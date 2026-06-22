@@ -42,6 +42,13 @@ pub trait Backend: Sized {
     fn new_driver(cfg: Self::Config) -> std::io::Result<Self::Driver>;
     fn init_process(cfg: &Self::Config) -> std::io::Result<()>;
     fn init_thread(cpu_id: u16) -> std::io::Result<()>;
+
+    fn allowed_cpus() -> Vec<u16> {
+        let n = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        (0..n as u16).collect()
+    }
 }
 
 cfg_select! {

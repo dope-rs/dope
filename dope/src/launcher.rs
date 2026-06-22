@@ -11,14 +11,15 @@
 //! [`ListenerOpts::reuseport`][reuseport]. Adapt to the host with the `max_conn`,
 //! `backlog`, and CPU-pinning knobs.
 //!
+//! [`Launcher::from_affinity`] binds one worker per CPU the process is actually
+//! allowed to run on, honouring a non-contiguous `--cpuset-cpus` such as
+//! `0-31,64-95`; [`Launcher::allowed_cpus`] returns that list for custom slicing.
+//!
 //! ```ignore
 //! use dope::{DriverConfig, Executor, runtime::profile::Production};
 //! use dope::launcher::{Ctx, Launcher};
 //!
-//! let cores = std::thread::available_parallelism()?.get() as u16;
-//! let cpus = (0..cores).collect::<Vec<u16>>();
-//!
-//! Launcher::new(cpus).run(|ctx: Ctx| {
+//! Launcher::from_affinity().run(|ctx: Ctx| {
 //!     let cfg = dope::DriverCfg::for_tcp_profile::<Production>(8192)
 //!         .with_cpu_id(Some(ctx.cpu));
 //!     let _exec = Executor::new(cfg)?;
@@ -60,6 +61,14 @@ pub struct Launcher {
 impl Launcher {
     pub fn new(cpus: Vec<u16>) -> Self {
         Self { cpus }
+    }
+
+    pub fn allowed_cpus() -> Vec<u16> {
+        <backend::Default as backend::Backend>::allowed_cpus()
+    }
+
+    pub fn from_affinity() -> Self {
+        Self::new(Self::allowed_cpus())
     }
 
     pub fn pin_to_cpu(cpu: u16) -> io::Result<()> {

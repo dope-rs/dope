@@ -48,4 +48,25 @@ impl crate::backend::Backend for Backend {
             Ok(())
         }
     }
+
+    fn allowed_cpus() -> Vec<u16> {
+        // SAFETY: cpu_set_t is a plain bitset POD; an all-zero value is a valid empty set.
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        // SAFETY: set is a live cpu_set_t and the size argument matches its layout.
+        let rc = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut set) };
+        if rc != 0 {
+            let n = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1);
+            return (0..n as u16).collect();
+        }
+        let mut cpus = Vec::new();
+        for cpu in 0..libc::CPU_SETSIZE as usize {
+            // SAFETY: set is a live cpu_set_t; cpu < CPU_SETSIZE.
+            if unsafe { libc::CPU_ISSET(cpu, &set) } {
+                cpus.push(cpu as u16);
+            }
+        }
+        cpus
+    }
 }
