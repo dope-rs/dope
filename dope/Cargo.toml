@@ -1,0 +1,25 @@
+[package]
+name = "dope"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+libc.workspace = true
+o3.workspace = true
+pin-project.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring.workspace = true
+
+[dev-dependencies]
+dope-gen = { path = "../gen" }
+dope-extra = { path = "../extra" }
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "alloc"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+io-uring.workspace = true
+libc.workspace = true
