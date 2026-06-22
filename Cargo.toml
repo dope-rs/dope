@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["dope", "gen", "extra"]
+
+[workspace.package]
+edition = "2024"
+version = "0.3.0"
+description = "The manifold runtime"
+repository = "https://github.com/dope-rs/dope"
+license = "MIT"
+authors = ["inq <gofiri@gmail.com>"]
+
+[workspace.dependencies]
+dope = { path = "dope", version = "0.3.0" }
+dope-gen = { path = "gen", version = "0.3.0" }
+dope-extra = { path = "extra", version = "0.3.0" }
+o3 = "0.1"
+libc = "0.2"
+io-uring = "0.7"
+pin-project = "1"
+

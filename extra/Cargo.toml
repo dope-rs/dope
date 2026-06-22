@@ -1,0 +1,15 @@
+[package]
+name = "dope-extra"
+edition.workspace = true
+version.workspace = true
+description = "dope harness extras — detached executor, OneShot driver, block-on"
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope.workspace = true
+pin-project.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

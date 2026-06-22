@@ -1,0 +1,16 @@
+[package]
+name = "dope-gen"
+edition.workspace = true
+version.workspace = true
+description = "Procedural macros for dope"
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+syn = { version = "2", features = ["full", "visit-mut"] }
+quote = "1"
