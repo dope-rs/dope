@@ -55,10 +55,11 @@ impl<C: Default + 'static> State<C> {
 
 pub struct Aux {
     arena: arena::Arena,
+    scratch: Box<[u8]>,
 }
 
 impl Aux {
-    pub fn write_buf_for<W: Wire, C: Default + 'static>(
+    fn write_buf_raw<W: Wire, C: Default + 'static>(
         &mut self,
         slot: &mut Slot<W, State<C>>,
     ) -> &mut [u8] {
@@ -68,6 +69,16 @@ impl Aux {
                 .expect("arena: max_conn hard cap guarantees a free buffer")
         });
         self.arena.slice(handle)
+    }
+
+    pub fn write_buf_for<W: Wire, C: Default + 'static>(
+        &mut self,
+        slot: &mut Slot<W, State<C>>,
+    ) -> &mut [u8] {
+        if slot.owes_egress() {
+            return &mut self.scratch;
+        }
+        self.write_buf_raw(slot)
     }
 }
 
@@ -130,6 +141,12 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         ud: backend::token::Token,
         driver: &mut Driver,
     ) {
+        if self.owes_egress() {
+            let n = written.min(write_buf.len());
+            let bytes = o3::buffer::Shared::copy_from_slice(&write_buf[..n]);
+            self.state.deferred.stage(bytes, false);
+            return;
+        }
         if !self.accept_write(write_buf.len(), written) {
             return;
         }
@@ -189,6 +206,19 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         ud: backend::token::Token,
         driver: &mut Driver,
     ) {
+        if self.owes_egress() {
+            let n = hdr_written.min(write_buf.len());
+            self.state
+                .deferred
+                .stage(o3::buffer::Shared::copy_from_slice(&write_buf[..n]), false);
+            let body = source.body();
+            if !body.is_empty() {
+                self.state
+                    .deferred
+                    .stage(o3::buffer::Shared::copy_from_slice(body), false);
+            }
+            return;
+        }
         if !self.accept_write(write_buf.len(), hdr_written) {
             return;
         }
@@ -253,6 +283,7 @@ where
             app,
             aux: Aux {
                 arena: arena::Arena::new(max_conn),
+                scratch: vec![0u8; send::WRITE_BUF_CAP].into_boxed_slice(),
             },
             idle: IdleSet::new(max_conn, E::Profile::IDLE_WINDOW),
             idle_send: IdleSet::new(
@@ -367,7 +398,7 @@ where
             if slot.core.is_closing() || slot.core.is_send_inflight() {
                 (false, false)
             } else if slot.state.send.sent_plain < slot.state.send.total_plain {
-                let write_buf = this.aux.write_buf_for(slot);
+                let write_buf = this.aux.write_buf_raw(slot);
                 slot.resume_send(write_buf, send_ud, driver);
                 let armed_send = slot.core.is_send_inflight();
                 let restage = !armed_send
@@ -635,7 +666,7 @@ where
         if needs_more {
             let send_ud = backend::token::Token::new(ID, idx, token.epoch());
             let armed = if let Some(slot) = this.pool.get_mut(idx) {
-                let write_buf = this.aux.write_buf_for(slot);
+                let write_buf = this.aux.write_buf_raw(slot);
                 slot.resume_send(write_buf, send_ud, driver);
                 slot.core.is_send_inflight()
             } else {
