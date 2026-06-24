@@ -362,9 +362,7 @@ where
                 backend::token::kind::SOCKET
             };
             let ud = pool.op(idx);
-            let cancelled = driver
-                .push(backend::sqe::Sqe::cancel(ud, op_kind))
-                .is_ok();
+            let cancelled = driver.push(backend::sqe::Sqe::cancel(ud, op_kind)).is_ok();
             if let Some(slot) = pool.get_mut(idx) {
                 slot.core.begin_close();
                 if !cancelled && slot.state.pending.mark(PEND_CLOSE) {

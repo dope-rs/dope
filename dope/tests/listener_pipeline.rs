@@ -167,7 +167,14 @@ fn two_responses_committed_while_first_in_flight_arrive_in_order() {
     drive_until(&mut exec, app.as_mut(), move || closes_done.get() >= 1);
 
     let (ok, got) = handle.join().expect("client join");
-    assert!(ok, "did not receive {} bytes (corruption/truncation)", want.len());
-    assert_eq!(got, want, "responses corrupted or reordered on the pipelined path");
+    assert!(
+        ok,
+        "did not receive {} bytes (corruption/truncation)",
+        want.len()
+    );
+    assert_eq!(
+        got, want,
+        "responses corrupted or reordered on the pipelined path"
+    );
     assert_eq!(closes.get(), 1, "connection must close exactly once");
 }

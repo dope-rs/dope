@@ -16,6 +16,7 @@ pub(super) mod system;
 pub(super) use backend::Backend;
 pub(super) use config::Config;
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
@@ -43,6 +44,14 @@ pub struct Driver {
     next_slot: u32,
     accept_slots: u32,
     defer_active: bool,
+    alive: &'static Cell<bool>,
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        // Mark dead before the io_uring ring drops so out-of-order Fds skip close.
+        self.alive.set(false);
+    }
 }
 
 impl Driver {
@@ -68,7 +77,12 @@ impl Driver {
             next_slot: cfg.fixed_file_slots,
             accept_slots: cfg.accept_slots,
             defer_active,
+            alive: Box::leak(Box::new(Cell::new(true))),
         })
+    }
+
+    pub(crate) fn alive_handle(&self) -> &'static Cell<bool> {
+        self.alive
     }
 
     pub fn defer_active(&self) -> bool {
