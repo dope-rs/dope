@@ -156,7 +156,11 @@ fn drain_reply_is_delivered_in_full_before_close() {
     drive_until(&mut exec, app.as_mut(), move || closes_done.get() >= 1);
 
     let (ok, got) = handle.join().expect("client join");
-    assert!(ok, "reply truncated before {} bytes (empty/short close)", want.len());
+    assert!(
+        ok,
+        "reply truncated before {} bytes (empty/short close)",
+        want.len()
+    );
     assert_eq!(got, want, "reply bytes corrupted on the drain path");
     assert_eq!(closes.get(), 1, "connection must close exactly once");
 }

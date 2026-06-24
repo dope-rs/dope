@@ -43,18 +43,21 @@ impl Kind {
     }
 }
 
+use std::cell::Cell;
 use std::ptr::NonNull;
 
 #[derive(Debug)]
 pub struct Fd {
     slot: FdSlot,
     driver: NonNull<crate::Driver>,
+    alive: &'static Cell<bool>,
 }
 
 impl Fd {
     pub fn adopt(slot: FdSlot, driver: &mut crate::Driver) -> Self {
         Self {
             slot,
+            alive: driver.alive_handle(),
             driver: NonNull::from(driver),
         }
     }
@@ -70,7 +73,11 @@ impl Fd {
 
 impl Drop for Fd {
     fn drop(&mut self) {
-        // SAFETY: Driver outlives all Fds derived from it (Worker.driver, stable for run_loop; thread-per-core, no aliasing).
+        // Driver dead (out-of-order drop) ⇒ its teardown already closed the slot.
+        if !self.alive.get() {
+            return;
+        }
+        // SAFETY: alive ⇒ driver still live; thread-per-core, no aliasing.
         unsafe { self.driver.as_mut() }.release_fd_slot(self.slot);
     }
 }
