@@ -189,9 +189,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             backend::RecvEvent::Eof => slot.recv_eof(more),
             backend::RecvEvent::Cancelled => slot.recv_cancelled(more),
             backend::RecvEvent::Starved => slot.recv_starved(more),
-            backend::RecvEvent::Unsupported | backend::RecvEvent::Failed(_) => {
-                slot.recv_failed(more)
-            }
+            backend::RecvEvent::Failed(_) => slot.recv_failed(more),
         };
         let needs_rearm = match &decision {
             RecvDecision::NoChunk { needs_rearm } | RecvDecision::Chunk { needs_rearm, .. } => {

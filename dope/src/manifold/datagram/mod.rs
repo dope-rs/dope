@@ -123,11 +123,6 @@ impl<const ID: u8> Socket<ID> {
             backend::RecvEvent::Eof
             | backend::RecvEvent::Cancelled
             | backend::RecvEvent::Starved => return,
-            backend::RecvEvent::Unsupported => {
-                panic!(
-                    "dope invariant violated: recvmsg-multi unsupported on required uring platform"
-                );
-            }
         };
         let (outcome, _guard) = backend::Datagram::recv_packet(driver, len, bid, msghdr);
         match outcome {
