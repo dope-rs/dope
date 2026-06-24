@@ -17,7 +17,7 @@ use crate::transport::link::{
     SocketStep,
 };
 use crate::transport::wire::{Reclaim, Wire};
-use crate::{Driver, Lend, Profile, backend};
+use crate::{Drive, Driver, Lend, Profile, backend};
 
 #[pin_project::pin_project(!Unpin)]
 pub struct Core<const ID: u8, A, S, E>
@@ -347,6 +347,29 @@ where
         idx: backend::token::LocalIdx,
         driver: &mut Driver,
     ) {
+        let (send_inflight, connecting) = match pool.get(idx) {
+            Some(s) => (s.core.is_send_inflight(), s.state.establish.is_connecting()),
+            None => return,
+        };
+        if connecting {
+            let ud = pool.op(idx);
+            let cancelled = driver
+                .push(backend::sqe::Sqe::cancel(ud, backend::token::kind::CONNECT))
+                .is_ok();
+            if let Some(slot) = pool.get_mut(idx) {
+                slot.core.begin_close();
+                if !cancelled && slot.state.pending.mark(PEND_CLOSE) {
+                    dirty.push(idx);
+                }
+            }
+            return;
+        }
+        if send_inflight {
+            if let Some(slot) = pool.get_mut(idx) {
+                slot.core.begin_close();
+            }
+            return;
+        }
         let drained = pool.get(idx).map(|s| app.is_drained(s)).unwrap_or(true);
         if drained {
             pool.try_close(idx, driver);

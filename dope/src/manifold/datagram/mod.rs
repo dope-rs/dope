@@ -106,6 +106,9 @@ impl<const ID: u8> Socket<ID> {
         let msghdr = {
             let this = self.as_mut().project();
             if !this.recv_arm.epoch_match(ud, RECV_ARM_TAG) {
+                if let backend::RecvEvent::Data { bid, .. } = &e {
+                    driver.release(Some(*bid));
+                }
                 return;
             }
             this.recv_arm.on_completion(more);
