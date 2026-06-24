@@ -347,14 +347,23 @@ where
         idx: backend::token::LocalIdx,
         driver: &mut Driver,
     ) {
-        let (send_inflight, connecting) = match pool.get(idx) {
-            Some(s) => (s.core.is_send_inflight(), s.state.establish.is_connecting()),
+        let (send_inflight, establishing, connecting) = match pool.get(idx) {
+            Some(s) => (
+                s.core.is_send_inflight(),
+                !s.state.establish.is_done(),
+                s.state.establish.is_connecting(),
+            ),
             None => return,
         };
-        if connecting {
+        if establishing {
+            let op_kind = if connecting {
+                backend::token::kind::CONNECT
+            } else {
+                backend::token::kind::SOCKET
+            };
             let ud = pool.op(idx);
             let cancelled = driver
-                .push(backend::sqe::Sqe::cancel(ud, backend::token::kind::CONNECT))
+                .push(backend::sqe::Sqe::cancel(ud, op_kind))
                 .is_ok();
             if let Some(slot) = pool.get_mut(idx) {
                 slot.core.begin_close();

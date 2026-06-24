@@ -49,7 +49,6 @@ pub enum RecvEvent {
     Eof,
     Cancelled,
     Starved,
-    Unsupported,
     Failed(i32),
 }
 
@@ -74,7 +73,6 @@ pub enum SyncEvent {
 #[derive(Clone, Copy)]
 pub enum AcceptEvent {
     Accepted(FdSlot),
-    Unsupported,
     Failed,
 }
 
@@ -107,7 +105,6 @@ impl TryFrom<Cqe> for Event {
             kind::ACCEPT => {
                 let e = match c.result {
                     n if n >= 0 => AcceptEvent::Accepted(FdSlot::new(n as u32)),
-                    n if -n == libc::EINVAL => AcceptEvent::Unsupported,
                     _ => AcceptEvent::Failed,
                 };
                 Ok(Self::Accept(Token::from_raw(c.user_data), c.more(), e))
@@ -127,8 +124,7 @@ impl TryFrom<Cqe> for Event {
                     0 => RecvEvent::Eof,
                     n => match -n {
                         libc::ECANCELED => RecvEvent::Cancelled,
-                        libc::EAGAIN | libc::ENOBUFS => RecvEvent::Starved,
-                        libc::EINVAL => RecvEvent::Unsupported,
+                        libc::EAGAIN | libc::ENOBUFS | libc::EINTR => RecvEvent::Starved,
                         errno => RecvEvent::Failed(errno),
                     },
                 };

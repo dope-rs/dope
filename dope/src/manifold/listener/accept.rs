@@ -101,11 +101,6 @@ impl<T: Transport> Accept<T> {
         self.arm.on_completion(more);
 
         match e {
-            backend::AcceptEvent::Unsupported => {
-                panic!(
-                    "dope invariant violated: accept-oneshot unsupported on required uring platform"
-                );
-            }
             backend::AcceptEvent::Failed => Outcome::Rejected,
             backend::AcceptEvent::Accepted(slot) => {
                 let fd = backend::socket::Fd::adopt(slot, driver);
