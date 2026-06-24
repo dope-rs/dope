@@ -93,6 +93,12 @@ pub struct Listener<
 }
 
 impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
+    fn owes_egress(&self) -> bool {
+        self.core.is_send_inflight()
+            || self.state.send.sent_plain < self.state.send.total_plain
+            || !self.state.deferred.is_idle()
+    }
+
     fn accept_write(&mut self, write_buf_cap: usize, written: usize) -> bool {
         if written > write_buf_cap {
             self.core.set_close_after();
@@ -117,25 +123,6 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
             .submit_send_vectored_tracked(&mut self.core, vectored, ud, driver)
     }
 
-    fn submit_split_vectored(
-        &mut self,
-        hdr_slice: &[u8],
-        body_slice: &[u8],
-        ud: backend::token::Token,
-        driver: &mut Driver,
-    ) {
-        let iovs = [
-            backend::socket::IoVec::from_slice(hdr_slice),
-            backend::socket::IoVec::from_slice(body_slice),
-        ];
-        let total = hdr_slice.len() + body_slice.len();
-        if let Some(n) = self.submit_pair(iovs, ud, driver) {
-            self.state.send.submitted_len = n;
-            self.state.send.sent_plain = n;
-            self.state.send.total_plain = total;
-        }
-    }
-
     pub fn submit_buffered(
         &mut self,
         write_buf: &mut [u8],
@@ -146,6 +133,10 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         if !self.accept_write(write_buf.len(), written) {
             return;
         }
+        self.state.send.total_plain = written;
+        self.state.send.sent_plain = 0;
+        self.state.send.submitted_len = 0;
+        self.state.send.source = send::SendSource::None;
         let plain = &write_buf[..written];
         if let Some(n) = self
             .wire
@@ -153,9 +144,7 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         {
             self.state.send.submitted_len = n;
             self.state.send.sent_plain = n;
-            self.state.send.total_plain = written;
         }
-        self.state.send.source = send::SendSource::None;
     }
 
     pub fn submit_split_static(
@@ -203,9 +192,11 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         if !self.accept_write(write_buf.len(), hdr_written) {
             return;
         }
-        let hdr_slice: &[u8] = &write_buf[..hdr_written];
-        self.submit_split_vectored(hdr_slice, source.body(), ud, driver);
+        self.state.send.total_plain = hdr_written + source.body().len();
+        self.state.send.sent_plain = 0;
+        self.state.send.submitted_len = 0;
         self.state.send.source = source;
+        self.resume_send(write_buf, ud, driver);
     }
 
     fn resume_send(&mut self, write_buf: &[u8], ud: backend::token::Token, driver: &mut Driver) {
@@ -375,6 +366,14 @@ where
             };
             if slot.core.is_closing() || slot.core.is_send_inflight() {
                 (false, false)
+            } else if slot.state.send.sent_plain < slot.state.send.total_plain {
+                let write_buf = this.aux.write_buf_for(slot);
+                slot.resume_send(write_buf, send_ud, driver);
+                let armed_send = slot.core.is_send_inflight();
+                let restage = !armed_send
+                    && slot.state.send.sent_plain < slot.state.send.total_plain
+                    && slot.state.pending.mark(PEND_EGRESS);
+                (armed_send, restage)
             } else {
                 if slot.state.deferred.close_after() {
                     slot.core.set_close_after();
@@ -484,7 +483,7 @@ where
     ) -> Option<ConnView<'_, A::Conn>> {
         let this = self.project();
         let (_, slot) = this.pool.get_mut_by_target(conn_id)?;
-        let inflight = slot.core.is_send_inflight() || !slot.state.deferred.is_idle();
+        let inflight = slot.owes_egress();
         Some(ConnView {
             state: &mut slot.state.conn,
             inflight,
@@ -663,15 +662,46 @@ where
         idx: backend::token::LocalIdx,
         driver: &mut Driver,
     ) {
-        let close = {
+        enum Step {
+            Close,
+            Retry,
+            Idle,
+        }
+        let step = {
             let this = self.as_ref().project_ref();
             let Some(slot) = this.pool.get(idx) else {
                 return;
             };
-            slot.core.should_close(this.app.defer_close(slot))
+            let defer = this.app.defer_close(slot);
+            if slot.core.is_closing() {
+                if slot.core.should_close(defer) {
+                    Step::Close
+                } else {
+                    Step::Idle
+                }
+            } else if slot.owes_egress() {
+                if slot.core.is_send_inflight() {
+                    Step::Idle
+                } else {
+                    Step::Retry
+                }
+            } else if slot.core.should_close(defer) {
+                Step::Close
+            } else {
+                Step::Idle
+            }
         };
-        if close {
-            Self::close_inherent(self.as_mut(), idx, driver);
+        match step {
+            Step::Close => Self::close_inherent(self.as_mut(), idx, driver),
+            Step::Retry => {
+                let this = self.as_mut().project();
+                if let Some(slot) = this.pool.get_mut(idx)
+                    && slot.state.pending.mark(PEND_EGRESS)
+                {
+                    this.dirty.push(idx);
+                }
+            }
+            Step::Idle => {}
         }
     }
 }
