@@ -9,9 +9,11 @@ use crate::backend;
 
 mod batch;
 mod connector;
+pub mod file;
 mod holding;
 mod io;
 mod listener;
+pub(crate) mod pending;
 mod slab;
 mod sleep;
 mod state;

@@ -41,6 +41,71 @@ impl Sqe {
         )
     }
 
+    pub fn openat(dir: RawFd, path: *const libc::c_char, flags: i32, mode: u32, op: Token) -> Self {
+        Self(
+            opcode::OpenAt::new(types::Fd(dir), path)
+                .flags(flags)
+                .mode(mode as libc::mode_t)
+                .build()
+                .user_data(op.with_kind(kind::OPEN).raw()),
+        )
+    }
+
+    pub fn openat_fixed(
+        dir: RawFd,
+        path: *const libc::c_char,
+        flags: i32,
+        mode: u32,
+        slot: FdSlot,
+        op: Token,
+    ) -> io::Result<Self> {
+        let dest = types::DestinationSlot::try_from_slot_target(slot.raw())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "dope: open slot out of range"))?;
+        Ok(Self(
+            opcode::OpenAt::new(types::Fd(dir), path)
+                .file_index(Some(dest))
+                .flags(flags)
+                .mode(mode as libc::mode_t)
+                .build()
+                .user_data(op.with_kind(kind::OPEN).raw()),
+        ))
+    }
+
+    pub fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
+        Self(
+            opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), buf.len() as u32)
+                .offset(offset)
+                .build()
+                .user_data(op.with_kind(kind::READ).raw()),
+        )
+    }
+
+    pub fn read_fixed_file(slot: FdSlot, buf: &mut [u8], offset: u64, op: Token) -> Self {
+        Self(
+            opcode::Read::new(types::Fixed(slot.raw()), buf.as_mut_ptr(), buf.len() as u32)
+                .offset(offset)
+                .build()
+                .user_data(op.with_kind(kind::READ).raw()),
+        )
+    }
+
+    pub fn splice_raw(
+        fd_in: RawFd,
+        off_in: i64,
+        fd_out: RawFd,
+        off_out: i64,
+        len: u32,
+        flags: u32,
+        op: Token,
+    ) -> Self {
+        Self(
+            opcode::Splice::new(types::Fd(fd_in), off_in, types::Fd(fd_out), off_out, len)
+                .flags(flags)
+                .build()
+                .user_data(op.with_kind(kind::SPLICE).raw()),
+        )
+    }
+
     pub fn fsync(fd: RawFd, op: Token) -> Self {
         Self(
             opcode::Fsync::new(types::Fd(fd))

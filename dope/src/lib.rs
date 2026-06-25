@@ -14,8 +14,9 @@ pub use backend::park::WakeRef;
 pub use backend::profile::Profile;
 pub use backend::{
     AcceptEvent, Backend, Bootstrap, ConnectEvent, Cqe, Drive, DriverCfg, DriverConfig, Event,
-    Lend, ListenerOpts, OutboundReservation, PushError, RecvEvent, SendEvent, SocketEvent, Sockopt,
-    SyncEvent, WriteEvent, datagram, file, platform, socket, sqe,
+    Lend, ListenerOpts, OpenEvent, OutboundReservation, PushError, ReadEvent, RecvEvent, SendEvent,
+    SocketEvent, Sockopt, SpliceEvent, SyncEvent, WriteEvent, datagram, file, platform, socket,
+    sqe,
 };
 pub use fiber::WakerSet;
 pub use o3;

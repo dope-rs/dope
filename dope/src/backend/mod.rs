@@ -15,7 +15,8 @@ pub mod socket;
 pub mod token;
 
 pub use cqe::{
-    AcceptEvent, ConnectEvent, Cqe, Event, RecvEvent, SendEvent, SocketEvent, SyncEvent, WriteEvent,
+    AcceptEvent, ConnectEvent, Cqe, Event, OpenEvent, ReadEvent, RecvEvent, SendEvent, SocketEvent,
+    SpliceEvent, SyncEvent, WriteEvent,
 };
 pub(super) use datagram::Datagram;
 pub use drive::Drive;
