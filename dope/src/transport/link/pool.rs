@@ -21,7 +21,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         Self {
             slab: Slab::new(max_conn),
             reservation,
-            recv_rearm_pending: VecDeque::with_capacity(max_conn),
+            recv_rearm_pending: VecDeque::new(),
             _t: PhantomData,
         }
     }
