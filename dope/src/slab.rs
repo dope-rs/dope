@@ -21,36 +21,27 @@ impl<T> Entry<T> {
 
 const NO_FREE: u32 = u32::MAX;
 
+// `place_at` and `reserve`/`alloc` must not mix on one Slab: the former bypasses the freelist.
 pub(super) struct Slab<T> {
-    slots: Box<[Entry<T>]>,
+    slots: Vec<Entry<T>>,
     next_free: u32,
     len: usize,
+    cap: usize,
 }
 
 impl<T> Slab<T> {
     #[must_use]
-    pub(super) fn new(slots: usize) -> Self {
-        let mut buf: Vec<Entry<T>> = Vec::with_capacity(slots);
-        for i in 0..slots {
-            let next = if i + 1 == slots {
-                NO_FREE
-            } else {
-                (i + 1) as u32
-            };
-            buf.push(Entry::Free {
-                next,
-                epoch: backend::token::Epoch::INITIAL,
-            });
-        }
+    pub(super) fn new(cap: usize) -> Self {
         Self {
-            slots: buf.into_boxed_slice(),
-            next_free: if slots == 0 { NO_FREE } else { 0 },
+            slots: Vec::new(),
+            next_free: NO_FREE,
             len: 0,
+            cap,
         }
     }
 
     pub(super) fn slot_count(&self) -> usize {
-        self.slots.len()
+        self.cap
     }
 
     pub(super) fn len(&self) -> usize {
@@ -61,9 +52,36 @@ impl<T> Slab<T> {
         self.len == 0
     }
 
+    fn push_free(&mut self, next: u32) {
+        self.slots.push(Entry::Free {
+            next,
+            epoch: backend::token::Epoch::INITIAL,
+        });
+    }
+
+    fn grow_through(&mut self, index: usize) {
+        while self.slots.len() <= index {
+            let here = self.slots.len() as u32;
+            let next = if here as usize == index {
+                NO_FREE
+            } else {
+                self.next_free
+            };
+            self.push_free(next);
+            if here as usize != index {
+                self.next_free = here;
+            }
+        }
+    }
+
     fn pop_free(&mut self) -> Option<(usize, backend::token::Epoch)> {
         if self.next_free == NO_FREE {
-            return None;
+            if self.slots.len() >= self.cap {
+                return None;
+            }
+            let idx = self.slots.len();
+            self.push_free(NO_FREE);
+            return Some((idx, backend::token::Epoch::INITIAL));
         }
         let idx = self.next_free as usize;
         let Entry::Free { next, epoch } = self.slots[idx] else {
@@ -89,7 +107,8 @@ impl<T> Slab<T> {
         make: F,
     ) -> backend::token::Key {
         let i = index.raw() as usize;
-        assert!(i < self.slots.len(), "slab::place_at index out of range");
+        assert!(i < self.cap, "slab::place_at index out of range");
+        self.grow_through(i);
         let epoch = self.slots[i].epoch().bump();
         if matches!(self.slots[i], Entry::Free { .. }) {
             self.len += 1;

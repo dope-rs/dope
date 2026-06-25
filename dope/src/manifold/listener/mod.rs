@@ -302,7 +302,7 @@ where
                 },
                 E::Profile::ABS_CONN_AGE.unwrap_or(std::time::Duration::ZERO),
             ),
-            dirty: Vec::with_capacity(max_conn),
+            dirty: Vec::new(),
             wire_cfg: <<A::Wire as Wire>::InitConfig as Default>::default(),
         }
     }

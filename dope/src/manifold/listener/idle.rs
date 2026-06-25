@@ -15,24 +15,33 @@ pub(super) struct IdleSet {
     head: u32,
     tail: u32,
     window: Duration,
+    cap: usize,
 }
 
 impl IdleSet {
     pub(super) fn new(cap: usize, window: Duration) -> Self {
-        let now = Instant::now();
-        let nodes = (0..cap)
-            .map(|i| Node {
-                deadline: now,
-                prev: NIL,
-                next: i as u32,
-            })
-            .collect();
         Self {
-            nodes,
+            nodes: Vec::new(),
             head: NIL,
             tail: NIL,
             window,
+            cap,
         }
+    }
+
+    fn ensure(&mut self, index: usize, now: Instant) -> bool {
+        if index >= self.cap {
+            return false;
+        }
+        while self.nodes.len() <= index {
+            let here = self.nodes.len() as u32;
+            self.nodes.push(Node {
+                deadline: now,
+                prev: NIL,
+                next: here,
+            });
+        }
+        true
     }
 
     fn unlink(&mut self, idx: u32) {
@@ -56,7 +65,7 @@ impl IdleSet {
     pub(super) fn arm(&mut self, idx: backend::token::LocalIdx, now: Instant) {
         let raw = idx.raw();
         let i = raw as usize;
-        if i >= self.nodes.len() {
+        if !self.ensure(i, now) {
             return;
         }
         if self.nodes[i].next != raw {
