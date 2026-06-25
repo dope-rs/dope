@@ -3,6 +3,7 @@ mod buf;
 pub mod connector;
 pub mod datagram;
 pub mod env;
+pub mod file;
 pub mod listener;
 
 pub mod route;

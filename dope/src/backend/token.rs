@@ -42,6 +42,9 @@ pub mod kind {
     pub const SETSOCKOPT: u8 = 8;
     pub const WRITE: u8 = 9;
     pub const SYNC: u8 = 10;
+    pub const OPEN: u8 = 11;
+    pub const READ: u8 = 12;
+    pub const SPLICE: u8 = 13;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]

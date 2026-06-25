@@ -7,6 +7,14 @@ pub struct Pipe {
 }
 
 impl Pipe {
+    pub fn new() -> io::Result<Self> {
+        Self::shutdown()
+    }
+
+    pub fn write_fd(&self) -> RawFd {
+        self.write.as_raw_fd()
+    }
+
     pub fn shutdown() -> io::Result<Self> {
         let mut fds = [0 as RawFd; 2];
         cfg_select! {

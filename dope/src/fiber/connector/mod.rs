@@ -8,6 +8,7 @@ use std::task::Waker;
 pub(super) use connect::Connect;
 use o3::buffer::Shared;
 
+use super::pending::{Pending, Resolve};
 use super::state::{RecvInto, SendIdle, State};
 use super::{ConnEnv, Holding};
 use crate::fiber::io::Host;
@@ -30,50 +31,32 @@ pub(super) enum ConnectOutcome {
 }
 
 pub struct AsyncApp<W: Wire> {
-    inbox: Vec<(u32, Resolved)>,
-    waiters: Vec<(u32, backend::park::WakeRef)>,
+    pending: Pending<Resolved>,
     _w: PhantomData<fn() -> W>,
 }
 
 impl<W: Wire> Default for AsyncApp<W> {
     fn default() -> Self {
         Self {
-            inbox: Vec::new(),
-            waiters: Vec::new(),
+            pending: Pending::default(),
             _w: PhantomData,
         }
     }
 }
 
 impl<W: Wire> AsyncApp<W> {
-    fn wake(&mut self, tag: u32) {
-        if let Some(pos) = self.waiters.iter().position(|(t, _)| *t == tag) {
-            let (_, w) = self.waiters.swap_remove(pos);
-            w.wake();
-        }
-    }
-
     fn resolve(&mut self, tag: u32, waker: &Waker) -> ConnectOutcome {
-        if let Some(pos) = self.inbox.iter().position(|(t, _)| *t == tag) {
-            let (_, r) = self.inbox.swap_remove(pos);
-            return match r {
-                Resolved::Ready(token) => ConnectOutcome::Conn(token),
-                Resolved::Failed => {
-                    ConnectOutcome::Failed(io::Error::other("fiber::Connector: connect failed"))
-                }
-            };
+        match self.pending.poll(tag, waker) {
+            Resolve::Ready(Resolved::Ready(token)) => ConnectOutcome::Conn(token),
+            Resolve::Ready(Resolved::Failed) => {
+                ConnectOutcome::Failed(io::Error::other("fiber::Connector: connect failed"))
+            }
+            Resolve::Pending => ConnectOutcome::Pending,
         }
-        let wref = backend::park::WakeRef::verified(waker);
-        match self.waiters.iter_mut().find(|(t, _)| *t == tag) {
-            Some(slot) => slot.1 = wref,
-            None => self.waiters.push((tag, wref)),
-        }
-        ConnectOutcome::Pending
     }
 
     fn cancel(&mut self, tag: u32) {
-        self.waiters.retain(|(t, _)| *t != tag);
-        self.inbox.retain(|(t, _)| *t != tag);
+        self.pending.cancel(tag);
     }
 }
 
@@ -101,13 +84,11 @@ impl<W: Wire> ConnApp for AsyncApp<W> {
         _driver: &mut Driver,
     ) {
         let token = slot.token();
-        self.inbox.push((tag, Resolved::Ready(token)));
-        self.wake(tag);
+        self.pending.settle(tag, Resolved::Ready(token));
     }
 
     fn on_connect_failed(&mut self, tag: u32, _driver: &mut Driver) {
-        self.inbox.push((tag, Resolved::Failed));
-        self.wake(tag);
+        self.pending.settle(tag, Resolved::Failed);
     }
 
     fn on_send(

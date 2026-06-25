@@ -71,6 +71,26 @@ pub enum SyncEvent {
 }
 
 #[derive(Clone, Copy)]
+pub enum OpenEvent {
+    Opened(i32),
+    Failed(i32),
+}
+
+#[derive(Clone, Copy)]
+pub enum ReadEvent {
+    Read(u32),
+    Eof,
+    Failed(i32),
+}
+
+#[derive(Clone, Copy)]
+pub enum SpliceEvent {
+    Moved(u32),
+    Eof,
+    Failed(i32),
+}
+
+#[derive(Clone, Copy)]
 pub enum AcceptEvent {
     Accepted(FdSlot),
     Failed,
@@ -95,6 +115,9 @@ pub enum Event {
     Connect(Token, ConnectEvent),
     Write(Token, WriteEvent),
     Sync(Token, SyncEvent),
+    Open(Token, OpenEvent),
+    Read(Token, ReadEvent),
+    Splice(Token, SpliceEvent),
 }
 
 impl TryFrom<Cqe> for Event {
@@ -158,6 +181,30 @@ impl TryFrom<Cqe> for Event {
                 };
                 Ok(Self::Sync(Token::from_raw(c.user_data), e))
             }
+            kind::OPEN => {
+                let e = if c.result >= 0 {
+                    OpenEvent::Opened(c.result)
+                } else {
+                    OpenEvent::Failed(-c.result)
+                };
+                Ok(Self::Open(Token::from_raw(c.user_data), e))
+            }
+            kind::READ => {
+                let e = match c.result {
+                    n if n > 0 => ReadEvent::Read(n as u32),
+                    0 => ReadEvent::Eof,
+                    n => ReadEvent::Failed(-n),
+                };
+                Ok(Self::Read(Token::from_raw(c.user_data), e))
+            }
+            kind::SPLICE => {
+                let e = match c.result {
+                    n if n > 0 => SpliceEvent::Moved(n as u32),
+                    0 => SpliceEvent::Eof,
+                    n => SpliceEvent::Failed(-n),
+                };
+                Ok(Self::Splice(Token::from_raw(c.user_data), e))
+            }
             kind::TIMER => Ok(Self::Timer(Token::from_raw(c.user_data))),
             kind::SOCKET => {
                 let e = if c.result >= 0 {
@@ -191,6 +238,9 @@ impl Event {
             Self::Connect(t, _) => t.route(),
             Self::Write(t, _) => t.route(),
             Self::Sync(t, _) => t.route(),
+            Self::Open(t, _) => t.route(),
+            Self::Read(t, _) => t.route(),
+            Self::Splice(t, _) => t.route(),
         }
     }
 }
