@@ -24,6 +24,54 @@ pub use sockopt::Sockopt;
 
 pub type DriverCfg = <Default as Backend>::Config;
 
+/// Size the provided recv-buffer pool to the recv high-water-mark — a small
+/// multiple of the CQE drain batch — NOT to the connection count. Shared by the
+/// io_uring and kqueue backends so both paths stay flat in conn count.
+///
+/// Provided buffers are released within the same drain batch they are checked
+/// out (proof in MEMORY_DESIGN.md section 0), so the held set never exceeds
+/// [`DRAIN_BATCH`](crate::runtime::executor::DRAIN_BATCH) regardless of
+/// `accept_slots`. `K_BATCH` standing batches leave the kernel several batches
+/// of inventory between flushes. Larger recv buffers (e.g. Throughput's 64 KiB)
+/// divide the entry count by their page ratio so total bytes stay bounded;
+/// floored so tiny deployments keep slack. `max_entries` is the backend's
+/// ring-buffer ceiling.
+pub(crate) fn provided_entries(
+    accept_slots: u32,
+    provided_buf_len: usize,
+    max_entries: u32,
+) -> u16 {
+    /// Standing-inventory floor: tiny deployments keep this much slack.
+    const PROVIDED_FLOOR: u32 = 1024;
+    /// Standing inventory = K_BATCH drained batches of recv buffers (4x the
+    /// `<=DRAIN_BATCH` recv HWM). Raise if the `enobufs` counter is non-zero at
+    /// sustained peak.
+    const K_BATCH: u32 = 4;
+
+    let drain_batch = crate::runtime::executor::DRAIN_BATCH as u32;
+    let buf_len_ratio = (provided_buf_len / 4096).max(1) as u32;
+    // Cap the standing inventory at the conn count: a deployment with fewer
+    // conns than the batch HWM cannot have more recvs in flight than conns.
+    let hwm_entries = K_BATCH
+        .saturating_mul(drain_batch)
+        .min(accept_slots.max(PROVIDED_FLOOR));
+    let target = hwm_entries.min(max_entries) / buf_len_ratio;
+    target.max(PROVIDED_FLOOR).min(u16::MAX as u32) as u16
+}
+
+/// Apply explicit provided-pool overrides in place; a zero field is left
+/// unchanged. Centralizes the "0 = keep the profile-derived value" contract of
+/// [`DriverConfig::with_provided`].
+#[inline]
+pub(crate) fn apply_provided(len: usize, entries: u16, dst_len: &mut usize, dst_entries: &mut u16) {
+    if len != 0 {
+        *dst_len = len;
+    }
+    if entries != 0 {
+        *dst_entries = entries;
+    }
+}
+
 pub trait DriverConfig: Sized + Copy {
     fn for_profile<P: crate::backend::profile::Profile>() -> Self;
 
@@ -31,6 +79,13 @@ pub trait DriverConfig: Sized + Copy {
     fn for_quic_udp(provided_buf_entries: u32, provided_buf_len: u32) -> Self;
 
     fn with_cpu_id(self, _cpu: Option<u16>) -> Self {
+        self
+    }
+
+    /// Override the provided recv-buffer pool sizing without minting a new
+    /// [`Profile`](crate::backend::profile::Profile). A zero argument leaves the
+    /// corresponding field at the profile-derived value.
+    fn with_provided(self, _len: usize, _entries: u16) -> Self {
         self
     }
 }

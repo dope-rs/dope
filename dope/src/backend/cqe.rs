@@ -124,7 +124,11 @@ impl TryFrom<Cqe> for Event {
                     0 => RecvEvent::Eof,
                     n => match -n {
                         libc::ECANCELED => RecvEvent::Cancelled,
-                        libc::EAGAIN | libc::ENOBUFS | libc::EINTR => RecvEvent::Starved,
+                        libc::ENOBUFS => {
+                            crate::memstats::enobufs_inc();
+                            RecvEvent::Starved
+                        }
+                        libc::EAGAIN | libc::EINTR => RecvEvent::Starved,
                         errno => RecvEvent::Failed(errno),
                     },
                 };

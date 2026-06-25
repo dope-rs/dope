@@ -158,6 +158,9 @@ impl Core {
     }
 
     pub fn send_done(&mut self) {
+        if self.send_in_flight {
+            crate::memstats::send_release();
+        }
         self.send_in_flight = false;
     }
 
@@ -166,6 +169,7 @@ impl Core {
             .push(backend::sqe::Sqe::send(&self.fd, buf, ud))
             .is_ok()
         {
+            crate::memstats::send_borrow();
             self.send_in_flight = true;
         }
     }
@@ -185,6 +189,7 @@ impl Core {
             ))
             .is_ok()
         {
+            crate::memstats::send_borrow();
             self.send_in_flight = true;
         }
     }

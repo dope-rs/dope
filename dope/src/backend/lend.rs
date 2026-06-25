@@ -3,7 +3,9 @@ pub trait Lend {
 
     fn release(&mut self, bid: Option<u16>);
 
-    // SAFETY: caller guarantees `bid` names a filled buffer of `len` bytes owned by the driver for `'a`.
+    /// # Safety
+    /// The caller guarantees `bid` names a filled buffer of `len` bytes owned by
+    /// the driver and held valid for `'a`.
     unsafe fn slice<'a>(&self, len: u32, bid: u16) -> &'a [u8];
 }
 

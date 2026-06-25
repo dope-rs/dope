@@ -122,6 +122,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             armed
         };
         if !armed && self.recv_rearm_pending.len() < cap {
+            crate::memstats::starved_rearm_inc();
             self.recv_rearm_pending.push_back(idx);
         }
         armed
@@ -198,6 +199,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             _ => false,
         };
         if needs_rearm && self.recv_rearm_pending.len() < cap {
+            crate::memstats::starved_rearm_inc();
             self.recv_rearm_pending.push_back(idx);
         }
         let outcome = match decision {
