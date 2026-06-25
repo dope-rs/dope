@@ -21,6 +21,11 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// kqueue's emulated ring-buffer ceiling, mirroring the io_uring max.
+    const KQ_MAX_ENTRIES: u32 = 32768;
+}
+
 impl crate::backend::DriverConfig for Config {
     fn for_profile<P: crate::backend::profile::Profile>() -> Self {
         Self {
@@ -39,12 +44,20 @@ impl crate::backend::DriverConfig for Config {
         Self {
             ring_entries: accept_slots
                 .saturating_add(P::OUTBOUND_RESERVE)
-                .next_power_of_two(),
+                .next_power_of_two()
+                .min(P::RING_ENTRIES),
             cq_entries: (accept_slots.saturating_mul(2).saturating_add(1024))
                 .next_power_of_two(),
-            fixed_file_slots: P::FIXED_FILE_SLOTS,
+            // Register only the requested conns + outbound reserve, not the
+            // FIXED_FILE_SLOTS ceiling (mirrors the uring backend). See
+            // MEMORY_DESIGN.md (fixed-file realism).
+            fixed_file_slots: accept_slots.saturating_add(P::OUTBOUND_RESERVE),
             accept_slots,
-            provided_buf_entries: ((accept_slots as usize).max(2048) * 4).min(32768) as u16,
+            provided_buf_entries: crate::backend::provided_entries(
+                accept_slots,
+                P::PROVIDED_BUF_LEN,
+                Self::KQ_MAX_ENTRIES,
+            ),
             provided_buf_len: P::PROVIDED_BUF_LEN,
         }
     }
@@ -58,5 +71,15 @@ impl crate::backend::DriverConfig for Config {
             provided_buf_entries: provided_buf_entries as u16,
             provided_buf_len: provided_buf_len as usize,
         }
+    }
+
+    fn with_provided(mut self, len: usize, entries: u16) -> Self {
+        crate::backend::apply_provided(
+            len,
+            entries,
+            &mut self.provided_buf_len,
+            &mut self.provided_buf_entries,
+        );
+        self
     }
 }

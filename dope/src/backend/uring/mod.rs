@@ -51,6 +51,7 @@ impl Drop for Driver {
     fn drop(&mut self) {
         // Mark dead before the io_uring ring drops so out-of-order Fds skip close.
         self.alive.set(false);
+        crate::memstats::dump();
     }
 }
 

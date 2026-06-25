@@ -683,6 +683,19 @@ where
             };
             let total = slot.state.send.total_plain;
             slot.reset_send();
+            // C1: the response fully drained and the SEND CQE has been observed,
+            // so the SEND SQE that referenced the arena buffer by raw pointer is
+            // complete and the kernel will not touch it again. Return the handle
+            // to the per-thread free list now (not at close) so the arena scales
+            // with concurrent in-flight writers, not live conns. Returning before
+            // the CQE (while is_send_inflight()) would be a use-after-free.
+            debug_assert!(
+                !slot.core.is_send_inflight(),
+                "arena buffer returned while a SEND SQE is still in flight"
+            );
+            if let Some(h) = slot.state.send.arena.take() {
+                this.aux.arena.release(h);
+            }
             this.app.on_send(slot, total, this.aux, driver);
         }
         self.as_mut().maybe_close_inherent(idx, driver);

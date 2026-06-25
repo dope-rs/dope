@@ -28,7 +28,8 @@ impl<'d, T> Holding<'d, T> {
         }
     }
 
-    // SAFETY: caller guarantees `ptr` is valid, pinned, and outlives `'d`.
+    /// # Safety
+    /// The caller guarantees `ptr` is valid, pinned, and outlives `'d`.
     #[inline(always)]
     pub unsafe fn from_raw(ptr: NonNull<T>) -> Self {
         Self {

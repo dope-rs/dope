@@ -14,7 +14,8 @@ impl<M: Manifold> Clone for TypedToken<M> {
 impl<M: Manifold> Copy for TypedToken<M> {}
 
 impl<M: Manifold> TypedToken<M> {
-    // SAFETY: caller guarantees `t` was issued for manifold `M`.
+    /// # Safety
+    /// The caller guarantees `t` was issued for manifold `M`.
     pub const unsafe fn from_raw_token(t: backend::token::Token) -> Self {
         Self(t, PhantomData)
     }

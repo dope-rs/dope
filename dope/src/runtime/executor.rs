@@ -6,7 +6,10 @@ use crate::runtime::dispatcher::Idle;
 use crate::{Dispatcher, Drive, Driver, DriverCfg, backend};
 
 const PARK_CEILING: Duration = Duration::from_secs(1);
-const DRAIN_BATCH: usize = 256;
+/// Per-tick CQE drain batch. Also the single source of truth for the
+/// provided-buffer pool sizing in [`crate::backend`] (the held buffer HWM is
+/// bounded by one drain batch — see MEMORY_DESIGN.md section 0).
+pub(crate) const DRAIN_BATCH: usize = 256;
 
 pub struct Executor {
     driver: Driver,

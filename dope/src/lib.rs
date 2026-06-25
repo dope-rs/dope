@@ -1,6 +1,7 @@
 #![warn(unreachable_pub)]
 
 mod backend;
+pub mod memstats;
 mod slab;
 
 pub mod fiber;
