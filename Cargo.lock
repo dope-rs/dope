@@ -16,7 +16,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "dope"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "dope-extra",
  "dope-gen",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "dope-extra"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "dope",
  "libc",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "dope-gen"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "proc-macro2",
  "quote",

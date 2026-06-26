@@ -36,6 +36,7 @@ pub struct State {
     status: Status,
     recv_waiter: Option<backend::park::WakeRef>,
     send_waiter: Option<backend::park::WakeRef>,
+    detached: bool,
 }
 
 impl State {
@@ -108,6 +109,18 @@ impl State {
 
     pub(super) fn set_send_waker(&mut self, w: &Waker) {
         Self::arm_waiter(&mut self.send_waiter, w);
+    }
+
+    /// Marks the reader (`Io`) gone, so the slot may release even with ingress
+    /// still queued — nothing will consume it.
+    pub(super) fn detach(&mut self) {
+        self.detached = true;
+    }
+
+    /// Whether the slot may release: the reader is gone, or no buffered ingress
+    /// remains for it. Keeps a half-close (EOF) from discarding unread bytes.
+    pub(super) fn readable_drained(&self) -> bool {
+        self.detached || self.recv_queue.is_empty()
     }
 
     pub(super) fn try_recv_into(&mut self, dst: &mut [u8]) -> RecvInto {
