@@ -37,6 +37,43 @@ pub(super) enum SqeInner {
         fd: RawFd,
         ud: u64,
     },
+    OpenAt {
+        dir: RawFd,
+        path: *const libc::c_char,
+        flags: i32,
+        mode: u32,
+        ud: u64,
+    },
+    OpenAtFixed {
+        dir: RawFd,
+        path: *const libc::c_char,
+        flags: i32,
+        mode: u32,
+        slot: FdSlot,
+        ud: u64,
+    },
+    Read {
+        fd: RawFd,
+        ptr: *mut u8,
+        len: u32,
+        offset: u64,
+        ud: u64,
+    },
+    ReadFixed {
+        slot: FdSlot,
+        ptr: *mut u8,
+        len: u32,
+        offset: u64,
+        ud: u64,
+    },
+    Splice {
+        fd_in: RawFd,
+        off_in: i64,
+        fd_out: RawFd,
+        off_out: i64,
+        len: u32,
+        ud: u64,
+    },
     SendMsg {
         slot: FdSlot,
         msg: *const libc::msghdr,
@@ -109,6 +146,43 @@ impl Sqe {
 
     pub fn fsync(fd: RawFd, op: Token) -> Self {
         Self(SqeInner::Fsync { fd, ud: op.with_kind(kind::SYNC).raw() })
+    }
+
+    pub fn openat(dir: RawFd, path: *const libc::c_char, flags: i32, mode: u32, op: Token) -> Self {
+        Self(SqeInner::OpenAt { dir, path, flags, mode, ud: op.with_kind(kind::OPEN).raw() })
+    }
+
+    pub fn openat_fixed(
+        dir: RawFd,
+        path: *const libc::c_char,
+        flags: i32,
+        mode: u32,
+        slot: FdSlot,
+        op: Token,
+    ) -> io::Result<Self> {
+        Ok(Self(SqeInner::OpenAtFixed { dir, path, flags, mode, slot, ud: op.with_kind(kind::OPEN).raw() }))
+    }
+
+    pub fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
+        Self(SqeInner::Read { fd, ptr: buf.as_mut_ptr(), len: buf.len() as u32, offset, ud: op.with_kind(kind::READ).raw() })
+    }
+
+    pub fn read_fixed_file(slot: FdSlot, buf: &mut [u8], offset: u64, op: Token) -> Self {
+        Self(SqeInner::ReadFixed { slot, ptr: buf.as_mut_ptr(), len: buf.len() as u32, offset, ud: op.with_kind(kind::READ).raw() })
+    }
+
+    /// `flags` is accepted for parity with the io_uring backend; the kqueue
+    /// bounce emulation has no equivalent and ignores it.
+    pub fn splice_raw(
+        fd_in: RawFd,
+        off_in: i64,
+        fd_out: RawFd,
+        off_out: i64,
+        len: u32,
+        _flags: u32,
+        op: Token,
+    ) -> Self {
+        Self(SqeInner::Splice { fd_in, off_in, fd_out, off_out, len, ud: op.with_kind(kind::SPLICE).raw() })
     }
 
     pub fn recv_multi(fd: &Fd, _buf_group: u16, op: Token) -> Self {

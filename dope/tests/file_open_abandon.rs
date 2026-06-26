@@ -1,5 +1,5 @@
 // Isolated in its own test binary: the fd-leak check reads the process-global
-// /proc/self/fd, which would be perturbed by other tests running in parallel.
+// /dev/fd, which would be perturbed by other tests running in parallel.
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -29,7 +29,7 @@ fn abandoned_completed_open_closes_fd() {
     let cpath = OpenPath::new(path.to_str().unwrap()).expect("path");
     let host = Holding::of(files.as_mut());
 
-    let fd_count = || std::fs::read_dir("/proc/self/fd").expect("procfs").count();
+    let fd_count = || std::fs::read_dir("/dev/fd").expect("fd dir").count();
     let before = fd_count();
 
     {
@@ -48,17 +48,20 @@ fn abandoned_completed_open_closes_fd() {
         assert!(matches!(open.as_mut().poll(&mut cx), Poll::Pending));
 
         // Drive until the open settles, without polling `open` again.
+        // Drain/dispatch before checking: a synchronous-completion backend
+        // (kqueue) runs the open at submit time, so the fd appears before its
+        // CQE is dispatched; the abandon-close only fires once `on_open` runs.
         let mut cqe_buf = [dope::Cqe::ZERO; 32];
         for _ in 0..200 {
-            if fd_count() > before {
-                break;
-            }
             let _ = Drive::park(driver, Duration::from_millis(5));
             let n = Drive::drain(driver, &mut cqe_buf);
             for cqe in &cqe_buf[..n] {
                 if let Ok(ev) = Event::try_from(*cqe) {
                     Manifold::dispatch(host.hold(), ev, driver);
                 }
+            }
+            if fd_count() > before {
+                break;
             }
         }
         assert!(fd_count() > before, "open did not produce an fd to leak");
