@@ -11,6 +11,7 @@ authors.workspace = true
 # I0 instrumentation: per-thread HWM / miss counters (see MEMORY_DESIGN.md).
 # Default OFF; when off the counters and all call sites compile to nothing.
 mem-stats = []
+panic-isolation = []
 
 [dependencies]
 libc.workspace = true

@@ -52,3 +52,26 @@ fn many_chunks_drain_in_order() {
     }
     assert_eq!(acc, b"000111222333444555");
 }
+
+#[test]
+fn oversized_single_stage_is_refused() {
+    use dope::transport::link::DeferredEgress;
+    let mut d = DeferredEgress::default();
+    let big = Shared::copy_from_slice(&vec![0u8; 2 * 1024 * 1024]);
+    assert!(
+        !d.stage(big, false),
+        "a single buffer exceeding the 1MB egress cap must be refused (not pushed unconditionally)"
+    );
+    assert!(
+        d.is_idle(),
+        "a refused stage must not enqueue, so the cap is a real bound"
+    );
+}
+
+#[test]
+fn within_cap_stage_succeeds() {
+    use dope::transport::link::DeferredEgress;
+    let mut d = DeferredEgress::default();
+    assert!(d.stage(Shared::copy_from_slice(b"hello"), false));
+    assert!(!d.is_idle());
+}

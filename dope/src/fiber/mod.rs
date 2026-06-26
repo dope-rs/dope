@@ -7,7 +7,6 @@ use pin_project::pin_project;
 
 use crate::backend;
 
-mod batch;
 mod connector;
 pub mod file;
 mod holding;
@@ -19,11 +18,11 @@ mod sleep;
 mod state;
 mod wake;
 
-pub use batch::{Batch, Lazy};
 pub use connector::Connector;
 pub use holding::Holding;
 pub use io::Io;
 pub use listener::Listener;
+pub use o3::task::{Batch, Lazy};
 pub use slab::{Slab, TaskId};
 pub use sleep::Sleep;
 pub use wake::WakerSet;

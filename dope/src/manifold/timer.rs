@@ -39,6 +39,7 @@ pub struct Timer<const ID: u8 = 0> {
     slots: Vec<Slot>,
     free: Vec<u32>,
     heap: Vec<HeapEntry>,
+    starved: Vec<backend::park::WakeRef>,
     cap: usize,
 }
 
@@ -59,7 +60,14 @@ impl<const ID: u8> Timer<ID> {
             slots: Vec::with_capacity(hint),
             free: Vec::with_capacity(hint),
             heap: Vec::with_capacity(hint),
+            starved: Vec::new(),
             cap,
+        }
+    }
+
+    pub fn register_starved(&mut self, caller: backend::park::WakeRef) {
+        if !self.starved.contains(&caller) {
+            self.starved.push(caller);
         }
     }
 
@@ -127,6 +135,11 @@ impl<const ID: u8> Timer<ID> {
         s.epoch = s.epoch.wrapping_add(1);
         s.heap_pos = NOT_IN_HEAP;
         self.free.push(slot);
+        if !self.starved.is_empty() {
+            for w in self.starved.drain(..) {
+                w.wake();
+            }
+        }
     }
 
     pub fn earliest(&self) -> Option<Instant> {

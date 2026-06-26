@@ -1,6 +1,9 @@
 use std::pin::pin;
 use std::ptr::NonNull;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+
+use std::future::Future;
 
 use dope::fiber::Holding;
 use dope::manifold::timer::Timer;
@@ -87,4 +90,70 @@ fn expire_fires_due_entries_only() {
     timer.expire(now);
     assert!(timer.is_fired(due));
     assert!(!timer.is_fired(pending));
+}
+
+#[test]
+fn full_timer_does_not_livelock_and_release_wakes_starved() {
+    let cfg = dope::DriverCfg::for_profile::<dope::runtime::profile::Throughput>();
+    let mut exec = Executor::new(cfg).expect("executor");
+    let armed = Box::pin(Parker::make_slot(
+        exec.driver_mut(),
+        Token::new(0, LocalIdx::new(0), Epoch::INITIAL),
+    ));
+    let waiter = Box::pin(Parker::make_slot(
+        exec.driver_mut(),
+        Token::new(0, LocalIdx::new(1), Epoch::INITIAL),
+    ));
+    let mut timer: Timer = Timer::with_capacity(1);
+    let now = Instant::now();
+    let held = timer
+        .try_arm(now + Duration::from_secs(100), armed.wake_ref())
+        .expect("arm fills the single slot");
+    assert!(
+        timer
+            .try_arm(now + Duration::from_secs(100), waiter.wake_ref())
+            .is_none(),
+        "a full slab must refuse the arm"
+    );
+
+    timer.register_starved(waiter.wake_ref());
+    let mut out = Vec::new();
+    Parker::drain(exec.driver_mut(), &mut out);
+    assert!(
+        out.is_empty(),
+        "registering a starved waiter must NOT self-rewake (no busy-spin)"
+    );
+
+    timer.cancel(held);
+    Parker::drain(exec.driver_mut(), &mut out);
+    let waiter_tok = Token::new(0, LocalIdx::new(1), Epoch::INITIAL);
+    assert!(
+        out.iter().any(|t| *t == waiter_tok),
+        "releasing a slot must wake the starved waiter"
+    );
+}
+
+#[test]
+fn far_future_sleep_arms_without_overflow() {
+    let cfg = dope::DriverCfg::for_profile::<dope::runtime::profile::Throughput>();
+    let mut exec = Executor::new(cfg).expect("executor");
+    let app = pin!(Clock {
+        timer: Timer::new()
+    });
+    let timer_ptr: NonNull<Timer> = NonNull::from(&app.timer);
+    // SAFETY: `app` is pinned for the whole test; the timer field never moves.
+    let hold: Holding<'_, Timer> = unsafe { Holding::from_raw(timer_ptr) };
+
+    let slot = Box::pin(Parker::make_slot(
+        exec.driver_mut(),
+        Token::new(0, LocalIdx::new(0), Epoch::INITIAL),
+    ));
+    let waker = slot.make_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    let mut sleep = pin!(dope::fiber::Sleep::new(hold, Duration::MAX));
+    assert!(
+        matches!(sleep.as_mut().poll(&mut cx), Poll::Pending),
+        "a Duration::MAX deadline must clamp instead of overflowing and stay pending"
+    );
 }

@@ -33,7 +33,7 @@ pub struct Sleep<'d, const ID: u8 = 0> {
 impl<'d, const ID: u8> Sleep<'d, ID> {
     pub fn new(timer: Holding<'d, Timer<ID>>, d: Duration) -> Self {
         Self {
-            deadline: Instant::now() + d,
+            deadline: crate::runtime::executor::saturating_deadline(Instant::now(), d),
             ticket: None,
             timer,
         }
@@ -63,7 +63,7 @@ impl<'d, const ID: u8> Future for Sleep<'d, ID> {
             None => match timer.try_arm(this.deadline, caller) {
                 Some(t) => this.ticket = Some(t),
                 None => {
-                    cx.waker().wake_by_ref();
+                    timer.register_starved(caller);
                     return Poll::Pending;
                 }
             },

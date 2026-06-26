@@ -6,10 +6,58 @@ use crate::runtime::dispatcher::Idle;
 use crate::{Dispatcher, Drive, Driver, DriverCfg, backend};
 
 const PARK_CEILING: Duration = Duration::from_secs(1);
+const FAR_FUTURE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+
+pub(crate) fn saturating_deadline(base: Instant, d: Duration) -> Instant {
+    base.checked_add(d)
+        .or_else(|| base.checked_add(FAR_FUTURE))
+        .unwrap_or(base)
+}
 /// Per-tick CQE drain batch. Also the single source of truth for the
 /// provided-buffer pool sizing in [`crate::backend`] (the held buffer HWM is
 /// bounded by one drain batch — see MEMORY_DESIGN.md section 0).
 pub(crate) const DRAIN_BATCH: usize = 256;
+
+cfg_select! {
+    feature = "panic-isolation" => {
+        fn dispatch_event<D: Dispatcher>(
+            dispatcher: Pin<&mut D>,
+            ev: backend::Event,
+            driver: &mut Driver,
+        ) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Dispatcher::dispatch(dispatcher, ev, driver);
+            }));
+        }
+
+        fn wake_event<D: Dispatcher>(
+            dispatcher: Pin<&mut D>,
+            target: backend::token::Token,
+            driver: &mut Driver,
+        ) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Dispatcher::on_wake(dispatcher, target, driver);
+            }));
+        }
+    }
+    _ => {
+        fn dispatch_event<D: Dispatcher>(
+            dispatcher: Pin<&mut D>,
+            ev: backend::Event,
+            driver: &mut Driver,
+        ) {
+            Dispatcher::dispatch(dispatcher, ev, driver);
+        }
+
+        fn wake_event<D: Dispatcher>(
+            dispatcher: Pin<&mut D>,
+            target: backend::token::Token,
+            driver: &mut Driver,
+        ) {
+            Dispatcher::on_wake(dispatcher, target, driver);
+        }
+    }
+}
 
 pub struct Executor {
     driver: Driver,
@@ -57,13 +105,13 @@ impl Executor {
             let Ok(ev) = backend::Event::try_from(*cqe) else {
                 continue;
             };
-            Dispatcher::dispatch(dispatcher.as_mut(), ev, driver);
+            dispatch_event(dispatcher.as_mut(), ev, driver);
         }
         let cq_saturated = n == buf.len();
         wake_buf.clear();
         backend::park::Parker::drain(driver, wake_buf);
         for target in wake_buf.iter() {
-            Dispatcher::on_wake(dispatcher.as_mut(), *target, driver);
+            wake_event(dispatcher.as_mut(), *target, driver);
         }
         Dispatcher::pre_park(dispatcher.as_mut(), driver);
         (cq_saturated, shutdown_seen)
@@ -89,7 +137,7 @@ impl Executor {
         mut dispatcher: Pin<&mut D>,
         drain_window: Duration,
     ) -> io::Result<()> {
-        let deadline = Instant::now() + drain_window;
+        let deadline = saturating_deadline(Instant::now(), drain_window);
         let mut buf = [backend::Cqe::ZERO; DRAIN_BATCH];
         let mut wake_buf: Vec<backend::token::Token> = Vec::with_capacity(64);
         loop {

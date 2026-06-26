@@ -144,7 +144,9 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         if self.owes_egress() {
             let n = written.min(write_buf.len());
             let bytes = o3::buffer::Shared::copy_from_slice(&write_buf[..n]);
-            self.state.deferred.stage(bytes, false);
+            if !self.state.deferred.stage(bytes, false) {
+                self.core.set_close_after();
+            }
             return;
         }
         if !self.accept_write(write_buf.len(), written) {
@@ -208,14 +210,20 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
     ) {
         if self.owes_egress() {
             let n = hdr_written.min(write_buf.len());
-            self.state
+            let hdr_ok = self
+                .state
                 .deferred
                 .stage(o3::buffer::Shared::copy_from_slice(&write_buf[..n]), false);
             let body = source.body();
-            if !body.is_empty() {
-                self.state
-                    .deferred
-                    .stage(o3::buffer::Shared::copy_from_slice(body), false);
+            // a headerless body would be a corrupt frame
+            let body_ok = hdr_ok
+                && (body.is_empty()
+                    || self
+                        .state
+                        .deferred
+                        .stage(o3::buffer::Shared::copy_from_slice(body), false));
+            if !hdr_ok || !body_ok {
+                self.core.set_close_after();
             }
             return;
         }
@@ -925,7 +933,9 @@ where
             if this.accept.needs_rearm() {
                 this.accept.arm(ID, driver);
             }
+            this.pool.flush_rearm(driver);
         }
+        self.as_mut().flush_dirty(driver);
         let now = Instant::now();
         self.as_mut().drain_idle(now, driver, |s| s.project().idle);
         if E::Profile::SEND_DEADLINE.is_some() {
@@ -941,10 +951,10 @@ where
 
     fn idle(self: Pin<&Self>) -> crate::runtime::dispatcher::Idle {
         let this = self.project_ref();
-        if <E::Profile as backend::profile::Profile>::HYBRID_PARK
-            && (this.accept.needs_rearm()
-                || this.pool.pending_recv_rearm()
-                || !this.dirty.is_empty())
+        if !this.dirty.is_empty()
+            || this.accept.needs_rearm()
+            || (<E::Profile as backend::profile::Profile>::HYBRID_PARK
+                && this.pool.pending_recv_rearm())
         {
             return crate::runtime::dispatcher::Idle::Busy;
         }
