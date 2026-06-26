@@ -195,14 +195,16 @@ where
     }
 
     fn poll_source(self: Pin<&mut Self>, driver: &mut Driver) {
-        let now = Instant::now();
         let this = self.project();
         if *this.draining {
             return;
         }
-        if let Some(t) = *this.backoff_timer
-            && this.timer.is_fired(t)
-        {
+        let backoff_fired = this.backoff_timer.is_some_and(|t| this.timer.is_fired(t));
+        if !this.upstreams.has_pending() && !backoff_fired {
+            return;
+        }
+        let now = Instant::now();
+        if backoff_fired && let Some(t) = *this.backoff_timer {
             this.timer.cancel(t);
             *this.backoff_timer = None;
         }

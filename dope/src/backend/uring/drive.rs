@@ -18,6 +18,10 @@ impl Drive for Driver {
         self.try_push(entry)
     }
 
+    fn submit_to_drain(&mut self) -> bool {
+        self.uring.submit().is_ok()
+    }
+
     fn drain(&mut self, buf: &mut [Cqe]) -> usize {
         let mut n = 0;
         {

@@ -164,11 +164,19 @@ impl Core {
         self.send_in_flight = false;
     }
 
+    fn push_send_retry(driver: &mut Driver, mut build: impl FnMut() -> backend::sqe::Sqe) -> bool {
+        if driver.push(build()).is_ok() {
+            return true;
+        }
+        if driver.submit_to_drain() {
+            return driver.push(build()).is_ok();
+        }
+        false
+    }
+
     pub fn submit_single(&mut self, ud: backend::token::Token, buf: &[u8], driver: &mut Driver) {
-        if driver
-            .push(backend::sqe::Sqe::send(&self.fd, buf, ud))
-            .is_ok()
-        {
+        let fd = &self.fd;
+        if Self::push_send_retry(driver, || backend::sqe::Sqe::send(fd, buf, ud)) {
             crate::memstats::send_borrow();
             self.send_in_flight = true;
         }
@@ -181,16 +189,43 @@ impl Core {
         driver: &mut Driver,
     ) {
         vectored.install_into_msghdr();
-        if driver
-            .push(backend::sqe::Sqe::send_msg(
-                &self.fd,
-                vectored.msghdr_storage().raw(),
-                ud,
-            ))
-            .is_ok()
-        {
+        let fd = &self.fd;
+        let msg = vectored.msghdr_storage().raw();
+        if Self::push_send_retry(driver, || backend::sqe::Sqe::send_msg(fd, msg, ud)) {
             crate::memstats::send_borrow();
             self.send_in_flight = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DriverConfig;
+    use crate::backend::profile::Production;
+    use crate::backend::token::{Epoch, LocalIdx, Token};
+
+    fn driver() -> Driver {
+        let cfg = <crate::DriverCfg as DriverConfig>::for_tcp_profile::<Production>(1);
+        Driver::new(cfg).expect("driver")
+    }
+
+    fn token() -> Token {
+        Token::new(1, LocalIdx::new(0), Epoch::ZERO.bump())
+    }
+
+    #[test]
+    fn submit_single_happy_path_marks_inflight_once() {
+        let mut drv = driver();
+        let fd = backend::socket::Fd::adopt(backend::socket::FdSlot::new(0), &mut drv);
+        let mut core = Core::new(fd);
+        assert!(!core.is_send_inflight());
+        core.submit_single(token(), b"hello", &mut drv);
+        assert!(
+            core.is_send_inflight(),
+            "happy path must queue the send and mark inflight"
+        );
+        core.send_done();
+        assert!(!core.is_send_inflight());
     }
 }
