@@ -7,6 +7,7 @@ pub mod sqe;
 mod system;
 mod udata;
 
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::mem::MaybeUninit;
@@ -39,6 +40,7 @@ const WAKE_IDENT: libc::uintptr_t = libc::uintptr_t::MAX;
 const MAX_DRAIN_PER_FD: usize = 256;
 const PENDING_CAP: usize = 1 << 16;
 const CHANGES_FLUSH_AT: usize = 4096;
+const SPLICE_BOUNCE: usize = 1 << 16;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Backend;
@@ -59,6 +61,7 @@ pub struct Driver {
     arena: Box<crate::backend::park::Arena>,
     accept_limit: u32,
     next_slot: u32,
+    alive: &'static Cell<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +154,13 @@ enum DrainOutcome {
     Closed,
 }
 
+impl Drop for Driver {
+    fn drop(&mut self) {
+        // Mark dead before the fd table drops so out-of-order `Fd`s skip close.
+        self.alive.set(false);
+    }
+}
+
 impl Driver {
     pub fn open(cfg: Config) -> io::Result<Self> {
         Self::new(cfg)
@@ -203,7 +213,12 @@ impl Driver {
             arena: crate::backend::park::Arena::new(slots)?,
             accept_limit: cfg.accept_slots.min(fixed_file_slots),
             next_slot: fixed_file_slots,
+            alive: Box::leak(Box::new(Cell::new(true))),
         })
+    }
+
+    pub(crate) fn alive_handle(&self) -> &'static Cell<bool> {
+        self.alive
     }
 
     pub(super) fn alloc_fixed_range(&mut self, len: u32) -> io::Result<u32> {
@@ -917,6 +932,25 @@ impl Driver {
             sqe::SqeInner::Fsync { fd, ud } => {
                 self.submit_fsync_inner(Token::from_raw(ud), fd)
             }
+            sqe::SqeInner::OpenAt { dir, path, flags, mode, ud } => {
+                self.submit_openat_inner(Token::from_raw(ud), dir, path, flags, mode, None)
+            }
+            sqe::SqeInner::OpenAtFixed { dir, path, flags, mode, slot, ud } => {
+                self.submit_openat_inner(Token::from_raw(ud), dir, path, flags, mode, Some(slot))
+            }
+            sqe::SqeInner::Read { fd, ptr, len, offset, ud } => {
+                self.submit_read_inner(Token::from_raw(ud), fd, ptr, len, offset)
+            }
+            sqe::SqeInner::ReadFixed { slot, ptr, len, offset, ud } => match self.raw_fd(slot) {
+                Some(fd) => self.submit_read_inner(Token::from_raw(ud), fd, ptr, len, offset),
+                None => {
+                    self.push_pending(PendingCompletion::Write { ud: Token::from_raw(ud), result: -libc::EBADF });
+                    true
+                }
+            },
+            sqe::SqeInner::Splice { fd_in, off_in, fd_out, off_out, len, ud } => {
+                self.submit_splice_inner(Token::from_raw(ud), fd_in, off_in, fd_out, off_out, len)
+            }
             // SAFETY: `msg` pointer validity is the caller's contract (sqe was constructed with `unsafe fn`).
             sqe::SqeInner::SendMsg { slot, msg, ud } => unsafe {
                 self.submit_send_msg_tagged_inner(Token::from_raw(ud), slot, msg)
@@ -1212,6 +1246,15 @@ impl Driver {
         true
     }
 
+    /// Queue a synchronous file-op result: a negative syscall return becomes
+    /// `-errno`, anything else the byte/fd count. Call before any other libc
+    /// call so `errno` still reflects the failing syscall.
+    fn complete_io(&mut self, ud: Token, rc: isize) -> bool {
+        let result = if rc < 0 { -Errno::last_raw() } else { rc as i32 };
+        self.push_pending(PendingCompletion::Write { ud, result });
+        true
+    }
+
     fn submit_write_fd_inner(
         &mut self,
         ud: Token,
@@ -1222,17 +1265,79 @@ impl Driver {
     ) -> bool {
         // SAFETY: `fd` is a live file fd owned by the caller; `ptr`/`len` are valid for this call.
         let n = unsafe { libc::pwrite(fd, ptr.cast(), len as usize, offset as libc::off_t) };
-        let result = if n < 0 { -Errno::last_raw() } else { n as i32 };
-        self.push_pending(PendingCompletion::Write { ud, result });
-        true
+        self.complete_io(ud, n)
     }
 
     fn submit_fsync_inner(&mut self, ud: Token, fd: RawFd) -> bool {
         // SAFETY: `fd` is a live file fd owned by the caller.
         let rc = unsafe { libc::fsync(fd) };
-        let result = if rc < 0 { -Errno::last_raw() } else { 0 };
-        self.push_pending(PendingCompletion::Write { ud, result });
-        true
+        self.complete_io(ud, rc as isize)
+    }
+
+    fn submit_openat_inner(
+        &mut self,
+        ud: Token,
+        dir: RawFd,
+        path: *const libc::c_char,
+        flags: i32,
+        mode: u32,
+        fixed: Option<FdSlot>,
+    ) -> bool {
+        // SAFETY: `path` is a valid NUL-terminated C string owned by the caller for this call.
+        // A fixed open keeps the fd in the driver table, so force `O_CLOEXEC` (the
+        // manifold strips it for io_uring, which registers the fd out of band).
+        let oflag = if fixed.is_some() { flags | libc::O_CLOEXEC } else { flags };
+        let fd = unsafe { libc::openat(dir, path, oflag, mode as libc::c_uint) };
+        if fd < 0 {
+            return self.complete_io(ud, fd as isize);
+        }
+        // io_uring reports a fixed open as result 0 (the fd lands in the slot, not the CQE).
+        if let Some(slot) = fixed {
+            let _ = self.register_raw_fd(slot.raw(), fd);
+            return self.complete_io(ud, 0);
+        }
+        self.complete_io(ud, fd as isize)
+    }
+
+    fn submit_read_inner(&mut self, ud: Token, fd: RawFd, ptr: *mut u8, len: u32, offset: u64) -> bool {
+        // SAFETY: `fd` is live; `ptr`/`len` name a buffer valid for this call.
+        let n = unsafe { libc::pread(fd, ptr.cast(), len as usize, offset as libc::off_t) };
+        self.complete_io(ud, n)
+    }
+
+    fn submit_splice_inner(
+        &mut self,
+        ud: Token,
+        fd_in: RawFd,
+        off_in: i64,
+        fd_out: RawFd,
+        off_out: i64,
+        len: u32,
+    ) -> bool {
+        // macOS has no splice(2); bounce one chunk through a buffer. A negative
+        // offset means the fd has no seek position (pipe/socket), so use plain
+        // read/write; otherwise the positioned variants. The caller advances by
+        // the returned count, so a short move is re-driven.
+        let cap = (len as usize).min(SPLICE_BOUNCE);
+        let mut buf = vec![0u8; cap];
+        let n = unsafe {
+            if off_in < 0 {
+                libc::read(fd_in, buf.as_mut_ptr().cast(), cap)
+            } else {
+                libc::pread(fd_in, buf.as_mut_ptr().cast(), cap, off_in as libc::off_t)
+            }
+        };
+        if n <= 0 {
+            return self.complete_io(ud, n);
+        }
+        let w = unsafe {
+            if off_out < 0 {
+                libc::write(fd_out, buf.as_ptr().cast(), n as usize)
+            } else {
+                libc::pwrite(fd_out, buf.as_ptr().cast(), n as usize, off_out as libc::off_t)
+            }
+        };
+        self.complete_io(ud, w)
     }
 
     fn submit_socket_at(
