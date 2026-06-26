@@ -11,6 +11,9 @@ use crate::transport::wire::Wire;
 enum Stage<T: Transport> {
     Init { addr: T::Addr, opts: T::StreamOpts },
     Ticket(u32),
+    // Terminal: the connection, if any, now belongs to the returned `Io`, so
+    // `Drop` must not cancel it.
+    Done,
 }
 
 pub struct Connect<'d, const ID: u8, T: Transport, W: Wire>
@@ -63,6 +66,7 @@ where
         let host_clone = this.host;
         let mut h = this.host.hold();
         let tag = match this.stage {
+            Stage::Done => return Poll::Pending,
             Stage::Ticket(t) => t,
             Stage::Init { ref addr, opts } => {
                 let addr = addr.clone();
@@ -76,8 +80,14 @@ where
             }
         };
         match h.as_mut().try_resolve(tag, cx.waker()) {
-            ConnectOutcome::Conn(token) => Poll::Ready(Ok(Io::new(host_clone, token))),
-            ConnectOutcome::Failed(e) => Poll::Ready(Err(e)),
+            ConnectOutcome::Conn(token) => {
+                this.stage = Stage::Done;
+                Poll::Ready(Ok(Io::new(host_clone, token)))
+            }
+            ConnectOutcome::Failed(e) => {
+                this.stage = Stage::Done;
+                Poll::Ready(Err(e))
+            }
             ConnectOutcome::Pending => Poll::Pending,
         }
     }

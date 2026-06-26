@@ -105,6 +105,10 @@ impl<W: Wire> ConnApp for AsyncApp<W> {
     fn on_close(&mut self, slot: &mut Slot<Self::Wire, session::State<Self::Conn>>) {
         slot.state.conn.signal_closed();
     }
+
+    fn is_drained(&self, slot: &Slot<Self::Wire, session::State<Self::Conn>>) -> bool {
+        slot.state.conn.readable_drained()
+    }
 }
 
 pub type Connector<const ID: u8, T, W> = Core<ID, AsyncApp<W>, Explicit<T>, ConnEnv<T, W>>;
@@ -188,7 +192,11 @@ where
         self.shutdown_conn(id, how);
     }
 
-    fn close(self: Pin<&mut Self>, id: backend::token::Token) {
+    fn close(mut self: Pin<&mut Self>, id: backend::token::Token) {
+        // Detach before close so the slot can release even with bytes buffered.
+        if let Some(s) = self.as_mut().state_for(id) {
+            s.conn.detach();
+        }
         self.request_close(id);
     }
 }
