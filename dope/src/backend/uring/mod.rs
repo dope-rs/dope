@@ -36,10 +36,11 @@ const DEFERRED_CLOSE_CAP: usize = 4096;
 const BOOT_UD: Token = Token::new(ROUTE_FRAMEWORK, LocalIdx::new(0), Epoch::ZERO);
 
 pub struct Driver {
+    /// Must drop before `provided`/`arena`: closing the ring cancels in-flight ops first.
+    uring: IoUring,
     setsockopt: Slab<Box<libc::c_int>>,
     deferred_close: VecDeque<FdSlot>,
     provided: provided::Ring,
-    uring: IoUring,
     arena: Box<crate::backend::park::Arena>,
     next_slot: u32,
     accept_slots: u32,

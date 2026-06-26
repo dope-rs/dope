@@ -13,6 +13,7 @@ pub struct Pool<const ID: u8, T: Transport, W: Wire, S> {
     slab: Slab<Slot<W, S>>,
     reservation: backend::OutboundReservation,
     recv_rearm_pending: VecDeque<backend::token::LocalIdx>,
+    rearm_present: Vec<bool>,
     _t: PhantomData<T>,
 }
 
@@ -22,7 +23,17 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             slab: Slab::new(max_conn),
             reservation,
             recv_rearm_pending: VecDeque::new(),
+            rearm_present: vec![false; max_conn],
             _t: PhantomData,
+        }
+    }
+
+    fn queue_rearm(&mut self, idx: backend::token::LocalIdx) {
+        let i = idx.raw() as usize;
+        if i < self.rearm_present.len() && !self.rearm_present[i] {
+            self.rearm_present[i] = true;
+            self.recv_rearm_pending.push_back(idx);
+            crate::memstats::starved_rearm_inc();
         }
     }
 
@@ -106,7 +117,6 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
 
     pub fn arm_recv(&mut self, idx: backend::token::LocalIdx, driver: &mut Driver) -> bool {
         let ud = self.op(idx);
-        let cap = self.capacity();
         let armed = {
             let Some(slot) = self.slab.at_index_mut(idx) else {
                 return false;
@@ -121,9 +131,8 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             slot.core.armed(armed);
             armed
         };
-        if !armed && self.recv_rearm_pending.len() < cap {
-            crate::memstats::starved_rearm_inc();
-            self.recv_rearm_pending.push_back(idx);
+        if !armed {
+            self.queue_rearm(idx);
         }
         armed
     }
@@ -134,6 +143,10 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             let Some(idx) = self.recv_rearm_pending.pop_front() else {
                 break;
             };
+            let i = idx.raw() as usize;
+            if i < self.rearm_present.len() {
+                self.rearm_present[i] = false;
+            }
             let skip = match self.get(idx) {
                 Some(slot) => !slot.core.needs_arm(),
                 None => true,
@@ -177,7 +190,6 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         let Some(idx) = self.decode_token(ud) else {
             return (bid, DispatchRecv::Drop);
         };
-        let cap = self.capacity();
         let Some(slot) = self.slab.at_index_mut(idx) else {
             return (bid, DispatchRecv::Drop);
         };
@@ -198,9 +210,8 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             }
             _ => false,
         };
-        if needs_rearm && self.recv_rearm_pending.len() < cap {
-            crate::memstats::starved_rearm_inc();
-            self.recv_rearm_pending.push_back(idx);
+        if needs_rearm {
+            self.queue_rearm(idx);
         }
         let outcome = match decision {
             RecvDecision::Drop => DispatchRecv::Drop,
@@ -218,9 +229,18 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
     }
 
     pub fn try_close(&mut self, idx: backend::token::LocalIdx, driver: &mut Driver) {
-        let Some(was_armed) = self.get(idx).map(|s| s.core.is_armed()) else {
+        let Some((was_armed, send_inflight)) = self
+            .get(idx)
+            .map(|s| (s.core.is_armed(), s.core.is_send_inflight()))
+        else {
             return;
         };
+        if send_inflight {
+            if let Some(slot) = self.slab.at_index_mut(idx) {
+                slot.core.begin_close();
+            }
+            return;
+        }
         if was_armed {
             let token = self.op(idx);
             let _ = driver.push(backend::sqe::Sqe::cancel(token, backend::token::kind::RECV));

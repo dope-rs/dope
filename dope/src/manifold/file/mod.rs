@@ -448,6 +448,15 @@ impl<const ID: u8, const N: usize> Manifold for Files<ID, N> {
 
     fn pre_park(self: Pin<&mut Self>, _driver: &mut Driver) {}
 
+    fn idle(self: Pin<&Self>) -> crate::runtime::dispatcher::Idle {
+        let this = Pin::get_ref(self);
+        if !this.opens.is_empty() || !this.reads.is_empty() || !this.splices.is_empty() {
+            crate::runtime::dispatcher::Idle::Busy
+        } else {
+            crate::runtime::dispatcher::Idle::Park(None)
+        }
+    }
+
     fn on_wake(self: Pin<&mut Self>, _target: TypedToken<Self>, _driver: &mut Driver) {}
 }
 

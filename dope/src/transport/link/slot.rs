@@ -47,7 +47,7 @@ pub struct DeferredEgress {
 impl DeferredEgress {
     pub fn stage(&mut self, bytes: Shared, close: bool) -> bool {
         self.close_after |= close;
-        if self.queue.over_cap() {
+        if !self.queue.has_room(1, bytes.len()) {
             return false;
         }
         self.queue.push(bytes);
