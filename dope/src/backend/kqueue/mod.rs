@@ -995,6 +995,10 @@ impl Drive for Driver {
         }
     }
 
+    fn submit_to_drain(&mut self) -> bool {
+        false
+    }
+
     fn drain(&mut self, buf: &mut [Cqe]) -> usize {
         use crate::backend::cqe;
         if self.pending.is_empty() {

@@ -17,6 +17,9 @@ pub trait Dialer<T: Transport> {
         None
     }
     fn poll_connect(&mut self, now: Instant) -> Action<T>;
+    fn has_pending(&self) -> bool {
+        true
+    }
     fn sock_addr(&self, tag: u32) -> Option<socket::Addr>;
     fn connect_outcome(&mut self, tag: u32, success: bool, now: Instant);
     fn connect_deferred(&mut self, tag: u32, now: Instant) {
@@ -76,6 +79,10 @@ where
         Action::Idle
     }
 
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     fn sock_addr(&self, tag: u32) -> Option<backend::socket::Addr> {
         let addr = self.slots.get(tag as usize)?.clone()?;
         T::to_sock_addr(addr).ok()
@@ -123,6 +130,7 @@ pub struct Static<T: Transport> {
     base_window: Duration,
     next: u32,
     rng_state: u64,
+    needs_poll: bool,
 }
 
 impl<T: Transport> Static<T>
@@ -138,6 +146,7 @@ where
         let seed =
             entropy ^ (n as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ base_window.as_nanos() as u64;
         Self {
+            needs_poll: !upstreams.is_empty(),
             upstreams,
             overrides: vec![None; n],
             states: vec![Health::default(); n],
@@ -185,6 +194,7 @@ where
         if self.states.len() < want {
             self.states.resize(want, Health::default());
             self.overrides.resize(want, None);
+            self.needs_poll |= !self.upstreams.is_empty();
         }
     }
 
@@ -204,11 +214,13 @@ where
         };
         self.overrides[idx] = Some(addr);
         self.states[idx] = Health::Idle;
+        self.needs_poll = true;
         Some(idx as u32)
     }
 
     fn poll_connect(&mut self, now: Instant) -> Action<T> {
         if self.states.is_empty() {
+            self.needs_poll = false;
             return Action::Idle;
         }
         let n = self.states.len() as u32;
@@ -236,10 +248,17 @@ where
                 tag: idx as u32,
             };
         }
+        // Scanned every slot without dialing: nothing is drivable until a state
+        // change re-opens the gate, or (for Backoff) the armed timer fires.
+        self.needs_poll = false;
         match min_retry {
             Some(min_retry_at) => Action::Backoff { min_retry_at },
             None => Action::Idle,
         }
+    }
+
+    fn has_pending(&self) -> bool {
+        self.needs_poll
     }
 
     fn sock_addr(&self, tag: u32) -> Option<backend::socket::Addr> {
@@ -267,6 +286,8 @@ where
         let attempt = prev_attempt.saturating_add(1).min(MAX_BACKOFF_SHIFT);
         let retry_at = self.retry_at(now, attempt);
         self.states[idx] = Health::Backoff { retry_at, attempt };
+        // Re-open the gate so poll_source runs once more and arms the backoff timer.
+        self.needs_poll = true;
     }
 
     fn connect_deferred(&mut self, tag: u32, now: Instant) {
@@ -282,6 +303,7 @@ where
                     attempt,
                 },
             };
+            self.needs_poll = true;
         }
     }
 
@@ -302,6 +324,7 @@ where
             retry_at,
             attempt: 1,
         };
+        self.needs_poll = true;
     }
 
     fn kill(&mut self, tag: u32) {
@@ -316,6 +339,7 @@ where
         for state in self.states.iter_mut() {
             if matches!(state, Health::Dead | Health::Backoff { .. }) {
                 *state = Health::Idle;
+                self.needs_poll = true;
             }
         }
     }

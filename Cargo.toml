@@ -4,7 +4,7 @@ members = ["dope", "gen", "extra"]
 
 [workspace.package]
 edition = "2024"
-version = "0.4.4"
+version = "0.4.5"
 description = "The manifold runtime"
 repository = "https://github.com/dope-rs/dope"
 license = "MIT"
