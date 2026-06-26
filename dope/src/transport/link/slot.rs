@@ -128,6 +128,7 @@ impl<W: Wire, S> Slot<W, S> {
             return RecvDecision::Drop;
         }
         self.core.recv_eof(more);
+        self.wire.on_recv_eof();
         RecvDecision::Close
     }
 

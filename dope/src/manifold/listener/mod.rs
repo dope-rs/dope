@@ -936,6 +936,7 @@ where
             self.as_mut()
                 .drain_idle(now, driver, |s| s.project().idle_abs_age);
         }
+        self.flush_dirty(driver);
     }
 
     fn idle(self: Pin<&Self>) -> crate::runtime::dispatcher::Idle {

@@ -55,6 +55,8 @@ pub trait Wire: 'static + Sized {
 
     fn process_recv<'a>(&mut self, bytes: &'a [u8]) -> Option<RecvChunk<'a>>;
 
+    fn on_recv_eof(&mut self) {}
+
     fn submit_send(
         &mut self,
         core: &mut Core,
