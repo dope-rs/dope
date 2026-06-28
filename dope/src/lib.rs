@@ -16,7 +16,7 @@ pub use backend::{
     AcceptEvent, Backend, Bootstrap, ConnectEvent, Cqe, Drive, DriverCfg, DriverConfig, Event,
     Lend, ListenerOpts, OpenEvent, OutboundReservation, PushError, ReadEvent, RecvEvent, SendEvent,
     SocketEvent, Sockopt, SpliceEvent, SyncEvent, WriteEvent, datagram, file, platform, socket,
-    sqe,
+    sqe, token,
 };
 pub use fiber::WakerSet;
 pub use o3;

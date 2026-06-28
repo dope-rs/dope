@@ -379,6 +379,10 @@ where
             }
             return;
         }
+        let ud = pool.op(idx);
+        if pool.get_mut(idx).is_some_and(|s| s.seal_graceful(ud, driver)) {
+            return;
+        }
         let drained = pool.get(idx).map(|s| app.is_drained(s)).unwrap_or(true);
         if drained {
             pool.try_close(idx, driver);
@@ -480,7 +484,12 @@ where
             DispatchRecv::Chunk(idx, chunk) => {
                 match self.as_mut().on_recv_chunk(idx, chunk, driver) {
                     Outcome::Ok => self.as_mut().maybe_close(idx, driver),
-                    Outcome::Overrun => Self::close_slot(self.as_mut(), idx, driver),
+                    Outcome::Overrun => {
+                        if let Some(slot) = self.as_mut().project().pool.get_mut(idx) {
+                            slot.core.mark_aborted();
+                        }
+                        Self::close_slot(self.as_mut(), idx, driver)
+                    }
                     Outcome::CloseAfter => {
                         self.as_mut().project().pool.set_close_after(idx);
                         self.as_mut().maybe_close(idx, driver);

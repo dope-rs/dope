@@ -112,6 +112,17 @@ impl<W: Wire, S> Slot<W, S> {
         self.wire.flush_pending(&mut self.core, ud, driver);
     }
 
+    pub fn seal_graceful(&mut self, ud: backend::token::Token, driver: &mut Driver) -> bool {
+        if self.core.seal_graceful() {
+            self.wire.on_graceful_close(&mut self.core, ud, driver);
+        }
+        if self.core.is_send_inflight() {
+            self.core.begin_close();
+            return true;
+        }
+        false
+    }
+
     pub fn recv_data<'a>(&mut self, more: bool, slice: &'a [u8]) -> RecvDecision<'a> {
         if !self.core.is_armed() {
             return RecvDecision::Drop;
@@ -181,6 +192,7 @@ impl<W: Wire, S> Slot<W, S> {
             return SendOutcome::Drop;
         }
         self.core.send_done();
+        self.core.mark_aborted();
         self.core.begin_close();
         SendOutcome::Close(idx)
     }

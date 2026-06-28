@@ -608,7 +608,12 @@ where
                         self.as_mut().arm_send_deadline(idx);
                         self.as_mut().maybe_close_inherent(idx, driver);
                     }
-                    Outcome::Overrun => Self::close_inherent(self.as_mut(), idx, driver),
+                    Outcome::Overrun => {
+                        if let Some(slot) = self.as_mut().project().pool.get_mut(idx) {
+                            slot.core.mark_aborted();
+                        }
+                        Self::close_inherent(self.as_mut(), idx, driver)
+                    }
                     Outcome::CloseAfter => {
                         self.as_mut().project().pool.set_close_after(idx);
                         self.as_mut().maybe_close_inherent(idx, driver);
@@ -857,6 +862,10 @@ where
                     ));
                 }
             }
+            return;
+        }
+        let ud = this.pool.op(idx);
+        if this.pool.get_mut(idx).is_some_and(|s| s.seal_graceful(ud, driver)) {
             return;
         }
         if let Some(slot) = this.pool.get_mut(idx) {
