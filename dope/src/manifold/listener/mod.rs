@@ -865,7 +865,11 @@ where
             return;
         }
         let ud = this.pool.op(idx);
-        if this.pool.get_mut(idx).is_some_and(|s| s.seal_graceful(ud, driver)) {
+        if this
+            .pool
+            .get_mut(idx)
+            .is_some_and(|s| s.seal_graceful(ud, driver))
+        {
             return;
         }
         if let Some(slot) = this.pool.get_mut(idx) {

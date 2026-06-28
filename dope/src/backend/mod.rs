@@ -165,7 +165,11 @@ impl core::default::Default for ListenerOpts {
 /// addr/port so every worker can bind it. Ephemeral (port 0) is private.
 pub(crate) fn datagram_opts(addr: &SocketAddr) -> ListenerOpts {
     let reuse = addr.port() != 0;
-    ListenerOpts { reuse_addr: reuse, reuse_port: reuse, ..ListenerOpts::default() }
+    ListenerOpts {
+        reuse_addr: reuse,
+        reuse_port: reuse,
+        ..ListenerOpts::default()
+    }
 }
 
 pub trait Bootstrap {
