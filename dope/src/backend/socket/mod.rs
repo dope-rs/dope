@@ -3,7 +3,7 @@ mod msg;
 
 use std::net::SocketAddr;
 
-pub use addr::Addr;
+pub use addr::{Addr, InetAddr};
 pub use msg::{IoVec, MsgHdr};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

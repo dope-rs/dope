@@ -40,6 +40,17 @@ impl<T> Slab<T> {
         }
     }
 
+    /// Pre-allocates all `cap` slots up front so `slots` never reallocates and
+    /// entry addresses stay fixed until removal — required when an entry is
+    /// self-referential (an iovec/msghdr pointing into the entry itself).
+    #[must_use]
+    pub(super) fn pinned(cap: usize) -> Self {
+        Self {
+            slots: Vec::with_capacity(cap),
+            ..Self::new(cap)
+        }
+    }
+
     pub(super) fn slot_count(&self) -> usize {
         self.cap
     }
