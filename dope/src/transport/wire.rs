@@ -106,6 +106,14 @@ pub trait Wire: 'static + Sized {
     ) -> bool;
 
     fn flush_pending(&mut self, core: &mut Core, ud: backend::token::Token, driver: &mut Driver);
+
+    fn on_graceful_close(
+        &mut self,
+        _core: &mut Core,
+        _ud: backend::token::Token,
+        _driver: &mut Driver,
+    ) {
+    }
 }
 
 pub struct Identity;

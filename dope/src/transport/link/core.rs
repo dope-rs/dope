@@ -61,6 +61,8 @@ pub struct Core {
     recv: RecvArm,
     phase: Phase,
     send_in_flight: bool,
+    aborted: bool,
+    graceful_sealed: bool,
 }
 
 impl Core {
@@ -70,7 +72,25 @@ impl Core {
             recv: RecvArm::Disarmed,
             phase: Phase::Open,
             send_in_flight: false,
+            aborted: false,
+            graceful_sealed: false,
         }
+    }
+
+    pub fn mark_aborted(&mut self) {
+        self.aborted = true;
+    }
+
+    pub fn is_aborted(&self) -> bool {
+        self.aborted
+    }
+
+    pub fn seal_graceful(&mut self) -> bool {
+        if self.aborted || self.graceful_sealed {
+            return false;
+        }
+        self.graceful_sealed = true;
+        true
     }
 
     pub fn armed(&mut self, pushed: bool) {
@@ -120,6 +140,7 @@ impl Core {
     }
 
     pub fn recv_failed(&mut self, more: bool) {
+        self.aborted = true;
         self.begin_close();
         self.settle_recv(more);
     }
