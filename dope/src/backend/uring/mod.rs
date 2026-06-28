@@ -264,12 +264,7 @@ impl Driver {
         backlog: Option<i32>,
     ) -> io::Result<(u32, SocketAddr)> {
         let handle = OsFd::open(Domain::for_addr(&addr), kind)?;
-        if opts.reuse_addr {
-            handle.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;
-        }
-        if opts.reuse_port {
-            handle.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEPORT, 1)?;
-        }
+        handle.apply_reuse(opts)?;
         handle.bind(&Addr::from_std(addr))?;
         match backlog {
             Some(backlog) => handle.listen(backlog)?,

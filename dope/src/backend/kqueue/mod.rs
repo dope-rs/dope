@@ -1486,12 +1486,7 @@ impl crate::backend::Bootstrap for Driver {
         opts: &ListenerOpts,
     ) -> io::Result<(Fd, SocketAddr)> {
         let handle = OsFd::open(Domain::for_addr(&addr), Kind::Stream)?;
-        if opts.reuse_addr {
-            handle.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;
-        }
-        if opts.reuse_port {
-            handle.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEPORT, 1)?;
-        }
+        handle.apply_reuse(opts)?;
         handle.bind(&Addr::from_std(addr))?;
         handle.listen(backlog)?;
         let actual = handle.local_addr()?;
@@ -1502,6 +1497,7 @@ impl crate::backend::Bootstrap for Driver {
     fn bind_datagram_slot(&mut self, addr: SocketAddr) -> io::Result<(Fd, SocketAddr)> {
         let handle = OsFd::open(Domain::for_addr(&addr), Kind::Dgram)?;
         handle.set_nonblocking()?;
+        handle.apply_reuse(&crate::backend::datagram_opts(&addr))?;
         handle.bind(&Addr::from_std(addr))?;
         let actual = handle.local_addr()?;
         let idx = self.boot_register(handle)?;

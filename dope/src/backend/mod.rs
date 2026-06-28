@@ -161,6 +161,13 @@ impl core::default::Default for ListenerOpts {
     }
 }
 
+/// Fixed-port datagram bind = QUIC server socket shared per-core; reuse the
+/// addr/port so every worker can bind it. Ephemeral (port 0) is private.
+pub(crate) fn datagram_opts(addr: &SocketAddr) -> ListenerOpts {
+    let reuse = addr.port() != 0;
+    ListenerOpts { reuse_addr: reuse, reuse_port: reuse, ..ListenerOpts::default() }
+}
+
 pub trait Bootstrap {
     fn bind_listener_slot(
         &mut self,
