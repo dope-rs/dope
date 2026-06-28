@@ -1,5 +1,3 @@
-use super::Addr;
-
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct IoVec {
@@ -74,11 +72,6 @@ impl MsgHdr {
         }
     }
 
-    pub fn set_name(&mut self, addr: &mut Addr) {
-        self.raw.msg_name = addr.mut_ptr().cast();
-        self.raw.msg_namelen = addr.socklen();
-    }
-
     pub fn set_name_ptr(&mut self, ptr: *mut libc::c_void, len: u32) {
         self.raw.msg_name = ptr;
         self.raw.msg_namelen = len;
@@ -91,6 +84,11 @@ impl MsgHdr {
     pub fn set_iov(&mut self, iov: &[IoVec]) {
         self.raw.msg_iov = iov.as_ptr() as *mut libc::iovec;
         self.raw.msg_iovlen = iov.len() as _;
+    }
+
+    pub fn set_control(&mut self, ptr: *mut libc::c_void, len: usize) {
+        self.raw.msg_control = ptr;
+        self.raw.msg_controllen = len as _;
     }
 
     pub fn flags(&self) -> libc::c_int {

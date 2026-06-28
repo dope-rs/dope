@@ -5,10 +5,76 @@ use std::{io, slice};
 
 use crate::backend::sockaddr::{Pod, Stamp};
 
+fn sockaddr_in_of(v4: SocketAddrV4) -> libc::sockaddr_in {
+    let mut sa = libc::sockaddr_in::zeroed();
+    sa.sin_family = libc::AF_INET as _;
+    sa.sin_port = v4.port().to_be();
+    sa.sin_addr = libc::in_addr {
+        s_addr: u32::from_ne_bytes(v4.ip().octets()),
+    };
+    sa.stamp();
+    sa
+}
+
+fn sockaddr_in6_of(v6: SocketAddrV6) -> libc::sockaddr_in6 {
+    let mut sa = libc::sockaddr_in6::zeroed();
+    sa.sin6_family = libc::AF_INET6 as _;
+    sa.sin6_port = v6.port().to_be();
+    sa.sin6_flowinfo = v6.flowinfo();
+    sa.sin6_scope_id = v6.scope_id();
+    sa.sin6_addr = libc::in6_addr {
+        s6_addr: v6.ip().octets(),
+    };
+    sa.stamp();
+    sa
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Addr {
     storage: libc::sockaddr_storage,
     len: libc::socklen_t,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+union InetStorage {
+    v4: libc::sockaddr_in,
+    v6: libc::sockaddr_in6,
+}
+
+/// IP-only sockaddr (28-byte `sockaddr_in6` worst case, no `sockaddr_storage`
+/// padding) for hot UDP send paths where the destination is always V4/V6.
+#[derive(Clone, Copy)]
+pub struct InetAddr {
+    storage: InetStorage,
+    len: libc::socklen_t,
+}
+
+impl InetAddr {
+    pub fn from_std(addr: SocketAddr) -> Self {
+        match addr {
+            SocketAddr::V4(v4) => Self {
+                storage: InetStorage {
+                    v4: sockaddr_in_of(v4),
+                },
+                len: size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            },
+            SocketAddr::V6(v6) => Self {
+                storage: InetStorage {
+                    v6: sockaddr_in6_of(v6),
+                },
+                len: size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            },
+        }
+    }
+
+    pub fn mut_ptr(&mut self) -> *mut libc::sockaddr {
+        &raw mut self.storage as *mut libc::sockaddr
+    }
+
+    pub fn socklen(&self) -> libc::socklen_t {
+        self.len
+    }
 }
 
 impl Addr {
@@ -65,34 +131,16 @@ impl Addr {
         &mut self.len as *mut libc::socklen_t
     }
 
-    fn from_v4(v4: SocketAddrV4) -> Self {
-        let mut sa = libc::sockaddr_in::zeroed();
-        sa.sin_family = libc::AF_INET as _;
-        sa.sin_port = v4.port().to_be();
-        sa.sin_addr = libc::in_addr {
-            s_addr: u32::from_ne_bytes(v4.ip().octets()),
-        };
-        sa.stamp();
-        Self::from_payload(sa, size_of::<libc::sockaddr_in>() as libc::socklen_t)
-    }
-
-    fn from_v6(v6: SocketAddrV6) -> Self {
-        let mut sa = libc::sockaddr_in6::zeroed();
-        sa.sin6_family = libc::AF_INET6 as _;
-        sa.sin6_port = v6.port().to_be();
-        sa.sin6_flowinfo = v6.flowinfo();
-        sa.sin6_scope_id = v6.scope_id();
-        sa.sin6_addr = libc::in6_addr {
-            s6_addr: v6.ip().octets(),
-        };
-        sa.stamp();
-        Self::from_payload(sa, size_of::<libc::sockaddr_in6>() as libc::socklen_t)
-    }
-
     pub fn from_std(addr: SocketAddr) -> Self {
         match addr {
-            SocketAddr::V4(v4) => Self::from_v4(v4),
-            SocketAddr::V6(v6) => Self::from_v6(v6),
+            SocketAddr::V4(v4) => Self::from_payload(
+                sockaddr_in_of(v4),
+                size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            ),
+            SocketAddr::V6(v6) => Self::from_payload(
+                sockaddr_in6_of(v6),
+                size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            ),
         }
     }
 

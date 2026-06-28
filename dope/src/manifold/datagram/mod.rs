@@ -36,9 +36,9 @@ pub struct Socket<const ID: u8> {
     bound_addr: SocketAddr,
     recv_arm: Arm,
     recv_msghdr: backend::socket::MsgHdr,
-    pending_outgoing: VecDeque<(SocketAddr, Vec<u8>)>,
+    pending_outgoing: VecDeque<Outgoing>,
     pending_outgoing_bytes: usize,
-    in_flight: Slab<Box<SendOp>>,
+    in_flight: Slab<SendOp>,
     #[pin]
     _pin: PhantomPinned,
 }
@@ -61,7 +61,7 @@ impl<const ID: u8> Socket<ID> {
             recv_msghdr: msghdr_template,
             pending_outgoing: VecDeque::new(),
             pending_outgoing_bytes: 0,
-            in_flight: Slab::new(Self::IN_FLIGHT_SENDS_CAP),
+            in_flight: Slab::pinned(Self::IN_FLIGHT_SENDS_CAP),
             _pin: PhantomPinned,
         })
     }
@@ -71,14 +71,74 @@ impl<const ID: u8> Socket<ID> {
     }
 
     pub fn queue_to(self: Pin<&mut Self>, payload: Vec<u8>, addr: SocketAddr) -> bool {
-        let this = self.project();
-        if this.pending_outgoing.len() >= Self::OUT_CAP
-            || this.pending_outgoing_bytes.saturating_add(payload.len()) > Self::OUT_BYTES_CAP
+        self.enqueue(Outgoing::plain(payload, addr))
+    }
+
+    /// Queues `payload` as a single UDP GSO send: the kernel splits it into
+    /// `segment_size`-byte datagrams (the last may be shorter) to `addr`, capped
+    /// at 64 segments. Sends one plain datagram when no split is needed; falls
+    /// back to per-segment sends off Linux. Either way all-or-nothing.
+    ///
+    /// ```no_run
+    /// # use dope::manifold::datagram::Socket;
+    /// # fn f<const ID: u8>(sock: std::pin::Pin<&mut Socket<ID>>, wire: Vec<u8>, dst: std::net::SocketAddr) {
+    /// sock.queue_segmented(wire, dst, 1200); // back-to-back 1200B packets -> one sendmsg
+    /// # }
+    /// ```
+    pub fn queue_segmented(
+        self: Pin<&mut Self>,
+        payload: Vec<u8>,
+        addr: SocketAddr,
+        segment_size: u16,
+    ) -> bool {
+        if segment_size == 0 || payload.len() <= segment_size as usize {
+            return self.queue_to(payload, addr);
+        }
+        debug_assert!(
+            payload.len().div_ceil(segment_size as usize) <= MAX_GSO_SEGMENTS,
+            "UDP GSO caps a send at {MAX_GSO_SEGMENTS} segments",
+        );
+        #[cfg(target_os = "linux")]
         {
+            self.enqueue(Outgoing::segmented(payload, addr, segment_size))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.enqueue_segmented_fallback(payload, addr, segment_size as usize)
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn enqueue_segmented_fallback(
+        self: Pin<&mut Self>,
+        payload: Vec<u8>,
+        addr: SocketAddr,
+        seg: usize,
+    ) -> bool {
+        if !self.fits(payload.len().div_ceil(seg), payload.len()) {
             return false;
         }
+        let this = self.project();
         *this.pending_outgoing_bytes += payload.len();
-        this.pending_outgoing.push_back((addr, payload));
+        for chunk in payload.chunks(seg) {
+            this.pending_outgoing
+                .push_back(Outgoing::plain(chunk.to_vec(), addr));
+        }
+        true
+    }
+
+    fn fits(&self, items: usize, bytes: usize) -> bool {
+        self.pending_outgoing.len() + items <= Self::OUT_CAP
+            && self.pending_outgoing_bytes.saturating_add(bytes) <= Self::OUT_BYTES_CAP
+    }
+
+    fn enqueue(self: Pin<&mut Self>, out: Outgoing) -> bool {
+        if !self.fits(1, out.payload.len()) {
+            return false;
+        }
+        let this = self.project();
+        *this.pending_outgoing_bytes += out.payload.len();
+        this.pending_outgoing.push_back(out);
         true
     }
 
@@ -164,12 +224,12 @@ impl<const ID: u8> Socket<ID> {
     fn flush_outgoing(self: Pin<&mut Self>, driver: &mut Driver) {
         let this = self.project();
         while this.in_flight.len() < this.in_flight.slot_count() {
-            let Some((addr, payload)) = this.pending_outgoing.pop_front() else {
+            let Some(out) = this.pending_outgoing.pop_front() else {
                 break;
             };
             *this.pending_outgoing_bytes =
-                this.pending_outgoing_bytes.saturating_sub(payload.len());
-            let Some(key) = this.in_flight.alloc(Box::new(SendOp::new(payload, addr))) else {
+                this.pending_outgoing_bytes.saturating_sub(out.payload.len());
+            let Some(key) = this.in_flight.alloc(SendOp::new(out)) else {
                 break;
             };
             let msghdr_ref = this.in_flight.get_mut(key).unwrap().fill_msghdr();
@@ -189,27 +249,96 @@ impl<const ID: u8> Socket<ID> {
     }
 }
 
+const MAX_GSO_SEGMENTS: usize = 64;
+
+struct Outgoing {
+    addr: SocketAddr,
+    payload: Vec<u8>,
+    /// UDP_SEGMENT size; 0 = one plain datagram.
+    #[cfg(target_os = "linux")]
+    segment_size: u16,
+}
+
+impl Outgoing {
+    fn plain(payload: Vec<u8>, addr: SocketAddr) -> Self {
+        Self {
+            addr,
+            payload,
+            #[cfg(target_os = "linux")]
+            segment_size: 0,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn segmented(payload: Vec<u8>, addr: SocketAddr, segment_size: u16) -> Self {
+        Self {
+            addr,
+            payload,
+            segment_size,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C, align(8))]
+struct CmsgBuf([u8; 32]);
+
 struct SendOp {
     buf: Vec<u8>,
-    addr: backend::socket::Addr,
+    addr: backend::socket::InetAddr,
     iov: backend::socket::IoVec,
     msg: backend::socket::MsgHdr,
+    #[cfg(target_os = "linux")]
+    segment_size: u16,
+    #[cfg(target_os = "linux")]
+    cmsg: CmsgBuf,
 }
 
 impl SendOp {
-    fn new(buf: Vec<u8>, dst: SocketAddr) -> Self {
+    fn new(out: Outgoing) -> Self {
         Self {
-            buf,
-            addr: backend::socket::Addr::from_std(dst),
+            buf: out.payload,
+            addr: backend::socket::InetAddr::from_std(out.addr),
             iov: backend::socket::IoVec::empty(),
             msg: backend::socket::MsgHdr::empty(),
+            #[cfg(target_os = "linux")]
+            segment_size: out.segment_size,
+            #[cfg(target_os = "linux")]
+            cmsg: CmsgBuf([0; 32]),
         }
     }
 
     fn fill_msghdr(&mut self) -> &backend::socket::MsgHdr {
         self.iov = backend::socket::IoVec::from_slice(&self.buf);
-        self.msg.set_name(&mut self.addr);
+        let name_ptr = self.addr.mut_ptr();
+        let name_len = self.addr.socklen();
+        self.msg.set_name_ptr(name_ptr.cast(), name_len);
         self.msg.set_iov(slice::from_ref(&self.iov));
+        #[cfg(target_os = "linux")]
+        if self.segment_size > 0 {
+            self.fill_gso_cmsg();
+        }
         &self.msg
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fill_gso_cmsg(&mut self) {
+        const DATA_LEN: u32 = size_of::<u16>() as u32;
+        let seg = self.segment_size;
+        let (ptr, cap) = (self.cmsg.0.as_mut_ptr(), self.cmsg.0.len());
+        unsafe {
+            let controllen = libc::CMSG_SPACE(DATA_LEN) as usize;
+            debug_assert!(controllen <= cap);
+            self.msg.set_control(ptr.cast(), controllen);
+            let hdr = libc::CMSG_FIRSTHDR(self.msg.raw());
+            (*hdr).cmsg_level = libc::SOL_UDP;
+            (*hdr).cmsg_type = libc::UDP_SEGMENT;
+            (*hdr).cmsg_len = libc::CMSG_LEN(DATA_LEN) as _;
+            std::ptr::copy_nonoverlapping(
+                std::ptr::addr_of!(seg).cast::<u8>(),
+                libc::CMSG_DATA(hdr),
+                DATA_LEN as usize,
+            );
+        }
     }
 }
