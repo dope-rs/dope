@@ -23,11 +23,11 @@ impl Bootstrap for Driver {
     }
 
     fn bind_datagram_slot(&mut self, addr: SocketAddr) -> io::Result<(Fd, SocketAddr)> {
+        let opts = crate::backend::datagram_opts(&addr);
         let (idx, bound) = if addr.port() == 0 {
-            let no_opts = ListenerOpts { reuse_addr: false, reuse_port: false, fastopen_backlog: None, defer_accept_secs: None };
-            self.boot_bound_via_syscall(addr, Kind::Dgram, &no_opts, None)?
+            self.boot_bound_via_syscall(addr, Kind::Dgram, &opts, None)?
         } else {
-            let idx = self.boot_bind_slot(Domain::for_addr(&addr), Kind::Dgram, addr, None)?;
+            let idx = self.boot_bind_slot(Domain::for_addr(&addr), Kind::Dgram, addr, Some(&opts))?;
             (idx, addr)
         };
         Ok((Fd::adopt(FdSlot::new(idx), self), bound))

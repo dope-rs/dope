@@ -90,6 +90,16 @@ impl OsFd {
         Self::check(rc)
     }
 
+    pub(super) fn apply_reuse(&self, opts: &super::ListenerOpts) -> io::Result<()> {
+        if opts.reuse_addr {
+            self.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;
+        }
+        if opts.reuse_port {
+            self.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEPORT, 1)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn local_addr(&self) -> io::Result<SocketAddr> {
         Addr::from_getsockname(self.as_raw_fd())?.to_std()
     }
