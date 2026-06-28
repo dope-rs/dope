@@ -1,7 +1,8 @@
 #![cfg(target_os = "linux")]
 
-//! `queue_segmented` must hand the kernel a single UDP_SEGMENT send that arrives
-//! as N separate datagrams (the last possibly shorter). Where GSO is missing the
+//! `queue_segmented` hands the kernel UDP_SEGMENT sends that arrive as N
+//! separate datagrams (the last possibly shorter), chunking runs past the
+//! 64-segment / 65535-byte cap across multiple sends. Where GSO is missing the
 //! kernel rejects it with EINVAL; the test skips rather than failing.
 
 use std::cell::Cell;
@@ -18,13 +19,8 @@ use dope::manifold::datagram::{Handler, Socket};
 use dope::runtime::dispatcher::Idle;
 use dope::{Driver, DriverCfg, DriverConfig, Event, Executor};
 
-const SEG: u16 = 1000;
-const LENS: [usize; 4] = [1000, 1000, 1000, 500];
-
-fn payload() -> Vec<u8> {
-    (0..LENS.iter().sum::<usize>() as u32)
-        .map(|i| (i % 251) as u8)
-        .collect()
+fn payload(len: usize) -> Vec<u8> {
+    (0..len as u32).map(|i| (i % 251) as u8).collect()
 }
 
 struct SendHandler {
@@ -53,7 +49,8 @@ impl Manifold for Sender {
         let this = self.project();
         match ev {
             Event::Recv(token, more, e) => {
-                this.sock.dispatch_recv(token, more, e, driver, this.handler)
+                this.sock
+                    .dispatch_recv(token, more, e, driver, this.handler)
             }
             Event::Send(token, e) => this.sock.dispatch_send(token, e, this.handler),
             _ => {}
@@ -94,8 +91,26 @@ fn drive_until<F: FnMut() -> bool + 'static>(exec: &mut Executor, app: Pin<&mut 
     dope_extra::block_on(exec, app, fiber);
 }
 
+/// A run of `segments` packets of `seg` bytes (the last `tail` shorter) must
+/// arrive as exactly that many datagrams, byte-identical, however many sendmsg
+/// calls dope splits it into.
 #[test]
-fn gso_send_arrives_as_separate_datagrams() {
+fn gso_run_within_cap_is_one_send() {
+    run_case(1000, &[1000, 1000, 1000, 500]);
+}
+
+/// 100 segments exceeds the 64-segment cap, so dope must split into multiple
+/// UDP_SEGMENT sends — the receiver still sees 100 datagrams.
+#[test]
+fn gso_run_past_cap_splits_across_sends() {
+    let mut lens = vec![1200usize; 99];
+    lens.push(500);
+    run_case(1200, &lens);
+}
+
+fn run_case(seg: u16, lens: &[usize]) {
+    let total: usize = lens.iter().sum();
+    let expect_datagrams = lens.len();
     let recv = UdpSocket::bind("127.0.0.1:0").expect("bind recv");
     recv.set_read_timeout(Some(Duration::from_secs(2))).ok();
     let dst = recv.local_addr().expect("recv addr");
@@ -105,7 +120,7 @@ fn gso_send_arrives_as_separate_datagrams() {
     let collector = std::thread::spawn(move || {
         let mut got = Vec::new();
         let mut buf = [0u8; 2048];
-        for _ in 0..LENS.len() {
+        for _ in 0..expect_datagrams {
             match recv.recv_from(&mut buf) {
                 Ok((n, _)) => {
                     got.extend_from_slice(&buf[..n]);
@@ -130,20 +145,20 @@ fn gso_send_arrives_as_separate_datagrams() {
         },
     });
 
-    let want = payload();
+    let want = payload(total);
     let queued = app
         .as_mut()
         .project()
         .sender
         .project()
         .sock
-        .queue_segmented(want.clone(), dst, SEG);
+        .queue_segmented(want.clone(), dst, seg);
     assert!(queued, "queue_segmented must accept the send");
 
     let recv_done = received.clone();
     let err_seen = errno.clone();
     drive_until(&mut exec, app.as_mut(), move || {
-        recv_done.load(Ordering::Relaxed) >= LENS.len() || err_seen.get().is_some()
+        recv_done.load(Ordering::Relaxed) >= expect_datagrams || err_seen.get().is_some()
     });
 
     let got = collector.join().expect("collector join");
@@ -152,13 +167,17 @@ fn gso_send_arrives_as_separate_datagrams() {
         eprintln!("UDP GSO unsupported on this kernel (EINVAL); skipping");
         return;
     }
-    assert_eq!(errno.get(), None, "send failed with errno {:?}", errno.get());
+    assert_eq!(
+        errno.get(),
+        None,
+        "send failed with errno {:?}",
+        errno.get()
+    );
 
     assert_eq!(
         received.load(Ordering::Relaxed),
-        LENS.len(),
-        "expected {} segmented datagrams",
-        LENS.len()
+        expect_datagrams,
+        "expected {expect_datagrams} segmented datagrams"
     );
     assert_eq!(got, want, "reassembled GSO payload differs from source");
 }

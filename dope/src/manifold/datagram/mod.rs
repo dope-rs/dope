@@ -74,10 +74,10 @@ impl<const ID: u8> Socket<ID> {
         self.enqueue(Outgoing::plain(payload, addr))
     }
 
-    /// Queues `payload` as a single UDP GSO send: the kernel splits it into
-    /// `segment_size`-byte datagrams (the last may be shorter) to `addr`, capped
-    /// at 64 segments. Sends one plain datagram when no split is needed; falls
-    /// back to per-segment sends off Linux. Either way all-or-nothing.
+    /// Queues `payload` for UDP GSO: the kernel slices it into `segment_size`-byte
+    /// datagrams, only the last shorter. A run past the 64-segment / 65535-byte
+    /// cap is chunked across sends; off Linux, into per-segment plain sends.
+    /// All-or-nothing.
     ///
     /// ```no_run
     /// # use dope::manifold::datagram::Socket;
@@ -94,37 +94,48 @@ impl<const ID: u8> Socket<ID> {
         if segment_size == 0 || payload.len() <= segment_size as usize {
             return self.queue_to(payload, addr);
         }
-        debug_assert!(
-            payload.len().div_ceil(segment_size as usize) <= MAX_GSO_SEGMENTS,
-            "UDP GSO caps a send at {MAX_GSO_SEGMENTS} segments",
-        );
-        #[cfg(target_os = "linux")]
-        {
-            self.enqueue(Outgoing::segmented(payload, addr, segment_size))
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            self.enqueue_segmented_fallback(payload, addr, segment_size as usize)
-        }
+        self.enqueue_segmented(payload, addr, segment_size)
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn enqueue_segmented_fallback(
+    #[cfg(target_os = "linux")]
+    fn enqueue_segmented(
         self: Pin<&mut Self>,
         payload: Vec<u8>,
         addr: SocketAddr,
-        seg: usize,
+        seg: u16,
     ) -> bool {
-        if !self.fits(payload.len().div_ceil(seg), payload.len()) {
-            return false;
+        let seg_len = seg as usize;
+        let max_send = (MAX_GSO_BYTES / seg_len).clamp(1, MAX_GSO_SEGMENTS) * seg_len;
+        if payload.len() <= max_send {
+            return self.enqueue(Outgoing::segmented(payload, addr, seg));
         }
-        let this = self.project();
-        *this.pending_outgoing_bytes += payload.len();
-        for chunk in payload.chunks(seg) {
-            this.pending_outgoing
-                .push_back(Outgoing::plain(chunk.to_vec(), addr));
-        }
-        true
+        let items = payload.len().div_ceil(max_send);
+        let bytes = payload.len();
+        let chunks = payload.chunks(max_send).map(|chunk| {
+            let chunk = chunk.to_vec();
+            if chunk.len() > seg_len {
+                Outgoing::segmented(chunk, addr, seg)
+            } else {
+                Outgoing::plain(chunk, addr)
+            }
+        });
+        self.enqueue_all(items, bytes, chunks)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn enqueue_segmented(
+        self: Pin<&mut Self>,
+        payload: Vec<u8>,
+        addr: SocketAddr,
+        seg: u16,
+    ) -> bool {
+        let seg_len = seg as usize;
+        let items = payload.len().div_ceil(seg_len);
+        let bytes = payload.len();
+        let chunks = payload
+            .chunks(seg_len)
+            .map(|chunk| Outgoing::plain(chunk.to_vec(), addr));
+        self.enqueue_all(items, bytes, chunks)
     }
 
     fn fits(&self, items: usize, bytes: usize) -> bool {
@@ -133,12 +144,21 @@ impl<const ID: u8> Socket<ID> {
     }
 
     fn enqueue(self: Pin<&mut Self>, out: Outgoing) -> bool {
-        if !self.fits(1, out.payload.len()) {
+        self.enqueue_all(1, out.payload.len(), std::iter::once(out))
+    }
+
+    fn enqueue_all(
+        self: Pin<&mut Self>,
+        items: usize,
+        bytes: usize,
+        chunks: impl Iterator<Item = Outgoing>,
+    ) -> bool {
+        if !self.fits(items, bytes) {
             return false;
         }
         let this = self.project();
-        *this.pending_outgoing_bytes += out.payload.len();
-        this.pending_outgoing.push_back(out);
+        *this.pending_outgoing_bytes += bytes;
+        this.pending_outgoing.extend(chunks);
         true
     }
 
@@ -227,8 +247,9 @@ impl<const ID: u8> Socket<ID> {
             let Some(out) = this.pending_outgoing.pop_front() else {
                 break;
             };
-            *this.pending_outgoing_bytes =
-                this.pending_outgoing_bytes.saturating_sub(out.payload.len());
+            *this.pending_outgoing_bytes = this
+                .pending_outgoing_bytes
+                .saturating_sub(out.payload.len());
             let Some(key) = this.in_flight.alloc(SendOp::new(out)) else {
                 break;
             };
@@ -249,7 +270,11 @@ impl<const ID: u8> Socket<ID> {
     }
 }
 
+/// One `UDP_SEGMENT` send caps at 64 segments and a 65535-byte payload (Linux).
+#[cfg(target_os = "linux")]
 const MAX_GSO_SEGMENTS: usize = 64;
+#[cfg(target_os = "linux")]
+const MAX_GSO_BYTES: usize = 65535;
 
 struct Outgoing {
     addr: SocketAddr,

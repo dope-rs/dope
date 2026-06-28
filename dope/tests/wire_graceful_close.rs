@@ -35,7 +35,13 @@ impl Wire for GracefulWire {
         Some(RecvChunk::Borrowed(bytes))
     }
 
-    fn submit_send(&mut self, core: &mut Core, plain: &[u8], ud: Token, driver: &mut Driver) -> usize {
+    fn submit_send(
+        &mut self,
+        core: &mut Core,
+        plain: &[u8],
+        ud: Token,
+        driver: &mut Driver,
+    ) -> usize {
         if plain.is_empty() {
             return 0;
         }
@@ -58,7 +64,13 @@ impl Wire for GracefulWire {
         consumed
     }
 
-    fn after_send_cqe(&mut self, _core: &mut Core, _n: usize, _ud: Token, _driver: &mut Driver) -> bool {
+    fn after_send_cqe(
+        &mut self,
+        _core: &mut Core,
+        _n: usize,
+        _ud: Token,
+        _driver: &mut Driver,
+    ) -> bool {
         false
     }
 
@@ -142,12 +154,13 @@ fn build(
         stream_opts: Default::default(),
         listener_opts: ListenerOpts::default(),
     };
-    let listener = Listener::<0, ProbeApp, Bundle<Tcp, GracefulWire, profile::Throughput>>::open_in(
-        ProbeApp { payload, closes },
-        cfg,
-        drv,
-    )
-    .expect("open_in");
+    let listener =
+        Listener::<0, ProbeApp, Bundle<Tcp, GracefulWire, profile::Throughput>>::open_in(
+            ProbeApp { payload, closes },
+            cfg,
+            drv,
+        )
+        .expect("open_in");
     let addr = listener.local_addr().expect("local_addr");
     (listener, addr)
 }
@@ -202,9 +215,17 @@ fn graceful_sentinel_trails_drain_reply() {
     drive_until(&mut exec, app.as_mut(), move || closes_done.get() >= 1);
 
     let got = handle.join().expect("client join");
-    assert_eq!(got.len(), want_len + BYE.len(), "reply + graceful sentinel length");
+    assert_eq!(
+        got.len(),
+        want_len + BYE.len(),
+        "reply + graceful sentinel length"
+    );
     assert_eq!(&got[..want_len], &want[..], "reply bytes precede sentinel");
-    assert_eq!(&got[want_len..], BYE, "graceful sentinel trails the reply before FIN");
+    assert_eq!(
+        &got[want_len..],
+        BYE,
+        "graceful sentinel trails the reply before FIN"
+    );
     assert_eq!(closes.get(), 1, "connection must close exactly once");
 }
 
@@ -229,6 +250,9 @@ fn graceful_sentinel_survives_peer_eof() {
     drive_until(&mut exec, app.as_mut(), move || closes_done.get() >= 1);
 
     let got = handle.join().expect("client join");
-    assert_eq!(got, BYE, "peer EOF must still emit the graceful sentinel, not suppress it");
+    assert_eq!(
+        got, BYE,
+        "peer EOF must still emit the graceful sentinel, not suppress it"
+    );
     assert_eq!(closes.get(), 1, "connection must close exactly once");
 }

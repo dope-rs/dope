@@ -380,7 +380,10 @@ where
             return;
         }
         let ud = pool.op(idx);
-        if pool.get_mut(idx).is_some_and(|s| s.seal_graceful(ud, driver)) {
+        if pool
+            .get_mut(idx)
+            .is_some_and(|s| s.seal_graceful(ud, driver))
+        {
             return;
         }
         let drained = pool.get(idx).map(|s| app.is_drained(s)).unwrap_or(true);
