@@ -274,6 +274,11 @@ impl DispatcherSpec {
         let dispatch_arms = self.dispatch_arms();
         let wake_arms = self.wake_arms();
         let tick_calls = self.tick_calls();
+        let post_coordinate_tick_calls = if self.coordinate {
+            self.tick_calls()
+        } else {
+            Vec::new()
+        };
         let shutdown_calls = self.shutdown_calls();
         let idle_expr = self.idle_expr();
         let uniqueness_use = if self.fields.len() >= 2 {
@@ -283,7 +288,7 @@ impl DispatcherSpec {
         };
         let coordinate_tail = if self.coordinate {
             quote! {
-                <#name #ty_generics>::coordinate(self, __driver);
+                <#name #ty_generics>::coordinate(self.as_mut(), __driver);
             }
         } else {
             quote! {}
@@ -321,6 +326,10 @@ impl DispatcherSpec {
                         #(#tick_calls)*
                     }
                     #coordinate_tail
+                    {
+                        let mut __this = self.as_mut().project();
+                        #(#post_coordinate_tick_calls)*
+                    }
                 }
                 fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::Idle {
                     let __this = self.project_ref();
