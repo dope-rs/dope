@@ -45,6 +45,7 @@ pub mod kind {
     pub const OPEN: u8 = 11;
     pub const READ: u8 = 12;
     pub const SPLICE: u8 = 13;
+    pub const RECV_DISCARD: u8 = 14;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]

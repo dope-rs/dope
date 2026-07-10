@@ -46,10 +46,25 @@ impl Cqe {
 #[derive(Clone, Copy)]
 pub enum RecvEvent {
     Data { len: u32, bid: u16 },
+    Discarded { len: u32 },
     Eof,
     Cancelled,
     Starved,
     Failed(i32),
+}
+
+impl RecvEvent {
+    fn from_errno(result: i32) -> Self {
+        match -result {
+            libc::ECANCELED => Self::Cancelled,
+            libc::ENOBUFS => {
+                crate::memstats::enobufs_inc();
+                Self::Starved
+            }
+            libc::EAGAIN | libc::EINTR => Self::Starved,
+            errno => Self::Failed(errno),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -145,15 +160,15 @@ impl TryFrom<Cqe> for Event {
                         }
                     }
                     0 => RecvEvent::Eof,
-                    n => match -n {
-                        libc::ECANCELED => RecvEvent::Cancelled,
-                        libc::ENOBUFS => {
-                            crate::memstats::enobufs_inc();
-                            RecvEvent::Starved
-                        }
-                        libc::EAGAIN | libc::EINTR => RecvEvent::Starved,
-                        errno => RecvEvent::Failed(errno),
-                    },
+                    n => RecvEvent::from_errno(n),
+                };
+                Ok(Self::Recv(Token::from_raw(c.user_data), c.more(), e))
+            }
+            kind::RECV_DISCARD => {
+                let e = match c.result {
+                    n if n > 0 => RecvEvent::Discarded { len: n as u32 },
+                    0 => RecvEvent::Eof,
+                    n => RecvEvent::from_errno(n),
                 };
                 Ok(Self::Recv(Token::from_raw(c.user_data), c.more(), e))
             }

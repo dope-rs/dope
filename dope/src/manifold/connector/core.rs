@@ -480,7 +480,7 @@ where
         match outcome {
             DispatchRecv::Drop => {}
             DispatchRecv::Close(idx) => Self::close_slot(self.as_mut(), idx, driver),
-            DispatchRecv::NoChunk(idx) => {
+            DispatchRecv::NoChunk(idx) | DispatchRecv::Discarded(idx) => {
                 self.as_mut().submit_egress(idx, driver);
                 self.as_mut().maybe_close(idx, driver);
             }

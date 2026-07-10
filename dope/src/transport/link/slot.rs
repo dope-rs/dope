@@ -128,10 +128,46 @@ impl<W: Wire, S> Slot<W, S> {
             return RecvDecision::Drop;
         }
         let needs_rearm = self.core.recv_data(more);
-        match self.wire.process_recv(slice) {
+        let swallowed = self.core.consume_discard(slice.len());
+        if swallowed == slice.len() {
+            return RecvDecision::Discarded { needs_rearm };
+        }
+        match self.wire.process_recv(&slice[swallowed..]) {
             Some(chunk) => RecvDecision::Chunk { chunk, needs_rearm },
             None => RecvDecision::NoChunk { needs_rearm },
         }
+    }
+
+    pub fn recv_discarded(&mut self, len: u32) -> RecvDecision<'static> {
+        if !self.core.is_armed() || !self.core.is_discard_armed() {
+            return RecvDecision::Drop;
+        }
+        RecvDecision::Discarded {
+            needs_rearm: self.core.recv_discarded(len),
+        }
+    }
+
+    /// Drop the next `n` incoming bytes in-kernel; `false` if unsupported
+    /// (caller must then discard in userspace).
+    pub fn begin_discard(&mut self, n: u64, driver: &mut Driver) -> bool {
+        if n == 0
+            || !W::RAW_RECV
+            || !self.core.kernel_discard()
+            || !backend::sqe::Sqe::SUPPORTS_RECV_DISCARD
+            || self.core.discard_remaining() > 0
+            || self.core.is_closing()
+            || self.core.close_after()
+        {
+            return false;
+        }
+        self.core.begin_discard(n);
+        if self.core.is_armed() && !self.core.is_discard_armed() {
+            let token = self.token;
+            Core::push_retry(driver, || {
+                backend::sqe::Sqe::cancel(token, backend::token::kind::RECV)
+            });
+        }
+        true
     }
 
     pub fn recv_eof(&mut self, more: bool) -> RecvDecision<'static> {
@@ -202,6 +238,9 @@ pub enum RecvDecision<'a> {
     Drop,
     Close,
     NoChunk {
+        needs_rearm: bool,
+    },
+    Discarded {
         needs_rearm: bool,
     },
     Chunk {

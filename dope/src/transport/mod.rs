@@ -19,6 +19,10 @@ pub trait Transport: 'static + Sized {
     type StreamOpts: Default + Copy + 'static + Submittable;
     type ListenerOpts: Default + Clone + 'static;
 
+    /// `recv(MSG_TRUNC)` frees bytes in-kernel without writing the buffer — true
+    /// for TCP, false for AF_UNIX (which always copies).
+    const KERNEL_DISCARD: bool = false;
+
     fn to_sock_addr(addr: Self::Addr) -> io::Result<backend::socket::Addr>;
 
     fn socket_params(addr: &Self::Addr) -> (i32, i32, i32);

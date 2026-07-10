@@ -583,14 +583,12 @@ where
                 Self::close_inherent(self.as_mut(), idx, driver);
             }
             DispatchRecv::NoChunk(idx) => {
-                {
-                    let this = self.as_mut().project();
-                    let ud = backend::token::Token::new(ID, idx, token.epoch());
-                    if let Some(slot) = this.pool.get_mut(idx) {
-                        slot.flush_pending(ud, driver);
-                    }
-                }
-                self.as_mut().maybe_close_inherent(idx, driver);
+                self.as_mut()
+                    .flush_after_recv(idx, token.epoch(), false, driver);
+            }
+            DispatchRecv::Discarded(idx) => {
+                self.as_mut()
+                    .flush_after_recv(idx, token.epoch(), true, driver);
             }
             DispatchRecv::Chunk(idx, chunk) => {
                 let app_outcome = {
@@ -794,7 +792,7 @@ where
             };
             this.pool.place_at(
                 fixed_idx,
-                Core::new(fixed_fd),
+                Core::new(fixed_fd, <E::Transport as Transport>::KERNEL_DISCARD),
                 <A::Wire as Wire>::new(this.wire_cfg),
                 conn_slot,
             );
@@ -832,6 +830,26 @@ where
         }
     }
 
+    fn flush_after_recv(
+        mut self: Pin<&mut Self>,
+        idx: backend::token::LocalIdx,
+        epoch: backend::token::Epoch,
+        refresh_idle: bool,
+        driver: &mut Driver,
+    ) {
+        {
+            let this = self.as_mut().project();
+            if refresh_idle {
+                this.idle.arm(idx, Instant::now());
+            }
+            let ud = backend::token::Token::new(ID, idx, epoch);
+            if let Some(slot) = this.pool.get_mut(idx) {
+                slot.flush_pending(ud, driver);
+            }
+        }
+        self.as_mut().maybe_close_inherent(idx, driver);
+    }
+
     fn close_inherent(self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &mut Driver) {
         let this = self.project();
         this.idle.cancel(idx);
@@ -841,11 +859,12 @@ where
         if E::Profile::ABS_CONN_AGE.is_some() {
             this.idle_abs_age.cancel(idx);
         }
-        let (send_inflight, is_armed, is_closing) = match this.pool.get(idx) {
+        let (send_inflight, is_armed, is_closing, cancel_kind) = match this.pool.get(idx) {
             Some(s) => (
                 s.core.is_send_inflight(),
                 s.core.is_armed(),
                 s.core.is_closing(),
+                s.core.recv_cancel_kind(),
             ),
             None => return,
         };
@@ -856,10 +875,7 @@ where
                     slot.core.begin_close();
                 }
                 if is_armed && !send_inflight {
-                    let _ = driver.push(backend::sqe::Sqe::cancel(
-                        recv_token,
-                        backend::token::kind::RECV,
-                    ));
+                    let _ = driver.push(backend::sqe::Sqe::cancel(recv_token, cancel_kind));
                 }
             }
             return;

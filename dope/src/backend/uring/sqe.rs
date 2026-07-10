@@ -122,6 +122,26 @@ impl Sqe {
         )
     }
 
+    pub const SUPPORTS_RECV_DISCARD: bool = true;
+
+    /// Oneshot recv that drops up to `remaining` bytes in-kernel via `MSG_TRUNC`
+    /// (the CQE result is the count dropped).
+    pub fn recv_discard(fd: &Fd, remaining: u64, op: Token) -> Self {
+        const DISCARD_CAP: u64 = 1 << 30;
+        static SCRATCH: u8 = 0;
+        let len = remaining.min(DISCARD_CAP) as u32;
+        Self(
+            opcode::Recv::new(
+                types::Fixed(fd.slot().raw()),
+                &SCRATCH as *const u8 as *mut u8,
+                len,
+            )
+            .flags(libc::MSG_TRUNC)
+            .build()
+            .user_data(op.with_kind(kind::RECV_DISCARD).raw()),
+        )
+    }
+
     pub fn accept_oneshot(
         listener: &Fd,
         addr_ptr: *mut libc::sockaddr,

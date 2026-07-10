@@ -51,6 +51,9 @@ pub trait Wire: 'static + Sized {
 
     const RECLAIM: Reclaim;
 
+    /// Recv bytes reach the app untransformed, making in-kernel discard exact.
+    const RAW_RECV: bool = false;
+
     fn new(cfg: &Self::InitConfig) -> Self;
 
     fn process_recv<'a>(&mut self, bytes: &'a [u8]) -> Option<RecvChunk<'a>>;
@@ -122,6 +125,8 @@ impl Wire for Identity {
     type InitConfig = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
+
+    const RAW_RECV: bool = true;
 
     fn new(_: &()) -> Self {
         Identity
