@@ -23,6 +23,8 @@ impl Transport for Tcp {
     type StreamOpts = tcp::StreamOpts;
     type ListenerOpts = tcp::ListenerOpts;
 
+    const KERNEL_DISCARD: bool = true;
+
     fn to_sock_addr(addr: SocketAddr) -> io::Result<backend::socket::Addr> {
         Ok(backend::socket::Addr::from_std(addr))
     }

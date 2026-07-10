@@ -9,7 +9,7 @@ enum Phase {
 
 enum RecvArm {
     Disarmed,
-    Armed,
+    Armed { discard: bool },
     Exhausted,
 }
 
@@ -63,10 +63,12 @@ pub struct Core {
     send_in_flight: bool,
     aborted: bool,
     graceful_sealed: bool,
+    kernel_discard: bool,
+    discard_remaining: u64,
 }
 
 impl Core {
-    pub fn new(fd: backend::socket::Fd) -> Self {
+    pub fn new(fd: backend::socket::Fd, kernel_discard: bool) -> Self {
         Self {
             fd,
             recv: RecvArm::Disarmed,
@@ -74,6 +76,8 @@ impl Core {
             send_in_flight: false,
             aborted: false,
             graceful_sealed: false,
+            kernel_discard,
+            discard_remaining: 0,
         }
     }
 
@@ -93,16 +97,16 @@ impl Core {
         true
     }
 
-    pub fn armed(&mut self, pushed: bool) {
+    pub fn armed(&mut self, pushed: bool, discard: bool) {
         self.recv = if pushed {
-            RecvArm::Armed
+            RecvArm::Armed { discard }
         } else {
             RecvArm::Exhausted
         };
     }
 
     pub fn is_armed(&self) -> bool {
-        matches!(self.recv, RecvArm::Armed)
+        matches!(self.recv, RecvArm::Armed { .. })
     }
 
     pub(super) fn needs_arm(&self) -> bool {
@@ -119,6 +123,45 @@ impl Core {
 
     pub fn recv_data(&mut self, more: bool) -> bool {
         self.settle_recv(more)
+    }
+
+    pub(crate) fn kernel_discard(&self) -> bool {
+        self.kernel_discard
+    }
+
+    pub(crate) fn begin_discard(&mut self, n: u64) {
+        self.discard_remaining = self.discard_remaining.saturating_add(n);
+    }
+
+    pub(crate) fn discard_remaining(&self) -> u64 {
+        self.discard_remaining
+    }
+
+    pub(super) fn is_discard_armed(&self) -> bool {
+        matches!(self.recv, RecvArm::Armed { discard: true })
+    }
+
+    pub(crate) fn recv_cancel_kind(&self) -> u8 {
+        if self.is_discard_armed() {
+            backend::token::kind::RECV_DISCARD
+        } else {
+            backend::token::kind::RECV
+        }
+    }
+
+    /// Returns how many of `len` bytes the discard budget swallowed.
+    pub(super) fn consume_discard(&mut self, len: usize) -> usize {
+        if self.discard_remaining == 0 {
+            return 0;
+        }
+        let take = (len as u64).min(self.discard_remaining) as usize;
+        self.discard_remaining -= take as u64;
+        take
+    }
+
+    pub(super) fn recv_discarded(&mut self, n: u32) -> bool {
+        self.discard_remaining = self.discard_remaining.saturating_sub(n as u64);
+        self.settle_recv(false)
     }
 
     pub fn recv_eof(&mut self, more: bool) {
@@ -185,7 +228,10 @@ impl Core {
         self.send_in_flight = false;
     }
 
-    fn push_send_retry(driver: &mut Driver, mut build: impl FnMut() -> backend::sqe::Sqe) -> bool {
+    pub(super) fn push_retry(
+        driver: &mut Driver,
+        mut build: impl FnMut() -> backend::sqe::Sqe,
+    ) -> bool {
         if driver.push(build()).is_ok() {
             return true;
         }
@@ -197,7 +243,7 @@ impl Core {
 
     pub fn submit_single(&mut self, ud: backend::token::Token, buf: &[u8], driver: &mut Driver) {
         let fd = &self.fd;
-        if Self::push_send_retry(driver, || backend::sqe::Sqe::send(fd, buf, ud)) {
+        if Self::push_retry(driver, || backend::sqe::Sqe::send(fd, buf, ud)) {
             crate::memstats::send_borrow();
             self.send_in_flight = true;
         }
@@ -212,7 +258,7 @@ impl Core {
         vectored.install_into_msghdr();
         let fd = &self.fd;
         let msg = vectored.msghdr_storage().raw();
-        if Self::push_send_retry(driver, || backend::sqe::Sqe::send_msg(fd, msg, ud)) {
+        if Self::push_retry(driver, || backend::sqe::Sqe::send_msg(fd, msg, ud)) {
             crate::memstats::send_borrow();
             self.send_in_flight = true;
         }
@@ -239,7 +285,7 @@ mod tests {
     fn submit_single_happy_path_marks_inflight_once() {
         let mut drv = driver();
         let fd = backend::socket::Fd::adopt(backend::socket::FdSlot::new(0), &mut drv);
-        let mut core = Core::new(fd);
+        let mut core = Core::new(fd, false);
         assert!(!core.is_send_inflight());
         core.submit_single(token(), b"hello", &mut drv);
         assert!(

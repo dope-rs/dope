@@ -124,11 +124,21 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
             if slot.core.is_armed() {
                 return true;
             }
-            let buf_group = driver.group();
-            let armed = driver
-                .push(backend::sqe::Sqe::recv_multi(&slot.core.fd, buf_group, ud))
-                .is_ok();
-            slot.core.armed(armed);
+            let remaining = slot.core.discard_remaining();
+            let (sqe, discard) = if backend::sqe::Sqe::SUPPORTS_RECV_DISCARD && remaining > 0 {
+                (
+                    backend::sqe::Sqe::recv_discard(&slot.core.fd, remaining, ud),
+                    true,
+                )
+            } else {
+                let buf_group = driver.group();
+                (
+                    backend::sqe::Sqe::recv_multi(&slot.core.fd, buf_group, ud),
+                    false,
+                )
+            };
+            let armed = driver.push(sqe).is_ok();
+            slot.core.armed(armed, discard);
             armed
         };
         if !armed {
@@ -199,15 +209,16 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
                 let slice = unsafe { driver.slice(len, bid) };
                 slot.recv_data(more, slice)
             }
+            backend::RecvEvent::Discarded { len } => slot.recv_discarded(len),
             backend::RecvEvent::Eof => slot.recv_eof(more),
             backend::RecvEvent::Cancelled => slot.recv_cancelled(more),
             backend::RecvEvent::Starved => slot.recv_starved(more),
             backend::RecvEvent::Failed(_) => slot.recv_failed(more),
         };
         let needs_rearm = match &decision {
-            RecvDecision::NoChunk { needs_rearm } | RecvDecision::Chunk { needs_rearm, .. } => {
-                *needs_rearm
-            }
+            RecvDecision::NoChunk { needs_rearm }
+            | RecvDecision::Discarded { needs_rearm }
+            | RecvDecision::Chunk { needs_rearm, .. } => *needs_rearm,
             _ => false,
         };
         if needs_rearm {
@@ -216,6 +227,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         let outcome = match decision {
             RecvDecision::Drop => DispatchRecv::Drop,
             RecvDecision::Close => DispatchRecv::Close(idx),
+            RecvDecision::Discarded { .. } => DispatchRecv::Discarded(idx),
             RecvDecision::NoChunk { .. } => DispatchRecv::NoChunk(idx),
             RecvDecision::Chunk { chunk, .. } => DispatchRecv::Chunk(idx, chunk),
         };
@@ -229,10 +241,13 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
     }
 
     pub fn try_close(&mut self, idx: backend::token::LocalIdx, driver: &mut Driver) {
-        let Some((was_armed, send_inflight)) = self
-            .get(idx)
-            .map(|s| (s.core.is_armed(), s.core.is_send_inflight()))
-        else {
+        let Some((was_armed, send_inflight, cancel_kind)) = self.get(idx).map(|s| {
+            (
+                s.core.is_armed(),
+                s.core.is_send_inflight(),
+                s.core.recv_cancel_kind(),
+            )
+        }) else {
             return;
         };
         if send_inflight {
@@ -243,7 +258,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         }
         if was_armed {
             let token = self.op(idx);
-            let _ = driver.push(backend::sqe::Sqe::cancel(token, backend::token::kind::RECV));
+            let _ = driver.push(backend::sqe::Sqe::cancel(token, cancel_kind));
         }
         let _ = self.release(idx);
     }
@@ -280,7 +295,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         if driver.push(sqe).is_err() {
             return None;
         }
-        let slot = Slot::<W, S>::new(Core::new(fd), wire, ud, park_slot, state);
+        let slot = Slot::<W, S>::new(Core::new(fd, T::KERNEL_DISCARD), wire, ud, park_slot, state);
         reservation.fill(slot);
         self.refresh_wake(local, driver);
         Some(local)
@@ -394,6 +409,7 @@ pub enum DispatchRecv<'a> {
     Close(backend::token::LocalIdx),
     Chunk(backend::token::LocalIdx, RecvChunk<'a>),
     NoChunk(backend::token::LocalIdx),
+    Discarded(backend::token::LocalIdx),
 }
 
 pub enum SendOutcome {

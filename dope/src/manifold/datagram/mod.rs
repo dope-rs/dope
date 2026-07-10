@@ -202,7 +202,8 @@ impl<const ID: u8> Socket<ID> {
             }
             backend::RecvEvent::Eof
             | backend::RecvEvent::Cancelled
-            | backend::RecvEvent::Starved => return,
+            | backend::RecvEvent::Starved
+            | backend::RecvEvent::Discarded { .. } => return,
         };
         let (outcome, _guard) = backend::Datagram::recv_packet(driver, len, bid, msghdr);
         match outcome {

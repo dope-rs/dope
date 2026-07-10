@@ -189,6 +189,12 @@ impl Sqe {
         Self(SqeInner::RecvMulti { slot: fd.slot(), ud: op.with_kind(kind::RECV).raw() })
     }
 
+    pub const SUPPORTS_RECV_DISCARD: bool = false;
+
+    pub fn recv_discard(_fd: &Fd, _remaining: u64, _op: Token) -> Self {
+        unreachable!()
+    }
+
     pub fn accept_oneshot(
         listener: &Fd,
         addr_ptr: *mut libc::sockaddr,
