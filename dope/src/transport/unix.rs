@@ -21,12 +21,12 @@ impl Transport for Unix {
         (libc::AF_UNIX, libc::SOCK_STREAM, 0)
     }
 
-    fn bind_listener_slot(
-        _driver: &mut Driver,
+    fn bind_listener_slot<'d>(
+        _driver: &'d Driver,
         _addr: &PathBuf,
         backlog: i32,
         _opts: &unix::ListenerOpts,
-    ) -> io::Result<(backend::socket::Fd, SocketAddr)> {
+    ) -> io::Result<(backend::socket::Fd<'d>, SocketAddr)> {
         if backlog <= 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

@@ -1,19 +1,18 @@
 use std::marker::PhantomData;
 
 use crate::backend;
-use crate::manifold::Manifold;
 
 #[repr(transparent)]
-pub struct TypedToken<M: Manifold>(backend::token::Token, PhantomData<fn() -> M>);
+pub struct TypedToken<M>(backend::token::Token, PhantomData<fn() -> M>);
 
-impl<M: Manifold> Clone for TypedToken<M> {
+impl<M> Clone for TypedToken<M> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<M: Manifold> Copy for TypedToken<M> {}
+impl<M> Copy for TypedToken<M> {}
 
-impl<M: Manifold> TypedToken<M> {
+impl<M> TypedToken<M> {
     /// # Safety
     /// The caller guarantees `t` was issued for manifold `M`.
     pub const unsafe fn from_raw_token(t: backend::token::Token) -> Self {

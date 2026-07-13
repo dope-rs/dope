@@ -37,12 +37,12 @@ impl Transport for Tcp {
         )
     }
 
-    fn bind_listener_slot(
-        driver: &mut Driver,
+    fn bind_listener_slot<'d>(
+        driver: &'d Driver,
         addr: &SocketAddr,
         backlog: i32,
         cfg: &tcp::ListenerOpts,
-    ) -> io::Result<(backend::socket::Fd, SocketAddr)> {
+    ) -> io::Result<(backend::socket::Fd<'d>, SocketAddr)> {
         if backlog <= 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -57,7 +57,7 @@ impl Transport for Tcp {
         cfg.per_ip_cap
     }
 
-    fn submit_quickack(fd: &backend::socket::Fd, driver: &mut Driver) -> bool {
+    fn submit_quickack<'d>(fd: &backend::socket::Fd<'d>, driver: &'d Driver) -> bool {
         driver.push(backend::sqe::Sqe::quickack(fd)).is_ok()
     }
 

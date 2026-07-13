@@ -16,9 +16,9 @@ pub(super) mod system;
 pub(super) use backend::Backend;
 pub(super) use config::Config;
 
-use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
+use std::cell::UnsafeCell;
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
 
@@ -26,7 +26,7 @@ use io_uring::IoUring;
 
 use crate::slab::Slab;
 
-use crate::backend::{Drive, Sockopt, ListenerOpts};
+use crate::backend::ListenerOpts;
 use crate::backend::os_fd::OsFd;
 use crate::backend::token::{Epoch, LocalIdx, ROUTE_FRAMEWORK, ROUTE_SHIFT, KIND_SHIFT, Token, kind};
 use crate::backend::socket::{Addr, Domain, FdSlot, Kind};
@@ -35,23 +35,34 @@ const SETSOCKOPT_CAP: usize = 4096;
 const DEFERRED_CLOSE_CAP: usize = 4096;
 const BOOT_UD: Token = Token::new(ROUTE_FRAMEWORK, LocalIdx::new(0), Epoch::ZERO);
 
+/// A single-threaded reactor with many live handles into it — session currency,
+/// [`socket::Fd`] backrefs, waker slots — so mutability is interior, never `&mut`:
+/// every handle is a plain `&Driver`.
+///
+/// ```text
+/// &'d Driver ── enter() borrow: Fd<'d> ⊂ exec, proven by borrowck
+/// ```
 pub struct Driver {
-    /// Must drop before `provided`/`arena`: closing the ring cancels in-flight ops first.
+    inner: UnsafeCell<Inner>,
+    /// Leaked on purpose: wakers are `'static`-shaped (`std::task::Waker`) and
+    /// may outlive the driver; a late wake lands in leaked memory and is
+    /// epoch-filtered, never a use-after-free.
+    arena: &'static crate::backend::park::Arena,
+}
+
+pub(super) struct Inner {
+    /// Must drop before `provided`: closing the ring cancels in-flight ops first.
     uring: IoUring,
     setsockopt: Slab<Box<libc::c_int>>,
     deferred_close: VecDeque<FdSlot>,
     provided: provided::Ring,
-    arena: Box<crate::backend::park::Arena>,
     next_slot: u32,
     accept_slots: u32,
     defer_active: bool,
-    alive: &'static Cell<bool>,
 }
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        // Mark dead before the io_uring ring drops so out-of-order Fds skip close.
-        self.alive.set(false);
         crate::memstats::dump();
     }
 }
@@ -71,31 +82,101 @@ impl Driver {
 
         let slots = cfg.fixed_file_slots as usize;
         Ok(Self {
-            setsockopt: Slab::new(SETSOCKOPT_CAP),
-            deferred_close: VecDeque::new(),
-            uring,
-            provided,
-            arena: crate::backend::park::Arena::new(slots)?,
-            next_slot: cfg.fixed_file_slots,
-            accept_slots: cfg.accept_slots,
-            defer_active,
-            alive: Box::leak(Box::new(Cell::new(true))),
+            inner: UnsafeCell::new(Inner {
+                setsockopt: Slab::new(SETSOCKOPT_CAP),
+                deferred_close: VecDeque::new(),
+                uring,
+                provided,
+                next_slot: cfg.fixed_file_slots,
+                accept_slots: cfg.accept_slots,
+                defer_active,
+            }),
+            arena: Box::leak(crate::backend::park::Arena::new(slots)?),
         })
     }
 
-    pub(crate) fn alive_handle(&self) -> &'static Cell<bool> {
-        self.alive
+    /// # Safety
+    /// Thread-confined, and every public method is a leaf: it takes this once
+    /// at entry, never calls back out while holding it, and drops it on return.
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    pub(super) unsafe fn inner(&self) -> &mut Inner {
+        unsafe { &mut *self.inner.get() }
+    }
+
+    #[inline]
+    pub(super) fn arena(&self) -> &'static crate::backend::park::Arena {
+        self.arena
     }
 
     pub fn defer_active(&self) -> bool {
-        self.defer_active
+        // SAFETY: leaf read.
+        unsafe { self.inner() }.defer_active
     }
 
+    /// Delegating shims for public traits live below; the real bodies sit on
+    /// [`Inner`].
+    pub fn reserve_outbound(&self, count: u32) -> io::Result<crate::backend::OutboundReservation> {
+        // SAFETY: leaf.
+        let base = unsafe { self.inner() }.alloc_fixed_range(count)?;
+        Ok(crate::backend::OutboundReservation::new(base, count))
+    }
+
+    #[inline]
+    pub(crate) fn release_fd_slot(&self, slot: FdSlot) {
+        // SAFETY: leaf.
+        unsafe { self.inner() }.release_fd_slot(slot);
+    }
+}
+
+impl Inner {
+    #[inline]
+    fn push_sqe(&mut self, sqe: sqe::Sqe) -> Result<(), crate::backend::PushError> {
+        let entry = sqe.entry();
+        if self.try_push(entry).is_ok() {
+            return Ok(());
+        }
+        self.uring.submit().map_err(|_| crate::backend::PushError)?;
+        self.try_push(entry)
+    }
+
+    fn set_sockopt(
+        &mut self,
+        fixed_idx: u32,
+        level: u32,
+        optname: u32,
+        value: i32,
+    ) -> Result<(), crate::backend::PushError> {
+        let Some(key) = self.setsockopt.alloc(Box::new(value)) else {
+            return Err(crate::backend::PushError);
+        };
+        let optval_ptr =
+            (&**self.setsockopt.get(key).unwrap() as *const libc::c_int).cast::<libc::c_void>();
+        let ud = Token::from_key(ROUTE_FRAMEWORK, key);
+        let sqe = io_uring::opcode::SetSockOpt::new(
+            io_uring::types::Fixed(fixed_idx),
+            level,
+            optname,
+            optval_ptr,
+            size_of::<libc::c_int>() as u32,
+        )
+        .build()
+        .user_data(ud.raw());
+        if self.try_push(&sqe).is_ok() {
+            Ok(())
+        } else {
+            self.setsockopt.remove(key);
+            Err(crate::backend::PushError)
+        }
+    }
+
+    #[inline]
     fn try_push(&mut self, sqe: &io_uring::squeue::Entry) -> Result<(), crate::backend::PushError> {
         // SAFETY: `push` only copies the entry; buffers it references are pinned by the in-flight request.
         unsafe { self.uring.submission().push(sqe) }.map_err(|_| crate::backend::PushError)
     }
 
+    #[inline]
     fn try_push_pair(
         &mut self,
         first: &io_uring::squeue::Entry,
@@ -135,6 +216,7 @@ impl Driver {
         Ok(base)
     }
 
+    #[inline]
     fn release_setsockopt(setsockopt: &mut Slab<Box<libc::c_int>>, raw: u64) -> bool {
         let route = (raw >> ROUTE_SHIFT) as u8;
         let kind_v = (raw >> KIND_SHIFT) as u8;
@@ -150,6 +232,7 @@ impl Driver {
         true
     }
 
+    #[inline]
     fn push_close(&mut self, slot: FdSlot) -> bool {
         let shut = sqe::Sqe::shutdown_linked_at(slot, libc::SHUT_RDWR);
         let close = sqe::Sqe::close_at(slot);
@@ -163,11 +246,6 @@ impl Driver {
             }
             self.deferred_close.pop_front();
         }
-    }
-
-    pub fn reserve_outbound(&mut self, count: u32) -> io::Result<crate::backend::OutboundReservation> {
-        let base = self.alloc_fixed_range(count)?;
-        Ok(crate::backend::OutboundReservation::new(base, count))
     }
 
     pub(super) fn release_fd_slot(&mut self, slot: FdSlot) {
@@ -203,7 +281,7 @@ impl Driver {
     }
 
     fn boot_perform(&mut self, sqe: sqe::Sqe) -> io::Result<()> {
-        self.push(sqe)?;
+        self.push_sqe(sqe)?;
         self.boot_await(0, 0)
     }
 
@@ -242,7 +320,7 @@ impl Driver {
     }
 
     fn boot_setsockopt(&mut self, slot: u32, level: u32, optname: u32, value: i32) -> io::Result<()> {
-        self.set(slot, level, optname, value)?;
+        self.set_sockopt(slot, level, optname, value)?;
         self.boot_await(0, 0)
     }
 
@@ -252,7 +330,7 @@ impl Driver {
             .offset(slot as i32)
             .build()
             .user_data(BOOT_UD.raw());
-        self.push(sqe::Sqe::from_entry(entry))?;
+        self.push_sqe(sqe::Sqe::from_entry(entry))?;
         self.boot_await(1, libc::EMFILE)
     }
 

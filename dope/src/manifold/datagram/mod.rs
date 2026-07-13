@@ -31,8 +31,8 @@ use crate::transport::multishot::Arm;
 use crate::{Bootstrap, Drive, Driver, Lend};
 
 #[pin_project]
-pub struct Socket<const ID: u8> {
-    fixed_fd: backend::socket::Fd,
+pub struct Socket<'d, const ID: u8> {
+    fixed_fd: backend::socket::Fd<'d>,
     bound_addr: SocketAddr,
     recv_arm: Arm,
     recv_msghdr: backend::socket::MsgHdr,
@@ -43,12 +43,12 @@ pub struct Socket<const ID: u8> {
     _pin: PhantomPinned,
 }
 
-impl<const ID: u8> Socket<ID> {
+impl<'d, const ID: u8> Socket<'d, ID> {
     const OUT_CAP: usize = 4096;
     const OUT_BYTES_CAP: usize = 16 << 20;
     const IN_FLIGHT_SENDS_CAP: usize = 4096;
 
-    pub fn bind(addr: SocketAddr, driver: &mut Driver) -> io::Result<Self> {
+    pub fn bind(addr: SocketAddr, driver: &'d Driver) -> io::Result<Self> {
         let (fixed_fd, bound_addr) = driver.bind_datagram_slot(addr)?;
         let mut msghdr_template = backend::socket::MsgHdr::empty();
         msghdr_template.set_namelen(size_of::<libc::sockaddr_storage>() as u32);
@@ -162,7 +162,7 @@ impl<const ID: u8> Socket<ID> {
         true
     }
 
-    pub fn tick(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    pub fn tick(mut self: Pin<&mut Self>, driver: &'d Driver) {
         if self.recv_arm.needs_rearm() {
             self.as_mut().arm_recv(driver);
         }
@@ -180,7 +180,7 @@ impl<const ID: u8> Socket<ID> {
         ud: backend::token::Token,
         more: bool,
         e: backend::RecvEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
         handler: &mut H,
     ) {
         let msghdr = {
@@ -230,7 +230,7 @@ impl<const ID: u8> Socket<ID> {
         }
     }
 
-    fn arm_recv(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn arm_recv(self: Pin<&mut Self>, driver: &'d Driver) {
         let this = self.project();
         let Some(ud) = this.recv_arm.begin(ID, RECV_ARM_TAG) else {
             return;
@@ -242,7 +242,7 @@ impl<const ID: u8> Socket<ID> {
         this.recv_arm.settle(pushed);
     }
 
-    fn flush_outgoing(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn flush_outgoing(self: Pin<&mut Self>, driver: &'d Driver) {
         let this = self.project();
         while this.in_flight.len() < this.in_flight.slot_count() {
             let Some(out) = this.pending_outgoing.pop_front() else {

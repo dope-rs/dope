@@ -56,65 +56,58 @@ pub trait Wire: 'static + Sized {
 
     fn new(cfg: &Self::InitConfig) -> Self;
 
+    /// Plaintext taken but not yet turned into a socket send. The slot parks on
+    /// it — no further bytes are handed over until [`Wire::flush_pending`] frees it.
+    ///
+    /// ```ignore
+    /// fn holds_plain(&self) -> bool {
+    ///     !self.pending.is_empty()
+    /// }
+    /// ```
+    fn holds_plain(&self) -> bool {
+        false
+    }
+
     fn process_recv<'a>(&mut self, bytes: &'a [u8]) -> Option<RecvChunk<'a>>;
 
     fn on_recv_eof(&mut self) {}
 
-    fn submit_send(
+    fn submit_send<'d>(
         &mut self,
-        core: &mut Core,
+        core: &mut Core<'d>,
         plain: &[u8],
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> usize;
 
-    fn submit_send_vectored(
+    fn submit_send_vectored<'d>(
         &mut self,
-        core: &mut Core,
+        core: &mut Core<'d>,
         vectored: Vectored<'_>,
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> usize;
 
-    fn submit_send_tracked(
+    fn after_send_cqe<'d>(
         &mut self,
-        core: &mut Core,
-        plain: &[u8],
-        ud: backend::token::Token,
-        driver: &mut Driver,
-    ) -> Option<usize> {
-        let was_inflight = core.is_send_inflight();
-        let consumed = self.submit_send(core, plain, ud, driver);
-        (core.is_send_inflight() && !was_inflight).then_some(consumed)
-    }
-
-    fn submit_send_vectored_tracked(
-        &mut self,
-        core: &mut Core,
-        vectored: Vectored<'_>,
-        ud: backend::token::Token,
-        driver: &mut Driver,
-    ) -> Option<usize> {
-        let was_inflight = core.is_send_inflight();
-        let consumed = self.submit_send_vectored(core, vectored, ud, driver);
-        (core.is_send_inflight() && !was_inflight).then_some(consumed)
-    }
-
-    fn after_send_cqe(
-        &mut self,
-        core: &mut Core,
+        core: &mut Core<'d>,
         n: usize,
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> bool;
 
-    fn flush_pending(&mut self, core: &mut Core, ud: backend::token::Token, driver: &mut Driver);
-
-    fn on_graceful_close(
+    fn flush_pending<'d>(
         &mut self,
-        _core: &mut Core,
+        core: &mut Core<'d>,
+        ud: backend::token::Token,
+        driver: &'d Driver,
+    );
+
+    fn on_graceful_close<'d>(
+        &mut self,
+        _core: &mut Core<'d>,
         _ud: backend::token::Token,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) {
     }
 }
@@ -136,12 +129,12 @@ impl Wire for Identity {
         Some(RecvChunk::Borrowed(bytes))
     }
 
-    fn submit_send(
+    fn submit_send<'d>(
         &mut self,
-        core: &mut Core,
+        core: &mut Core<'d>,
         plain: &[u8],
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> usize {
         if plain.is_empty() {
             return 0;
@@ -150,12 +143,12 @@ impl Wire for Identity {
         plain.len()
     }
 
-    fn submit_send_vectored(
+    fn submit_send_vectored<'d>(
         &mut self,
-        core: &mut Core,
+        core: &mut Core<'d>,
         vectored: Vectored<'_>,
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> usize {
         if vectored.iovs.is_empty() {
             return 0;
@@ -165,21 +158,21 @@ impl Wire for Identity {
         consumed
     }
 
-    fn after_send_cqe(
+    fn after_send_cqe<'d>(
         &mut self,
-        _core: &mut Core,
+        _core: &mut Core<'d>,
         _n: usize,
         _ud: backend::token::Token,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) -> bool {
         false
     }
 
-    fn flush_pending(
+    fn flush_pending<'d>(
         &mut self,
-        _core: &mut Core,
+        _core: &mut Core<'d>,
         _ud: backend::token::Token,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) {
     }
 }

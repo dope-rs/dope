@@ -23,13 +23,13 @@ impl<const ID: u8> Counter<ID> {
     }
 }
 
-impl<const ID: u8> Manifold for Counter<ID> {
+impl<'d, const ID: u8> Manifold<'d> for Counter<ID> {
     const ID: u8 = ID;
 
-    fn dispatch(self: Pin<&mut Self>, _ev: dope::Event, _driver: &mut Driver) {
+    fn dispatch(self: Pin<&mut Self>, _ev: dope::Event, _driver: &'d Driver) {
         self.dispatch_calls.set(self.dispatch_calls.get() + 1);
     }
-    fn pre_park(self: Pin<&mut Self>, _driver: &mut Driver) {
+    fn pre_park(self: Pin<&mut Self>, _driver: &'d Driver) {
         self.tick_calls.set(self.tick_calls.get() + 1);
     }
     fn idle(self: Pin<&Self>) -> Idle {
@@ -86,10 +86,11 @@ fn build_initializes_fields() {
 
 #[test]
 fn block_on_ticks_every_field() {
-    let mut exec = make_exec();
+    let exec = make_exec();
+    let mut sess = exec.enter();
     let mut app = pin!(make_dispatcher());
     dope_extra::block_on(
-        &mut exec,
+        &mut sess,
         app.as_mut(),
         dope::fiber::Fiber::new(std::future::ready(())),
     );

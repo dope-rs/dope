@@ -240,7 +240,7 @@ impl<const ID: u8> Timer<ID> {
 }
 
 impl<const ID: u8> Timer<ID> {
-    pub fn pre_park(self: Pin<&mut Self>, _driver: &mut Driver) {
+    pub fn pre_park(self: Pin<&mut Self>, _driver: &Driver) {
         Pin::get_mut(self).expire(Instant::now());
     }
 
@@ -249,10 +249,10 @@ impl<const ID: u8> Timer<ID> {
     }
 }
 
-impl<const ID: u8> crate::manifold::Manifold for Timer<ID> {
+impl<'d, const ID: u8> crate::manifold::Manifold<'d> for Timer<ID> {
     const ID: u8 = ID;
 
-    fn pre_park(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn pre_park(self: Pin<&mut Self>, driver: &'d Driver) {
         Timer::pre_park(self, driver)
     }
 

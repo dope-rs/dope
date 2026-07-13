@@ -43,42 +43,38 @@ impl Kind {
     }
 }
 
-use std::cell::Cell;
-use std::ptr::NonNull;
-
-#[derive(Debug)]
-pub struct Fd {
+pub struct Fd<'d> {
     slot: FdSlot,
-    driver: NonNull<crate::Driver>,
-    alive: &'static Cell<bool>,
+    driver: &'d crate::Driver,
 }
 
-impl Fd {
-    pub fn adopt(slot: FdSlot, driver: &mut crate::Driver) -> Self {
-        Self {
-            slot,
-            alive: driver.alive_handle(),
-            driver: NonNull::from(driver),
-        }
+impl std::fmt::Debug for Fd<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Fd").field(&self.slot.0).finish()
+    }
+}
+
+impl<'d> Fd<'d> {
+    #[inline]
+    pub fn adopt(slot: FdSlot, driver: &'d crate::Driver) -> Self {
+        Self { slot, driver }
     }
 
+    #[inline]
     pub(super) fn slot(&self) -> FdSlot {
         self.slot
     }
 
+    #[inline]
     pub fn index(&self) -> u32 {
         self.slot.0
     }
 }
 
-impl Drop for Fd {
+impl<'d> Drop for Fd<'d> {
+    #[inline]
     fn drop(&mut self) {
-        // Driver dead (out-of-order drop) ⇒ its teardown already closed the slot.
-        if !self.alive.get() {
-            return;
-        }
-        // SAFETY: alive ⇒ driver still live; thread-per-core, no aliasing.
-        unsafe { self.driver.as_mut() }.release_fd_slot(self.slot);
+        self.driver.release_fd_slot(self.slot);
     }
 }
 

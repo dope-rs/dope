@@ -13,14 +13,14 @@ use dope::{DriverConfig, Executor};
 const ID: u8 = 0;
 const MAX_CONN: usize = 8;
 
-type Conn = Connector<ID, Tcp, Identity>;
+type Conn<'d> = Connector<'d, ID, Tcp, Identity>;
 
 #[pin_project::pin_project]
 #[derive(dope_gen::Dispatcher)]
-struct App {
+struct App<'d> {
     #[pin]
     #[manifold]
-    connector: Conn,
+    connector: Conn<'d>,
 }
 
 // The async client connector must actually move bytes: a `connect_held` that
@@ -49,16 +49,17 @@ fn fiber_connector_roundtrip() {
     });
 
     let cfg = <dope::DriverCfg as DriverConfig>::for_tcp_profile::<Production>(MAX_CONN);
-    let mut exec = Executor::new(cfg).expect("executor");
-    let connector = Conn::new(MAX_CONN, exec.driver_mut());
+    let exec = Executor::new(cfg).expect("executor");
+    let mut sess = exec.enter();
+    let connector = Conn::new(MAX_CONN, sess.driver());
     let mut app = pin!(App { connector });
 
-    let conn_ptr: NonNull<Conn> = NonNull::from(&app.connector);
+    let conn_ptr: NonNull<Conn<'_>> = NonNull::from(&app.connector);
     // SAFETY: `app` is pinned for the whole test; the connector field never moves.
-    let hold: Holding<'_, Conn> = unsafe { Holding::from_raw(conn_ptr) };
+    let hold: Holding<'_, Conn<'_>> = unsafe { Holding::from_raw(conn_ptr) };
 
     let got = dope_extra::block_on(
-        &mut exec,
+        &mut sess,
         app.as_mut(),
         Fiber::new(async move {
             let mut io = Conn::connect_held(hold, addr, Default::default()).await?;

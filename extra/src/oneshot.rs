@@ -38,7 +38,7 @@ impl<F: Future> OneShot<F> {
         this.output.take()
     }
 
-    pub fn pre_park(self: Pin<&mut Self>, _driver: &mut Driver) {
+    pub fn pre_park(self: Pin<&mut Self>, _driver: &Driver) {
         let mut this = self.project();
         let Some(fut) = this.fut.as_mut().as_pin_mut() else {
             return;

@@ -48,12 +48,12 @@ impl<W: Wire> Application for AcceptQueue<W> {
     type Conn = State;
     type Wire = W;
 
-    fn on_chunk(
+    fn on_chunk<'d>(
         &mut self,
-        slot: &mut Slot<W, listener::State<State>>,
+        slot: &mut Slot<'d, W, listener::State<State>>,
         chunk: RecvChunk<'_>,
         _aux: &mut listener::Aux,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) -> Outcome {
         if slot.state.conn.push_recv(chunk.as_slice()) {
             Outcome::Overrun
@@ -62,25 +62,29 @@ impl<W: Wire> Application for AcceptQueue<W> {
         }
     }
 
-    fn on_send(
+    fn on_send<'d>(
         &mut self,
-        slot: &mut Slot<W, listener::State<State>>,
+        slot: &mut Slot<'d, W, listener::State<State>>,
         _sent: usize,
         _aux: &mut listener::Aux,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) {
         slot.state.conn.wake_send();
     }
 
-    fn on_close(&mut self, slot: &mut Slot<W, listener::State<State>>, _aux: &mut listener::Aux) {
+    fn on_close<'d>(
+        &mut self,
+        slot: &mut Slot<'d, W, listener::State<State>>,
+        _aux: &mut listener::Aux,
+    ) {
         slot.state.conn.signal_closed();
     }
 
-    fn on_accept(
+    fn on_accept<'d>(
         &mut self,
-        slot: &mut Slot<W, listener::State<State>>,
+        slot: &mut Slot<'d, W, listener::State<State>>,
         _aux: &mut listener::Aux,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) -> Outcome {
         if self.accepts.len() >= self.cap {
             return Outcome::Overrun;
@@ -93,24 +97,24 @@ impl<W: Wire> Application for AcceptQueue<W> {
     }
 }
 
-type Inner<const ID: u8, T, W> = listener::Listener<ID, AcceptQueue<W>, ConnEnv<T, W>>;
+type Inner<'d, const ID: u8, T, W> = listener::Listener<'d, ID, AcceptQueue<W>, ConnEnv<T, W>>;
 
 #[pin_project(!Unpin)]
-pub struct Listener<const ID: u8, T: Transport, W: Wire>
+pub struct Listener<'d, const ID: u8, T: Transport, W: Wire>
 where
     T::Addr: Clone,
 {
     #[pin]
-    inner: Inner<ID, T, W>,
+    inner: Inner<'d, ID, T, W>,
 }
 
-impl<const ID: u8, T: Transport, W: Wire> Listener<ID, T, W>
+impl<'d, const ID: u8, T: Transport, W: Wire> Listener<'d, ID, T, W>
 where
     T::Addr: Clone,
 {
     pub fn bind(
         capacity: usize,
-        driver: &mut Driver,
+        driver: &'d Driver,
         addr: &T::Addr,
         backlog: i32,
         listener_opts: T::ListenerOpts,
@@ -140,12 +144,12 @@ where
         }
     }
 
-    pub fn accept_held<'d>(this: Holding<'d, Self>) -> super::Fiber<'d, Accept<'d, ID, T, W>> {
+    pub fn accept_held<'h>(this: Holding<'h, Self>) -> super::Fiber<'h, Accept<'h, 'd, ID, T, W>> {
         super::Fiber::new(Accept { host: this })
     }
 }
 
-impl<const ID: u8, T: Transport, W: Wire> Host for Listener<ID, T, W>
+impl<'d, const ID: u8, T: Transport, W: Wire> Host for Listener<'d, ID, T, W>
 where
     T::Addr: Clone,
 {
@@ -199,28 +203,30 @@ where
     }
 }
 
-impl<const ID: u8, T: Transport, W: Wire> Manifold for Listener<ID, T, W>
+impl<'d, const ID: u8, T: Transport, W: Wire> Manifold<'d> for Listener<'d, ID, T, W>
 where
     T::Addr: Clone,
 {
     const ID: u8 = ID;
 
-    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, driver: &mut Driver) {
+    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, driver: &'d Driver) {
         Manifold::dispatch(self.project().inner, ev, driver);
     }
 
-    fn pre_park(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn pre_park(self: Pin<&mut Self>, driver: &'d Driver) {
         self.project().inner.pre_park(driver);
     }
 
     fn on_wake(
         self: Pin<&mut Self>,
         target: crate::manifold::route::TypedToken<Self>,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
-        // SAFETY: fiber Listener<ID, T, W> shares const ID with Inner<ID, T, W>; TypedToken<Self> bits match Inner's Manifold::ID.
+        // SAFETY: fiber Listener<ID, T, W> shares const ID with Inner<'d, ID, T, W>; TypedToken<Self> bits match Inner's Manifold::ID.
         let inner = unsafe {
-            crate::manifold::route::TypedToken::<Inner<ID, T, W>>::from_raw_token(target.token())
+            crate::manifold::route::TypedToken::<Inner<'d, ID, T, W>>::from_raw_token(
+                target.token(),
+            )
         };
         Manifold::on_wake(self.project().inner, inner, driver);
     }
@@ -229,25 +235,25 @@ where
         Manifold::idle(self.project_ref().inner)
     }
 
-    fn on_shutdown(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn on_shutdown(self: Pin<&mut Self>, driver: &'d Driver) {
         Manifold::on_shutdown(self.project().inner, driver);
     }
 }
 
-pub struct Accept<'d, const ID: u8, T: Transport, W: Wire>
+pub struct Accept<'h, 'd, const ID: u8, T: Transport, W: Wire>
 where
     T::Addr: Clone,
 {
-    host: Holding<'d, Listener<ID, T, W>>,
+    host: Holding<'h, Listener<'d, ID, T, W>>,
 }
 
-impl<const ID: u8, T: Transport, W: Wire> Unpin for Accept<'_, ID, T, W> where T::Addr: Clone {}
+impl<const ID: u8, T: Transport, W: Wire> Unpin for Accept<'_, '_, ID, T, W> where T::Addr: Clone {}
 
-impl<'d, const ID: u8, T: Transport, W: Wire> Future for Accept<'d, ID, T, W>
+impl<'h, 'd, const ID: u8, T: Transport, W: Wire> Future for Accept<'h, 'd, ID, T, W>
 where
     T::Addr: Clone,
 {
-    type Output = io::Result<Io<'d, Listener<ID, T, W>>>;
+    type Output = io::Result<Io<'h, Listener<'d, ID, T, W>>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

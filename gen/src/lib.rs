@@ -10,7 +10,12 @@ use syn::{DeriveInput, Fields, FieldsNamed, Generics, Ident, ItemFn, Type, parse
 pub fn forward(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (_, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (brand, fresh) = brand_lifetime(&input.generics);
+    let impl_generics = {
+        let params = input.generics.params.iter();
+        quote! { <#fresh #(#params),*> }
+    };
 
     let data = match &input.data {
         syn::Data::Struct(s) => s,
@@ -57,7 +62,7 @@ pub fn forward(input: TokenStream) -> TokenStream {
     });
     let id_const = match field_ty {
         Some(ty) => quote! {
-            const ID: u8 = <#ty as ::dope::manifold::Manifold>::ID;
+            const ID: u8 = <#ty as ::dope::manifold::Manifold<#brand>>::ID;
         },
         None => quote! {},
     };
@@ -66,20 +71,20 @@ pub fn forward(input: TokenStream) -> TokenStream {
         None => quote! { _ },
     };
     quote! {
-        impl #impl_generics ::dope::manifold::Manifold for #name #ty_generics
+        impl #impl_generics ::dope::manifold::Manifold<#brand> for #name #ty_generics
         #where_clause
         {
             #id_const
             fn dispatch(
                 self: ::core::pin::Pin<&mut Self>,
                 ev: ::dope::Event,
-                driver: &mut ::dope::Driver,
+                driver: &#brand ::dope::Driver,
             ) {
-                let _ = <#field_ty_tokens as ::dope::manifold::Manifold>::ID;
+                let _ = <#field_ty_tokens as ::dope::manifold::Manifold<#brand>>::ID;
                 ::dope::manifold::Manifold::dispatch(self.project().#field, ev, driver)
             }
 
-            fn pre_park(self: ::core::pin::Pin<&mut Self>, driver: &mut ::dope::Driver) {
+            fn pre_park(self: ::core::pin::Pin<&mut Self>, driver: &#brand ::dope::Driver) {
                 ::dope::manifold::Manifold::pre_park(self.project().#field, driver)
             }
             fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::Idle {
@@ -88,7 +93,7 @@ pub fn forward(input: TokenStream) -> TokenStream {
             fn on_wake(
                 self: ::core::pin::Pin<&mut Self>,
                 target: ::dope::manifold::route::TypedToken<Self>,
-                driver: &mut ::dope::Driver,
+                driver: &#brand ::dope::Driver,
             ) {
                 // SAFETY: Forward propagates Manifold::ID, so wrapper's TypedToken<Self> bits match inner field's Manifold::ID.
                 let __typed = unsafe { ::dope::manifold::route::TypedToken::<#field_ty_tokens>::from_raw_token(target.token()) };
@@ -270,8 +275,13 @@ impl DispatcherSpec {
 
     fn manifold_impl(&self) -> proc_macro2::TokenStream {
         let name = &self.name;
-        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
-        let dispatch_arms = self.dispatch_arms();
+        let (_, ty_generics, where_clause) = self.generics.split_for_impl();
+        let (brand, fresh) = brand_lifetime(&self.generics);
+        let impl_generics = {
+            let params = self.generics.params.iter();
+            quote! { <#fresh #(#params),*> }
+        };
+        let dispatch_arms = self.dispatch_arms(&brand);
         let wake_arms = self.wake_arms();
         let tick_calls = self.tick_calls();
         let post_coordinate_tick_calls = if self.coordinate {
@@ -294,11 +304,11 @@ impl DispatcherSpec {
             quote! {}
         };
         quote! {
-            impl #impl_generics ::dope::Dispatcher for #name #ty_generics #where_clause {
+            impl #impl_generics ::dope::Dispatcher<#brand> for #name #ty_generics #where_clause {
                 fn dispatch(
                     self: ::core::pin::Pin<&mut Self>,
                     __ev: ::dope::Event,
-                    __driver: &mut ::dope::Driver,
+                    __driver: &#brand ::dope::Driver,
                 ) {
                     #uniqueness_use
                     let mut __this = self.project();
@@ -311,7 +321,7 @@ impl DispatcherSpec {
                 fn on_wake(
                     self: ::core::pin::Pin<&mut Self>,
                     __target: ::dope::runtime::token::Token,
-                    __driver: &mut ::dope::Driver,
+                    __driver: &#brand ::dope::Driver,
                 ) {
                     let mut __this = self.project();
                     let __route = __target.route();
@@ -320,7 +330,7 @@ impl DispatcherSpec {
                         _ => {}
                     }
                 }
-                fn pre_park(mut self: ::core::pin::Pin<&mut Self>, __driver: &mut ::dope::Driver) {
+                fn pre_park(mut self: ::core::pin::Pin<&mut Self>, __driver: &#brand ::dope::Driver) {
                     {
                         let mut __this = self.as_mut().project();
                         #(#tick_calls)*
@@ -335,7 +345,7 @@ impl DispatcherSpec {
                     let __this = self.project_ref();
                     #idle_expr
                 }
-                fn on_shutdown(mut self: ::core::pin::Pin<&mut Self>, __driver: &mut ::dope::Driver) {
+                fn on_shutdown(mut self: ::core::pin::Pin<&mut Self>, __driver: &#brand ::dope::Driver) {
                     let mut __this = self.as_mut().project();
                     #(#shutdown_calls)*
                 }
@@ -343,7 +353,7 @@ impl DispatcherSpec {
         }
     }
 
-    fn dispatch_arms(&self) -> Vec<proc_macro2::TokenStream> {
+    fn dispatch_arms(&self, brand: &proc_macro2::TokenStream) -> Vec<proc_macro2::TokenStream> {
         self.fields
             .iter()
             .map(|f| {
@@ -351,7 +361,7 @@ impl DispatcherSpec {
                 let inner = f.inner_ty();
                 let body = f.wrap_body(quote! { as_pin_mut() }, quote! { as_mut() }, |recv| {
                     quote! {
-                        let _ = <#inner as ::dope::manifold::Manifold>::ID;
+                        let _ = <#inner as ::dope::manifold::Manifold<#brand>>::ID;
                         ::dope::manifold::Manifold::dispatch(#recv, __ev, __driver);
                     }
                 });
@@ -597,4 +607,14 @@ pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
     *item_fn.block = new_block;
 
     quote! { #item_fn }.into()
+}
+
+fn brand_lifetime(generics: &Generics) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    match generics.lifetimes().next() {
+        Some(lt) => {
+            let lt = &lt.lifetime;
+            (quote! { #lt }, quote! {})
+        }
+        None => (quote! { '__d }, quote! { '__d, }),
+    }
 }

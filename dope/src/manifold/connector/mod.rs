@@ -57,11 +57,11 @@ impl<N: Session, W: Wire> ConnApp for SessionApp<N, W> {
     type Conn = SessionConn<N>;
     type Wire = W;
 
-    fn on_chunk(
+    fn on_chunk<'d>(
         &mut self,
-        slot: &mut Slot<Self::Wire, State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
         chunk: RecvChunk<'_>,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) -> ChunkOutcome {
         if chunk.is_empty() {
             return ChunkOutcome::Ok;
@@ -102,11 +102,11 @@ impl<N: Session, W: Wire> ConnApp for SessionApp<N, W> {
         }
     }
 
-    fn on_connected(
+    fn on_connected<'d>(
         &mut self,
         _tag: u32,
-        slot: &mut Slot<Self::Wire, State<Self::Conn>>,
-        _driver: &mut Driver,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
+        _driver: &'d Driver,
     ) {
         let conn_id = slot.token();
         let State { conn, egress, .. } = &mut slot.state;
@@ -117,7 +117,7 @@ impl<N: Session, W: Wire> ConnApp for SessionApp<N, W> {
         });
     }
 
-    fn before_send(&mut self, slot: &mut Slot<Self::Wire, State<Self::Conn>>) {
+    fn before_send<'d>(&mut self, slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>) {
         let conn_id = slot.token();
         let State { conn, egress, .. } = &mut slot.state;
         self.session.flush_trailer(&mut Ctx {
@@ -127,15 +127,15 @@ impl<N: Session, W: Wire> ConnApp for SessionApp<N, W> {
         });
     }
 
-    fn on_send(
+    fn on_send<'d>(
         &mut self,
-        _slot: &mut Slot<Self::Wire, State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
         _sent: usize,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) {
     }
 
-    fn on_close(&mut self, slot: &mut Slot<Self::Wire, State<Self::Conn>>) {
+    fn on_close<'d>(&mut self, slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>) {
         let conn_id = slot.token();
         let State { conn, egress, .. } = &mut slot.state;
         self.session.disconnect(&mut Ctx {
@@ -145,18 +145,19 @@ impl<N: Session, W: Wire> ConnApp for SessionApp<N, W> {
         });
     }
 
-    fn defer_close(&self, slot: &Slot<Self::Wire, State<Self::Conn>>) -> bool {
+    fn defer_close<'d>(&self, slot: &Slot<'d, Self::Wire, State<Self::Conn>>) -> bool {
         slot.state.conn.conn_state.defer_close()
     }
 
-    fn is_drained(&self, slot: &Slot<Self::Wire, State<Self::Conn>>) -> bool {
+    fn is_drained<'d>(&self, slot: &Slot<'d, Self::Wire, State<Self::Conn>>) -> bool {
         slot.state.conn.conn_state.is_drained()
     }
 }
 
 pub type Connector<
+    'd,
     const ID: u8,
     N,
     S = Static<Tcp>,
     E = Bundle<Tcp, Identity, backend::profile::Production>,
-> = Core<ID, SessionApp<N, <E as Env>::Wire>, S, E>;
+> = Core<'d, ID, SessionApp<N, <E as Env>::Wire>, S, E>;

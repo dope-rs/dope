@@ -4,16 +4,16 @@ members = ["dope", "gen", "extra"]
 
 [workspace.package]
 edition = "2024"
-version = "0.5.7"
+version = "0.6.0"
 description = "The manifold runtime"
 repository = "https://github.com/dope-rs/dope"
 license = "MIT"
 authors = ["inq <gofiri@gmail.com>"]
 
 [workspace.dependencies]
-dope = { path = "dope", version = "0.5.7" }
-dope-gen = { path = "gen", version = "0.5.7" }
-dope-extra = { path = "extra", version = "0.5.7" }
+dope = { path = "dope", version = "0.6.0" }
+dope-gen = { path = "gen", version = "0.6.0" }
+dope-extra = { path = "extra", version = "0.6.0" }
 o3 = "0.2"
 libc = "0.2"
 io-uring = "0.7"

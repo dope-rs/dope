@@ -5,13 +5,14 @@ use crate::transport::Transport;
 use crate::transport::multishot::Arm;
 use crate::{Drive, Driver, backend};
 
-pub enum Outcome {
-    Accepted(backend::socket::Fd, Option<IpAddr>),
+pub enum Outcome<'d> {
+    Accepted(backend::socket::Fd<'d>, Option<IpAddr>),
+    Capped(IpAddr),
     Rejected,
 }
 
-pub struct Accept<T: Transport> {
-    fd: backend::socket::Fd,
+pub struct Accept<'d, T: Transport> {
+    fd: backend::socket::Fd<'d>,
     arm: Arm,
     accept_slot: backend::token::LocalIdx,
     stream_opts: T::StreamOpts,
@@ -20,9 +21,9 @@ pub struct Accept<T: Transport> {
     per_ip_counts: HashMap<IpAddr, u32>,
 }
 
-impl<T: Transport> Accept<T> {
+impl<'d, T: Transport> Accept<'d, T> {
     pub fn new(
-        fd: backend::socket::Fd,
+        fd: backend::socket::Fd<'d>,
         max_conn: u32,
         stream_opts: T::StreamOpts,
         per_ip_cap: u32,
@@ -50,7 +51,7 @@ impl<T: Transport> Accept<T> {
         self.arm.request_rearm();
     }
 
-    pub fn arm(&mut self, route: u8, driver: &mut Driver) {
+    pub fn arm(&mut self, route: u8, driver: &'d Driver) {
         let Some(ud) = self.arm.begin(route, self.accept_slot) else {
             return;
         };
@@ -66,7 +67,7 @@ impl<T: Transport> Accept<T> {
         self.arm.settle(pushed);
     }
 
-    pub fn stop_accept(&mut self, route: u8, driver: &mut Driver) {
+    pub fn stop_accept(&mut self, route: u8, driver: &'d Driver) {
         if self.arm.is_armed() {
             let token =
                 backend::token::Token::new(route, self.accept_slot, self.arm.current_epoch());
@@ -93,8 +94,8 @@ impl<T: Transport> Accept<T> {
         ud: backend::token::Token,
         more: bool,
         e: backend::AcceptEvent,
-        driver: &mut Driver,
-    ) -> Outcome {
+        driver: &'d Driver,
+    ) -> Outcome<'d> {
         if !self.arm.epoch_match(ud, self.accept_slot) {
             return Outcome::Rejected;
         }
@@ -113,7 +114,7 @@ impl<T: Transport> Accept<T> {
                 {
                     let count = self.per_ip_counts.entry(ip).or_insert(0);
                     if *count >= self.per_ip_cap {
-                        return Outcome::Rejected;
+                        return Outcome::Capped(ip);
                     }
                     *count += 1;
                 }

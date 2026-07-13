@@ -27,18 +27,18 @@ pub trait Transport: 'static + Sized {
 
     fn socket_params(addr: &Self::Addr) -> (i32, i32, i32);
 
-    fn bind_listener_slot(
-        driver: &mut Driver,
+    fn bind_listener_slot<'d>(
+        driver: &'d Driver,
         addr: &Self::Addr,
         backlog: i32,
         opts: &Self::ListenerOpts,
-    ) -> io::Result<(backend::socket::Fd, SocketAddr)>;
+    ) -> io::Result<(backend::socket::Fd<'d>, SocketAddr)>;
 
-    fn submit_shutdown(fd: &backend::socket::Fd, how: i32, driver: &mut Driver) -> bool {
+    fn submit_shutdown<'d>(fd: &backend::socket::Fd<'d>, how: i32, driver: &'d Driver) -> bool {
         driver.push(backend::sqe::Sqe::shutdown(fd, how)).is_ok()
     }
 
-    fn submit_quickack(fd: &backend::socket::Fd, driver: &mut Driver) -> bool {
+    fn submit_quickack<'d>(fd: &backend::socket::Fd<'d>, driver: &'d Driver) -> bool {
         let _ = (fd, driver);
         false
     }

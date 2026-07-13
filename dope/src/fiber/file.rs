@@ -36,19 +36,19 @@ enum Stage {
     Done,
 }
 
-pub struct Open<'d, 'p, const ID: u8, const N: usize> {
-    host: Holding<'d, Files<ID, N>>,
-    driver: *mut Driver,
+pub struct Open<'h, 'd, 'p, const ID: u8, const N: usize> {
+    host: Holding<'h, Files<ID, N>>,
+    driver: &'d Driver,
     path: &'p OpenPath,
     flags: i32,
     fixed: Option<FdSlot>,
     stage: Stage,
 }
 
-impl<'d, 'p, const ID: u8, const N: usize> Open<'d, 'p, ID, N> {
+impl<'h, 'd, 'p, const ID: u8, const N: usize> Open<'h, 'd, 'p, ID, N> {
     pub(crate) fn new(
-        host: Holding<'d, Files<ID, N>>,
-        driver: &mut Driver,
+        host: Holding<'h, Files<ID, N>>,
+        driver: &'d Driver,
         path: &'p OpenPath,
         flags: i32,
         fixed: Option<FdSlot>,
@@ -64,19 +64,19 @@ impl<'d, 'p, const ID: u8, const N: usize> Open<'d, 'p, ID, N> {
     }
 }
 
-impl<const ID: u8, const N: usize> Unpin for Open<'_, '_, ID, N> {}
+impl<const ID: u8, const N: usize> Unpin for Open<'_, '_, '_, ID, N> {}
 
-impl<const ID: u8, const N: usize> Drop for Open<'_, '_, ID, N> {
+impl<const ID: u8, const N: usize> Drop for Open<'_, '_, '_, ID, N> {
     fn drop(&mut self) {
         if let Stage::Pending(token) = self.stage {
             // SAFETY: thread-per-core; driver outlives the future, no aliasing &mut.
-            let driver = unsafe { &mut *self.driver };
+            let driver = self.driver;
             self.host.hold().cancel_open(token, driver);
         }
     }
 }
 
-impl<'d, 'p, const ID: u8, const N: usize> Future for Open<'d, 'p, ID, N> {
+impl<'h, 'd, 'p, const ID: u8, const N: usize> Future for Open<'h, 'd, 'p, ID, N> {
     type Output = io::Result<Source>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -86,7 +86,7 @@ impl<'d, 'p, const ID: u8, const N: usize> Future for Open<'d, 'p, ID, N> {
             Stage::Pending(t) => t,
             Stage::Init => {
                 // SAFETY: thread-per-core; driver outlives the future, no aliasing &mut.
-                let driver = unsafe { &mut *this.driver };
+                let driver = this.driver;
                 let begun = match this.fixed {
                     Some(slot) => this
                         .host
@@ -120,19 +120,19 @@ impl<'d, 'p, const ID: u8, const N: usize> Future for Open<'d, 'p, ID, N> {
 
 /// Positional read; the buffer is owned by the manifold for the op's lifetime and
 /// returned as `(buf, result)`, so a mid-read drop is sound (no kernel UAF).
-pub struct Read<'d, const ID: u8, const N: usize> {
-    host: Holding<'d, Files<ID, N>>,
-    driver: *mut Driver,
+pub struct Read<'h, 'd, const ID: u8, const N: usize> {
+    host: Holding<'h, Files<ID, N>>,
+    driver: &'d Driver,
     src: Source,
     buf: Option<Vec<u8>>,
     offset: u64,
     stage: Stage,
 }
 
-impl<'d, const ID: u8, const N: usize> Read<'d, ID, N> {
+impl<'h, 'd, const ID: u8, const N: usize> Read<'h, 'd, ID, N> {
     pub(crate) fn new(
-        host: Holding<'d, Files<ID, N>>,
-        driver: &mut Driver,
+        host: Holding<'h, Files<ID, N>>,
+        driver: &'d Driver,
         src: Source,
         buf: Vec<u8>,
         offset: u64,
@@ -148,19 +148,19 @@ impl<'d, const ID: u8, const N: usize> Read<'d, ID, N> {
     }
 }
 
-impl<const ID: u8, const N: usize> Unpin for Read<'_, ID, N> {}
+impl<const ID: u8, const N: usize> Unpin for Read<'_, '_, ID, N> {}
 
-impl<const ID: u8, const N: usize> Drop for Read<'_, ID, N> {
+impl<const ID: u8, const N: usize> Drop for Read<'_, '_, ID, N> {
     fn drop(&mut self) {
         if let Stage::Pending(token) = self.stage {
             // SAFETY: thread-per-core; driver outlives the future, no aliasing &mut.
-            let driver = unsafe { &mut *self.driver };
+            let driver = self.driver;
             self.host.hold().cancel_read(token, driver);
         }
     }
 }
 
-impl<'d, const ID: u8, const N: usize> Future for Read<'d, ID, N> {
+impl<'h, 'd, const ID: u8, const N: usize> Future for Read<'h, 'd, ID, N> {
     type Output = (Vec<u8>, io::Result<usize>);
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -179,7 +179,7 @@ impl<'d, const ID: u8, const N: usize> Future for Read<'d, ID, N> {
                 }
                 let host = this.host;
                 // SAFETY: thread-per-core; driver outlives the future, no aliasing &mut.
-                let driver = unsafe { &mut *this.driver };
+                let driver = this.driver;
                 let begun = match this.src {
                     Source::Fd(fd) => host.hold().begin_read(fd, buf, this.offset, driver),
                     Source::Fixed(slot) => {
@@ -215,9 +215,9 @@ impl<'d, const ID: u8, const N: usize> Future for Read<'d, ID, N> {
     }
 }
 
-pub struct SpliceToPipe<'d, const ID: u8, const N: usize> {
-    host: Holding<'d, Files<ID, N>>,
-    driver: *mut Driver,
+pub struct SpliceToPipe<'h, 'd, const ID: u8, const N: usize> {
+    host: Holding<'h, Files<ID, N>>,
+    driver: &'d Driver,
     src: Source,
     off_in: i64,
     pipe_write_fd: RawFd,
@@ -225,10 +225,10 @@ pub struct SpliceToPipe<'d, const ID: u8, const N: usize> {
     stage: Stage,
 }
 
-impl<'d, const ID: u8, const N: usize> SpliceToPipe<'d, ID, N> {
+impl<'h, 'd, const ID: u8, const N: usize> SpliceToPipe<'h, 'd, ID, N> {
     pub(crate) fn new(
-        host: Holding<'d, Files<ID, N>>,
-        driver: &mut Driver,
+        host: Holding<'h, Files<ID, N>>,
+        driver: &'d Driver,
         src: Source,
         off_in: i64,
         pipe_write_fd: RawFd,
@@ -246,19 +246,19 @@ impl<'d, const ID: u8, const N: usize> SpliceToPipe<'d, ID, N> {
     }
 }
 
-impl<const ID: u8, const N: usize> Unpin for SpliceToPipe<'_, ID, N> {}
+impl<const ID: u8, const N: usize> Unpin for SpliceToPipe<'_, '_, ID, N> {}
 
-impl<const ID: u8, const N: usize> Drop for SpliceToPipe<'_, ID, N> {
+impl<const ID: u8, const N: usize> Drop for SpliceToPipe<'_, '_, ID, N> {
     fn drop(&mut self) {
         if let Stage::Pending(token) = self.stage {
             // SAFETY: thread-per-core; driver outlives the future, no aliasing &mut.
-            let driver = unsafe { &mut *self.driver };
+            let driver = self.driver;
             self.host.hold().cancel_splice(token, driver);
         }
     }
 }
 
-impl<'d, const ID: u8, const N: usize> Future for SpliceToPipe<'d, ID, N> {
+impl<'h, 'd, const ID: u8, const N: usize> Future for SpliceToPipe<'h, 'd, ID, N> {
     type Output = io::Result<usize>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -277,7 +277,7 @@ impl<'d, const ID: u8, const N: usize> Future for SpliceToPipe<'d, ID, N> {
                     }
                 };
                 // SAFETY: thread-per-core; driver outlives the future, no aliasing &mut.
-                let driver = unsafe { &mut *this.driver };
+                let driver = this.driver;
                 let begun = this.host.hold().begin_splice_to_pipe(
                     fd_in,
                     this.off_in,

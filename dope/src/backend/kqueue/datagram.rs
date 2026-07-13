@@ -6,7 +6,7 @@ use crate::backend::socket::Addr;
 
 impl Datagram for Driver {
     fn recv_packet<'a>(
-        &'a mut self,
+        &'a self,
         len: u32,
         bid: u16,
         msghdr: &libc::msghdr,

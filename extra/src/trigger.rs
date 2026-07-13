@@ -16,7 +16,7 @@ impl Trigger {
         })
     }
 
-    pub fn register(&self, driver: &mut Driver) -> bool {
+    pub fn register(&self, driver: &Driver) -> bool {
         driver.push(Sqe::poll_shutdown(self.pipe.read_fd())).is_ok()
     }
 
@@ -34,7 +34,7 @@ impl SignalTrigger {
         Ok(Self { fd: Self::open()? })
     }
 
-    pub fn register(&self, driver: &mut Driver) -> bool {
+    pub fn register(&self, driver: &Driver) -> bool {
         driver.push(Sqe::poll_shutdown(self.fd)).is_ok()
     }
 }

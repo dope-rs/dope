@@ -22,7 +22,8 @@ fn cfg() -> dope::DriverCfg {
 
 #[test]
 fn files_reports_busy_while_read_in_flight() {
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let pipe = dope::platform::Pipe::new().expect("pipe");
 
@@ -34,14 +35,14 @@ fn files_reports_busy_while_read_in_flight() {
     {
         let read = Files::read_held(
             Holding::of(files.as_mut()),
-            exec.driver_mut(),
+            sess.driver(),
             Source::fd(pipe.read_fd()),
             vec![0u8; 16],
             0,
         );
-        let driver = exec.driver_mut();
+        let driver = sess.driver();
         let sentinel = Token::new(ID, LocalIdx::new(63), Epoch::INITIAL);
-        let slot = Parker::make_slot(&*driver, sentinel);
+        let slot = Parker::make_slot(driver, sentinel);
         let waker = slot.make_waker();
         let mut cx = Context::from_waker(&waker);
         let mut read = Box::pin(read);
@@ -56,7 +57,7 @@ fn files_reports_busy_while_read_in_flight() {
 
     // SAFETY: pipe.write_fd() is a live write end owned by `pipe`.
     let _ = unsafe { libc::write(pipe.write_fd(), b"x".as_ptr().cast(), 1) };
-    let driver = exec.driver_mut();
+    let driver = sess.driver();
     let mut cqe_buf = [dope::Cqe::ZERO; 32];
     let mut released = false;
     for _ in 0..200 {
