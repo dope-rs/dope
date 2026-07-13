@@ -38,7 +38,7 @@ impl SockOpt {
         Some((level, opt, value))
     }
 
-    fn submit(self, idx: u32, driver: &mut Driver) {
+    fn submit(self, idx: u32, driver: &Driver) {
         if let Some((level, opt, value)) = self.resolve() {
             let _ = driver.set(idx, level as u32, opt as u32, value);
         }
@@ -46,7 +46,7 @@ impl SockOpt {
 }
 
 pub trait Submittable {
-    fn submit(self, idx: u32, driver: &mut Driver);
+    fn submit(self, idx: u32, driver: &Driver);
 }
 
 #[derive(Clone, Copy, Default)]
@@ -66,6 +66,7 @@ impl SocketToggle {
 }
 
 pub mod tcp {
+
     use std::time::Duration;
 
     use super::{SockOpt, SocketToggle, Submittable};
@@ -93,7 +94,7 @@ pub mod tcp {
     }
 
     impl Submittable for StreamOpts {
-        fn submit(self, idx: u32, driver: &mut Driver) {
+        fn submit(self, idx: u32, driver: &Driver) {
             let tuned = self.keepalive_tuned();
             let opts: [Option<SockOpt>; 9] = [
                 self.quickack.flag().map(SockOpt::Quickack),
@@ -128,6 +129,7 @@ pub mod tcp {
 }
 
 pub mod unix {
+
     use super::{SockOpt, Submittable};
     use crate::Driver;
 
@@ -138,7 +140,7 @@ pub mod unix {
     }
 
     impl Submittable for StreamOpts {
-        fn submit(self, idx: u32, driver: &mut Driver) {
+        fn submit(self, idx: u32, driver: &Driver) {
             let opts: [Option<SockOpt>; 2] = [
                 self.recv_buffer_size.map(SockOpt::RecvBuf),
                 self.send_buffer_size.map(SockOpt::SendBuf),

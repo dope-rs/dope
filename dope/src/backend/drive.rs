@@ -4,14 +4,14 @@ use std::time::Duration;
 use crate::backend::PushError;
 use crate::backend::cqe::Cqe;
 
-pub trait Drive: Sized + 'static {
+pub trait Drive: Sized {
     type Sqe;
 
-    fn push(&mut self, sqe: Self::Sqe) -> Result<(), PushError>;
+    fn push(&self, sqe: Self::Sqe) -> Result<(), PushError>;
 
-    fn submit_to_drain(&mut self) -> bool;
+    fn submit_to_drain(&self) -> bool;
 
-    fn drain(&mut self, buf: &mut [Cqe]) -> usize;
+    fn drain(&self, buf: &mut [Cqe]) -> usize;
 
-    fn park(&mut self, timeout: Duration) -> io::Result<()>;
+    fn park(&self, timeout: Duration) -> io::Result<()>;
 }

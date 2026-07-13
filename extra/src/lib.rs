@@ -52,10 +52,10 @@ impl<P: Profile> Detached<P> {
     }
 }
 
-impl<P: Profile> dope::manifold::Manifold for Detached<P> {
+impl<'d, P: Profile> dope::manifold::Manifold<'d> for Detached<P> {
     const ID: u8 = ROUTE_TASKS;
 
-    fn pre_park(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn pre_park(self: Pin<&mut Self>, driver: &'d Driver) {
         let this = self.project();
         this.timer.pre_park(driver);
     }
@@ -63,7 +63,7 @@ impl<P: Profile> dope::manifold::Manifold for Detached<P> {
     fn on_wake(
         self: Pin<&mut Self>,
         target: dope::manifold::route::TypedToken<Self>,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) {
         let this = self.project();
         this.exec.wake_slot(target.slot());

@@ -20,18 +20,18 @@ impl Idle {
     }
 }
 
-pub trait Dispatcher {
+pub trait Dispatcher<'d> {
     const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
 
-    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, driver: &mut Driver);
+    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, driver: &'d Driver);
 
-    fn on_wake(self: Pin<&mut Self>, target: backend::token::Token, driver: &mut Driver);
+    fn on_wake(self: Pin<&mut Self>, target: backend::token::Token, driver: &'d Driver);
 
-    fn pre_park(self: Pin<&mut Self>, driver: &mut Driver);
+    fn pre_park(self: Pin<&mut Self>, driver: &'d Driver);
 
     fn idle(self: Pin<&Self>) -> Idle;
 
-    fn on_shutdown(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn on_shutdown(self: Pin<&mut Self>, driver: &'d Driver) {
         let _ = (self, driver);
     }
 }

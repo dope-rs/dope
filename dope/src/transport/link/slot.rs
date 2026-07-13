@@ -71,17 +71,17 @@ impl DeferredEgress {
     }
 }
 
-pub struct Slot<W: Wire, S> {
-    pub core: Core,
+pub struct Slot<'d, W: Wire, S> {
+    pub core: Core<'d>,
     pub wire: W,
     pub state: S,
     token: backend::token::Token,
     park_idx: backend::socket::FdSlot,
 }
 
-impl<W: Wire, S> Slot<W, S> {
+impl<'d, W: Wire, S> Slot<'d, W, S> {
     pub fn new(
-        core: Core,
+        core: Core<'d>,
         wire: W,
         token: backend::token::Token,
         park_idx: backend::socket::FdSlot,
@@ -108,11 +108,11 @@ impl<W: Wire, S> Slot<W, S> {
         backend::park::Parker::slot(driver, self.park_idx).make_waker()
     }
 
-    pub fn flush_pending(&mut self, ud: backend::token::Token, driver: &mut Driver) {
+    pub fn flush_pending(&mut self, ud: backend::token::Token, driver: &'d Driver) {
         self.wire.flush_pending(&mut self.core, ud, driver);
     }
 
-    pub fn seal_graceful(&mut self, ud: backend::token::Token, driver: &mut Driver) -> bool {
+    pub fn seal_graceful(&mut self, ud: backend::token::Token, driver: &'d Driver) -> bool {
         if self.core.seal_graceful() {
             self.wire.on_graceful_close(&mut self.core, ud, driver);
         }
@@ -149,7 +149,7 @@ impl<W: Wire, S> Slot<W, S> {
 
     /// Drop the next `n` incoming bytes in-kernel; `false` if unsupported
     /// (caller must then discard in userspace).
-    pub fn begin_discard(&mut self, n: u64, driver: &mut Driver) -> bool {
+    pub fn begin_discard(&mut self, n: u64, driver: &'d Driver) -> bool {
         if n == 0
             || !W::RAW_RECV
             || !self.core.kernel_discard()
@@ -211,7 +211,7 @@ impl<W: Wire, S> Slot<W, S> {
         n: usize,
         ud: backend::token::Token,
         idx: backend::token::LocalIdx,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> SendOutcome {
         if !self.core.is_send_inflight() {
             return SendOutcome::Drop;

@@ -11,7 +11,7 @@ pub enum Outcome<'a> {
 
 pub trait Datagram: Lend {
     fn recv_packet<'a>(
-        &'a mut self,
+        &'a self,
         len: u32,
         bid: u16,
         msghdr: &libc::msghdr,

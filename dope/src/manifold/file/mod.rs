@@ -85,47 +85,47 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         }
     }
 
-    pub fn open_held<'d, 'p>(
-        this: crate::fiber::Holding<'d, Self>,
-        driver: &mut Driver,
+    pub fn open_held<'h, 'd, 'p>(
+        this: crate::fiber::Holding<'h, Self>,
+        driver: &'d Driver,
         path: &'p OpenPath,
         flags: i32,
-    ) -> crate::fiber::file::Open<'d, 'p, ID, N> {
+    ) -> crate::fiber::file::Open<'h, 'd, 'p, ID, N> {
         crate::fiber::file::Open::new(this, driver, path, flags, None)
     }
 
-    pub fn open_fixed_held<'d, 'p>(
-        this: crate::fiber::Holding<'d, Self>,
-        driver: &mut Driver,
+    pub fn open_fixed_held<'h, 'd, 'p>(
+        this: crate::fiber::Holding<'h, Self>,
+        driver: &'d Driver,
         path: &'p OpenPath,
         flags: i32,
         slot: FdSlot,
-    ) -> crate::fiber::file::Open<'d, 'p, ID, N> {
+    ) -> crate::fiber::file::Open<'h, 'd, 'p, ID, N> {
         crate::fiber::file::Open::new(this, driver, path, flags, Some(slot))
     }
 
-    pub fn read_held<'d>(
-        this: crate::fiber::Holding<'d, Self>,
-        driver: &mut Driver,
+    pub fn read_held<'h, 'd>(
+        this: crate::fiber::Holding<'h, Self>,
+        driver: &'d Driver,
         src: crate::fiber::file::Source,
         buf: Vec<u8>,
         offset: u64,
-    ) -> crate::fiber::file::Read<'d, ID, N> {
+    ) -> crate::fiber::file::Read<'h, 'd, ID, N> {
         crate::fiber::file::Read::new(this, driver, src, buf, offset)
     }
 
-    pub fn splice_to_pipe_held<'d>(
-        this: crate::fiber::Holding<'d, Self>,
-        driver: &mut Driver,
+    pub fn splice_to_pipe_held<'h, 'd>(
+        this: crate::fiber::Holding<'h, Self>,
+        driver: &'d Driver,
         src: crate::fiber::file::Source,
         off_in: i64,
         pipe_write_fd: RawFd,
         len: u32,
-    ) -> crate::fiber::file::SpliceToPipe<'d, ID, N> {
+    ) -> crate::fiber::file::SpliceToPipe<'h, 'd, ID, N> {
         crate::fiber::file::SpliceToPipe::new(this, driver, src, off_in, pipe_write_fd, len)
     }
 
-    pub fn alloc_fixed_slot(driver: &mut Driver, count: u32) -> io::Result<FdSlot> {
+    pub fn alloc_fixed_slot(driver: &Driver, count: u32) -> io::Result<FdSlot> {
         let base = driver.reserve_outbound(count)?;
         Ok(base.absolute(backend::token::LocalIdx::new(0)))
     }
@@ -138,7 +138,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         self: Pin<&mut Self>,
         path: &OpenPath,
         flags: i32,
-        driver: &mut Driver,
+        driver: &Driver,
     ) -> Option<backend::token::Token> {
         let this = self.project();
         let key = this.opens.alloc(OpenHold {
@@ -161,7 +161,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         path: &OpenPath,
         flags: i32,
         slot: FdSlot,
-        driver: &mut Driver,
+        driver: &Driver,
     ) -> Option<backend::token::Token> {
         let this = self.project();
         let key = this.opens.alloc(OpenHold {
@@ -189,7 +189,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         fd: RawFd,
         buf: Vec<u8>,
         offset: u64,
-        driver: &mut Driver,
+        driver: &Driver,
     ) -> Result<backend::token::Token, Vec<u8>> {
         let this = self.project();
         Self::submit_read(this.reads, driver, buf, |held, token| {
@@ -202,7 +202,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         slot: FdSlot,
         buf: Vec<u8>,
         offset: u64,
-        driver: &mut Driver,
+        driver: &Driver,
     ) -> Result<backend::token::Token, Vec<u8>> {
         let this = self.project();
         Self::submit_read(this.reads, driver, buf, |held, token| {
@@ -214,7 +214,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
     // recovered via `Err` on any submit failure.
     fn submit_read(
         reads: &mut Slab<ReadHold>,
-        driver: &mut Driver,
+        driver: &Driver,
         buf: Vec<u8>,
         make_sqe: impl FnOnce(&mut [u8], backend::token::Token) -> Sqe,
     ) -> Result<backend::token::Token, Vec<u8>> {
@@ -242,7 +242,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         off_in: i64,
         pipe_write_fd: RawFd,
         len: u32,
-        driver: &mut Driver,
+        driver: &Driver,
     ) -> Option<backend::token::Token> {
         let this = self.project();
         let key = this.splices.alloc(())?;
@@ -282,7 +282,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
     pub(crate) fn cancel_splice(
         self: Pin<&mut Self>,
         token: backend::token::Token,
-        driver: &mut Driver,
+        driver: &Driver,
     ) {
         let this = self.project();
         if this.splices.get(token.key()).is_none() {
@@ -331,11 +331,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         }
     }
 
-    pub(crate) fn cancel_open(
-        self: Pin<&mut Self>,
-        token: backend::token::Token,
-        driver: &mut Driver,
-    ) {
+    pub(crate) fn cancel_open(self: Pin<&mut Self>, token: backend::token::Token, driver: &Driver) {
         let this = self.project();
         let Some(hold) = this.opens.get(token.key()).copied() else {
             this.open_pending.cancel(token.slot().raw());
@@ -356,11 +352,7 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
         let _ = driver.push(Sqe::cancel(token, backend::token::kind::OPEN));
     }
 
-    pub(crate) fn cancel_read(
-        self: Pin<&mut Self>,
-        token: backend::token::Token,
-        driver: &mut Driver,
-    ) {
+    pub(crate) fn cancel_read(self: Pin<&mut Self>, token: backend::token::Token, driver: &Driver) {
         let this = self.project();
         if this.reads.get(token.key()).is_none() {
             this.read_pending.cancel(token.slot().raw());
@@ -434,10 +426,10 @@ impl<const ID: u8, const N: usize> Files<ID, N> {
     }
 }
 
-impl<const ID: u8, const N: usize> Manifold for Files<ID, N> {
+impl<'d, const ID: u8, const N: usize> Manifold<'d> for Files<ID, N> {
     const ID: u8 = ID;
 
-    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, _driver: &mut Driver) {
+    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, _driver: &'d Driver) {
         match ev {
             backend::Event::Open(token, e) => self.on_open(token, e),
             backend::Event::Read(token, e) => self.on_read(token, e),
@@ -446,7 +438,7 @@ impl<const ID: u8, const N: usize> Manifold for Files<ID, N> {
         }
     }
 
-    fn pre_park(self: Pin<&mut Self>, _driver: &mut Driver) {}
+    fn pre_park(self: Pin<&mut Self>, _driver: &'d Driver) {}
 
     fn idle(self: Pin<&Self>) -> crate::runtime::dispatcher::Idle {
         let this = Pin::get_ref(self);
@@ -457,7 +449,7 @@ impl<const ID: u8, const N: usize> Manifold for Files<ID, N> {
         }
     }
 
-    fn on_wake(self: Pin<&mut Self>, _target: TypedToken<Self>, _driver: &mut Driver) {}
+    fn on_wake(self: Pin<&mut Self>, _target: TypedToken<Self>, _driver: &'d Driver) {}
 }
 
 // Fixed-table opens report result 0 (caller-owned slot), so only a raw open's

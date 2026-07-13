@@ -64,11 +64,11 @@ impl<W: Wire> ConnApp for AsyncApp<W> {
     type Conn = State;
     type Wire = W;
 
-    fn on_chunk(
+    fn on_chunk<'d>(
         &mut self,
-        slot: &mut Slot<Self::Wire, session::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, session::State<Self::Conn>>,
         chunk: RecvChunk<'_>,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) -> ChunkOutcome {
         if slot.state.conn.push_recv(chunk.as_slice()) {
             ChunkOutcome::Overrun
@@ -77,55 +77,55 @@ impl<W: Wire> ConnApp for AsyncApp<W> {
         }
     }
 
-    fn on_connected(
+    fn on_connected<'d>(
         &mut self,
         tag: u32,
-        slot: &mut Slot<Self::Wire, session::State<Self::Conn>>,
-        _driver: &mut Driver,
+        slot: &mut Slot<'d, Self::Wire, session::State<Self::Conn>>,
+        _driver: &'d Driver,
     ) {
         let token = slot.token();
         self.pending.settle(tag, Resolved::Ready(token));
     }
 
-    fn on_connect_failed(&mut self, tag: u32, _driver: &mut Driver) {
+    fn on_connect_failed(&mut self, tag: u32, _driver: &Driver) {
         self.pending.settle(tag, Resolved::Failed);
     }
 
-    fn on_send(
+    fn on_send<'d>(
         &mut self,
-        slot: &mut Slot<Self::Wire, session::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, session::State<Self::Conn>>,
         _sent: usize,
-        _driver: &mut Driver,
+        _driver: &'d Driver,
     ) {
         if slot.state.egress_len() == 0 {
             slot.state.conn.wake_send();
         }
     }
 
-    fn on_close(&mut self, slot: &mut Slot<Self::Wire, session::State<Self::Conn>>) {
+    fn on_close<'d>(&mut self, slot: &mut Slot<'d, Self::Wire, session::State<Self::Conn>>) {
         slot.state.conn.signal_closed();
     }
 
-    fn is_drained(&self, slot: &Slot<Self::Wire, session::State<Self::Conn>>) -> bool {
+    fn is_drained<'d>(&self, slot: &Slot<'d, Self::Wire, session::State<Self::Conn>>) -> bool {
         slot.state.conn.readable_drained()
     }
 }
 
-pub type Connector<const ID: u8, T, W> = Core<ID, AsyncApp<W>, Explicit<T>, ConnEnv<T, W>>;
+pub type Connector<'d, const ID: u8, T, W> = Core<'d, ID, AsyncApp<W>, Explicit<T>, ConnEnv<T, W>>;
 
-impl<const ID: u8, T: Transport, W: Wire> Core<ID, AsyncApp<W>, Explicit<T>, ConnEnv<T, W>>
+impl<'d, const ID: u8, T: Transport, W: Wire> Core<'d, ID, AsyncApp<W>, Explicit<T>, ConnEnv<T, W>>
 where
     T::Addr: Clone,
 {
-    pub fn new(capacity: usize, driver: &mut Driver) -> Self {
+    pub fn new(capacity: usize, driver: &'d Driver) -> Self {
         Self::with_app(AsyncApp::default(), Explicit::default(), capacity, driver)
     }
 
-    pub fn connect_held<'d>(
-        this: Holding<'d, Self>,
+    pub fn connect_held<'h>(
+        this: Holding<'h, Self>,
         addr: T::Addr,
         opts: T::StreamOpts,
-    ) -> super::Fiber<'d, Connect<'d, ID, T, W>> {
+    ) -> super::Fiber<'h, Connect<'h, 'd, ID, T, W>> {
         super::Fiber::new(Connect::new(this, addr, opts))
     }
 
@@ -148,7 +148,8 @@ where
     }
 }
 
-impl<const ID: u8, T: Transport, W: Wire> Host for Core<ID, AsyncApp<W>, Explicit<T>, ConnEnv<T, W>>
+impl<'d, const ID: u8, T: Transport, W: Wire> Host
+    for Core<'d, ID, AsyncApp<W>, Explicit<T>, ConnEnv<T, W>>
 where
     T::Addr: Clone,
 {

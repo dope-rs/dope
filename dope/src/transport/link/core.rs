@@ -56,8 +56,8 @@ pub enum RecvError {
     Live { needs_rearm: bool },
 }
 
-pub struct Core {
-    pub(super) fd: backend::socket::Fd,
+pub struct Core<'d> {
+    pub(super) fd: backend::socket::Fd<'d>,
     recv: RecvArm,
     phase: Phase,
     send_in_flight: bool,
@@ -67,8 +67,8 @@ pub struct Core {
     discard_remaining: u64,
 }
 
-impl Core {
-    pub fn new(fd: backend::socket::Fd, kernel_discard: bool) -> Self {
+impl<'d> Core<'d> {
+    pub fn new(fd: backend::socket::Fd<'d>, kernel_discard: bool) -> Self {
         Self {
             fd,
             recv: RecvArm::Disarmed,
@@ -229,7 +229,7 @@ impl Core {
     }
 
     pub(super) fn push_retry(
-        driver: &mut Driver,
+        driver: &'d Driver,
         mut build: impl FnMut() -> backend::sqe::Sqe,
     ) -> bool {
         if driver.push(build()).is_ok() {
@@ -241,7 +241,7 @@ impl Core {
         false
     }
 
-    pub fn submit_single(&mut self, ud: backend::token::Token, buf: &[u8], driver: &mut Driver) {
+    pub fn submit_single(&mut self, ud: backend::token::Token, buf: &[u8], driver: &'d Driver) {
         let fd = &self.fd;
         if Self::push_retry(driver, || backend::sqe::Sqe::send(fd, buf, ud)) {
             crate::memstats::send_borrow();
@@ -253,7 +253,7 @@ impl Core {
         &mut self,
         ud: backend::token::Token,
         mut vectored: Vectored<'_>,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         vectored.install_into_msghdr();
         let fd = &self.fd;
@@ -283,11 +283,11 @@ mod tests {
 
     #[test]
     fn submit_single_happy_path_marks_inflight_once() {
-        let mut drv = driver();
-        let fd = backend::socket::Fd::adopt(backend::socket::FdSlot::new(0), &mut drv);
+        let drv = driver();
+        let fd = backend::socket::Fd::adopt(backend::socket::FdSlot::new(0), &drv);
         let mut core = Core::new(fd, false);
         assert!(!core.is_send_inflight());
-        core.submit_single(token(), b"hello", &mut drv);
+        core.submit_single(token(), b"hello", &drv);
         assert!(
             core.is_send_inflight(),
             "happy path must queue the send and mark inflight"

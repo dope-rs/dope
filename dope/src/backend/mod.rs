@@ -174,13 +174,13 @@ pub(crate) fn datagram_opts(addr: &SocketAddr) -> ListenerOpts {
 
 pub trait Bootstrap {
     fn bind_listener_slot(
-        &mut self,
+        &self,
         addr: SocketAddr,
         backlog: i32,
         opts: &ListenerOpts,
-    ) -> io::Result<(socket::Fd, SocketAddr)>;
+    ) -> io::Result<(socket::Fd<'_>, SocketAddr)>;
 
-    fn bind_datagram_slot(&mut self, addr: SocketAddr) -> io::Result<(socket::Fd, SocketAddr)>;
+    fn bind_datagram_slot(&self, addr: SocketAddr) -> io::Result<(socket::Fd<'_>, SocketAddr)>;
 }
 
 pub struct OutboundReservation {

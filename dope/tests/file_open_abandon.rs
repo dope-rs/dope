@@ -21,10 +21,11 @@ fn abandoned_completed_open_closes_fd() {
     let path = std::env::temp_dir().join(format!("dope_abandon_open_{}", std::process::id()));
     std::fs::write(&path, b"x").expect("write temp");
 
-    let mut exec = Executor::new(dope::DriverCfg::for_profile::<
+    let exec = Executor::new(dope::DriverCfg::for_profile::<
         dope::runtime::profile::Throughput,
     >())
     .expect("executor");
+    let sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let cpath = OpenPath::new(path.to_str().unwrap()).expect("path");
     let host = Holding::of(files.as_mut());
@@ -35,13 +36,13 @@ fn abandoned_completed_open_closes_fd() {
     {
         let open = Files::open_held(
             host,
-            exec.driver_mut(),
+            sess.driver(),
             &cpath,
             dope::file::O_RDONLY | dope::file::O_CLOEXEC,
         );
-        let driver = exec.driver_mut();
+        let driver = sess.driver();
         let sentinel = Token::new(ID, LocalIdx::new(63), Epoch::INITIAL);
-        let slot = Parker::make_slot(&*driver, sentinel);
+        let slot = Parker::make_slot(driver, sentinel);
         let waker = slot.make_waker();
         let mut cx = Context::from_waker(&waker);
         let mut open = Box::pin(open);

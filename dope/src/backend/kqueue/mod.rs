@@ -7,15 +7,15 @@ pub mod sqe;
 mod system;
 mod udata;
 
-use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::io;
+use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::slice;
 use std::time::Duration;
 
-use crate::backend::{Drive, Lend, Sockopt};
+use crate::backend::{Bootstrap, Drive, Lend, Sockopt};
 use crate::backend::cqe::Cqe;
 use std::net::SocketAddr;
 
@@ -45,7 +45,15 @@ const SPLICE_BOUNCE: usize = 1 << 16;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Backend;
 
+/// See the uring twin: shared handles + interior mutability; every public
+/// method is a leaf over [`Inner`].
 pub struct Driver {
+    inner: UnsafeCell<Inner>,
+    /// Leaked on purpose: wakers are `'static`-shaped and may outlive us.
+    arena: &'static crate::backend::park::Arena,
+}
+
+struct Inner {
     kq: OwnedFd,
     changes: Vec<libc::kevent>,
     accept_slots: HashMap<usize, AcceptSlot>,
@@ -58,10 +66,8 @@ pub struct Driver {
     pending: VecDeque<PendingCompletion>,
     provided: provided::Pool,
     fd_table: Vec<Option<RawFd>>,
-    arena: Box<crate::backend::park::Arena>,
     accept_limit: u32,
     next_slot: u32,
-    alive: &'static Cell<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -154,16 +160,20 @@ enum DrainOutcome {
     Closed,
 }
 
-impl Drop for Driver {
-    fn drop(&mut self) {
-        // Mark dead before the fd table drops so out-of-order `Fd`s skip close.
-        self.alive.set(false);
-    }
-}
+
 
 impl Driver {
     pub fn open(cfg: Config) -> io::Result<Self> {
         Self::new(cfg)
+    }
+
+    /// # Safety
+    /// Thread-confined, and every public method is a leaf: it takes this once
+    /// at entry, never calls back out while holding it, and drops it on return.
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    pub(super) unsafe fn inner(&self) -> &mut Inner {
+        unsafe { &mut *self.inner.get() }
     }
 
     pub fn new(cfg: Config) -> io::Result<Self> {
@@ -198,28 +208,40 @@ impl Driver {
         let fixed_file_slots = cfg.fixed_file_slots.max(cfg.accept_slots).max(1);
         let slots = fixed_file_slots as usize;
         Ok(Self {
-            kq,
-            changes: Vec::with_capacity(64),
-            accept_slots: HashMap::new(),
-            recv_slots: HashMap::new(),
-            recvmsg_slots: HashMap::new(),
-            write_retries: Vec::new(),
-            write_retry_free: Vec::new(),
-            write_retry_fd: HashMap::new(),
-            resume: VecDeque::new(),
-            pending: VecDeque::new(),
-            provided: provided::Pool::new(cfg.provided_buf_entries, cfg.provided_buf_len as u32),
-            fd_table: vec![None; slots],
-            arena: crate::backend::park::Arena::new(slots)?,
-            accept_limit: cfg.accept_slots.min(fixed_file_slots),
-            next_slot: fixed_file_slots,
-            alive: Box::leak(Box::new(Cell::new(true))),
+            inner: UnsafeCell::new(Inner {
+                kq,
+                changes: Vec::with_capacity(64),
+                accept_slots: HashMap::new(),
+                recv_slots: HashMap::new(),
+                recvmsg_slots: HashMap::new(),
+                write_retries: Vec::new(),
+                write_retry_free: Vec::new(),
+                write_retry_fd: HashMap::new(),
+                resume: VecDeque::new(),
+                pending: VecDeque::new(),
+                provided: provided::Pool::new(cfg.provided_buf_entries, cfg.provided_buf_len as u32),
+                fd_table: vec![None; slots],
+                accept_limit: cfg.accept_slots.min(fixed_file_slots),
+                next_slot: fixed_file_slots,
+            }),
+            arena: Box::leak(crate::backend::park::Arena::new(slots)?),
         })
     }
 
-    pub(crate) fn alive_handle(&self) -> &'static Cell<bool> {
-        self.alive
+    pub fn reserve_outbound(&self, count: u32) -> io::Result<crate::backend::OutboundReservation> {
+        // SAFETY: leaf.
+        let base = unsafe { self.inner() }.alloc_fixed_range(count)?;
+        Ok(crate::backend::OutboundReservation::new(base, count))
     }
+
+    #[inline]
+    pub(crate) fn release_fd_slot(&self, slot: FdSlot) {
+        // SAFETY: leaf.
+        unsafe { self.inner() }.release_slot(slot);
+    }
+}
+
+impl Inner {
 
     pub(super) fn alloc_fixed_range(&mut self, len: u32) -> io::Result<u32> {
         let base = self
@@ -245,6 +267,7 @@ impl Driver {
         Ok(())
     }
 
+    #[inline]
     fn raw_fd(&self, slot: FdSlot) -> Option<RawFd> {
         self.fd_table.get(slot.raw() as usize).and_then(|v| *v)
     }
@@ -255,6 +278,7 @@ impl Driver {
         drop(OsFd::take(raw));
     }
 
+    #[inline]
     fn release_slot(&mut self, slot: FdSlot) {
         let idx = slot.raw() as usize;
         if let Some(raw) = self.fd_table.get_mut(idx).and_then(Option::take) {
@@ -262,18 +286,6 @@ impl Driver {
         }
     }
 
-    pub(super) fn adopt_fd_raw(&mut self, idx: u32) -> Fd {
-        Fd::adopt(FdSlot::new(idx), self)
-    }
-
-    pub fn reserve_outbound(&mut self, count: u32) -> io::Result<crate::backend::OutboundReservation> {
-        let base = self.alloc_fixed_range(count)?;
-        Ok(crate::backend::OutboundReservation::new(base, count))
-    }
-
-    pub(super) fn release_fd_slot(&mut self, slot: FdSlot) {
-        self.release_slot(slot);
-    }
 
     fn next_accept_slot(&self) -> Option<u32> {
         self.fd_table
@@ -342,7 +354,7 @@ impl Driver {
     }
 }
 
-impl Driver {
+impl Inner {
     fn dispatch_event(&mut self, ev: &libc::kevent) {
         if ev.filter == libc::EVFILT_USER {
             return;
@@ -775,7 +787,7 @@ impl Driver {
     }
 }
 
-impl Driver {
+impl Inner {
     fn push_pending(&mut self, c: PendingCompletion) {
         if self.pending.is_empty() {
             self.changes.push(libc::kevent {
@@ -902,6 +914,7 @@ impl Driver {
         true
     }
 
+    #[inline]
     fn dispatch_push(&mut self, sqe: sqe::Sqe) -> bool {
         match sqe.0 {
             sqe::SqeInner::AcceptOneshot { listener, addr_ptr, addrlen_ptr, ud } => {
@@ -1006,7 +1019,7 @@ impl crate::backend::park::Parker for Driver {
     }
 
     fn make_slot(&self, target: Token) -> crate::backend::park::Slot {
-        crate::backend::park::Slot::new(target, std::ptr::NonNull::from(&*self.arena))
+        crate::backend::park::Slot::new(target, std::ptr::NonNull::from(self.arena))
     }
 
     fn drain(&self, out: &mut Vec<Token>) {
@@ -1021,26 +1034,29 @@ impl crate::backend::park::Parker for Driver {
 impl Drive for Driver {
     type Sqe = sqe::Sqe;
 
-    fn push(&mut self, sqe: sqe::Sqe) -> Result<(), crate::backend::PushError> {
-        if self.dispatch_push(sqe) {
+    fn push(&self, sqe: sqe::Sqe) -> Result<(), crate::backend::PushError> {
+        // SAFETY: leaf.
+        if unsafe { self.inner() }.dispatch_push(sqe) {
             Ok(())
         } else {
             Err(crate::backend::PushError)
         }
     }
 
-    fn submit_to_drain(&mut self) -> bool {
+    fn submit_to_drain(&self) -> bool {
         false
     }
 
-    fn drain(&mut self, buf: &mut [Cqe]) -> usize {
+    fn drain(&self, buf: &mut [Cqe]) -> usize {
         use crate::backend::cqe;
-        if self.pending.is_empty() {
-            let _ = self.poll(Some(Duration::ZERO));
+        // SAFETY: leaf.
+        let this = unsafe { self.inner() };
+        if this.pending.is_empty() {
+            let _ = this.poll(Some(Duration::ZERO));
         }
         let mut n = 0;
         while n < buf.len() {
-            let Some(p) = self.pending.pop_front() else {
+            let Some(p) = this.pending.pop_front() else {
                 break;
             };
             buf[n] = match p {
@@ -1086,20 +1102,22 @@ impl Drive for Driver {
         n
     }
 
-    fn park(&mut self, timeout: Duration) -> io::Result<()> {
-        self.poll(Some(timeout)).map(|_| ())
+    fn park(&self, timeout: Duration) -> io::Result<()> {
+        // SAFETY: leaf.
+        unsafe { self.inner() }.poll(Some(timeout)).map(|_| ())
     }
 }
 
 impl Sockopt for Driver {
     fn set(
-        &mut self,
+        &self,
         fixed_idx: u32,
         level: u32,
         optname: u32,
         value: i32,
     ) -> Result<(), crate::backend::PushError> {
-        let Some(raw) = self.raw_fd(FdSlot::new(fixed_idx)) else {
+        // SAFETY: leaf.
+        let Some(raw) = unsafe { self.inner() }.raw_fd(FdSlot::new(fixed_idx)) else {
             return Err(crate::backend::PushError);
         };
         // SAFETY: raw is a live socket; value points to a live c_int of the specified size.
@@ -1121,22 +1139,25 @@ impl Lend for Driver {
         0
     }
 
-    fn release(&mut self, bid: Option<u16>) {
+    fn release(&self, bid: Option<u16>) {
+        // SAFETY: leaf.
+        let this = unsafe { self.inner() };
         let Some(b) = bid else { return };
-        self.provided.defer(b);
-        if !self.resume.is_empty() {
-            self.resume_pending();
+        this.provided.defer(b);
+        if !this.resume.is_empty() {
+            this.resume_pending();
         }
     }
 
     unsafe fn slice<'a>(&self, len: u32, bid: u16) -> &'a [u8] {
-        let (ptr, _) = self.provided.ptr_len(bid);
+        // SAFETY: leaf read; caller guarantees `bid` is valid + held until `release`.
+        let (ptr, _) = unsafe { self.inner() }.provided.ptr_len(bid);
         // SAFETY: caller guarantees `bid` is valid + held until `release`; len is byte count <= buffer cap.
         unsafe { slice::from_raw_parts(ptr, len as usize) }
     }
 }
 
-impl Driver {
+impl Inner {
     fn arm_accept_oneshot_inner(
         &mut self,
         ud: Token,
@@ -1470,7 +1491,7 @@ impl Driver {
     }
 }
 
-impl Driver {
+impl Inner {
     fn boot_register(&mut self, handle: OsFd) -> io::Result<u32> {
         let slot = self.alloc_fixed_range(1)?;
         self.register_raw_fd(slot, handle.into_raw_fd())?;
@@ -1478,30 +1499,34 @@ impl Driver {
     }
 }
 
-impl crate::backend::Bootstrap for Driver {
+impl Bootstrap for Driver {
     fn bind_listener_slot(
-        &mut self,
+        &self,
         addr: SocketAddr,
         backlog: i32,
         opts: &ListenerOpts,
-    ) -> io::Result<(Fd, SocketAddr)> {
+    ) -> io::Result<(Fd<'_>, SocketAddr)> {
+        // SAFETY: leaf.
+        let this = unsafe { self.inner() };
         let handle = OsFd::open(Domain::for_addr(&addr), Kind::Stream)?;
         handle.apply_reuse(opts)?;
         handle.bind(&Addr::from_std(addr))?;
         handle.listen(backlog)?;
         let actual = handle.local_addr()?;
-        let idx = self.boot_register(handle)?;
-        Ok((self.adopt_fd_raw(idx), actual))
+        let idx = this.boot_register(handle)?;
+        Ok((Fd::adopt(FdSlot::new(idx), self), actual))
     }
 
-    fn bind_datagram_slot(&mut self, addr: SocketAddr) -> io::Result<(Fd, SocketAddr)> {
+    fn bind_datagram_slot(&self, addr: SocketAddr) -> io::Result<(Fd<'_>, SocketAddr)> {
+        // SAFETY: leaf.
+        let this = unsafe { self.inner() };
         let handle = OsFd::open(Domain::for_addr(&addr), Kind::Dgram)?;
         handle.set_nonblocking()?;
         handle.apply_reuse(&crate::backend::datagram_opts(&addr))?;
         handle.bind(&Addr::from_std(addr))?;
         let actual = handle.local_addr()?;
-        let idx = self.boot_register(handle)?;
-        Ok((self.adopt_fd_raw(idx), actual))
+        let idx = this.boot_register(handle)?;
+        Ok((Fd::adopt(FdSlot::new(idx), self), actual))
     }
 }
 
@@ -1509,8 +1534,8 @@ impl crate::backend::Backend for Backend {
     type Driver = Driver;
     type Config = config::Config;
 
-    fn new_driver(cfg: Self::Config) -> io::Result<Self::Driver> {
-        Driver::new(cfg)
+    fn new_driver(cfg: Self::Config) -> io::Result<Pin<Box<Self::Driver>>> {
+        Ok(Box::pin(Driver::new(cfg)?))
     }
 
     fn init_process(_cfg: &Config) -> io::Result<()> {

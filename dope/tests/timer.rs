@@ -22,7 +22,8 @@ struct Clock {
 #[test]
 fn sleep_expires_after_deadline() {
     let cfg = dope::DriverCfg::for_profile::<dope::runtime::profile::Throughput>();
-    let mut exec = Executor::new(cfg).expect("executor");
+    let exec = Executor::new(cfg).expect("executor");
+    let mut sess = exec.enter();
 
     let mut app = pin!(Clock {
         timer: Timer::new()
@@ -34,7 +35,7 @@ fn sleep_expires_after_deadline() {
 
     let start = Instant::now();
     dope_extra::block_on(
-        &mut exec,
+        &mut sess,
         app.as_mut(),
         dope::fiber::Fiber::new(async move {
             hold.sleep(Duration::from_millis(60)).await;
@@ -48,9 +49,10 @@ fn sleep_expires_after_deadline() {
 #[test]
 fn earliest_tracks_min_deadline() {
     let cfg = dope::DriverCfg::for_profile::<dope::runtime::profile::Throughput>();
-    let mut exec = Executor::new(cfg).expect("executor");
+    let exec = Executor::new(cfg).expect("executor");
+    let sess = exec.enter();
     let slot = Box::pin(Parker::make_slot(
-        exec.driver_mut(),
+        sess.driver(),
         Token::new(0, LocalIdx::new(0), Epoch::INITIAL),
     ));
     let wake = slot.wake_ref();
@@ -73,9 +75,10 @@ fn earliest_tracks_min_deadline() {
 #[test]
 fn expire_fires_due_entries_only() {
     let cfg = dope::DriverCfg::for_profile::<dope::runtime::profile::Throughput>();
-    let mut exec = Executor::new(cfg).expect("executor");
+    let exec = Executor::new(cfg).expect("executor");
+    let sess = exec.enter();
     let slot = Box::pin(Parker::make_slot(
-        exec.driver_mut(),
+        sess.driver(),
         Token::new(0, LocalIdx::new(0), Epoch::INITIAL),
     ));
     let wake = slot.wake_ref();
@@ -95,13 +98,14 @@ fn expire_fires_due_entries_only() {
 #[test]
 fn full_timer_does_not_livelock_and_release_wakes_starved() {
     let cfg = dope::DriverCfg::for_profile::<dope::runtime::profile::Throughput>();
-    let mut exec = Executor::new(cfg).expect("executor");
+    let exec = Executor::new(cfg).expect("executor");
+    let sess = exec.enter();
     let armed = Box::pin(Parker::make_slot(
-        exec.driver_mut(),
+        sess.driver(),
         Token::new(0, LocalIdx::new(0), Epoch::INITIAL),
     ));
     let waiter = Box::pin(Parker::make_slot(
-        exec.driver_mut(),
+        sess.driver(),
         Token::new(0, LocalIdx::new(1), Epoch::INITIAL),
     ));
     let mut timer: Timer = Timer::with_capacity(1);
@@ -118,17 +122,17 @@ fn full_timer_does_not_livelock_and_release_wakes_starved() {
 
     timer.register_starved(waiter.wake_ref());
     let mut out = Vec::new();
-    Parker::drain(exec.driver_mut(), &mut out);
+    Parker::drain(sess.driver(), &mut out);
     assert!(
         out.is_empty(),
         "registering a starved waiter must NOT self-rewake (no busy-spin)"
     );
 
     timer.cancel(held);
-    Parker::drain(exec.driver_mut(), &mut out);
+    Parker::drain(sess.driver(), &mut out);
     let waiter_tok = Token::new(0, LocalIdx::new(1), Epoch::INITIAL);
     assert!(
-        out.iter().any(|t| *t == waiter_tok),
+        out.contains(&waiter_tok),
         "releasing a slot must wake the starved waiter"
     );
 }
@@ -136,7 +140,8 @@ fn full_timer_does_not_livelock_and_release_wakes_starved() {
 #[test]
 fn far_future_sleep_arms_without_overflow() {
     let cfg = dope::DriverCfg::for_profile::<dope::runtime::profile::Throughput>();
-    let mut exec = Executor::new(cfg).expect("executor");
+    let exec = Executor::new(cfg).expect("executor");
+    let sess = exec.enter();
     let app = pin!(Clock {
         timer: Timer::new()
     });
@@ -145,7 +150,7 @@ fn far_future_sleep_arms_without_overflow() {
     let hold: Holding<'_, Timer> = unsafe { Holding::from_raw(timer_ptr) };
 
     let slot = Box::pin(Parker::make_slot(
-        exec.driver_mut(),
+        sess.driver(),
         Token::new(0, LocalIdx::new(0), Epoch::INITIAL),
     ));
     let waker = slot.make_waker();

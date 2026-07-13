@@ -20,14 +20,14 @@ use crate::transport::wire::{Reclaim, Wire};
 use crate::{Drive, Driver, Lend, Profile, backend};
 
 #[pin_project::pin_project(!Unpin)]
-pub struct Core<const ID: u8, A, S, E>
+pub struct Core<'d, const ID: u8, A, S, E>
 where
     A: ConnApp,
     S: Dialer<E::Transport>,
     E: Env<Wire = A::Wire>,
     E::Transport: Transport<Addr: Clone>,
 {
-    pub(super) pool: Pool<ID, E::Transport, A::Wire, State<A::Conn>>,
+    pub(super) pool: Pool<'d, ID, E::Transport, A::Wire, State<A::Conn>>,
     pub(super) app: A,
     pub(super) upstreams: S,
     stream_opts: <E::Transport as Transport>::StreamOpts,
@@ -40,14 +40,14 @@ where
     _e: PhantomData<E>,
 }
 
-impl<const ID: u8, A, S, E> Core<ID, A, S, E>
+impl<'d, const ID: u8, A, S, E> Core<'d, ID, A, S, E>
 where
     A: ConnApp,
     S: Dialer<E::Transport>,
     E: Env<Wire = A::Wire>,
     E::Transport: Transport<Addr: Clone>,
 {
-    pub fn with_app(app: A, mut upstreams: S, max_conn: usize, driver: &mut Driver) -> Self {
+    pub fn with_app(app: A, mut upstreams: S, max_conn: usize, driver: &'d Driver) -> Self {
         let reservation = driver
             .reserve_outbound(max_conn as u32)
             .expect("dope: connector outbound reservation");
@@ -56,7 +56,7 @@ where
             backend::token::LocalIdx::new(max_conn as u32),
             backend::token::Epoch::INITIAL,
         );
-        let backoff_slot = Box::new(backend::park::Parker::make_slot(&*driver, backoff_sentinel));
+        let backoff_slot = Box::new(backend::park::Parker::make_slot(driver, backoff_sentinel));
         upstreams.resize(max_conn);
         let pool = Pool::new(max_conn, reservation);
         Self {
@@ -89,7 +89,7 @@ where
     pub fn dial(
         mut self: Pin<&mut Self>,
         addr: <E::Transport as Transport>::Addr,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> Option<u32> {
         let tag = self.as_mut().project().upstreams.dial(addr)?;
         self.poll_source(driver);
@@ -189,12 +189,12 @@ where
         Some(&mut slot.state)
     }
 
-    fn rouse(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    fn rouse(mut self: Pin<&mut Self>, driver: &'d Driver) {
         self.as_mut().poll_source(driver);
         self.flush_dirty(driver);
     }
 
-    fn poll_source(self: Pin<&mut Self>, driver: &mut Driver) {
+    fn poll_source(self: Pin<&mut Self>, driver: &'d Driver) {
         let this = self.project();
         if *this.draining {
             return;
@@ -239,7 +239,7 @@ where
         self: Pin<&mut Self>,
         ud: backend::token::Token,
         e: backend::SocketEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let now = Instant::now();
         let this = self.project();
@@ -267,7 +267,7 @@ where
         mut self: Pin<&mut Self>,
         ud: backend::token::Token,
         e: backend::ConnectEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let now = Instant::now();
         let (idx, tag) = {
@@ -301,7 +301,7 @@ where
         self.project().upstreams.connect_outcome(tag, true, now);
     }
 
-    fn submit_egress(self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &mut Driver) {
+    fn submit_egress(self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &'d Driver) {
         let this = self.project();
         let Some((slot, ud)) = this.pool.send_slot(idx) else {
             return;
@@ -326,7 +326,7 @@ where
         }
     }
 
-    fn close_slot(self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &mut Driver) {
+    fn close_slot(self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &'d Driver) {
         let now = Instant::now();
         let this = self.project();
         let slot_meta = this
@@ -343,11 +343,11 @@ where
     }
 
     fn drain_close(
-        pool: &mut Pool<ID, E::Transport, A::Wire, State<A::Conn>>,
+        pool: &mut Pool<'d, ID, E::Transport, A::Wire, State<A::Conn>>,
         dirty: &mut Vec<backend::token::LocalIdx>,
         app: &A,
         idx: backend::token::LocalIdx,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let (send_inflight, establishing, connecting) = match pool.get(idx) {
             Some(s) => (
@@ -396,7 +396,7 @@ where
         }
     }
 
-    fn flush_dirty(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    fn flush_dirty(mut self: Pin<&mut Self>, driver: &'d Driver) {
         let n = self.as_ref().project_ref().dirty.len();
         for i in 0..n {
             let (idx, flags) = {
@@ -433,7 +433,7 @@ where
         mut self: Pin<&mut Self>,
         idx: backend::token::LocalIdx,
         chunk: crate::transport::wire::RecvChunk<'_>,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> Outcome {
         let outcome = {
             let this = self.as_mut().project();
@@ -470,7 +470,7 @@ where
         token: backend::token::Token,
         more: bool,
         e: backend::RecvEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let (cqe_bid, outcome) = self
             .as_mut()
@@ -507,11 +507,13 @@ where
         mut self: Pin<&mut Self>,
         token: backend::token::Token,
         e: backend::SendEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let (idx, n) = match self.as_mut().project().pool.classify_send(token, e, driver) {
             SendOutcome::Sent { idx, n } => (idx, n),
-            SendOutcome::Close(idx) => return Self::close_slot(self.as_mut(), idx, driver),
+            SendOutcome::Close(idx) => {
+                return Self::close_slot(self.as_mut(), idx, driver);
+            }
             SendOutcome::Drop => return,
         };
         {
@@ -527,7 +529,7 @@ where
         self.maybe_close(idx, driver);
     }
 
-    fn maybe_close(mut self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &mut Driver) {
+    fn maybe_close(mut self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &'d Driver) {
         let close = {
             let this = self.as_ref().project_ref();
             let Some(slot) = this.pool.get(idx) else {
@@ -541,14 +543,14 @@ where
     }
 }
 
-impl<const ID: u8, N, S, E> Core<ID, SessionApp<N, E::Wire>, S, E>
+impl<'d, const ID: u8, N, S, E> Core<'d, ID, SessionApp<N, E::Wire>, S, E>
 where
     N: Session,
     S: Dialer<E::Transport>,
     E: Env,
     E::Transport: Transport<Addr: Clone>,
 {
-    pub fn new(session: N, upstreams: S, max_conn: usize, driver: &mut Driver) -> Self {
+    pub fn new(session: N, upstreams: S, max_conn: usize, driver: &'d Driver) -> Self {
         let app = SessionApp {
             session,
             _w: PhantomData,
@@ -570,7 +572,7 @@ where
     }
 }
 
-impl<const ID: u8, A, S, E> HasTimer for Core<ID, A, S, E>
+impl<'d, const ID: u8, A, S, E> HasTimer for Core<'d, ID, A, S, E>
 where
     A: ConnApp,
     S: Dialer<E::Transport>,
@@ -582,7 +584,7 @@ where
     }
 }
 
-impl<const ID: u8, A, S, E> crate::manifold::Manifold for Core<ID, A, S, E>
+impl<'d, const ID: u8, A, S, E> crate::manifold::Manifold<'d> for Core<'d, ID, A, S, E>
 where
     A: ConnApp,
     S: Dialer<E::Transport>,
@@ -591,7 +593,7 @@ where
 {
     const ID: u8 = ID;
 
-    fn dispatch(mut self: Pin<&mut Self>, ev: backend::Event, driver: &mut Driver) {
+    fn dispatch(mut self: Pin<&mut Self>, ev: backend::Event, driver: &'d Driver) {
         match ev {
             backend::Event::Recv(token, more, e) => {
                 self.as_mut().handle_recv(token, more, e, driver)
@@ -605,7 +607,7 @@ where
         self.flush_dirty(driver);
     }
 
-    fn pre_park(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    fn pre_park(mut self: Pin<&mut Self>, driver: &'d Driver) {
         {
             let this = self.as_mut().project();
             Pin::new(this.timer).pre_park(driver);
@@ -614,7 +616,7 @@ where
         self.flush_dirty(driver);
     }
 
-    fn on_wake(self: Pin<&mut Self>, _target: TypedToken<Self>, driver: &mut Driver) {
+    fn on_wake(self: Pin<&mut Self>, _target: TypedToken<Self>, driver: &'d Driver) {
         self.rouse(driver);
     }
 
@@ -626,7 +628,7 @@ where
         Pin::new(this.timer).idle()
     }
 
-    fn on_shutdown(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    fn on_shutdown(mut self: Pin<&mut Self>, driver: &'d Driver) {
         {
             let this = self.as_mut().project();
             *this.draining = true;

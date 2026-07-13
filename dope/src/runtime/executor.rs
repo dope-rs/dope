@@ -23,7 +23,7 @@ cfg_select! {
         fn dispatch_event<D: Dispatcher>(
             dispatcher: Pin<&mut D>,
             ev: backend::Event,
-            driver: &mut Driver,
+            driver: &'d Driver,
         ) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Dispatcher::dispatch(dispatcher, ev, driver);
@@ -33,7 +33,7 @@ cfg_select! {
         fn wake_event<D: Dispatcher>(
             dispatcher: Pin<&mut D>,
             target: backend::token::Token,
-            driver: &mut Driver,
+            driver: &'d Driver,
         ) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Dispatcher::on_wake(dispatcher, target, driver);
@@ -41,24 +41,25 @@ cfg_select! {
         }
     }
     _ => {
-        fn dispatch_event<D: Dispatcher>(
+        fn dispatch_event<'d, D: Dispatcher<'d>>(
             dispatcher: Pin<&mut D>,
             ev: backend::Event,
-            driver: &mut Driver,
+            driver: &'d Driver,
         ) {
             Dispatcher::dispatch(dispatcher, ev, driver);
         }
 
-        fn wake_event<D: Dispatcher>(
+        fn wake_event<'d, D: Dispatcher<'d>>(
             dispatcher: Pin<&mut D>,
             target: backend::token::Token,
-            driver: &mut Driver,
+            driver: &'d Driver,
         ) {
             Dispatcher::on_wake(dispatcher, target, driver);
         }
     }
 }
 
+/// Owns the driver. Movable between sessions; inside one, borrowck pins it.
 pub struct Executor {
     driver: Driver,
 }
@@ -69,12 +70,45 @@ impl Executor {
         Ok(Self { driver })
     }
 
-    pub fn driver_mut(&mut self) -> &mut Driver {
-        &mut self.driver
+    /// Opens a session: `'d` is this borrow's region. Every [`Fd`] adopted
+    /// through it holds `&'d Driver`, so borrowck proves the executor outlives
+    /// them all — `Fd::drop` is safe code.
+    ///
+    /// Driver-first teardown is unwritable:
+    ///
+    /// ```compile_fail,E0505
+    /// use dope::runtime::profile::Production;
+    /// use dope::{DriverCfg, DriverConfig, Executor, socket};
+    ///
+    /// let cfg = <DriverCfg as DriverConfig>::for_tcp_profile::<Production>(4);
+    /// let exec = Executor::new(cfg).unwrap();
+    /// let sess = exec.enter();
+    /// let fd = socket::Fd::adopt(socket::FdSlot::new(0), sess.driver());
+    /// drop(exec); // cannot move out of `exec` while an Fd<'d> is alive
+    /// drop(fd);
+    /// ```
+    ///
+    /// [`Fd`]: crate::backend::socket::Fd
+    pub fn enter(&self) -> Session<'_> {
+        Session {
+            driver: &self.driver,
+        }
+    }
+}
+
+/// One borrowed run of the driver; see [`Executor::enter`].
+pub struct Session<'d> {
+    driver: &'d Driver,
+}
+
+impl<'d> Session<'d> {
+    #[inline]
+    pub fn driver(&self) -> &'d Driver {
+        self.driver
     }
 
-    pub fn run<D: Dispatcher>(&mut self, mut dispatcher: Pin<&mut D>) -> io::Result<()> {
-        let driver = &mut self.driver;
+    pub fn run<D: Dispatcher<'d>>(&mut self, mut dispatcher: Pin<&mut D>) -> io::Result<()> {
+        let driver = self.driver;
         let mut buf = [backend::Cqe::ZERO; DRAIN_BATCH];
         let mut wake_buf: Vec<backend::token::Token> = Vec::with_capacity(64);
         loop {
@@ -89,8 +123,8 @@ impl Executor {
         }
     }
 
-    fn tick<D: Dispatcher>(
-        driver: &mut Driver,
+    fn tick<D: Dispatcher<'d>>(
+        driver: &'d Driver,
         mut dispatcher: Pin<&mut D>,
         buf: &mut [backend::Cqe; DRAIN_BATCH],
         wake_buf: &mut Vec<backend::token::Token>,
@@ -117,7 +151,7 @@ impl Executor {
         (cq_saturated, shutdown_seen)
     }
 
-    fn park_timeout<D: Dispatcher>(
+    fn park_timeout<D: Dispatcher<'d>>(
         driver: &Driver,
         dispatcher: Pin<&D>,
         cq_saturated: bool,
@@ -132,8 +166,8 @@ impl Executor {
         }
     }
 
-    fn drain_loop<D: Dispatcher>(
-        driver: &mut Driver,
+    fn drain_loop<D: Dispatcher<'d>>(
+        driver: &'d Driver,
         mut dispatcher: Pin<&mut D>,
         drain_window: Duration,
     ) -> io::Result<()> {

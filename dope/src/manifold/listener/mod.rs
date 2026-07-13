@@ -59,9 +59,9 @@ pub struct Aux {
 }
 
 impl Aux {
-    fn write_buf_raw<W: Wire, C: Default + 'static>(
+    fn write_buf_raw<'d, W: Wire, C: Default + 'static>(
         &mut self,
-        slot: &mut Slot<W, State<C>>,
+        slot: &mut Slot<'d, W, State<C>>,
     ) -> &mut [u8] {
         let handle = slot.state.send.arena.get_or_insert_with(|| {
             self.arena
@@ -71,9 +71,9 @@ impl Aux {
         self.arena.slice(handle)
     }
 
-    pub fn write_buf_for<W: Wire, C: Default + 'static>(
+    pub fn write_buf_for<'d, W: Wire, C: Default + 'static>(
         &mut self,
-        slot: &mut Slot<W, State<C>>,
+        slot: &mut Slot<'d, W, State<C>>,
     ) -> &mut [u8] {
         if slot.owes_egress() {
             return &mut self.scratch;
@@ -84,6 +84,7 @@ impl Aux {
 
 #[pin_project::pin_project(!Unpin)]
 pub struct Listener<
+    'd,
     const ID: u8,
     A,
     E = Bundle<Tcp, <A as Application>::Wire, backend::profile::Production>,
@@ -91,10 +92,10 @@ pub struct Listener<
     A: Application,
     E: Env<Wire = A::Wire>,
 {
-    pool: Pool<ID, E::Transport, A::Wire, State<A::Conn>>,
+    pool: Pool<'d, ID, E::Transport, A::Wire, State<A::Conn>>,
     app: A,
     aux: Aux,
-    accept: Accept<E::Transport>,
+    accept: Accept<'d, E::Transport>,
     bound_addr: SocketAddr,
     idle: IdleSet,
     idle_send: IdleSet,
@@ -103,11 +104,49 @@ pub struct Listener<
     wire_cfg: <A::Wire as Wire>::InitConfig,
 }
 
-impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
+/// What a slot owes the socket, most urgent first. `Held` outranks `Deferred`:
+/// handing more bytes to a wire that is already sitting on plaintext would let
+/// the two coalesce into one CQE and lose a completion.
+enum Egress {
+    Clear,
+    Inflight,
+    Plain,
+    Held,
+    Deferred,
+}
+
+impl<'d, W: Wire, C: Default + 'static> Slot<'d, W, State<C>> {
+    fn egress(&self) -> Egress {
+        if self.core.is_send_inflight() {
+            Egress::Inflight
+        } else if self.state.send.sent_plain < self.state.send.total_plain {
+            Egress::Plain
+        } else if self.wire.holds_plain() {
+            Egress::Held
+        } else if !self.state.deferred.is_idle() {
+            Egress::Deferred
+        } else {
+            Egress::Clear
+        }
+    }
+
     fn owes_egress(&self) -> bool {
-        self.core.is_send_inflight()
-            || self.state.send.sent_plain < self.state.send.total_plain
-            || !self.state.deferred.is_idle()
+        !matches!(self.egress(), Egress::Clear)
+    }
+
+    /// Whether a send went out, and whether the slot still has bytes it can act
+    /// on itself. [`Egress::Held`] is neither: only the wire can move it along.
+    fn after_handoff(&mut self) -> (bool, bool) {
+        let armed = self.core.is_send_inflight();
+        let restage = matches!(self.egress(), Egress::Plain | Egress::Deferred)
+            && self.state.pending.mark(PEND_EGRESS);
+        (armed, restage)
+    }
+
+    fn adopt_deferred_close(&mut self) {
+        if self.state.deferred.close_after() {
+            self.core.set_close_after();
+        }
     }
 
     fn accept_write(&mut self, write_buf_cap: usize, written: usize) -> bool {
@@ -119,19 +158,30 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         true
     }
 
-    fn submit_pair(
+    fn hand_plain(&mut self, plain: &[u8], ud: backend::token::Token, driver: &'d Driver) {
+        let was_inflight = self.core.is_send_inflight();
+        let consumed = self.wire.submit_send(&mut self.core, plain, ud, driver);
+        let armed = self.core.is_send_inflight() && !was_inflight;
+        self.state.send.record_handoff(consumed, armed);
+    }
+
+    fn hand_split(
         &mut self,
         iovs: [backend::socket::IoVec; 2],
         ud: backend::token::Token,
-        driver: &mut Driver,
-    ) -> Option<usize> {
+        driver: &'d Driver,
+    ) {
+        let was_inflight = self.core.is_send_inflight();
         let vectored = crate::transport::wire::Vectored {
             iovs: &iovs,
             iov_storage: &mut self.state.send.pending_iovs,
             msghdr_storage: &mut self.state.send.pending_msghdr,
         };
-        self.wire
-            .submit_send_vectored_tracked(&mut self.core, vectored, ud, driver)
+        let consumed = self
+            .wire
+            .submit_send_vectored(&mut self.core, vectored, ud, driver);
+        let armed = self.core.is_send_inflight() && !was_inflight;
+        self.state.send.record_handoff(consumed, armed);
     }
 
     pub fn submit_buffered(
@@ -139,7 +189,7 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         write_buf: &mut [u8],
         written: usize,
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         if self.owes_egress() {
             let n = written.min(write_buf.len());
@@ -152,18 +202,8 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         if !self.accept_write(write_buf.len(), written) {
             return;
         }
-        self.state.send.total_plain = written;
-        self.state.send.sent_plain = 0;
-        self.state.send.submitted_len = 0;
-        self.state.send.source = send::SendSource::None;
-        let plain = &write_buf[..written];
-        if let Some(n) = self
-            .wire
-            .submit_send_tracked(&mut self.core, plain, ud, driver)
-        {
-            self.state.send.submitted_len = n;
-            self.state.send.sent_plain = n;
-        }
+        self.state.send.begin(written, send::SendSource::None);
+        self.hand_plain(&write_buf[..written], ud, driver);
     }
 
     pub fn submit_split_static(
@@ -172,7 +212,7 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         hdr_written: usize,
         body: &'static [u8],
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         self.submit_split(
             write_buf,
@@ -189,7 +229,7 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         hdr_written: usize,
         body: o3::buffer::Shared,
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         self.submit_split(
             write_buf,
@@ -206,7 +246,7 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         hdr_written: usize,
         source: send::SendSource,
         ud: backend::token::Token,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         if self.owes_egress() {
             let n = hdr_written.min(write_buf.len());
@@ -230,14 +270,13 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
         if !self.accept_write(write_buf.len(), hdr_written) {
             return;
         }
-        self.state.send.total_plain = hdr_written + source.body().len();
-        self.state.send.sent_plain = 0;
-        self.state.send.submitted_len = 0;
-        self.state.send.source = source;
+        self.state
+            .send
+            .begin(hdr_written + source.body().len(), source);
         self.resume_send(write_buf, ud, driver);
     }
 
-    fn resume_send(&mut self, write_buf: &[u8], ud: backend::token::Token, driver: &mut Driver) {
+    fn resume_send(&mut self, write_buf: &[u8], ud: backend::token::Token, driver: &'d Driver) {
         let sent = self.state.send.sent_plain;
         let hdr_len = self.state.send.write_buf_len;
         let hdr_rem: &[u8] = if sent < hdr_len {
@@ -256,28 +295,17 @@ impl<W: Wire, C: Default + 'static> Slot<W, State<C>> {
             backend::socket::IoVec::from_slice(hdr_rem),
             backend::socket::IoVec::from_slice(body_rem),
         ];
-        if let Some(n) = self.submit_pair(iovs, ud, driver) {
-            self.state.send.submitted_len = n;
-            self.state.send.sent_plain += n;
-        }
-    }
-
-    fn reset_send(&mut self) {
-        self.state.send.write_buf_len = 0;
-        self.state.send.submitted_len = 0;
-        self.state.send.sent_plain = 0;
-        self.state.send.total_plain = 0;
-        self.state.send.source = send::SendSource::None;
+        self.hand_split(iovs, ud, driver);
     }
 }
 
-impl<const ID: u8, A, E> Listener<ID, A, E>
+impl<'d, const ID: u8, A, E> Listener<'d, ID, A, E>
 where
     A: Application,
     E: Env<Wire = A::Wire>,
 {
     fn new(
-        listener_fd: backend::socket::Fd,
+        listener_fd: backend::socket::Fd<'d>,
         bound_addr: SocketAddr,
         app: A,
         max_conn: usize,
@@ -319,13 +347,13 @@ where
         self.wire_cfg = cfg;
     }
 
-    pub fn open_in(app: A, cfg: Config<E::Transport>, driver: &mut Driver) -> io::Result<Self> {
+    pub fn open_in(app: A, cfg: Config<E::Transport>, driver: &'d Driver) -> io::Result<Self> {
         let mut listener = Self::assemble(app, cfg, driver)?;
         listener.accept.request_rearm();
         Ok(listener)
     }
 
-    fn assemble(app: A, cfg: Config<E::Transport>, driver: &mut Driver) -> io::Result<Self> {
+    fn assemble(app: A, cfg: Config<E::Transport>, driver: &'d Driver) -> io::Result<Self> {
         let Config {
             max_conn,
             bind,
@@ -359,7 +387,7 @@ where
         ))
     }
 
-    fn flush_dirty(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    fn flush_dirty(mut self: Pin<&mut Self>, driver: &'d Driver) {
         let n = self.as_ref().project_ref().dirty.len();
         for i in 0..n {
             let (local_idx, flags) = {
@@ -395,7 +423,7 @@ where
     fn commit_chunk(
         mut self: Pin<&mut Self>,
         local_idx: backend::token::LocalIdx,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let (armed_send, restage) = {
             let this = self.as_mut().project();
@@ -403,36 +431,35 @@ where
             let Some(slot) = this.pool.get_mut(local_idx) else {
                 return;
             };
-            if slot.core.is_closing() || slot.core.is_send_inflight() {
+            if slot.core.is_closing() {
                 (false, false)
-            } else if slot.state.send.sent_plain < slot.state.send.total_plain {
-                let write_buf = this.aux.write_buf_raw(slot);
-                slot.resume_send(write_buf, send_ud, driver);
-                let armed_send = slot.core.is_send_inflight();
-                let restage = !armed_send
-                    && slot.state.send.sent_plain < slot.state.send.total_plain
-                    && slot.state.pending.mark(PEND_EGRESS);
-                (armed_send, restage)
             } else {
-                if slot.state.deferred.close_after() {
-                    slot.core.set_close_after();
-                }
-                let vectored = slot.state.deferred.prepare_send(u32::MAX as usize);
-                if vectored.iovs.is_empty() {
-                    slot.flush_pending(send_ud, driver);
-                    (false, false)
-                } else {
-                    let consumed =
-                        slot.wire
-                            .submit_send_vectored(&mut slot.core, vectored, send_ud, driver);
-                    if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnSubmit) {
-                        slot.state.deferred.ack(consumed);
+                match slot.egress() {
+                    Egress::Inflight => (false, false),
+                    Egress::Plain => {
+                        let write_buf = this.aux.write_buf_raw(slot);
+                        slot.resume_send(write_buf, send_ud, driver);
+                        slot.after_handoff()
                     }
-                    let armed_send = slot.core.is_send_inflight();
-                    let restage = !armed_send
-                        && !slot.state.deferred.is_idle()
-                        && slot.state.pending.mark(PEND_EGRESS);
-                    (armed_send, restage)
+                    Egress::Held | Egress::Clear => {
+                        slot.adopt_deferred_close();
+                        slot.flush_pending(send_ud, driver);
+                        (false, false)
+                    }
+                    Egress::Deferred => {
+                        slot.adopt_deferred_close();
+                        let vectored = slot.state.deferred.prepare_send(u32::MAX as usize);
+                        let consumed = slot.wire.submit_send_vectored(
+                            &mut slot.core,
+                            vectored,
+                            send_ud,
+                            driver,
+                        );
+                        if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnSubmit) {
+                            slot.state.deferred.ack(consumed);
+                        }
+                        slot.after_handoff()
+                    }
                 }
             }
         };
@@ -474,7 +501,7 @@ where
         mut self: Pin<&mut Self>,
         conn_id: backend::token::Token,
         written: usize,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> bool {
         let local_idx = {
             let this = self.as_mut().project();
@@ -571,7 +598,7 @@ where
         token: backend::token::Token,
         more: bool,
         e: backend::RecvEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let (cqe_bid, outcome) = {
             let this = self.as_mut().project();
@@ -626,7 +653,7 @@ where
         mut self: Pin<&mut Self>,
         token: backend::token::Token,
         e: backend::SendEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let this = self.as_mut().project();
         let (idx, sent) = match this.pool.classify_send(token, e, driver) {
@@ -660,12 +687,12 @@ where
             self.as_mut().commit_chunk(idx, driver);
             return;
         }
-        let submitted_total = this
+        let armed_plain = this
             .pool
             .get(idx)
-            .map(|s| s.state.send.submitted_len)
+            .map(|s| s.state.send.armed_plain)
             .unwrap_or(0);
-        if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnComplete) && sent != submitted_total {
+        if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnComplete) && sent != armed_plain {
             self.close_inherent(idx, driver);
             return;
         }
@@ -693,7 +720,7 @@ where
                 return;
             };
             let total = slot.state.send.total_plain;
-            slot.reset_send();
+            slot.state.send.reset();
             // C1: the response fully drained and the SEND CQE has been observed,
             // so the SEND SQE that referenced the arena buffer by raw pointer is
             // complete and the kernel will not touch it again. Return the handle
@@ -715,7 +742,7 @@ where
     fn maybe_close_inherent(
         mut self: Pin<&mut Self>,
         idx: backend::token::LocalIdx,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         enum Step {
             Close,
@@ -734,16 +761,13 @@ where
                 } else {
                     Step::Idle
                 }
-            } else if slot.owes_egress() {
-                if slot.core.is_send_inflight() {
-                    Step::Idle
-                } else {
-                    Step::Retry
-                }
-            } else if slot.core.should_close(defer) {
-                Step::Close
             } else {
-                Step::Idle
+                match slot.egress() {
+                    Egress::Plain | Egress::Deferred => Step::Retry,
+                    Egress::Inflight | Egress::Held => Step::Idle,
+                    Egress::Clear if slot.core.should_close(defer) => Step::Close,
+                    Egress::Clear => Step::Idle,
+                }
             }
         };
         match step {
@@ -766,7 +790,7 @@ pub struct ConnView<'a, T> {
     pub inflight: bool,
 }
 
-impl<const ID: u8, A, E> Listener<ID, A, E>
+impl<'d, const ID: u8, A, E> Listener<'d, ID, A, E>
 where
     A: Application,
     E: Env<Wire = A::Wire>,
@@ -776,12 +800,16 @@ where
         token: backend::token::Token,
         more: bool,
         e: backend::AcceptEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let (fixed_idx, overflow) = {
             let this = self.as_mut().project();
             let (fixed_fd, peer_ip) = match this.accept.on_completion(token, more, e, driver) {
                 accept::Outcome::Accepted(fd, ip) => (fd, ip),
+                accept::Outcome::Capped(ip) => {
+                    this.app.on_capped(ip);
+                    return;
+                }
                 accept::Outcome::Rejected => return,
             };
             let fixed_idx_raw = fixed_fd.index();
@@ -821,7 +849,7 @@ where
         }
     }
 
-    fn drain_idle<F>(mut self: Pin<&mut Self>, now: Instant, driver: &mut Driver, project: F)
+    fn drain_idle<F>(mut self: Pin<&mut Self>, now: Instant, driver: &'d Driver, project: F)
     where
         F: Fn(Pin<&mut Self>) -> &mut IdleSet,
     {
@@ -835,7 +863,7 @@ where
         idx: backend::token::LocalIdx,
         epoch: backend::token::Epoch,
         refresh_idle: bool,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         {
             let this = self.as_mut().project();
@@ -850,7 +878,7 @@ where
         self.as_mut().maybe_close_inherent(idx, driver);
     }
 
-    fn close_inherent(self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &mut Driver) {
+    fn close_inherent(self: Pin<&mut Self>, idx: backend::token::LocalIdx, driver: &'d Driver) {
         let this = self.project();
         this.idle.cancel(idx);
         if E::Profile::SEND_DEADLINE.is_some() {
@@ -901,14 +929,14 @@ where
     }
 }
 
-impl<const ID: u8, A, E> Manifold for Listener<ID, A, E>
+impl<'d, const ID: u8, A, E> Manifold<'d> for Listener<'d, ID, A, E>
 where
     A: Application,
     E: Env<Wire = A::Wire>,
 {
     const ID: u8 = ID;
 
-    fn dispatch(mut self: Pin<&mut Self>, ev: backend::Event, driver: &mut Driver) {
+    fn dispatch(mut self: Pin<&mut Self>, ev: backend::Event, driver: &'d Driver) {
         match ev {
             backend::Event::Recv(token, more, e) => self.as_mut().pump_recv(token, more, e, driver),
             backend::Event::Send(token, e) => self.as_mut().pump_send(token, e, driver),
@@ -928,7 +956,7 @@ where
     fn on_wake(
         mut self: Pin<&mut Self>,
         target: crate::manifold::route::TypedToken<Self>,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) {
         let conn_id = target.token();
         let local_idx = {
@@ -945,7 +973,7 @@ where
         self.flush_dirty(driver);
     }
 
-    fn on_shutdown(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    fn on_shutdown(mut self: Pin<&mut Self>, driver: &'d Driver) {
         let cap = {
             let this = self.as_mut().project();
             this.accept.stop_accept(ID, driver);
@@ -956,7 +984,7 @@ where
         }
     }
 
-    fn pre_park(mut self: Pin<&mut Self>, driver: &mut Driver) {
+    fn pre_park(mut self: Pin<&mut Self>, driver: &'d Driver) {
         {
             let this = self.as_mut().project();
             if this.accept.needs_rearm() {

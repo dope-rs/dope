@@ -24,11 +24,15 @@ fn temp_path(name: &str) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn drive<F: Future>(exec: &mut Executor, host: Holding<'_, Files<ID, 64>>, fut: F) -> F::Output {
-    let driver = exec.driver_mut();
+fn drive<F: Future>(
+    sess: &mut dope::Session<'_>,
+    host: Holding<'_, Files<ID, 64>>,
+    fut: F,
+) -> F::Output {
+    let driver = sess.driver();
 
     let sentinel = Token::new(ID, LocalIdx::new(63), Epoch::INITIAL);
-    let slot = Parker::make_slot(&*driver, sentinel);
+    let slot = Parker::make_slot(driver, sentinel);
     let waker = slot.make_waker();
     let mut cx = Context::from_waker(&waker);
 
@@ -48,7 +52,7 @@ fn drive<F: Future>(exec: &mut Executor, host: Holding<'_, Files<ID, 64>>, fut: 
             }
         }
         wake_buf.clear();
-        Parker::drain(&*driver, &mut wake_buf);
+        Parker::drain(driver, &mut wake_buf);
     }
     panic!("future did not complete");
 }
@@ -56,7 +60,8 @@ fn drive<F: Future>(exec: &mut Executor, host: Holding<'_, Files<ID, 64>>, fut: 
 // A read dropped mid-flight must reclaim its slot and not corrupt a later read.
 #[test]
 fn dropping_pending_read_orphans_then_reclaims_slot() {
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let pipe = dope::platform::Pipe::new().expect("pipe");
     let host = Holding::of(files.as_mut());
@@ -65,14 +70,14 @@ fn dropping_pending_read_orphans_then_reclaims_slot() {
     {
         let read = Files::read_held(
             host,
-            exec.driver_mut(),
+            sess.driver(),
             Source::fd(pipe.read_fd()),
             vec![0u8; 16],
             0,
         );
-        let driver = exec.driver_mut();
+        let driver = sess.driver();
         let sentinel = Token::new(ID, LocalIdx::new(63), Epoch::INITIAL);
-        let slot = Parker::make_slot(&*driver, sentinel);
+        let slot = Parker::make_slot(driver, sentinel);
         let waker = slot.make_waker();
         let mut cx = Context::from_waker(&waker);
         let mut read = Box::pin(read);
@@ -84,7 +89,7 @@ fn dropping_pending_read_orphans_then_reclaims_slot() {
     // SAFETY: pipe.write_fd() is a live write end owned by `pipe`.
     let _ = unsafe { libc::write(pipe.write_fd(), b"x".as_ptr().cast(), 1) };
     {
-        let driver = exec.driver_mut();
+        let driver = sess.driver();
         let mut cqe_buf = [dope::Cqe::ZERO; 32];
         for _ in 0..50 {
             let _ = Drive::park(driver, Duration::from_millis(5));
@@ -103,12 +108,12 @@ fn dropping_pending_read_orphans_then_reclaims_slot() {
     let f = dope::file::OsFile::open(&path).expect("open");
     let read = Files::read_held(
         host,
-        exec.driver_mut(),
+        sess.driver(),
         Source::of(&f),
         vec![0u8; payload.len()],
         0,
     );
-    let (dst, res) = drive(&mut exec, host, read);
+    let (dst, res) = drive(&mut sess, host, read);
     let n = res.expect("read after cancel");
     assert_eq!(n, payload.len());
     assert_eq!(&dst[..n], payload);
@@ -121,21 +126,22 @@ fn route_awaits_open_then_read() {
     let payload = b"awaited-through-the-io-uring-loop";
     std::fs::write(&path, payload).expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let cpath = OpenPath::new(&path).expect("path");
 
     let host = Holding::of(files.as_mut());
     let open = Files::open_held(
         host,
-        exec.driver_mut(),
+        sess.driver(),
         &cpath,
         dope::file::O_RDONLY | dope::file::O_CLOEXEC,
     );
-    let src = drive(&mut exec, host, open).expect("open");
+    let src = drive(&mut sess, host, open).expect("open");
 
-    let read = Files::read_held(host, exec.driver_mut(), src, vec![0u8; payload.len()], 0);
-    let (dst, res) = drive(&mut exec, host, read);
+    let read = Files::read_held(host, sess.driver(), src, vec![0u8; payload.len()], 0);
+    let (dst, res) = drive(&mut sess, host, read);
     let n = res.expect("read");
 
     assert_eq!(n, payload.len());
@@ -145,18 +151,19 @@ fn route_awaits_open_then_read() {
 
 #[test]
 fn route_awaits_open_enoent_clean_error() {
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let cpath = OpenPath::new("/nonexistent/dope/async/missing/file").expect("path");
 
     let host = Holding::of(files.as_mut());
     let open = Files::open_held(
         host,
-        exec.driver_mut(),
+        sess.driver(),
         &cpath,
         dope::file::O_RDONLY | dope::file::O_CLOEXEC,
     );
-    let err = drive(&mut exec, host, open).expect_err("open should fail");
+    let err = drive(&mut sess, host, open).expect_err("open should fail");
     assert_eq!(err.raw_os_error(), Some(libc::ENOENT));
 }
 
@@ -166,19 +173,20 @@ fn route_awaits_read_via_raw_fd() {
     let payload = b"raw-fd-read-path";
     std::fs::write(&path, payload).expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let f = dope::file::OsFile::open(&path).expect("open");
 
     let host = Holding::of(files.as_mut());
     let read = Files::read_held(
         host,
-        exec.driver_mut(),
+        sess.driver(),
         Source::of(&f),
         vec![0u8; payload.len()],
         0,
     );
-    let (dst, res) = drive(&mut exec, host, read);
+    let (dst, res) = drive(&mut sess, host, read);
     let n = res.expect("read");
 
     assert_eq!(n, payload.len());
@@ -192,7 +200,8 @@ fn route_awaits_splice_file_to_pipe() {
     let payload = b"async-splice-file-to-pipe";
     std::fs::write(&path, payload).expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let f = dope::file::OsFile::open(&path).expect("open");
     let pipe = dope::platform::Pipe::new().expect("pipe");
@@ -200,13 +209,13 @@ fn route_awaits_splice_file_to_pipe() {
     let host = Holding::of(files.as_mut());
     let splice = Files::splice_to_pipe_held(
         host,
-        exec.driver_mut(),
+        sess.driver(),
         Source::of(&f),
         0,
         pipe.write_fd(),
         payload.len() as u32,
     );
-    let moved = drive(&mut exec, host, splice).expect("splice");
+    let moved = drive(&mut sess, host, splice).expect("splice");
     assert_eq!(moved, payload.len());
 
     let mut got = vec![0u8; payload.len()];
@@ -223,25 +232,26 @@ fn route_awaits_fixed_file_open_and_read() {
     let payload = b"fixed-file-table-read";
     std::fs::write(&path, payload).expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let mut files: Pin<Box<Files<ID, 64>>> = Box::pin(Files::new());
     let cpath = OpenPath::new(&path).expect("path");
 
-    let slot = Files::<ID, 64>::alloc_fixed_slot(exec.driver_mut(), 1).expect("fixed slot");
+    let slot = Files::<ID, 64>::alloc_fixed_slot(sess.driver(), 1).expect("fixed slot");
 
     let host = Holding::of(files.as_mut());
     let open = Files::open_fixed_held(
         host,
-        exec.driver_mut(),
+        sess.driver(),
         &cpath,
         dope::file::O_RDONLY | dope::file::O_CLOEXEC,
         slot,
     );
-    let src = drive(&mut exec, host, open).expect("fixed open");
+    let src = drive(&mut sess, host, open).expect("fixed open");
     assert!(matches!(src, Source::Fixed(_)));
 
-    let read = Files::read_held(host, exec.driver_mut(), src, vec![0u8; payload.len()], 0);
-    let (dst, res) = drive(&mut exec, host, read);
+    let read = Files::read_held(host, sess.driver(), src, vec![0u8; payload.len()], 0);
+    let (dst, res) = drive(&mut sess, host, read);
     let n = res.expect("fixed read");
 
     assert_eq!(n, payload.len());

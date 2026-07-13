@@ -16,20 +16,20 @@ enum Stage<T: Transport> {
     Done,
 }
 
-pub struct Connect<'d, const ID: u8, T: Transport, W: Wire>
+pub struct Connect<'h, 'd, const ID: u8, T: Transport, W: Wire>
 where
     T::Addr: Clone,
 {
-    host: Holding<'d, Connector<ID, T, W>>,
+    host: Holding<'h, Connector<'d, ID, T, W>>,
     stage: Stage<T>,
 }
 
-impl<'d, const ID: u8, T: Transport, W: Wire> Connect<'d, ID, T, W>
+impl<'h, 'd, const ID: u8, T: Transport, W: Wire> Connect<'h, 'd, ID, T, W>
 where
     T::Addr: Clone,
 {
     pub(super) fn new(
-        host: Holding<'d, Connector<ID, T, W>>,
+        host: Holding<'h, Connector<'d, ID, T, W>>,
         addr: T::Addr,
         opts: T::StreamOpts,
     ) -> Self {
@@ -40,9 +40,9 @@ where
     }
 }
 
-impl<const ID: u8, T: Transport, W: Wire> Unpin for Connect<'_, ID, T, W> where T::Addr: Clone {}
+impl<const ID: u8, T: Transport, W: Wire> Unpin for Connect<'_, '_, ID, T, W> where T::Addr: Clone {}
 
-impl<'d, const ID: u8, T: Transport, W: Wire> Drop for Connect<'d, ID, T, W>
+impl<'h, 'd, const ID: u8, T: Transport, W: Wire> Drop for Connect<'h, 'd, ID, T, W>
 where
     T::Addr: Clone,
 {
@@ -55,11 +55,11 @@ where
     }
 }
 
-impl<'d, const ID: u8, T: Transport, W: Wire> Future for Connect<'d, ID, T, W>
+impl<'h, 'd, const ID: u8, T: Transport, W: Wire> Future for Connect<'h, 'd, ID, T, W>
 where
     T::Addr: Clone,
 {
-    type Output = io::Result<Io<'d, Connector<ID, T, W>>>;
+    type Output = io::Result<Io<'h, Connector<'d, ID, T, W>>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

@@ -17,8 +17,8 @@ fn tok(n: u32) -> Token {
     Token::new(7, LocalIdx::new(n), Epoch::INITIAL)
 }
 
-fn drive_until(exec: &mut Executor, want: Token) -> Event {
-    let driver = exec.driver_mut();
+fn drive_until(sess: &mut dope::Session<'_>, want: Token) -> Event {
+    let driver = sess.driver();
     let mut buf = [dope::Cqe::ZERO; 32];
     for _ in 0..500 {
         let _ = driver.park(Duration::from_millis(20));
@@ -51,17 +51,18 @@ fn async_read_returns_file_bytes() {
     let payload = b"the quick brown fox jumps over the lazy dog";
     std::fs::write(&path, payload).expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let f = OsFile::open(&path).expect("open");
     assert_eq!(f.len().expect("len"), payload.len() as u64);
 
     let mut dst = vec![0u8; payload.len()];
     let t = tok(1);
-    exec.driver_mut()
+    sess.driver()
         .push(file::read_at(&f, &mut dst, 0, t))
         .expect("push read");
 
-    let read_len = match drive_until(&mut exec, t) {
+    let read_len = match drive_until(&mut sess, t) {
         Event::Read(_, ReadEvent::Read(n)) => n as usize,
         other => panic!("unexpected event variant: {}", variant(&other)),
     };
@@ -76,16 +77,17 @@ fn async_read_eof_at_end_of_file() {
     let path = temp_path("eof");
     std::fs::write(&path, b"abc").expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let f = OsFile::open(&path).expect("open");
 
     let mut dst = vec![0u8; 16];
     let t = tok(2);
-    exec.driver_mut()
+    sess.driver()
         .push(file::read_at(&f, &mut dst, 3, t))
         .expect("push read");
 
-    match drive_until(&mut exec, t) {
+    match drive_until(&mut sess, t) {
         Event::Read(_, ReadEvent::Eof) => {}
         other => panic!("expected EOF, got {}", variant(&other)),
     }
@@ -98,16 +100,17 @@ fn async_read_short_when_buffer_exceeds_file() {
     let payload = b"tiny";
     std::fs::write(&path, payload).expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let f = OsFile::open(&path).expect("open");
 
     let mut dst = vec![0u8; 4096];
     let t = tok(4);
-    exec.driver_mut()
+    sess.driver()
         .push(file::read_at(&f, &mut dst, 0, t))
         .expect("push read");
 
-    let n = match drive_until(&mut exec, t) {
+    let n = match drive_until(&mut sess, t) {
         Event::Read(_, ReadEvent::Read(n)) => n as usize,
         other => panic!("expected short read, got {}", variant(&other)),
     };
@@ -118,14 +121,15 @@ fn async_read_short_when_buffer_exceeds_file() {
 
 #[test]
 fn async_open_missing_path_reports_enoent() {
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let path = OpenPath::new("/nonexistent/dope/definitely/missing/file").expect("path");
     let t = tok(3);
-    exec.driver_mut()
+    sess.driver()
         .push(file::open_at(&path, file::O_RDONLY | file::O_CLOEXEC, t))
         .expect("push open");
 
-    match drive_until(&mut exec, t) {
+    match drive_until(&mut sess, t) {
         Event::Open(_, OpenEvent::Failed(errno)) => {
             assert_eq!(errno, libc::ENOENT);
         }
@@ -139,14 +143,15 @@ fn async_open_then_read_via_returned_fd() {
     let payload = b"opened-by-io-uring";
     std::fs::write(&path, payload).expect("write temp");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let cpath = OpenPath::new(&path).expect("path");
     let to = tok(10);
-    exec.driver_mut()
+    sess.driver()
         .push(file::open_at(&cpath, file::O_RDONLY | file::O_CLOEXEC, to))
         .expect("push open");
 
-    let fd = match drive_until(&mut exec, to) {
+    let fd = match drive_until(&mut sess, to) {
         Event::Open(_, OpenEvent::Opened(fd)) => {
             assert!(fd >= 0);
             fd
@@ -156,11 +161,11 @@ fn async_open_then_read_via_returned_fd() {
 
     let mut dst = vec![0u8; payload.len()];
     let tr = tok(11);
-    exec.driver_mut()
+    sess.driver()
         .push(file::read_fd(fd, &mut dst, 0, tr))
         .expect("push read");
 
-    let n = match drive_until(&mut exec, tr) {
+    let n = match drive_until(&mut sess, tr) {
         Event::Read(_, ReadEvent::Read(n)) => n as usize,
         other => panic!("expected read, got {}", variant(&other)),
     };
@@ -185,12 +190,13 @@ fn splice_file_to_socket_zero_copy() {
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let mut sess = exec.enter();
     let f = OsFile::open(&path).expect("open");
     let pipe = Pipe::new().expect("pipe");
 
     let t_in = tok(20);
-    exec.driver_mut()
+    sess.driver()
         .push(file::splice_file_to_pipe(
             &f,
             0,
@@ -200,7 +206,7 @@ fn splice_file_to_socket_zero_copy() {
         ))
         .expect("push splice in");
 
-    let moved_in = match drive_until(&mut exec, t_in) {
+    let moved_in = match drive_until(&mut sess, t_in) {
         Event::Splice(_, SpliceEvent::Moved(n)) => n as usize,
         other => panic!("expected splice into pipe, got {}", variant(&other)),
     };
@@ -208,7 +214,7 @@ fn splice_file_to_socket_zero_copy() {
 
     let t_out = tok(21);
     let sock_fd = sender.as_raw_fd();
-    exec.driver_mut()
+    sess.driver()
         .push(Sqe::splice_raw(
             pipe.read_fd(),
             -1,
@@ -220,7 +226,7 @@ fn splice_file_to_socket_zero_copy() {
         ))
         .expect("push splice out");
 
-    let moved_out = match drive_until(&mut exec, t_out) {
+    let moved_out = match drive_until(&mut sess, t_out) {
         Event::Splice(_, SpliceEvent::Moved(n)) => n as usize,
         other => panic!("expected splice to socket, got {}", variant(&other)),
     };
@@ -240,13 +246,14 @@ fn write_path_still_works() {
     let f = OsFile::create(&path).expect("create");
     let payload = b"write-path-intact";
 
-    let mut exec = Executor::new(cfg()).expect("executor");
+    let exec = Executor::new(cfg()).expect("executor");
+    let sess = exec.enter();
     let t = tok(30);
-    exec.driver_mut()
+    sess.driver()
         .push(Sqe::write_fd(f.fd(), payload, 0, t))
         .expect("push write");
 
-    let driver = exec.driver_mut();
+    let driver = sess.driver();
     let mut buf = [dope::Cqe::ZERO; 32];
     let mut wrote = None;
     'outer: for _ in 0..500 {

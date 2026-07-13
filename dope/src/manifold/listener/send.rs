@@ -38,7 +38,7 @@ impl SendSource {
 pub struct State {
     pub(super) arena: Option<super::arena::Handle>,
     pub write_buf_len: usize,
-    pub submitted_len: usize,
+    pub armed_plain: usize,
     pub sent_plain: usize,
     pub total_plain: usize,
     pub source: SendSource,
@@ -51,12 +51,41 @@ impl Default for State {
         Self {
             arena: None,
             write_buf_len: 0,
-            submitted_len: 0,
+            armed_plain: 0,
             sent_plain: 0,
             total_plain: 0,
             source: SendSource::None,
             pending_iovs: [backend::socket::IoVec::empty(); 4],
             pending_msghdr: backend::socket::MsgHdr::empty(),
         }
+    }
+}
+
+impl State {
+    #[inline]
+    pub(super) fn begin(&mut self, total_plain: usize, source: SendSource) {
+        self.total_plain = total_plain;
+        self.sent_plain = 0;
+        self.armed_plain = 0;
+        self.source = source;
+    }
+
+    #[inline]
+    pub(super) fn reset(&mut self) {
+        self.write_buf_len = 0;
+        self.total_plain = 0;
+        self.sent_plain = 0;
+        self.armed_plain = 0;
+        self.source = SendSource::None;
+    }
+
+    /// `armed_plain` tracks only the submit that put a send on the wire, so a
+    /// `Reclaim::OnComplete` CQE can be checked against what it covers.
+    #[inline]
+    pub(super) fn record_handoff(&mut self, consumed: usize, armed: bool) {
+        if armed {
+            self.armed_plain = consumed;
+        }
+        self.sent_plain += consumed;
     }
 }

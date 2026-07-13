@@ -9,15 +9,15 @@ use crate::transport::config::Submittable;
 use crate::transport::wire::{RecvChunk, Wire};
 use crate::{Drive, Driver, Lend, backend};
 
-pub struct Pool<const ID: u8, T: Transport, W: Wire, S> {
-    slab: Slab<Slot<W, S>>,
+pub struct Pool<'d, const ID: u8, T: Transport, W: Wire, S> {
+    slab: Slab<Slot<'d, W, S>>,
     reservation: backend::OutboundReservation,
     recv_rearm_pending: VecDeque<backend::token::LocalIdx>,
     rearm_present: Vec<bool>,
     _t: PhantomData<T>,
 }
 
-impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
+impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     pub fn new(max_conn: usize, reservation: backend::OutboundReservation) -> Self {
         Self {
             slab: Slab::new(max_conn),
@@ -45,11 +45,11 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         !self.recv_rearm_pending.is_empty()
     }
 
-    pub fn fd_of(&self, local: backend::token::LocalIdx) -> Option<&backend::socket::Fd> {
+    pub fn fd_of(&self, local: backend::token::LocalIdx) -> Option<&backend::socket::Fd<'d>> {
         self.slab.at_index(local).map(|(v, _)| &v.core.fd)
     }
 
-    pub fn place_at(&mut self, idx: backend::token::LocalIdx, core: Core, wire: W, state: S) {
+    pub fn place_at(&mut self, idx: backend::token::LocalIdx, core: Core<'d>, wire: W, state: S) {
         debug_assert!(
             self.slab.at_index(idx).is_none(),
             "Pool::place_at over occupied slot"
@@ -57,7 +57,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         let park_slot = self.reservation.absolute(idx);
         self.slab.place_at(idx, |key| {
             let token = backend::token::Token::new(ID, key.index(), key.epoch());
-            Slot::<W, S>::new(core, wire, token, park_slot, state)
+            Slot::new(core, wire, token, park_slot, state)
         });
     }
 
@@ -68,18 +68,18 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         self.slab.remove(backend::token::Key::new(idx, epoch))
     }
 
-    pub fn get(&self, idx: backend::token::LocalIdx) -> Option<&Slot<W, S>> {
+    pub fn get(&self, idx: backend::token::LocalIdx) -> Option<&Slot<'d, W, S>> {
         self.slab.at_index(idx).map(|(v, _)| v)
     }
 
-    pub fn get_mut(&mut self, idx: backend::token::LocalIdx) -> Option<&mut Slot<W, S>> {
+    pub fn get_mut(&mut self, idx: backend::token::LocalIdx) -> Option<&mut Slot<'d, W, S>> {
         self.slab.at_index_mut(idx)
     }
 
     pub fn get_mut_by_target(
         &mut self,
         target: backend::token::Token,
-    ) -> Option<(backend::token::LocalIdx, &mut Slot<W, S>)> {
+    ) -> Option<(backend::token::LocalIdx, &mut Slot<'d, W, S>)> {
         let idx = self.decode_token(target)?;
         self.slab.at_index_mut(idx).map(|slot| (idx, slot))
     }
@@ -100,11 +100,11 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         self.slab.get(key).map(|_| key.index())
     }
 
-    fn slot_of<'d>(
+    fn slot_of<'a>(
         &self,
         idx: backend::token::LocalIdx,
-        driver: &'d Driver,
-    ) -> &'d backend::park::Slot {
+        driver: &'a Driver,
+    ) -> &'a backend::park::Slot {
         backend::park::Parker::slot(driver, self.reservation.absolute(idx))
     }
 
@@ -115,7 +115,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         }
     }
 
-    pub fn arm_recv(&mut self, idx: backend::token::LocalIdx, driver: &mut Driver) -> bool {
+    pub fn arm_recv(&mut self, idx: backend::token::LocalIdx, driver: &'d Driver) -> bool {
         let ud = self.op(idx);
         let armed = {
             let Some(slot) = self.slab.at_index_mut(idx) else {
@@ -147,7 +147,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         armed
     }
 
-    pub fn flush_rearm(&mut self, driver: &mut Driver) {
+    pub fn flush_rearm(&mut self, driver: &'d Driver) {
         let n = self.recv_rearm_pending.len();
         for _ in 0..n {
             let Some(idx) = self.recv_rearm_pending.pop_front() else {
@@ -172,7 +172,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         &mut self,
         ud: backend::token::Token,
         e: backend::SendEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> SendOutcome {
         let Some(idx) = self.decode_token(ud) else {
             return SendOutcome::Drop;
@@ -191,7 +191,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         ud: backend::token::Token,
         more: bool,
         e: backend::RecvEvent,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> (Option<u16>, DispatchRecv<'a>) {
         let bid = match e {
             backend::RecvEvent::Data { bid, .. } => Some(bid),
@@ -240,7 +240,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         }
     }
 
-    pub fn try_close(&mut self, idx: backend::token::LocalIdx, driver: &mut Driver) {
+    pub fn try_close(&mut self, idx: backend::token::LocalIdx, driver: &'d Driver) {
         let Some((was_armed, send_inflight, cancel_kind)) = self.get(idx).map(|s| {
             (
                 s.core.is_armed(),
@@ -264,11 +264,11 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
     }
 }
 
-impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
+impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     pub fn send_slot(
         &mut self,
         idx: backend::token::LocalIdx,
-    ) -> Option<(&mut Slot<W, S>, backend::token::Token)> {
+    ) -> Option<(&mut Slot<'d, W, S>, backend::token::Token)> {
         let ud = self.op(idx);
         let slot = self.slab.at_index_mut(idx)?;
         if slot.core.is_closing() || slot.core.is_send_inflight() {
@@ -282,7 +282,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         addr: &T::Addr,
         wire: W,
         state: S,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> Option<backend::token::LocalIdx> {
         let reservation = self.slab.reserve()?;
         let local = reservation.index();
@@ -307,7 +307,7 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         e: &backend::SocketEvent,
         sock_addr: backend::socket::Addr,
         opts: &T::StreamOpts,
-        driver: &mut Driver,
+        driver: &'d Driver,
     ) -> SocketStep
     where
         S: Outbound,
@@ -351,8 +351,8 @@ impl<const ID: u8, T: Transport, W: Wire, S> Pool<ID, T, W, S> {
         &mut self,
         ud: backend::token::Token,
         e: &backend::ConnectEvent,
-        driver: &mut Driver,
-        peek: impl FnOnce(&Slot<W, S>) -> X,
+        driver: &'d Driver,
+        peek: impl FnOnce(&Slot<'d, W, S>) -> X,
     ) -> ConnectStep<X>
     where
         S: Outbound,
