@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/ui/file/fixed_stat.rs:7:33
+  |
+7 |     let _ = Stat::source(files, source);
+  |             ------------        ^^^^^^ expected `&Source<'_>`, found `&Source<'_, Fixed>`
+  |             |
+  |             arguments to this function are incorrect
+  |
+  = note: expected reference `&Source<'_, dope_fiber::file::Direct>`
+             found reference `&Source<'d, dope_fiber::file::Fixed>`
+note: associated function defined here
+ --> src/file/stat.rs
+  |
+  |     pub fn source(host: &'h Files<'d, ID, N>, source: &Source<'d, Direct>) -> Self {
+  |            ^^^^^^

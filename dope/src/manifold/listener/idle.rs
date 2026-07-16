@@ -1,19 +1,18 @@
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use crate::backend;
-
-const NIL: u32 = u32::MAX;
-
-struct Node {
-    deadline: Instant,
-    prev: u32,
-    next: u32,
-}
+use super::Listener;
+use super::application::Application;
+use crate::DriverContext;
+use crate::manifold::env::Env;
+use crate::runtime::profile::RuntimeProfile;
+use dope_core::backend::Sqe;
+use dope_core::driver::submission::Submission;
+use dope_core::driver::token::SlotIndex;
+use o3::collections::SlotQueue;
 
 pub(super) struct IdleSet {
-    nodes: Vec<Node>,
-    head: u32,
-    tail: u32,
+    queue: SlotQueue<Instant>,
     window: Duration,
     cap: usize,
 }
@@ -21,94 +20,137 @@ pub(super) struct IdleSet {
 impl IdleSet {
     pub(super) fn new(cap: usize, window: Duration) -> Self {
         Self {
-            nodes: Vec::new(),
-            head: NIL,
-            tail: NIL,
+            queue: SlotQueue::with_capacity(0),
             window,
             cap,
         }
     }
 
-    fn ensure(&mut self, index: usize, now: Instant) -> bool {
+    fn ensure(&mut self, index: usize) -> bool {
         if index >= self.cap {
             return false;
         }
-        while self.nodes.len() <= index {
-            let here = self.nodes.len() as u32;
-            self.nodes.push(Node {
-                deadline: now,
-                prev: NIL,
-                next: here,
-            });
+        if self.queue.capacity() <= index {
+            let capacity = self
+                .queue
+                .capacity()
+                .saturating_mul(2)
+                .max(index + 1)
+                .min(self.cap);
+            self.queue.grow_to(capacity);
         }
         true
     }
 
-    fn unlink(&mut self, idx: u32) {
-        let (prev, next) = {
-            let n = &self.nodes[idx as usize];
-            (n.prev, n.next)
-        };
-        if prev != NIL {
-            self.nodes[prev as usize].next = next;
-        } else {
-            self.head = next;
-        }
-        if next != NIL {
-            self.nodes[next as usize].prev = prev;
-        } else {
-            self.tail = prev;
-        }
-        self.nodes[idx as usize].next = idx;
-    }
-
-    pub(super) fn arm(&mut self, idx: backend::token::LocalIdx, now: Instant) {
+    pub(super) fn arm(&mut self, idx: SlotIndex, now: Instant) {
         let raw = idx.raw();
         let i = raw as usize;
-        if !self.ensure(i, now) {
+        if !self.ensure(i) {
             return;
         }
-        if self.nodes[i].next != raw {
-            self.unlink(raw);
-        }
+        self.queue.remove(i);
         let deadline = now + self.window;
-        let tail = self.tail;
-        {
-            let node = &mut self.nodes[i];
-            node.deadline = deadline;
-            node.prev = tail;
-            node.next = NIL;
-        }
-        if tail != NIL {
-            self.nodes[tail as usize].next = raw;
-        } else {
-            self.head = raw;
-        }
-        self.tail = raw;
+        let Some(entry) = self.queue.vacant_entry(i) else {
+            unreachable!()
+        };
+        entry.push_back(deadline);
     }
 
-    pub(super) fn cancel(&mut self, idx: backend::token::LocalIdx) {
-        let raw = idx.raw();
-        let i = raw as usize;
-        if i >= self.nodes.len() || self.nodes[i].next == raw {
-            return;
-        }
-        self.unlink(raw);
+    pub(super) fn cancel(&mut self, idx: SlotIndex) {
+        self.queue.remove(idx.raw() as usize);
     }
 
-    pub(super) fn pop_expired(&mut self, now: Instant) -> Option<backend::token::LocalIdx> {
-        if self.head == NIL {
+    pub(super) fn pop_expired(&mut self, now: Instant) -> Option<SlotIndex> {
+        let (index, &deadline) = self.queue.front_key_value()?;
+        if deadline > now {
             return None;
         }
-        let h = self.head;
-        if self.nodes[h as usize].deadline > now {
-            return None;
-        }
-        self.unlink(h);
-        Some(backend::token::LocalIdx::new(h))
+        self.queue.pop_front();
+        Some(SlotIndex::new(index as u32))
     }
 
     pub(super) fn earliest(&self) -> Option<Instant> {
-        (self.head != NIL).then(|| self.nodes[self.head as usize].deadline)
+        self.queue.front().copied()
+    }
+}
+
+pub(super) trait IdlePhase<'d, const ID: u8, A, E>
+where
+    A: Application<'d>,
+    E: Env<Wire = A::Wire>,
+{
+    fn drain_idle<F>(
+        self: Pin<&mut Self>,
+        now: Instant,
+        driver: &mut DriverContext<'_, 'd>,
+        project: F,
+    ) where
+        F: Fn(Pin<&mut Self>) -> &mut IdleSet;
+
+    fn close_inherent(self: Pin<&mut Self>, idx: SlotIndex, driver: &mut DriverContext<'_, 'd>);
+}
+
+impl<'d, const ID: u8, A, E> IdlePhase<'d, ID, A, E> for Listener<'d, ID, A, E>
+where
+    A: Application<'d>,
+    E: Env<Wire = A::Wire>,
+{
+    fn drain_idle<F>(
+        mut self: Pin<&mut Self>,
+        now: Instant,
+        driver: &mut DriverContext<'_, 'd>,
+        project: F,
+    ) where
+        F: Fn(Pin<&mut Self>) -> &mut IdleSet,
+    {
+        while let Some(idx) = project(self.as_mut()).pop_expired(now) {
+            Self::close_inherent(self.as_mut(), idx, driver);
+        }
+    }
+
+    fn close_inherent(self: Pin<&mut Self>, idx: SlotIndex, driver: &mut DriverContext<'_, 'd>) {
+        let mut this = self.project();
+        this.idle.cancel(idx);
+        if E::Profile::SEND_DEADLINE.is_some() {
+            this.idle_send.cancel(idx);
+        }
+        if E::Profile::ABS_CONN_AGE.is_some() {
+            this.idle_abs_age.cancel(idx);
+        }
+        let (send_inflight, is_armed, is_closing, cancel_kind, ud) = match this.pool.get(idx) {
+            Some(s) => (
+                s.core.is_send_inflight(),
+                s.core.is_armed(),
+                s.core.is_closing(),
+                s.core.recv_cancel_kind(),
+                s.token(),
+            ),
+            None => return,
+        };
+        if send_inflight || is_armed {
+            if !is_closing {
+                if let Some(slot) = this.pool.get_mut(idx) {
+                    slot.core.begin_close();
+                }
+                if is_armed && !send_inflight {
+                    let _ = driver.push(Sqe::cancel(ud, cancel_kind));
+                }
+            }
+            return;
+        }
+        if this
+            .pool
+            .get_mut(idx)
+            .is_some_and(|s| s.seal_graceful(driver, ud))
+        {
+            return;
+        }
+        if let Some(slot) = this.pool.get_mut(idx) {
+            this.app.as_mut().close(slot, this.aux);
+            if let Some(ip) = slot.state.peer_ip.take() {
+                this.accept.release_peer_ip(ip);
+            }
+        }
+        this.pool.try_close(idx, driver);
     }
 }

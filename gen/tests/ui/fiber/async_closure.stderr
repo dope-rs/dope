@@ -1,0 +1,5 @@
+error: independent async scope is not a fiber
+ --> tests/ui/fiber/async_closure.rs:5:17
+  |
+5 |         let _ = async || dope_fiber::ready(()).await;
+  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

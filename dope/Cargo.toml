@@ -7,24 +7,21 @@ repository.workspace = true
 license.workspace = true
 authors.workspace = true
 
-[features]
-# I0 instrumentation: per-thread HWM / miss counters (see MEMORY_DESIGN.md).
-# Default OFF; when off the counters and all call sites compile to nothing.
-mem-stats = []
-panic-isolation = []
-
 [dependencies]
+dope-core.workspace = true
+dope-net.workspace = true
 libc.workspace = true
 o3.workspace = true
 pin-project.workspace = true
+siphasher.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring.workspace = true
 
 [dev-dependencies]
-dope-gen = { path = "../gen" }
 dope-extra = { path = "../extra" }
-futures-util = { version = "0.3", default-features = false, features = ["async-await", "alloc"] }
+dope-fiber = { path = "../fiber" }
+dope-gen = { path = "../gen" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 io-uring.workspace = true

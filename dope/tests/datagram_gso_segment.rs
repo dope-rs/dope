@@ -1,36 +1,40 @@
 #![cfg(target_os = "linux")]
-//! `queue_segmented` hands the kernel UDP_SEGMENT sends that arrive as N separate
-//! datagrams (the last possibly shorter), chunking runs past the 64-segment /
-//! 65535-byte cap across multiple sends. Where GSO is missing the kernel rejects
-//! it with EINVAL; the test skips rather than failing.
 
 mod common;
+
+extern crate dope;
+use o3::cell::BrandCell;
 
 use std::cell::Cell;
 use std::net::{SocketAddr, UdpSocket};
 use std::pin::{Pin, pin};
 use std::rc::Rc;
+use std::thread::JoinHandle;
 
 use dope::manifold::Manifold;
 use dope::manifold::datagram::{Handler, Socket};
-use dope::runtime::dispatcher::Idle;
-use dope::{Driver, DriverCfg, DriverConfig, Event, Executor};
+use dope::runtime::Idle;
+use dope::{Event, EventRef};
 
 use common::Gate;
-
-fn payload(len: usize) -> Vec<u8> {
-    (0..len as u32).map(|i| (i % 251) as u8).collect()
-}
 
 struct SendHandler {
     errno: Rc<Cell<Option<i32>>>,
     gate: Rc<Gate>,
 }
 
-impl Handler<0> for SendHandler {
-    fn on_packet(&mut self, _addr: SocketAddr, _data: &[u8], _sock: Pin<&mut Socket<0>>) {}
+impl<'d> Handler<'d, 0> for SendHandler {
+    fn packet(
+        &mut self,
+        _addr: SocketAddr,
+        packet: dope::manifold::datagram::Packet<'d>,
+        _sock: Pin<&mut Socket<'d, 0>>,
+        driver: &mut dope::DriverContext<'_, 'd>,
+    ) {
+        packet.release(driver);
+    }
 
-    fn on_error(&mut self, errno: i32, _sock: Pin<&mut Socket<0>>) {
+    fn error(&mut self, errno: i32, _sock: Pin<&mut Socket<0>>) {
         self.errno.set(Some(errno));
         self.gate.hit();
     }
@@ -46,15 +50,18 @@ struct Sender<'d> {
 impl<'d> Manifold<'d> for Sender<'d> {
     const ID: u8 = 0;
 
-    fn dispatch(self: Pin<&mut Self>, ev: Event, driver: &'d Driver) {
-        let mut this = self.project();
-        match ev {
-            Event::Recv(token, more, e) => {
+    fn dispatch(mut self: Pin<&mut Self>, ev: Event, driver: &mut dope::DriverContext<'_, 'd>) {
+        let mut sender = self.as_mut();
+        let mut this = sender.as_mut().project();
+        match ev.as_ref() {
+            EventRef::Recv(token, more, e) => {
                 this.sock
-                    .dispatch_recv(token, more, e, driver, this.handler)
+                    .dispatch_recv(token, more, *e, this.handler, driver)
             }
-            Event::Send(token, e) => {
-                this.sock.as_mut().dispatch_send(token, e, this.handler);
+            EventRef::Send(token, e) => {
+                this.sock
+                    .as_mut()
+                    .dispatch_send(token, *e, this.handler, driver);
                 if !this.sock.has_pending() {
                     this.handler.gate.hit();
                 }
@@ -63,12 +70,12 @@ impl<'d> Manifold<'d> for Sender<'d> {
         }
     }
 
-    fn pre_park(self: Pin<&mut Self>, driver: &'d Driver) {
-        self.project().sock.tick(driver);
+    fn pre_park(mut self: Pin<&mut Self>, driver: &mut dope::DriverContext<'_, 'd>) {
+        self.as_mut().project().sock.tick(driver);
     }
 
     fn idle(self: Pin<&Self>) -> Idle {
-        if self.project_ref().sock.has_pending() {
+        if self.project_ref().sock.needs_flush() {
             Idle::Busy
         } else {
             Idle::Park(None)
@@ -82,35 +89,42 @@ struct App<'d> {
     #[pin]
     #[manifold]
     sender: Sender<'d>,
-    #[pin]
-    #[manifold]
-    guard: common::Guard,
 }
 
-/// A run of segments must arrive as exactly that many datagrams, byte-identical,
-/// however many sendmsg calls dope splits it into.
 #[test]
-fn gso_run_within_cap_is_one_send() {
+fn gso_runs_within_and_past_cap() {
     run_case(1000, &[1000, 1000, 1000, 500]);
-}
-
-/// 100 segments exceeds the 64-segment cap, so dope must split into multiple
-/// UDP_SEGMENT sends — the receiver still sees 100 datagrams.
-#[test]
-fn gso_run_past_cap_splits_across_sends() {
     let mut lens = vec![1200usize; 99];
     lens.push(500);
     run_case(1200, &lens);
 }
 
-fn run_case(seg: u16, lens: &[usize]) {
-    let total: usize = lens.iter().sum();
-    let want_datagrams = lens.len();
+#[test]
+fn dropping_armed_socket_poison_route() {
+    common::quic_exec(64, 2048).enter(|mut sess| {
+        {
+            let mut driver = sess.driver_access();
+            let socket = Socket::<0>::bind("127.0.0.1:0".parse().expect("parse"), &mut driver)
+                .expect("bind");
+            let mut socket = pin!(socket);
+            socket.as_mut().tick(&mut driver);
+        }
+        let error = match Socket::<0>::bind(
+            "127.0.0.1:0".parse().expect("parse"),
+            &mut sess.driver_access(),
+        ) {
+            Ok(_) => panic!("dirty route reused"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    });
+}
+
+fn udp_collector(want_datagrams: usize) -> (SocketAddr, JoinHandle<(usize, Vec<u8>)>) {
     let recv = UdpSocket::bind("127.0.0.1:0").expect("bind recv");
     recv.set_read_timeout(Some(common::GUARD / 2)).ok();
     let dst = recv.local_addr().expect("recv addr");
-
-    let collector = std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let mut got = Vec::new();
         let mut seen = 0usize;
         let mut buf = [0u8; 2048];
@@ -125,49 +139,76 @@ fn run_case(seg: u16, lens: &[usize]) {
         }
         (seen, got)
     });
+    (dst, handle)
+}
+
+fn run_case(seg: u16, lens: &[usize]) {
+    let total: usize = lens.iter().sum();
+    let want_datagrams = lens.len();
+    let (dst, collector) = udp_collector(want_datagrams);
 
     let gate = Gate::new();
     let errno = Rc::new(Cell::new(None));
-    let cfg = <DriverCfg as DriverConfig>::for_quic_udp(4096, 2048);
-    let exec = Executor::new(cfg).expect("executor");
-    let mut sess = exec.enter();
-    let sock =
-        Socket::<0>::bind("127.0.0.1:0".parse().expect("parse"), sess.driver()).expect("bind send");
-    let mut app = pin!(App {
-        sender: Sender {
-            sock,
-            handler: SendHandler {
-                errno: errno.clone(),
-                gate: gate.clone(),
+    common::quic_exec(4096, 2048).enter(|mut sess| {
+        let sock = Socket::<0>::bind(
+            "127.0.0.1:0".parse().expect("parse"),
+            &mut sess.driver_access(),
+        )
+        .expect("bind send");
+        let app = pin!(BrandCell::new(App {
+            sender: Sender {
+                sock,
+                handler: SendHandler {
+                    errno: errno.clone(),
+                    gate: gate.clone(),
+                },
             },
-        },
-        guard: common::Guard::new(),
+        }));
+
+        let want = common::pattern(total);
+        let queued = app
+            .as_ref()
+            .borrow_pin_mut(sess.token())
+            .project()
+            .sender
+            .project()
+            .sock
+            .queue_segmented(want.clone(), dst, seg);
+        assert!(queued.is_ok(), "queue_segmented must accept the send");
+
+        {
+            let (token, mut driver) = sess.token_and_driver();
+            let mut app = app.as_ref().borrow_pin_mut(token);
+            let mut sender = app.as_mut().project().sender.project();
+            assert_eq!(sender.sock.retained_outgoing_bytes(), total);
+            sender.sock.as_mut().tick(&mut driver);
+            assert_eq!(sender.sock.retained_outgoing_bytes(), total);
+        }
+
+        common::run_until(&mut sess, app.as_ref(), &gate, 1);
+        assert_eq!(
+            app.as_ref()
+                .borrow_pin(sess.token())
+                .project_ref()
+                .sender
+                .project_ref()
+                .sock
+                .retained_outgoing_bytes(),
+            0,
+        );
+        let (seen, got) = collector.join().expect("collector join");
+
+        if errno.get() == Some(libc::EINVAL) {
+            eprintln!("UDP GSO unsupported on this kernel (EINVAL); skipping");
+            return;
+        }
+        assert_eq!(
+            errno.get(),
+            None,
+            "send failed with errno {:?}",
+            errno.get()
+        );
+        assert_eq!(seen, want_datagrams, "expected {want_datagrams} datagrams");
+        assert_eq!(got, want, "reassembled GSO payload differs from source");
     });
-
-    let want = payload(total);
-    let queued = app
-        .as_mut()
-        .project()
-        .sender
-        .project()
-        .sock
-        .queue_segmented(want.clone(), dst, seg);
-    assert!(queued, "queue_segmented must accept the send");
-
-    let guard = app.as_mut().guard_handle();
-    common::run_until(&mut sess, app.as_mut(), guard, &gate, 1);
-    let (seen, got) = collector.join().expect("collector join");
-
-    if errno.get() == Some(libc::EINVAL) {
-        eprintln!("UDP GSO unsupported on this kernel (EINVAL); skipping");
-        return;
-    }
-    assert_eq!(
-        errno.get(),
-        None,
-        "send failed with errno {:?}",
-        errno.get()
-    );
-    assert_eq!(seen, want_datagrams, "expected {want_datagrams} datagrams");
-    assert_eq!(got, want, "reassembled GSO payload differs from source");
 }

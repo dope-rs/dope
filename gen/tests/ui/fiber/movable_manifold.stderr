@@ -1,0 +1,89 @@
+error[E0308]: mismatched types
+  --> tests/ui/fiber/movable_manifold.rs:16:10
+   |
+16 | #[derive(dope_gen::Dispatcher)]
+   |          ^^^^^^^^^^^^^^^^^^^^
+   |          |
+   |          expected `Pin<&mut _>`, found `&mut Inner`
+   |          arguments to this function are incorrect
+   |
+   = note:         expected struct `Pin<&mut _>`
+           found mutable reference `&mut Inner`
+note: method defined here
+  --> $WORKSPACE/dope/src/manifold/mod.rs
+   |
+   |     fn dispatch(self: Pin<&mut Self>, ev: dope_core::io::Event, driver: &mut DriverContext<'_, 'd>) {
+   |        ^^^^^^^^
+   = note: this error originates in the derive macro `dope_gen::Dispatcher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+  --> tests/ui/fiber/movable_manifold.rs:16:10
+   |
+16 | #[derive(dope_gen::Dispatcher)]
+   |          ^^^^^^^^^^^^^^^^^^^^
+   |          |
+   |          expected `Pin<&mut Inner>`, found `&mut Inner`
+   |          arguments to this function are incorrect
+   |
+   = note:         expected struct `Pin<&mut Inner>`
+           found mutable reference `&mut Inner`
+note: method defined here
+  --> $WORKSPACE/dope/src/manifold/mod.rs
+   |
+   |     fn activate(
+   |        ^^^^^^^^
+   = note: this error originates in the derive macro `dope_gen::Dispatcher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+  --> tests/ui/fiber/movable_manifold.rs:16:10
+   |
+16 | #[derive(dope_gen::Dispatcher)]
+   |          ^^^^^^^^^^^^^^^^^^^^
+   |          |
+   |          expected `Pin<&mut _>`, found `&mut Inner`
+   |          arguments to this function are incorrect
+   |
+   = note:         expected struct `Pin<&mut _>`
+           found mutable reference `&mut Inner`
+note: method defined here
+  --> $WORKSPACE/dope/src/manifold/mod.rs
+   |
+   |     fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>);
+   |        ^^^^^^^^
+   = note: this error originates in the derive macro `dope_gen::Dispatcher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+  --> tests/ui/fiber/movable_manifold.rs:16:10
+   |
+16 | #[derive(dope_gen::Dispatcher)]
+   |          ^^^^^^^^^^^^^^^^^^^^
+   |          |
+   |          expected `Pin<&_>`, found `&Inner`
+   |          arguments to this function are incorrect
+   |
+   = note: expected struct `Pin<&_>`
+           found reference `&Inner`
+note: method defined here
+  --> $WORKSPACE/dope/src/manifold/mod.rs
+   |
+   |     fn idle(self: Pin<&Self>) -> Idle {
+   |        ^^^^
+   = note: this error originates in the derive macro `dope_gen::Dispatcher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+  --> tests/ui/fiber/movable_manifold.rs:16:10
+   |
+16 | #[derive(dope_gen::Dispatcher)]
+   |          ^^^^^^^^^^^^^^^^^^^^
+   |          |
+   |          expected `Pin<&mut _>`, found `&mut Inner`
+   |          arguments to this function are incorrect
+   |
+   = note:         expected struct `Pin<&mut _>`
+           found mutable reference `&mut Inner`
+note: method defined here
+  --> $WORKSPACE/dope/src/manifold/mod.rs
+   |
+   |     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
+   |        ^^^^^^^^
+   = note: this error originates in the derive macro `dope_gen::Dispatcher` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,108 @@
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{Data, DeriveInput, Error, Fields, Ident, Type};
+
+use crate::derive::Derive;
+
+pub(crate) struct Forward;
+
+impl Forward {
+    pub(crate) fn derive(input: DeriveInput) -> TokenStream {
+        if let Err(error) = Derive::reject_packed(&input.attrs) {
+            return error.to_compile_error().into();
+        }
+        let name = &input.ident;
+        let (_, ty_generics, where_clause) = input.generics.split_for_impl();
+        let (brand, fresh) = Derive::brand_lifetime(&input.generics);
+        let impl_generics = {
+            let params = input.generics.params.iter();
+            quote! { <#fresh #(#params),*> }
+        };
+
+        let data = match &input.data {
+            Data::Struct(s) => s,
+            _ => {
+                return Error::new_spanned(name, "Forward requires a struct")
+                    .to_compile_error()
+                    .into();
+            }
+        };
+        let fields = match &data.fields {
+            Fields::Named(f) => &f.named,
+            _ => {
+                return Error::new_spanned(name, "Forward requires named fields")
+                    .to_compile_error()
+                    .into();
+            }
+        };
+        let mut marked: Vec<(&Ident, &Type)> = Vec::new();
+        for f in fields {
+            if f.attrs.iter().any(|a| a.path().is_ident("forward"))
+                && let Some(ident) = &f.ident
+            {
+                marked.push((ident, &f.ty));
+            }
+        }
+        let (field, field_ty) = match marked.as_slice() {
+            [one] => *one,
+            [] => {
+                return Error::new_spanned(
+                    name,
+                    "Forward needs exactly one field marked `#[forward]`",
+                )
+                .to_compile_error()
+                .into();
+            }
+            _ => {
+                return Error::new_spanned(name, "Forward accepts only one `#[forward]` field")
+                    .to_compile_error()
+                    .into();
+            }
+        };
+
+        quote! {
+            impl #impl_generics ::dope::manifold::Manifold<#brand> for #name #ty_generics
+            #where_clause
+            {
+                const ID: u8 = <#field_ty as ::dope::manifold::Manifold<#brand>>::ID;
+                fn dispatch(
+                    self: ::core::pin::Pin<&mut Self>,
+                    ev: ::dope::Event,
+                    driver: &mut ::dope::DriverContext<'_, #brand>,
+                ) {
+                    let _ = <#field_ty as ::dope::manifold::Manifold<#brand>>::ID;
+                    let __field = self.project().#field;
+                    ::dope::manifold::Manifold::dispatch(__field, ev, driver)
+                }
+                fn pre_park(
+                    self: ::core::pin::Pin<&mut Self>,
+                    driver: &mut ::dope::DriverContext<'_, #brand>,
+                ) {
+                    let __field = self.project().#field;
+                    ::dope::manifold::Manifold::pre_park(__field, driver)
+                }
+                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::runtime::Idle {
+                    let __field = self.project_ref().#field;
+                    ::dope::manifold::Manifold::idle(__field)
+                }
+                fn activate(
+                    self: ::core::pin::Pin<&mut Self>,
+                    target: ::dope::manifold::TypedToken<Self>,
+                    driver: &mut ::dope::DriverContext<'_, #brand>,
+                ) {
+                    let __typed = unsafe { ::dope::manifold::TypedToken::<#field_ty>::new_unchecked(target.into_inner()) };
+                    let __field = self.project().#field;
+                    ::dope::manifold::Manifold::activate(__field, __typed, driver)
+                }
+                fn shutdown(
+                    self: ::core::pin::Pin<&mut Self>,
+                    driver: &mut ::dope::DriverContext<'_, #brand>,
+                ) {
+                    let __field = self.project().#field;
+                    ::dope::manifold::Manifold::shutdown(__field, driver)
+                }
+            }
+        }
+        .into()
+    }
+}

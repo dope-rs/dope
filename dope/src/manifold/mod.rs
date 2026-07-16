@@ -1,18 +1,17 @@
-mod buf;
-
 pub mod connector;
 pub mod datagram;
 pub mod env;
 pub mod file;
 pub mod listener;
-
-pub mod route;
 pub mod timer;
+mod typed;
+
+pub use typed::TypedToken;
 
 use std::pin::Pin;
 
-use crate::runtime::dispatcher::Idle;
-use crate::{Driver, backend};
+use crate::DriverContext;
+use crate::runtime::Idle;
 
 pub enum Outcome {
     Ok,
@@ -23,22 +22,29 @@ pub enum Outcome {
 pub trait Manifold<'d>: Sized {
     const ID: u8 = 0;
 
-    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, driver: &'d Driver) {
-        let _ = (self, ev, driver);
+    fn dispatch(
+        self: Pin<&mut Self>,
+        ev: dope_core::io::Event,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
+        let _ = (ev, driver);
     }
 
-    fn pre_park(self: Pin<&mut Self>, driver: &'d Driver);
+    fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>);
 
     fn idle(self: Pin<&Self>) -> Idle {
-        let _ = self;
         Idle::Park(None)
     }
 
-    fn on_wake(self: Pin<&mut Self>, target: route::TypedToken<Self>, driver: &'d Driver) {
+    fn activate(
+        self: Pin<&mut Self>,
+        target: TypedToken<Self>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
         let _ = (target, driver);
     }
 
-    fn on_shutdown(self: Pin<&mut Self>, driver: &'d Driver) {
-        let _ = (self, driver);
+    fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
+        let _ = driver;
     }
 }

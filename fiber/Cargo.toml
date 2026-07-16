@@ -1,0 +1,21 @@
+[package]
+name = "dope-fiber"
+edition.workspace = true
+version.workspace = true
+description.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope.workspace = true
+dope-core.workspace = true
+dope-net.workspace = true
+dope-gen.workspace = true
+libc.workspace = true
+o3.workspace = true
+pin-project.workspace = true
+
+[dev-dependencies]
+dope-test.workspace = true
+trybuild = "1"

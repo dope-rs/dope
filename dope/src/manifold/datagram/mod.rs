@@ -1,44 +1,91 @@
-use std::collections::VecDeque;
 use std::marker::PhantomPinned;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::{io, slice};
+use std::rc::Rc;
+use std::{io, iter};
 
 use pin_project::pin_project;
 
-use crate::backend;
+use dope_core::driver::bootstrap::Bootstrap;
+use dope_core::driver::buffers::ProvidedBuffers;
+use dope_core::driver::control::ContextControl;
+use dope_core::driver::datagram::Datagram;
+use dope_core::driver::route::Route;
+use dope_core::driver::submission::Submission;
+use dope_core::io::provided::ProvidedLease;
+use o3::collections::FixedQueue;
 
-pub trait Handler<const ID: u8> {
-    fn on_packet(&mut self, addr: SocketAddr, data: &[u8], sock: Pin<&mut Socket<ID>>);
+use crate::DriverContext;
 
-    fn on_empty(&mut self, sock: Pin<&mut Socket<ID>>) {
+mod send;
+
+use send::Outgoing;
+use send::Payload;
+use send::SendOp;
+
+pub struct Packet<'d> {
+    guard: ProvidedLease<'d>,
+    offset: usize,
+    len: usize,
+}
+
+impl AsRef<[u8]> for Packet<'_> {
+    fn as_ref(&self) -> &[u8] {
+        &self.guard.as_slice()[self.offset..self.offset + self.len]
+    }
+}
+
+impl<'d> Packet<'d> {
+    pub fn release(self, driver: &mut DriverContext<'_, 'd>) {
+        self.guard.release(driver);
+    }
+}
+
+pub trait Handler<'d, const ID: u8> {
+    fn packet(
+        &mut self,
+        addr: SocketAddr,
+        packet: Packet<'d>,
+        sock: Pin<&mut Socket<'d, ID>>,
+        driver: &mut DriverContext<'_, 'd>,
+    );
+
+    fn empty(&mut self, sock: Pin<&mut Socket<'d, ID>>) {
         let _ = sock;
     }
 
-    fn on_truncated(&mut self, src: SocketAddr, partial: &[u8], sock: Pin<&mut Socket<ID>>) {
+    fn truncated(&mut self, src: SocketAddr, partial: &[u8], sock: Pin<&mut Socket<'d, ID>>) {
         let _ = (src, partial, sock);
     }
 
-    fn on_error(&mut self, errno: i32, sock: Pin<&mut Socket<ID>>) {
+    fn error(&mut self, errno: i32, sock: Pin<&mut Socket<'d, ID>>) {
         let _ = (errno, sock);
     }
 }
 
-const RECV_ARM_TAG: backend::token::LocalIdx = backend::token::LocalIdx::new(0);
+const RECV_ARM_TAG: SlotIndex = SlotIndex::new(0);
 
-use crate::slab::Slab;
-use crate::transport::multishot::Arm;
-use crate::{Bootstrap, Drive, Driver, Lend};
+use dope_core::backend::Sqe;
+use dope_core::backend::{MAX_GSO_BYTES, MAX_GSO_SEGMENTS};
+use dope_core::driver::token::{KeyTag, SLOT_MASK, SlotIndex, Token, TokenSlab, kind};
+use dope_core::io::RecvEvent;
+use dope_core::io::SendEvent;
+use dope_core::io::datagram::RecvOutcome;
+use dope_core::io::fd::Fd;
+use dope_core::io::socket::msg::MsgHdr;
+use dope_net::multishot::Multishot;
 
-#[pin_project]
+type SendTag<const ID: u8> = KeyTag<ID, { kind::SEND }>;
+#[pin_project(!Unpin)]
 pub struct Socket<'d, const ID: u8> {
-    fixed_fd: backend::socket::Fd<'d>,
+    route: Route<'d, ID>,
+    fixed_fd: Fd<'d>,
     bound_addr: SocketAddr,
-    recv_arm: Arm,
-    recv_msghdr: backend::socket::MsgHdr,
-    pending_outgoing: VecDeque<Outgoing>,
-    pending_outgoing_bytes: usize,
-    in_flight: Slab<SendOp>,
+    recv_arm: Multishot,
+    recv_msghdr: MsgHdr,
+    pending_outgoing: FixedQueue<Outgoing<'d>>,
+    retained_outgoing_bytes: usize,
+    in_flight: TokenSlab<SendOp<'d>, SendTag<ID>>,
     #[pin]
     _pin: PhantomPinned,
 }
@@ -46,22 +93,27 @@ pub struct Socket<'d, const ID: u8> {
 impl<'d, const ID: u8> Socket<'d, ID> {
     const OUT_CAP: usize = 4096;
     const OUT_BYTES_CAP: usize = 16 << 20;
-    const IN_FLIGHT_SENDS_CAP: usize = 4096;
+    const IN_FLIGHT_SENDS_CAP: usize = {
+        assert!(4096 <= SLOT_MASK as usize + 1);
+        4096
+    };
 
-    pub fn bind(addr: SocketAddr, driver: &'d Driver) -> io::Result<Self> {
+    pub fn bind(addr: SocketAddr, driver: &mut DriverContext<'_, 'd>) -> io::Result<Self> {
+        let route = Route::reserve(driver)?;
         let (fixed_fd, bound_addr) = driver.bind_datagram_slot(addr)?;
-        let mut msghdr_template = backend::socket::MsgHdr::empty();
+        let mut msghdr_template = MsgHdr::empty();
         msghdr_template.set_namelen(size_of::<libc::sockaddr_storage>() as u32);
-        let mut arm = Arm::default();
+        let mut arm = Multishot::default();
         arm.request_rearm();
         Ok(Self {
+            route,
             fixed_fd,
             bound_addr,
             recv_arm: arm,
             recv_msghdr: msghdr_template,
-            pending_outgoing: VecDeque::new(),
-            pending_outgoing_bytes: 0,
-            in_flight: Slab::pinned(Self::IN_FLIGHT_SENDS_CAP),
+            pending_outgoing: FixedQueue::with_capacity(Self::OUT_CAP),
+            retained_outgoing_bytes: 0,
+            in_flight: TokenSlab::with_capacity(Self::IN_FLIGHT_SENDS_CAP),
             _pin: PhantomPinned,
         })
     }
@@ -70,99 +122,160 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         self.bound_addr
     }
 
-    pub fn queue_to(self: Pin<&mut Self>, payload: Vec<u8>, addr: SocketAddr) -> bool {
-        self.enqueue(Outgoing::plain(payload, addr))
+    pub fn queue_to(
+        self: Pin<&mut Self>,
+        payload: Vec<u8>,
+        addr: SocketAddr,
+    ) -> Result<(), Vec<u8>> {
+        if !self.fits(1, payload.len()) {
+            return Err(payload);
+        }
+        let bytes = payload.len();
+        self.enqueue_all(
+            bytes,
+            iter::once(Outgoing::plain(Payload::Owned(payload), addr)),
+        );
+        Ok(())
     }
 
-    /// Queues `payload` for UDP GSO: the kernel slices it into `segment_size`-byte
-    /// datagrams, only the last shorter. A run past the 64-segment / 65535-byte
-    /// cap is chunked across sends; off Linux, into per-segment plain sends.
-    /// All-or-nothing.
-    ///
-    /// ```no_run
-    /// # use dope::manifold::datagram::Socket;
-    /// # fn f<const ID: u8>(sock: std::pin::Pin<&mut Socket<ID>>, wire: Vec<u8>, dst: std::net::SocketAddr) {
-    /// sock.queue_segmented(wire, dst, 1200); // back-to-back 1200B packets -> one sendmsg
-    /// # }
-    /// ```
+    pub fn queue_buffer(
+        self: Pin<&mut Self>,
+        payload: o3::buffer::Lease<'d>,
+        addr: SocketAddr,
+    ) -> Result<(), o3::buffer::Lease<'d>> {
+        if !self.fits(1, payload.len()) {
+            return Err(payload);
+        }
+        let bytes = payload.len();
+        self.enqueue_all(
+            bytes,
+            iter::once(Outgoing::plain(Payload::Buffer(payload), addr)),
+        );
+        Ok(())
+    }
+
+    pub fn queue_packet(
+        self: Pin<&mut Self>,
+        packet: Packet<'d>,
+        addr: SocketAddr,
+    ) -> Result<(), Packet<'d>> {
+        if !self.fits(1, packet.as_ref().len()) {
+            return Err(packet);
+        }
+        let bytes = packet.as_ref().len();
+        self.enqueue_all(
+            bytes,
+            iter::once(Outgoing::plain(Payload::Packet(packet), addr)),
+        );
+        Ok(())
+    }
+
     pub fn queue_segmented(
         self: Pin<&mut Self>,
         payload: Vec<u8>,
         addr: SocketAddr,
         segment_size: u16,
-    ) -> bool {
+    ) -> Result<(), Vec<u8>> {
         if segment_size == 0 || payload.len() <= segment_size as usize {
             return self.queue_to(payload, addr);
         }
         self.enqueue_segmented(payload, addr, segment_size)
     }
 
-    #[cfg(target_os = "linux")]
+    pub fn queue_segments(
+        self: Pin<&mut Self>,
+        payload: Vec<u8>,
+        segments: &[u32],
+        addr: SocketAddr,
+    ) -> Result<(), Vec<u8>> {
+        let mut items = 0;
+        let Some(bytes) = Outgoing::visit_segments(segments, |_, _, _| items += 1) else {
+            return Err(payload);
+        };
+        if items == 0 || bytes != payload.len() || !self.fits(items, bytes) {
+            return Err(payload);
+        }
+        let this = self.project();
+        let batch = Rc::new(payload);
+        *this.retained_outgoing_bytes += bytes;
+        let _ = Outgoing::visit_segments(segments, |offset, len, segment_size| {
+            let Some(entry) = this.pending_outgoing.vacant_entry() else {
+                unreachable!()
+            };
+            entry.push_back(Outgoing::range(
+                Rc::clone(&batch),
+                offset,
+                len,
+                addr,
+                segment_size,
+            ));
+        });
+        Ok(())
+    }
+
     fn enqueue_segmented(
         self: Pin<&mut Self>,
         payload: Vec<u8>,
         addr: SocketAddr,
         seg: u16,
-    ) -> bool {
+    ) -> Result<(), Vec<u8>> {
         let seg_len = seg as usize;
         let max_send = (MAX_GSO_BYTES / seg_len).clamp(1, MAX_GSO_SEGMENTS) * seg_len;
         if payload.len() <= max_send {
-            return self.enqueue(Outgoing::segmented(payload, addr, seg));
+            if !self.fits(1, payload.len()) {
+                return Err(payload);
+            }
+            let bytes = payload.len();
+            self.enqueue_all(bytes, iter::once(Outgoing::segmented(payload, addr, seg)));
+            return Ok(());
         }
         let items = payload.len().div_ceil(max_send);
         let bytes = payload.len();
-        let chunks = payload.chunks(max_send).map(|chunk| {
-            let chunk = chunk.to_vec();
-            if chunk.len() > seg_len {
-                Outgoing::segmented(chunk, addr, seg)
-            } else {
-                Outgoing::plain(chunk, addr)
-            }
-        });
-        self.enqueue_all(items, bytes, chunks)
+        if !self.fits(items, bytes) {
+            return Err(payload);
+        }
+        self.enqueue_segmented_ranges(payload, addr, seg, max_send);
+        Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn enqueue_segmented(
+    fn enqueue_segmented_ranges(
         self: Pin<&mut Self>,
         payload: Vec<u8>,
         addr: SocketAddr,
-        seg: u16,
-    ) -> bool {
-        let seg_len = seg as usize;
-        let items = payload.len().div_ceil(seg_len);
+        segment_size: u16,
+        chunk_size: usize,
+    ) {
         let bytes = payload.len();
-        let chunks = payload
-            .chunks(seg_len)
-            .map(|chunk| Outgoing::plain(chunk.to_vec(), addr));
-        self.enqueue_all(items, bytes, chunks)
+        let this = self.project();
+        let batch = Rc::new(payload);
+        *this.retained_outgoing_bytes += bytes;
+        for offset in (0..bytes).step_by(chunk_size) {
+            let len = chunk_size.min(bytes - offset);
+            let gso = (len > segment_size as usize).then_some(segment_size);
+            let Some(entry) = this.pending_outgoing.vacant_entry() else {
+                unreachable!()
+            };
+            entry.push_back(Outgoing::range(Rc::clone(&batch), offset, len, addr, gso));
+        }
     }
 
     fn fits(&self, items: usize, bytes: usize) -> bool {
-        self.pending_outgoing.len() + items <= Self::OUT_CAP
-            && self.pending_outgoing_bytes.saturating_add(bytes) <= Self::OUT_BYTES_CAP
+        items <= Self::OUT_CAP - self.pending_outgoing.len()
+            && self.retained_outgoing_bytes.saturating_add(bytes) <= Self::OUT_BYTES_CAP
     }
 
-    fn enqueue(self: Pin<&mut Self>, out: Outgoing) -> bool {
-        self.enqueue_all(1, out.payload.len(), std::iter::once(out))
-    }
-
-    fn enqueue_all(
-        self: Pin<&mut Self>,
-        items: usize,
-        bytes: usize,
-        chunks: impl Iterator<Item = Outgoing>,
-    ) -> bool {
-        if !self.fits(items, bytes) {
-            return false;
-        }
+    fn enqueue_all(self: Pin<&mut Self>, bytes: usize, chunks: impl Iterator<Item = Outgoing<'d>>) {
         let this = self.project();
-        *this.pending_outgoing_bytes += bytes;
-        this.pending_outgoing.extend(chunks);
-        true
+        *this.retained_outgoing_bytes += bytes;
+        for chunk in chunks {
+            let Some(entry) = this.pending_outgoing.vacant_entry() else {
+                unreachable!()
+            };
+            entry.push_back(chunk);
+        }
     }
 
-    pub fn tick(mut self: Pin<&mut Self>, driver: &'d Driver) {
+    pub fn tick(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         if self.recv_arm.needs_rearm() {
             self.as_mut().arm_recv(driver);
         }
@@ -175,196 +288,164 @@ impl<'d, const ID: u8> Socket<'d, ID> {
             || self.recv_arm.needs_rearm()
     }
 
-    pub fn dispatch_recv<H: Handler<ID>>(
+    pub fn needs_flush(&self) -> bool {
+        !self.pending_outgoing.is_empty() || self.recv_arm.needs_rearm()
+    }
+
+    pub fn retained_outgoing_bytes(&self) -> usize {
+        self.retained_outgoing_bytes
+    }
+
+    pub fn dispatch_recv<H: Handler<'d, ID>>(
         mut self: Pin<&mut Self>,
-        ud: backend::token::Token,
+        ud: Token,
         more: bool,
-        e: backend::RecvEvent,
-        driver: &'d Driver,
+        e: dope_core::io::RecvEvent,
         handler: &mut H,
+        driver: &mut DriverContext<'_, 'd>,
     ) {
+        let buffer = match e {
+            RecvEvent::Data { len, bid } => {
+                Some(unsafe { ProvidedLease::from_completion(driver, len, bid) })
+            }
+            _ => None,
+        };
         let msghdr = {
             let this = self.as_mut().project();
             if !this.recv_arm.epoch_match(ud, RECV_ARM_TAG) {
-                if let backend::RecvEvent::Data { bid, .. } = &e {
-                    driver.release(Some(*bid));
+                if let Some(buffer) = buffer {
+                    buffer.release(driver);
                 }
                 return;
             }
-            this.recv_arm.on_completion(more);
+            this.recv_arm.complete(more);
             this.recv_msghdr.raw()
         };
-        let (len, bid) = match e {
-            backend::RecvEvent::Data { len, bid } => (len, bid),
-            backend::RecvEvent::Failed(errno) => {
-                handler.on_error(errno, self);
-                return;
+        let Some(guard) = buffer else {
+            match e {
+                RecvEvent::Failed(errno) => {
+                    handler.error(errno, self);
+                }
+                RecvEvent::Eof
+                | RecvEvent::Cancelled
+                | RecvEvent::Starved
+                | RecvEvent::Discarded { .. } => {}
+                RecvEvent::Data { .. } => unreachable!(),
             }
-            backend::RecvEvent::Eof
-            | backend::RecvEvent::Cancelled
-            | backend::RecvEvent::Starved
-            | backend::RecvEvent::Discarded { .. } => return,
+            return;
         };
-        let (outcome, _guard) = backend::Datagram::recv_packet(driver, len, bid, msghdr);
+        let outcome = driver.driver_ref().recv_packet(&guard, msghdr);
         match outcome {
-            backend::datagram::Outcome::Packet { src, payload } => {
-                handler.on_packet(src, payload, self)
+            RecvOutcome::Packet { src, payload } => {
+                let len = payload.len();
+                handler.packet(
+                    src,
+                    Packet {
+                        guard,
+                        offset: payload.start,
+                        len,
+                    },
+                    self,
+                    driver,
+                )
             }
-            backend::datagram::Outcome::Empty => handler.on_empty(self),
-            backend::datagram::Outcome::Truncated { src, partial } => {
-                handler.on_truncated(src, partial, self)
+            RecvOutcome::Empty => {
+                handler.empty(self);
+                guard.release(driver);
             }
-            backend::datagram::Outcome::Error(errno) => handler.on_error(errno, self),
+            RecvOutcome::Truncated { src, partial } => {
+                handler.truncated(src, &guard.as_slice()[partial], self);
+                guard.release(driver);
+            }
+            RecvOutcome::Error(errno) => {
+                handler.error(errno, self);
+                guard.release(driver);
+            }
         }
     }
 
-    pub fn dispatch_send<H: Handler<ID>>(
+    pub fn dispatch_send<H: Handler<'d, ID>>(
         mut self: Pin<&mut Self>,
-        ud: backend::token::Token,
-        e: backend::SendEvent,
+        ud: Token,
+        e: dope_core::io::SendEvent,
         handler: &mut H,
+        driver: &mut DriverContext<'_, 'd>,
     ) {
-        self.as_mut().project().in_flight.remove(ud.key());
-        if let backend::SendEvent::Failed(errno) = e {
-            handler.on_error(errno, self);
+        let this = self.as_mut().project();
+        if let Some(parts) = ud.parts::<SendTag<ID>>()
+            && let Some(op) = this.in_flight.remove_parts(parts.slab())
+            && let Some(released) = op.finish(driver)
+        {
+            debug_assert!(*this.retained_outgoing_bytes >= released);
+            *this.retained_outgoing_bytes -= released;
+        }
+        if let SendEvent::Failed(errno) = e {
+            handler.error(errno, self);
         }
     }
 
-    fn arm_recv(self: Pin<&mut Self>, driver: &'d Driver) {
+    fn arm_recv(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         let this = self.project();
         let Some(ud) = this.recv_arm.begin(ID, RECV_ARM_TAG) else {
             return;
         };
-        let buf_group = driver.group();
-        let sqe =
-            backend::sqe::Sqe::recv_msg_multi(this.fixed_fd, this.recv_msghdr.raw(), buf_group, ud);
+        let buf_group = driver.buffer_group();
+        let sqe = Sqe::recv_msg_multi(this.fixed_fd, this.recv_msghdr.raw(), buf_group, ud);
         let pushed = driver.push(sqe).is_ok();
         this.recv_arm.settle(pushed);
     }
 
-    fn flush_outgoing(self: Pin<&mut Self>, driver: &'d Driver) {
+    fn flush_outgoing(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         let this = self.project();
-        while this.in_flight.len() < this.in_flight.slot_count() {
+        while this.in_flight.len() < this.in_flight.capacity() {
             let Some(out) = this.pending_outgoing.pop_front() else {
                 break;
             };
-            *this.pending_outgoing_bytes = this
-                .pending_outgoing_bytes
-                .saturating_sub(out.payload.len());
-            let Some(key) = this.in_flight.alloc(SendOp::new(out)) else {
-                break;
+            let op = SendOp::new(out);
+            let (key, msghdr) = match this.in_flight.insert_entry(op) {
+                Ok((key, op)) => (key, op.fill_msghdr()),
+                Err(op) => {
+                    let out = op.into_outgoing();
+                    let Some(entry) = this.pending_outgoing.vacant_entry() else {
+                        unreachable!()
+                    };
+                    entry.push_front(out);
+                    break;
+                }
             };
-            let msghdr_ref = this.in_flight.get_mut(key).unwrap().fill_msghdr();
-            let ud = backend::token::Token::from_key(ID, key);
+            let ud = Token::from_key(key);
             let pushed = driver
-                .push(backend::sqe::Sqe::send_msg(
-                    this.fixed_fd,
-                    msghdr_ref.raw(),
-                    ud,
-                ))
+                .push(Sqe::send_msg(this.fixed_fd, msghdr.raw(), ud))
                 .is_ok();
             if !pushed {
-                this.in_flight.remove(key);
+                if let Some(op) = this.in_flight.remove(key) {
+                    let out = op.into_outgoing();
+                    let Some(entry) = this.pending_outgoing.vacant_entry() else {
+                        unreachable!()
+                    };
+                    entry.push_front(out);
+                }
                 break;
             }
         }
     }
-}
 
-/// One `UDP_SEGMENT` send caps at 64 segments and a 65535-byte payload (Linux).
-#[cfg(target_os = "linux")]
-const MAX_GSO_SEGMENTS: usize = 64;
-#[cfg(target_os = "linux")]
-const MAX_GSO_BYTES: usize = 65535;
-
-struct Outgoing {
-    addr: SocketAddr,
-    payload: Vec<u8>,
-    /// UDP_SEGMENT size; 0 = one plain datagram.
-    #[cfg(target_os = "linux")]
-    segment_size: u16,
-}
-
-impl Outgoing {
-    fn plain(payload: Vec<u8>, addr: SocketAddr) -> Self {
-        Self {
-            addr,
-            payload,
-            #[cfg(target_os = "linux")]
-            segment_size: 0,
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn segmented(payload: Vec<u8>, addr: SocketAddr, segment_size: u16) -> Self {
-        Self {
-            addr,
-            payload,
-            segment_size,
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[repr(C, align(8))]
-struct CmsgBuf([u8; 32]);
-
-struct SendOp {
-    buf: Vec<u8>,
-    addr: backend::socket::InetAddr,
-    iov: backend::socket::IoVec,
-    msg: backend::socket::MsgHdr,
-    #[cfg(target_os = "linux")]
-    segment_size: u16,
-    #[cfg(target_os = "linux")]
-    cmsg: CmsgBuf,
-}
-
-impl SendOp {
-    fn new(out: Outgoing) -> Self {
-        Self {
-            buf: out.payload,
-            addr: backend::socket::InetAddr::from_std(out.addr),
-            iov: backend::socket::IoVec::empty(),
-            msg: backend::socket::MsgHdr::empty(),
-            #[cfg(target_os = "linux")]
-            segment_size: out.segment_size,
-            #[cfg(target_os = "linux")]
-            cmsg: CmsgBuf([0; 32]),
-        }
-    }
-
-    fn fill_msghdr(&mut self) -> &backend::socket::MsgHdr {
-        self.iov = backend::socket::IoVec::from_slice(&self.buf);
-        let name_ptr = self.addr.mut_ptr();
-        let name_len = self.addr.socklen();
-        self.msg.set_name_ptr(name_ptr.cast(), name_len);
-        self.msg.set_iov(slice::from_ref(&self.iov));
-        #[cfg(target_os = "linux")]
-        if self.segment_size > 0 {
-            self.fill_gso_cmsg();
-        }
-        &self.msg
-    }
-
-    #[cfg(target_os = "linux")]
-    fn fill_gso_cmsg(&mut self) {
-        const DATA_LEN: u32 = size_of::<u16>() as u32;
-        let seg = self.segment_size;
-        let (ptr, cap) = (self.cmsg.0.as_mut_ptr(), self.cmsg.0.len());
-        unsafe {
-            let controllen = libc::CMSG_SPACE(DATA_LEN) as usize;
-            debug_assert!(controllen <= cap);
-            self.msg.set_control(ptr.cast(), controllen);
-            let hdr = libc::CMSG_FIRSTHDR(self.msg.raw());
-            (*hdr).cmsg_level = libc::SOL_UDP;
-            (*hdr).cmsg_type = libc::UDP_SEGMENT;
-            (*hdr).cmsg_len = libc::CMSG_LEN(DATA_LEN) as _;
-            std::ptr::copy_nonoverlapping(
-                std::ptr::addr_of!(seg).cast::<u8>(),
-                libc::CMSG_DATA(hdr),
-                DATA_LEN as usize,
+    pub fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
+        let this = self.project();
+        let mut targets = Vec::new();
+        if this.recv_arm.is_armed() {
+            targets.push(
+                Token::new(ID, RECV_ARM_TAG, this.recv_arm.current_epoch()).with_kind(kind::RECV),
             );
         }
+        for index in 0..this.in_flight.capacity() as u32 {
+            if let Some(key) = this.in_flight.key(index) {
+                targets.push(Token::from_key(key));
+            }
+        }
+        if !targets.is_empty() {
+            driver.quiesce(&targets);
+        }
+        this.route.finish(driver, !targets.is_empty());
     }
 }

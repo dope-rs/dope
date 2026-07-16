@@ -1,10 +1,11 @@
-use crate::transport::Transport;
+use dope_net::Transport;
 
 #[derive(Clone, Debug)]
 pub struct Config<T: Transport> {
-    pub max_conn: usize,
+    pub max_connections: usize,
     pub bind: T::Addr,
     pub backlog: i32,
-    pub stream_opts: T::StreamOpts,
-    pub listener_opts: T::ListenerOpts,
+    pub stream: T::StreamConfig,
+    pub transport: T::ListenerConfig,
+    pub egress: dope_net::link::egress::config::Config,
 }
