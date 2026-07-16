@@ -1,0 +1,5 @@
+error: pin! is not supported in a fiber; store the owned Fiber directly
+ --> tests/ui/fiber/pin_macro.rs:5:22
+  |
+5 |         let _value = ::std::pin::pin!(dope_fiber::ready(()));
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

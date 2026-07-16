@@ -1,0 +1,8 @@
+error[E0515]: cannot return value referencing local variable `text`
+ --> tests/ui/fiber/local_borrow_escape.rs:8:9
+  |
+6 |         let borrowed = dope_fiber::ready(text.as_str()).await;
+  |                                          ---- `text` is borrowed here
+7 |         let _owner_remains_live = text.len();
+8 |         borrowed
+  |         ^^^^^^^^ returns a value referencing data owned by the current function

@@ -1,0 +1,7 @@
+error: #[handler] takes no arguments
+ --> tests/ui/fiber/handler_args.rs:1:1
+  |
+1 | #[dope_gen::handler(size = 512)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `dope_gen::handler` (in Nightly builds, run with -Z macro-backtrace for more info)

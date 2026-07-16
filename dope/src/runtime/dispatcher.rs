@@ -1,8 +1,10 @@
 use std::pin::Pin;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crate::{Driver, backend};
+use crate::DriverContext;
+use dope_core::driver::token::Token;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Idle {
     Busy,
     Park(Option<Instant>),
@@ -20,18 +22,23 @@ impl Idle {
     }
 }
 
-pub trait Dispatcher<'d> {
-    const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+/// Application-side hooks driven by a [`Session`](super::Session).
+///
+/// The runtime serializes every callback on its worker thread. `shutdown` is
+/// invoked at most once for an app scope, including interruption and unwinding
+/// paths managed by [`Session::with_app`](super::Session::with_app).
+pub trait Dispatcher<'d>: Sized {
+    const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 
-    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, driver: &'d Driver);
+    fn dispatch(self: Pin<&mut Self>, ev: dope_core::io::Event, driver: &mut DriverContext<'_, 'd>);
 
-    fn on_wake(self: Pin<&mut Self>, target: backend::token::Token, driver: &'d Driver);
+    fn activate(self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>);
 
-    fn pre_park(self: Pin<&mut Self>, driver: &'d Driver);
+    fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>);
 
     fn idle(self: Pin<&Self>) -> Idle;
 
-    fn on_shutdown(self: Pin<&mut Self>, driver: &'d Driver) {
-        let _ = (self, driver);
+    fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
+        let _ = driver;
     }
 }

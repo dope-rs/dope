@@ -2,619 +2,236 @@
 
 extern crate proc_macro;
 
+mod derive;
+mod dispatcher;
+mod fiber;
+mod forward;
+
+use dispatcher::DispatcherSpec;
+use fiber::Fiber;
+use forward::Forward;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{DeriveInput, Fields, FieldsNamed, Generics, Ident, ItemFn, Type, parse_macro_input};
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Ident, Span};
+use quote::quote;
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
+use syn::{
+    DeriveInput, Error, Expr, GenericArgument, GenericParam, ImplItem, ItemFn, ItemImpl, Lifetime,
+    LifetimeParam, Member, MetaNameValue, PathArguments, Token, parse_macro_input,
+};
+
+fn is_field_path(expression: &Expr) -> bool {
+    match expression {
+        Expr::Path(path) => {
+            path.qself.is_none()
+                && path.path.leading_colon.is_none()
+                && path.path.segments.len() == 1
+                && matches!(path.path.segments[0].arguments, PathArguments::None)
+        }
+        Expr::Field(field) => {
+            matches!(field.member, Member::Named(_)) && is_field_path(&field.base)
+        }
+        _ => false,
+    }
+}
+
+#[proc_macro_attribute]
+pub fn fiber_fn(attr: TokenStream, input: TokenStream) -> TokenStream {
+    Fiber::attribute(attr, input)
+}
+
+#[proc_macro]
+pub fn fiber(input: TokenStream) -> TokenStream {
+    Fiber::expression(input)
+}
 
 #[proc_macro_derive(Forward, attributes(forward))]
 pub fn forward(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (_, ty_generics, where_clause) = input.generics.split_for_impl();
-    let (brand, fresh) = brand_lifetime(&input.generics);
-    let impl_generics = {
-        let params = input.generics.params.iter();
-        quote! { <#fresh #(#params),*> }
-    };
-
-    let data = match &input.data {
-        syn::Data::Struct(s) => s,
-        _ => {
-            return syn::Error::new_spanned(name, "Forward requires a struct")
-                .to_compile_error()
-                .into();
-        }
-    };
-    let fields = match &data.fields {
-        Fields::Named(f) => &f.named,
-        _ => {
-            return syn::Error::new_spanned(name, "Forward requires named fields")
-                .to_compile_error()
-                .into();
-        }
-    };
-    let mut marked: Vec<&Ident> = Vec::new();
-    for f in fields {
-        if f.attrs.iter().any(|a| a.path().is_ident("forward")) {
-            marked.push(f.ident.as_ref().expect("named field has ident"));
-        }
-    }
-    let field = match marked.as_slice() {
-        [one] => *one,
-        [] => {
-            return syn::Error::new_spanned(
-                name,
-                "Forward needs exactly one field marked `#[forward]`",
-            )
-            .to_compile_error()
-            .into();
-        }
-        _ => {
-            return syn::Error::new_spanned(name, "Forward accepts only one `#[forward]` field")
-                .to_compile_error()
-                .into();
-        }
-    };
-
-    let field_ty: Option<&Type> = fields.iter().find_map(|f| {
-        let ident = f.ident.as_ref()?;
-        if ident == field { Some(&f.ty) } else { None }
-    });
-    let id_const = match field_ty {
-        Some(ty) => quote! {
-            const ID: u8 = <#ty as ::dope::manifold::Manifold<#brand>>::ID;
-        },
-        None => quote! {},
-    };
-    let field_ty_tokens = match field_ty {
-        Some(ty) => quote! { #ty },
-        None => quote! { _ },
-    };
-    quote! {
-        impl #impl_generics ::dope::manifold::Manifold<#brand> for #name #ty_generics
-        #where_clause
-        {
-            #id_const
-            fn dispatch(
-                self: ::core::pin::Pin<&mut Self>,
-                ev: ::dope::Event,
-                driver: &#brand ::dope::Driver,
-            ) {
-                let _ = <#field_ty_tokens as ::dope::manifold::Manifold<#brand>>::ID;
-                ::dope::manifold::Manifold::dispatch(self.project().#field, ev, driver)
-            }
-
-            fn pre_park(self: ::core::pin::Pin<&mut Self>, driver: &#brand ::dope::Driver) {
-                ::dope::manifold::Manifold::pre_park(self.project().#field, driver)
-            }
-            fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::Idle {
-                ::dope::manifold::Manifold::idle(self.project_ref().#field)
-            }
-            fn on_wake(
-                self: ::core::pin::Pin<&mut Self>,
-                target: ::dope::manifold::route::TypedToken<Self>,
-                driver: &#brand ::dope::Driver,
-            ) {
-                // SAFETY: Forward propagates Manifold::ID, so wrapper's TypedToken<Self> bits match inner field's Manifold::ID.
-                let __typed = unsafe { ::dope::manifold::route::TypedToken::<#field_ty_tokens>::from_raw_token(target.token()) };
-                ::dope::manifold::Manifold::on_wake(self.project().#field, __typed, driver)
-            }
-        }
-    }
-    .into()
-}
-
-struct ManifoldField {
-    name: Ident,
-    ty: Type,
-    optional: bool,
-    const_ident: Ident,
-}
-
-impl ManifoldField {
-    fn inner_ty(&self) -> proc_macro2::TokenStream {
-        if self.optional {
-            if let Type::Path(tp) = &self.ty
-                && let Some(seg) = tp.path.segments.last()
-                && seg.ident == "Option"
-                && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
-            {
-                for a in &args.args {
-                    if let syn::GenericArgument::Type(inner) = a {
-                        return quote! { #inner };
-                    }
-                }
-            }
-            let ty = &self.ty;
-            quote! { #ty }
-        } else {
-            let ty = &self.ty;
-            quote! { #ty }
-        }
-    }
-
-    fn wrap_body(
-        &self,
-        accessor_optional: proc_macro2::TokenStream,
-        accessor_direct: proc_macro2::TokenStream,
-        body_with: impl FnOnce(proc_macro2::TokenStream) -> proc_macro2::TokenStream,
-    ) -> proc_macro2::TokenStream {
-        let field = &self.name;
-        if self.optional {
-            let body = body_with(quote! { __inner });
-            quote! {
-                if let ::core::option::Option::Some(__inner) = __this.#field.#accessor_optional {
-                    #body
-                }
-            }
-        } else {
-            body_with(quote! { __this.#field.#accessor_direct })
-        }
-    }
-}
-
-struct DispatcherSpec {
-    name: Ident,
-    generics: Generics,
-    fields: Vec<ManifoldField>,
-    coordinate: bool,
-}
-
-impl DispatcherSpec {
-    fn parse(
-        name: Ident,
-        generics: Generics,
-        named: &FieldsNamed,
-        coordinate: bool,
-    ) -> Result<Self, syn::Error> {
-        let mut tagged: Vec<(Ident, Type, bool)> = Vec::new();
-        let mut any_tagged = false;
-        let mut all: Vec<(Ident, Type)> = Vec::new();
-        for f in &named.named {
-            let ident = f.ident.clone().expect("named field");
-            let ty = f.ty.clone();
-            all.push((ident.clone(), ty.clone()));
-            let mut is_manifold = false;
-            let mut optional = false;
-            for attr in &f.attrs {
-                if !attr.path().is_ident("manifold") {
-                    continue;
-                }
-                is_manifold = true;
-                if matches!(attr.meta, syn::Meta::Path(_)) {
-                    continue;
-                }
-                attr.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("optional") {
-                        optional = true;
-                        Ok(())
-                    } else {
-                        Err(meta.error("unknown `manifold` option"))
-                    }
-                })?;
-            }
-            if is_manifold {
-                any_tagged = true;
-                tagged.push((ident, ty, optional));
-            }
-        }
-
-        let raw: Vec<(Ident, Type, bool)> = if any_tagged {
-            tagged
-        } else {
-            all.into_iter().map(|(i, t)| (i, t, false)).collect()
-        };
-
-        let mut fields = Vec::with_capacity(raw.len());
-        for (ident, ty, optional) in raw {
-            let const_ident = format_ident!("{}_ROUTE", ident.to_string().to_uppercase());
-            fields.push(ManifoldField {
-                name: ident,
-                ty,
-                optional,
-                const_ident,
-            });
-        }
-
-        Ok(Self {
-            name,
-            generics,
-            fields,
-            coordinate,
-        })
-    }
-
-    fn route_consts(&self) -> proc_macro2::TokenStream {
-        let name = &self.name;
-        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
-        let consts = self.fields.iter().map(|f| {
-            let const_name = &f.const_ident;
-            let inner = f.inner_ty();
-            quote! {
-                pub const #const_name: u8 = <#inner as ::dope::manifold::Manifold>::ID;
-            }
-        });
-        let uniqueness_const = self.uniqueness_const();
-        quote! {
-            impl #impl_generics #name #ty_generics #where_clause {
-                #(#consts)*
-                #uniqueness_const
-            }
-        }
-    }
-
-    fn uniqueness_const(&self) -> proc_macro2::TokenStream {
-        if self.fields.len() < 2 {
-            return quote! {};
-        }
-        let n = self.fields.len();
-        let ids = self.fields.iter().map(|f| {
-            let inner = f.inner_ty();
-            quote! { <#inner as ::dope::manifold::Manifold>::ID }
-        });
-        quote! {
-            #[doc(hidden)]
-            pub const __MANIFOLD_ID_UNIQUE: () = {
-                let __ids: [u8; #n] = [ #(#ids),* ];
-                let mut __i = 0;
-                while __i < __ids.len() {
-                    let mut __j = __i + 1;
-                    while __j < __ids.len() {
-                        if __ids[__i] == __ids[__j] {
-                            ::core::panic!(
-                                "Dispatcher: duplicate Manifold::ID detected across fields"
-                            );
-                        }
-                        __j += 1;
-                    }
-                    __i += 1;
-                }
-            };
-        }
-    }
-
-    fn manifold_impl(&self) -> proc_macro2::TokenStream {
-        let name = &self.name;
-        let (_, ty_generics, where_clause) = self.generics.split_for_impl();
-        let (brand, fresh) = brand_lifetime(&self.generics);
-        let impl_generics = {
-            let params = self.generics.params.iter();
-            quote! { <#fresh #(#params),*> }
-        };
-        let dispatch_arms = self.dispatch_arms(&brand);
-        let wake_arms = self.wake_arms();
-        let tick_calls = self.tick_calls();
-        let post_coordinate_tick_calls = if self.coordinate {
-            self.tick_calls()
-        } else {
-            Vec::new()
-        };
-        let shutdown_calls = self.shutdown_calls();
-        let idle_expr = self.idle_expr();
-        let uniqueness_use = if self.fields.len() >= 2 {
-            quote! { let _: () = Self::__MANIFOLD_ID_UNIQUE; }
-        } else {
-            quote! {}
-        };
-        let coordinate_tail = if self.coordinate {
-            quote! {
-                <#name #ty_generics>::coordinate(self.as_mut(), __driver);
-            }
-        } else {
-            quote! {}
-        };
-        quote! {
-            impl #impl_generics ::dope::Dispatcher<#brand> for #name #ty_generics #where_clause {
-                fn dispatch(
-                    self: ::core::pin::Pin<&mut Self>,
-                    __ev: ::dope::Event,
-                    __driver: &#brand ::dope::Driver,
-                ) {
-                    #uniqueness_use
-                    let mut __this = self.project();
-                    let __route = __ev.route();
-                    match __route {
-                        #(#dispatch_arms)*
-                        _ => {}
-                    }
-                }
-                fn on_wake(
-                    self: ::core::pin::Pin<&mut Self>,
-                    __target: ::dope::runtime::token::Token,
-                    __driver: &#brand ::dope::Driver,
-                ) {
-                    let mut __this = self.project();
-                    let __route = __target.route();
-                    match __route {
-                        #(#wake_arms)*
-                        _ => {}
-                    }
-                }
-                fn pre_park(mut self: ::core::pin::Pin<&mut Self>, __driver: &#brand ::dope::Driver) {
-                    {
-                        let mut __this = self.as_mut().project();
-                        #(#tick_calls)*
-                    }
-                    #coordinate_tail
-                    {
-                        let mut __this = self.as_mut().project();
-                        #(#post_coordinate_tick_calls)*
-                    }
-                }
-                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::Idle {
-                    let __this = self.project_ref();
-                    #idle_expr
-                }
-                fn on_shutdown(mut self: ::core::pin::Pin<&mut Self>, __driver: &#brand ::dope::Driver) {
-                    let mut __this = self.as_mut().project();
-                    #(#shutdown_calls)*
-                }
-            }
-        }
-    }
-
-    fn dispatch_arms(&self, brand: &proc_macro2::TokenStream) -> Vec<proc_macro2::TokenStream> {
-        self.fields
-            .iter()
-            .map(|f| {
-                let const_name = &f.const_ident;
-                let inner = f.inner_ty();
-                let body = f.wrap_body(quote! { as_pin_mut() }, quote! { as_mut() }, |recv| {
-                    quote! {
-                        let _ = <#inner as ::dope::manifold::Manifold<#brand>>::ID;
-                        ::dope::manifold::Manifold::dispatch(#recv, __ev, __driver);
-                    }
-                });
-                quote! { Self::#const_name => { #body } }
-            })
-            .collect()
-    }
-
-    fn wake_arms(&self) -> Vec<proc_macro2::TokenStream> {
-        self.fields
-            .iter()
-            .map(|f| {
-                let const_name = &f.const_ident;
-                let inner = f.inner_ty();
-                let body = f.wrap_body(
-                    quote! { as_pin_mut() },
-                    quote! { as_mut() },
-                    |recv| {
-                        quote! {
-                            // SAFETY: gate verified __target.route() == <#inner as ::dope::manifold::Manifold>::ID.
-                            let __typed = unsafe { ::dope::manifold::route::TypedToken::<#inner>::from_raw_token(__target) };
-                            ::dope::manifold::Manifold::on_wake(#recv, __typed, __driver);
-                        }
-                    },
-                );
-                quote! { Self::#const_name => { #body } }
-            })
-            .collect()
-    }
-
-    fn shutdown_calls(&self) -> Vec<proc_macro2::TokenStream> {
-        self.fields
-            .iter()
-            .map(|f| {
-                f.wrap_body(quote! { as_pin_mut() }, quote! { as_mut() }, |recv| {
-                    quote! {
-                        ::dope::manifold::Manifold::on_shutdown(#recv, __driver);
-                    }
-                })
-            })
-            .collect()
-    }
-
-    fn tick_calls(&self) -> Vec<proc_macro2::TokenStream> {
-        self.fields
-            .iter()
-            .map(|f| {
-                f.wrap_body(quote! { as_pin_mut() }, quote! { as_mut() }, |recv| {
-                    quote! {
-                        ::dope::manifold::Manifold::pre_park(#recv, __driver);
-                    }
-                })
-            })
-            .collect()
-    }
-
-    fn idle_expr(&self) -> proc_macro2::TokenStream {
-        if self.fields.is_empty() {
-            return quote! { ::dope::Idle::Park(::core::option::Option::None) };
-        }
-        let arms = self.fields.iter().map(|f| {
-            f.wrap_body(quote! { as_pin_ref() }, quote! { as_ref() }, |recv| {
-                quote! {
-                    match ::dope::manifold::Manifold::idle(#recv) {
-                        ::dope::Idle::Busy => return ::dope::Idle::Busy,
-                        __park => __acc = __acc.reduce(__park),
-                    }
-                }
-            })
-        });
-        quote! {
-            {
-                let mut __acc = ::dope::Idle::Park(::core::option::Option::None);
-                #(#arms)*
-                __acc
-            }
-        }
-    }
-
-    fn handles_impl(&self) -> proc_macro2::TokenStream {
-        let name = &self.name;
-        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
-        let handle_fns = self.fields.iter().map(|f| {
-            let field = &f.name;
-            let fn_name = format_ident!("{}_handle", field);
-            if f.optional {
-                let inner = f.inner_ty();
-                quote! {
-                    #[inline(always)]
-                    pub fn #fn_name<'__d>(
-                        self: ::core::pin::Pin<&mut Self>,
-                    ) -> ::core::option::Option<::dope::fiber::Holding<'__d, #inner>>
-                    where
-                        Self: '__d,
-                    {
-                        // SAFETY: pinned Self's field address is stable for Self's pin scope; thread-per-core; the brand '__d is bounded by Self: '__d.
-                        let __this = unsafe { ::core::pin::Pin::get_unchecked_mut(self) };
-                        __this.#field.as_mut().map(|__m| {
-                            let __ptr = ::core::ptr::NonNull::from(__m);
-                            // SAFETY: same pin/brand argument as the non-optional arm; Some payload address is stable while pinned.
-                            unsafe { ::dope::fiber::Holding::from_raw(__ptr) }
-                        })
-                    }
-                }
-            } else {
-                let ty = &f.ty;
-                quote! {
-                    #[inline(always)]
-                    pub fn #fn_name<'__d>(
-                        self: ::core::pin::Pin<&mut Self>,
-                    ) -> ::dope::fiber::Holding<'__d, #ty>
-                    where
-                        Self: '__d,
-                    {
-                        // SAFETY: pinned Self's field address is stable for Self's pin scope; thread-per-core; the brand '__d is bounded by Self: '__d.
-                        let __this = unsafe { ::core::pin::Pin::get_unchecked_mut(self) };
-                        let __ptr = ::core::ptr::NonNull::from(&mut __this.#field);
-                        unsafe { ::dope::fiber::Holding::from_raw(__ptr) }
-                    }
-                }
-            }
-        });
-        quote! {
-            impl #impl_generics #name #ty_generics #where_clause {
-                #(#handle_fns)*
-            }
-        }
-    }
+    Forward::derive(input)
 }
 
 #[proc_macro_derive(Dispatcher, attributes(manifold, coordinate))]
 pub fn dispatcher(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let name = input.ident;
-    let generics = input.generics;
-    let coordinate = input.attrs.iter().any(|a| a.path().is_ident("coordinate"));
-    let data = match &input.data {
-        syn::Data::Struct(s) => s,
-        _ => {
-            return syn::Error::new_spanned(&name, "Dispatcher requires a struct")
-                .to_compile_error()
-                .into();
-        }
-    };
-    let named = match &data.fields {
-        Fields::Named(n) => n,
-        _ => {
-            return syn::Error::new_spanned(&name, "Dispatcher requires named fields")
-                .to_compile_error()
-                .into();
-        }
-    };
-    let spec = match DispatcherSpec::parse(name, generics, named, coordinate) {
-        Ok(s) => s,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    let route_consts = spec.route_consts();
-    let manifold_impl = spec.manifold_impl();
-    let handles_impl = spec.handles_impl();
-    quote! {
-        #route_consts
-        #manifold_impl
-        #handles_impl
-    }
-    .into()
-}
-
-const HANDLER_DEFAULT_SIZE: usize = 256;
-
-struct HandlerAttr {
-    size: usize,
-}
-
-impl HandlerAttr {
-    fn parse(attr: proc_macro2::TokenStream) -> Result<Self, syn::Error> {
-        if attr.is_empty() {
-            return Ok(Self {
-                size: HANDLER_DEFAULT_SIZE,
-            });
-        }
-        let meta: syn::Meta = syn::parse2(attr)?;
-        let nv = match meta {
-            syn::Meta::NameValue(nv) => nv,
-            other => {
-                return Err(syn::Error::new_spanned(
-                    other,
-                    "#[handler] expects `size = N`",
-                ));
-            }
-        };
-        if !nv.path.is_ident("size") {
-            return Err(syn::Error::new_spanned(
-                nv.path,
-                "#[handler] only supports `size = N`",
-            ));
-        }
-        let lit = match nv.value {
-            syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Int(lit),
-                ..
-            }) => lit,
-            other => {
-                return Err(syn::Error::new_spanned(
-                    other,
-                    "#[handler(size = ...)] expects integer literal",
-                ));
-            }
-        };
-        Ok(Self {
-            size: lit.base10_parse::<usize>()?,
-        })
-    }
+    DispatcherSpec::derive(input)
 }
 
 #[proc_macro_attribute]
 pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let size = match HandlerAttr::parse(attr.into()) {
-        Ok(h) => h.size,
-        Err(err) => return err.to_compile_error().into(),
-    };
-
-    let mut item_fn = parse_macro_input!(item as ItemFn);
-
-    if item_fn.sig.asyncness.take().is_none() {
-        return syn::Error::new_spanned(&item_fn.sig, "#[handler] requires `async fn`")
+    if !attr.is_empty() {
+        return Error::new(Span::call_site(), "#[handler] takes no arguments")
             .to_compile_error()
             .into();
     }
 
-    let output_ty = match &item_fn.sig.output {
-        syn::ReturnType::Default => quote! { () },
-        syn::ReturnType::Type(_, ty) => quote! { #ty },
-    };
+    let mut item_fn = parse_macro_input!(item as ItemFn);
 
-    item_fn.sig.output = syn::parse_quote! {
-        -> ::dope::o3::task::InlineFuture<'static, #output_ty, #size>
-    };
-
-    let original_block = item_fn.block.clone();
-    let new_block: syn::Block = syn::parse_quote! {{
-        ::dope::o3::task::InlineFuture::new(async move #original_block)
-    }};
-    *item_fn.block = new_block;
-
-    quote! { #item_fn }.into()
+    if item_fn.sig.asyncness.is_none() {
+        return Error::new_spanned(&item_fn.sig, "#[handler] requires `async fn`")
+            .to_compile_error()
+            .into();
+    }
+    let driver: syn::Lifetime = syn::parse_quote!('__dope_handler);
+    item_fn.sig.generics.params.insert(
+        0,
+        GenericParam::Lifetime(LifetimeParam::new(driver.clone())),
+    );
+    Fiber::attribute(quote!(#driver).into(), quote!(#item_fn).into())
 }
 
-fn brand_lifetime(generics: &Generics) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    match generics.lifetimes().next() {
-        Some(lt) => {
-            let lt = &lt.lifetime;
-            (quote! { #lt }, quote! {})
+#[proc_macro_attribute]
+pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let arguments = match Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse(attr) {
+        Ok(arguments) => arguments,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let mut codec: Option<Expr> = None;
+    let mut io: Option<Expr> = None;
+    for argument in arguments {
+        let Some(key) = argument.path.get_ident() else {
+            return Error::new_spanned(
+                argument.path,
+                "connector_session arguments must be identifiers",
+            )
+            .to_compile_error()
+            .into();
+        };
+        let target = match key.to_string().as_str() {
+            "codec" => &mut codec,
+            "io" => &mut io,
+            _ => {
+                return Error::new_spanned(key, "connector_session supports only `codec` and `io`")
+                    .to_compile_error()
+                    .into();
+            }
+        };
+        if target.replace(argument.value).is_some() {
+            return Error::new_spanned(key, "duplicate connector_session argument")
+                .to_compile_error()
+                .into();
         }
-        None => (quote! { '__d }, quote! { '__d, }),
     }
+    let codec = match codec {
+        Some(codec) => codec,
+        None => {
+            return Error::new(Span::call_site(), "missing `codec` argument")
+                .to_compile_error()
+                .into();
+        }
+    };
+    let io = match io {
+        Some(io) => io,
+        None => {
+            return Error::new(Span::call_site(), "missing `io` argument")
+                .to_compile_error()
+                .into();
+        }
+    };
+    let mut item = match syn::parse::<ItemImpl>(item) {
+        Ok(item) => item,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let Some(session) = item
+        .trait_
+        .as_ref()
+        .and_then(|(_, path, _)| path.segments.last())
+    else {
+        return Error::new_spanned(
+            &item.self_ty,
+            "#[connector_session] requires an impl of connector::Session",
+        )
+        .to_compile_error()
+        .into();
+    };
+    if session.ident != "Session" {
+        return Error::new_spanned(
+            &item.self_ty,
+            "#[connector_session] requires an impl of connector::Session",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let driver = match &session.arguments {
+        PathArguments::AngleBracketed(arguments) => arguments.args.iter().find_map(|argument| {
+            if let GenericArgument::Lifetime(lifetime) = argument {
+                Some(lifetime.clone())
+            } else {
+                None
+            }
+        }),
+        PathArguments::None => None,
+        PathArguments::Parenthesized(_) => None,
+    }
+    .unwrap_or_else(|| Lifetime::new("'_", Span::call_site()));
+    for method in ["codec", "activate", "drain_requests"] {
+        if item
+            .items
+            .iter()
+            .any(|member| matches!(member, ImplItem::Fn(function) if function.sig.ident == method))
+        {
+            return Error::new_spanned(
+                &item.self_ty,
+                format!("#[connector_session] generates `{method}`; remove the duplicate"),
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
+    let dope = match crate_name("dope") {
+        Ok(FoundCrate::Itself) => quote!(crate),
+        Ok(FoundCrate::Name(name)) => {
+            let name = Ident::new(&name, Span::call_site());
+            quote!(::#name)
+        }
+        Err(error) => {
+            return Error::new(
+                Span::call_site(),
+                format!("connector_session could not resolve the `dope` crate: {error}"),
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+    if !is_field_path(&codec) {
+        return Error::new_spanned(
+            codec,
+            "`codec` must be a field path such as `protocol.codec`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !is_field_path(&io) {
+        return Error::new_spanned(io, "`io` must be a field path such as `port.io`")
+            .to_compile_error()
+            .into();
+    }
+    item.items.push(syn::parse_quote! {
+        fn codec(&self) -> &Self::Codec {
+            &self.#codec
+        }
+    });
+    item.items.push(syn::parse_quote! {
+        fn activate(
+            &self,
+            token: #dope::driver::token::Token,
+            ready: #dope::driver::ready::ReadyKey<#driver>,
+        ) {
+            assert!(self.#io.activate(token, ready));
+        }
+    });
+    item.items.push(syn::parse_quote! {
+        fn drain_requests(
+            &self,
+            token: #dope::driver::token::Token,
+            push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        ) -> #dope::manifold::connector::Requests {
+            match self.#io.drain_requests(token, push) {
+                Some(requests) => requests,
+                None => #dope::manifold::connector::Requests::default(),
+            }
+        }
+    });
+    quote!(#item).into()
 }

@@ -1,465 +1,316 @@
+use std::cell::Cell;
 use std::io;
 use std::marker::PhantomData;
-use std::os::fd::RawFd;
+use std::os::fd::OwnedFd;
 use std::pin::Pin;
-use std::task::Waker;
+use std::rc::Rc;
 
-use pin_project::pin_project;
+use dope_core::driver::control::ContextControl;
+use o3::buffer::Block;
 
-use crate::backend::file::OpenPath;
-use crate::backend::socket::FdSlot;
-use crate::backend::sqe::Sqe;
-use crate::fiber::pending::{Pending, Resolve};
-use crate::manifold::Manifold;
-use crate::manifold::route::TypedToken;
-use crate::slab::Slab;
-use crate::{Drive, Driver, backend};
+mod metadata;
+mod open;
+mod read;
+mod source;
+mod splice;
+mod stat;
+mod table;
 
-#[derive(Clone, Copy)]
-pub enum OpenDone {
-    Fd(RawFd),
-    Failed(i32),
-}
+pub use metadata::Metadata;
+pub use open::OpenDone;
+pub use read::ReadDone;
+#[doc(hidden)]
+pub use source::SourceRef;
+pub use source::{Direct, Fixed, Source};
+pub use splice::SpliceDone;
+pub use stat::StatDone;
 
-#[derive(Clone, Copy)]
-pub enum ReadDone {
-    Read(u32),
-    Eof,
-    Failed(i32),
-}
+use open::OpenTable;
+use read::ReadTable;
+use splice::SpliceTable;
+use stat::StatTable;
 
-#[derive(Clone, Copy)]
-pub enum SpliceDone {
-    Moved(u32),
-    Eof,
-    Failed(i32),
-}
+use dope::DriverContext;
+use dope::manifold::Manifold;
+use dope::manifold::TypedToken;
+use dope::runtime::Idle;
+use dope_core::driver::ready::CompletionWaker;
+use dope_core::driver::route::Route;
+use dope_core::driver::token::kind::{READ, READ_BLOCK};
+use dope_core::driver::token::{SlotIndex, Token};
+use dope_core::io::EventKind;
+use dope_core::io::fd::Fd;
+use dope_core::io::file::OpenPath;
 
 pub enum FileOutcome<R> {
     Done(R),
     Pending,
 }
 
-// Runtime-owned read buffer: the kernel SQE points at it, so it must outlive the
-// future. `orphaned` keeps it alive past a mid-read drop until the CQE lands.
-struct ReadHold {
-    buf: Vec<u8>,
-    orphaned: bool,
-}
-
-// `fixed`: a raw openat's CQE carries an fd to close if abandoned; a fixed-table
-// open's result is 0 (fd lands in a caller-owned slot) and must never be closed.
-#[derive(Clone, Copy)]
-struct OpenHold {
-    orphaned: bool,
-    fixed: bool,
-}
-
-#[pin_project(!Unpin)]
-pub struct Files<const ID: u8, const N: usize> {
-    opens: Slab<OpenHold>,
-    reads: Slab<ReadHold>,
-    splices: Slab<()>,
-    open_pending: Pending<OpenDone>,
-    read_pending: Pending<ReadDone>,
-    splice_pending: Pending<SpliceDone>,
+pub struct Files<'d, const ID: u8, const N: usize> {
+    route: Route<'d, ID>,
+    opens: OpenTable<'d, ID>,
+    reads: ReadTable<'d, Vec<u8>, ID, READ>,
+    block_reads: ReadTable<'d, Block, ID, READ_BLOCK>,
+    splices: SpliceTable<'d, ID>,
+    stats: StatTable<'d, ID>,
+    poison_route: Cell<bool>,
     _id: PhantomData<fn() -> [(); N]>,
 }
 
-impl<const ID: u8, const N: usize> Default for Files<ID, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct FilesFactory<const ID: u8, const N: usize>;
 
-impl<const ID: u8, const N: usize> Files<ID, N> {
-    pub fn new() -> Self {
-        Self {
-            opens: Slab::new(N),
-            reads: Slab::new(N),
-            splices: Slab::new(N),
-            open_pending: Pending::default(),
-            read_pending: Pending::default(),
-            splice_pending: Pending::default(),
+impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
+    pub fn new(driver: &mut DriverContext<'_, 'd>) -> io::Result<Self> {
+        Ok(Self {
+            route: Route::reserve(driver)?,
+            opens: OpenTable::new(N),
+            reads: ReadTable::new(N),
+            block_reads: ReadTable::new(N),
+            splices: SpliceTable::new(N),
+            stats: StatTable::new(N),
+            poison_route: Cell::new(false),
             _id: PhantomData,
-        }
-    }
-
-    pub fn open_held<'h, 'd, 'p>(
-        this: crate::fiber::Holding<'h, Self>,
-        driver: &'d Driver,
-        path: &'p OpenPath,
-        flags: i32,
-    ) -> crate::fiber::file::Open<'h, 'd, 'p, ID, N> {
-        crate::fiber::file::Open::new(this, driver, path, flags, None)
-    }
-
-    pub fn open_fixed_held<'h, 'd, 'p>(
-        this: crate::fiber::Holding<'h, Self>,
-        driver: &'d Driver,
-        path: &'p OpenPath,
-        flags: i32,
-        slot: FdSlot,
-    ) -> crate::fiber::file::Open<'h, 'd, 'p, ID, N> {
-        crate::fiber::file::Open::new(this, driver, path, flags, Some(slot))
-    }
-
-    pub fn read_held<'h, 'd>(
-        this: crate::fiber::Holding<'h, Self>,
-        driver: &'d Driver,
-        src: crate::fiber::file::Source,
-        buf: Vec<u8>,
-        offset: u64,
-    ) -> crate::fiber::file::Read<'h, 'd, ID, N> {
-        crate::fiber::file::Read::new(this, driver, src, buf, offset)
-    }
-
-    pub fn splice_to_pipe_held<'h, 'd>(
-        this: crate::fiber::Holding<'h, Self>,
-        driver: &'d Driver,
-        src: crate::fiber::file::Source,
-        off_in: i64,
-        pipe_write_fd: RawFd,
-        len: u32,
-    ) -> crate::fiber::file::SpliceToPipe<'h, 'd, ID, N> {
-        crate::fiber::file::SpliceToPipe::new(this, driver, src, off_in, pipe_write_fd, len)
-    }
-
-    pub fn alloc_fixed_slot(driver: &Driver, count: u32) -> io::Result<FdSlot> {
-        let base = driver.reserve_outbound(count)?;
-        Ok(base.absolute(backend::token::LocalIdx::new(0)))
-    }
-
-    fn token(key: backend::token::Key) -> backend::token::Token {
-        backend::token::Token::from_key(ID, key)
-    }
-
-    pub(crate) fn begin_open(
-        self: Pin<&mut Self>,
-        path: &OpenPath,
-        flags: i32,
-        driver: &Driver,
-    ) -> Option<backend::token::Token> {
-        let this = self.project();
-        let key = this.opens.alloc(OpenHold {
-            orphaned: false,
-            fixed: false,
-        })?;
-        let token = Self::token(key);
-        if driver
-            .push(backend::file::open_at(path, flags, token))
-            .is_err()
-        {
-            this.opens.remove(key);
-            return None;
-        }
-        Some(token)
-    }
-
-    pub(crate) fn begin_open_fixed(
-        self: Pin<&mut Self>,
-        path: &OpenPath,
-        flags: i32,
-        slot: FdSlot,
-        driver: &Driver,
-    ) -> Option<backend::token::Token> {
-        let this = self.project();
-        let key = this.opens.alloc(OpenHold {
-            orphaned: false,
-            fixed: true,
-        })?;
-        let token = Self::token(key);
-        let flags = flags & !libc::O_CLOEXEC;
-        let sqe = match Sqe::openat_fixed(libc::AT_FDCWD, path.as_ptr(), flags, 0, slot, token) {
-            Ok(sqe) => sqe,
-            Err(_) => {
-                this.opens.remove(key);
-                return None;
-            }
-        };
-        if driver.push(sqe).is_err() {
-            this.opens.remove(key);
-            return None;
-        }
-        Some(token)
-    }
-
-    pub(crate) fn begin_read(
-        self: Pin<&mut Self>,
-        fd: RawFd,
-        buf: Vec<u8>,
-        offset: u64,
-        driver: &Driver,
-    ) -> Result<backend::token::Token, Vec<u8>> {
-        let this = self.project();
-        Self::submit_read(this.reads, driver, buf, |held, token| {
-            backend::file::read_fd(fd, held, offset, token)
         })
     }
 
-    pub(crate) fn begin_read_fixed(
-        self: Pin<&mut Self>,
-        slot: FdSlot,
+    pub fn factory() -> FilesFactory<ID, N> {
+        FilesFactory
+    }
+
+    pub fn manifold(&self) -> FileManifold<'_, 'd, ID, N> {
+        FileManifold { files: self }
+    }
+
+    fn record_quiesce(&self, quiesced: bool) {
+        if quiesced {
+            self.poison_route.set(true);
+        }
+    }
+
+    pub fn alloc_fixed(&self, driver: &mut DriverContext<'_, 'd>) -> io::Result<Fd<'d>> {
+        let base = driver.reserve_outbound(1)?;
+        Ok(unsafe { Fd::from_raw_slot(base.absolute(SlotIndex::new(0)), driver.driver_ref()) })
+    }
+
+    #[doc(hidden)]
+    pub fn begin_open(
+        &self,
+        path: OpenPath,
+        flags: i32,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> Option<Token> {
+        self.opens.begin(path, flags, driver)
+    }
+
+    #[doc(hidden)]
+    pub fn begin_open_fixed(
+        &self,
+        path: OpenPath,
+        flags: i32,
+        fd: &Fd<'_>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> Option<Token> {
+        self.opens.begin_fixed(path, flags, fd, driver)
+    }
+
+    #[doc(hidden)]
+    pub fn begin_read(
+        &self,
+        source: SourceRef<'d>,
         buf: Vec<u8>,
         offset: u64,
-        driver: &Driver,
-    ) -> Result<backend::token::Token, Vec<u8>> {
-        let this = self.project();
-        Self::submit_read(this.reads, driver, buf, |held, token| {
-            Sqe::read_fixed_file(slot, held, offset, token)
-        })
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> Result<Token, Vec<u8>> {
+        self.reads.begin(source, buf, offset, driver)
     }
 
-    // Buffer moves into the slab so the SQE points at stable, owned storage;
-    // recovered via `Err` on any submit failure.
-    fn submit_read(
-        reads: &mut Slab<ReadHold>,
-        driver: &Driver,
-        buf: Vec<u8>,
-        make_sqe: impl FnOnce(&mut [u8], backend::token::Token) -> Sqe,
-    ) -> Result<backend::token::Token, Vec<u8>> {
-        let Some(reservation) = reads.reserve() else {
-            return Err(buf);
-        };
-        let key = reservation.fill(ReadHold {
-            buf,
-            orphaned: false,
-        });
-        let token = Self::token(key);
-        let held = reads.at_index_mut(key.index()).expect("just filled");
-        let sqe = make_sqe(&mut held.buf, token);
-        if driver.push(sqe).is_err() {
-            let buf = std::mem::take(&mut held.buf);
-            reads.remove(key);
-            return Err(buf);
-        }
-        Ok(token)
+    #[doc(hidden)]
+    pub fn begin_block_read(
+        &self,
+        source: SourceRef<'d>,
+        buf: Block,
+        offset: u64,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> Result<Token, Block> {
+        self.block_reads.begin(source, buf, offset, driver)
     }
 
-    pub(crate) fn begin_splice_to_pipe(
-        self: Pin<&mut Self>,
-        fd_in: RawFd,
+    #[doc(hidden)]
+    pub fn begin_splice_to_pipe(
+        &self,
+        source: Rc<OwnedFd>,
         off_in: i64,
-        pipe_write_fd: RawFd,
+        sink: Rc<OwnedFd>,
         len: u32,
-        driver: &Driver,
-    ) -> Option<backend::token::Token> {
-        let this = self.project();
-        let key = this.splices.alloc(())?;
-        let token = backend::token::Token::from_key(ID, key);
-        if driver
-            .push(backend::file::splice_fd_to_pipe(
-                fd_in,
-                off_in,
-                pipe_write_fd,
-                len,
-                token,
-            ))
-            .is_err()
-        {
-            this.splices.remove(key);
-            return None;
-        }
-        Some(token)
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> Option<Token> {
+        self.splices.begin(source, off_in, sink, len, driver)
     }
 
-    pub(crate) fn poll_splice(
-        self: Pin<&mut Self>,
-        token: backend::token::Token,
-        waker: &Waker,
-    ) -> FileOutcome<SpliceDone> {
-        let tag = token.slot().raw();
-        let this = self.project();
-        match this.splice_pending.poll(tag, waker) {
-            Resolve::Ready(done) => {
-                this.splices.remove(token.key());
-                FileOutcome::Done(done)
-            }
-            Resolve::Pending => FileOutcome::Pending,
-        }
+    #[doc(hidden)]
+    pub fn begin_stat_path(
+        &self,
+        path: OpenPath,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> Option<Token> {
+        self.stats.begin_path(path, driver)
     }
 
-    pub(crate) fn cancel_splice(
-        self: Pin<&mut Self>,
-        token: backend::token::Token,
-        driver: &Driver,
-    ) {
-        let this = self.project();
-        if this.splices.get(token.key()).is_none() {
-            this.splice_pending.cancel(token.slot().raw());
-            return;
-        }
-        let _ = driver.push(Sqe::cancel(token, backend::token::kind::SPLICE));
-        this.splice_pending.cancel(token.slot().raw());
-        this.splices.remove(token.key());
+    #[doc(hidden)]
+    pub fn begin_stat_fd(
+        &self,
+        fd: Rc<OwnedFd>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> Option<Token> {
+        self.stats.begin_fd(fd, driver)
     }
 
-    pub(crate) fn poll_open(
-        self: Pin<&mut Self>,
-        token: backend::token::Token,
-        waker: &Waker,
-    ) -> FileOutcome<OpenDone> {
-        let tag = token.slot().raw();
-        let this = self.project();
-        match this.open_pending.poll(tag, waker) {
-            Resolve::Ready(done) => {
-                this.opens.remove(token.key());
-                FileOutcome::Done(done)
-            }
-            Resolve::Pending => FileOutcome::Pending,
-        }
+    #[doc(hidden)]
+    pub fn poll_open(&self, token: Token, wake: CompletionWaker<'d>) -> FileOutcome<OpenDone> {
+        self.opens.poll(token, wake)
     }
 
-    pub(crate) fn poll_read(
-        self: Pin<&mut Self>,
-        token: backend::token::Token,
-        waker: &Waker,
+    #[doc(hidden)]
+    pub fn poll_read(
+        &self,
+        token: Token,
+        wake: CompletionWaker<'d>,
     ) -> FileOutcome<(Vec<u8>, ReadDone)> {
-        let tag = token.slot().raw();
-        let this = self.project();
-        match this.read_pending.poll(tag, waker) {
-            Resolve::Ready(done) => {
-                let buf = this
-                    .reads
-                    .at_index_mut(token.slot())
-                    .map(|held| std::mem::take(&mut held.buf))
-                    .unwrap_or_default();
-                this.reads.remove(token.key());
-                FileOutcome::Done((buf, done))
-            }
-            Resolve::Pending => FileOutcome::Pending,
-        }
+        self.reads.poll(token, wake)
     }
 
-    pub(crate) fn cancel_open(self: Pin<&mut Self>, token: backend::token::Token, driver: &Driver) {
-        let this = self.project();
-        let Some(hold) = this.opens.get(token.key()).copied() else {
-            this.open_pending.cancel(token.slot().raw());
-            return;
-        };
-        // Already completed -> close the abandoned fd now; else orphan so
-        // `on_open` closes it when the cancelled open's CQE lands.
-        if let Some(done) = this.open_pending.take(token.slot().raw()) {
-            if let OpenDone::Fd(fd) = done {
-                close_abandoned_open(fd, hold.fixed);
-            }
-            this.opens.remove(token.key());
-            return;
-        }
-        if let Some(held) = this.opens.get_mut(token.key()) {
-            held.orphaned = true;
-        }
-        let _ = driver.push(Sqe::cancel(token, backend::token::kind::OPEN));
+    #[doc(hidden)]
+    pub fn poll_block_read(
+        &self,
+        token: Token,
+        wake: CompletionWaker<'d>,
+    ) -> FileOutcome<(Block, ReadDone)> {
+        self.block_reads.poll(token, wake)
     }
 
-    pub(crate) fn cancel_read(self: Pin<&mut Self>, token: backend::token::Token, driver: &Driver) {
-        let this = self.project();
-        if this.reads.get(token.key()).is_none() {
-            this.read_pending.cancel(token.slot().raw());
-            return;
-        }
-        // Already completed -> free now; still in flight -> orphan so the buffer
-        // outlives the cancelled op until `on_read` sees the CQE.
-        if this.read_pending.cancel(token.slot().raw()) {
-            this.reads.remove(token.key());
-            return;
-        }
-        if let Some(held) = this.reads.at_index_mut(token.slot()) {
-            held.orphaned = true;
-        }
-        let _ = driver.push(Sqe::cancel(token, backend::token::kind::READ));
+    #[doc(hidden)]
+    pub fn poll_splice(&self, token: Token, wake: CompletionWaker<'d>) -> FileOutcome<SpliceDone> {
+        self.splices.poll(token, wake)
     }
 
-    fn on_open(self: Pin<&mut Self>, token: backend::token::Token, e: backend::OpenEvent) {
-        let this = self.project();
-        // Epoch-guard: a CQE for a cancelled/reused slot is stale.
-        let Some(hold) = this.opens.get(token.key()).copied() else {
-            return;
-        };
-        if hold.orphaned {
-            // Future dropped mid-open: close a leaked fd, then free the slot.
-            if let backend::OpenEvent::Opened(fd) = e {
-                close_abandoned_open(fd, hold.fixed);
-            }
-            this.opens.remove(token.key());
-            return;
-        }
-        let done = match e {
-            backend::OpenEvent::Opened(fd) => OpenDone::Fd(fd),
-            backend::OpenEvent::Failed(errno) => OpenDone::Failed(errno),
-        };
-        this.open_pending.settle(token.slot().raw(), done);
+    #[doc(hidden)]
+    pub fn poll_stat(&self, token: Token, wake: CompletionWaker<'d>) -> FileOutcome<StatDone> {
+        self.stats.poll(token, wake)
     }
 
-    fn on_read(self: Pin<&mut Self>, token: backend::token::Token, e: backend::ReadEvent) {
-        let this = self.project();
-        // Epoch-guard: a CQE for a cancelled/reused slot is stale.
-        let orphaned = match this.reads.get(token.key()) {
-            Some(held) => held.orphaned,
-            None => return,
-        };
-        if orphaned {
-            // Future dropped mid-read: kernel done, free the held buffer.
-            this.reads.remove(token.key());
-            return;
-        }
-        let done = match e {
-            backend::ReadEvent::Read(n) => ReadDone::Read(n),
-            backend::ReadEvent::Eof => ReadDone::Eof,
-            backend::ReadEvent::Failed(errno) => ReadDone::Failed(errno),
-        };
-        this.read_pending.settle(token.slot().raw(), done);
+    #[doc(hidden)]
+    pub fn cancel_open(&self, token: Token) {
+        self.opens.cancel(token);
     }
 
-    fn on_splice(self: Pin<&mut Self>, token: backend::token::Token, e: backend::SpliceEvent) {
-        let this = self.project();
-        // Epoch-guard: a CQE for a cancelled/reused slot is stale.
-        if this.splices.get(token.key()).is_none() {
-            return;
-        }
-        let done = match e {
-            backend::SpliceEvent::Moved(n) => SpliceDone::Moved(n),
-            backend::SpliceEvent::Eof => SpliceDone::Eof,
-            backend::SpliceEvent::Failed(errno) => SpliceDone::Failed(errno),
-        };
-        this.splice_pending.settle(token.slot().raw(), done);
+    #[doc(hidden)]
+    pub fn cancel_read(&self, token: Token) {
+        self.reads.cancel(token);
+    }
+
+    #[doc(hidden)]
+    pub fn cancel_block_read(&self, token: Token) {
+        self.block_reads.cancel(token);
+    }
+
+    #[doc(hidden)]
+    pub fn cancel_splice(&self, token: Token) {
+        self.splices.cancel(token);
+    }
+
+    #[doc(hidden)]
+    pub fn cancel_stat(&self, token: Token) {
+        self.stats.cancel(token);
+    }
+
+    fn flush_cancellations(&self, driver: &mut DriverContext<'_, 'd>) {
+        let quiesced = self.opens.flush_cancellations(driver)
+            | self.reads.flush_cancellations(driver)
+            | self.block_reads.flush_cancellations(driver)
+            | self.splices.flush_cancellations(driver)
+            | self.stats.flush_cancellations(driver);
+        self.record_quiesce(quiesced);
     }
 }
 
-impl<'d, const ID: u8, const N: usize> Manifold<'d> for Files<ID, N> {
+impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
+    fn shutdown(&self, driver: &mut DriverContext<'_, 'd>) {
+        let mut targets = Vec::new();
+        self.opens.append_targets(&mut targets);
+        self.reads.append_targets(&mut targets);
+        self.block_reads.append_targets(&mut targets);
+        self.splices.append_targets(&mut targets);
+        self.stats.append_targets(&mut targets);
+        if !targets.is_empty() {
+            driver.quiesce(&targets);
+        }
+        self.route
+            .finish(driver, self.poison_route.get() || !targets.is_empty());
+    }
+}
+
+impl<const ID: u8, const N: usize> dope::runtime::StorageFactory for FilesFactory<ID, N> {
+    type Output<'d> = Files<'d, ID, N>;
+
+    fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
+        match Files::new(driver) {
+            Ok(files) => files,
+            Err(_) => std::process::abort(),
+        }
+    }
+}
+
+pub struct FileManifold<'scope, 'd, const ID: u8, const N: usize> {
+    files: &'scope Files<'d, ID, N>,
+}
+
+impl<'scope, 'd, const ID: u8, const N: usize> Manifold<'d> for FileManifold<'scope, 'd, ID, N> {
     const ID: u8 = ID;
 
-    fn dispatch(self: Pin<&mut Self>, ev: backend::Event, _driver: &'d Driver) {
-        match ev {
-            backend::Event::Open(token, e) => self.on_open(token, e),
-            backend::Event::Read(token, e) => self.on_read(token, e),
-            backend::Event::Splice(token, e) => self.on_splice(token, e),
+    fn dispatch(
+        self: Pin<&mut Self>,
+        ev: dope_core::io::Event,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
+        let this = self.as_ref().get_ref().files;
+        match ev.into_kind() {
+            EventKind::Open(token, e) => this.opens.complete(token, e, driver),
+            EventKind::Read(token, e) => this.reads.complete(token, e, driver),
+            EventKind::ReadBlock(token, e) => this.block_reads.complete(token, e, driver),
+            EventKind::Splice(token, e) => this.splices.complete(token, e, driver),
+            EventKind::Stat(token, e) => this.stats.complete(token, e, driver),
             _ => {}
         }
     }
 
-    fn pre_park(self: Pin<&mut Self>, _driver: &'d Driver) {}
+    fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
+        self.as_ref().get_ref().files.flush_cancellations(driver);
+    }
 
-    fn idle(self: Pin<&Self>) -> crate::runtime::dispatcher::Idle {
-        let this = Pin::get_ref(self);
-        if !this.opens.is_empty() || !this.reads.is_empty() || !this.splices.is_empty() {
-            crate::runtime::dispatcher::Idle::Busy
+    fn idle(self: Pin<&Self>) -> Idle {
+        let this = self.get_ref().files;
+        if !this.opens.is_empty()
+            || !this.reads.is_empty()
+            || !this.block_reads.is_empty()
+            || !this.splices.is_empty()
+            || !this.stats.is_empty()
+        {
+            Idle::Busy
         } else {
-            crate::runtime::dispatcher::Idle::Park(None)
+            Idle::Park(None)
         }
     }
 
-    fn on_wake(self: Pin<&mut Self>, _target: TypedToken<Self>, _driver: &'d Driver) {}
-}
-
-// Fixed-table opens report result 0 (caller-owned slot), so only a raw open's
-// abandoned fd is closed here.
-fn close_abandoned_open(fd: RawFd, fixed: bool) {
-    if fixed || fd < 0 {
-        return;
+    fn activate(
+        self: Pin<&mut Self>,
+        _target: TypedToken<Self>,
+        _driver: &mut DriverContext<'_, 'd>,
+    ) {
+        let _ = self;
     }
-    // SAFETY: a fresh kernel fd whose future was dropped before taking it; unowned.
-    unsafe {
-        libc::close(fd);
+
+    fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
+        self.as_ref().get_ref().files.shutdown(driver);
     }
 }

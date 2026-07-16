@@ -12,5 +12,14 @@ proc-macro = true
 
 [dependencies]
 proc-macro2 = "1"
+proc-macro-crate = "3"
 syn = { version = "2", features = ["full", "visit-mut"] }
 quote = "1"
+
+[dev-dependencies]
+dope = { path = "../dope" }
+dope-fiber = { path = "../fiber" }
+dope-test.workspace = true
+o3.workspace = true
+pin-project.workspace = true
+trybuild = "1"

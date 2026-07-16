@@ -1,24 +1,40 @@
-//! Fixed-port datagram (QUIC server) sockets must enable SO_REUSEPORT so every
-//! per-core worker can bind the same port. Before the fix the second bind failed
-//! with EADDRINUSE, pinning QUIC to a single core.
+extern crate dope;
+
+mod common;
+
+use std::net::SocketAddr;
 
 use dope::manifold::datagram::Socket;
-use dope::{DriverCfg, DriverConfig, Executor};
+
+fn reserve_udp_addr() -> SocketAddr {
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("reserve port");
+    sock.local_addr().expect("local addr")
+}
 
 #[test]
 fn datagram_fixed_port_allows_concurrent_reuseport_binds() {
-    let addr: std::net::SocketAddr = "127.0.0.1:54983".parse().unwrap();
+    for _ in 0..5 {
+        let addr = reserve_udp_addr();
+        assert_ne!(addr.port(), 0);
 
-    let cfg_a = <DriverCfg as DriverConfig>::for_quic_udp(4096, 2048);
-    let exec_a = Executor::new(cfg_a).expect("executor a");
-    let sess_a = exec_a.enter();
-    let _sock_a = Socket::<0>::bind(addr, sess_a.driver()).expect("first bind");
+        let exec_a = common::quic_exec(4096, 2048);
+        let bound = exec_a.enter(|mut sess_a| {
+            let Ok(_sock_a) = Socket::<0>::bind(addr, &mut sess_a.driver_access()) else {
+                return false;
+            };
 
-    let cfg_b = <DriverCfg as DriverConfig>::for_quic_udp(4096, 2048);
-    let exec_b = Executor::new(cfg_b).expect("executor b");
-    let sess_b = exec_b.enter();
-    let sock_b = Socket::<0>::bind(addr, sess_b.driver())
-        .expect("second bind on same fixed port must succeed with SO_REUSEPORT");
+            let exec_b = common::quic_exec(4096, 2048);
+            exec_b.enter(|mut sess_b| {
+                let sock_b = Socket::<0>::bind(addr, &mut sess_b.driver_access())
+                    .expect("second bind on same fixed port must succeed with SO_REUSEPORT");
 
-    assert_eq!(sock_b.local_addr().port(), 54983);
+                assert_eq!(sock_b.local_addr().port(), addr.port());
+            });
+            true
+        });
+        if bound {
+            return;
+        }
+    }
+    panic!("reserved port kept racing away across retries");
 }

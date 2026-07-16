@@ -1,28 +1,23 @@
 #![warn(unreachable_pub)]
 
-mod backend;
-pub mod memstats;
-mod slab;
+extern crate self as dope;
 
-pub mod fiber;
-pub mod launcher;
+pub mod hash;
 pub mod manifold;
+pub mod panic;
 pub mod runtime;
-pub mod transport;
 
-pub use backend::park::WakeRef;
-pub use backend::profile::Profile;
-pub use backend::{
-    AcceptEvent, Backend, Bootstrap, ConnectEvent, Cqe, Drive, DriverCfg, DriverConfig, Event,
-    Lend, ListenerOpts, OpenEvent, OutboundReservation, PushError, ReadEvent, RecvEvent, SendEvent,
-    SocketEvent, Sockopt, SpliceEvent, SyncEvent, WriteEvent, datagram, file, platform, socket,
-    sqe, token,
+pub use dope_core::driver::bootstrap::Bootstrap;
+pub use dope_core::driver::buffers::ProvidedBuffers;
+pub use dope_core::driver::completion::Completion;
+pub use dope_core::driver::control::ContextControl;
+pub use dope_core::driver::datagram::Datagram;
+pub use dope_core::driver::ext::DriverExt;
+pub use dope_core::driver::submission::Submission;
+pub use dope_core::driver::{Driver, DriverContext, DriverRef, OutboundReservation, PushError};
+pub use dope_core::io::provided::{ProvidedLease, ProvidedView};
+pub use dope_core::io::{
+    AcceptEvent, ConnectEvent, Cqe, DecodeError, Event, EventRef, OpenEvent, ReadEvent, RecvEvent,
+    SendEvent, SocketEvent, SpliceEvent, SyncEvent, WriteEvent,
 };
-pub use fiber::WakerSet;
-pub use o3;
-pub use runtime::dispatcher::{Dispatcher, Idle};
-pub use runtime::executor::Executor;
-pub use runtime::executor::Session;
-pub use transport::wire;
-
-pub type Driver = <backend::Default as Backend>::Driver;
+pub use dope_core::{driver, io, platform};

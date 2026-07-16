@@ -1,0 +1,16 @@
+[package]
+name = "dope-net"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope-core.workspace = true
+libc.workspace = true
+o3.workspace = true
+
+[dev-dependencies]
+dope-test.workspace = true

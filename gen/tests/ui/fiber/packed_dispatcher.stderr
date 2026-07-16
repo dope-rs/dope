@@ -1,0 +1,5 @@
+error: pinned projection does not support repr(packed)
+ --> tests/ui/fiber/packed_dispatcher.rs:3:8
+  |
+3 | #[repr(packed)]
+  |        ^^^^^^

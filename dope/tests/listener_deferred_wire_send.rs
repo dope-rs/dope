@@ -1,36 +1,33 @@
 #![cfg(target_os = "linux")]
-//! A wire that consumes plaintext without arming a socket send — what a TLS wire
-//! does mid-handshake: app data is stashed, no ciphertext exists yet. h2-over-TLS
-//! trips it, because the h2 server writes SETTINGS the moment the connection
-//! opens. Plaintext h2c and HTTP/1 only write post-handshake and never do.
 
 mod common;
 
+extern crate dope;
+use o3::cell::BrandCell;
+
 use std::cell::RefCell;
-use std::io::{Read, Write};
-use std::pin::pin;
+use std::io::Write;
+use std::pin::{Pin, pin};
 use std::rc::Rc;
 
-use dope::Driver;
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application, Listener};
-use dope::runtime::token::Token;
-use dope::transport::config::tcp::ListenerOpts;
-use dope::transport::link::{Core, Slot};
-use dope::transport::wire::{Reclaim, RecvChunk, Vectored, Wire};
+use dope::manifold::listener::{self, Application, Listener, SlotEgress};
+use dope_net::link::slot::Slot;
+use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
+use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
+use o3::buffer::{Borrowed, Bytes, RetainBytes};
 
 use common::{Gate, Wired};
 
 const HANDSHAKE: &[u8] = b"hello";
 
-/// Rounds the peer must send before the wire establishes. Real TLS takes more
-/// than one, which is what keeps the wire holding plaintext across a recv.
 const ROUNDS: u8 = 2;
+
+const FRAMES: &[&[u8]] = &[b"PREAMBLE", b"SETTINGS"];
 
 struct DeferredWire {
     rounds: u8,
     pending: Vec<u8>,
-    inflight: Vec<u8>,
 }
 
 impl DeferredWire {
@@ -38,93 +35,98 @@ impl DeferredWire {
         self.rounds >= ROUNDS
     }
 
-    fn arm<'d>(&mut self, core: &mut Core<'d>, ud: Token, driver: &'d Driver) {
-        if !self.established() || core.is_send_inflight() || self.pending.is_empty() {
-            return;
+    fn prepare<'a>(
+        &mut self,
+        mut send: Storage<'a, SendBuf<1024>>,
+        consumed: usize,
+    ) -> Prepared<'a> {
+        if self.established() && send.is_empty() && !self.pending.is_empty() {
+            send.extend_from_slice(&self.pending);
+            self.pending.clear();
         }
-        self.inflight.clear();
-        self.inflight.append(&mut self.pending);
-        core.submit_single(ud, &self.inflight, driver);
+        if send.is_empty() {
+            send.empty(consumed)
+        } else {
+            send.buffered(consumed)
+        }
     }
 }
 
 impl Wire for DeferredWire {
     type InitConfig = ();
+    type RuntimeContext = ();
+    type Recv<'a> = Bytes<Borrowed<'a>>;
+    type SendStorage = SendBuf<1024>;
 
     const RECLAIM: Reclaim = Reclaim::OnSubmit;
 
     const RAW_RECV: bool = true;
 
-    fn new(_: &()) -> Self {
-        Self {
-            rounds: 0,
-            pending: Vec::new(),
-            inflight: Vec::new(),
-        }
+    fn runtime_context(_: RuntimeLimits) -> std::io::Result<()> {
+        Ok(())
     }
 
-    fn holds_plain(&self) -> bool {
-        !self.pending.is_empty()
+    fn open(_: &(), _: &()) -> Option<(Self, Self::SendStorage)> {
+        Some((
+            Self {
+                rounds: 0,
+                pending: Vec::new(),
+            },
+            SendBuf::new(),
+        ))
     }
 
-    fn process_recv<'a>(&mut self, bytes: &'a [u8]) -> Option<RecvChunk<'a>> {
+    fn holds_plain(&self, send: &Self::SendStorage) -> bool {
+        !self.pending.is_empty() || !send.is_empty()
+    }
+
+    fn process_recv<'a>(&mut self, _: &(), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
         if !self.established() {
             self.rounds += 1;
             return None;
         }
-        Some(RecvChunk::Borrowed(bytes))
+        Some(Bytes::<Borrowed<'a>>::from(bytes))
     }
 
-    fn submit_send<'d>(
-        &mut self,
-        core: &mut Core<'d>,
-        plain: &[u8],
-        ud: Token,
-        driver: &'d Driver,
-    ) -> usize {
-        self.pending.extend_from_slice(plain);
-        self.arm(core, ud, driver);
-        plain.len()
+    fn prepare_send<'a>(
+        &'a mut self,
+        send: Storage<'a, Self::SendStorage>,
+        plain: Plain<'a>,
+    ) -> Prepared<'a> {
+        self.pending.extend_from_slice(plain.as_slice());
+        self.prepare(send, plain.len())
     }
 
-    fn submit_send_vectored<'d>(
-        &mut self,
-        core: &mut Core<'d>,
-        vectored: Vectored<'_>,
-        ud: Token,
-        driver: &'d Driver,
-    ) -> usize {
+    fn prepare_send_vectored<'a>(
+        &'a mut self,
+        send: Storage<'a, Self::SendStorage>,
+        vectored: Vectored<'a>,
+    ) -> Prepared<'a> {
         let mut consumed = 0;
-        for iov in vectored.iovs {
-            if iov.is_empty() {
+        for plain in vectored.iter() {
+            if plain.is_empty() {
                 continue;
             }
-            // SAFETY: iov points into caller-owned memory valid for this call.
-            let plain = unsafe { std::slice::from_raw_parts(iov.as_ptr(), iov.len()) };
             self.pending.extend_from_slice(plain);
             consumed += plain.len();
         }
-        self.arm(core, ud, driver);
-        consumed
+        self.prepare(send, consumed)
     }
 
-    fn after_send_cqe<'d>(
-        &mut self,
-        _core: &mut Core<'d>,
-        _n: usize,
-        _ud: Token,
-        _driver: &'d Driver,
-    ) -> bool {
-        self.inflight.clear();
-        false
+    fn after_send<'a>(
+        &'a mut self,
+        mut send: Storage<'a, Self::SendStorage>,
+        n: usize,
+    ) -> Prepared<'a> {
+        send.consume(n);
+        self.prepare(send, 0)
     }
 
-    fn flush_pending<'d>(&mut self, core: &mut Core<'d>, ud: Token, driver: &'d Driver) {
-        self.arm(core, ud, driver);
+    fn flush_pending<'a>(&'a mut self, send: Storage<'a, Self::SendStorage>) -> Prepared<'a> {
+        self.prepare(send, 0)
     }
 }
 
-/// Writes every frame at connection open — before the wire is established.
 struct PreambleApp {
     frames: &'static [&'static [u8]],
     sends: Rc<RefCell<Vec<usize>>>,
@@ -137,18 +139,18 @@ impl PreambleApp {
     }
 }
 
-impl Application for PreambleApp {
+impl<'d> Application<'d> for PreambleApp {
     type Conn = ();
     type Wire = DeferredWire;
 
-    fn on_accept<'d>(
-        &mut self,
+    fn accept(
+        self: Pin<&mut Self>,
         slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
         aux: &mut listener::Aux,
-        driver: &'d Driver,
+        driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
-        for frame in self.frames {
-            let buf = aux.write_buf_for(slot);
+        for frame in self.get_mut().frames {
+            let mut buf = aux.write_buf_for(slot);
             buf[..frame.len()].copy_from_slice(frame);
             let ud = slot.token();
             slot.submit_buffered(buf, frame.len(), ud, driver);
@@ -156,35 +158,36 @@ impl Application for PreambleApp {
         Outcome::Ok
     }
 
-    fn on_chunk<'d>(
-        &mut self,
+    fn chunk<R: RetainBytes>(
+        self: Pin<&mut Self>,
         _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _chunk: RecvChunk<'_>,
+        _chunk: R,
         _aux: &mut listener::Aux,
-        _driver: &'d Driver,
+        _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
     }
 
-    fn on_send<'d>(
-        &mut self,
+    fn send(
+        self: Pin<&mut Self>,
         slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
         sent: usize,
         _aux: &mut listener::Aux,
-        _driver: &'d Driver,
+        _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
-        self.sends.borrow_mut().push(sent);
-        if self.sends.borrow().iter().sum::<usize>() >= self.want_bytes() {
-            slot.core.set_close_after();
+        let this = self.get_mut();
+        this.sends.borrow_mut().push(sent);
+        if this.sends.borrow().iter().sum::<usize>() >= this.want_bytes() {
+            slot.set_close_after();
         }
     }
 
-    fn on_close<'d>(
-        &mut self,
+    fn close(
+        self: Pin<&mut Self>,
         _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
         _aux: &mut listener::Aux,
     ) {
-        self.gate.hit();
+        self.get_mut().gate.hit();
     }
 }
 
@@ -194,73 +197,49 @@ struct App<'d> {
     #[pin]
     #[manifold]
     listener: Listener<'d, 0, PreambleApp, Wired<DeferredWire>>,
-    #[pin]
-    #[manifold]
-    guard: common::Guard,
 }
 
-/// Every frame reaches the peer once, in order, and each is reported to
-/// `on_send` exactly once.
-fn run_case(frames: &'static [&'static [u8]]) {
-    let gate = Gate::new();
-    let sends = Rc::new(RefCell::new(Vec::new()));
-    let (exec, cfg) = common::tcp_host(16, ListenerOpts::default());
-    let mut sess = exec.enter();
-    let listener = Listener::<0, PreambleApp, Wired<DeferredWire>>::open_in(
-        PreambleApp {
-            frames,
-            sends: sends.clone(),
-            gate: gate.clone(),
-        },
-        cfg,
-        sess.driver(),
-    )
-    .expect("open_in");
-    let addr = listener.local_addr().expect("local_addr");
-    let mut app = pin!(App {
-        listener,
-        guard: common::Guard::new(),
-    });
-
-    let peer = std::thread::spawn(move || {
-        let mut s = common::connect(addr);
-        for _ in 0..ROUNDS {
-            s.write_all(HANDSHAKE).expect("handshake");
-            // a distinct recv per round; coalesced writes would establish in one
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        let mut got = Vec::new();
-        s.read_to_end(&mut got).expect("read to eof");
-        got
-    });
-
-    let guard = app.as_mut().guard_handle();
-    common::run_until(&mut sess, app.as_mut(), guard, &gate, 1);
-    let got = peer.join().expect("peer join");
-
-    let want: Vec<u8> = frames.concat();
-    assert_eq!(
-        got, want,
-        "frames must reach the peer once and in order; a repeat means the slot \
-         re-handed plaintext the wire had already consumed"
-    );
-    let lens: Vec<usize> = frames.iter().map(|f| f.len()).collect();
-    assert_eq!(
-        *sends.borrow(),
-        lens,
-        "every frame must be reported to on_send exactly once"
-    );
-}
-
-#[test]
-fn frame_written_before_wire_established_is_sent_once() {
-    run_case(&[b"PREAMBLE"]);
-}
-
-/// The second frame stages on the deferred queue while the wire still holds the
-/// first. Handing it over before the wire flushes coalesces both into one CQE,
-/// and the second frame's `on_send` never fires.
 #[test]
 fn frames_written_before_wire_established_are_each_reported() {
-    run_case(&[b"PREAMBLE", b"SETTINGS"])
+    let gate = Gate::new();
+    let sends = Rc::new(RefCell::new(Vec::new()));
+    let (exec, cfg) = common::tcp_host(16, dope_net::tcp::listener::Config::default());
+    exec.enter(|mut sess| {
+        let hash_builder = sess.seed().derive(dope::hash::domain::ACCEPT).state();
+        let (listener, addr) = common::open_listener(
+            PreambleApp {
+                frames: FRAMES,
+                sends: sends.clone(),
+                gate: gate.clone(),
+            },
+            cfg,
+            hash_builder,
+            &mut sess.driver_access(),
+        );
+        let app = pin!(BrandCell::new(App { listener }));
+
+        let peer = common::spawn_peer(addr, |s| {
+            for _ in 0..ROUNDS {
+                s.write_all(HANDSHAKE).expect("handshake");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            common::read_all(s)
+        });
+
+        common::run_until(&mut sess, app.as_ref(), &gate, 1);
+        let got = peer.join().expect("peer join");
+
+        let want: Vec<u8> = FRAMES.concat();
+        assert_eq!(
+            got, want,
+            "frames must reach the peer once and in order; a repeat means the slot \
+         re-handed plaintext the wire had already consumed"
+        );
+        let lens: Vec<usize> = FRAMES.iter().map(|f| f.len()).collect();
+        assert_eq!(
+            *sends.borrow(),
+            lens,
+            "every frame must be reported to send exactly once"
+        );
+    });
 }

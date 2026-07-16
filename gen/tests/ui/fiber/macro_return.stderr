@@ -1,0 +1,22 @@
+warning: unreachable arm
+ --> tests/ui/fiber/macro_return.rs:5:9
+  |
+5 |         ::core::matches!(return 1usize, _)
+  |         ^^^^^^^^^^^^^^^^^-------------^^^^
+  |         |                |
+  |         |                any code following this expression is unreachable
+  |         unreachable arm
+  |
+  = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+error[E0308]: mismatched types
+ --> tests/ui/fiber/macro_return.rs:5:9
+  |
+5 |         ::core::matches!(return 1usize, _)
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `usize`, found `bool`
+  |
+note: return type inferred to be `usize` here
+ --> tests/ui/fiber/macro_return.rs:5:33
+  |
+5 |         ::core::matches!(return 1usize, _)
+  |                                 ^^^^^^
