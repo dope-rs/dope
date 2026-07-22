@@ -91,14 +91,6 @@ impl<'d> Outgoing<'d> {
         }
     }
 
-    pub(super) fn segmented(payload: Vec<u8>, addr: SocketAddr, segment_size: u16) -> Self {
-        Self {
-            addr,
-            payload: Payload::Owned(payload),
-            segment_size,
-        }
-    }
-
     pub(super) fn range(
         batch: Rc<Vec<u8>>,
         offset: usize,

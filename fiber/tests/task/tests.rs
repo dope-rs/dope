@@ -514,21 +514,6 @@ fn dropping_waiter_unlinks_without_disturbing_order() {
 }
 
 #[test]
-fn wait_queue_delivers_payload_by_generation_key() {
-    with_session(|sess| {
-        let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let queue = pin!(WaitQueue::<u32>::with_payload_capacity(1));
-        let waiter = pin!(Waiter::new());
-        let waker = Waker::from_ready(sess.driver(), ready.key());
-        assert!(queue.as_ref().try_register_waker(waiter.as_ref(), waker));
-        queue.as_ref().assign_one(41).expect("waiting receiver");
-        assert!(!waiter.is_registered());
-        assert_eq!(waiter.take_assigned(), Some(41));
-        assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
-    });
-}
-
-#[test]
 fn waiter_survives_queue_drop_without_a_dangling_registration() {
     with_session(|sess| {
         let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");

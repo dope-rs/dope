@@ -11,8 +11,6 @@ use crate::driver::token::{KIND_SHIFT, Token, kind};
 use crate::io::fd::FdSlot;
 use crate::io::ffi::Handle;
 
-use super::SPLICE_BOUNCE;
-
 pub(crate) trait Submit {
     fn cancel_inner(&mut self, target: Token) -> bool;
     fn submit_send_tagged_inner(
@@ -39,7 +37,6 @@ pub(crate) trait Submit {
         path: *const libc::c_char,
         flags: i32,
         mode: u32,
-        fixed: Option<FdSlot>,
     ) -> bool;
     fn submit_read_inner(
         &mut self,
@@ -48,15 +45,6 @@ pub(crate) trait Submit {
         ptr: *mut u8,
         len: u32,
         offset: u64,
-    ) -> bool;
-    fn submit_splice_inner(
-        &mut self,
-        ud: Token,
-        fd_in: RawFd,
-        off_in: i64,
-        fd_out: RawFd,
-        off_out: i64,
-        len: u32,
     ) -> bool;
     fn submit_socket_at(
         &mut self,
@@ -177,25 +165,8 @@ impl Submit for Kqueue {
         path: *const libc::c_char,
         flags: i32,
         mode: u32,
-        fixed: Option<FdSlot>,
     ) -> bool {
-        let oflag = if fixed.is_some() {
-            flags | libc::O_CLOEXEC
-        } else {
-            flags
-        };
-        let fd = unsafe { libc::openat(dir, path, oflag, mode as libc::c_uint) };
-        if fd < 0 {
-            let result = -Errno::last().raw();
-            return match fixed {
-                Some(slot) => self.complete_create(ud, result, slot),
-                None => self.complete_io(ud, fd as isize),
-            };
-        }
-        if let Some(slot) = fixed {
-            let _ = self.register_raw_fd(slot.raw(), fd);
-            return self.complete_create(ud, 0, slot);
-        }
+        let fd = unsafe { libc::openat(dir, path, flags, mode as libc::c_uint) };
         self.complete_io(ud, fd as isize)
     }
 
@@ -209,42 +180,6 @@ impl Submit for Kqueue {
     ) -> bool {
         let n = unsafe { libc::pread(fd, ptr.cast(), len as usize, offset as libc::off_t) };
         self.complete_io(ud, n)
-    }
-
-    fn submit_splice_inner(
-        &mut self,
-        ud: Token,
-        fd_in: RawFd,
-        off_in: i64,
-        fd_out: RawFd,
-        off_out: i64,
-        len: u32,
-    ) -> bool {
-        let cap = (len as usize).min(SPLICE_BOUNCE);
-        let buf = &mut self.splice_buf[..cap];
-        let n = unsafe {
-            if off_in < 0 {
-                libc::read(fd_in, buf.as_mut_ptr().cast(), cap)
-            } else {
-                libc::pread(fd_in, buf.as_mut_ptr().cast(), cap, off_in as libc::off_t)
-            }
-        };
-        if n <= 0 {
-            return self.complete_io(ud, n);
-        }
-        let w = unsafe {
-            if off_out < 0 {
-                libc::write(fd_out, buf.as_ptr().cast(), n as usize)
-            } else {
-                libc::pwrite(
-                    fd_out,
-                    buf.as_ptr().cast(),
-                    n as usize,
-                    off_out as libc::off_t,
-                )
-            }
-        };
-        self.complete_io(ud, w)
     }
 
     fn submit_socket_at(

@@ -42,7 +42,6 @@ const WAKE_IDENT: uintptr_t = uintptr_t::MAX;
 pub(crate) const MAX_DRAIN_PER_FD: usize = 256;
 const PENDING_CAP: usize = 1 << 16;
 const CHANGES_FLUSH_AT: usize = 4096;
-const SPLICE_BOUNCE: usize = 1 << 16;
 
 pub struct Kqueue {
     pub(crate) kq: OwnedFd,
@@ -56,7 +55,6 @@ pub struct Kqueue {
     pub(crate) pending: PendingQueue,
     pub(crate) provided: Provided,
     pub(crate) backing: Backing,
-    splice_buf: Box<[u8]>,
     fd_table: Vec<Option<RawFd>>,
     accept_limit: u32,
     next_slot: u32,
@@ -103,7 +101,6 @@ impl Kqueue {
                 pending: PendingQueue::with_capacity(PENDING_CAP, slots),
                 provided,
                 backing,
-                splice_buf: vec![0; SPLICE_BOUNCE].into_boxed_slice(),
                 fd_table: vec![None; slots],
                 accept_limit: cfg.accept_slots.min(fixed_file_slots),
                 next_slot: fixed_file_slots,

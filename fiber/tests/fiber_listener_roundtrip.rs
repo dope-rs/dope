@@ -65,38 +65,42 @@ fn fiber_listener_roundtrip() {
             app.as_ref(),
             dope_gen::fiber!('_ => async move {
                 let mut stream = stream.take().expect("stream owner");
-                let mut prefix = [0; 5];
-                let mut filled = 0;
-                while filled < prefix.len() {
-                    let read = stream.read_into(&mut prefix[filled..]).await?;
+                let mut prefix = Vec::with_capacity(5);
+                while prefix.len() < 5 {
+                    let (read, buf) = stream.read(vec![0; 5 - prefix.len()]).await;
+                    let read = read?;
                     if read == 0 {
                         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
                     }
-                    filled += read;
+                    prefix.extend_from_slice(&buf[..read]);
                 }
-                let tail = stream
-                    .read_chunk()
-                    .await?
-                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
-                let tail = tail.as_slice().to_vec();
-                stream.write_all_static(b"!").await?;
-                let mut reused = [0; 3];
-                let mut filled = 0;
-                while filled < reused.len() {
-                    let read = stream.read_into(&mut reused[filled..]).await?;
+                let mut tail = Vec::with_capacity(2);
+                while tail.len() < 2 {
+                    let (read, buf) = stream.read(vec![0; 2 - tail.len()]).await;
+                    let read = read?;
                     if read == 0 {
                         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
                     }
-                    filled += read;
+                    tail.extend_from_slice(&buf[..read]);
                 }
-                stream.write_all_static(b"pong").await?;
+                stream.write_all(b"!").await?;
+                let mut reused = Vec::with_capacity(3);
+                while reused.len() < 3 {
+                    let (read, buf) = stream.read(vec![0; 3 - reused.len()]).await;
+                    let read = read?;
+                    if read == 0 {
+                        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+                    }
+                    reused.extend_from_slice(&buf[..read]);
+                }
+                stream.write_all(b"pong").await?;
                 Ok::<_, std::io::Error>((prefix, tail, reused))
             }),
         )
         .expect("roundtrip");
-        assert_eq!(prefix, *b"abcde");
+        assert_eq!(prefix, b"abcde");
         assert_eq!(tail, b"fg");
-        assert_eq!(reused, *b"xyz");
+        assert_eq!(reused, b"xyz");
         assert_eq!(client.join().expect("join"), (*b"!", *b"pong"));
     });
 }

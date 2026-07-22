@@ -18,10 +18,6 @@ impl Pipe {
         Ok(Self::from_fds(fds[0], fds[1]))
     }
 
-    pub fn write_fd(&self) -> RawFd {
-        self.write.as_raw_fd()
-    }
-
     pub fn write_end(&self) -> BorrowedFd<'_> {
         self.write.as_fd()
     }
@@ -42,10 +38,6 @@ impl Pipe {
                 _exclusive: PhantomData,
             }
         }
-    }
-
-    pub fn read_fd(&self) -> RawFd {
-        self.read.as_raw_fd()
     }
 
     pub fn read_end(&self) -> BorrowedFd<'_> {

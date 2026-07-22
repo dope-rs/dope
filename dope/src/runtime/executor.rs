@@ -7,10 +7,11 @@ use dope_core::driver::ext::DriverExt;
 use o3::cell::{BrandCell, BrandToken};
 
 use super::run::Run;
+use crate::driver::Driver;
 use crate::hash::Seed;
 use crate::runtime::__private::RootTask;
 use crate::runtime::Dispatcher;
-use crate::{Driver, DriverContext, DriverRef, driver};
+use crate::{DriverContext, DriverRef, driver};
 
 pub trait StorageFactory: 'static {
     type Output<'d>: 'd;

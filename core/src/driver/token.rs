@@ -72,14 +72,12 @@ pub mod kind {
     pub const SYNC: u8 = 10;
     pub const OPEN: u8 = 11;
     pub const READ: u8 = 12;
-    pub const SPLICE: u8 = 13;
     pub const RECV_DISCARD: u8 = 14;
     pub const CREATE: u8 = 15;
     pub const CLOSE_PREP: u8 = 16;
     pub const CLOSE: u8 = 17;
     pub const STAT: u8 = 18;
     pub const ONE_SHOT: u8 = 19;
-    pub const READ_BLOCK: u8 = 20;
     pub const TASK_QUEUE: u8 = 21;
 }
 

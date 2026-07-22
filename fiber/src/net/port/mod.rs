@@ -8,14 +8,14 @@ use o3::buffer::{RetainBytes, Shared};
 use o3::collections::CellQueue;
 
 use crate::Waker;
-use dope::ProvidedView;
 use dope::driver::token::Token;
+use dope::io::provided::ProvidedView;
 use dope::manifold::connector;
 use std::io::Error;
 use std::io::ErrorKind;
 
 use recv::arena::{RecvArena, RecvLayout};
-use result::{RecvChunkResult, RecvInto, SendIdle};
+use result::{RecvInto, SendIdle};
 use state::State;
 
 struct Entry<'d> {
@@ -221,12 +221,6 @@ impl<'d> Port<'d> {
     pub(crate) fn recv_into(&self, token: Token, dst: &mut [u8]) -> RecvInto {
         self.entry(token).map_or(RecvInto::Bytes(0), |entry| {
             Self::state(entry).try_recv_into(&self.recv, dst)
-        })
-    }
-
-    pub(crate) fn recv_chunk(&self, token: Token) -> RecvChunkResult<'d> {
-        self.entry(token).map_or(RecvChunkResult::Closed, |entry| {
-            Self::state(entry).try_recv_chunk(&self.recv)
         })
     }
 

@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::source::DialKey;
 use super::state::State;
 use crate::DriverContext;
-use crate::ProvidedView;
+use crate::io::provided::ProvidedView;
 use crate::runtime::Idle;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_net::link::slot::Slot;

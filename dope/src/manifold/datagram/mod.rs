@@ -66,7 +66,6 @@ pub trait Handler<'d, const ID: u8> {
 const RECV_ARM_TAG: SlotIndex = SlotIndex::new(0);
 
 use dope_core::backend::Sqe;
-use dope_core::backend::{MAX_GSO_BYTES, MAX_GSO_SEGMENTS};
 use dope_core::driver::token::{KeyTag, SLOT_MASK, SlotIndex, Token, TokenSlab, kind};
 use dope_core::io::RecvEvent;
 use dope_core::io::SendEvent;
@@ -170,18 +169,6 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         Ok(())
     }
 
-    pub fn queue_segmented(
-        self: Pin<&mut Self>,
-        payload: Vec<u8>,
-        addr: SocketAddr,
-        segment_size: u16,
-    ) -> Result<(), Vec<u8>> {
-        if segment_size == 0 || payload.len() <= segment_size as usize {
-            return self.queue_to(payload, addr);
-        }
-        self.enqueue_segmented(payload, addr, segment_size)
-    }
-
     pub fn queue_segments(
         self: Pin<&mut Self>,
         payload: Vec<u8>,
@@ -213,52 +200,6 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         Ok(())
     }
 
-    fn enqueue_segmented(
-        self: Pin<&mut Self>,
-        payload: Vec<u8>,
-        addr: SocketAddr,
-        seg: u16,
-    ) -> Result<(), Vec<u8>> {
-        let seg_len = seg as usize;
-        let max_send = (MAX_GSO_BYTES / seg_len).clamp(1, MAX_GSO_SEGMENTS) * seg_len;
-        if payload.len() <= max_send {
-            if !self.fits(1, payload.len()) {
-                return Err(payload);
-            }
-            let bytes = payload.len();
-            self.enqueue_all(bytes, iter::once(Outgoing::segmented(payload, addr, seg)));
-            return Ok(());
-        }
-        let items = payload.len().div_ceil(max_send);
-        let bytes = payload.len();
-        if !self.fits(items, bytes) {
-            return Err(payload);
-        }
-        self.enqueue_segmented_ranges(payload, addr, seg, max_send);
-        Ok(())
-    }
-
-    fn enqueue_segmented_ranges(
-        self: Pin<&mut Self>,
-        payload: Vec<u8>,
-        addr: SocketAddr,
-        segment_size: u16,
-        chunk_size: usize,
-    ) {
-        let bytes = payload.len();
-        let this = self.project();
-        let batch = Rc::new(payload);
-        *this.retained_outgoing_bytes += bytes;
-        for offset in (0..bytes).step_by(chunk_size) {
-            let len = chunk_size.min(bytes - offset);
-            let gso = (len > segment_size as usize).then_some(segment_size);
-            let Some(entry) = this.pending_outgoing.vacant_entry() else {
-                unreachable!()
-            };
-            entry.push_back(Outgoing::range(Rc::clone(&batch), offset, len, addr, gso));
-        }
-    }
-
     fn fits(&self, items: usize, bytes: usize) -> bool {
         items <= Self::OUT_CAP - self.pending_outgoing.len()
             && self.retained_outgoing_bytes.saturating_add(bytes) <= Self::OUT_BYTES_CAP
@@ -282,18 +223,8 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         self.flush_outgoing(driver);
     }
 
-    pub fn has_pending(&self) -> bool {
-        !self.in_flight.is_empty()
-            || !self.pending_outgoing.is_empty()
-            || self.recv_arm.needs_rearm()
-    }
-
     pub fn needs_flush(&self) -> bool {
         !self.pending_outgoing.is_empty() || self.recv_arm.needs_rearm()
-    }
-
-    pub fn retained_outgoing_bytes(&self) -> usize {
-        self.retained_outgoing_bytes
     }
 
     pub fn dispatch_recv<H: Handler<'d, ID>>(

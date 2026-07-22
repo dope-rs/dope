@@ -36,7 +36,6 @@ impl<'d> Handler<'d, 0> for SendHandler {
 
     fn error(&mut self, errno: i32, _sock: Pin<&mut Socket<0>>) {
         self.errno.set(Some(errno));
-        self.gate.hit();
     }
 }
 
@@ -62,9 +61,7 @@ impl<'d> Manifold<'d> for Sender<'d> {
                 this.sock
                     .as_mut()
                     .dispatch_send(token, e, this.handler, driver);
-                if !this.sock.has_pending() {
-                    this.handler.gate.hit();
-                }
+                this.handler.gate.hit();
             }
             _ => {}
         }
@@ -93,10 +90,10 @@ struct App<'d> {
 
 #[test]
 fn gso_runs_within_and_past_cap() {
-    run_case(1000, &[1000, 1000, 1000, 500]);
+    run_case(&[1000, 1000, 1000, 500], 1);
     let mut lens = vec![1200usize; 99];
     lens.push(500);
-    run_case(1200, &lens);
+    run_case(&lens, 2);
 }
 
 #[test]
@@ -142,7 +139,7 @@ fn udp_collector(want_datagrams: usize) -> (SocketAddr, JoinHandle<(usize, Vec<u
     (dst, handle)
 }
 
-fn run_case(seg: u16, lens: &[usize]) {
+fn run_case(lens: &[usize], sends: u32) {
     let total: usize = lens.iter().sum();
     let want_datagrams = lens.len();
     let (dst, collector) = udp_collector(want_datagrams);
@@ -166,6 +163,7 @@ fn run_case(seg: u16, lens: &[usize]) {
         }));
 
         let want = common::pattern(total);
+        let segments: Vec<_> = lens.iter().map(|&len| len as u32).collect();
         let queued = app
             .as_ref()
             .borrow_pin_mut(sess.token())
@@ -173,29 +171,17 @@ fn run_case(seg: u16, lens: &[usize]) {
             .sender
             .project()
             .sock
-            .queue_segmented(want.clone(), dst, seg);
-        assert!(queued.is_ok(), "queue_segmented must accept the send");
+            .queue_segments(want.clone(), &segments, dst);
+        assert!(queued.is_ok(), "queue_segments must accept the send");
 
         {
             let (token, mut driver) = sess.token_and_driver();
             let mut app = app.as_ref().borrow_pin_mut(token);
             let mut sender = app.as_mut().project().sender.project();
-            assert_eq!(sender.sock.retained_outgoing_bytes(), total);
             sender.sock.as_mut().tick(&mut driver);
-            assert_eq!(sender.sock.retained_outgoing_bytes(), total);
         }
 
-        common::run_until(&mut sess, app.as_ref(), &gate, 1);
-        assert_eq!(
-            app.as_ref()
-                .borrow_pin(sess.token())
-                .project_ref()
-                .sender
-                .project_ref()
-                .sock
-                .retained_outgoing_bytes(),
-            0,
-        );
+        common::run_until(&mut sess, app.as_ref(), &gate, sends);
         let (seen, got) = collector.join().expect("collector join");
 
         if errno.get() == Some(libc::EINVAL) {

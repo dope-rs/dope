@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::pin::pin;
 
+use dope::driver::Driver;
 use dope::driver::profile::DriverProfile;
 use dope::driver::token::{Epoch, SlotIndex, Token};
 use dope::manifold::env::{Bundle, Env};
@@ -8,7 +9,7 @@ use dope::manifold::file::{Files, FilesFactory};
 use dope::manifold::listener::{Application, Config, Listener};
 use dope::runtime::profile;
 use dope::runtime::{Executor, Session};
-use dope::{Driver, DriverContext, DriverRef, driver};
+use dope::{DriverContext, DriverRef, driver};
 use dope_core::driver::ext::DriverExt;
 use dope_fiber::{ListenerPort, ListenerPortFactory};
 use dope_net::tcp::Tcp;

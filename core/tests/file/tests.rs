@@ -1,6 +1,3 @@
-use std::io::Read;
-use std::net::{TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use dope_core::driver::completion::Completion;
@@ -10,8 +7,7 @@ use dope_core::backend::Sqe;
 use dope_core::driver::DriverContext;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::file::{self, OpenPath, OsFile};
-use dope_core::io::pipe::Pipe;
-use dope_core::io::{Event, EventRef, OpenEvent, ReadEvent, SpliceEvent, WriteEvent};
+use dope_core::io::{Event, EventRef, OpenEvent, ReadEvent, WriteEvent};
 use dope_test::{TempFile, with_driver};
 
 fn tok(n: u32) -> Token {
@@ -30,7 +26,6 @@ fn event_token(ev: &Event) -> Token {
         | EventRef::Sync(t, ..)
         | EventRef::Open(t, ..)
         | EventRef::Read(t, ..)
-        | EventRef::Splice(t, ..)
         | EventRef::Stat(t, ..) => t,
         EventRef::Shutdown => panic!("unexpected shutdown completion"),
     }
@@ -50,17 +45,6 @@ fn drive_until<'d>(driver: &mut DriverContext<'_, 'd>, want: Token) -> Event<'d>
         }
     }
     panic!("no completion for token");
-}
-
-fn loopback_pair() -> (TcpStream, TcpStream) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let sender = TcpStream::connect(addr).expect("connect");
-    let (receiver, _) = listener.accept().expect("accept");
-    receiver
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("timeout");
-    (sender, receiver)
 }
 
 #[test]
@@ -155,51 +139,6 @@ fn async_open_then_read_via_returned_fd() {
 }
 
 #[test]
-fn splice_file_to_socket_zero_copy() {
-    let payload = b"zero-copy-splice-payload-over-loopback";
-    let tmp = TempFile::with("splice", payload);
-    let (sender, mut receiver) = loopback_pair();
-
-    with_driver(|mut driver| {
-        let f = OsFile::open(tmp.path_str()).expect("open");
-        let pipe = Pipe::new().expect("pipe");
-
-        let t_in = tok(20);
-        driver
-            .push(unsafe { f.splice_to_pipe(0, pipe.write_fd(), payload.len() as u32, t_in) })
-            .expect("push splice in");
-
-        let event = drive_until(&mut driver, t_in);
-        let moved_in = match event.as_ref() {
-            EventRef::Splice(_, SpliceEvent::Moved(n)) => *n as usize,
-            _ => panic!("expected splice into pipe, got {}", variant(&event)),
-        };
-        assert_eq!(moved_in, payload.len());
-
-        let t_out = tok(21);
-        let sock_fd = sender.as_raw_fd();
-        driver
-            .push(unsafe {
-                Sqe::splice_raw(pipe.read_fd(), -1, sock_fd, -1, moved_in as u32, 0, t_out)
-            })
-            .expect("push splice out");
-
-        let event = drive_until(&mut driver, t_out);
-        let moved_out = match event.as_ref() {
-            EventRef::Splice(_, SpliceEvent::Moved(n)) => *n as usize,
-            _ => panic!("expected splice to socket, got {}", variant(&event)),
-        };
-        assert_eq!(moved_out, payload.len());
-
-        let mut got = vec![0u8; payload.len()];
-        receiver.read_exact(&mut got).expect("read socket");
-        assert_eq!(&got, payload);
-
-        drop(sender);
-    });
-}
-
-#[test]
 fn write_path_still_works() {
     let tmp = TempFile::with("write", b"");
     let f = OsFile::create(tmp.path_str()).expect("create");
@@ -227,7 +166,6 @@ fn variant(ev: &Event) -> &'static str {
     match ev.as_ref() {
         EventRef::Open(..) => "Open",
         EventRef::Read(..) => "Read",
-        EventRef::Splice(..) => "Splice",
         EventRef::Stat(..) => "Stat",
         EventRef::Accept(..) => "Accept",
         EventRef::Recv(..) => "Recv",

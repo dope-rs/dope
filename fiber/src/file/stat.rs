@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::task::Poll;
 
 use super::already_done;
-use super::{Direct, Metadata, Source};
+use super::{Metadata, Source};
 use crate::{Context, Fiber};
 use dope::io::file::OpenPath;
 use dope::manifold::file::{FileOutcome, Files, StatDone};
@@ -28,10 +28,10 @@ pub struct Stat<'h, 'd, const ID: u8, const N: usize> {
 }
 
 impl<'h, 'd, const ID: u8, const N: usize> Stat<'h, 'd, ID, N> {
-    pub fn source(host: &'h Files<'d, ID, N>, source: &Source<'d, Direct>) -> Self {
+    pub fn source(host: &'h Files<'d, ID, N>, source: &Source<'d>) -> Self {
         Self {
             host,
-            stage: StatStage::Init(StatTarget::Fd(source.direct())),
+            stage: StatStage::Init(StatTarget::Fd(source.lease())),
         }
     }
 
