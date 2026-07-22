@@ -1,6 +1,6 @@
 extern crate dope;
 
-mod common;
+use dope_test as common;
 
 use std::net::SocketAddr;
 

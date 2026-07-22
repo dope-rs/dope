@@ -2,7 +2,7 @@
 
 extern crate dope;
 
-mod common;
+use dope_test as common;
 
 use o3::cell::BrandCell;
 use std::cell::Cell;

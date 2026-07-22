@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-mod common;
+use dope_test as common;
 
 extern crate dope;
 use o3::cell::BrandCell;

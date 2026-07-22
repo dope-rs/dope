@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 use crate::GUARD;
@@ -29,6 +29,22 @@ pub fn spawn_peer<T: Send + 'static>(
         let mut stream = connect(addr);
         script(&mut stream)
     })
+}
+
+/// Accepts and holds `count` silent loopback connections until all have arrived.
+pub fn hold_connections(count: usize) -> (SocketAddr, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let handle = std::thread::spawn(move || {
+        let mut held = Vec::with_capacity(count);
+        for _ in 0..count {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            held.push(stream);
+        }
+    });
+    (addr, handle)
 }
 
 pub fn request_reply(addr: SocketAddr, request: Vec<u8>) -> std::thread::JoinHandle<Vec<u8>> {

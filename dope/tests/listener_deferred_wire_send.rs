@@ -1,23 +1,19 @@
 #![cfg(target_os = "linux")]
 
-mod common;
-
 extern crate dope;
-use o3::cell::BrandCell;
 
 use std::cell::RefCell;
 use std::io::Write;
-use std::pin::{Pin, pin};
+use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application, Listener, SlotEgress};
+use dope::manifold::listener::{self, Application, SlotEgress};
 use dope_net::link::slot::Slot;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
 use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
+use dope_test::{Gate, Wired};
 use o3::buffer::{Borrowed, Bytes, RetainBytes};
-
-use common::{Gate, Wired};
 
 const HANDSHAKE: &[u8] = b"hello";
 
@@ -191,55 +187,43 @@ impl<'d> Application<'d> for PreambleApp {
     }
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Dispatcher)]
-struct App<'d> {
-    #[pin]
-    #[manifold]
-    listener: Listener<'d, 0, PreambleApp, Wired<DeferredWire>>,
-}
-
 #[test]
 fn frames_written_before_wire_established_are_each_reported() {
     let gate = Gate::new();
     let sends = Rc::new(RefCell::new(Vec::new()));
-    let (exec, cfg) = common::tcp_host(16, dope_net::tcp::listener::Config::default());
-    exec.enter(|mut sess| {
-        let hash_builder = sess.seed().derive(dope::hash::domain::ACCEPT).state();
-        let (listener, addr) = common::open_listener(
-            PreambleApp {
-                frames: FRAMES,
-                sends: sends.clone(),
-                gate: gate.clone(),
-            },
-            cfg,
-            hash_builder,
-            &mut sess.driver_access(),
-        );
-        let app = pin!(BrandCell::new(App { listener }));
+    dope_test::tcp_case! {
+        max_connections: 16,
+        transport: dope_net::tcp::listener::Config::default(),
+        env: Wired<DeferredWire>,
+        app: PreambleApp {
+            frames: FRAMES,
+            sends: sends.clone(),
+            gate: gate.clone(),
+        },
+        |case| {
+            let peer = case.peer(|s| {
+                for _ in 0..ROUNDS {
+                    s.write_all(HANDSHAKE).expect("handshake");
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                dope_test::read_all(s)
+            });
 
-        let peer = common::spawn_peer(addr, |s| {
-            for _ in 0..ROUNDS {
-                s.write_all(HANDSHAKE).expect("handshake");
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            common::read_all(s)
-        });
+            case.until(&gate, 1);
+            let got = peer.join().expect("peer join");
 
-        common::run_until(&mut sess, app.as_ref(), &gate, 1);
-        let got = peer.join().expect("peer join");
-
-        let want: Vec<u8> = FRAMES.concat();
-        assert_eq!(
-            got, want,
-            "frames must reach the peer once and in order; a repeat means the slot \
+            let want: Vec<u8> = FRAMES.concat();
+            assert_eq!(
+                got, want,
+                "frames must reach the peer once and in order; a repeat means the slot \
          re-handed plaintext the wire had already consumed"
-        );
-        let lens: Vec<usize> = FRAMES.iter().map(|f| f.len()).collect();
-        assert_eq!(
-            *sends.borrow(),
-            lens,
-            "every frame must be reported to send exactly once"
-        );
-    });
+            );
+            let lens: Vec<usize> = FRAMES.iter().map(|f| f.len()).collect();
+            assert_eq!(
+                *sends.borrow(),
+                lens,
+                "every frame must be reported to send exactly once"
+            );
+        }
+    }
 }

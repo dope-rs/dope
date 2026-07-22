@@ -1,4 +1,4 @@
-mod common;
+use dope_test as common;
 
 use std::io::{Read, Write};
 use std::pin::pin;

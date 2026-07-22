@@ -1,4 +1,4 @@
-mod common;
+use dope_test as common;
 
 use std::cell::Cell;
 use std::io;

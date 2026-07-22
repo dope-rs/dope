@@ -7,8 +7,8 @@ use dope::driver::token::{Epoch, SlotIndex, Token};
 use dope::manifold::connector::{CloseKind, Port, Requests};
 use o3::buffer::Shared;
 
-mod common;
 use common::assert_unwinds;
+use dope_test as common;
 
 fn with_port_env<R>(f: impl for<'d> FnOnce(Token, ReadyKey<'d>, dope::DriverRef<'d>) -> R) -> R {
     common::with_session(|sess| {

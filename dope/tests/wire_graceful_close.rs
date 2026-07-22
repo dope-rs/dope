@@ -1,23 +1,19 @@
 #![cfg(target_os = "linux")]
 
-mod common;
-
 extern crate dope;
-use o3::cell::BrandCell;
 
 use std::io::Write;
 use std::net::Shutdown;
-use std::pin::{Pin, pin};
+use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application, Listener, SlotEgress};
+use dope::manifold::listener::{self, Application, SlotEgress};
 use dope_net::link::slot::Slot;
 use dope_net::wire::send::{Plain, Prepared, Storage, Vectored};
 use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
+use dope_test::{Gate, Wired};
 use o3::buffer::{Borrowed, Bytes, RetainBytes};
-
-use common::{Gate, Wired};
 
 const BYE: &[u8] = b"<<BYE>>";
 const CONTROL: &[u8] = b"<<CONTROL>>";
@@ -116,14 +112,6 @@ impl<'d> Application<'d> for ProbeApp {
     }
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Dispatcher)]
-struct App<'d> {
-    #[pin]
-    #[manifold]
-    listener: Listener<'d, 0, ProbeApp, Wired<GracefulWire>>,
-}
-
 struct ControlWire {
     pending: bool,
 }
@@ -213,92 +201,81 @@ impl<'d> Application<'d> for ControlApp {
     }
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Dispatcher)]
-struct ControlHost<'d> {
-    #[pin]
-    #[manifold]
-    listener: Listener<'d, 0, ControlApp, Wired<ControlWire>>,
-}
-
 #[test]
 fn graceful_sentinel_trails_drain_reply() {
-    let want = common::pattern(12_000);
+    let want = dope_test::pattern(12_000);
     let gate = Gate::new();
-    let (exec, cfg) = common::tcp_host(64, dope_net::tcp::listener::Config::default());
-    exec.enter(|mut sess| {
-        let app = ProbeApp {
+    dope_test::tcp_case! {
+        max_connections: 64,
+        transport: dope_net::tcp::listener::Config::default(),
+        env: Wired<GracefulWire>,
+        app: ProbeApp {
             payload: Some(want.clone()),
             gate: gate.clone(),
-        };
-        let hash_builder = sess.seed().derive(dope::hash::domain::ACCEPT).state();
-        let (listener, addr) =
-            common::open_listener(app, cfg, hash_builder, &mut sess.driver_access());
-        let app = pin!(BrandCell::new(App { listener }));
+        },
+        |case| {
+            let peer = case.peer(|s| {
+                s.write_all(b"GET\n").expect("request");
+                dope_test::read_all(s)
+            });
 
-        let peer = common::spawn_peer(addr, |s| {
-            s.write_all(b"GET\n").expect("request");
-            common::read_all(s)
-        });
+            case.until(&gate, 1);
+            let got = peer.join().expect("peer join");
 
-        common::run_until(&mut sess, app.as_ref(), &gate, 1);
-        let got = peer.join().expect("peer join");
-
-        let mut expect = want;
-        expect.extend_from_slice(BYE);
-        assert_eq!(got, expect, "sentinel must trail the reply, before the FIN");
-        assert_eq!(gate.hits(), 1, "connection must close exactly once");
-    });
+            let mut expect = want;
+            expect.extend_from_slice(BYE);
+            assert_eq!(got, expect, "sentinel must trail the reply, before the FIN");
+            assert_eq!(gate.hits(), 1, "connection must close exactly once");
+        }
+    }
 }
 
 #[test]
 fn graceful_sentinel_survives_peer_eof() {
     let gate = Gate::new();
-    let (exec, cfg) = common::tcp_host(64, dope_net::tcp::listener::Config::default());
-    exec.enter(|mut sess| {
-        let app = ProbeApp {
+    dope_test::tcp_case! {
+        max_connections: 64,
+        transport: dope_net::tcp::listener::Config::default(),
+        env: Wired<GracefulWire>,
+        app: ProbeApp {
             payload: None,
             gate: gate.clone(),
-        };
-        let hash_builder = sess.seed().derive(dope::hash::domain::ACCEPT).state();
-        let (listener, addr) =
-            common::open_listener(app, cfg, hash_builder, &mut sess.driver_access());
-        let app = pin!(BrandCell::new(App { listener }));
+        },
+        |case| {
+            let peer = case.peer(|s| {
+                s.write_all(b"REQ").expect("request");
+                s.shutdown(Shutdown::Write).expect("half close");
+                dope_test::read_all(s)
+            });
 
-        let peer = common::spawn_peer(addr, |s| {
-            s.write_all(b"REQ").expect("request");
-            s.shutdown(Shutdown::Write).expect("half close");
-            common::read_all(s)
-        });
+            case.until(&gate, 1);
+            let got = peer.join().expect("peer join");
 
-        common::run_until(&mut sess, app.as_ref(), &gate, 1);
-        let got = peer.join().expect("peer join");
-
-        assert_eq!(got, BYE, "peer EOF must not suppress the graceful sentinel");
-        assert_eq!(gate.hits(), 1, "connection must close exactly once");
-    });
+            assert_eq!(got, BYE, "peer EOF must not suppress the graceful sentinel");
+            assert_eq!(gate.hits(), 1, "connection must close exactly once");
+        }
+    }
 }
 
 #[test]
 fn control_output_is_flushed_after_plaintext() {
     let gate = Gate::new();
-    let (exec, cfg) = common::tcp_host(64, dope_net::tcp::listener::Config::default());
-    exec.enter(|mut sess| {
-        let app = ControlApp { gate: gate.clone() };
-        let hash_builder = sess.seed().derive(dope::hash::domain::ACCEPT).state();
-        let (listener, addr) =
-            common::open_listener(app, cfg, hash_builder, &mut sess.driver_access());
-        let app = pin!(BrandCell::new(ControlHost { listener }));
+    dope_test::tcp_case! {
+        max_connections: 64,
+        transport: dope_net::tcp::listener::Config::default(),
+        env: Wired<ControlWire>,
+        app: ControlApp { gate: gate.clone() },
+        |case| {
+            let peer = case.peer(|s| {
+                s.write_all(b"REQ").expect("request");
+                dope_test::read_all(s)
+            });
 
-        let peer = common::spawn_peer(addr, |s| {
-            s.write_all(b"REQ").expect("request");
-            common::read_all(s)
-        });
+            case.until(&gate, 1);
+            let got = peer.join().expect("peer join");
 
-        common::run_until(&mut sess, app.as_ref(), &gate, 1);
-        let got = peer.join().expect("peer join");
-
-        assert_eq!(got, CONTROL);
-        assert_eq!(gate.hits(), 1);
-    });
+            assert_eq!(got, CONTROL);
+            assert_eq!(gate.hits(), 1);
+        }
+    }
 }

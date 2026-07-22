@@ -1,19 +1,15 @@
 #![cfg(target_os = "linux")]
 
-mod common;
-
 extern crate dope;
-use std::pin::{Pin, pin};
+use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application, Listener, SlotEgress};
+use dope::manifold::listener::{self, Application, SlotEgress};
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
+use dope_test::Gate;
 use o3::buffer::RetainBytes;
-use o3::cell::BrandCell;
-
-use common::{Gate, Plain};
 
 fn resp_a() -> Vec<u8> {
     vec![0xA1; 8000]
@@ -65,39 +61,24 @@ impl<'d> Application<'d> for PipelineApp {
     }
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Dispatcher)]
-struct App<'d> {
-    #[pin]
-    #[manifold]
-    listener: Listener<'d, 0, PipelineApp, Plain>,
-}
-
 #[test]
 fn two_responses_committed_while_first_in_flight_arrive_in_order() {
     let mut want = resp_a();
     want.extend_from_slice(&resp_b());
     let gate = Gate::new();
-    let (exec, cfg) = common::tcp_host(64, dope_net::tcp::listener::Config::default());
-    exec.enter(|mut sess| {
-        let hash_builder = sess.seed().derive(dope::hash::domain::ACCEPT).state();
-        let (listener, addr) = common::open_listener(
-            PipelineApp { gate: gate.clone() },
-            cfg,
-            hash_builder,
-            &mut sess.driver_access(),
-        );
-        let app = pin!(BrandCell::new(App { listener }));
+    dope_test::tcp_case! {
+        max_connections: 64,
+        app: PipelineApp { gate: gate.clone() },
+        |case| {
+            let peer = case.request_reply(b"GO\n".to_vec());
+            case.until(&gate, 1);
+            let got = peer.join().expect("peer join");
 
-        let peer = common::request_reply(addr, b"GO\n".to_vec());
-
-        common::run_until(&mut sess, app.as_ref(), &gate, 1);
-        let got = peer.join().expect("peer join");
-
-        assert_eq!(
-            got, want,
-            "responses corrupted, reordered, or truncated on the pipelined path"
-        );
-        assert_eq!(gate.hits(), 1, "connection must close exactly once");
-    });
+            assert_eq!(
+                got, want,
+                "responses corrupted, reordered, or truncated on the pipelined path"
+            );
+            assert_eq!(gate.hits(), 1, "connection must close exactly once");
+        }
+    }
 }
