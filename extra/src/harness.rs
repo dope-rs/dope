@@ -7,6 +7,12 @@ use std::time::Duration;
 
 use dope::runtime::{Launcher, WorkerContext, WorkerEntry};
 
+mod fiber;
+mod tcp;
+
+pub use fiber::{Elapsed, expect_pending, poll_once, within};
+pub use tcp::{TcpScript, TcpScriptConfig};
+
 pub struct Harness {
     bind: SocketAddr,
 }

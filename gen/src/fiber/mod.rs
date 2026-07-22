@@ -39,6 +39,9 @@ impl Fiber {
     pub(crate) fn attribute(attr: TokenStream, input: TokenStream) -> TokenStream {
         let driver = parse_macro_input!(attr as Lifetime);
         let mut item = parse_macro_input!(input as ItemFn);
+        if let Err(error) = item.modifiers.require_empty() {
+            return error.to_compile_error().into();
+        }
         if item.sig.asyncness.take().is_none() {
             return Error::new_spanned(item.sig.fn_token, "fiber requires async fn")
                 .to_compile_error()
