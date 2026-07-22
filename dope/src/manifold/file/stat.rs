@@ -15,7 +15,7 @@ use dope_core::platform::Platform;
 
 type StatBuf = <Backend as Platform>::StatBuf;
 
-use super::table::{OperationTable, Targets};
+use super::table::OperationTable;
 use dope_core::driver::ready::CompletionWaker;
 
 pub enum StatDone {
@@ -100,18 +100,12 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
     }
 
     pub(crate) fn flush_cancellations(&self, driver: &mut DriverContext<'_, 'd>) -> bool {
-        self.operations
-            .flush_cancellations(driver, |token, _| Targets::one(token))
+        self.operations.flush_cancellations(driver)
     }
 
-    pub(crate) fn complete(
-        &self,
-        token: Token,
-        event: StatEvent,
-        driver: &mut DriverContext<'_, 'd>,
-    ) {
+    pub(crate) fn complete(&self, token: Token, event: StatEvent) {
         self.operations
-            .complete(token, event, driver, |hold, event| match event {
+            .complete(token, event, |hold, event| match event {
                 StatEvent::Done => {
                     let raw = unsafe { hold.stat.assume_init_read() };
                     match Backend::parse_meta(&raw) {

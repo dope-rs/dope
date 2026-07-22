@@ -10,8 +10,9 @@ use std::thread;
 use o3::marker::ThreadBound;
 
 use super::ShutdownTrigger;
+use crate::DriverContext;
+use crate::driver::Driver;
 use crate::hash::Seed;
-use crate::{Driver, DriverContext};
 use dope_core::driver::ext::DriverExt;
 
 #[derive(Clone, Copy)]
@@ -276,10 +277,6 @@ impl Launcher {
             ));
         }
         Self::with_placements(vec![Placement::Unbound; workers])
-    }
-
-    pub fn from_affinity() -> io::Result<Self> {
-        Self::pinned(Self::allowed_cpus()?)
     }
 
     fn with_placements(placements: Vec<Placement>) -> io::Result<Self> {

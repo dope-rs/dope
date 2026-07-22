@@ -60,18 +60,6 @@ impl OsFile {
     pub unsafe fn read_at(&self, buf: &mut [u8], offset: u64, op: Token) -> Sqe {
         unsafe { Sqe::read(self.inner.as_raw_fd(), buf, offset, op) }
     }
-
-    /// # Safety
-    /// `self` and `pipe_write_fd` must stay open until completion.
-    pub unsafe fn splice_to_pipe(
-        &self,
-        off_in: i64,
-        pipe_write_fd: RawFd,
-        len: u32,
-        op: Token,
-    ) -> Sqe {
-        Sqe::splice_to_pipe(self.inner.as_raw_fd(), off_in, pipe_write_fd, len, op)
-    }
 }
 
 pub struct OpenPath {

@@ -23,7 +23,7 @@ use dope::manifold::env::Bundle;
 use dope::runtime::profile::Balanced;
 pub use dope_gen::{fiber, fiber_fn};
 pub use extensions::{AppSessionExt, SessionExt, SlotExt};
-pub use io::{Io, RecvBuffer};
+pub use io::Io;
 pub use net::connector::{
     Connect, Connector, ConnectorHandle, ConnectorPort, ConnectorPortFactory,
 };

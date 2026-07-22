@@ -152,8 +152,10 @@ fn receive_hoarder_cannot_starve_another_connection() {
             app.as_ref(),
             dope_gen::fiber!('_ => async move {
                 let mut probe = probe.take().expect("probe owner");
-                let mut request = [0; 1];
-                probe.read_into(&mut request).await?;
+                let (read, request) = probe.read(vec![0; 1]).await;
+                if read? == 0 {
+                    return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+                }
                 Ok::<_, std::io::Error>((probe, request))
             }),
         )

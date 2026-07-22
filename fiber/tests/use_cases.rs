@@ -12,11 +12,7 @@ use dope_fiber::{
 use dope_test::{drain_tokens, poll_with_slot, tok, with_session};
 use o3::buffer::Shared;
 
-fn register<'d, T>(
-    queue: Pin<&WaitQueue<T>>,
-    waiter: Pin<&Waiter<'d, T>>,
-    waker: Waker<'d>,
-) -> bool {
+fn register<'d>(queue: Pin<&WaitQueue>, waiter: Pin<&Waiter<'d>>, waker: Waker<'d>) -> bool {
     queue.try_register_waker(waiter, waker)
 }
 
@@ -75,25 +71,6 @@ fn request_waiter_can_switch_queues_and_either_endpoint_may_drop_first() {
         drop(canceled);
         assert!(origin.is_empty());
         assert!(drain_tokens(sess.driver()).is_empty());
-    });
-}
-
-#[test]
-fn request_waiter_receives_its_assigned_payload_without_shared_storage() {
-    with_session(|sess| {
-        let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let queue = pin!(WaitQueue::<u32>::with_payload_capacity(1));
-        let waiter = pin!(Waiter::new());
-
-        assert!(register(
-            queue.as_ref(),
-            waiter.as_ref(),
-            Waker::from_ready(sess.driver(), ready.key()),
-        ));
-        queue.as_ref().assign_one(41).expect("waiting request");
-
-        assert_eq!(waiter.take_assigned(), Some(41));
-        assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
     });
 }
 

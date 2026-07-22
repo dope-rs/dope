@@ -5,11 +5,11 @@ use std::net::Shutdown;
 use std::pin::Pin;
 use std::task::Poll;
 
-use dope::ProvidedView;
+use dope::io::provided::ProvidedView;
 use o3::buffer::{Bytes, Retained, Shared};
 
 use crate::net::port::Port;
-use crate::net::port::result::{RecvChunkResult, RecvInto, SendIdle};
+use crate::net::port::result::{RecvInto, SendIdle};
 use crate::{Context, Fiber, Waker};
 use dope::driver::token::Token;
 
@@ -18,10 +18,6 @@ pub trait Host<'d> {
 
     fn recv_into(&self, id: Token, dst: &mut [u8]) -> RecvInto {
         self.port().recv_into(id, dst)
-    }
-
-    fn recv_chunk(&self, id: Token) -> RecvChunkResult<'d> {
-        self.port().recv_chunk(id)
     }
 
     fn recv_waker(&self, id: Token, waker: Waker<'d>) {
@@ -57,38 +53,24 @@ pub trait Host<'d> {
     }
 }
 
-pub enum RecvBuffer<'d> {
+pub(crate) enum RecvBuffer<'d> {
     Owned(Bytes<Retained>),
     Provided(ProvidedView<'d>),
 }
 
 impl RecvBuffer<'_> {
-    pub fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         match self {
             Self::Owned(value) => value.as_slice(),
             Self::Provided(value) => value.as_slice(),
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.as_slice().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn advance(&mut self, count: usize) {
+    pub(crate) fn advance(&mut self, count: usize) {
         match self {
             Self::Owned(value) => value.advance(count),
             Self::Provided(value) => value.advance(count),
         }
-    }
-}
-
-impl AsRef<[u8]> for RecvBuffer<'_> {
-    fn as_ref(&self) -> &[u8] {
-        self.as_slice()
     }
 }
 
@@ -216,10 +198,6 @@ impl<'d, H: Host<'d>> Io<'d, H> {
         self.host().recv_into(self.id, dst)
     }
 
-    fn try_recv_chunk(&mut self) -> RecvChunkResult<'d> {
-        self.host().recv_chunk(self.id)
-    }
-
     fn set_recv_waker(&mut self, waker: Waker<'d>) {
         self.host().recv_waker(self.id, waker);
     }
@@ -254,26 +232,6 @@ impl<'d, H: Host<'d>> Io<'d, H> {
         Ok(())
     }
 
-    pub fn read_into<'a>(
-        &'a mut self,
-        buf: &'a mut [u8],
-    ) -> impl Fiber<'d, Output = io::Result<usize>> + 'a {
-        ReadInto {
-            registration: Registration::new(self, Interest::Recv),
-            buf,
-            done: false,
-        }
-    }
-
-    pub fn read_chunk(
-        &mut self,
-    ) -> impl Fiber<'d, Output = io::Result<Option<RecvBuffer<'d>>>> + '_ {
-        ReadChunk {
-            registration: Registration::new(self, Interest::Recv),
-            done: false,
-        }
-    }
-
     pub fn write_all<'a>(
         &'a mut self,
         data: &'a [u8],
@@ -297,13 +255,6 @@ impl<'d, H: Host<'d>> Io<'d, H> {
         }
     }
 
-    pub fn write_all_static<'a>(
-        &'a mut self,
-        bytes: &'static [u8],
-    ) -> impl Fiber<'d, Output = io::Result<()>> + 'a {
-        self.write_all_shared(Shared::from_static(bytes))
-    }
-
     pub fn read<'a>(
         &'a mut self,
         buf: Vec<u8>,
@@ -313,50 +264,6 @@ impl<'d, H: Host<'d>> Io<'d, H> {
             buf,
             done: false,
         }
-    }
-}
-
-struct ReadInto<'a, 'd, H: Host<'d>> {
-    registration: Registration<'a, 'd, H>,
-    buf: &'a mut [u8],
-    done: bool,
-}
-
-impl<'d, H: Host<'d>> Fiber<'d> for ReadInto<'_, 'd, H> {
-    type Output = io::Result<usize>;
-
-    fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        assert!(!this.done, "fiber::Io::read_into polled after completion");
-        this.registration.poll_recv(cx, this.buf, &mut this.done)
-    }
-}
-
-struct ReadChunk<'a, 'd, H: Host<'d>> {
-    registration: Registration<'a, 'd, H>,
-    done: bool,
-}
-
-impl<'d, H: Host<'d>> Fiber<'d> for ReadChunk<'_, 'd, H> {
-    type Output = io::Result<Option<RecvBuffer<'d>>>;
-
-    fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        assert!(!this.done, "fiber::Io::read_chunk polled after completion");
-        let result = match this.registration.io.try_recv_chunk() {
-            RecvChunkResult::Chunk(chunk) => Poll::Ready(Ok(Some(chunk))),
-            RecvChunkResult::Closed => Poll::Ready(Ok(None)),
-            RecvChunkResult::Failed(error) => Poll::Ready(Err(error)),
-            RecvChunkResult::Pending => {
-                this.registration.arm(unsafe { cx.waker_unchecked() });
-                Poll::Pending
-            }
-        };
-        if result.is_ready() {
-            this.registration.complete();
-            this.done = true;
-        }
-        result
     }
 }
 

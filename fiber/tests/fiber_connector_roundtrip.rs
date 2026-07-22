@@ -236,8 +236,8 @@ fn ping_roundtrip<'scope, 'd, D: Dispatcher<'d>>(
             app,
             dope_gen::fiber!('_ => async move {
                 let mut io = owner.take().expect("io owner");
-                let mut buf = [0u8; 16];
-                let n = io.read_into(&mut buf).await?;
+                let (result, buf) = io.read(vec![0; 16]).await;
+                let n = result?;
                 Ok::<_, std::io::Error>((io, buf, n))
             }),
         )

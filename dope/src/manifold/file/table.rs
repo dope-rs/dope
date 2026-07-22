@@ -1,12 +1,11 @@
 use std::io;
 
-use crate::{DriverContext, PushError};
+use crate::DriverContext;
 use dope_core::backend::Sqe;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::submission::Submission;
 use dope_core::driver::token::{Key, KeyTag, SLOT_MASK, Token, TokenCellSlab};
-use dope_core::io::fd::FdSlot;
 
 enum State<'d, R> {
     Submitted,
@@ -56,65 +55,6 @@ impl<H, R, Tag> Drop for BeginEntry<'_, '_, H, R, Tag> {
     }
 }
 
-pub(super) enum CompletionAction<H, R> {
-    Settle(R),
-    Resubmit {
-        sqe: Sqe,
-        accepted: fn(&mut H),
-        aborted: fn(&mut H),
-        failed: fn(PushError) -> R,
-    },
-}
-
-impl<H, R> From<R> for CompletionAction<H, R> {
-    fn from(result: R) -> Self {
-        Self::Settle(result)
-    }
-}
-
-pub(super) struct Targets {
-    first: Token,
-    second: Option<Token>,
-    release: Option<FdSlot>,
-}
-
-impl Targets {
-    pub(super) fn one(first: Token) -> Self {
-        Self {
-            first,
-            second: None,
-            release: None,
-        }
-    }
-
-    pub(super) fn two_releasing(first: Token, second: Token, slot: FdSlot) -> Self {
-        Self {
-            first,
-            second: Some(second),
-            release: Some(slot),
-        }
-    }
-
-    fn append_to(self, targets: &mut Vec<Token>) {
-        targets.push(self.first);
-        if let Some(second) = self.second {
-            targets.push(second);
-        }
-    }
-
-    fn quiesce(self, driver: &mut DriverContext<'_, '_>) {
-        match self.second {
-            Some(second) => driver.quiesce(&[self.first, second]),
-            None => driver.quiesce(std::slice::from_ref(&self.first)),
-        };
-        if let Some(slot) = self.release {
-            // SAFETY: cancellation removed the operation that uniquely owned this
-            // reserved slot, and quiescing stopped every create touching it.
-            drop(unsafe { driver.guard_raw(slot) });
-        }
-    }
-}
-
 pub(super) struct OperationTable<'d, H, R, Tag> {
     entries: TokenCellSlab<Operation<'d, H, R>, Tag>,
 }
@@ -135,27 +75,17 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
     }
 
     pub(super) fn append_targets(&self, targets: &mut Vec<Token>) {
-        self.append_targets_with(targets, |token, _| Targets::one(token));
-    }
-
-    pub(super) fn append_targets_with(
-        &self,
-        targets: &mut Vec<Token>,
-        mut map: impl FnMut(Token, &H) -> Targets,
-    ) {
         for key in self.entries.keys() {
             let token = Token::from_key(key);
-            if let Some(target) = self
+            if self
                 .entries
                 .update(key, |operation| match operation.state {
-                    State::Submitted | State::Waiting(_) | State::CancelPending => {
-                        Some(map(token, &operation.hold))
-                    }
-                    State::Settled(_) => None,
+                    State::Submitted | State::Waiting(_) | State::CancelPending => true,
+                    State::Settled(_) => false,
                 })
-                .flatten()
+                .unwrap_or(false)
             {
-                target.append_to(targets);
+                targets.push(token);
             }
         }
     }
@@ -264,11 +194,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
             .map(|operation| operation.hold)
     }
 
-    pub(super) fn flush_cancellations(
-        &self,
-        driver: &mut DriverContext<'_, 'd>,
-        mut target: impl FnMut(Token, &H) -> Targets,
-    ) -> bool {
+    pub(super) fn flush_cancellations(&self, driver: &mut DriverContext<'_, 'd>) -> bool {
         let keys: Vec<_> = self.entries.keys().collect();
         let mut quiesced = false;
         for key in keys {
@@ -277,28 +203,24 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
                 .entries
                 .update(key, |operation| {
                     matches!(operation.state, State::CancelPending)
-                        .then(|| target(token, &operation.hold))
                 })
-                .flatten();
-            let Some(targets) = pending else {
+                .unwrap_or(false);
+            if !pending {
                 continue;
-            };
-            targets.quiesce(driver);
+            }
+            driver.quiesce(std::slice::from_ref(&token));
             let _ = self.entries.remove(key);
             quiesced = true;
         }
         quiesced
     }
 
-    pub(super) fn complete<E, C>(
+    pub(super) fn complete<E>(
         &self,
         token: Token,
         event: E,
-        driver: &mut DriverContext<'_, 'd>,
-        transition: impl FnOnce(&mut H, E) -> C,
-    ) where
-        C: Into<CompletionAction<H, R>>,
-    {
+        transition: impl FnOnce(&mut H, E) -> R,
+    ) {
         let Some(parts) = token.parts::<KeyTag<ID, KIND>>() else {
             return;
         };
@@ -306,11 +228,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         self.entries
             .update_parts(parts.slab(), |operation| match &operation.state {
                 State::CancelPending => {
-                    let action: CompletionAction<H, R> =
-                        transition(&mut operation.hold, event).into();
-                    if let CompletionAction::Resubmit { aborted, .. } = action {
-                        aborted(&mut operation.hold);
-                    }
+                    let _ = transition(&mut operation.hold, event);
                 }
                 State::Settled(_) => {}
                 State::Submitted | State::Waiting(_) => {
@@ -318,25 +236,8 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
                         State::Waiting(registered) => Some(*registered),
                         _ => None,
                     };
-                    match transition(&mut operation.hold, event).into() {
-                        CompletionAction::Settle(result) => {
-                            operation.state = State::Settled(result);
-                            wake = registered;
-                        }
-                        CompletionAction::Resubmit {
-                            sqe,
-                            accepted,
-                            aborted,
-                            failed,
-                        } => match driver.push(sqe) {
-                            Ok(()) => accepted(&mut operation.hold),
-                            Err(error) => {
-                                aborted(&mut operation.hold);
-                                operation.state = State::Settled(failed(error));
-                                wake = registered;
-                            }
-                        },
-                    }
+                    operation.state = State::Settled(transition(&mut operation.hold, event));
+                    wake = registered;
                 }
             });
         if let Some(wake) = wake {

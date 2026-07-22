@@ -26,7 +26,6 @@ use io_uring::opcode::SendMsg;
 use io_uring::opcode::SetSockOpt;
 use io_uring::opcode::Shutdown;
 use io_uring::opcode::Socket;
-use io_uring::opcode::Splice;
 use io_uring::opcode::Statx;
 use io_uring::opcode::Timeout;
 use io_uring::opcode::Write;
@@ -118,29 +117,6 @@ impl Sqe {
     }
 
     /// # Safety
-    /// `dir` and a NUL-terminated `path` must stay valid, and `slot` reserved, until completion.
-    pub unsafe fn openat_fixed(
-        dir: RawFd,
-        path: *const libc::c_char,
-        flags: i32,
-        mode: u32,
-        slot: FdSlot,
-        op: Token,
-    ) -> io::Result<Self> {
-        let dest = DestinationSlot::try_from_slot_target(slot.raw())
-            .map_err(|_| Error::new(ErrorKind::InvalidInput, "dope: open slot out of range"))?;
-        Ok(Self::create(
-            OpenAt::new(types::Fd(dir), path)
-                .file_index(Some(dest))
-                .flags(flags)
-                .mode(mode as libc::mode_t)
-                .build(),
-            slot,
-            op.with_kind(kind::OPEN).raw(),
-        ))
-    }
-
-    /// # Safety
     /// `fd` must stay open and `buf` stable and unaliased until completion.
     pub unsafe fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
         let buf = unsafe {
@@ -165,24 +141,6 @@ impl Sqe {
         )
     }
 
-    pub fn read_fixed_file_uninit(
-        slot: FdSlot,
-        buf: &mut [MaybeUninit<u8>],
-        offset: u64,
-        op: Token,
-    ) -> Self {
-        Self::new(
-            Read::new(
-                types::Fixed(slot.raw()),
-                buf.as_mut_ptr().cast(),
-                buf.len() as u32,
-            )
-            .offset(offset)
-            .build()
-            .user_data(op.raw()),
-        )
-    }
-
     pub fn stat_path(path: *const libc::c_char, stat: *mut libc::statx, op: Token) -> Self {
         Self::new(
             Statx::new(types::Fd(libc::AT_FDCWD), path, stat.cast::<types::statx>())
@@ -200,47 +158,6 @@ impl Sqe {
                 .build()
                 .user_data(op.with_kind(kind::STAT).raw()),
         )
-    }
-
-    /// # Safety
-    /// Both descriptors must stay open until completion.
-    pub unsafe fn splice_raw(
-        fd_in: RawFd,
-        off_in: i64,
-        fd_out: RawFd,
-        off_out: i64,
-        len: u32,
-        flags: u32,
-        op: Token,
-    ) -> Self {
-        Self::splice(fd_in, off_in, fd_out, off_out, len, flags, op)
-    }
-
-    fn splice(
-        fd_in: RawFd,
-        off_in: i64,
-        fd_out: RawFd,
-        off_out: i64,
-        len: u32,
-        flags: u32,
-        op: Token,
-    ) -> Self {
-        Self::new(
-            Splice::new(types::Fd(fd_in), off_in, types::Fd(fd_out), off_out, len)
-                .flags(flags)
-                .build()
-                .user_data(op.with_kind(kind::SPLICE).raw()),
-        )
-    }
-
-    pub fn splice_to_pipe(
-        fd_in: RawFd,
-        off_in: i64,
-        pipe_write_fd: RawFd,
-        len: u32,
-        op: Token,
-    ) -> Self {
-        Self::splice(fd_in, off_in, pipe_write_fd, -1, len, 0, op)
     }
 
     /// # Safety

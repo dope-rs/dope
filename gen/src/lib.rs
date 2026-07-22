@@ -17,8 +17,8 @@ use quote::quote;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::{
-    DeriveInput, Error, Expr, GenericArgument, GenericParam, ImplItem, ItemFn, ItemImpl, Lifetime,
-    LifetimeParam, Member, MetaNameValue, PathArguments, Token, parse_macro_input,
+    DeriveInput, Error, Expr, GenericArgument, ImplItem, ItemImpl, Lifetime, Member, MetaNameValue,
+    PathArguments, Token, parse_macro_input,
 };
 
 fn is_field_path(expression: &Expr) -> bool {
@@ -56,38 +56,6 @@ pub fn forward(input: TokenStream) -> TokenStream {
 pub fn dispatcher(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     DispatcherSpec::derive(input)
-}
-
-#[proc_macro_attribute]
-pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return Error::new(Span::call_site(), "#[handler] takes no arguments")
-            .to_compile_error()
-            .into();
-    }
-
-    let mut item_fn = parse_macro_input!(item as ItemFn);
-
-    if let Err(error) = item_fn.modifiers.require_empty() {
-        return error.to_compile_error().into();
-    }
-    if let syn::Safety::Unsafe(unsafe_token) = &item_fn.sig.safety {
-        return Error::new_spanned(unsafe_token, "#[handler] does not support unsafe functions")
-            .to_compile_error()
-            .into();
-    }
-
-    if item_fn.sig.asyncness.is_none() {
-        return Error::new_spanned(&item_fn.sig, "#[handler] requires `async fn`")
-            .to_compile_error()
-            .into();
-    }
-    let driver: syn::Lifetime = syn::parse_quote!('__dope_handler);
-    item_fn.sig.generics.params.insert(
-        0,
-        GenericParam::Lifetime(LifetimeParam::new(driver.clone())),
-    );
-    Fiber::attribute(quote!(#driver).into(), quote!(#item_fn).into())
 }
 
 #[proc_macro_attribute]

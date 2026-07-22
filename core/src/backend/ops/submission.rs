@@ -98,15 +98,7 @@ mod kqueue {
                     flags,
                     mode,
                     ud,
-                } => backend.submit_openat_inner(ud, dir, path, flags, mode, None),
-                SqeInner::OpenAtFixed {
-                    dir,
-                    path,
-                    flags,
-                    mode,
-                    slot,
-                    ud,
-                } => backend.submit_openat_inner(ud, dir, path, flags, mode, Some(slot)),
+                } => backend.submit_openat_inner(ud, dir, path, flags, mode),
                 SqeInner::Read {
                     fd,
                     ptr,
@@ -114,22 +106,6 @@ mod kqueue {
                     offset,
                     ud,
                 } => backend.submit_read_inner(ud, fd, ptr, len, offset),
-                SqeInner::ReadFixed {
-                    slot,
-                    ptr,
-                    len,
-                    offset,
-                    ud,
-                } => match backend.raw_fd(slot) {
-                    Some(fd) => backend.submit_read_inner(ud, fd, ptr, len, offset),
-                    None => {
-                        backend.push_pending(PendingCompletion::Write {
-                            ud,
-                            result: -libc::EBADF,
-                        });
-                        true
-                    }
-                },
                 SqeInner::StatPath { path, stat, ud } => {
                     let rc = unsafe { libc::stat(path, stat) };
                     backend.complete_io(ud, rc as isize)
@@ -138,14 +114,6 @@ mod kqueue {
                     let rc = unsafe { libc::fstat(fd, stat) };
                     backend.complete_io(ud, rc as isize)
                 }
-                SqeInner::Splice {
-                    fd_in,
-                    off_in,
-                    fd_out,
-                    off_out,
-                    len,
-                    ud,
-                } => backend.submit_splice_inner(ud, fd_in, off_in, fd_out, off_out, len),
                 SqeInner::SendMsg { slot, msg, ud } => unsafe {
                     backend.submit_send_msg_tagged_inner(ud, slot, msg)
                 },

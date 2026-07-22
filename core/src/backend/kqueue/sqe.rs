@@ -45,23 +45,8 @@ pub enum SqeInner {
         mode: u32,
         ud: Token,
     },
-    OpenAtFixed {
-        dir: RawFd,
-        path: *const libc::c_char,
-        flags: i32,
-        mode: u32,
-        slot: FdSlot,
-        ud: Token,
-    },
     Read {
         fd: RawFd,
-        ptr: *mut u8,
-        len: u32,
-        offset: u64,
-        ud: Token,
-    },
-    ReadFixed {
-        slot: FdSlot,
         ptr: *mut u8,
         len: u32,
         offset: u64,
@@ -75,14 +60,6 @@ pub enum SqeInner {
     StatFd {
         fd: RawFd,
         stat: *mut libc::stat,
-        ud: Token,
-    },
-    Splice {
-        fd_in: RawFd,
-        off_in: i64,
-        fd_out: RawFd,
-        off_out: i64,
-        len: u32,
         ud: Token,
     },
     SendMsg {
@@ -179,26 +156,6 @@ impl Sqe {
     }
 
     /// # Safety
-    /// `dir` and a NUL-terminated `path` must stay valid, and `slot` reserved, until completion.
-    pub unsafe fn openat_fixed(
-        dir: RawFd,
-        path: *const libc::c_char,
-        flags: i32,
-        mode: u32,
-        slot: FdSlot,
-        op: Token,
-    ) -> io::Result<Self> {
-        Ok(Self::new(SqeInner::OpenAtFixed {
-            dir,
-            path,
-            flags,
-            mode,
-            slot,
-            ud: op.with_kind(kind::OPEN),
-        }))
-    }
-
-    /// # Safety
     /// `fd` must stay open and `buf` stable and unaliased until completion.
     pub unsafe fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
         let buf = unsafe {
@@ -224,21 +181,6 @@ impl Sqe {
         })
     }
 
-    pub fn read_fixed_file_uninit(
-        slot: FdSlot,
-        buf: &mut [MaybeUninit<u8>],
-        offset: u64,
-        op: Token,
-    ) -> Self {
-        Self::new(SqeInner::ReadFixed {
-            slot,
-            ptr: buf.as_mut_ptr().cast(),
-            len: buf.len() as u32,
-            offset,
-            ud: op,
-        })
-    }
-
     pub fn stat_path(path: *const libc::c_char, stat: *mut libc::stat, op: Token) -> Self {
         Self::new(SqeInner::StatPath {
             path,
@@ -253,41 +195,6 @@ impl Sqe {
             stat,
             ud: op.with_kind(kind::STAT),
         })
-    }
-
-    /// # Safety
-    /// Both descriptors must stay open until completion.
-    pub unsafe fn splice_raw(
-        fd_in: RawFd,
-        off_in: i64,
-        fd_out: RawFd,
-        off_out: i64,
-        len: u32,
-        _flags: u32,
-        op: Token,
-    ) -> Self {
-        Self::splice(fd_in, off_in, fd_out, off_out, len, op)
-    }
-
-    fn splice(fd_in: RawFd, off_in: i64, fd_out: RawFd, off_out: i64, len: u32, op: Token) -> Self {
-        Self::new(SqeInner::Splice {
-            fd_in,
-            off_in,
-            fd_out,
-            off_out,
-            len,
-            ud: op.with_kind(kind::SPLICE),
-        })
-    }
-
-    pub fn splice_to_pipe(
-        fd_in: RawFd,
-        off_in: i64,
-        pipe_write_fd: RawFd,
-        len: u32,
-        op: Token,
-    ) -> Self {
-        Self::splice(fd_in, off_in, pipe_write_fd, -1, len, op)
     }
 
     /// # Safety

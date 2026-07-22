@@ -5,24 +5,8 @@ use std::pin::{Pin, pin};
 use dope::manifold::Manifold;
 use dope::manifold::connector::{self, Codec, Ctx, Requests, Stateless};
 use dope::runtime::Idle;
-use dope_fiber::Fiber;
-use dope_test::{drive, poll_until_ready, with_context, with_session};
+use dope_test::{drive, with_session};
 use o3::buffer::Shared;
-
-#[dope_gen::handler]
-async fn echo(x: u32) -> u32 {
-    x + 1
-}
-
-#[dope_gen::handler]
-async fn await_chain(x: u32) -> u32 {
-    let a = ready_value(x).await;
-    ready_value(a + 10).await
-}
-
-fn ready_value<'d>(value: u32) -> impl Fiber<'d, Output = u32> {
-    dope_fiber::ready(value)
-}
 
 struct TestCodec;
 
@@ -162,11 +146,6 @@ async fn wait_repeated<'d>() -> usize {
 fn assert_usize_output<'d>(_: &impl dope_fiber::Fiber<'d, Output = usize>) {}
 
 #[test]
-fn handler_returns_generated_fiber() {
-    with_context(|cx| assert_eq!(poll_until_ready(cx, echo(7)), 8));
-}
-
-#[test]
 fn connector_session_generates_structural_methods() {
     let session = TestSession {
         protocol: TestProtocol { codec: TestCodec },
@@ -176,11 +155,6 @@ fn connector_session_generates_structural_methods() {
         connector::Session::codec(&session),
         &session.protocol.codec
     ));
-}
-
-#[test]
-fn nested_awaits_run_to_completion() {
-    with_context(|cx| assert_eq!(poll_until_ready(cx, await_chain(1)), 11));
 }
 
 #[test]

@@ -3,12 +3,12 @@ use std::io::{self, Error, ErrorKind};
 
 use crate::Waker;
 use crate::io::RecvBuffer;
-use dope::ProvidedView;
+use dope::io::provided::ProvidedView;
 use o3::buffer::RetainBytes;
 
 use super::recv::arena::{PushError, RecvArena};
 use super::recv::queue::RecvQueue;
-use super::result::{RecvChunkResult, RecvInto, SendIdle};
+use super::result::{RecvInto, SendIdle};
 
 pub(crate) struct State<'d> {
     recv: RecvQueue,
@@ -144,19 +144,6 @@ impl<'d> State<'d> {
             return RecvInto::Bytes(0);
         }
         RecvInto::Pending
-    }
-
-    pub(crate) fn try_recv_chunk(&self, arena: &RecvArena<'d>) -> RecvChunkResult<'d> {
-        if let Some(chunk) = arena.pop(&self.recv) {
-            return RecvChunkResult::Chunk(chunk);
-        }
-        if let Some(error) = self.take_error() {
-            return RecvChunkResult::Failed(error);
-        }
-        if self.is_closed() {
-            return RecvChunkResult::Closed;
-        }
-        RecvChunkResult::Pending
     }
 
     pub(crate) fn send_status(&self, inflight: bool) -> SendIdle {

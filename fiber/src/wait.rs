@@ -7,40 +7,33 @@ use o3::marker::ThreadBound;
 
 use crate::task::{Context, Waker};
 
-type WaiterPtr<T> = NonNull<Waiter<'static, T>>;
+type WaiterPtr = NonNull<Waiter<'static>>;
 
 /// A bounded, allocation-free FIFO of pinned waiters.
 ///
 /// The queue and its waiters unlink each other during `Drop`, so either side
 /// may be dropped first. All raw links stay inside this module; the public API
 /// requires both endpoints to be pinned before a link can be created.
-pub struct WaitQueue<T = ()> {
-    head: Cell<Option<WaiterPtr<T>>>,
-    tail: Cell<Option<WaiterPtr<T>>>,
+pub struct WaitQueue {
+    head: Cell<Option<WaiterPtr>>,
+    tail: Cell<Option<WaiterPtr>>,
     len: Cell<usize>,
     capacity: usize,
     _pin: PhantomPinned,
     _thread: ThreadBound,
 }
 
-pub struct Waiter<'d, T = ()> {
-    queue: Cell<Option<NonNull<WaitQueue<T>>>>,
-    previous: Cell<Option<WaiterPtr<T>>>,
-    next: Cell<Option<WaiterPtr<T>>>,
+pub struct Waiter<'d> {
+    queue: Cell<Option<NonNull<WaitQueue>>>,
+    previous: Cell<Option<WaiterPtr>>,
+    next: Cell<Option<WaiterPtr>>,
     wake: Cell<Option<Waker<'d>>>,
-    assigned: Cell<Option<T>>,
     _pin: PhantomPinned,
     _thread: ThreadBound,
 }
 
-impl WaitQueue<()> {
+impl WaitQueue {
     pub const fn with_capacity(capacity: usize) -> Self {
-        Self::build(capacity)
-    }
-}
-
-impl<T> WaitQueue<T> {
-    const fn build(capacity: usize) -> Self {
         Self {
             head: Cell::new(None),
             tail: Cell::new(None),
@@ -49,10 +42,6 @@ impl<T> WaitQueue<T> {
             _pin: PhantomPinned,
             _thread: ThreadBound::NEW,
         }
-    }
-
-    pub const fn with_payload_capacity(capacity: usize) -> Self {
-        Self::build(capacity)
     }
 
     /// Projects one queue from a pinned slice without exposing the intrusive
@@ -64,18 +53,18 @@ impl<T> WaitQueue<T> {
         Some(unsafe { Pin::new_unchecked(queue) })
     }
 
-    fn contains<'d>(self: Pin<&Self>, waiter: Pin<&Waiter<'d, T>>) -> bool {
+    fn contains<'d>(self: Pin<&Self>, waiter: Pin<&Waiter<'d>>) -> bool {
         waiter.queue.get() == Some(NonNull::from(self.get_ref()))
     }
 
-    pub fn can_register<'d>(self: Pin<&Self>, waiter: Pin<&Waiter<'d, T>>) -> bool {
+    pub fn can_register<'d>(self: Pin<&Self>, waiter: Pin<&Waiter<'d>>) -> bool {
         self.contains(waiter) || self.len.get() < self.capacity
     }
 
     #[must_use]
     pub fn try_register<'d>(
         self: Pin<&Self>,
-        waiter: Pin<&Waiter<'d, T>>,
+        waiter: Pin<&Waiter<'d>>,
         context: Pin<&Context<'_, 'd>>,
     ) -> bool {
         // SAFETY: `waiter` carries the same driver brand `'d` and owns the
@@ -86,7 +75,7 @@ impl<T> WaitQueue<T> {
     #[doc(hidden)]
     pub fn try_register_waker<'d>(
         self: Pin<&Self>,
-        waiter: Pin<&Waiter<'d, T>>,
+        waiter: Pin<&Waiter<'d>>,
         waker: Waker<'d>,
     ) -> bool {
         if self.contains(waiter) {
@@ -104,7 +93,7 @@ impl<T> WaitQueue<T> {
         debug_assert!(waiter.next.get().is_none());
 
         let queue = NonNull::from(self.get_ref());
-        let node = NonNull::from(waiter.get_ref()).cast::<Waiter<'static, T>>();
+        let node = NonNull::from(waiter.get_ref()).cast::<Waiter<'static>>();
         let previous = self.tail.get();
         waiter.queue.set(Some(queue));
         waiter.previous.set(previous);
@@ -121,7 +110,7 @@ impl<T> WaitQueue<T> {
         true
     }
 
-    fn unlink<'d>(self: Pin<&Self>, waiter: NonNull<Waiter<'d, T>>) -> Option<Waker<'d>> {
+    fn unlink<'d>(self: Pin<&Self>, waiter: NonNull<Waiter<'d>>) -> Option<Waker<'d>> {
         // SAFETY: callers obtain this pointer either from a pinned `Waiter` or
         // from this queue's links. Both Drop implementations unlink before an
         // endpoint's storage can cease to be live.
@@ -150,36 +139,26 @@ impl<T> WaitQueue<T> {
         waiter.wake.take()
     }
 
-    fn pop_next(self: Pin<&Self>, assigned: Option<T>, wake: bool) -> Result<(), Option<T>> {
+    fn pop_next(self: Pin<&Self>, wake: bool) -> bool {
         let Some(node) = self.head.get() else {
-            return Err(assigned);
+            return false;
         };
-        let waiter = node.cast::<Waiter<'_, T>>();
+        let waiter = node.cast::<Waiter<'_>>();
         let waker = self
             .unlink(waiter)
             .expect("dope-fiber: linked waiter missing its queue");
-        // SAFETY: unlinking removes the raw links but does not end the pinned
-        // waiter's lifetime. The owner cannot drop it concurrently.
-        unsafe { waiter.as_ref() }.assigned.set(assigned);
         if wake {
             waker.wake();
         }
-        Ok(())
+        true
     }
 
     pub fn wake(self: Pin<&Self>) {
-        while self.pop_next(None, true).is_ok() {}
+        while self.pop_next(true) {}
     }
 
     pub fn wake_one(self: Pin<&Self>) {
-        let _ = self.pop_next(None, true);
-    }
-
-    pub fn assign_one(self: Pin<&Self>, value: T) -> Result<(), T> {
-        match self.pop_next(Some(value), true) {
-            Err(Some(value)) => Err(value),
-            _ => Ok(()),
-        }
+        self.pop_next(true);
     }
 
     pub fn len(&self) -> usize {
@@ -191,24 +170,23 @@ impl<T> WaitQueue<T> {
     }
 }
 
-impl<T> Drop for WaitQueue<T> {
+impl Drop for WaitQueue {
     fn drop(&mut self) {
         // SAFETY: a linked queue can only have been accessed through a `Pin`.
         // Its address remains stable through Drop, and `pop_next` clears every
         // waiter's back-link before the queue storage goes away.
         let queue = unsafe { Pin::new_unchecked(&*self) };
-        while queue.pop_next(None, false).is_ok() {}
+        while queue.pop_next(false) {}
     }
 }
 
-impl<'d, T> Waiter<'d, T> {
+impl<'d> Waiter<'d> {
     pub const fn new() -> Self {
         Self {
             queue: Cell::new(None),
             previous: Cell::new(None),
             next: Cell::new(None),
             wake: Cell::new(None),
-            assigned: Cell::new(None),
             _pin: PhantomPinned,
             _thread: ThreadBound::NEW,
         }
@@ -228,19 +206,15 @@ impl<'d, T> Waiter<'d, T> {
     pub fn is_registered(&self) -> bool {
         self.queue.get().is_some()
     }
-
-    pub fn take_assigned(&self) -> Option<T> {
-        self.assigned.take()
-    }
 }
 
-impl<T> Default for Waiter<'_, T> {
+impl Default for Waiter<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> Drop for Waiter<'_, T> {
+impl Drop for Waiter<'_> {
     fn drop(&mut self) {
         let Some(queue) = self.queue.get() else {
             return;

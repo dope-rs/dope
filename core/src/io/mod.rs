@@ -114,13 +114,6 @@ impl ReadEvent {
 }
 
 #[derive(Clone, Copy)]
-pub enum SpliceEvent {
-    Moved(u32),
-    Eof,
-    Failed(i32),
-}
-
-#[derive(Clone, Copy)]
 pub enum StatEvent {
     Done,
     Failed(i32),
@@ -159,8 +152,6 @@ pub enum EventKind<'d> {
     Sync(Token, SyncEvent),
     Open(Token, OpenEvent),
     Read(Token, ReadEvent),
-    ReadBlock(Token, ReadEvent),
-    Splice(Token, SpliceEvent),
     Stat(Token, StatEvent),
     Shutdown,
 }
@@ -197,8 +188,6 @@ enum DecodedEvent {
     Sync(Token, SyncEvent),
     Open(Token, OpenEvent),
     Read(Token, ReadEvent),
-    ReadBlock(Token, ReadEvent),
-    Splice(Token, SpliceEvent),
     Stat(Token, StatEvent),
     Shutdown,
 }
@@ -275,15 +264,6 @@ impl DecodedEvent {
                 Ok(Self::Open(token, e))
             }
             kind::READ => Ok(Self::Read(token, ReadEvent::from_result(c.result))),
-            kind::READ_BLOCK => Ok(Self::ReadBlock(token, ReadEvent::from_result(c.result))),
-            kind::SPLICE => {
-                let e = match c.result {
-                    n if n > 0 => SpliceEvent::Moved(n as u32),
-                    0 => SpliceEvent::Eof,
-                    n => SpliceEvent::Failed(-n),
-                };
-                Ok(Self::Splice(token, e))
-            }
             kind::STAT => {
                 let e = if c.result >= 0 {
                     StatEvent::Done
@@ -311,7 +291,6 @@ pub enum EventRef<'a, 'd> {
     Sync(Token, &'a SyncEvent),
     Open(Token, &'a OpenEvent),
     Read(Token, &'a ReadEvent),
-    Splice(Token, &'a SpliceEvent),
     Stat(Token, &'a StatEvent),
     Shutdown,
 }
@@ -366,8 +345,6 @@ impl<'d> Event<'d> {
             DecodedEvent::Sync(token, event) => EventKind::Sync(token, event),
             DecodedEvent::Open(token, event) => EventKind::Open(token, event),
             DecodedEvent::Read(token, event) => EventKind::Read(token, event),
-            DecodedEvent::ReadBlock(token, event) => EventKind::ReadBlock(token, event),
-            DecodedEvent::Splice(token, event) => EventKind::Splice(token, event),
             DecodedEvent::Stat(token, event) => EventKind::Stat(token, event),
             DecodedEvent::Shutdown => EventKind::Shutdown,
         };
@@ -394,8 +371,6 @@ impl<'d> Event<'d> {
             EventKind::Sync(t, e) => EventRef::Sync(*t, e),
             EventKind::Open(t, e) => EventRef::Open(*t, e),
             EventKind::Read(t, e) => EventRef::Read(*t, e),
-            EventKind::ReadBlock(t, e) => EventRef::Read(*t, e),
-            EventKind::Splice(t, e) => EventRef::Splice(*t, e),
             EventKind::Stat(t, e) => EventRef::Stat(*t, e),
             EventKind::Shutdown => EventRef::Shutdown,
         }
@@ -425,8 +400,6 @@ impl<'d> Event<'d> {
             | EventKind::Sync(token, _)
             | EventKind::Open(token, _)
             | EventKind::Read(token, _)
-            | EventKind::ReadBlock(token, _)
-            | EventKind::Splice(token, _)
             | EventKind::Stat(token, _) => Some(*token),
             EventKind::Shutdown => None,
         }
@@ -444,8 +417,6 @@ impl<'d> Event<'d> {
             EventKind::Sync(t, _) => t.route(),
             EventKind::Open(t, _) => t.route(),
             EventKind::Read(t, _) => t.route(),
-            EventKind::ReadBlock(t, _) => t.route(),
-            EventKind::Splice(t, _) => t.route(),
             EventKind::Stat(t, _) => t.route(),
             EventKind::Shutdown => SHUTDOWN.route(),
         }
