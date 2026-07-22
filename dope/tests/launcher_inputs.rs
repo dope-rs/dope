@@ -86,7 +86,7 @@ fn unbound_workers_report_stable_metadata() {
 struct Parked;
 
 impl<'d> Dispatcher<'d> for Parked {
-    fn dispatch(self: Pin<&mut Self>, _event: Event, _driver: &mut DriverContext<'_, 'd>) {}
+    fn dispatch(self: Pin<&mut Self>, _event: Event<'d>, _driver: &mut DriverContext<'_, 'd>) {}
 
     fn activate(
         self: Pin<&mut Self>,
@@ -134,4 +134,72 @@ fn worker_failure_stops_other_cooperative_workers() {
         .run::<Supervised>(vec![SupervisedInput::Fail, SupervisedInput::Wait])
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert!(error.to_string().contains("worker 0"));
+    assert!(error.to_string().contains("worker failed"));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WorkerPanic(u8);
+
+struct Panicking;
+
+impl WorkerEntry for Panicking {
+    type Input = SupervisedInput;
+
+    fn run(input: Self::Input, context: WorkerContext) -> io::Result<()> {
+        match input {
+            SupervisedInput::Fail => std::panic::panic_any(WorkerPanic(17)),
+            SupervisedInput::Wait => {
+                Executor::with_seed(driver::Config::for_profile::<Throughput>(), context.seed())?
+                    .enter(|mut session| {
+                        context.try_register_shutdown(&mut session.driver_access())?;
+                        let app = std::pin::pin!(o3::cell::BrandCell::new(Parked));
+                        session.run(app.as_ref())
+                    })
+            }
+        }
+    }
+}
+
+#[test]
+fn worker_panic_is_resumed_after_cooperative_shutdown() {
+    let panic = std::panic::catch_unwind(|| {
+        Launcher::unbound(2)
+            .expect("launcher")
+            .run::<Panicking>(vec![SupervisedInput::Fail, SupervisedInput::Wait])
+    })
+    .expect_err("worker panic must not become an io error");
+    assert_eq!(panic.downcast_ref::<WorkerPanic>(), Some(&WorkerPanic(17)));
+}
+
+enum MixedFailure {
+    Error,
+    DelayedPanic,
+}
+
+struct Mixed;
+
+impl WorkerEntry for Mixed {
+    type Input = MixedFailure;
+
+    fn run(input: Self::Input, _context: WorkerContext) -> io::Result<()> {
+        match input {
+            MixedFailure::Error => Err(io::Error::other("first error")),
+            MixedFailure::DelayedPanic => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::panic::panic_any(WorkerPanic(23))
+            }
+        }
+    }
+}
+
+#[test]
+fn later_worker_panic_is_not_hidden_by_an_earlier_error() {
+    let panic = std::panic::catch_unwind(|| {
+        Launcher::unbound(2)
+            .expect("launcher")
+            .run::<Mixed>(vec![MixedFailure::Error, MixedFailure::DelayedPanic])
+    })
+    .expect_err("a worker panic has priority over an io failure");
+    assert_eq!(panic.downcast_ref::<WorkerPanic>(), Some(&WorkerPanic(23)));
 }

@@ -79,7 +79,7 @@ impl<'d> ConnApp<'d> for LivenessApp {
 
     fn send(&mut self, _slot: &mut Slot<'d>, _sent: usize, _driver: &mut DriverContext<'_, 'd>) {}
 
-    fn close(&mut self, _slot: &mut Slot<'d>) {}
+    fn close(&mut self, _slot: &mut Slot<'d>, _driver: &mut DriverContext<'_, 'd>) {}
 }
 
 fn run(timeout: Option<Duration>, want: u32) -> (Rc<Gate>, Rc<Cell<Option<Duration>>>) {

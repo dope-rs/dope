@@ -5,7 +5,7 @@ use dope::driver::token::ROUTE_FRAMEWORK;
 use dope::runtime::{AppSession, Dispatcher, Session};
 use o3::cell::BrandCell;
 
-use crate::{Context, Waker};
+use crate::{Context, RootWaker, Waker};
 use crate::{Fiber, OneShot};
 use dope::DriverContext;
 use dope_net::link::slot::Slot;
@@ -13,6 +13,8 @@ use dope_net::wire::Wire;
 
 pub trait SlotExt<'d> {
     fn waker<'a>(&'a self) -> Waker<'a>;
+
+    fn root_waker(&self) -> RootWaker<'d>;
 
     fn context<'poll>(&self, driver: DriverContext<'poll, 'd>) -> Context<'poll, 'd>;
 
@@ -22,6 +24,10 @@ pub trait SlotExt<'d> {
 impl<'d, W: Wire, S> SlotExt<'d> for Slot<'d, W, S> {
     fn waker<'a>(&'a self) -> Waker<'a> {
         Waker::from_ready(self.driver(), self.ready_key()).shorten()
+    }
+
+    fn root_waker(&self) -> RootWaker<'d> {
+        RootWaker::from_ready(self.driver(), self.ready_key())
     }
 
     fn context<'poll>(&self, driver: DriverContext<'poll, 'd>) -> Context<'poll, 'd> {
@@ -56,7 +62,7 @@ impl<'scope, 'd: 'scope, S> SessionExt<'d> for Session<'scope, 'd, S> {
     {
         self.block_on_with(
             dispatcher,
-            OneShot::new(fiber, ROUTE_FRAMEWORK, self.driver()),
+            OneShot::new(fiber, ROUTE_FRAMEWORK, self.driver())?,
         )
     }
 }
@@ -76,6 +82,6 @@ where
         F: Fiber<'d>,
     {
         let driver = self.driver();
-        self.block_on_with(OneShot::new(fiber, ROUTE_FRAMEWORK, driver))
+        self.block_on_with(OneShot::new(fiber, ROUTE_FRAMEWORK, driver)?)
     }
 }

@@ -11,11 +11,11 @@ note: required because it appears within the type `Pinned`
    |
  6 | struct Pinned(PhantomPinned);
    |        ^^^^^^
-note: required by a bound in `BrandCell::<'id, T>::borrow_mut`
-  --> /home/ec2-user/Projects/o3/src/cell/brand.rs:36:12
+note: required by a bound in `BrandedCell::<'id, T, Tag>::borrow_mut`
+  --> $CARGO/o3-$VERSION/src/cell/brand.rs
    |
-34 |     pub fn borrow_mut<'a>(&'a self, token: &'a mut BrandToken<'id>) -> &'a mut T
+   |     pub fn borrow_mut<'a>(&'a self, token: &'a mut BrandedToken<'id, Tag>) -> &'a mut T
    |            ---------- required by a bound in this associated function
-35 |     where
-36 |         T: Unpin,
-   |            ^^^^^ required by this bound in `BrandCell::<'id, T>::borrow_mut`
+   |     where
+   |         T: Unpin,
+   |            ^^^^^ required by this bound in `BrandedCell::<'id, T, Tag>::borrow_mut`

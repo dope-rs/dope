@@ -1,6 +1,5 @@
 use std::io;
 use std::marker::PhantomData;
-use std::pin::Pin;
 
 use super::core::{Core, Outbound};
 use super::slot::{RecvDecision, Slot};
@@ -9,19 +8,17 @@ use crate::wire::{RuntimeLimits, Wire};
 use dope_core::backend::Sqe;
 use dope_core::driver::buffers::ProvidedBuffers;
 use dope_core::driver::control::ContextControl;
-use dope_core::driver::ready::ReadySlot;
 use dope_core::driver::submission::Submission;
 use dope_core::driver::token::{
-    Epoch, Key, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, SlotIndex, Token, TokenSlab, kind,
+    Epoch, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, SlotIndex, Token, TokenSlab, kind,
 };
-use dope_core::driver::{DriverContext, DriverRef, OutboundReservation};
+use dope_core::driver::{DriverContext, OutboundReservation};
 use dope_core::io::fd::Fd;
-use dope_core::io::provided::ProvidedLease;
+use dope_core::io::provided::ProvidedView;
 use dope_core::io::socket::addr::Addr;
 use dope_core::io::{ConnectEvent, RecvEvent, SendEvent, SocketEvent};
+use o3::buffer::ByteSpan;
 use o3::collections::FixedQueue;
-
-type PoolKey<const ID: u8> = Key<KeyTag<ID>>;
 
 pub struct Pool<'d, const ID: u8, T: Transport, W: Wire, S> {
     slab: TokenSlab<Slot<'d, W, S>, KeyTag<ID>>,
@@ -111,14 +108,13 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         config: &W::InitConfig,
         state: S,
     ) -> bool {
-        let fd_slot = self.reservation.absolute(idx);
         let Some((wire, send)) = W::open(config, &self.runtime) else {
             return false;
         };
         self.slab
             .insert_at_with(idx.raw(), |key| {
                 let token = Token::from_key(key);
-                Slot::new(core, wire, send, token, fd_slot, state)
+                Slot::new(core, wire, send, token, state)
             })
             .is_some()
     }
@@ -145,19 +141,11 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             .map(|slot| (SlotIndex::new(parts.index()), slot))
     }
 
-    fn key(&self, idx: SlotIndex) -> Option<PoolKey<ID>> {
-        self.slab.key(idx.raw())
-    }
-
-    fn slot_of(&self, idx: SlotIndex, driver: DriverRef<'d>) -> Pin<&'d ReadySlot<'d>> {
-        driver.ready_slot(self.reservation.absolute(idx))
-    }
-
-    pub fn refresh_wake(&mut self, idx: SlotIndex, driver: DriverRef<'d>) {
-        let Some(key) = self.key(idx) else {
+    pub fn refresh_wake(&self, idx: SlotIndex) {
+        let Some((slot, key)) = self.slab.get_index(idx.raw()) else {
             return;
         };
-        self.slot_of(idx, driver).set_target(Token::from_key(key));
+        slot.core.fd.ready_handle().set_target(Token::from_key(key));
     }
 
     pub fn arm_recv(&mut self, idx: SlotIndex, driver: &mut DriverContext<'_, 'd>) -> bool {
@@ -253,8 +241,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         &mut self,
         ud: Token,
         more: bool,
-        e: dope_core::io::RecvEvent,
-        buffer: Option<&'a ProvidedLease<'d>>,
+        e: &'a dope_core::io::RecvEvent<'d>,
     ) -> DispatchRecv<W::Recv<'a>> {
         let Some(parts) = ud.parts::<KeyTag<ID>>() else {
             return DispatchRecv::Drop;
@@ -265,14 +252,8 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         };
         let idx = SlotIndex::new(parts.index());
         let decision = match e {
-            RecvEvent::Data { .. } => slot.recv_data(
-                runtime,
-                more,
-                buffer
-                    .expect("data completion requires a provided-buffer lease")
-                    .as_slice(),
-            ),
-            RecvEvent::Discarded { len } => slot.recv_discarded(len),
+            RecvEvent::Data(buffer) => slot.recv_data(runtime, more, buffer.as_slice()),
+            RecvEvent::Discarded { len } => slot.recv_discarded(*len),
             RecvEvent::Eof => slot.recv_eof(more),
             RecvEvent::Cancelled => slot.recv_cancelled(more),
             RecvEvent::Starved => slot.recv_starved(more),
@@ -293,6 +274,42 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             RecvDecision::Discarded { .. } => DispatchRecv::Discarded(idx),
             RecvDecision::NoChunk { .. } => DispatchRecv::NoChunk(idx),
             RecvDecision::Chunk { chunk, .. } => DispatchRecv::Chunk(idx, chunk),
+        }
+    }
+
+    pub fn dispatch_retained_recv(
+        &mut self,
+        ud: Token,
+        more: bool,
+        event: dope_core::io::RecvEvent<'d>,
+    ) -> DispatchRecv<Option<ProvidedView<'d>>> {
+        let dispatch = match self.dispatch_recv(ud, more, &event) {
+            DispatchRecv::Drop => DispatchRecv::Drop,
+            DispatchRecv::Close(idx) => DispatchRecv::Close(idx),
+            DispatchRecv::NoChunk(idx) => DispatchRecv::NoChunk(idx),
+            DispatchRecv::Discarded(idx) => DispatchRecv::Discarded(idx),
+            DispatchRecv::Chunk(idx, chunk) => {
+                let range = match &event {
+                    RecvEvent::Data(lease) => lease.range_of(chunk.as_slice()),
+                    _ => None,
+                };
+                DispatchRecv::Chunk(idx, range)
+            }
+        };
+        match dispatch {
+            DispatchRecv::Drop => DispatchRecv::Drop,
+            DispatchRecv::Close(idx) => DispatchRecv::Close(idx),
+            DispatchRecv::NoChunk(idx) => DispatchRecv::NoChunk(idx),
+            DispatchRecv::Discarded(idx) => DispatchRecv::Discarded(idx),
+            DispatchRecv::Chunk(idx, range) => {
+                let view = match (event, range) {
+                    (RecvEvent::Data(lease), Some((offset, len))) => {
+                        lease.into_view(offset, len).ok()
+                    }
+                    _ => None,
+                };
+                DispatchRecv::Chunk(idx, view)
+            }
         }
     }
 
@@ -366,8 +383,8 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         let (wire, send) = W::open(config, &self.runtime)?;
         let key = reservation.key();
         let idx = SlotIndex::new(key.index());
-        let fd_slot = self.reservation.try_absolute(idx)?;
-        let fd = unsafe { Fd::from_raw_slot(fd_slot, driver.driver_ref()) };
+        let outbound_slot = self.reservation.slot(idx)?;
+        let fd = unsafe { Fd::from_raw_slot(outbound_slot.fd(), driver.driver_ref()) };
         let (domain, socket_type, protocol) = socket_params;
         let ud = Token::from_key(key);
         let sqe = match Sqe::socket(domain, socket_type, protocol, &fd, ud) {
@@ -382,16 +399,9 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             return None;
         }
         let state = make_state(idx);
-        let slot = Slot::<W, S>::new(
-            Core::new(fd, T::KERNEL_DISCARD),
-            wire,
-            send,
-            ud,
-            fd_slot,
-            state,
-        );
+        let slot = Slot::<W, S>::new(Core::new(fd, T::KERNEL_DISCARD), wire, send, ud, state);
         reservation.insert(slot);
-        self.slot_of(idx, driver.driver_ref()).set_target(ud);
+        self.refresh_wake(idx);
         Some(idx)
     }
 

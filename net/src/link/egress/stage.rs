@@ -1,11 +1,12 @@
 use o3::buffer::Shared;
 
+use super::arena::PreparedChain;
 use super::metadata::MetadataQueue;
-use super::queue::{Entry, PreparedChain};
-use super::wire::WireBuf;
+use super::raw::entry::Entry;
+use super::wire::raw::lease::WireLease;
 
 pub struct Stage<'a, B = Shared> {
-    wire: &'a mut Option<WireBuf>,
+    wire: &'a mut Option<WireLease>,
     entries: &'a MetadataQueue<Entry<B>>,
     start: usize,
     len: usize,
@@ -15,7 +16,7 @@ pub struct Stage<'a, B = Shared> {
 
 impl<'a, B> Stage<'a, B> {
     pub(super) fn open(
-        wire: &'a mut Option<WireBuf>,
+        wire: &'a mut Option<WireLease>,
         entries: &'a MetadataQueue<Entry<B>>,
     ) -> Self {
         let (start, overflowed) = match wire.as_mut() {
@@ -54,7 +55,7 @@ impl<B> Stage<'_, B> {
             self.overflowed = true;
             return;
         };
-        if buffer.contiguous_spare_writer().try_push(byte).is_err() {
+        if !buffer.push(byte) {
             self.overflowed = true;
             return;
         }
@@ -69,11 +70,7 @@ impl<B> Stage<'_, B> {
             self.overflowed = true;
             return;
         };
-        if buffer
-            .contiguous_spare_writer()
-            .try_extend_from_slice(src)
-            .is_err()
-        {
+        if !buffer.extend_from_slice(src) {
             self.overflowed = true;
             return;
         }
@@ -90,7 +87,7 @@ impl<B> Stage<'_, B> {
 
 impl<B: AsRef<[u8]>> Stage<'_, B> {
     pub fn commit(self) -> usize {
-        self.commit_with(None)
+        self.commit_with(None::<B>)
     }
 
     pub(super) fn commit_with(mut self, body: Option<B>) -> usize {
@@ -100,7 +97,7 @@ impl<B: AsRef<[u8]>> Stage<'_, B> {
         let Some(buffer) = self.wire.as_ref() else {
             return 0;
         };
-        let data = unsafe { buffer.as_ptr().add(self.start) };
+        let data = buffer.pointer_at(self.start);
         let mut prepared = PreparedChain::new(&self.entries.arena.pool);
         if !prepared.push_wire(data, self.len) {
             return 0;
@@ -125,7 +122,7 @@ impl<B> Drop for Stage<'_, B> {
         {
             buffer.truncate(self.start);
         }
-        if self.wire.as_ref().is_some_and(WireBuf::is_empty) {
+        if self.wire.as_ref().is_some_and(WireLease::is_empty) {
             self.wire.take();
         }
     }

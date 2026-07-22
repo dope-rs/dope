@@ -28,7 +28,7 @@ fn abandoned_completed_open_closes_fd() {
                 cpath,
                 dope::io::file::O_RDONLY | dope::io::file::O_CLOEXEC,
             );
-            let mut open = std::pin::pin!(OneShot::new(open, u8::MAX, driver));
+            let mut open = std::pin::pin!(OneShot::new(open, u8::MAX, driver).expect("ready slot"));
             open.as_mut().pre_park(&mut sess.driver_access());
             assert!(!open.as_ref().is_done());
 

@@ -1,15 +1,22 @@
-mod events;
+mod close;
+mod connect;
+mod recv;
+mod send;
+mod source;
 
 use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
 
-use self::events::Events;
+use self::close::ClosePhase;
+use self::connect::ConnectPhase;
+use self::recv::RecvPhase;
+use self::send::SendPhase;
+use self::source::SourcePhase;
 use super::SessionApp;
 use super::app::ConnApp;
 use super::session::Session;
-use super::source::{Action, DialKey, Dialer};
+use super::source::{DialKey, Dialer};
 use super::state::State;
 use crate::DriverContext;
 use crate::manifold::Manifold;
@@ -19,14 +26,14 @@ use crate::manifold::timer::{Ticket, Timer};
 use crate::runtime::Idle;
 use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::control::ContextControl;
-use dope_core::driver::ready::{CompletionWaker, ReadyKey, ReadySlot};
+use dope_core::driver::ready::{ReadyKey, ReadySlot};
 use dope_core::driver::route::Route;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::EventKind;
 use dope_net::Transport;
 use dope_net::link::egress;
+use dope_net::link::egress::arena::Arena;
 use dope_net::link::egress::config::Config;
-use dope_net::link::egress::queue::Arena;
 use dope_net::link::pool::Pool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PEND_SHUTDOWN, PendingQueue};
 use dope_net::wire::Wire;
@@ -43,7 +50,7 @@ where
 {
     route: Route<'d, ID>,
     pub(super) pool: ConnPool<'d, ID, E::Transport, A::Wire, A::Conn, A::Send>,
-    egress_arena: egress::queue::Arena<A::Send>,
+    egress_arena: egress::arena::Arena<A::Send>,
     pub(super) app: A,
     pub(super) upstreams: S,
     stream: <E::Transport as Transport>::StreamConfig,
@@ -85,11 +92,11 @@ where
         let reservation = driver.reserve_outbound(max_connections as u32)?;
         let backoff_sentinel =
             Token::new(ID, SlotIndex::new(max_connections as u32), Epoch::INITIAL);
-        let backoff_slot = driver.driver_ref().make_ready_slot(backoff_sentinel);
+        let backoff_slot = driver.driver_ref().make_ready_slot(backoff_sentinel)?;
         upstreams.resize(max_connections);
         let pool = Pool::new(
             max_connections,
-            A::max_retained_recv_chunks(max_connections),
+            A::max_retained_recv_chunks(max_connections)?,
             reservation,
             driver,
         )?;
@@ -177,161 +184,11 @@ where
         &self.app
     }
 
-    fn poll_source(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        let mut this = self;
-        if *this.as_ref().project_ref().draining {
-            return;
-        }
-        let backoff_fired = {
-            let fields = this.as_ref().project_ref();
-            fields
-                .backoff_timer
-                .is_some_and(|ticket| fields.timer.is_fired(ticket))
-        };
-        if !this.as_ref().project_ref().upstreams.has_pending() && !backoff_fired {
-            return;
-        }
-        let now = driver.turn_now();
-        if backoff_fired {
-            let fields = this.as_mut().project();
-            if let Some(ticket) = fields.backoff_timer.take() {
-                fields.timer.cancel(ticket);
-            }
-        }
-        let cap = this.as_ref().project_ref().pool.capacity();
-        for _ in 0..cap {
-            let action = this.as_mut().project().upstreams.poll_connect(now);
-            match action {
-                Action::Connect { key } => {
-                    let fields = this.as_mut().project();
-                    let Some(socket_params) = fields.upstreams.socket_params(key) else {
-                        fields.upstreams.connect_outcome(key, false, now);
-                        continue;
-                    };
-                    let submitted = fields.pool.submit_socket_with_state(
-                        socket_params,
-                        fields.wire_config,
-                        |slot| {
-                            State::<A::Conn, A::Send>::new(
-                                key,
-                                slot.raw() as usize,
-                                fields.egress_arena,
-                            )
-                        },
-                        driver,
-                    );
-                    match submitted {
-                        Some(slot) => fields.upstreams.bind(key, slot),
-                        None => {
-                            fields.upstreams.connect_deferred(key, now);
-                            break;
-                        }
-                    }
-                }
-                Action::Backoff { min_retry_at } => {
-                    if this.as_ref().project_ref().backoff_timer.is_none() {
-                        this.as_mut().arm_backoff(min_retry_at);
-                    }
-                    break;
-                }
-                Action::Idle => break,
-            }
-        }
-    }
-
-    fn arm_backoff(self: Pin<&mut Self>, deadline: Instant) {
-        let ready = self.as_ref().backoff_key();
-        let wake = CompletionWaker::from_ready(self.as_ref().get_ref().route.driver(), ready);
-        let this = self.project();
-        if let Some(ticket) = this.backoff_timer.take() {
-            this.timer.cancel(ticket);
-        }
-        *this.backoff_timer = this.timer.try_arm(deadline, wake);
-    }
-
-    /// (Re)arm the single inbound-idle deadline. Reuses the connector's backoff
-    /// ready slot as the wake target, so firing routes back through `rouse` →
-    /// `poll_liveness` exactly like the reconnect-backoff timer. Cancels any
-    /// prior arm.
-    fn arm_liveness(self: Pin<&mut Self>, deadline: Instant) {
-        let ready = self.as_ref().backoff_key();
-        let wake = CompletionWaker::from_ready(self.as_ref().get_ref().route.driver(), ready);
-        let this = self.project();
-        if let Some(ticket) = this.liveness_timer.take() {
-            this.timer.cancel(ticket);
-        }
-        *this.liveness_timer = this.timer.try_arm(deadline, wake);
-    }
-
-    /// Earliest `last_recv + timeout` over established, non-retired slots, or
-    /// `None` if none qualify. The min the deadline is (re)armed to.
-    fn earliest_liveness(self: Pin<&Self>, timeout: Duration) -> Option<Instant> {
-        let this = self.project_ref();
-        let cap = this.pool.capacity() as u32;
-        let mut min: Option<Instant> = None;
-        for raw in 0..cap {
-            let idx = SlotIndex::new(raw);
-            let Some(slot) = this.pool.get(idx) else {
-                continue;
-            };
-            if !slot.state.establish.is_done() || slot.state.retired {
-                continue;
-            }
-            if let Some(seen) = slot.state.last_recv {
-                let deadline = seen + timeout;
-                min = Some(min.map_or(deadline, |m| m.min(deadline)));
-            }
-        }
-        min
-    }
-
-    /// Inbound-idle watchdog, run from `rouse`. Cheap when the deadline has not
-    /// fired (one `is_fired` check). On expiry: force a *recoverable* close
-    /// (`close_slot` → `upstreams.disconnect` → redial, NOT a permanent `kill`)
-    /// for every slot silent past its bound, then re-arm to the next survivor.
-    /// A recv that landed since the arm pushed `last_recv` forward, so a slot
-    /// that spoke just before this wake is spared and simply re-armed.
-    fn poll_liveness(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        let fired = {
-            let fields = self.as_ref().project_ref();
-            fields
-                .liveness_timer
-                .is_some_and(|ticket| fields.timer.is_fired(ticket))
-        };
-        if !fired {
-            return;
-        }
-        {
-            let this = self.as_mut().project();
-            if let Some(ticket) = this.liveness_timer.take() {
-                this.timer.cancel(ticket);
-            }
-        }
-        let Some(timeout) = self.as_ref().project_ref().app.inbound_idle_timeout() else {
-            return;
-        };
-        let now = driver.turn_now();
-        let cap = self.as_ref().project_ref().pool.capacity() as u32;
-        for raw in 0..cap {
-            let idx = SlotIndex::new(raw);
-            let expired = {
-                let this = self.as_ref().project_ref();
-                this.pool.get(idx).is_some_and(|slot| {
-                    slot.state.establish.is_done()
-                        && !slot.state.retired
-                        && slot
-                            .state
-                            .last_recv
-                            .is_some_and(|seen| now.duration_since(seen) >= timeout)
-                })
-            };
-            if expired {
-                Self::close_slot(self.as_mut(), idx, driver);
-            }
-        }
-        if let Some(deadline) = self.as_ref().earliest_liveness(timeout) {
-            self.arm_liveness(deadline);
-        }
+    fn rouse(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
+        self.as_mut().flush_cancellations();
+        self.as_mut().poll_source(driver);
+        self.as_mut().poll_liveness(driver);
+        self.flush_dirty(driver);
     }
 }
 
@@ -394,7 +251,7 @@ where
 {
     pub fn dispatch(
         mut self: Pin<&mut Self>,
-        ev: dope_core::io::Event,
+        ev: dope_core::io::Event<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         match ev.into_kind() {
@@ -418,7 +275,7 @@ where
     }
 
     pub fn activate(mut self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>) {
-        self.as_mut().apply_requests(target);
+        self.as_mut().apply_requests(target, driver);
         self.rouse(driver);
     }
 
@@ -466,7 +323,7 @@ where
 
     fn dispatch(
         self: Pin<&mut Self>,
-        ev: dope_core::io::Event,
+        ev: dope_core::io::Event<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         self.dispatch(ev, driver);

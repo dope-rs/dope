@@ -1,4 +1,5 @@
 use core::pin::Pin;
+use std::io;
 
 use dope::driver::ready::ReadySlot;
 use dope::driver::token::{Epoch, SlotIndex, Token, kind};
@@ -25,14 +26,14 @@ impl<'d, F> OneShot<'d, F>
 where
     F: Fiber<'d>,
 {
-    pub fn new(fiber: F, route: u8, driver: DriverRef<'d>) -> Self {
+    pub fn new(fiber: F, route: u8, driver: DriverRef<'d>) -> io::Result<Self> {
         let target = Token::new(route, SlotIndex::new(0), Epoch::INITIAL).with_kind(kind::ONE_SHOT);
-        Self {
+        Ok(Self {
             fiber: Some(fiber),
             output: None,
-            slot: driver.make_ready_slot(target),
+            slot: driver.make_ready_slot(target)?,
             target,
-        }
+        })
     }
 
     pub fn target(&self) -> Token {

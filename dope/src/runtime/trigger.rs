@@ -5,7 +5,7 @@ use dope_core::driver::control::ContextControl;
 use dope_core::io::pipe::Pipe;
 use o3::marker::ThreadBound;
 
-use super::ffi::SignalState;
+use super::signal::SignalState;
 
 /// A cloneable, process-local shutdown notification.
 ///
@@ -54,14 +54,6 @@ impl SignalShutdown {
     }
 
     pub fn try_register(&self, driver: &mut DriverContext<'_, '_>) -> io::Result<()> {
-        cfg_select! {
-            target_os = "linux" => {
-                unsafe { driver.register_shutdown_fd(self.state.fd()) }
-            }
-            _ => {
-                let _ = driver;
-                unreachable!("SignalShutdown cannot be constructed on this target")
-            }
-        }
+        self.state.try_register(driver)
     }
 }

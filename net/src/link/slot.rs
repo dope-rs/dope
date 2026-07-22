@@ -14,7 +14,6 @@ use dope_core::backend::Sqe;
 use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::kind::RECV;
 use dope_core::driver::token::{SlotIndex, Token};
-use dope_core::io::fd::FdSlot;
 
 const DEFERRED_IOV: usize = 32;
 
@@ -120,14 +119,14 @@ pub struct DeferredEgress {
 
 impl DeferredEgress {
     pub fn new() -> Self {
-        let arena = egress::queue::Arena::<SendBuffer>::default();
+        let arena = egress::arena::Arena::<SendBuffer>::default();
         Self {
             queue: arena.queue_for(0),
             close_after: Cell::new(false),
         }
     }
 
-    pub fn new_for(arena: &egress::queue::Arena<SendBuffer>, lane: usize) -> Self {
+    pub fn new_for(arena: &egress::arena::Arena<SendBuffer>, lane: usize) -> Self {
         Self {
             queue: arena.queue_for(lane),
             close_after: Cell::new(false),
@@ -198,25 +197,16 @@ pub struct Slot<'d, W: Wire, S> {
     pub send: W::SendStorage,
     pub state: S,
     token: Token,
-    ready_slot: FdSlot,
 }
 
 impl<'d, W: Wire, S> Slot<'d, W, S> {
-    pub fn new(
-        core: Core<'d>,
-        wire: W,
-        send: W::SendStorage,
-        token: Token,
-        ready_slot: FdSlot,
-        state: S,
-    ) -> Self {
+    pub fn new(core: Core<'d>, wire: W, send: W::SendStorage, token: Token, state: S) -> Self {
         Self {
             core,
             wire,
             send,
             state,
             token,
-            ready_slot,
         }
     }
 
@@ -242,12 +232,12 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
     }
 
     pub fn mark_ready(&self) {
-        self.core.fd.driver().ready_slot(self.ready_slot).activate();
+        self.core.fd.ready_handle().activate();
     }
 
     #[doc(hidden)]
     pub fn ready_key(&self) -> ReadyKey<'d> {
-        self.core.fd.driver().ready_slot(self.ready_slot).key()
+        self.core.fd.ready_handle().key()
     }
 
     #[doc(hidden)]

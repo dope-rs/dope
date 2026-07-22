@@ -41,7 +41,7 @@ use dope_core::driver::route::Route;
 use dope_core::driver::token::{SLOT_MASK, SlotIndex, Token};
 use dope_core::io::EventKind;
 use dope_net::Transport;
-use dope_net::link::egress::queue::Arena;
+use dope_net::link::egress::arena::Arena;
 use dope_net::link::pool::Pool;
 use dope_net::link::slot::{
     PEND_CLOSE, PEND_EGRESS, PEND_SHUTDOWN, PendingQueue, SendBuffer, Slot,
@@ -159,7 +159,7 @@ where
             route,
             pool: Pool::new(
                 max_connections,
-                A::max_retained_recv_chunks(max_connections),
+                A::max_retained_recv_chunks(max_connections)?,
                 OutboundReservation::empty(),
                 driver,
             )?,
@@ -261,7 +261,7 @@ where
 
     fn dispatch(
         self: Pin<&mut Self>,
-        ev: dope_core::io::Event,
+        ev: dope_core::io::Event<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let mut this = self;

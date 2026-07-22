@@ -6,6 +6,7 @@ use o3::marker::ThreadBound;
 
 use crate::backend::Backend;
 use crate::driver::DriverRef;
+use crate::driver::ready::ReadyHandle;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FdSlot(u32, ThreadBound);
@@ -57,6 +58,10 @@ impl<'d> Fd<'d> {
 
     pub fn driver(&self) -> DriverRef<'d> {
         self.driver
+    }
+
+    pub fn ready_handle(&self) -> ReadyHandle<'d> {
+        self.driver.fixed_ready(self.slot)
     }
 
     pub(crate) fn into_parts(self) -> (FdSlot, DriverRef<'d>) {

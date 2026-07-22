@@ -24,7 +24,7 @@ pub trait Manifold<'d>: Sized {
 
     fn dispatch(
         self: Pin<&mut Self>,
-        ev: dope_core::io::Event,
+        ev: dope_core::io::Event<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let _ = (ev, driver);

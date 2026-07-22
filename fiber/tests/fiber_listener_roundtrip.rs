@@ -45,10 +45,13 @@ fn fiber_listener_roundtrip() {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .expect("timeout");
-            stream.write_all(b"ping").expect("write");
+            stream.write_all(b"abcdefg").expect("write first request");
+            let mut ack = [0; 1];
+            stream.read_exact(&mut ack).expect("read acknowledgement");
+            stream.write_all(b"xyz").expect("write second request");
             let mut reply = [0; 4];
             stream.read_exact(&mut reply).expect("read");
-            reply
+            (ack, reply)
         });
         let stream = common::drive(
             &mut sess,
@@ -57,31 +60,43 @@ fn fiber_listener_roundtrip() {
         )
         .expect("accept");
         let mut stream = Some(stream);
-        let (stream, request) = common::drive(
+        let (prefix, tail, reused) = common::drive(
             &mut sess,
             app.as_ref(),
             dope_gen::fiber!('_ => async move {
                 let mut stream = stream.take().expect("stream owner");
-                let request = stream
+                let mut prefix = [0; 5];
+                let mut filled = 0;
+                while filled < prefix.len() {
+                    let read = stream.read_into(&mut prefix[filled..]).await?;
+                    if read == 0 {
+                        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+                    }
+                    filled += read;
+                }
+                let tail = stream
                     .read_chunk()
                     .await?
                     .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
-                Ok::<_, std::io::Error>((stream, request))
-            }),
-        )
-        .expect("read");
-        let mut stream = Some(stream);
-        common::drive(
-            &mut sess,
-            app.as_ref(),
-            dope_gen::fiber!('_ => async move {
-                let mut stream = stream.take().expect("stream owner");
+                let tail = tail.as_slice().to_vec();
+                stream.write_all_static(b"!").await?;
+                let mut reused = [0; 3];
+                let mut filled = 0;
+                while filled < reused.len() {
+                    let read = stream.read_into(&mut reused[filled..]).await?;
+                    if read == 0 {
+                        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+                    }
+                    filled += read;
+                }
                 stream.write_all_static(b"pong").await?;
-                Ok::<_, std::io::Error>(stream)
+                Ok::<_, std::io::Error>((prefix, tail, reused))
             }),
         )
         .expect("roundtrip");
-        assert_eq!(request.as_slice(), b"ping");
-        assert_eq!(client.join().expect("join"), *b"pong");
+        assert_eq!(prefix, *b"abcde");
+        assert_eq!(tail, b"fg");
+        assert_eq!(reused, *b"xyz");
+        assert_eq!(client.join().expect("join"), (*b"!", *b"pong"));
     });
 }

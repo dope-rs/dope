@@ -2,12 +2,17 @@ use std::io::{self, Error};
 use std::os::fd::RawFd;
 use std::ptr::null_mut;
 
-use super::{AcceptSlot, ReadSlot, RecvMsgSlot, SlotHeader};
 use super::super::pending::PendingCompletion;
 use super::super::udata::Udata;
 use super::super::{Kqueue, TAG_ACCEPT, TAG_RECV, TAG_RECV_MSG};
+use super::{AcceptSlot, ReadSlot, RecvMsgSlot, SlotHeader};
 use crate::driver::token::Token;
 use crate::io::fd::FdSlot;
+
+pub(crate) enum RecvKind {
+    Bytes,
+    Message(*const libc::msghdr),
+}
 
 pub(crate) trait Arm {
     fn set_fd_nonblocking(raw: RawFd) -> io::Result<()>;
@@ -22,6 +27,7 @@ pub(crate) trait Arm {
         addrlen_ptr: *mut libc::socklen_t,
     ) -> bool;
     fn cancel_accept_inner(&mut self, ud: Token) -> bool;
+    fn arm_recv_inner(&mut self, ud: Token, slot: FdSlot, kind: RecvKind) -> bool;
     fn arm_recv_multi_inner(&mut self, ud: Token, slot: FdSlot) -> bool;
     unsafe fn arm_recv_msg_multi_inner(
         &mut self,
@@ -148,7 +154,7 @@ impl Arm for Kqueue {
         true
     }
 
-    fn arm_recv_multi_inner(&mut self, ud: Token, slot: FdSlot) -> bool {
+    fn arm_recv_inner(&mut self, ud: Token, slot: FdSlot, kind: RecvKind) -> bool {
         let Some(raw) = self.raw_fd(slot) else {
             self.push_pending(PendingCompletion::Recv {
                 ud,
@@ -160,20 +166,28 @@ impl Arm for Kqueue {
         };
         let slot_idx = Udata::slot_key(ud.route(), ud.slot().raw());
         let epoch = ud.epoch().raw();
-        if !self.insert_read(
-            slot_idx,
-            ReadSlot::Recv(SlotHeader {
-                fd: raw,
-                epoch,
-                armed: true,
-                resume_queued: false,
-                ud,
-            }),
-        ) {
+        let header = SlotHeader {
+            fd: raw,
+            epoch,
+            armed: true,
+            resume_queued: false,
+            ud,
+        };
+        let (tag, read) = match kind {
+            RecvKind::Bytes => (TAG_RECV, ReadSlot::Recv(header)),
+            RecvKind::Message(msg_template) => (
+                TAG_RECV_MSG,
+                ReadSlot::RecvMsg(RecvMsgSlot {
+                    hdr: header,
+                    msg_template,
+                }),
+            ),
+        };
+        if !self.insert_read(slot_idx, read) {
             return false;
         }
         if self
-            .arm_read_multi(raw, Udata::from_token(ud, TAG_RECV))
+            .arm_read_multi(raw, Udata::from_token(ud, tag))
             .is_err()
         {
             self.remove_read(slot_idx);
@@ -182,46 +196,17 @@ impl Arm for Kqueue {
         true
     }
 
+    fn arm_recv_multi_inner(&mut self, ud: Token, slot: FdSlot) -> bool {
+        self.arm_recv_inner(ud, slot, RecvKind::Bytes)
+    }
+
     unsafe fn arm_recv_msg_multi_inner(
         &mut self,
         ud: Token,
         slot: FdSlot,
         msg: *const libc::msghdr,
     ) -> bool {
-        let Some(raw) = self.raw_fd(slot) else {
-            self.push_pending(PendingCompletion::Recv {
-                ud,
-                result: -libc::EBADF,
-                more: false,
-                bid: None,
-            });
-            return true;
-        };
-        let slot_idx = Udata::slot_key(ud.route(), ud.slot().raw());
-        let epoch = ud.epoch().raw();
-        if !self.insert_read(
-            slot_idx,
-            ReadSlot::RecvMsg(RecvMsgSlot {
-                hdr: SlotHeader {
-                    fd: raw,
-                    epoch,
-                    armed: true,
-                    resume_queued: false,
-                    ud,
-                },
-                msg_template: msg,
-            }),
-        ) {
-            return false;
-        }
-        if self
-            .arm_read_multi(raw, Udata::from_token(ud, TAG_RECV_MSG))
-            .is_err()
-        {
-            self.remove_read(slot_idx);
-            return false;
-        }
-        true
+        self.arm_recv_inner(ud, slot, RecvKind::Message(msg))
     }
 
     fn cancel_recv_inner(&mut self, ud: Token) -> bool {

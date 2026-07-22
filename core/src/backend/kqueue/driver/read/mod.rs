@@ -7,7 +7,6 @@ use crate::driver::token::Token;
 pub(crate) mod arm;
 pub(crate) mod dispatch;
 
-
 pub(super) struct FixedMap<T>(FixedHashTable<(usize, T)>);
 
 impl<T> FixedMap<T> {

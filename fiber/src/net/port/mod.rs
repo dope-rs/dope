@@ -1,4 +1,5 @@
-mod recv;
+pub(in crate::net) mod recv;
+pub(crate) mod result;
 mod state;
 
 use std::cell::Cell;
@@ -13,8 +14,9 @@ use dope::manifold::connector;
 use std::io::Error;
 use std::io::ErrorKind;
 
+use recv::arena::{RecvArena, RecvLayout};
+use result::{RecvChunkResult, RecvInto, SendIdle};
 use state::State;
-pub(crate) use state::{RecvArena, RecvChunkResult, RecvInto, SendIdle};
 
 struct Entry<'d> {
     token: Cell<Option<Token>>,
@@ -57,16 +59,13 @@ pub struct Port<'d> {
 }
 
 impl<'d> Port<'d> {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self::build(capacity, false)
+    pub(in crate::net) fn with_layout(layout: RecvLayout, deferred_requests: bool) -> Self {
+        Self::build(layout, deferred_requests)
     }
 
-    pub(crate) fn with_deferred_requests(capacity: usize) -> Self {
-        Self::build(capacity, true)
-    }
-
-    fn build(capacity: usize, deferred_requests: bool) -> Self {
-        let recv = RecvArena::for_connections(capacity);
+    fn build(layout: RecvLayout, deferred_requests: bool) -> Self {
+        let capacity = layout.connections();
+        let recv = RecvArena::with_layout(layout);
         let entries = (0..capacity).map(|_| Entry::default()).collect();
         Self {
             entries,
@@ -124,7 +123,9 @@ impl<'d> Port<'d> {
         let Some(entry) = self.entries.get(token.slot().raw() as usize) else {
             return false;
         };
-        entry.state.reset(&self.recv);
+        if !entry.state.reset(&self.recv) {
+            return false;
+        }
         entry.send.take();
         entry.send_pending.set(false);
         entry.shutdown.set(None);
@@ -290,41 +291,5 @@ impl<'d> Port<'d> {
             entry.close.set(true);
             self.notify_requests(token, entry);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use o3::buffer::Shared;
-
-    use super::Port;
-    use dope::driver::token::{Epoch, SlotIndex, Token};
-
-    #[test]
-    fn deferred_requests_coalesce_until_drained() {
-        let port = Port::with_deferred_requests(1);
-        let token = Token::new(7, SlotIndex::new(0), Epoch::INITIAL);
-        assert!(port.activate_deferred(token));
-
-        port.send(token, Shared::from_static(b"reply"));
-        port.shutdown(token, libc::SHUT_WR);
-        port.close(token);
-
-        assert_eq!(port.pop_deferred_request(), Some(token));
-        assert!(port.pop_deferred_request().is_none());
-        let requests = port.requests(token).expect("live connection");
-        assert_eq!(
-            requests.send.as_ref().map(Shared::as_slice),
-            Some(&b"reply"[..])
-        );
-        assert_eq!(requests.shutdown, Some(libc::SHUT_WR));
-        assert!(requests.close);
-
-        port.shutdown(token, libc::SHUT_RDWR);
-        assert_eq!(port.pop_deferred_request(), Some(token));
-        assert_eq!(
-            port.requests(token).expect("live connection").shutdown,
-            Some(libc::SHUT_RDWR)
-        );
     }
 }

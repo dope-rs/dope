@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::time::Instant;
 
 use o3::buffer::Shared;
@@ -16,12 +15,13 @@ pub const IOV_CAP: usize = 32;
 
 use dope_core::driver::token::Token;
 use dope_net::wire::send::Vectored;
+use o3::cell::RegionToken;
 
 pub struct Ctx<'a, 'd, N: Session<'d>> {
     pub conn_id: Token,
     pub state: &'a mut N::ConnState,
     pub sink: &'a mut egress::queue::Queue<IOV_CAP, N::Send>,
-    pub(super) driver: PhantomData<fn(&'d ()) -> &'d ()>,
+    pub region: &'a mut RegionToken<'d>,
 }
 
 pub struct State<C: Default, B: AsRef<[u8]> = Shared> {
@@ -50,7 +50,7 @@ impl<C: Default, B: AsRef<[u8]>> Outbound for State<C, B> {
 }
 
 impl<C: Default, B: AsRef<[u8]>> State<C, B> {
-    pub(super) fn new(dial: DialKey, lane: usize, arena: &egress::queue::Arena<B>) -> Self {
+    pub(super) fn new(dial: DialKey, lane: usize, arena: &egress::arena::Arena<B>) -> Self {
         Self {
             conn: C::default(),
             egress: arena.queue_for(lane),

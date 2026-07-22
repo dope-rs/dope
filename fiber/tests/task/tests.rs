@@ -3,7 +3,6 @@ use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
 
-use dope::driver::ready::ReadySlot;
 use dope_fiber::{
     Batch, Context, Fiber, FixedSlab, Slab, TaskContext, TaskId, TaskQueue, WaitQueue, Waiter,
     Waker, ready,
@@ -428,16 +427,16 @@ fn fiber_slabs_contain_drop_panics() {
 #[test]
 fn wait_queue_deduplicates_and_reports_overflow() {
     with_session(|sess| {
-        let first = pin!(sess.driver().make_ready_slot(tok(0)));
-        let second = pin!(sess.driver().make_ready_slot(tok(1)));
-        let overflow = pin!(sess.driver().make_ready_slot(tok(2)));
+        let first = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let second = sess.driver().make_ready_slot(tok(1)).expect("ready slot");
+        let overflow = sess.driver().make_ready_slot(tok(2)).expect("ready slot");
         let queue = pin!(WaitQueue::with_capacity(2));
         let first_waiter = pin!(Waiter::new());
         let second_waiter = pin!(Waiter::new());
         let overflow_waiter = pin!(Waiter::new());
-        let first_waker = Waker::from_ready(sess.driver(), first.as_ref().key());
-        let second_waker = Waker::from_ready(sess.driver(), second.as_ref().key());
-        let overflow_waker = Waker::from_ready(sess.driver(), overflow.as_ref().key());
+        let first_waker = Waker::from_ready(sess.driver(), first.key());
+        let second_waker = Waker::from_ready(sess.driver(), second.key());
+        let overflow_waker = Waker::from_ready(sess.driver(), overflow.key());
         assert!(
             queue
                 .as_ref()
@@ -472,19 +471,19 @@ fn wait_queue_deduplicates_and_reports_overflow() {
 #[test]
 fn dropping_waiter_unlinks_without_disturbing_order() {
     with_session(|sess| {
-        let first = pin!(sess.driver().make_ready_slot(tok(0)));
-        let second = pin!(sess.driver().make_ready_slot(tok(1)));
-        let removed = pin!(sess.driver().make_ready_slot(tok(2)));
-        let wrapped = pin!(sess.driver().make_ready_slot(tok(3)));
+        let first = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let second = sess.driver().make_ready_slot(tok(1)).expect("ready slot");
+        let removed = sess.driver().make_ready_slot(tok(2)).expect("ready slot");
+        let wrapped = sess.driver().make_ready_slot(tok(3)).expect("ready slot");
         let queue = pin!(WaitQueue::with_capacity(3));
         let first_waiter = Box::pin(Waiter::new());
         let second_waiter = Box::pin(Waiter::new());
         let removed_waiter = Box::pin(Waiter::new());
         let wrapped_waiter = Box::pin(Waiter::new());
-        let first_waker = Waker::from_ready(sess.driver(), first.as_ref().key());
-        let second_waker = Waker::from_ready(sess.driver(), second.as_ref().key());
-        let removed_waker = Waker::from_ready(sess.driver(), removed.as_ref().key());
-        let wrapped_waker = Waker::from_ready(sess.driver(), wrapped.as_ref().key());
+        let first_waker = Waker::from_ready(sess.driver(), first.key());
+        let second_waker = Waker::from_ready(sess.driver(), second.key());
+        let removed_waker = Waker::from_ready(sess.driver(), removed.key());
+        let wrapped_waker = Waker::from_ready(sess.driver(), wrapped.key());
 
         assert!(
             queue
@@ -515,19 +514,54 @@ fn dropping_waiter_unlinks_without_disturbing_order() {
 }
 
 #[test]
+fn wait_queue_delivers_payload_by_generation_key() {
+    with_session(|sess| {
+        let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let queue = pin!(WaitQueue::<u32>::with_payload_capacity(1));
+        let waiter = pin!(Waiter::new());
+        let waker = Waker::from_ready(sess.driver(), ready.key());
+        assert!(queue.as_ref().try_register_waker(waiter.as_ref(), waker));
+        queue.as_ref().assign_one(41).expect("waiting receiver");
+        assert!(!waiter.is_registered());
+        assert_eq!(waiter.take_assigned(), Some(41));
+        assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
+    });
+}
+
+#[test]
+fn waiter_survives_queue_drop_without_a_dangling_registration() {
+    with_session(|sess| {
+        let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let waiter = pin!(Waiter::new());
+        {
+            let queue = pin!(WaitQueue::with_capacity(1));
+            let waker = Waker::from_ready(sess.driver(), ready.key());
+            assert!(queue.as_ref().try_register_waker(waiter.as_ref(), waker));
+        }
+        assert!(!waiter.is_registered());
+        assert!(!waiter.as_ref().unregister());
+        let replacement = pin!(WaitQueue::with_capacity(1));
+        let waker = Waker::from_ready(sess.driver(), ready.key());
+        assert!(
+            replacement
+                .as_ref()
+                .try_register_waker(waiter.as_ref(), waker)
+        );
+    });
+}
+
+#[test]
 fn child_queue_wakes_parent_once() {
     with_session(|sess| {
-        let parent = pin!(sess.driver().make_ready_slot(tok(0)));
+        let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let queue = pin!(TaskQueue::new());
         let task = pin!(TaskContext::new());
-        let context = unsafe {
-            task.as_ref().bind(
-                queue.as_ref(),
-                17,
-                Some(Waker::from_ready(sess.driver(), parent.as_ref().key())),
-            )
-        };
-        let child = context;
+        let binding = task.as_ref().bind(
+            queue.as_ref(),
+            17,
+            Some(Waker::from_ready(sess.driver(), parent.key())),
+        );
+        let child = binding.waker();
         child.wake();
         child.wake();
         assert_eq!(queue.as_ref().pop(), Some(17));
@@ -539,19 +573,24 @@ fn child_queue_wakes_parent_once() {
 #[test]
 fn wake_of_an_unpolled_batch_member_is_coalesced() {
     with_session(|sess| {
-        let parent = pin!(sess.driver().make_ready_slot(tok(0)));
-        let parent_waker = Waker::from_ready(sess.driver(), parent.as_ref().key());
+        let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let parent_waker = Waker::from_ready(sess.driver(), parent.key());
         let queue = pin!(TaskQueue::new());
         let first = pin!(TaskContext::new());
         let second = pin!(TaskContext::new());
-        let first_waker = unsafe { first.as_ref().bind(queue.as_ref(), 10, Some(parent_waker)) };
-        let second_waker = unsafe { second.as_ref().bind(queue.as_ref(), 11, Some(parent_waker)) };
+        let first_binding = first.as_ref().bind(queue.as_ref(), 10, Some(parent_waker));
+        let second_binding = second.as_ref().bind(queue.as_ref(), 11, Some(parent_waker));
+        let first_waker = first_binding.waker();
+        let second_waker = second_binding.waker();
 
         first_waker.wake();
         second_waker.wake();
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
 
-        let mut batch = unsafe { queue.as_ref().snapshot(parent_waker.shorten()) };
+        let mut batch = queue
+            .as_ref()
+            .snapshot(parent_waker.shorten())
+            .expect("single live snapshot");
         assert_eq!(batch.next(), Some(10));
         second_waker.wake();
         assert_eq!(batch.next(), Some(11));
@@ -559,14 +598,17 @@ fn wake_of_an_unpolled_batch_member_is_coalesced() {
         drop(batch);
 
         assert!(
-            unsafe { queue.as_ref().snapshot(parent_waker.shorten()) }
+            queue
+                .as_ref()
+                .snapshot(parent_waker.shorten())
+                .expect("previous snapshot dropped")
                 .next()
                 .is_none()
         );
         assert!(drain_tokens(sess.driver()).is_empty());
 
-        unsafe { first.as_ref().unbind() };
-        unsafe { second.as_ref().unbind() };
+        drop(first_binding);
+        drop(second_binding);
     });
 }
 
@@ -576,29 +618,26 @@ fn task_queue_preserves_target_type() {
     let queue = pin!(TaskQueue::<WideTarget>::new());
     let task = pin!(TaskContext::with_target(WideTarget(0)));
     {
-        let context = unsafe { task.as_ref().bind(queue.as_ref(), target, None) };
-        context.wake();
+        let binding = task.as_ref().bind(queue.as_ref(), target, None);
+        binding.wake();
         assert_eq!(queue.as_ref().pop(), Some(target));
     };
-    unsafe { task.as_ref().unbind() };
 }
 
 #[test]
 fn unbind_unlinks_queued_child() {
     with_session(|sess| {
-        let parent = pin!(sess.driver().make_ready_slot(tok(0)));
+        let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let queue = pin!(TaskQueue::new());
         let task = pin!(TaskContext::new());
-        let context = unsafe {
-            task.as_ref().bind(
-                queue.as_ref(),
-                19,
-                Some(Waker::from_ready(sess.driver(), parent.as_ref().key())),
-            )
-        };
-        let child = context;
+        let binding = task.as_ref().bind(
+            queue.as_ref(),
+            19,
+            Some(Waker::from_ready(sess.driver(), parent.key())),
+        );
+        let child = binding.waker();
         child.wake();
-        unsafe { task.as_ref().unbind() };
+        drop(binding);
         assert!(queue.as_ref().is_empty());
     });
 }
@@ -607,8 +646,8 @@ fn unbind_unlinks_queued_child() {
 fn dropped_slot_is_unlinked() {
     with_session(|sess| {
         {
-            let slot = pin!(sess.driver().make_ready_slot(tok(0)));
-            slot.as_ref().activate();
+            let slot = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+            slot.activate();
         }
         assert!(drain_tokens(sess.driver()).is_empty());
     });
@@ -618,13 +657,13 @@ fn dropped_slot_is_unlinked() {
 fn stale_ready_key_cannot_activate_reused_slot() {
     with_session(|sess| {
         let stale = {
-            let slot = pin!(sess.driver().make_ready_slot(tok(0)));
-            slot.as_ref().key()
+            let slot = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+            slot.key()
         };
-        let replacement = pin!(sess.driver().make_ready_slot(tok(1)));
+        let replacement = sess.driver().make_ready_slot(tok(1)).expect("ready slot");
         sess.driver().activate_ready(stale);
         assert!(drain_tokens(sess.driver()).is_empty());
-        replacement.as_ref().activate();
+        replacement.activate();
         assert_eq!(drain_tokens(sess.driver()), [tok(1)]);
     });
 }
@@ -632,10 +671,10 @@ fn stale_ready_key_cannot_activate_reused_slot() {
 #[test]
 fn queued_slot_coalesces_latest_target() {
     with_session(|sess| {
-        let slot = pin!(sess.driver().make_ready_slot(tok(0)));
-        slot.as_ref().activate();
-        slot.as_ref().set_target(tok(1));
-        slot.as_ref().activate();
+        let slot = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        slot.activate();
+        slot.set_target(tok(1));
+        slot.activate();
         assert_eq!(drain_tokens(sess.driver()), [tok(1)]);
     });
 }
@@ -644,9 +683,12 @@ fn queued_slot_coalesces_latest_target() {
 fn wake_of_an_unpolled_ready_slot_is_coalesced() {
     with_session(|sess| {
         let targets = [tok(0), tok(1)];
-        let slots = sess.driver().make_ready_slots(targets);
-        let first = ReadySlot::get(slots.as_ref(), 0).unwrap();
-        let second = ReadySlot::get(slots.as_ref(), 1).unwrap();
+        let slots = sess
+            .driver()
+            .make_ready_slots(targets)
+            .expect("ready slots");
+        let first = slots.first().unwrap();
+        let second = slots.get(1).unwrap();
         first.activate();
         second.activate();
 
@@ -667,13 +709,13 @@ fn wake_of_an_unpolled_ready_slot_is_coalesced() {
 fn wake_after_dequeue_is_deferred_to_the_next_batch() {
     with_session(|sess| {
         let target = tok(0);
-        let slot = pin!(sess.driver().make_ready_slot(target));
-        slot.as_ref().activate();
+        let slot = sess.driver().make_ready_slot(target).expect("ready slot");
+        slot.activate();
 
         let mut drained = Vec::new();
         sess.driver().drain_ready(|ready| {
             drained.push(ready);
-            slot.as_ref().activate();
+            slot.activate();
         });
 
         assert_eq!(drained, [target]);
@@ -685,14 +727,14 @@ fn wake_after_dequeue_is_deferred_to_the_next_batch() {
 fn drain_requeues_after_unwind() {
     with_session(|sess| {
         let targets = [tok(0), tok(1), tok(2)];
-        let slots = sess.driver().make_ready_slots(targets);
+        let slots = sess
+            .driver()
+            .make_ready_slots(targets)
+            .expect("ready slots");
         for index in 0..slots.len() {
-            ReadySlot::get(slots.as_ref(), index).unwrap().activate();
+            slots.get(index).unwrap().activate();
         }
-        let first = Waker::from_ready(
-            sess.driver(),
-            ReadySlot::get(slots.as_ref(), 0).unwrap().key(),
-        );
+        let first = Waker::from_ready(sess.driver(), slots.first().unwrap().key());
         assert_unwinds(|| {
             sess.driver().drain_ready(|_| {
                 panic!("wake");
@@ -709,13 +751,13 @@ fn drain_requeues_after_unwind() {
 #[test]
 fn recursive_drain_defers_new_wakes() {
     with_session(|sess| {
-        let first = pin!(sess.driver().make_ready_slot(tok(0)));
-        let deferred = pin!(sess.driver().make_ready_slot(tok(1)));
-        first.as_ref().activate();
+        let first = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let deferred = sess.driver().make_ready_slot(tok(1)).expect("ready slot");
+        first.activate();
         let nested = std::cell::Cell::new(None);
         sess.driver().drain_ready(|target| {
             assert_eq!(target, tok(0));
-            deferred.as_ref().activate();
+            deferred.activate();
             sess.driver().drain_ready(|target| nested.set(Some(target)));
         });
         assert_eq!(nested.get(), None);
@@ -727,12 +769,22 @@ fn recursive_drain_defers_new_wakes() {
 fn dropping_pending_snapshot_slot_unlinks_it() {
     with_session(|sess| {
         let targets = [tok(0), tok(1), tok(2)];
-        let first = Box::pin(sess.driver().make_ready_slot(targets[0]));
-        let mut second = Some(Box::pin(sess.driver().make_ready_slot(targets[1])));
-        let third = Box::pin(sess.driver().make_ready_slot(targets[2]));
-        first.as_ref().activate();
-        second.as_ref().unwrap().as_ref().activate();
-        third.as_ref().activate();
+        let first = sess
+            .driver()
+            .make_ready_slot(targets[0])
+            .expect("ready slot");
+        let mut second = Some(
+            sess.driver()
+                .make_ready_slot(targets[1])
+                .expect("ready slot"),
+        );
+        let third = sess
+            .driver()
+            .make_ready_slot(targets[2])
+            .expect("ready slot");
+        first.activate();
+        second.as_ref().unwrap().activate();
+        third.activate();
         let mut out = Vec::new();
         sess.driver().drain_ready(|target| {
             out.push(target);

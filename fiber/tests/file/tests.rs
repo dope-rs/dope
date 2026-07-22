@@ -82,13 +82,14 @@ fn forget_pending<'d, F: dope_fiber::Fiber<'d>>(
     fiber: F,
     route: u8,
 ) {
-    let mut pending = Box::pin(OneShot::new(fiber, route, driver.driver_ref()));
+    let mut pending =
+        Box::pin(OneShot::new(fiber, route, driver.driver_ref()).expect("ready slot"));
     pending.as_mut().pre_park(driver);
     assert!(!pending.as_ref().is_done());
     mem::forget(pending);
 }
 
-fn next_event(sess: &mut Sess<'_, '_>) -> dope::Event {
+fn next_event<'scope, 'd>(sess: &mut Sess<'scope, 'd>) -> dope::Event<'d> {
     let events = RefCell::new(Vec::new());
     pump_events(
         sess,
@@ -394,34 +395,35 @@ fn canceled_fixed_open_slot_is_reused_immediately() {
             let cpath = OpenPath::new(file.path_str()).expect("path");
             let open = Open::fixed(sess.storage(), cpath, RDONLY, fd);
             let mut driver = sess.driver_access();
-            let mut second = Some(Box::pin(OneShot::new(open, u8::MAX, driver.driver_ref())));
+            let mut second = Some(Box::pin(
+                OneShot::new(open, u8::MAX, driver.driver_ref()).expect("ready slot"),
+            ));
             second
                 .as_mut()
                 .expect("second fixed open")
                 .as_mut()
                 .pre_park(&mut driver);
-            let mut completions = [dope::Cqe::ZERO; 32];
+            let mut completions = [const { None }; 32];
             let mut seen = 0;
             let mut cancelled = 0;
             while seen < 512 || cancelled < 6 {
                 let count = driver.drain(&mut completions);
                 assert_ne!(count, 0, "unrelated completions were lost");
-                for completion in &completions[..count] {
-                    let Some(token) = Token::try_from_raw(completion.user_data) else {
-                        continue;
-                    };
-                    if completion.result == -libc::ECANCELED {
-                        assert!(token.route() == ID || token.route() == ID + 2);
-                        assert_eq!(completion.kind(), kind::OPEN);
+                for completion in &mut completions[..count] {
+                    let completion = completion.take().expect("completion slot");
+                    if completion.result() == -libc::ECANCELED {
+                        assert!(completion.route() == ID || completion.route() == ID + 2);
+                        assert_eq!(completion.operation(), kind::OPEN);
                         cancelled += 1;
                         if cancelled == 1 {
                             drop(second.take());
                         }
                     } else {
+                        let token = completion.token().expect("routed completion");
                         assert_eq!(token.route(), ID + 1);
                         assert_eq!(token.slot().raw(), seen);
-                        assert_eq!(completion.kind(), kind::WRITE);
-                        assert_eq!(completion.result, -libc::EBADF);
+                        assert_eq!(completion.operation(), kind::WRITE);
+                        assert_eq!(completion.result(), -libc::EBADF);
                         seen += 1;
                     }
                 }
@@ -482,7 +484,7 @@ fn canceling_block_read_reclaims_backend_resubmission() {
         let input = dope::io::file::OsFile::open(file.path_str()).expect("input");
         let source = Source::try_from_fd(input.as_fd()).expect("source");
         let read = BlockRead::new(sess.storage(), &source, o3::buffer::Block::new(), 0);
-        let mut pending = Box::pin(OneShot::new(read, 210, sess.driver()));
+        let mut pending = Box::pin(OneShot::new(read, 210, sess.driver()).expect("ready slot"));
         pending.as_mut().pre_park(&mut sess.driver_access());
 
         let event = next_event(&mut sess);
@@ -511,7 +513,7 @@ fn block_read_backend_continuation_reuses_the_operation_token() {
         let input = dope::io::file::OsFile::open(file.path_str()).expect("input");
         let source = Source::try_from_fd(input.as_fd()).expect("source");
         let read = BlockRead::new(sess.storage(), &source, o3::buffer::Block::new(), 0);
-        let mut pending = Box::pin(OneShot::new(read, 211, sess.driver()));
+        let mut pending = Box::pin(OneShot::new(read, 211, sess.driver()).expect("ready slot"));
         pending.as_mut().pre_park(&mut sess.driver_access());
 
         let first = next_event(&mut sess);

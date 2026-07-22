@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::Poll;
 
-use super::Stage;
+use super::already_done;
 use super::{Direct, Metadata, Source};
 use crate::{Context, Fiber};
 use dope::io::file::OpenPath;
@@ -16,26 +16,29 @@ enum StatTarget {
     Path(OpenPath),
 }
 
+enum StatStage {
+    Init(StatTarget),
+    Pending(dope::driver::token::Token),
+    Done,
+}
+
 pub struct Stat<'h, 'd, const ID: u8, const N: usize> {
     host: &'h Files<'d, ID, N>,
-    target: Option<StatTarget>,
-    stage: Stage,
+    stage: StatStage,
 }
 
 impl<'h, 'd, const ID: u8, const N: usize> Stat<'h, 'd, ID, N> {
     pub fn source(host: &'h Files<'d, ID, N>, source: &Source<'d, Direct>) -> Self {
         Self {
             host,
-            target: Some(StatTarget::Fd(source.direct())),
-            stage: Stage::Init,
+            stage: StatStage::Init(StatTarget::Fd(source.direct())),
         }
     }
 
     pub fn path(host: &'h Files<'d, ID, N>, path: OpenPath) -> Self {
         Self {
             host,
-            target: Some(StatTarget::Path(path)),
-            stage: Stage::Init,
+            stage: StatStage::Init(StatTarget::Path(path)),
         }
     }
 }
@@ -44,7 +47,7 @@ impl<const ID: u8, const N: usize> Unpin for Stat<'_, '_, ID, N> {}
 
 impl<const ID: u8, const N: usize> Drop for Stat<'_, '_, ID, N> {
     fn drop(&mut self) {
-        if let Stage::Pending(token) = self.stage {
+        if let StatStage::Pending(token) = self.stage {
             self.host.cancel_stat(token);
         }
     }
@@ -55,33 +58,30 @@ impl<'h, 'd, const ID: u8, const N: usize> Fiber<'d> for Stat<'h, 'd, ID, N> {
 
     fn poll(self: Pin<&mut Self>, mut cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let token = match this.stage {
-            Stage::Done => return Poll::Ready(Err(Stage::already_done())),
-            Stage::Pending(token) => token,
-            Stage::Init => {
-                let target = this.target.take().unwrap();
+        let token = match std::mem::replace(&mut this.stage, StatStage::Done) {
+            StatStage::Done => return Poll::Ready(Err(already_done())),
+            StatStage::Pending(token) => token,
+            StatStage::Init(target) => {
                 let mut driver = cx.as_mut().driver_access();
                 let token = match target {
                     StatTarget::Fd(fd) => this.host.begin_stat_fd(fd, &mut driver),
                     StatTarget::Path(path) => this.host.begin_stat_path(path, &mut driver),
                 };
                 let Some(token) = token else {
-                    this.stage = Stage::Done;
                     return Poll::Ready(Err(Error::other("dope::file: stat submit failed")));
                 };
-                this.stage = Stage::Pending(token);
                 token
             }
         };
         match this.host.poll_stat(token, cx.completion_waker()) {
-            FileOutcome::Done(done) => {
-                this.stage = Stage::Done;
-                Poll::Ready(match done {
-                    StatDone::Metadata(metadata) => Ok(metadata),
-                    StatDone::Failed(errno) => Err(Error::from_raw_os_error(errno)),
-                })
+            FileOutcome::Done(done) => Poll::Ready(match done {
+                StatDone::Metadata(metadata) => Ok(metadata),
+                StatDone::Failed(error) => Err(error),
+            }),
+            FileOutcome::Pending => {
+                this.stage = StatStage::Pending(token);
+                Poll::Pending
             }
-            FileOutcome::Pending => Poll::Pending,
         }
     }
 }

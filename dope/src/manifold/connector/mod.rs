@@ -66,7 +66,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
         chunk: R,
-        _driver: &mut DriverContext<'_, 'd>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
         if chunk.is_empty() {
             return ChunkOutcome::Ok;
@@ -100,7 +100,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
                     conn_id,
                     state: conn_state,
                     sink: egress,
-                    driver: PhantomData,
+                    region: driver.region_token(),
                 },
             );
         }
@@ -115,27 +115,32 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         &mut self,
         _key: DialKey,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        _driver: &mut DriverContext<'_, 'd>,
+        driver: &mut DriverContext<'_, 'd>,
     ) {
         let conn_id = slot.token();
-        self.session.activate(conn_id, slot.ready_key());
+        self.session
+            .activate(conn_id, slot.ready_key(), driver.region_token());
         let State { conn, egress, .. } = &mut slot.state;
         self.session.connect(&mut Ctx {
             conn_id,
             state: &mut conn.conn_state,
             sink: egress,
-            driver: PhantomData,
+            region: driver.region_token(),
         });
     }
 
-    fn before_send(&mut self, slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>) {
+    fn before_send(
+        &mut self,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
         let conn_id = slot.token();
         let State { conn, egress, .. } = &mut slot.state;
         self.session.flush_trailer(&mut Ctx {
             conn_id,
             state: &mut conn.conn_state,
             sink: egress,
-            driver: PhantomData,
+            region: driver.region_token(),
         });
     }
 
@@ -148,33 +153,53 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         self.session.sent(slot.token(), sent);
     }
 
-    fn close(&mut self, slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>) {
+    fn close(
+        &mut self,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
         let conn_id = slot.token();
         let State { conn, egress, .. } = &mut slot.state;
         self.session.disconnect(&mut Ctx {
             conn_id,
             state: &mut conn.conn_state,
             sink: egress,
-            driver: PhantomData,
+            region: driver.region_token(),
         });
     }
 
-    fn defer_close(&self, slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>) -> bool {
-        self.session
-            .defer_close(slot.token(), &slot.state.conn.conn_state)
+    fn defer_close(
+        &self,
+        slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> bool {
+        self.session.defer_close(
+            slot.token(),
+            &slot.state.conn.conn_state,
+            driver.region_token(),
+        )
     }
 
-    fn is_drained(&self, slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>) -> bool {
-        self.session
-            .is_drained(slot.token(), &slot.state.conn.conn_state)
+    fn is_drained(
+        &self,
+        slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> bool {
+        self.session.is_drained(
+            slot.token(),
+            &slot.state.conn.conn_state,
+            driver.region_token(),
+        )
     }
 
     fn drain_requests(
         &self,
         token: Token,
         push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
-        self.session.drain_requests(token, push)
+        self.session
+            .drain_requests(token, push, driver.region_token())
     }
 
     fn pre_park(&mut self) {

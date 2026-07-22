@@ -4,7 +4,7 @@ use std::mem;
 use std::pin::Pin;
 use std::task::Poll;
 
-use super::Stage;
+use super::already_done;
 use super::{Direct, Fixed, Source};
 use crate::{Context, Fiber};
 use dope::driver::token::Token;
@@ -69,14 +69,13 @@ impl OpenKind for Fixed {
 }
 
 enum OpenStage<S> {
-    Init(S),
-    Pending(Token, S),
+    Init { path: OpenPath, slot: S },
+    Pending { token: Token, slot: S },
     Done,
 }
 
 pub struct Open<'h, 'd, const ID: u8, const N: usize, K: OpenKind = Direct> {
     host: &'h Files<'d, ID, N>,
-    path: Option<OpenPath>,
     flags: i32,
     stage: OpenStage<K::Slot<'d>>,
 }
@@ -85,9 +84,8 @@ impl<'h, 'd, const ID: u8, const N: usize> Open<'h, 'd, ID, N, Direct> {
     pub fn direct(host: &'h Files<'d, ID, N>, path: OpenPath, flags: i32) -> Self {
         Self {
             host,
-            path: Some(path),
             flags,
-            stage: OpenStage::Init(()),
+            stage: OpenStage::Init { path, slot: () },
         }
     }
 }
@@ -96,9 +94,8 @@ impl<'h, 'd, const ID: u8, const N: usize> Open<'h, 'd, ID, N, Fixed> {
     pub fn fixed(host: &'h Files<'d, ID, N>, path: OpenPath, flags: i32, fixed: Fd<'d>) -> Self {
         Self {
             host,
-            path: Some(path),
             flags,
-            stage: OpenStage::Init(fixed),
+            stage: OpenStage::Init { path, slot: fixed },
         }
     }
 }
@@ -107,7 +104,7 @@ impl<const ID: u8, const N: usize, K: OpenKind> Unpin for Open<'_, '_, ID, N, K>
 
 impl<const ID: u8, const N: usize, K: OpenKind> Drop for Open<'_, '_, ID, N, K> {
     fn drop(&mut self) {
-        if let OpenStage::Pending(token, _) = &self.stage {
+        if let OpenStage::Pending { token, .. } = &self.stage {
             self.host.cancel_open(*token);
         }
     }
@@ -119,10 +116,9 @@ impl<'h, 'd, const ID: u8, const N: usize, K: OpenKind> Fiber<'d> for Open<'h, '
     fn poll(self: Pin<&mut Self>, mut cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let (token, slot) = match mem::replace(&mut this.stage, OpenStage::Done) {
-            OpenStage::Done => return Poll::Ready(Err(Stage::already_done())),
-            OpenStage::Pending(t, slot) => (t, slot),
-            OpenStage::Init(slot) => {
-                let path = this.path.take().unwrap();
+            OpenStage::Done => return Poll::Ready(Err(already_done())),
+            OpenStage::Pending { token, slot } => (token, slot),
+            OpenStage::Init { path, slot } => {
                 let begun = {
                     let mut driver = cx.as_mut().driver_access();
                     K::begin(this.host, path, this.flags, &slot, &mut driver)
@@ -139,7 +135,7 @@ impl<'h, 'd, const ID: u8, const N: usize, K: OpenKind> Fiber<'d> for Open<'h, '
                 done => Ok(K::source(slot, done)),
             }),
             FileOutcome::Pending => {
-                this.stage = OpenStage::Pending(token, slot);
+                this.stage = OpenStage::Pending { token, slot };
                 Poll::Pending
             }
         }

@@ -4,7 +4,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -29,24 +29,20 @@ impl Default for TcpScriptConfig {
 
 struct Shared {
     cancelled: AtomicBool,
-    stream: Mutex<Option<TcpStream>>,
+    stream: OnceLock<Arc<TcpStream>>,
 }
 
 impl Shared {
     fn new() -> Self {
         Self {
             cancelled: AtomicBool::new(false),
-            stream: Mutex::new(None),
+            stream: OnceLock::new(),
         }
     }
 
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
-        let stream = self
-            .stream
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(stream) = stream.as_ref() {
+        if let Some(stream) = self.stream.get() {
             let _ = stream.shutdown(Shutdown::Both);
         }
     }
@@ -189,20 +185,16 @@ fn run<T>(
         Ok(stream) => stream,
         Err(error) => return Outcome::Io(error),
     };
-    *shared
-        .stream
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cancel_stream);
-    let outcome = match panic::catch_unwind(AssertUnwindSafe(|| script(&mut stream))) {
+    if shared.stream.set(Arc::new(cancel_stream)).is_err() {
+        return Outcome::Io(Error::new(
+            ErrorKind::AlreadyExists,
+            "TCP script published its cancellation stream twice",
+        ));
+    }
+    match panic::catch_unwind(AssertUnwindSafe(|| script(&mut stream))) {
         Ok(value) => Outcome::Complete(value),
         Err(payload) => Outcome::Panicked(payload),
-    };
-    shared
-        .stream
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
-    outcome
+    }
 }
 
 fn accept(listener: &TcpListener, shared: &Shared, timeout: Duration) -> io::Result<TcpStream> {

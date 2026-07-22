@@ -23,7 +23,8 @@ use dope_net::Transport;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 
-use super::port::{Port, RecvArena, Requests};
+use super::port::recv::arena::{RecvArena, RecvLayout};
+use super::port::{Port, Requests};
 
 pub struct ListenerPort<'d> {
     connections: Port<'d>,
@@ -32,20 +33,27 @@ pub struct ListenerPort<'d> {
 }
 
 pub struct ListenerPortFactory {
-    capacity: usize,
+    layout: RecvLayout,
 }
 
 impl<'d> ListenerPort<'d> {
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize) -> io::Result<Self> {
+        Ok(Self::with_layout(RecvLayout::new(capacity)?))
+    }
+
+    fn with_layout(layout: RecvLayout) -> Self {
+        let capacity = layout.connections();
         Self {
-            connections: Port::with_deferred_requests(capacity),
+            connections: Port::with_layout(layout, true),
             accepts: CellQueue::with_capacity(capacity),
             waiters: Box::pin(WaitQueue::with_capacity(capacity)),
         }
     }
 
-    pub fn factory(capacity: usize) -> ListenerPortFactory {
-        ListenerPortFactory { capacity }
+    pub fn factory(capacity: usize) -> io::Result<ListenerPortFactory> {
+        Ok(ListenerPortFactory {
+            layout: RecvLayout::new(capacity)?,
+        })
     }
 
     fn capacity(&self) -> usize {
@@ -104,7 +112,7 @@ impl dope::runtime::StorageFactory for ListenerPortFactory {
     type Output<'d> = ListenerPort<'d>;
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        ListenerPort::with_capacity(self.capacity)
+        ListenerPort::with_layout(self.layout)
     }
 }
 
@@ -119,7 +127,7 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
 
     const RETAIN_RAW_RECV: bool = true;
 
-    fn max_retained_recv_chunks(max_connections: usize) -> usize {
+    fn max_retained_recv_chunks(max_connections: usize) -> io::Result<usize> {
         RecvArena::capacity_for(max_connections)
     }
 
@@ -302,7 +310,7 @@ where
 {
     const ID: u8 = ID;
 
-    fn dispatch(mut self: Pin<&mut Self>, ev: dope::Event, driver: &mut DriverContext<'_, 'd>) {
+    fn dispatch(mut self: Pin<&mut Self>, ev: dope::Event<'d>, driver: &mut DriverContext<'_, 'd>) {
         let conn = match ev.as_ref() {
             EventRef::Send(conn, _) => Some(conn),
             _ => None,

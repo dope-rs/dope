@@ -32,18 +32,17 @@ fn event_token(ev: &Event) -> Token {
         | EventRef::Read(t, ..)
         | EventRef::Splice(t, ..)
         | EventRef::Stat(t, ..) => t,
+        EventRef::Shutdown => panic!("unexpected shutdown completion"),
     }
 }
 
-fn drive_until(driver: &mut DriverContext<'_, '_>, want: Token) -> Event {
-    let mut buf = [dope_core::io::Cqe::ZERO; 32];
+fn drive_until<'d>(driver: &mut DriverContext<'_, 'd>, want: Token) -> Event<'d> {
+    let mut buf = [const { None }; 32];
     for _ in 0..500 {
         let _ = driver.wait(Some(Duration::from_millis(20)));
         let n = driver.drain(&mut buf);
-        for cqe in &buf[..n] {
-            let Ok(ev) = (unsafe { Event::from_cqe(*cqe) }) else {
-                continue;
-            };
+        for event in &mut buf[..n] {
+            let ev = event.take().expect("completion slot");
             let t = event_token(&ev);
             if t.same_target(want) {
                 return ev;
@@ -238,5 +237,6 @@ fn variant(ev: &Event) -> &'static str {
         EventRef::Connect(..) => "Connect",
         EventRef::Write(..) => "Write",
         EventRef::Sync(..) => "Sync",
+        EventRef::Shutdown => "Shutdown",
     }
 }

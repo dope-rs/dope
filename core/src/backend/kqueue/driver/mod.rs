@@ -4,7 +4,6 @@ pub(crate) mod retry;
 pub(crate) mod submit;
 pub(crate) mod udata;
 
-
 use std::io::{self, Error, ErrorKind};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -16,13 +15,19 @@ use crate::backend::kqueue::provided::{Backing, Provided};
 use crate::driver::Config;
 use crate::driver::route::Routes;
 use crate::driver::token::{SHUTDOWN, Token, kind};
-use crate::io::ffi::Handle;
 use crate::io::fd::FdSlot;
+use crate::io::ffi::Handle;
+use crate::io::file::RawMetadata;
+use crate::platform::Platform;
+use crate::platform::snapshot::Snapshot;
 
 use self::pending::{PendingCompletion, PendingQueue};
 use self::read::{FixedMap, ReadSlot, Resume};
 use self::retry::{Retry, WriteRetrySlot};
 use self::udata::Udata;
+use super::platform::gso::Gso;
+use crate::platform::raw::host::HOST;
+use super::sqe::{Sqe, TimerSpec};
 use libc::uintptr_t;
 use std::ptr::{null, null_mut};
 
@@ -351,5 +356,24 @@ impl Kqueue {
 impl Drop for Kqueue {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+impl Platform for Kqueue {
+    type Sqe = Sqe;
+    type Gso = Gso;
+    type StatBuf = libc::stat;
+    type TimerSpec = TimerSpec;
+
+    fn entropy() -> io::Result<[u64; 2]> {
+        HOST.entropy()
+    }
+
+    fn parse_meta(raw: &Self::StatBuf) -> io::Result<RawMetadata> {
+        HOST.parse_meta(raw)
+    }
+
+    fn snapshot() -> io::Result<Snapshot> {
+        HOST.snapshot()
     }
 }

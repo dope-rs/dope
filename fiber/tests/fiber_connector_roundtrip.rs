@@ -165,9 +165,9 @@ where
 
 fn connector_exec(max_connections: usize) -> Executor<ConnectorPortFactory<Tcp>> {
     let cfg = dope::driver::Config::for_tcp_profile::<Balanced>(max_connections);
-    Executor::new(cfg)
-        .expect("executor")
-        .with_storage_factory(ConnectorPort::<Tcp>::factory(max_connections))
+    Executor::new(cfg).expect("executor").with_storage_factory(
+        ConnectorPort::<Tcp>::factory(max_connections).expect("connector capacity"),
+    )
 }
 
 fn spawn_reply_server(
