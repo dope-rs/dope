@@ -15,3 +15,4 @@ dope-net.workspace = true
 dope-fiber.workspace = true
 o3.workspace = true
 libc.workspace = true
+pin-project.workspace = true

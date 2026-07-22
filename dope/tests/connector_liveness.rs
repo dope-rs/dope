@@ -12,32 +12,20 @@
 //! regress the way it did when it was reimplemented per-protocol.
 #![cfg(target_os = "linux")]
 
-mod common;
-
 extern crate dope;
 
 use std::cell::Cell;
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::pin::pin;
 use std::rc::Rc;
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use dope::DriverContext;
-use dope::manifold::connector::source::{DialKey, Static};
+use dope::manifold::connector::source::DialKey;
 use dope::manifold::connector::state::State;
-use dope::manifold::connector::{ChunkOutcome, ConnApp, Core};
-use dope::runtime::Executor;
-use dope::runtime::profile::Throughput;
-use dope::{driver, hash};
-use dope_net::tcp::Tcp;
+use dope::manifold::connector::{ChunkOutcome, ConnApp};
 use dope_net::wire::identity::Identity;
+use dope_test::{Gate, hold_connections};
 use o3::buffer::{RetainBytes, Shared};
-use o3::cell::BrandCell;
 
-use common::Gate;
-
-const ID: u8 = 0;
 // Exactly one upstream connection, so `connected()` fires once per real dial —
 // the reconnect is unambiguous. (With N slots the connector eagerly opens N
 // connections to the single addr at startup, which would satisfy the gate
@@ -94,59 +82,25 @@ impl<'d> ConnApp<'d> for LivenessApp {
     fn close(&mut self, _slot: &mut Slot<'d>) {}
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Dispatcher)]
-struct App<'d> {
-    #[pin]
-    #[manifold]
-    connector: Core<'d, ID, LivenessApp, Static<Tcp>, common::Plain>,
-}
-
-/// Accepts `accepts` connections and holds each open and SILENT (never writes,
-/// never closes) — earlier sockets stay alive while it blocks on the next
-/// `accept`, so the client sees a silent peer, not an EOF. Reaching the 2nd
-/// accept is proof the client force-reconnected.
-fn silent_server(accepts: usize) -> (SocketAddr, JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("local addr");
-    let handle = thread::spawn(move || {
-        let mut held: Vec<TcpStream> = Vec::with_capacity(accepts);
-        for _ in 0..accepts {
-            match listener.accept() {
-                Ok((stream, _)) => held.push(stream),
-                Err(_) => return,
-            }
-        }
-        drop(held);
-    });
-    (addr, handle)
-}
-
 fn run(timeout: Option<Duration>, want: u32) -> (Rc<Gate>, Rc<Cell<Option<Duration>>>) {
-    let (addr, server) = silent_server(2);
+    let (addr, server) = hold_connections(2);
     let gate = Gate::new();
     let reconnect_at = Rc::new(Cell::new(None));
 
-    let cfg = driver::Config::for_tcp_profile::<Throughput>(MAX);
-    Executor::new(cfg).expect("executor").enter(|mut sess| {
-        // `Core::with_app` resizes the dialer to `max_connections` itself.
-        let seed = hash::Seed::new([1, 2]).state();
-        let dialer = Static::<Tcp>::new(vec![addr], REDIAL_BACKOFF, seed);
-        let connector = Core::with_app(
-            LivenessApp {
-                timeout,
-                gate: gate.clone(),
-                start: Instant::now(),
-                reconnect_at: reconnect_at.clone(),
-            },
-            dialer,
-            MAX,
-            &mut sess.driver_access(),
-        )
-        .expect("connector");
-        let app = pin!(BrandCell::new(App { connector }));
-        common::run_until(&mut sess, app.as_ref(), &gate, want);
-    });
+    dope_test::connector_case! {
+        max_connections: MAX,
+        address: addr,
+        backoff: REDIAL_BACKOFF,
+        app: LivenessApp {
+            timeout,
+            gate: gate.clone(),
+            start: Instant::now(),
+            reconnect_at: reconnect_at.clone(),
+        },
+        |case| {
+            case.until(&gate, want);
+        }
+    }
 
     server.join().expect("server join");
     (gate, reconnect_at)

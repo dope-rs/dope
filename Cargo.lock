@@ -23,6 +23,7 @@ dependencies = [
  "dope-fiber",
  "dope-gen",
  "dope-net",
+ "dope-test",
  "io-uring",
  "libc",
  "o3",
@@ -104,6 +105,7 @@ dependencies = [
  "dope-net",
  "libc",
  "o3",
+ "pin-project",
 ]
 
 [[package]]

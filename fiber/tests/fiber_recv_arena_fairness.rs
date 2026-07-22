@@ -11,7 +11,7 @@ use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
 use o3::buffer::{Bytes, Leased, SharedPool};
 use o3::cell::BrandCell;
 
-mod common;
+use dope_test as common;
 
 const MAX_CONN: usize = 2;
 const QUEUE_CAP: usize = 256;

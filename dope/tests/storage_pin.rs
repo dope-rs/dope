@@ -3,7 +3,7 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::ptr::NonNull;
 
-mod common;
+use dope_test as common;
 
 extern crate dope;
 use dope::runtime::StorageFactory;

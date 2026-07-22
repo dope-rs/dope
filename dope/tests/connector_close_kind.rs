@@ -11,33 +11,21 @@
 //! it green.
 #![cfg(target_os = "linux")]
 
-mod common;
-
 extern crate dope;
 
 use std::cell::Cell;
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::pin::pin;
 use std::rc::Rc;
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use dope::DriverContext;
 use dope::driver::token::Token;
-use dope::manifold::connector::source::{DialKey, Static};
+use dope::manifold::connector::source::DialKey;
 use dope::manifold::connector::state::State;
-use dope::manifold::connector::{ChunkOutcome, CloseKind, ConnApp, Core, Requests};
-use dope::runtime::Executor;
-use dope::runtime::profile::Throughput;
-use dope::{driver, hash};
-use dope_net::tcp::Tcp;
+use dope::manifold::connector::{ChunkOutcome, CloseKind, ConnApp, Requests};
 use dope_net::wire::identity::Identity;
+use dope_test::{Gate, hold_connections};
 use o3::buffer::{RetainBytes, Shared};
-use o3::cell::BrandCell;
 
-use common::Gate;
-
-const ID: u8 = 0;
 const MAX: usize = 1;
 const REDIAL_BACKOFF: Duration = Duration::from_millis(20);
 
@@ -102,53 +90,23 @@ impl<'d> ConnApp<'d> for CloseKindApp {
     fn close(&mut self, _slot: &mut Slot<'d>) {}
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Dispatcher)]
-struct App<'d> {
-    #[pin]
-    #[manifold]
-    connector: Core<'d, ID, CloseKindApp, Static<Tcp>, common::Plain>,
-}
-
-/// Accepts up to `accepts` connections, holding each open and silent.
-fn server(accepts: usize) -> (SocketAddr, JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("local addr");
-    let handle = thread::spawn(move || {
-        let mut held: Vec<TcpStream> = Vec::with_capacity(accepts);
-        for _ in 0..accepts {
-            match listener.accept() {
-                Ok((stream, _)) => held.push(stream),
-                Err(_) => return,
-            }
-        }
-        drop(held);
-    });
-    (addr, handle)
-}
-
 fn run(kind: CloseKind, want: u32) -> Rc<Gate> {
-    let (addr, srv) = server(2);
+    let (addr, srv) = hold_connections(2);
     let gate = Gate::new();
 
-    let cfg = driver::Config::for_tcp_profile::<Throughput>(MAX);
-    Executor::new(cfg).expect("executor").enter(|mut sess| {
-        let seed = hash::Seed::new([1, 2]).state();
-        let dialer = Static::<Tcp>::new(vec![addr], REDIAL_BACKOFF, seed);
-        let connector = Core::with_app(
-            CloseKindApp {
-                kind,
-                gate: gate.clone(),
-                pending: Cell::new(None),
-            },
-            dialer,
-            MAX,
-            &mut sess.driver_access(),
-        )
-        .expect("connector");
-        let app = pin!(BrandCell::new(App { connector }));
-        common::run_until(&mut sess, app.as_ref(), &gate, want);
-    });
+    dope_test::connector_case! {
+        max_connections: MAX,
+        address: addr,
+        backoff: REDIAL_BACKOFF,
+        app: CloseKindApp {
+            kind,
+            gate: gate.clone(),
+            pending: Cell::new(None),
+        },
+        |case| {
+            case.until(&gate, want);
+        }
+    }
 
     srv.join().expect("server join");
     gate
