@@ -68,6 +68,15 @@ pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut item_fn = parse_macro_input!(item as ItemFn);
 
+    if let Err(error) = item_fn.modifiers.require_empty() {
+        return error.to_compile_error().into();
+    }
+    if let syn::Safety::Unsafe(unsafe_token) = &item_fn.sig.safety {
+        return Error::new_spanned(unsafe_token, "#[handler] does not support unsafe functions")
+            .to_compile_error()
+            .into();
+    }
+
     if item_fn.sig.asyncness.is_none() {
         return Error::new_spanned(&item_fn.sig, "#[handler] requires `async fn`")
             .to_compile_error()
@@ -133,10 +142,13 @@ pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(item) => item,
         Err(error) => return error.to_compile_error().into(),
     };
+    if let Err(error) = item.modifiers.require_empty() {
+        return error.to_compile_error().into();
+    }
     let Some(session) = item
         .trait_
         .as_ref()
-        .and_then(|(_, path, _)| path.segments.last())
+        .and_then(|(path, _)| path.segments.last())
     else {
         return Error::new_spanned(
             &item.self_ty,
