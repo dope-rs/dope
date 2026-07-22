@@ -1,3 +1,4 @@
+use std::io;
 use std::time::Duration;
 
 use super::source::DialKey;
@@ -57,8 +58,8 @@ pub trait ConnApp<'d>: Sized {
         None
     }
 
-    fn max_retained_recv_chunks(_: usize) -> usize {
-        0
+    fn max_retained_recv_chunks(_: usize) -> io::Result<usize> {
+        Ok(0)
     }
 
     fn chunk<R: RetainBytes>(
@@ -89,8 +90,12 @@ pub trait ConnApp<'d>: Sized {
         let _ = (key, driver);
     }
 
-    fn before_send(&mut self, slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>) {
-        let _ = slot;
+    fn before_send(
+        &mut self,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
+        let _ = (slot, driver);
     }
 
     fn send(
@@ -100,15 +105,27 @@ pub trait ConnApp<'d>: Sized {
         driver: &mut DriverContext<'_, 'd>,
     );
 
-    fn close(&mut self, slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>);
+    fn close(
+        &mut self,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    );
 
-    fn defer_close(&self, slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>) -> bool {
-        let _ = slot;
+    fn defer_close(
+        &self,
+        slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> bool {
+        let _ = (slot, driver);
         false
     }
 
-    fn is_drained(&self, slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>) -> bool {
-        let _ = slot;
+    fn is_drained(
+        &self,
+        slot: &Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> bool {
+        let _ = (slot, driver);
         true
     }
 
@@ -116,8 +133,9 @@ pub trait ConnApp<'d>: Sized {
         &self,
         token: Token,
         push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
-        let _ = (token, push);
+        let _ = (token, push, driver);
         Requests::default()
     }
 

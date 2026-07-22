@@ -2,8 +2,9 @@ use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::{Rc, Weak};
 
+use dope_net::link::egress::arena::Arena;
 use dope_net::link::egress::config::Config;
-use dope_net::link::egress::queue::{Arena, Queue};
+use dope_net::link::egress::queue::Queue;
 use o3::buffer::Shared;
 
 fn queue<const IOV: usize, B: AsRef<[u8]>>() -> Queue<IOV, B> {

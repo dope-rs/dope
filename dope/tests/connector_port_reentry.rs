@@ -13,8 +13,8 @@ use dope_test as common;
 fn with_port_env<R>(f: impl for<'d> FnOnce(Token, ReadyKey<'d>, dope::DriverRef<'d>) -> R) -> R {
     common::with_session(|sess| {
         let token = common::tok(0);
-        let slot = std::pin::pin!(sess.driver().make_ready_slot(token));
-        let wake = slot.as_ref().key();
+        let slot = sess.driver().make_ready_slot(token).expect("ready slot");
+        let wake = slot.key();
         f(token, wake, sess.driver())
     })
 }

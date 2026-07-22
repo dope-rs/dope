@@ -3,9 +3,9 @@ use std::os::fd::RawFd;
 use std::path::Path;
 use std::{io, slice};
 
-use crate::backend::PlatformAbi;
 use crate::driver::Driver;
 use crate::io::socket::Pod;
+use crate::platform::raw::abi::PlatformAbi;
 use std::io::{Error, ErrorKind};
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;

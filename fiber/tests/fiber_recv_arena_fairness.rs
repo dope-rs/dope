@@ -4,7 +4,7 @@ use std::time::Duration;
 
 extern crate dope;
 use dope::runtime::profile::Balanced;
-use dope_fiber::Listener;
+use dope_fiber::{ConnectorPort, Listener, ListenerPort};
 use dope_net::tcp::Tcp;
 use dope_net::wire::send::{Plain, Prepared, Storage, Vectored};
 use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
@@ -19,6 +19,18 @@ const QUEUE_CAP: usize = 256;
 type Pool<'scope, 'd> = Listener<'scope, 'd, 0, Tcp, PooledWire>;
 
 struct PooledWire;
+
+#[test]
+fn receive_capacity_is_validated_before_storage_build() {
+    let listener = ListenerPort::factory(0)
+        .err()
+        .expect("zero listener capacity");
+    assert_eq!(listener.kind(), std::io::ErrorKind::InvalidInput);
+    let connector = ConnectorPort::<Tcp>::factory(usize::MAX)
+        .err()
+        .expect("overflowing connector capacity");
+    assert_eq!(connector.kind(), std::io::ErrorKind::InvalidInput);
+}
 
 impl Wire for PooledWire {
     type InitConfig = ();

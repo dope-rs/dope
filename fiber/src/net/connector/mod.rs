@@ -22,7 +22,8 @@ use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 use std::io::Error;
 
-use super::port::{Port, RecvArena};
+use super::port::Port;
+use super::port::recv::arena::{RecvArena, RecvLayout};
 use pending::{Pending, Resolve};
 
 enum Resolved {
@@ -42,7 +43,7 @@ where
 }
 
 pub struct ConnectorPortFactory<T> {
-    capacity: usize,
+    layout: RecvLayout,
     egress: Config,
     transport: PhantomData<fn() -> T>,
 }
@@ -51,13 +52,18 @@ impl<'d, T: Transport> ConnectorPort<'d, T>
 where
     T::Addr: Clone,
 {
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize) -> io::Result<Self> {
         Self::with_egress(capacity, Config::default())
     }
 
-    pub fn with_egress(capacity: usize, egress: Config) -> Self {
+    pub fn with_egress(capacity: usize, egress: Config) -> io::Result<Self> {
+        Ok(Self::with_layout(RecvLayout::new(capacity)?, egress))
+    }
+
+    fn with_layout(layout: RecvLayout, egress: Config) -> Self {
+        let capacity = layout.connections();
         Self {
-            connections: Port::with_capacity(capacity),
+            connections: Port::with_layout(layout, false),
             pending: Pending::with_capacity(capacity),
             cancels: CellQueue::with_capacity(capacity),
             source: Explicit::with_capacity(capacity),
@@ -65,20 +71,23 @@ where
         }
     }
 
-    pub fn factory(capacity: usize) -> ConnectorPortFactory<T> {
-        ConnectorPortFactory {
-            capacity,
+    pub fn factory(capacity: usize) -> io::Result<ConnectorPortFactory<T>> {
+        Ok(ConnectorPortFactory {
+            layout: RecvLayout::new(capacity)?,
             egress: Config::default(),
             transport: PhantomData,
-        }
+        })
     }
 
-    pub fn factory_with_egress(capacity: usize, egress: Config) -> ConnectorPortFactory<T> {
-        ConnectorPortFactory {
-            capacity,
+    pub fn factory_with_egress(
+        capacity: usize,
+        egress: Config,
+    ) -> io::Result<ConnectorPortFactory<T>> {
+        Ok(ConnectorPortFactory {
+            layout: RecvLayout::new(capacity)?,
             egress,
             transport: PhantomData,
-        }
+        })
     }
 
     pub fn handle(&self) -> ConnectorHandle<'_, 'd, T> {
@@ -176,7 +185,7 @@ where
     type Output<'d> = ConnectorPort<'d, T>;
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        ConnectorPort::with_egress(self.capacity, self.egress)
+        ConnectorPort::with_layout(self.layout, self.egress)
     }
 }
 
@@ -204,7 +213,7 @@ where
 
     const RETAIN_RAW_RECV: bool = true;
 
-    fn max_retained_recv_chunks(max_connections: usize) -> usize {
+    fn max_retained_recv_chunks(max_connections: usize) -> io::Result<usize> {
         RecvArena::capacity_for(max_connections)
     }
 
@@ -261,11 +270,19 @@ where
             .sync_send(slot.token(), slot.state.egress_len() != 0);
     }
 
-    fn close(&mut self, slot: &mut Slot<'d, Self::Wire, state::State<Self::Conn>>) {
+    fn close(
+        &mut self,
+        slot: &mut Slot<'d, Self::Wire, state::State<Self::Conn>>,
+        _driver: &mut DriverContext<'_, 'd>,
+    ) {
         self.port.closed(slot.token());
     }
 
-    fn is_drained(&self, slot: &Slot<'d, Self::Wire, state::State<Self::Conn>>) -> bool {
+    fn is_drained(
+        &self,
+        slot: &Slot<'d, Self::Wire, state::State<Self::Conn>>,
+        _driver: &mut DriverContext<'_, 'd>,
+    ) -> bool {
         self.port.connections.readable_drained(slot.token())
     }
 
@@ -273,6 +290,7 @@ where
         &self,
         token: Token,
         push: impl FnMut(Shared) -> Result<(), Shared>,
+        _driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
         self.port.drain_requests(token, push)
     }

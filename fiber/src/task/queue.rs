@@ -1,15 +1,21 @@
 use core::cell::Cell;
 use core::marker::PhantomPinned;
 use core::pin::Pin;
+use core::ptr::NonNull;
 
 use o3::cell::RawCell;
 use o3::collections::{BatchDrain, BatchSet};
 
-use super::Waker;
+use super::{RootWaker, TaskContext, Waker};
+
+struct Slot<T: Copy> {
+    target: Cell<T>,
+    task: Cell<Option<NonNull<TaskContext<T>>>>,
+}
 
 pub struct TaskQueue<T: Copy = usize> {
     pub(super) ready: BatchSet,
-    values: RawCell<Vec<Cell<T>>>,
+    values: RawCell<Vec<Slot<T>>>,
     free: RawCell<Vec<usize>>,
     _pin: PhantomPinned,
 }
@@ -50,16 +56,20 @@ impl<T: Copy> TaskQueue<T> {
         }
     }
 
-    pub(super) fn allocate(&self, target: T) -> usize {
+    pub(super) fn allocate(&self, target: T, task: NonNull<TaskContext<T>>) -> usize {
         unsafe {
             self.free.with_mut(|free| {
                 self.values.with_mut(|values| {
                     if let Some(index) = free.pop() {
-                        values[index].set(target);
+                        values[index].target.set(target);
+                        values[index].task.set(Some(task));
                         index
                     } else {
                         let index = values.len();
-                        values.push(Cell::new(target));
+                        values.push(Slot {
+                            target: Cell::new(target),
+                            task: Cell::new(Some(task)),
+                        });
                         self.ready.grow_to(index + 1);
                         index
                     }
@@ -70,15 +80,16 @@ impl<T: Copy> TaskQueue<T> {
 
     pub(super) fn release(&self, index: usize) {
         self.ready.remove(index);
+        unsafe { self.values.with(|values| values[index].task.set(None)) };
         unsafe { self.free.with_mut(|free| free.push(index)) };
     }
 
     pub(super) fn set_target(&self, index: usize, target: T) {
-        unsafe { self.values.with(|values| values[index].set(target)) };
+        unsafe { self.values.with(|values| values[index].target.set(target)) };
     }
 
     fn target(&self, index: usize) -> T {
-        unsafe { self.values.with(|values| values[index].get()) }
+        unsafe { self.values.with(|values| values[index].target.get()) }
     }
 
     pub fn pop(self: Pin<&Self>) -> Option<T> {
@@ -89,26 +100,57 @@ impl<T: Copy> TaskQueue<T> {
         self.ready.is_empty()
     }
 
-    /// # Safety
-    /// No other snapshot may be active for this queue.
-    pub unsafe fn snapshot<'d>(
+    pub fn snapshot<'d>(
         self: Pin<&'d Self>,
         parent: Waker<'d>,
-    ) -> impl Iterator<Item = T> + use<'d, T> {
+    ) -> Option<impl Iterator<Item = T> + use<'d, T>> {
+        self.snapshot_inner(parent)
+    }
+
+    pub fn snapshot_root<'queue, 'root>(
+        self: Pin<&'queue Self>,
+        parent: RootWaker<'root>,
+    ) -> Option<impl Iterator<Item = T> + use<'queue, T>>
+    where
+        'root: 'queue,
+    {
+        self.snapshot_inner(parent.into_waker().shorten())
+    }
+
+    fn snapshot_inner<'d>(self: Pin<&'d Self>, parent: Waker<'d>) -> Option<TaskSnapshot<'d, T>> {
         let queue = self.get_ref();
         let ready: &'d BatchSet = &queue.ready;
-        TaskSnapshot {
+        Some(TaskSnapshot {
             queue,
-            drain: ready.drain_batch(),
+            drain: Some(ready.drain_batch()?),
             parent,
             exhausted: false,
-        }
+        })
     }
 }
 
 impl<T: Copy> Default for TaskQueue<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T: Copy> Drop for TaskQueue<T> {
+    fn drop(&mut self) {
+        let queue = NonNull::from(&*self);
+        // SAFETY: every occupied slot was installed from a pinned task. Queue
+        // Drop runs while its ready set is still live and detaches each node
+        // before the queue storage can disappear.
+        unsafe {
+            self.values.with(|values| {
+                for (index, slot) in values.iter().enumerate() {
+                    let Some(task) = slot.task.take() else {
+                        continue;
+                    };
+                    Pin::new_unchecked(task.as_ref()).detach_queue(queue, index);
+                }
+            });
+        }
     }
 }
 

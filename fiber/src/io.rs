@@ -8,7 +8,8 @@ use std::task::Poll;
 use dope::ProvidedView;
 use o3::buffer::{Bytes, Retained, Shared};
 
-use crate::net::port::{Port, RecvChunkResult, RecvInto, SendIdle};
+use crate::net::port::Port;
+use crate::net::port::result::{RecvChunkResult, RecvInto, SendIdle};
 use crate::{Context, Fiber, Waker};
 use dope::driver::token::Token;
 

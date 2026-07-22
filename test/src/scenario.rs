@@ -28,7 +28,7 @@ impl<'d, M> Dispatcher<'d> for ManifoldHost<M>
 where
     M: Manifold<'d>,
 {
-    fn dispatch(self: Pin<&mut Self>, event: Event, driver: &mut DriverContext<'_, 'd>) {
+    fn dispatch(self: Pin<&mut Self>, event: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
         if event.route() == M::ID {
             Manifold::dispatch(self.project().manifold, event, driver);
         }

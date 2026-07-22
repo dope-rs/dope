@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 use dope::manifold::Manifold;
 use dope::manifold::datagram::{Handler, Socket};
 use dope::runtime::Idle;
-use dope::{Event, EventRef};
+use dope::{Event, EventKind};
 
 use common::Gate;
 
@@ -50,18 +50,18 @@ struct Sender<'d> {
 impl<'d> Manifold<'d> for Sender<'d> {
     const ID: u8 = 0;
 
-    fn dispatch(mut self: Pin<&mut Self>, ev: Event, driver: &mut dope::DriverContext<'_, 'd>) {
+    fn dispatch(mut self: Pin<&mut Self>, ev: Event<'d>, driver: &mut dope::DriverContext<'_, 'd>) {
         let mut sender = self.as_mut();
         let mut this = sender.as_mut().project();
-        match ev.as_ref() {
-            EventRef::Recv(token, more, e) => {
+        match ev.into_kind() {
+            EventKind::Recv(token, more, e) => {
                 this.sock
-                    .dispatch_recv(token, more, *e, this.handler, driver)
+                    .dispatch_recv(token, more, e, this.handler, driver)
             }
-            EventRef::Send(token, e) => {
+            EventKind::Send(token, e) => {
                 this.sock
                     .as_mut()
-                    .dispatch_send(token, *e, this.handler, driver);
+                    .dispatch_send(token, e, this.handler, driver);
                 if !this.sock.has_pending() {
                     this.handler.gate.hit();
                 }

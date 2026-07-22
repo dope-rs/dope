@@ -7,6 +7,7 @@ use super::lifecycle::Lifecycle;
 use crate::runtime::Idle;
 use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::Token;
+use o3::cell::RegionToken;
 
 pub trait Session<'d>: Sized {
     type Codec: Codec;
@@ -15,8 +16,8 @@ pub trait Session<'d>: Sized {
 
     fn codec(&self) -> &Self::Codec;
 
-    fn activate(&self, token: Token, ready: ReadyKey<'d>) {
-        let _ = (token, ready);
+    fn activate(&self, token: Token, ready: ReadyKey<'d>, region: &mut RegionToken<'d>) {
+        let _ = (token, ready, region);
     }
 
     fn connect(&mut self, ctx: &mut Ctx<'_, 'd, Self>);
@@ -37,18 +38,31 @@ pub trait Session<'d>: Sized {
         &self,
         token: Token,
         push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        region: &mut RegionToken<'d>,
     ) -> Requests {
-        let _ = (token, push);
+        let _ = (token, push, region);
         Requests::default()
     }
 
-    fn defer_close(&self, token: Token, state: &Self::ConnState) -> bool {
+    fn defer_close(
+        &self,
+        token: Token,
+        state: &Self::ConnState,
+        region: &mut RegionToken<'d>,
+    ) -> bool {
         let _ = token;
+        let _ = region;
         state.defer_close()
     }
 
-    fn is_drained(&self, token: Token, state: &Self::ConnState) -> bool {
+    fn is_drained(
+        &self,
+        token: Token,
+        state: &Self::ConnState,
+        region: &mut RegionToken<'d>,
+    ) -> bool {
         let _ = token;
+        let _ = region;
         state.is_drained()
     }
 

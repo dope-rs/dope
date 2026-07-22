@@ -1,7 +1,9 @@
+pub mod arena;
 pub mod config;
 mod credits;
 pub mod metadata;
 pub mod queue;
+pub(crate) mod raw;
 pub mod stage;
 mod wire;
 

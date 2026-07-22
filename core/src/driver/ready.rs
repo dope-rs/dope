@@ -1,7 +1,6 @@
 use std::cell::Cell;
 use std::io::{Error, ErrorKind, Result};
-use std::marker::{PhantomData, PhantomPinned};
-use std::pin::Pin;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use o3::collections::BatchSet;
@@ -85,64 +84,68 @@ impl<'d> CompletionWaker<'d> {
     }
 }
 
-pub struct ReadySlot<'d> {
-    arena: NonNull<Arena>,
+#[derive(Clone, Copy)]
+pub struct ReadyHandle<'d> {
+    arena: &'d Arena,
     key: ReadyKey<'d>,
-    owned: bool,
-    _pin: PhantomPinned,
+}
+
+impl<'d> ReadyHandle<'d> {
+    pub fn set_target(self, target: Token) {
+        self.arena.set_target(self.key, target);
+    }
+
+    #[inline]
+    pub fn activate(self) {
+        self.arena.activate(self.key);
+    }
+
+    pub fn key(self) -> ReadyKey<'d> {
+        self.key
+    }
+}
+
+pub struct ReadySlot<'d> {
+    arena: &'d Arena,
+    key: ReadyKey<'d>,
 }
 
 impl<'d> ReadySlot<'d> {
-    fn new(arena: &'d Arena, index: u32, owned: bool) -> Self {
+    fn new(arena: &'d Arena, index: u32) -> Self {
         arena.live[index as usize].set(true);
         Self {
-            arena: NonNull::from(arena),
+            arena,
             key: ReadyKey {
                 index,
                 epoch: arena.epochs[index as usize].get(),
                 _arena: PhantomData,
                 _thread: ThreadBound::NEW,
             },
-            owned,
-            _pin: PhantomPinned,
         }
     }
 
-    pub fn get(slots: Pin<&[Self]>, index: usize) -> Option<Pin<&Self>> {
-        let slot = slots.get_ref().get(index)?;
-        Some(unsafe { Pin::new_unchecked(slot) })
-    }
-
-    pub fn set_target(self: Pin<&Self>, target: Token) {
-        unsafe { self.arena.as_ref() }.set_target(self.key, target);
+    pub fn set_target(&self, target: Token) {
+        self.arena.set_target(self.key, target);
     }
 
     #[inline]
-    pub fn activate(self: Pin<&Self>) {
-        unsafe { self.arena.as_ref() }.activate(self.key);
+    pub fn activate(&self) {
+        self.arena.activate(self.key);
     }
 
-    pub fn key(self: Pin<&Self>) -> ReadyKey<'d> {
-        ReadyKey {
-            index: self.key.index,
-            epoch: self.key.epoch,
-            _arena: PhantomData,
-            _thread: ThreadBound::NEW,
-        }
+    pub fn key(&self) -> ReadyKey<'d> {
+        self.key
     }
 }
 
 impl Drop for ReadySlot<'_> {
     fn drop(&mut self) {
-        if self.owned {
-            unsafe { self.arena.as_ref() }.release(self.key);
-        }
+        self.arena.release(self.key);
     }
 }
 
 pub(super) struct Arena {
-    /// Drops before the arena fields referenced by every fixed slot.
-    fixed: Pin<Box<[ReadySlot<'static>]>>,
+    fixed: usize,
     ready: BatchSet,
     targets: Box<[Cell<Token>]>,
     epochs: Box<[Cell<u32>]>,
@@ -150,11 +153,10 @@ pub(super) struct Arena {
     next_free: Box<[Cell<u32>]>,
     free: Cell<u32>,
     free_len: Cell<usize>,
-    _pin: PhantomPinned,
 }
 
 impl Arena {
-    pub(super) fn new(fixed: usize, dynamic: usize) -> Result<Pin<Box<Self>>> {
+    pub(super) fn new(fixed: usize, dynamic: usize) -> Result<Box<Self>> {
         let capacity = fixed
             .checked_add(dynamic)
             .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "dope: ready capacity overflow"))?;
@@ -166,12 +168,14 @@ impl Arena {
         }
 
         let dummy = Token::new(ROUTE_FRAMEWORK, SlotIndex::new(0), Epoch::INITIAL);
-        let mut arena = Box::pin(Self {
-            fixed: Box::into_pin(Vec::new().into_boxed_slice()),
+        Ok(Box::new(Self {
+            fixed,
             ready: BatchSet::with_capacity(capacity),
             targets: (0..capacity).map(|_| Cell::new(dummy)).collect(),
             epochs: (0..capacity).map(|_| Cell::new(0)).collect(),
-            live: (0..capacity).map(|_| Cell::new(false)).collect(),
+            live: (0..capacity)
+                .map(|index| Cell::new(index < fixed))
+                .collect(),
             next_free: (0..capacity)
                 .map(|index| {
                     let next = if index + 1 < capacity {
@@ -184,15 +188,7 @@ impl Arena {
                 .collect(),
             free: Cell::new(if fixed < capacity { fixed as u32 } else { NIL }),
             free_len: Cell::new(capacity - fixed),
-            _pin: PhantomPinned,
-        });
-
-        let arena_ref: &'static Arena = unsafe { &*(arena.as_ref().get_ref() as *const Arena) };
-        let slots: Box<[ReadySlot<'static>]> = (0..fixed)
-            .map(|index| ReadySlot::new(arena_ref, index as u32, false))
-            .collect();
-        unsafe { arena.as_mut().get_unchecked_mut() }.fixed = Box::into_pin(slots);
-        Ok(arena)
+        }))
     }
 
     fn valid(&self, key: ReadyKey<'_>) -> bool {
@@ -200,36 +196,66 @@ impl Arena {
         self.live.get(index).is_some_and(Cell::get) && self.epochs[index].get() == key.epoch
     }
 
-    pub(crate) fn slot<'d>(&'d self, slot: FdSlot) -> Pin<&'d ReadySlot<'d>> {
-        let slot = &self.fixed[slot.raw() as usize];
-        unsafe { Pin::new_unchecked(slot) }
+    pub(crate) fn fixed_slot(&self, slot: FdSlot) -> ReadyHandle<'_> {
+        let index = slot.raw();
+        debug_assert!((index as usize) < self.fixed);
+        ReadyHandle {
+            arena: self,
+            key: ReadyKey {
+                index,
+                epoch: 0,
+                _arena: PhantomData,
+                _thread: ThreadBound::NEW,
+            },
+        }
     }
 
-    pub(crate) fn make_slot<'d>(&'d self, target: Token) -> ReadySlot<'d> {
-        self.try_make_slot(target)
-            .expect("dope: dynamic ready slots exhausted")
+    pub(crate) fn make_slot(&self, target: Token) -> Result<ReadySlot<'_>> {
+        self.make_slot_reserving(target, 0)
     }
 
-    pub(crate) fn try_make_slot<'d>(&'d self, target: Token) -> Option<ReadySlot<'d>> {
-        self.try_make_slot_reserving(target, 0)
+    pub(crate) fn make_slots<I>(&self, targets: I) -> Result<Box<[ReadySlot<'_>]>>
+    where
+        I: IntoIterator<Item = Token>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let targets = targets.into_iter();
+        let requested = targets.len();
+        let available = self.free_len.get();
+        if requested > available {
+            return Err(Self::capacity_error(requested, available));
+        }
+        targets
+            .enumerate()
+            .map(|(index, target)| self.make_slot_reserving(target, requested - index - 1))
+            .collect()
     }
 
-    pub(crate) fn try_make_slot_reserving<'d>(
-        &'d self,
+    pub(crate) fn make_slot_reserving(
+        &self,
         target: Token,
         reserve: usize,
-    ) -> Option<ReadySlot<'d>> {
+    ) -> Result<ReadySlot<'_>> {
         if self.free_len.get() <= reserve {
-            return None;
+            return Err(Self::capacity_error(1, self.free_len.get()));
         }
         let index = self.free.get();
         if index == NIL {
-            return None;
+            return Err(Self::capacity_error(1, 0));
         }
         self.free.set(self.next_free[index as usize].get());
         self.free_len.set(self.free_len.get() - 1);
         self.targets[index as usize].set(target);
-        Some(ReadySlot::new(self, index, true))
+        Ok(ReadySlot::new(self, index))
+    }
+
+    fn capacity_error(requested: usize, available: usize) -> Error {
+        Error::new(
+            ErrorKind::WouldBlock,
+            format!(
+                "dope: dynamic ready capacity exhausted: requested {requested}, available {available}"
+            ),
+        )
     }
 
     fn set_target(&self, key: ReadyKey<'_>, target: Token) {

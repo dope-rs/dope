@@ -34,15 +34,16 @@ fn poll_once_never_drives_a_pending_fiber_twice() {
 fn within_expires_a_pending_fiber_at_its_deadline() {
     dope_test::with_session(|mut session| {
         let timer: Timer<'_, 0> = Timer::with_capacity(1, session.driver());
-        let slot = pin!(session.driver().make_ready_slot(dope_test::tok(0)));
+        let slot = session
+            .driver()
+            .make_ready_slot(dope_test::tok(0))
+            .expect("ready slot");
         let pending = dope_fiber::poll_fn(|_| Poll::<()>::Pending);
         let mut bounded = pin!(within(&timer, Duration::from_millis(10), pending));
-        assert!(
-            dope_test::poll_with_slot(&mut session, slot.as_ref(), bounded.as_mut()).is_pending()
-        );
+        assert!(dope_test::poll_with_slot(&mut session, &slot, bounded.as_mut()).is_pending());
         std::thread::sleep(Duration::from_millis(10));
         timer.expire(Instant::now());
-        let outcome = dope_test::poll_with_slot(&mut session, slot.as_ref(), bounded.as_mut());
+        let outcome = dope_test::poll_with_slot(&mut session, &slot, bounded.as_mut());
         assert!(matches!(outcome, Poll::Ready(Err(_))));
     });
 }

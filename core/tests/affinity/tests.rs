@@ -28,6 +28,6 @@ fn local_capabilities_keep_their_layout() {
     );
     assert_eq!(
         size_of::<dope_core::driver::ready::ReadySlot<'static>>(),
-        3 * size_of::<u64>()
+        2 * size_of::<u64>()
     );
 }

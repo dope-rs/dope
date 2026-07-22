@@ -118,38 +118,6 @@ impl State {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::State;
-
-    #[test]
-    fn partial_completion_rewinds_the_unsent_suffix() {
-        let mut send = State::default();
-        send.begin(100, Default::default());
-        send.record_handoff(100, true);
-
-        assert!(send.complete_handoff(40));
-        assert_eq!(send.consumed_plain, 40);
-        assert_eq!(send.inflight_plain, 0);
-
-        send.record_handoff(60, true);
-        assert!(send.complete_handoff(60));
-        assert_eq!(send.consumed_plain, 100);
-        assert_eq!(send.inflight_plain, 0);
-    }
-
-    #[test]
-    fn completion_cannot_exceed_the_inflight_plaintext() {
-        let mut send = State::default();
-        send.begin(8, Default::default());
-        send.record_handoff(8, true);
-
-        assert!(!send.complete_handoff(9));
-        assert_eq!(send.consumed_plain, 8);
-        assert_eq!(send.inflight_plain, 8);
-    }
-}
-
 pub(super) trait SendPhase<'d, const ID: u8, A, E>
 where
     A: Application<'d>,

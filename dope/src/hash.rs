@@ -1,7 +1,7 @@
 use std::hash::BuildHasher;
 use std::io;
 
-use crate::Driver;
+use dope_core::backend::Backend;
 use dope_core::platform::Platform;
 use siphasher::sip::SipHasher13;
 
@@ -19,7 +19,7 @@ pub struct Seed {
 
 impl Seed {
     pub fn random() -> io::Result<Self> {
-        Ok(Self::new(Driver::entropy()?))
+        Ok(Self::new(Backend::entropy()?))
     }
 
     pub const fn new(words: [u64; 2]) -> Self {

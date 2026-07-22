@@ -1,5 +1,8 @@
 use std::ptr::NonNull;
 
+use crate::backend::Backend;
+use crate::backend::ops::buffers::BufferBackend;
+
 use super::DriverContext;
 
 pub trait ProvidedBuffers {
@@ -13,52 +16,20 @@ pub trait ProvidedBuffers {
     unsafe fn buffer_ptr_len(&mut self, len: u32, bid: u16) -> (NonNull<u8>, usize);
 }
 
-cfg_select! {
-    target_os = "linux" => {
-        use crate::backend::uring::provided::ring::Ring;
-
-        impl ProvidedBuffers for DriverContext<'_, '_> {
-            fn buffer_group(&self) -> u16 {
-                Ring::BGID
-            }
-
-            fn buffer_len(&self) -> usize {
-                self.backend_ref().provided.buf_len()
-            }
-
-            unsafe fn release(&mut self, bid: u16) {
-                self.backend().provided.defer(bid);
-            }
-
-            unsafe fn buffer_ptr_len(&mut self, len: u32, bid: u16) -> (NonNull<u8>, usize) {
-                let (ptr, len) = self.backend_ref().provided.ptr_len(bid, len as usize);
-                (unsafe { NonNull::new_unchecked(ptr.cast_mut()) }, len)
-            }
-        }
+impl ProvidedBuffers for DriverContext<'_, '_> {
+    fn buffer_group(&self) -> u16 {
+        <Backend as BufferBackend>::buffer_group(self.backend_ref())
     }
-    _ => {
-        use crate::backend::kqueue::driver::read::dispatch::Dispatch;
 
-        impl ProvidedBuffers for DriverContext<'_, '_> {
-            fn buffer_group(&self) -> u16 {
-                0
-            }
+    fn buffer_len(&self) -> usize {
+        <Backend as BufferBackend>::buffer_len(self.backend_ref())
+    }
 
-            fn buffer_len(&self) -> usize {
-                self.backend_ref().provided.buf_len()
-            }
+    unsafe fn release(&mut self, bid: u16) {
+        unsafe { <Backend as BufferBackend>::release_buffer(self.backend(), bid) };
+    }
 
-            unsafe fn release(&mut self, bid: u16) {
-                let state = self.backend();
-                state.provided.defer(bid);
-                if !state.resume.is_empty() {
-                    state.resume_pending();
-                }
-            }
-
-            unsafe fn buffer_ptr_len(&mut self, len: u32, bid: u16) -> (NonNull<u8>, usize) {
-                unsafe { self.backend_ref().backing.ptr_len(bid, len as usize) }
-            }
-        }
+    unsafe fn buffer_ptr_len(&mut self, len: u32, bid: u16) -> (NonNull<u8>, usize) {
+        unsafe { <Backend as BufferBackend>::buffer_ptr_len(self.backend_ref(), len, bid) }
     }
 }

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use dope::driver::ready::ReadySlot;
 use dope::runtime::{Dispatcher, Session};
-use dope::{Completion, Cqe, DriverContext, Event};
+use dope::{Completion, DriverContext, Event};
 use dope_fiber::{Context, Fiber, OneShot, SessionExt};
 use o3::cell::BrandCell;
 
@@ -15,17 +15,20 @@ use crate::rt::{tok, with_session};
 
 pub fn with_context<R>(run: impl for<'poll, 'd> FnOnce(Pin<&mut Context<'poll, 'd>>) -> R) -> R {
     with_session(|mut session| {
-        let slot = pin!(session.driver().make_ready_slot(tok(0)));
+        let slot = session
+            .driver()
+            .make_ready_slot(tok(0))
+            .expect("ready slot");
         let reference = session.driver();
         let access = session.driver_access();
-        let mut context = pin!(Context::from_ready(reference, slot.as_ref().key(), access));
+        let mut context = pin!(Context::from_ready(reference, slot.key(), access));
         run(context.as_mut())
     })
 }
 
 pub fn poll_with_slot<'scope, 'd, S, F>(
     session: &mut Session<'scope, 'd, S>,
-    slot: Pin<&ReadySlot<'d>>,
+    slot: &ReadySlot<'d>,
     fiber: Pin<&mut F>,
 ) -> Poll<F::Output>
 where
@@ -136,10 +139,10 @@ pub fn run_until<'scope, 'd, D: Dispatcher<'d>>(
 
 pub fn pump_events<'scope, 'd, S>(
     sess: &mut Session<'scope, 'd, S>,
-    mut handle: impl FnMut(Event),
+    mut handle: impl FnMut(Event<'d>),
     mut done: impl FnMut() -> bool,
 ) -> bool {
-    let mut buf = [Cqe::ZERO; 32];
+    let mut buf = [const { None }; 32];
     for _ in 0..500 {
         if done() {
             return true;
@@ -147,17 +150,15 @@ pub fn pump_events<'scope, 'd, S>(
         let mut driver = sess.driver_access();
         let _ = driver.wait(Some(Duration::from_millis(5)));
         let n = driver.drain(&mut buf);
-        for cqe in &buf[..n] {
-            if let Ok(event) = unsafe { Event::from_cqe(*cqe) } {
-                handle(event);
-            }
+        for event in &mut buf[..n] {
+            handle(event.take().expect("completion slot"));
         }
     }
     done()
 }
 
 pub fn drop_pending<'d, F: Fiber<'d>>(driver: &mut DriverContext<'_, 'd>, op: F, tag: u8) {
-    let mut one = pin!(OneShot::new(op, tag, driver.driver_ref()));
+    let mut one = pin!(OneShot::new(op, tag, driver.driver_ref()).expect("ready slot"));
     one.as_mut().pre_park(driver);
     assert!(!one.as_ref().is_done());
 }

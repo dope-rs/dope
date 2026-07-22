@@ -54,7 +54,12 @@ impl<'d> Fiber<'d> for Blocked<'d> {
 struct TestDispatcher;
 
 impl<'d> Dispatcher<'d> for TestDispatcher {
-    fn dispatch(self: Pin<&mut Self>, _event: Event, _driver: &mut dope::DriverContext<'_, 'd>) {}
+    fn dispatch(
+        self: Pin<&mut Self>,
+        _event: Event<'d>,
+        _driver: &mut dope::DriverContext<'_, 'd>,
+    ) {
+    }
 
     fn activate(self: Pin<&mut Self>, _target: Token, _driver: &mut dope::DriverContext<'_, 'd>) {}
 
@@ -127,7 +132,11 @@ struct WakeDispatcher {
 }
 
 impl<'d> Dispatcher<'d> for WakeDispatcher {
-    fn dispatch(self: Pin<&mut Self>, _event: Event, _driver: &mut dope::DriverContext<'_, 'd>) {
+    fn dispatch(
+        self: Pin<&mut Self>,
+        _event: Event<'d>,
+        _driver: &mut dope::DriverContext<'_, 'd>,
+    ) {
         let _ = self;
     }
 
@@ -165,8 +174,11 @@ fn block_on_consumes_only_its_exact_wake_token() {
             foreign_wakes: Cell::new(0),
             foreign,
         });
-        let foreign_slot = pin!(session.driver().make_ready_slot(foreign));
-        foreign_slot.as_ref().activate();
+        let foreign_slot = session
+            .driver()
+            .make_ready_slot(foreign)
+            .expect("ready slot");
+        foreign_slot.activate();
         let app = pin!(BrandCell::new(WakeDispatcher {
             state: Rc::clone(&state),
         }));

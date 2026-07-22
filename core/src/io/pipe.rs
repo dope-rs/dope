@@ -3,8 +3,8 @@ use std::io;
 use std::marker::PhantomData;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
-use crate::backend::PlatformAbi;
 use crate::driver::Driver;
+use crate::platform::raw::abi::PlatformAbi;
 
 pub struct Pipe {
     read: OwnedFd,

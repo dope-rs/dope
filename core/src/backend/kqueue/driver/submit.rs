@@ -4,12 +4,12 @@ use super::Kqueue;
 use super::pending::PendingCompletion;
 use super::read::arm::Arm;
 use super::retry::{Retry, WriteKind};
+use crate::platform::raw::abi::PlatformAbi;
 use crate::backend::kqueue::errno::Errno;
-use crate::backend::PlatformAbi;
 use crate::driver::Driver;
 use crate::driver::token::{KIND_SHIFT, Token, kind};
-use crate::io::ffi::Handle;
 use crate::io::fd::FdSlot;
+use crate::io::ffi::Handle;
 
 use super::SPLICE_BOUNCE;
 

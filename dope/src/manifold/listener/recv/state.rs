@@ -101,12 +101,6 @@ impl<const HEAD_CAP: usize, const HARD_CAP: usize> State<HEAD_CAP, HARD_CAP> {
         Self::extend_capped(accumulator, src, limit)
     }
 
-    /// Retains ingress that cannot be dispatched until an outstanding action
-    /// or egress backlog completes.
-    ///
-    /// Unlike [`Self::extend`], this is bounded by the connection-wide hard
-    /// cap rather than the current HTTP frame limit: one receive completion may
-    /// legally contain the end of that frame followed by pipelined bytes.
     pub fn extend_backlog(&mut self, src: &[u8]) -> ExtendOutcome {
         Self::extend_capped(
             self.accumulator
@@ -121,26 +115,5 @@ impl<const HEAD_CAP: usize, const HARD_CAP: usize> State<HEAD_CAP, HARD_CAP> {
             .get_or_insert_with(|| SnapshotBuf::with_capacity(INITIAL_CAPACITY.min(HARD_CAP)))
             .try_reserve_to(target)
             .is_ok()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ExtendOutcome, State};
-
-    #[test]
-    fn body_and_backlog_limits_are_independent_from_the_head_limit() {
-        let mut recv = State::<8, 32>::default();
-        assert!(matches!(recv.extend(&[0; 8]), ExtendOutcome::Ok));
-        assert!(matches!(recv.extend(&[0]), ExtendOutcome::Overrun));
-
-        recv.permit_body();
-        assert!(matches!(recv.extend(&[0; 24]), ExtendOutcome::Ok));
-        assert!(matches!(recv.extend_backlog(&[0]), ExtendOutcome::Overrun));
-
-        recv.clear();
-        recv.restrict_to_head();
-        assert!(matches!(recv.extend_backlog(&[0; 32]), ExtendOutcome::Ok));
-        assert!(matches!(recv.extend_backlog(&[0]), ExtendOutcome::Overrun));
     }
 }

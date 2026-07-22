@@ -1,26 +1,26 @@
+use std::io;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::rc::Rc;
 
 use super::FileOutcome;
 use super::Metadata;
-use dope::{Driver, DriverContext};
-use dope_core::backend::Sqe;
+use dope::DriverContext;
+use dope_core::backend::{Backend, Sqe};
 use dope_core::driver::token::kind::STAT;
 use dope_core::driver::token::{KeyTag, Token};
 use dope_core::io::StatEvent;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
 
-type StatBuf = <Driver as Platform>::StatBuf;
+type StatBuf = <Backend as Platform>::StatBuf;
 
 use super::table::{OperationTable, Targets};
 use dope_core::driver::ready::CompletionWaker;
 
-#[derive(Clone, Copy)]
 pub enum StatDone {
     Metadata(Metadata),
-    Failed(i32),
+    Failed(io::Error),
 }
 
 enum StatSource {
@@ -114,9 +114,12 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
             .complete(token, event, driver, |hold, event| match event {
                 StatEvent::Done => {
                     let raw = unsafe { hold.stat.assume_init_read() };
-                    StatDone::Metadata(Metadata::from_raw(Driver::parse_meta(&raw)))
+                    match Backend::parse_meta(&raw) {
+                        Ok(metadata) => StatDone::Metadata(Metadata::from_raw(metadata)),
+                        Err(error) => StatDone::Failed(error),
+                    }
                 }
-                StatEvent::Failed(errno) => StatDone::Failed(errno),
+                StatEvent::Failed(errno) => StatDone::Failed(io::Error::from_raw_os_error(errno)),
             });
     }
 }

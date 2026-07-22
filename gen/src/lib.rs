@@ -229,6 +229,7 @@ pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
             &self,
             token: #dope::driver::token::Token,
             ready: #dope::driver::ready::ReadyKey<#driver>,
+            _region: &mut ::o3::cell::RegionToken<#driver>,
         ) {
             assert!(self.#io.activate(token, ready));
         }
@@ -238,6 +239,7 @@ pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
             &self,
             token: #dope::driver::token::Token,
             push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+            _region: &mut ::o3::cell::RegionToken<#driver>,
         ) -> #dope::manifold::connector::Requests {
             match self.#io.drain_requests(token, push) {
                 Some(requests) => requests,

@@ -20,13 +20,15 @@ pub struct ProvidedView<'d> {
 
 impl<'d> ProvidedLease<'d> {
     /// # Safety
-    /// `bid` must be a uniquely owned live completion buffer. This call
-    /// transfers its ownership to the returned lease.
-    pub unsafe fn from_completion(driver: &mut DriverContext<'_, 'd>, len: u32, bid: u16) -> Self {
-        let reference = driver.driver_ref();
-        let (ptr, len) = unsafe { driver.buffer_ptr_len(len, bid) };
+    /// `bid` and the region must name one live unique completion buffer.
+    pub(crate) unsafe fn from_raw_completion(
+        driver: DriverRef<'d>,
+        bid: u16,
+        ptr: NonNull<u8>,
+        len: usize,
+    ) -> Self {
         Self {
-            driver: reference,
+            driver,
             bid: Cell::new(Some(bid)),
             ptr,
             len,
@@ -44,38 +46,16 @@ impl<'d> ProvidedLease<'d> {
         (offset <= self.len && bytes.len() <= self.len - offset).then_some((offset, bytes.len()))
     }
 
-    pub fn into_view(self, offset: usize, len: usize) -> ProvidedView<'d> {
-        assert!(offset <= self.len && len <= self.len - offset);
+    pub fn into_view(self, offset: usize, len: usize) -> Result<ProvidedView<'d>, Self> {
+        if offset > self.len || len > self.len - offset {
+            return Err(self);
+        }
         let ptr = unsafe { NonNull::new_unchecked(self.ptr.as_ptr().add(offset)) };
-        ProvidedView {
+        Ok(ProvidedView {
             _lease: self,
             ptr,
             len,
-        }
-    }
-
-    /// Transfers buffer-return responsibility to a retained subrange.
-    ///
-    /// The completion buffer has one logical owner. This method moves that
-    /// ownership into the returned view without moving the lease value, which
-    /// permits receive values borrowing the buffer to be dropped first.
-    pub fn retained_view(&self, offset: usize, len: usize) -> ProvidedView<'d> {
-        assert!(offset <= self.len && len <= self.len - offset);
-        let bid = self
-            .bid
-            .take()
-            .expect("provided buffer ownership was already transferred");
-        let ptr = unsafe { NonNull::new_unchecked(self.ptr.as_ptr().add(offset)) };
-        ProvidedView {
-            _lease: Self {
-                driver: self.driver,
-                bid: Cell::new(Some(bid)),
-                ptr: self.ptr,
-                len: self.len,
-            },
-            ptr,
-            len,
-        }
+        })
     }
 
     pub fn release(&self, driver: &mut DriverContext<'_, 'd>) {

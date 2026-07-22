@@ -266,7 +266,7 @@ where
             if !placed {
                 return;
             }
-            this.pool.refresh_wake(fixed_idx, driver.driver_ref());
+            this.pool.refresh_wake(fixed_idx);
             let now = driver.turn_now();
             this.idle.arm(fixed_idx, now);
             if E::Profile::ABS_CONN_AGE.is_some() {

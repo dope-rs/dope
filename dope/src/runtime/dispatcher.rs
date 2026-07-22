@@ -30,7 +30,11 @@ impl Idle {
 pub trait Dispatcher<'d>: Sized {
     const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 
-    fn dispatch(self: Pin<&mut Self>, ev: dope_core::io::Event, driver: &mut DriverContext<'_, 'd>);
+    fn dispatch(
+        self: Pin<&mut Self>,
+        ev: dope_core::io::Event<'d>,
+        driver: &mut DriverContext<'_, 'd>,
+    );
 
     fn activate(self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>);
 

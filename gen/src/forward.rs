@@ -67,7 +67,7 @@ impl Forward {
                 const ID: u8 = <#field_ty as ::dope::manifold::Manifold<#brand>>::ID;
                 fn dispatch(
                     self: ::core::pin::Pin<&mut Self>,
-                    ev: ::dope::Event,
+                    ev: ::dope::Event<#brand>,
                     driver: &mut ::dope::DriverContext<'_, #brand>,
                 ) {
                     let _ = <#field_ty as ::dope::manifold::Manifold<#brand>>::ID;

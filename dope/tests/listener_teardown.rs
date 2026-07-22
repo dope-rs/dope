@@ -106,7 +106,11 @@ struct DropLive<M> {
 impl<'d, M: Manifold<'d>> Manifold<'d> for DropLive<M> {
     const ID: u8 = M::ID;
 
-    fn dispatch(self: Pin<&mut Self>, ev: dope::Event, driver: &mut dope::DriverContext<'_, 'd>) {
+    fn dispatch(
+        self: Pin<&mut Self>,
+        ev: dope::Event<'d>,
+        driver: &mut dope::DriverContext<'_, 'd>,
+    ) {
         M::dispatch(
             unsafe { self.map_unchecked_mut(|s| &mut s.inner) },
             ev,

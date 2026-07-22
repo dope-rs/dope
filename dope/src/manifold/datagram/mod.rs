@@ -300,39 +300,28 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         mut self: Pin<&mut Self>,
         ud: Token,
         more: bool,
-        e: dope_core::io::RecvEvent,
+        e: dope_core::io::RecvEvent<'d>,
         handler: &mut H,
         driver: &mut DriverContext<'_, 'd>,
     ) {
-        let buffer = match e {
-            RecvEvent::Data { len, bid } => {
-                Some(unsafe { ProvidedLease::from_completion(driver, len, bid) })
+        let guard = match e {
+            RecvEvent::Data(buffer) => buffer,
+            RecvEvent::Failed(errno) => {
+                handler.error(errno, self);
+                return;
             }
-            _ => None,
+            RecvEvent::Eof
+            | RecvEvent::Cancelled
+            | RecvEvent::Starved
+            | RecvEvent::Discarded { .. } => return,
         };
         let msghdr = {
             let this = self.as_mut().project();
             if !this.recv_arm.epoch_match(ud, RECV_ARM_TAG) {
-                if let Some(buffer) = buffer {
-                    buffer.release(driver);
-                }
                 return;
             }
             this.recv_arm.complete(more);
             this.recv_msghdr.raw()
-        };
-        let Some(guard) = buffer else {
-            match e {
-                RecvEvent::Failed(errno) => {
-                    handler.error(errno, self);
-                }
-                RecvEvent::Eof
-                | RecvEvent::Cancelled
-                | RecvEvent::Starved
-                | RecvEvent::Discarded { .. } => {}
-                RecvEvent::Data { .. } => unreachable!(),
-            }
-            return;
         };
         let outcome = driver.driver_ref().recv_packet(&guard, msghdr);
         match outcome {

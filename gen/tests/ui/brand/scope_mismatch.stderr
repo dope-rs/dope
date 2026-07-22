@@ -9,7 +9,7 @@ error[E0521]: borrowed data escapes outside of closure
 9 |             let _ = cell.borrow_mut(&mut first);
   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `second` escapes the closure body here
   |
-  = note: requirement occurs because of a mutable reference to `BrandToken<'_>`
+  = note: requirement occurs because of a mutable reference to `BrandedToken<'_, o3::cell::brand::BrandPermission>`
   = note: mutable references are invariant over their type parameter
   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 
@@ -20,7 +20,7 @@ error[E0521]: borrowed data escapes outside of closure
    |                        ---------
    |                        |
    |                        `first` is a reference that is only valid in the closure body
-   |                        has type `BrandToken<'1>`
+   |                        has type `BrandedToken<'1, o3::cell::brand::BrandPermission>`
 ...
 10 |             let _ = cell.borrow_mut(&mut second);
    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

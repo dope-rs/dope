@@ -64,7 +64,7 @@ pub fn listener_exec<P: DriverProfile>(
 ) -> Executor<ListenerPortFactory> {
     Executor::new(tweak(driver::Config::for_tcp_profile::<P>(max_connections)))
         .expect("executor")
-        .with_storage_factory(ListenerPort::factory(max_connections))
+        .with_storage_factory(ListenerPort::factory(max_connections).expect("listener capacity"))
 }
 
 pub fn tcp_host(

@@ -8,6 +8,7 @@ use core::ptr::NonNull;
 
 use dope::driver::ready::{CompletionWaker, ReadyKey};
 use dope::{DriverContext, DriverRef};
+use o3::cell::RegionToken;
 use o3::collections::BatchSet;
 use o3::marker::ThreadBound;
 
@@ -115,6 +116,31 @@ pub struct TaskContext<T: Copy = usize> {
     target: Cell<T>,
 }
 
+pub struct TaskBinding<'a, T: Copy = usize> {
+    task: Pin<&'a TaskContext<T>>,
+    _queue: PhantomData<Pin<&'a TaskQueue<T>>>,
+}
+
+impl<T: Copy> TaskBinding<'_, T> {
+    pub fn waker(&self) -> Waker<'_> {
+        unsafe { self.task.context_unchecked() }
+    }
+
+    pub fn wake(&self) {
+        self.task.wake();
+    }
+
+    pub fn set_target(&self, target: T) {
+        self.task.set_target(target);
+    }
+}
+
+impl<T: Copy> Drop for TaskBinding<'_, T> {
+    fn drop(&mut self) {
+        unsafe { self.task.unbind() };
+    }
+}
+
 impl TaskContext<usize> {
     pub const fn new() -> Self {
         Self::with_target(0)
@@ -131,40 +157,31 @@ impl<T: Copy> TaskContext<T> {
         }
     }
 
-    /// # Safety
-    /// The task and queue stay pinned and live until unbound.
-    pub unsafe fn bind<'task, 'parent>(
+    pub fn bind<'task, 'parent>(
         self: Pin<&'task Self>,
         queue: Pin<&'task TaskQueue<T>>,
         target: T,
         parent: Option<Waker<'parent>>,
-    ) -> Waker<'task>
+    ) -> TaskBinding<'task, T>
     where
         'parent: 'task,
     {
-        let parent: Option<Waker<'task>> = parent.map(|waker| unsafe { mem::transmute(waker) });
-        unsafe { self.bind_inner(queue, target, parent) }
+        let parent = parent.map(Waker::shorten);
+        unsafe { self.bind_inner(queue, target, parent) };
+        TaskBinding {
+            task: self,
+            _queue: PhantomData,
+        }
     }
 
-    /// # Safety
-    /// The task, queue, and parent stay pinned and live until unbound.
-    pub unsafe fn bind_child<'d>(
-        self: Pin<&Self>,
-        queue: Pin<&TaskQueue<T>>,
-        target: T,
-        parent: Waker<'d>,
-    ) -> Waker<'d> {
-        unsafe { self.bind_inner(queue, target, Some(parent)) }
-    }
-
-    unsafe fn bind_inner<'d>(
+    pub(crate) unsafe fn bind_inner<'d>(
         self: Pin<&Self>,
         queue: Pin<&TaskQueue<T>>,
         target: T,
         parent: Option<Waker<'d>>,
     ) -> Waker<'d> {
         assert!(self.index.get() == usize::MAX, "task context already bound");
-        let index = queue.allocate(target);
+        let index = queue.allocate(target, NonNull::from(self.get_ref()));
         self.queue.set(Some(NonNull::from(queue.get_ref())));
         self.index.set(index);
         self.target.set(target);
@@ -193,7 +210,7 @@ impl<T: Copy> TaskContext<T> {
 
     /// # Safety
     /// No context or waker for this task may be used after this call.
-    pub unsafe fn unbind(self: Pin<&Self>) {
+    pub(crate) unsafe fn unbind(self: Pin<&Self>) {
         let index = self.index.replace(usize::MAX);
         if index == usize::MAX {
             return;
@@ -203,6 +220,25 @@ impl<T: Copy> TaskContext<T> {
         if let Some(queue) = self.queue.replace(None) {
             unsafe { queue.as_ref() }.release(index);
         }
+    }
+
+    /// Detaches a node while its queue is being dropped.
+    ///
+    /// # Safety
+    /// `queue` is the live queue currently recorded by this pinned task, and
+    /// `index` is the queue slot that points back to it.
+    pub(super) unsafe fn detach_queue(
+        self: Pin<&Self>,
+        queue: NonNull<TaskQueue<T>>,
+        index: usize,
+    ) {
+        if self.queue.get() != Some(queue) || self.index.get() != index {
+            return;
+        }
+        let node = unsafe { self.map_unchecked(|task| &task.node) };
+        unsafe { node.unbind() };
+        self.queue.set(None);
+        self.index.set(usize::MAX);
     }
 
     pub fn set_target(self: Pin<&Self>, target: T) {
@@ -216,9 +252,13 @@ impl<T: Copy> TaskContext<T> {
         self.target.get()
     }
 
+    pub(crate) fn is_bound(&self) -> bool {
+        self.index.get() != usize::MAX
+    }
+
     /// # Safety
     /// The bound task and queue stay pinned and live for `'d`.
-    pub unsafe fn context_unchecked<'d>(self: Pin<&Self>) -> Waker<'d> {
+    pub(crate) unsafe fn context_unchecked<'d>(self: Pin<&Self>) -> Waker<'d> {
         assert!(self.index.get() != usize::MAX, "task context not bound");
         let node = unsafe { self.map_unchecked(|task| &task.node) };
         Waker::from_node(NonNull::from(node.get_ref()))
@@ -236,6 +276,18 @@ impl Default for TaskContext<usize> {
     }
 }
 
+impl<T: Copy> Drop for TaskContext<T> {
+    fn drop(&mut self) {
+        if self.index.get() == usize::MAX {
+            return;
+        }
+        // SAFETY: a task can only become bound after it has been pinned. Drop
+        // runs at that stable address and no waker may be used after its owner
+        // has dropped the task context.
+        unsafe { Pin::new_unchecked(&*self).unbind() };
+    }
+}
+
 type TaskBrand<'d> = PhantomData<(&'d Cell<()>, fn(&'d ()) -> &'d ())>;
 
 #[derive(Clone, Copy)]
@@ -244,9 +296,11 @@ enum WakeTarget<'d> {
     Ready(DriverRef<'d>, ReadyKey<'d>),
 }
 
+#[pin_project::pin_project]
 pub struct Context<'poll, 'd> {
     wake: Waker<'d>,
     driver: DriverContext<'poll, 'd>,
+    #[pin]
     _pin: PhantomPinned,
 }
 
@@ -309,7 +363,11 @@ impl<'poll, 'd> Context<'poll, 'd> {
     }
 
     pub fn driver_access(self: Pin<&mut Self>) -> DriverContext<'_, 'd> {
-        unsafe { self.get_unchecked_mut() }.driver.reborrow()
+        self.project().driver.reborrow()
+    }
+
+    pub fn region_token(self: Pin<&mut Self>) -> &mut RegionToken<'d> {
+        self.project().driver.region_token()
     }
 
     pub(crate) fn child(self: Pin<&mut Self>, wake: Waker<'d>) -> Context<'_, 'd> {
@@ -381,6 +439,30 @@ impl<'d> Waker<'d> {
             WakeTarget::Node(node) => unsafe { Pin::new_unchecked(node.as_ref()) }.wake(),
             WakeTarget::Ready(driver, key) => driver.activate_ready(key),
         }
+    }
+}
+
+/// A driver-owned wake target that may outlive the object which exposed it.
+///
+/// Ready keys are generational, so waking after their slot has been released
+/// is a safe no-op. Unlike [`Waker`], this type can never name a task node.
+#[derive(Clone, Copy)]
+pub struct RootWaker<'d> {
+    driver: DriverRef<'d>,
+    key: ReadyKey<'d>,
+}
+
+impl<'d> RootWaker<'d> {
+    pub fn from_ready(driver: DriverRef<'d>, key: ReadyKey<'d>) -> Self {
+        Self { driver, key }
+    }
+
+    pub fn wake(self) {
+        self.driver.activate_ready(self.key);
+    }
+
+    pub(crate) fn into_waker(self) -> Waker<'d> {
+        Waker::from_ready(self.driver, self.key)
     }
 }
 

@@ -13,15 +13,6 @@ pub use read::{BlockRead, Read};
 pub use splice::SpliceToPipe;
 pub use stat::Stat;
 
-use dope::driver::token::Token;
-enum Stage {
-    Init,
-    Pending(Token),
-    Done,
-}
-
-impl Stage {
-    fn already_done() -> io::Error {
-        Error::other("dope::file: fiber polled after completion")
-    }
+fn already_done() -> io::Error {
+    Error::other("dope::file: fiber polled after completion")
 }

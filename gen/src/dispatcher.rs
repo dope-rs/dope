@@ -277,7 +277,7 @@ impl DispatcherSpec {
             impl #impl_generics ::dope::runtime::Dispatcher<#brand> for #name #ty_generics #where_clause {
                 fn dispatch(
                     mut self: ::core::pin::Pin<&mut Self>,
-                    __ev: ::dope::Event,
+                    __ev: ::dope::Event<#brand>,
                     __driver: &mut ::dope::DriverContext<'_, #brand>,
                 ) {
                     #uniqueness_use

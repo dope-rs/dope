@@ -2,10 +2,10 @@ use std::io::{self, Error};
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
-use crate::backend::PlatformAbi;
 use crate::driver::Driver;
 use crate::io::socket::addr::Addr;
 use crate::io::socket::{Domain, Kind, ListenerConfig};
+use crate::platform::raw::abi::PlatformAbi;
 
 #[derive(Debug)]
 pub(crate) struct Handle {

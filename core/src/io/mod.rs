@@ -11,8 +11,9 @@ use std::fmt;
 use std::io::{self, Error};
 
 use crate::driver::token;
-use crate::driver::token::{Token, kind};
+use crate::driver::token::{SHUTDOWN, Token, kind};
 use fd::FdSlot;
+use provided::ProvidedLease;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError;
@@ -30,24 +31,22 @@ pub(crate) const MORE: u32 = 1 << 1;
 pub(crate) const BUFFER_SHIFT: u32 = 16;
 
 #[derive(Clone, Copy)]
-pub struct Cqe {
-    pub user_data: u64,
-    pub result: i32,
-    pub flags: u32,
+pub(crate) struct Cqe {
+    user_data: u64,
+    result: i32,
+    flags: u32,
 }
 
 impl Cqe {
-    pub const ZERO: Self = Self {
-        user_data: 0,
-        result: 0,
-        flags: 0,
-    };
-
-    pub fn route(self) -> u8 {
-        (self.user_data >> token::ROUTE_SHIFT) as u8
+    pub(crate) const fn new(user_data: u64, result: i32, flags: u32) -> Self {
+        Self {
+            user_data,
+            result,
+            flags,
+        }
     }
 
-    pub fn kind(self) -> u8 {
+    pub(crate) fn kind(self) -> u8 {
         (self.user_data >> token::KIND_SHIFT) as u8
     }
 
@@ -64,25 +63,13 @@ impl Cqe {
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum RecvEvent {
-    Data { len: u32, bid: u16 },
+pub enum RecvEvent<'d> {
+    Data(ProvidedLease<'d>),
     Discarded { len: u32 },
     Eof,
     Cancelled,
     Starved,
     Failed(i32),
-}
-
-impl RecvEvent {
-    fn from_errno(result: i32) -> Self {
-        match -result {
-            libc::ECANCELED => Self::Cancelled,
-            libc::ENOBUFS => Self::Starved,
-            libc::EAGAIN | libc::EINTR => Self::Starved,
-            errno => Self::Failed(errno),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -155,11 +142,15 @@ pub enum ConnectEvent {
     Failed(io::Error),
 }
 
-pub struct Event(EventKind);
+pub struct Event<'d> {
+    kind: EventKind<'d>,
+    result: i32,
+    operation: u8,
+}
 
-pub enum EventKind {
+pub enum EventKind<'d> {
     Accept(Token, bool, AcceptEvent),
-    Recv(Token, bool, RecvEvent),
+    Recv(Token, bool, RecvEvent<'d>),
     Send(Token, SendEvent),
     Timer(Token),
     Socket(Token, SocketEvent),
@@ -171,18 +162,60 @@ pub enum EventKind {
     ReadBlock(Token, ReadEvent),
     Splice(Token, SpliceEvent),
     Stat(Token, StatEvent),
+    Shutdown,
 }
 
-impl Event {
-    pub fn decode(c: Cqe) -> Result<Self, DecodeError> {
+#[derive(Clone, Copy)]
+enum DecodedRecv {
+    Data { len: u32, bid: u16 },
+    Discarded { len: u32 },
+    Eof,
+    Cancelled,
+    Starved,
+    Failed(i32),
+}
+
+impl DecodedRecv {
+    fn from_errno(result: i32) -> Self {
+        match -result {
+            libc::ECANCELED => Self::Cancelled,
+            libc::ENOBUFS | libc::EAGAIN | libc::EINTR => Self::Starved,
+            errno => Self::Failed(errno),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DecodedEvent {
+    Accept(Token, bool, AcceptEvent),
+    Recv(Token, bool, DecodedRecv),
+    Send(Token, SendEvent),
+    Timer(Token),
+    Socket(Token, i32),
+    Connect(Token, i32),
+    Write(Token, WriteEvent),
+    Sync(Token, SyncEvent),
+    Open(Token, OpenEvent),
+    Read(Token, ReadEvent),
+    ReadBlock(Token, ReadEvent),
+    Splice(Token, SpliceEvent),
+    Stat(Token, StatEvent),
+    Shutdown,
+}
+
+impl DecodedEvent {
+    fn decode(c: Cqe) -> Result<Self, DecodeError> {
         let token = Token::try_from_raw(c.user_data).ok_or(DecodeError)?;
+        if token == SHUTDOWN {
+            return Ok(Self::Shutdown);
+        }
         match c.kind() {
             kind::ACCEPT => {
                 let e = match c.result {
                     n if n >= 0 => AcceptEvent::Accepted(FdSlot::new(n as u32)),
                     _ => AcceptEvent::Failed,
                 };
-                Ok(Self(EventKind::Accept(token, c.more(), e)))
+                Ok(Self::Accept(token, c.more(), e))
             }
             kind::RECV => {
                 let e = match c.result {
@@ -191,23 +224,23 @@ impl Event {
                             debug_assert!(false, "RECV data cqe without buffer flag");
                             return Err(DecodeError);
                         }
-                        RecvEvent::Data {
+                        DecodedRecv::Data {
                             len: n as u32,
                             bid: c.bid_raw(),
                         }
                     }
-                    0 => RecvEvent::Eof,
-                    n => RecvEvent::from_errno(n),
+                    0 => DecodedRecv::Eof,
+                    n => DecodedRecv::from_errno(n),
                 };
-                Ok(Self(EventKind::Recv(token, c.more(), e)))
+                Ok(Self::Recv(token, c.more(), e))
             }
             kind::RECV_DISCARD => {
                 let e = match c.result {
-                    n if n > 0 => RecvEvent::Discarded { len: n as u32 },
-                    0 => RecvEvent::Eof,
-                    n => RecvEvent::from_errno(n),
+                    n if n > 0 => DecodedRecv::Discarded { len: n as u32 },
+                    0 => DecodedRecv::Eof,
+                    n => DecodedRecv::from_errno(n),
                 };
-                Ok(Self(EventKind::Recv(token, c.more(), e)))
+                Ok(Self::Recv(token, c.more(), e))
             }
             kind::SEND => {
                 let e = if c.result >= 0 {
@@ -215,7 +248,7 @@ impl Event {
                 } else {
                     SendEvent::Failed(-c.result)
                 };
-                Ok(Self(EventKind::Send(token, e)))
+                Ok(Self::Send(token, e))
             }
             kind::WRITE => {
                 let e = if c.result >= 0 {
@@ -223,7 +256,7 @@ impl Event {
                 } else {
                     WriteEvent::Failed(-c.result)
                 };
-                Ok(Self(EventKind::Write(token, e)))
+                Ok(Self::Write(token, e))
             }
             kind::SYNC => {
                 let e = if c.result >= 0 {
@@ -231,7 +264,7 @@ impl Event {
                 } else {
                     SyncEvent::Failed(-c.result)
                 };
-                Ok(Self(EventKind::Sync(token, e)))
+                Ok(Self::Sync(token, e))
             }
             kind::OPEN => {
                 let e = if c.result >= 0 {
@@ -239,23 +272,17 @@ impl Event {
                 } else {
                     OpenEvent::Failed(-c.result)
                 };
-                Ok(Self(EventKind::Open(token, e)))
+                Ok(Self::Open(token, e))
             }
-            kind::READ => Ok(Self(EventKind::Read(
-                token,
-                ReadEvent::from_result(c.result),
-            ))),
-            kind::READ_BLOCK => Ok(Self(EventKind::ReadBlock(
-                token,
-                ReadEvent::from_result(c.result),
-            ))),
+            kind::READ => Ok(Self::Read(token, ReadEvent::from_result(c.result))),
+            kind::READ_BLOCK => Ok(Self::ReadBlock(token, ReadEvent::from_result(c.result))),
             kind::SPLICE => {
                 let e = match c.result {
                     n if n > 0 => SpliceEvent::Moved(n as u32),
                     0 => SpliceEvent::Eof,
                     n => SpliceEvent::Failed(-n),
                 };
-                Ok(Self(EventKind::Splice(token, e)))
+                Ok(Self::Splice(token, e))
             }
             kind::STAT => {
                 let e = if c.result >= 0 {
@@ -263,41 +290,19 @@ impl Event {
                 } else {
                     StatEvent::Failed(-c.result)
                 };
-                Ok(Self(EventKind::Stat(token, e)))
+                Ok(Self::Stat(token, e))
             }
-            kind::TIMER => Ok(Self(EventKind::Timer(token))),
-            kind::SOCKET => {
-                let e = if c.result >= 0 {
-                    SocketEvent::Created
-                } else {
-                    SocketEvent::Failed(Error::from_raw_os_error(-c.result))
-                };
-                Ok(Self(EventKind::Socket(token, e)))
-            }
-            kind::CONNECT => {
-                let e = if c.result >= 0 {
-                    ConnectEvent::Connected
-                } else {
-                    ConnectEvent::Failed(Error::from_raw_os_error(-c.result))
-                };
-                Ok(Self(EventKind::Connect(token, e)))
-            }
+            kind::TIMER => Ok(Self::Timer(token)),
+            kind::SOCKET => Ok(Self::Socket(token, c.result)),
+            kind::CONNECT => Ok(Self::Connect(token, c.result)),
             _ => Err(DecodeError),
         }
     }
 }
 
-impl TryFrom<Cqe> for EventKind {
-    type Error = DecodeError;
-
-    fn try_from(cqe: Cqe) -> Result<Self, DecodeError> {
-        Event::decode(cqe).map(Event::into_kind)
-    }
-}
-
-pub enum EventRef<'a> {
+pub enum EventRef<'a, 'd> {
     Accept(Token, bool, &'a AcceptEvent),
-    Recv(Token, bool, &'a RecvEvent),
+    Recv(Token, bool, &'a RecvEvent<'d>),
     Send(Token, &'a SendEvent),
     Timer(Token),
     Socket(Token, &'a SocketEvent),
@@ -308,21 +313,77 @@ pub enum EventRef<'a> {
     Read(Token, &'a ReadEvent),
     Splice(Token, &'a SpliceEvent),
     Stat(Token, &'a StatEvent),
+    Shutdown,
 }
 
-impl Event {
-    /// # Safety
-    /// `cqe` was produced by the paired driver and has not been decoded before.
-    pub unsafe fn from_cqe(cqe: Cqe) -> Result<Self, DecodeError> {
-        Self::decode(cqe)
+impl<'d> Event<'d> {
+    pub(crate) fn from_cqe(
+        cqe: Cqe,
+        provided: impl FnOnce(u32, u16) -> ProvidedLease<'d>,
+    ) -> Result<Self, DecodeError> {
+        let result = cqe.result;
+        let operation = cqe.kind();
+        let mut provided = cqe
+            .has_buffer()
+            .then(|| provided(result.max(0) as u32, cqe.bid_raw()));
+        let kind = match DecodedEvent::decode(cqe)? {
+            DecodedEvent::Accept(token, more, event) => EventKind::Accept(token, more, event),
+            DecodedEvent::Recv(token, more, event) => {
+                let event = match event {
+                    DecodedRecv::Data { len, bid } => {
+                        let lease = provided.take().ok_or(DecodeError)?;
+                        debug_assert_eq!(lease.as_slice().len(), len as usize);
+                        debug_assert_eq!(bid, cqe.bid_raw());
+                        RecvEvent::Data(lease)
+                    }
+                    DecodedRecv::Discarded { len } => RecvEvent::Discarded { len },
+                    DecodedRecv::Eof => RecvEvent::Eof,
+                    DecodedRecv::Cancelled => RecvEvent::Cancelled,
+                    DecodedRecv::Starved => RecvEvent::Starved,
+                    DecodedRecv::Failed(errno) => RecvEvent::Failed(errno),
+                };
+                EventKind::Recv(token, more, event)
+            }
+            DecodedEvent::Send(token, event) => EventKind::Send(token, event),
+            DecodedEvent::Timer(token) => EventKind::Timer(token),
+            DecodedEvent::Socket(token, result) => EventKind::Socket(
+                token,
+                if result >= 0 {
+                    SocketEvent::Created
+                } else {
+                    SocketEvent::Failed(Error::from_raw_os_error(-result))
+                },
+            ),
+            DecodedEvent::Connect(token, result) => EventKind::Connect(
+                token,
+                if result >= 0 {
+                    ConnectEvent::Connected
+                } else {
+                    ConnectEvent::Failed(Error::from_raw_os_error(-result))
+                },
+            ),
+            DecodedEvent::Write(token, event) => EventKind::Write(token, event),
+            DecodedEvent::Sync(token, event) => EventKind::Sync(token, event),
+            DecodedEvent::Open(token, event) => EventKind::Open(token, event),
+            DecodedEvent::Read(token, event) => EventKind::Read(token, event),
+            DecodedEvent::ReadBlock(token, event) => EventKind::ReadBlock(token, event),
+            DecodedEvent::Splice(token, event) => EventKind::Splice(token, event),
+            DecodedEvent::Stat(token, event) => EventKind::Stat(token, event),
+            DecodedEvent::Shutdown => EventKind::Shutdown,
+        };
+        Ok(Self {
+            kind,
+            result,
+            operation,
+        })
     }
 
-    pub fn into_kind(self) -> EventKind {
-        self.0
+    pub fn into_kind(self) -> EventKind<'d> {
+        self.kind
     }
 
-    pub fn as_ref(&self) -> EventRef<'_> {
-        match &self.0 {
+    pub fn as_ref(&self) -> EventRef<'_, 'd> {
+        match &self.kind {
             EventKind::Accept(t, more, e) => EventRef::Accept(*t, *more, e),
             EventKind::Recv(t, more, e) => EventRef::Recv(*t, *more, e),
             EventKind::Send(t, e) => EventRef::Send(*t, e),
@@ -336,11 +397,43 @@ impl Event {
             EventKind::ReadBlock(t, e) => EventRef::Read(*t, e),
             EventKind::Splice(t, e) => EventRef::Splice(*t, e),
             EventKind::Stat(t, e) => EventRef::Stat(*t, e),
+            EventKind::Shutdown => EventRef::Shutdown,
+        }
+    }
+
+    pub const fn result(&self) -> i32 {
+        self.result
+    }
+
+    pub const fn operation(&self) -> u8 {
+        self.operation
+    }
+
+    pub const fn is_shutdown(&self) -> bool {
+        matches!(self.kind, EventKind::Shutdown)
+    }
+
+    pub const fn token(&self) -> Option<Token> {
+        match &self.kind {
+            EventKind::Accept(token, ..)
+            | EventKind::Recv(token, ..)
+            | EventKind::Send(token, _)
+            | EventKind::Timer(token)
+            | EventKind::Socket(token, _)
+            | EventKind::Connect(token, _)
+            | EventKind::Write(token, _)
+            | EventKind::Sync(token, _)
+            | EventKind::Open(token, _)
+            | EventKind::Read(token, _)
+            | EventKind::ReadBlock(token, _)
+            | EventKind::Splice(token, _)
+            | EventKind::Stat(token, _) => Some(*token),
+            EventKind::Shutdown => None,
         }
     }
 
     pub fn route(&self) -> u8 {
-        match &self.0 {
+        match &self.kind {
             EventKind::Accept(t, ..) => t.route(),
             EventKind::Recv(t, ..) => t.route(),
             EventKind::Send(t, _) => t.route(),
@@ -354,9 +447,7 @@ impl Event {
             EventKind::ReadBlock(t, _) => t.route(),
             EventKind::Splice(t, _) => t.route(),
             EventKind::Stat(t, _) => t.route(),
+            EventKind::Shutdown => SHUTDOWN.route(),
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

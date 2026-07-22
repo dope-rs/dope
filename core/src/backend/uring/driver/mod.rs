@@ -1,6 +1,5 @@
 pub(crate) mod files;
 
-
 use crate::backend::uring::sqe;
 
 use std::io::{self, Error, ErrorKind};
@@ -11,16 +10,22 @@ use io_uring::IoUring;
 
 use self::files::FileTable;
 use crate::backend::uring::provided::ring::Ring;
+use crate::driver::route::Routes;
 use crate::driver::token::{
     KIND_SHIFT, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, Token, TokenSlab, kind,
 };
-use crate::driver::route::Routes;
 use crate::driver::{Config, PushError};
-use crate::io::{BUFFER, BUFFER_SHIFT};
 use crate::io::fd::FdSlot;
+use crate::io::{BUFFER, BUFFER_SHIFT};
 use io_uring::squeue::Entry;
-use io_uring::types::CancelBuilder;
+use io_uring::types::{CancelBuilder, Timespec};
 use sqe::Sqe;
+
+use super::platform::gso::Gso;
+use crate::platform::raw::host::HOST;
+use crate::io::file::RawMetadata;
+use crate::platform::Platform;
+use crate::platform::snapshot::Snapshot;
 
 const SETSOCKOPT_CAP: usize = 4096;
 const _: () = assert!(SETSOCKOPT_CAP <= SLOT_MASK as usize + 1);
@@ -293,7 +298,11 @@ impl Uring {
         flags: u32,
     ) -> Disposition {
         let Some(token) = Token::try_from_raw(user_data) else {
-            return Disposition::Drop;
+            return if flags & BUFFER != 0 {
+                Disposition::DropBuffer((flags >> BUFFER_SHIFT) as u16)
+            } else {
+                Disposition::Drop
+            };
         };
         if Self::release_setsockopt(setsockopt, token) {
             return Disposition::Internal;
@@ -323,9 +332,7 @@ impl Uring {
                 libc::close(result);
             }
             return Disposition::Drop;
-        } else if op_kind == kind::RECV
-            && flags & BUFFER != 0
-            && routes.is_poisoned(token.route())
+        } else if op_kind == kind::RECV && flags & BUFFER != 0 && routes.is_poisoned(token.route())
         {
             return Disposition::DropBuffer((flags >> BUFFER_SHIFT) as u16);
         }
@@ -355,5 +362,24 @@ impl Uring {
             Self::push_close_at(uring, slot)
                 || (uring.submit().is_ok() && Self::push_close_at(uring, slot))
         });
+    }
+}
+
+impl Platform for Uring {
+    type Sqe = Sqe;
+    type Gso = Gso;
+    type StatBuf = libc::statx;
+    type TimerSpec = Timespec;
+
+    fn entropy() -> io::Result<[u64; 2]> {
+        HOST.entropy()
+    }
+
+    fn parse_meta(raw: &Self::StatBuf) -> io::Result<RawMetadata> {
+        HOST.parse_meta(raw)
+    }
+
+    fn snapshot() -> io::Result<Snapshot> {
+        HOST.snapshot()
     }
 }

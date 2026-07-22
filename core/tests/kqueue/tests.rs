@@ -6,7 +6,6 @@ use dope_core::driver::bootstrap::Bootstrap;
 use dope_core::driver::completion::Completion;
 use dope_core::driver::submission::Submission;
 use dope_core::driver::token::{Epoch, SlotIndex, Token, kind};
-use dope_core::io::Cqe;
 use dope_test::with_driver;
 
 fn open_fds() -> Vec<libc::c_int> {
@@ -57,11 +56,12 @@ fn close_retires_recv_before_raw_fd_reuse() {
             .wait(Some(Duration::from_secs(1)))
             .expect("receive new");
 
-        let mut completions = [Cqe::ZERO; 2];
+        let mut completions = [const { None }; 2];
         let n = driver.drain(&mut completions);
         assert_eq!(n, 1);
-        assert_eq!(completions[0].route(), new_token.route());
-        assert_eq!(completions[0].kind(), kind::RECV);
+        let completion = completions[0].as_ref().expect("completion");
+        assert_eq!(completion.route(), new_token.route());
+        assert_eq!(completion.operation(), kind::RECV);
 
         drop(driver.guard(new));
     });

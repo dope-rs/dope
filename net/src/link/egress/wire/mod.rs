@@ -1,7 +1,11 @@
+pub(crate) mod raw;
+
 use std::pin::Pin;
 use std::rc::Rc;
 
-use o3::buffer::{BlockLease, BlockPool};
+use o3::buffer::BlockPool;
+
+use self::raw::state::WireState;
 
 #[derive(Clone)]
 pub(super) struct WireArena {
@@ -15,10 +19,7 @@ impl WireArena {
         }
     }
 
-    pub(super) fn acquire(&self) -> Option<WireBuf> {
-        let lease = self.pool.as_ref().try_acquire()?;
-        Some(unsafe { std::mem::transmute::<BlockLease<'_>, BlockLease<'static>>(lease) })
+    pub(super) fn state(&self) -> WireState {
+        WireState::new(self.pool.clone())
     }
 }
-
-pub(super) type WireBuf = BlockLease<'static>;

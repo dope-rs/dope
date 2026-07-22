@@ -98,7 +98,11 @@ impl<const ID: u8> Counter<ID> {
 impl<'d, const ID: u8> Manifold<'d> for Counter<ID> {
     const ID: u8 = ID;
 
-    fn dispatch(self: Pin<&mut Self>, _ev: dope::Event, _driver: &mut dope::DriverContext<'_, 'd>) {
+    fn dispatch(
+        self: Pin<&mut Self>,
+        _ev: dope::Event<'d>,
+        _driver: &mut dope::DriverContext<'_, 'd>,
+    ) {
         let this = self.as_ref().get_ref();
         this.dispatch_calls.set(this.dispatch_calls.get() + 1);
     }

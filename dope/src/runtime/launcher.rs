@@ -1,4 +1,7 @@
+use std::any::Any;
 use std::collections::HashSet;
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
@@ -72,6 +75,163 @@ pub struct Launcher {
 }
 
 const DEFAULT_WORKER_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+enum WorkerOutcome {
+    Success,
+    Failed(io::Error),
+    Panicked(Box<dyn Any + Send>),
+}
+
+struct WorkerReport {
+    worker: usize,
+    outcome: WorkerOutcome,
+}
+
+enum LaunchOutcome {
+    Success,
+    Panicked(Box<dyn Any + Send>),
+}
+
+struct WorkerFailure {
+    worker: usize,
+    source: io::Error,
+}
+
+struct SpawnFailure {
+    spawn: io::Error,
+    shutdown: Option<io::Error>,
+    worker: Option<WorkerFailure>,
+}
+
+impl Display for SpawnFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "launcher could not spawn every worker: {}", self.spawn)?;
+        if let Some(shutdown) = &self.shutdown {
+            write!(f, "; shutdown notification failed: {shutdown}")?;
+        }
+        if let Some(worker) = &self.worker {
+            write!(f, "; a started {worker}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for SpawnFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpawnFailure")
+            .field("spawn", &self.spawn)
+            .field("shutdown", &self.shutdown)
+            .field("worker", &self.worker)
+            .finish()
+    }
+}
+
+impl Error for SpawnFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.spawn)
+    }
+}
+
+impl Display for WorkerFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "launcher worker {}: {}", self.worker, self.source)
+    }
+}
+
+impl fmt::Debug for WorkerFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerFailure")
+            .field("worker", &self.worker)
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
+impl Error for WorkerFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+struct WorkerLedger {
+    seen: Box<[bool]>,
+    reported: usize,
+    failure: Option<WorkerFailure>,
+    panic: Option<Box<dyn Any + Send>>,
+    protocol: Option<io::Error>,
+}
+
+impl WorkerLedger {
+    fn new(workers: usize) -> Self {
+        Self {
+            seen: vec![false; workers].into_boxed_slice(),
+            reported: 0,
+            failure: None,
+            panic: None,
+            protocol: None,
+        }
+    }
+
+    fn record(&mut self, report: WorkerReport) {
+        let Some(seen) = self.seen.get_mut(report.worker) else {
+            self.protocol.get_or_insert_with(|| {
+                io::Error::other(format!(
+                    "launcher worker report index {} is out of range",
+                    report.worker
+                ))
+            });
+            return;
+        };
+        if *seen {
+            self.protocol.get_or_insert_with(|| {
+                io::Error::other(format!(
+                    "launcher worker {} reported more than once",
+                    report.worker
+                ))
+            });
+            return;
+        }
+        *seen = true;
+        self.reported += 1;
+        match report.outcome {
+            WorkerOutcome::Success => {}
+            WorkerOutcome::Failed(source) if self.failure.is_none() => {
+                self.failure = Some(WorkerFailure {
+                    worker: report.worker,
+                    source,
+                });
+            }
+            WorkerOutcome::Failed(_) => {}
+            WorkerOutcome::Panicked(payload) if self.panic.is_none() => {
+                self.panic = Some(payload);
+            }
+            WorkerOutcome::Panicked(_) => {}
+        }
+    }
+
+    fn finish(self) -> io::Result<LaunchOutcome> {
+        if let Some(error) = self.protocol {
+            return Err(error);
+        }
+        if self.reported != self.seen.len() {
+            return Err(io::Error::other(format!(
+                "launcher received {} of {} worker reports",
+                self.reported,
+                self.seen.len()
+            )));
+        }
+        if let Some(payload) = self.panic {
+            return Ok(LaunchOutcome::Panicked(payload));
+        }
+        match self.failure {
+            None => Ok(LaunchOutcome::Success),
+            Some(failure) => {
+                let kind = failure.source.kind();
+                Err(io::Error::new(kind, failure))
+            }
+        }
+    }
+}
 
 impl Launcher {
     /// Returns the number of workers supervised by this launcher.
@@ -181,56 +341,102 @@ impl Launcher {
             ));
         }
 
-        thread::scope(|scope| -> io::Result<()> {
+        let outcome = thread::scope(|scope| -> io::Result<LaunchOutcome> {
             let (completed, outcomes) = mpsc::channel();
             let mut handles = Vec::with_capacity(worker_count);
             for (worker, placement, input, seed, worker_shutdown) in workers {
                 let completed = completed.clone();
-                handles.push(
-                    thread::Builder::new()
-                        .name(format!("dope-worker-{worker}"))
-                        .stack_size(worker_stack_size)
-                        .spawn_scoped(scope, move || {
-                            let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                                enter::<E>(worker, placement, seed, worker_shutdown, input)
-                            }))
-                            .unwrap_or_else(|_| {
-                                Err(io::Error::other(format!(
-                                    "launcher worker {worker} panicked"
-                                )))
-                            });
-                            let _ = completed.send((worker, result));
-                        })?,
-                );
+                let handle = thread::Builder::new()
+                    .name(format!("dope-worker-{worker}"))
+                    .stack_size(worker_stack_size)
+                    .spawn_scoped(scope, move || {
+                        let outcome = match panic::catch_unwind(AssertUnwindSafe(|| {
+                            enter::<E>(worker, placement, seed, worker_shutdown, input)
+                        })) {
+                            Ok(Ok(())) => WorkerOutcome::Success,
+                            Ok(Err(error)) => WorkerOutcome::Failed(error),
+                            Err(payload) => WorkerOutcome::Panicked(payload),
+                        };
+                        let report = WorkerReport { worker, outcome };
+                        completed.send(report).map_err(|error| error.0)
+                    });
+                match handle {
+                    Ok(handle) => handles.push((worker, handle)),
+                    Err(spawn) => {
+                        let shutdown_error = shutdown.fire().err();
+                        let mut worker_error = None;
+                        let mut worker_panic = None;
+                        for (worker, handle) in handles {
+                            match handle.join() {
+                                Ok(Ok(())) => {}
+                                Ok(Err(report)) => match report.outcome {
+                                    WorkerOutcome::Success => {}
+                                    WorkerOutcome::Failed(source) if worker_error.is_none() => {
+                                        worker_error = Some(WorkerFailure { worker, source });
+                                    }
+                                    WorkerOutcome::Failed(_) => {}
+                                    WorkerOutcome::Panicked(payload) if worker_panic.is_none() => {
+                                        worker_panic = Some(payload);
+                                    }
+                                    WorkerOutcome::Panicked(_) => {}
+                                },
+                                Err(payload) if worker_panic.is_none() => {
+                                    worker_panic = Some(payload);
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        if let Some(payload) = worker_panic {
+                            panic::resume_unwind(payload);
+                        }
+                        let kind = spawn.kind();
+                        return Err(io::Error::new(
+                            kind,
+                            SpawnFailure {
+                                spawn,
+                                shutdown: shutdown_error,
+                                worker: worker_error,
+                            },
+                        ));
+                    }
+                }
             }
             drop(completed);
 
-            let mut results = (0..worker_count)
-                .map(|_| None)
-                .collect::<Vec<Option<io::Result<()>>>>();
-            let (first_worker, first_result) = outcomes.recv().map_err(|_| {
+            let mut ledger = WorkerLedger::new(worker_count);
+            let first = outcomes.recv().map_err(|_| {
                 io::Error::other("launcher workers exited without reporting an outcome")
             })?;
-            results[first_worker] = Some(first_result);
+            ledger.record(first);
             let fire_result = shutdown.fire();
 
             for _ in 1..worker_count {
-                let (worker, result) = outcomes.recv().map_err(|_| {
+                let report = outcomes.recv().map_err(|_| {
                     io::Error::other("launcher worker outcome channel closed early")
                 })?;
-                results[worker] = Some(result);
+                ledger.record(report);
             }
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| io::Error::other("launcher supervisor invariant violated"))?;
+            for (worker, handle) in handles {
+                match handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(report)) => ledger.record(report),
+                    Err(payload) => ledger.record(WorkerReport {
+                        worker,
+                        outcome: WorkerOutcome::Panicked(payload),
+                    }),
+                }
             }
 
-            for result in results {
-                result.expect("every worker reported its outcome")?;
+            let outcome = ledger.finish()?;
+            if matches!(&outcome, LaunchOutcome::Success) {
+                fire_result?;
             }
-            fire_result
-        })
+            Ok(outcome)
+        })?;
+        match outcome {
+            LaunchOutcome::Success => Ok(()),
+            LaunchOutcome::Panicked(payload) => panic::resume_unwind(payload),
+        }
     }
 }
 

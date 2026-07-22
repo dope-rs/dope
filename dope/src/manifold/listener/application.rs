@@ -3,11 +3,13 @@ use crate::manifold::Outcome;
 use crate::manifold::env::Env;
 use crate::manifold::listener::{Aux, Listener, State};
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
-use dope_core::io::provided::{ProvidedLease, ProvidedView};
+use dope_core::io::RecvEvent;
+use dope_core::io::provided::ProvidedView;
 use dope_net::link::pool::DispatchRecv;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
-use o3::buffer::{Borrowed, ByteSpan, Bytes, RetainBytes};
+use o3::buffer::{Borrowed, Bytes, RetainBytes};
+use std::io;
 use std::net::IpAddr;
 use std::pin::Pin;
 
@@ -21,8 +23,8 @@ pub trait Application<'d>: Sized {
 
     const RETAIN_RAW_RECV: bool = false;
 
-    fn max_retained_recv_chunks(_: usize) -> usize {
-        0
+    fn max_retained_recv_chunks(_: usize) -> io::Result<usize> {
+        Ok(0)
     }
 
     fn connection(self: Pin<&Self>) -> Self::Conn {
@@ -108,9 +110,18 @@ where
         self: Pin<&mut Self>,
         token: Token,
         more: bool,
-        event: dope_core::io::RecvEvent,
+        event: RecvEvent<'d>,
         driver: &mut DriverContext<'_, 'd>,
     );
+
+    fn dispatch_chunk<C, F>(
+        self: Pin<&mut Self>,
+        token: Token,
+        dispatch: DispatchRecv<C>,
+        driver: &mut DriverContext<'_, 'd>,
+        recv: F,
+    ) where
+        F: FnOnce(Pin<&mut Self>, SlotIndex, C, &mut DriverContext<'_, 'd>) -> Outcome;
 
     fn flush_after_recv(
         self: Pin<&mut Self>,
@@ -130,20 +141,54 @@ where
         mut self: Pin<&mut Self>,
         token: Token,
         more: bool,
-        e: dope_core::io::RecvEvent,
+        event: RecvEvent<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
-        let buffer = match e {
-            dope_core::io::RecvEvent::Data { len, bid } => {
-                Some(unsafe { ProvidedLease::from_completion(driver, len, bid) })
-            }
-            _ => None,
-        };
-        let outcome = {
+        if A::RETAIN_RAW_RECV && A::Wire::RAW_RECV {
+            let dispatch = {
+                let this = self.as_mut().project();
+                this.pool.dispatch_retained_recv(token, more, event)
+            };
+            self.dispatch_chunk(token, dispatch, driver, |mut this, idx, chunk, driver| {
+                let Some(chunk) = chunk else {
+                    return Outcome::Overrun;
+                };
+                let mut this = this.as_mut().project();
+                this.idle.arm(idx, driver.turn_now());
+                match this.pool.get_mut(idx) {
+                    Some(slot) => this
+                        .app
+                        .as_mut()
+                        .retained_chunk(slot, chunk, this.aux, driver),
+                    None => Outcome::Ok,
+                }
+            });
+            return;
+        }
+        let dispatch = {
             let this = self.as_mut().project();
-            this.pool.dispatch_recv(token, more, e, buffer.as_ref())
+            this.pool.dispatch_recv(token, more, &event)
         };
-        match outcome {
+        self.dispatch_chunk(token, dispatch, driver, |mut this, idx, chunk, driver| {
+            let mut this = this.as_mut().project();
+            this.idle.arm(idx, driver.turn_now());
+            match this.pool.get_mut(idx) {
+                Some(slot) => this.app.as_mut().chunk(slot, chunk, this.aux, driver),
+                None => Outcome::Ok,
+            }
+        });
+    }
+
+    fn dispatch_chunk<C, F>(
+        mut self: Pin<&mut Self>,
+        token: Token,
+        dispatch: DispatchRecv<C>,
+        driver: &mut DriverContext<'_, 'd>,
+        recv: F,
+    ) where
+        F: FnOnce(Pin<&mut Self>, SlotIndex, C, &mut DriverContext<'_, 'd>) -> Outcome,
+    {
+        match dispatch {
             DispatchRecv::Drop => {}
             DispatchRecv::Close(idx) => {
                 Self::close_inherent(self.as_mut(), idx, driver);
@@ -156,57 +201,23 @@ where
                 self.as_mut()
                     .flush_after_recv(idx, token.epoch(), true, driver);
             }
-            DispatchRecv::Chunk(idx, chunk) => {
-                let app_outcome = if A::RETAIN_RAW_RECV && A::Wire::RAW_RECV {
-                    let chunk = {
-                        let lease = buffer
-                            .as_ref()
-                            .expect("raw receive chunk requires a provided buffer");
-                        let (offset, len) = lease
-                            .range_of(chunk.as_slice())
-                            .expect("Wire::RAW_RECV chunk must reference its input");
-                        drop(chunk);
-                        lease.retained_view(offset, len)
-                    };
-                    let mut this = self.as_mut().project();
-                    this.idle.arm(idx, driver.turn_now());
-                    if let Some(slot) = this.pool.get_mut(idx) {
-                        this.app
-                            .as_mut()
-                            .retained_chunk(slot, chunk, this.aux, driver)
-                    } else {
-                        Outcome::Ok
-                    }
-                } else {
-                    let mut this = self.as_mut().project();
-                    this.idle.arm(idx, driver.turn_now());
-                    if let Some(slot) = this.pool.get_mut(idx) {
-                        this.app.as_mut().chunk(slot, chunk, this.aux, driver)
-                    } else {
-                        Outcome::Ok
-                    }
-                };
-                match app_outcome {
-                    Outcome::Ok => {
-                        self.as_mut()
-                            .flush_after_recv(idx, token.epoch(), false, driver);
-                        self.as_mut().arm_send_deadline(idx, driver);
-                    }
-                    Outcome::Overrun => {
-                        if let Some(slot) = self.as_mut().project().pool.get_mut(idx) {
-                            slot.core.mark_aborted();
-                        }
-                        Self::close_inherent(self.as_mut(), idx, driver)
-                    }
-                    Outcome::CloseAfter => {
-                        self.as_mut().project().pool.set_close_after(idx);
-                        self.as_mut().maybe_close_inherent(idx, driver);
-                    }
+            DispatchRecv::Chunk(idx, chunk) => match recv(self.as_mut(), idx, chunk, driver) {
+                Outcome::Ok => {
+                    self.as_mut()
+                        .flush_after_recv(idx, token.epoch(), false, driver);
+                    self.as_mut().arm_send_deadline(idx, driver);
                 }
-            }
-        }
-        if let Some(buffer) = buffer.as_ref() {
-            buffer.release(driver);
+                Outcome::Overrun => {
+                    if let Some(slot) = self.as_mut().project().pool.get_mut(idx) {
+                        slot.core.mark_aborted();
+                    }
+                    Self::close_inherent(self.as_mut(), idx, driver)
+                }
+                Outcome::CloseAfter => {
+                    self.as_mut().project().pool.set_close_after(idx);
+                    self.as_mut().maybe_close_inherent(idx, driver);
+                }
+            },
         }
     }
 

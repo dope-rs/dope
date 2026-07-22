@@ -73,6 +73,7 @@ impl<'d> ConnApp<'d> for CloseKindApp {
         &self,
         token: Token,
         _push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        _driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
         if self.pending.get() == Some(token) {
             self.pending.set(None);
@@ -87,7 +88,7 @@ impl<'d> ConnApp<'d> for CloseKindApp {
 
     fn send(&mut self, _slot: &mut Slot<'d>, _sent: usize, _driver: &mut DriverContext<'_, 'd>) {}
 
-    fn close(&mut self, _slot: &mut Slot<'d>) {}
+    fn close(&mut self, _slot: &mut Slot<'d>, _driver: &mut DriverContext<'_, 'd>) {}
 }
 
 fn run(kind: CloseKind, want: u32) -> Rc<Gate> {

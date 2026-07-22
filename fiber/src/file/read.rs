@@ -1,12 +1,11 @@
 use std::io;
-use std::io::Error;
 use std::mem;
 use std::pin::Pin;
 use std::task::Poll;
 
 use o3::buffer::Block;
 
-use super::Stage;
+use super::already_done;
 use super::{Source, SourceRef};
 use crate::{Context, Fiber};
 use dope::DriverContext;
@@ -65,7 +64,7 @@ impl<'h, 'd, const ID: u8, const N: usize, B> ReadState<'h, 'd, ID, N, B> {
             B,
             u64,
             &mut DriverContext<'_, 'd>,
-        ) -> Result<Token, B>,
+        ) -> Result<Token, (B, io::Error)>,
         complete: impl FnOnce(
             &Files<'d, ID, N>,
             Token,
@@ -76,7 +75,7 @@ impl<'h, 'd, const ID: u8, const N: usize, B> ReadState<'h, 'd, ID, N, B> {
         B: Default,
     {
         let token = match self.enter_poll() {
-            Phase::Done => return Poll::Ready((B::default(), Err(Stage::already_done()))),
+            Phase::Done => return Poll::Ready((B::default(), Err(already_done()))),
             Phase::Ready(buffer, output) => return Poll::Ready((buffer, Ok(output))),
             Phase::Pending(token) => token,
             Phase::Init { source, buffer } => {
@@ -89,11 +88,8 @@ impl<'h, 'd, const ID: u8, const N: usize, B> ReadState<'h, 'd, ID, N, B> {
                         self.phase = Phase::Pending(token);
                         token
                     }
-                    Err(buffer) => {
-                        return Poll::Ready((
-                            buffer,
-                            Err(Error::other("dope::file: read submit failed")),
-                        ));
+                    Err((buffer, error)) => {
+                        return Poll::Ready((buffer, Err(error)));
                     }
                 }
             }
@@ -105,13 +101,7 @@ impl<'h, 'd, const ID: u8, const N: usize, B> ReadState<'h, 'd, ID, N, B> {
                     buffer,
                     match done {
                         ReadDone::Complete(output) => Ok(output),
-                        ReadDone::Failed(errno) => Err(Error::from_raw_os_error(errno)),
-                        ReadDone::OffsetOverflow => {
-                            Err(Error::other("dope::file: read offset overflow"))
-                        }
-                        ReadDone::SubmitFailed => {
-                            Err(Error::other("dope::file: read submit failed"))
-                        }
+                        ReadDone::Failed(error) => Err(error),
                     },
                 ))
             }

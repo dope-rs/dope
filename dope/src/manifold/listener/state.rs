@@ -22,7 +22,7 @@ impl<C: Default + 'static> State<C> {
         conn: C,
         peer_ip: Option<IpAddr>,
         lane: usize,
-        arena: &egress::queue::Arena<SendBuffer>,
+        arena: &egress::arena::Arena<SendBuffer>,
     ) -> Self {
         Self {
             conn,

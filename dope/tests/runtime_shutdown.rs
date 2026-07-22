@@ -14,7 +14,7 @@ struct CountingDispatcher {
 }
 
 impl<'d> Dispatcher<'d> for CountingDispatcher {
-    fn dispatch(self: Pin<&mut Self>, _event: Event, _driver: &mut DriverContext<'_, 'd>) {}
+    fn dispatch(self: Pin<&mut Self>, _event: Event<'d>, _driver: &mut DriverContext<'_, 'd>) {}
 
     fn activate(
         self: Pin<&mut Self>,

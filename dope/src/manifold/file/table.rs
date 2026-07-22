@@ -1,4 +1,6 @@
-use crate::DriverContext;
+use std::io;
+
+use crate::{DriverContext, PushError};
 use dope_core::backend::Sqe;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::ready::CompletionWaker;
@@ -18,12 +20,53 @@ struct Operation<'d, H, R> {
     state: State<'d, R>,
 }
 
-pub(super) enum CompletionAction<R> {
-    Settle(R),
-    Resubmit { sqe: Sqe, failed: R },
+struct BeginEntry<'a, 'd, H, R, Tag> {
+    entries: &'a TokenCellSlab<Operation<'d, H, R>, Tag>,
+    key: Key<Tag>,
+    active: bool,
 }
 
-impl<R> From<R> for CompletionAction<R> {
+impl<'a, 'd, H, R, Tag> BeginEntry<'a, 'd, H, R, Tag> {
+    fn new(entries: &'a TokenCellSlab<Operation<'d, H, R>, Tag>, key: Key<Tag>) -> Self {
+        Self {
+            entries,
+            key,
+            active: true,
+        }
+    }
+
+    fn commit(mut self) {
+        self.active = false;
+    }
+
+    fn rollback(mut self) -> H {
+        self.active = false;
+        match self.entries.remove(self.key) {
+            Some(operation) => operation.hold,
+            None => unreachable!("file operation entry vanished during begin"),
+        }
+    }
+}
+
+impl<H, R, Tag> Drop for BeginEntry<'_, '_, H, R, Tag> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.entries.remove(self.key);
+        }
+    }
+}
+
+pub(super) enum CompletionAction<H, R> {
+    Settle(R),
+    Resubmit {
+        sqe: Sqe,
+        accepted: fn(&mut H),
+        aborted: fn(&mut H),
+        failed: fn(PushError) -> R,
+    },
+}
+
+impl<H, R> From<R> for CompletionAction<H, R> {
     fn from(result: R) -> Self {
         Self::Settle(result)
     }
@@ -123,30 +166,65 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         driver: &mut DriverContext<'_, 'd>,
         make_sqe: impl FnOnce(Token, &mut H) -> Option<(T, Sqe)>,
     ) -> Result<T, H> {
-        let (key, entry) = self
+        let key = self
             .entries
-            .insert_with(
-                Operation {
-                    hold,
-                    state: State::Submitted,
-                },
-                |key, operation| {
-                    let token = Token::from_key(key);
-                    (key, make_sqe(token, &mut operation.hold))
-                },
-            )
+            .insert(Operation {
+                hold,
+                state: State::Submitted,
+            })
             .map_err(|operation| operation.hold)?;
-        let Some((result, sqe)) = entry else {
-            return Err(self.remove(key).unwrap());
+        let entry = BeginEntry::new(&self.entries, key);
+        let prepared = self.entries.update(key, |operation| {
+            make_sqe(Token::from_key(key), &mut operation.hold)
+        });
+        let Some(Some((result, sqe))) = prepared else {
+            return Err(entry.rollback());
         };
         if driver.push(sqe).is_err() {
-            return Err(self.remove(key).unwrap());
+            return Err(entry.rollback());
         }
+        entry.commit();
         Ok(result)
     }
 
-    fn remove(&self, key: Key<KeyTag<ID, KIND>>) -> Option<H> {
-        self.entries.remove(key).map(|operation| operation.hold)
+    pub(super) fn begin_prepared<T>(
+        &self,
+        hold: H,
+        driver: &mut DriverContext<'_, 'd>,
+        prepare: impl FnOnce(Token, &mut H) -> io::Result<(T, Sqe)>,
+        accepted: impl FnOnce(&mut H),
+        aborted: impl FnOnce(&mut H),
+    ) -> Result<T, (H, io::Error)> {
+        let key = self
+            .entries
+            .insert(Operation {
+                hold,
+                state: State::Submitted,
+            })
+            .map_err(|operation| (operation.hold, io::Error::from(io::ErrorKind::WouldBlock)))?;
+        let entry = BeginEntry::new(&self.entries, key);
+        let prepared = self.entries.update(key, |operation| {
+            prepare(Token::from_key(key), &mut operation.hold)
+        });
+        let (result, sqe) = match prepared {
+            Some(Ok(prepared)) => prepared,
+            Some(Err(error)) => return Err((entry.rollback(), error)),
+            None => std::process::abort(),
+        };
+        if let Err(error) = driver.push(sqe) {
+            let hold = entry.rollback();
+            let mut hold = hold;
+            aborted(&mut hold);
+            return Err((hold, error.into()));
+        }
+        let accepted = self
+            .entries
+            .update(key, |operation| accepted(&mut operation.hold));
+        if accepted.is_none() {
+            std::process::abort();
+        }
+        entry.commit();
+        Ok(result)
     }
 
     pub(super) fn poll(&self, token: Token, wake: CompletionWaker<'d>) -> Option<(H, R)> {
@@ -219,7 +297,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         driver: &mut DriverContext<'_, 'd>,
         transition: impl FnOnce(&mut H, E) -> C,
     ) where
-        C: Into<CompletionAction<R>>,
+        C: Into<CompletionAction<H, R>>,
     {
         let Some(parts) = token.parts::<KeyTag<ID, KIND>>() else {
             return;
@@ -228,7 +306,11 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         self.entries
             .update_parts(parts.slab(), |operation| match &operation.state {
                 State::CancelPending => {
-                    let _: CompletionAction<R> = transition(&mut operation.hold, event).into();
+                    let action: CompletionAction<H, R> =
+                        transition(&mut operation.hold, event).into();
+                    if let CompletionAction::Resubmit { aborted, .. } = action {
+                        aborted(&mut operation.hold);
+                    }
                 }
                 State::Settled(_) => {}
                 State::Submitted | State::Waiting(_) => {
@@ -241,12 +323,19 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
                             operation.state = State::Settled(result);
                             wake = registered;
                         }
-                        CompletionAction::Resubmit { sqe, failed } => {
-                            if driver.push(sqe).is_err() {
-                                operation.state = State::Settled(failed);
+                        CompletionAction::Resubmit {
+                            sqe,
+                            accepted,
+                            aborted,
+                            failed,
+                        } => match driver.push(sqe) {
+                            Ok(()) => accepted(&mut operation.hold),
+                            Err(error) => {
+                                aborted(&mut operation.hold);
+                                operation.state = State::Settled(failed(error));
                                 wake = registered;
                             }
-                        }
+                        },
                     }
                 }
             });

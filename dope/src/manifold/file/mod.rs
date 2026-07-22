@@ -10,6 +10,7 @@ use o3::buffer::Block;
 
 mod metadata;
 mod open;
+mod raw;
 mod read;
 mod source;
 mod splice;
@@ -90,7 +91,12 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
 
     pub fn alloc_fixed(&self, driver: &mut DriverContext<'_, 'd>) -> io::Result<Fd<'d>> {
         let base = driver.reserve_outbound(1)?;
-        Ok(unsafe { Fd::from_raw_slot(base.absolute(SlotIndex::new(0)), driver.driver_ref()) })
+        let Some(slot) = base.slot(SlotIndex::new(0)) else {
+            return Err(io::Error::other(
+                "dope: backend returned an empty single-slot reservation",
+            ));
+        };
+        Ok(unsafe { Fd::from_raw_slot(slot.fd(), driver.driver_ref()) })
     }
 
     #[doc(hidden)]
@@ -121,7 +127,7 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
         buf: Vec<u8>,
         offset: u64,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Result<Token, Vec<u8>> {
+    ) -> Result<Token, (Vec<u8>, io::Error)> {
         self.reads.begin(source, buf, offset, driver)
     }
 
@@ -132,7 +138,7 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
         buf: Block,
         offset: u64,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Result<Token, Block> {
+    ) -> Result<Token, (Block, io::Error)> {
         self.block_reads.begin(source, buf, offset, driver)
     }
 
@@ -270,7 +276,7 @@ impl<'scope, 'd, const ID: u8, const N: usize> Manifold<'d> for FileManifold<'sc
 
     fn dispatch(
         self: Pin<&mut Self>,
-        ev: dope_core::io::Event,
+        ev: dope_core::io::Event<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let this = self.as_ref().get_ref().files;
