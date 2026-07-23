@@ -68,7 +68,6 @@ where
     idle_send: IdleSet,
     idle_abs_age: IdleSet,
     dirty: PendingQueue,
-    wire_config: <A::Wire as Wire>::InitConfig,
 }
 
 #[cold]
@@ -116,17 +115,32 @@ where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
 {
-    pub fn set_config(&mut self, config: <A::Wire as Wire>::InitConfig) {
-        self.wire_config = config;
-    }
-
     pub fn open_in(
         app: A,
         config: Config<E::Transport>,
         hash_builder: hash::State,
         driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self>
+    where
+        <A::Wire as Wire>::InitConfig: Default,
+    {
+        Self::open_in_with_wire(
+            app,
+            config,
+            <A::Wire as Wire>::InitConfig::default(),
+            hash_builder,
+            driver,
+        )
+    }
+
+    pub fn open_in_with_wire(
+        app: A,
+        config: Config<E::Transport>,
+        wire_config: <A::Wire as Wire>::InitConfig,
+        hash_builder: hash::State,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
-        let mut listener = Self::assemble(app, config, hash_builder, driver)?;
+        let mut listener = Self::assemble(app, config, wire_config, hash_builder, driver)?;
         listener.accept.request_rearm();
         Ok(listener)
     }
@@ -134,6 +148,7 @@ where
     fn assemble(
         app: A,
         config: Config<E::Transport>,
+        wire_config: <A::Wire as Wire>::InitConfig,
         hash_builder: hash::State,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
@@ -161,6 +176,7 @@ where
                 max_connections,
                 A::max_retained_recv_chunks(max_connections)?,
                 OutboundReservation::empty(),
+                wire_config,
                 driver,
             )?,
             egress_arena: Arena::with_config(egress, max_connections),
@@ -192,7 +208,6 @@ where
                 E::Profile::ABS_CONN_AGE.unwrap_or(Duration::ZERO),
             ),
             dirty: PendingQueue::with_capacity(max_connections),
-            wire_config: <<A::Wire as Wire>::InitConfig as Default>::default(),
         })
     }
 
@@ -209,6 +224,10 @@ where
 
     pub fn handler_mut(self: Pin<&mut Self>) -> Pin<&mut A> {
         self.project().app
+    }
+
+    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut <A::Wire as Wire>::RuntimeContext {
+        self.project().pool.wire_runtime()
     }
 
     pub fn set_close_after(self: Pin<&mut Self>, conn_id: Token) {

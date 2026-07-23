@@ -217,14 +217,45 @@ where
         listener_config: T::ListenerConfig,
         stream_config: T::StreamConfig,
         hash_builder: hash::State,
+    ) -> io::Result<Self>
+    where
+        W::InitConfig: Default,
+    {
+        Self::bind_with_wire(
+            port,
+            driver,
+            Self::config(
+                port.capacity(),
+                addr,
+                backlog,
+                listener_config,
+                stream_config,
+            ),
+            W::InitConfig::default(),
+            hash_builder,
+        )
+    }
+
+    pub fn bind_with_wire(
+        port: &'scope ListenerPort<'d>,
+        driver: &mut DriverContext<'_, 'd>,
+        config: Config<T>,
+        wire_config: W::InitConfig,
+        hash_builder: hash::State,
     ) -> io::Result<Self> {
-        let capacity = port.capacity();
-        let inner = listener::Listener::open_in(
+        if config.max_connections != port.capacity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fiber: listener config capacity does not match port",
+            ));
+        }
+        let inner = listener::Listener::open_in_with_wire(
             AcceptQueue::<W> {
                 port,
                 _wire: PhantomData,
             },
-            Self::config(capacity, addr, backlog, listener_config, stream_config),
+            config,
+            wire_config,
             hash_builder,
             driver,
         )?;
@@ -281,6 +312,10 @@ where
             port,
             conn,
         );
+    }
+
+    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut W::RuntimeContext {
+        unsafe { self.map_unchecked_mut(|listener| &mut listener.inner) }.wire_runtime()
     }
 }
 

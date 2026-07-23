@@ -54,7 +54,6 @@ where
     pub(super) app: A,
     pub(super) upstreams: S,
     stream: <E::Transport as Transport>::StreamConfig,
-    wire_config: <A::Wire as Wire>::InitConfig,
     dirty: PendingQueue,
     backoff_timer: Option<Ticket>,
     liveness_timer: Option<Ticket>,
@@ -77,15 +76,63 @@ where
         upstreams: S,
         max_connections: usize,
         driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self>
+    where
+        <A::Wire as Wire>::InitConfig: Default,
+    {
+        Self::with_app_configs(
+            app,
+            upstreams,
+            max_connections,
+            Config::default(),
+            <A::Wire as Wire>::InitConfig::default(),
+            driver,
+        )
+    }
+
+    pub fn with_app_wire_config(
+        app: A,
+        upstreams: S,
+        max_connections: usize,
+        wire_config: <A::Wire as Wire>::InitConfig,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
-        Self::with_app_config(app, upstreams, max_connections, Config::default(), driver)
+        Self::with_app_configs(
+            app,
+            upstreams,
+            max_connections,
+            Config::default(),
+            wire_config,
+            driver,
+        )
     }
 
     pub fn with_app_config(
         app: A,
+        upstreams: S,
+        max_connections: usize,
+        egress_config: Config,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self>
+    where
+        <A::Wire as Wire>::InitConfig: Default,
+    {
+        Self::with_app_configs(
+            app,
+            upstreams,
+            max_connections,
+            egress_config,
+            <A::Wire as Wire>::InitConfig::default(),
+            driver,
+        )
+    }
+
+    pub fn with_app_configs(
+        app: A,
         mut upstreams: S,
         max_connections: usize,
         egress_config: Config,
+        wire_config: <A::Wire as Wire>::InitConfig,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         let route = Route::reserve(driver)?;
@@ -98,6 +145,7 @@ where
             max_connections,
             A::max_retained_recv_chunks(max_connections)?,
             reservation,
+            wire_config,
             driver,
         )?;
         Ok(Self {
@@ -107,7 +155,6 @@ where
             app,
             upstreams,
             stream: <E::Transport as Transport>::StreamConfig::default(),
-            wire_config: <<A::Wire as Wire>::InitConfig as Default>::default(),
             dirty: PendingQueue::with_capacity(max_connections),
             backoff_timer: None,
             liveness_timer: None,
@@ -116,10 +163,6 @@ where
             draining: false,
             _e: PhantomData,
         })
-    }
-
-    pub fn set_config(&mut self, config: <A::Wire as Wire>::InitConfig) {
-        self.wire_config = config;
     }
 
     fn backoff_key(self: Pin<&Self>) -> ReadyKey<'d> {
@@ -184,6 +227,10 @@ where
         &self.app
     }
 
+    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut <A::Wire as Wire>::RuntimeContext {
+        self.project().pool.wire_runtime()
+    }
+
     fn rouse(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         self.as_mut().flush_cancellations();
         self.as_mut().poll_source(driver);
@@ -204,7 +251,10 @@ where
         upstreams: S,
         max_connections: usize,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> io::Result<Self> {
+    ) -> io::Result<Self>
+    where
+        <E::Wire as Wire>::InitConfig: Default,
+    {
         Self::new_with_egress(
             session,
             upstreams,
@@ -220,12 +270,57 @@ where
         max_connections: usize,
         egress_config: Config,
         driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self>
+    where
+        <E::Wire as Wire>::InitConfig: Default,
+    {
+        Self::new_with_configs(
+            session,
+            upstreams,
+            max_connections,
+            egress_config,
+            <E::Wire as Wire>::InitConfig::default(),
+            driver,
+        )
+    }
+
+    pub fn new_with_wire_config(
+        session: N,
+        upstreams: S,
+        max_connections: usize,
+        wire_config: <E::Wire as Wire>::InitConfig,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self> {
+        Self::new_with_configs(
+            session,
+            upstreams,
+            max_connections,
+            Config::default(),
+            wire_config,
+            driver,
+        )
+    }
+
+    pub fn new_with_configs(
+        session: N,
+        upstreams: S,
+        max_connections: usize,
+        egress_config: Config,
+        wire_config: <E::Wire as Wire>::InitConfig,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         let app = SessionApp {
             session,
             _w: PhantomData,
         };
-        Self::with_app_config(app, upstreams, max_connections, egress_config, driver)
+        Self::with_app_configs(
+            app,
+            upstreams,
+            max_connections,
+            egress_config,
+            wire_config,
+            driver,
+        )
     }
 
     pub fn session(&self) -> &N {
@@ -234,11 +329,6 @@ where
 
     pub fn session_mut(self: Pin<&mut Self>) -> &mut N {
         &mut self.project().app.session
-    }
-
-    pub fn config(mut self, config: <E::Wire as Wire>::InitConfig) -> Self {
-        self.set_config(config);
-        self
     }
 }
 

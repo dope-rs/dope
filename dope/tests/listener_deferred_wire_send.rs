@@ -11,7 +11,7 @@ use dope::manifold::Outcome;
 use dope::manifold::listener::{self, Application, SlotEgress};
 use dope_net::link::slot::Slot;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
-use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
+use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
 use dope_test::{Gate, Wired};
 use o3::buffer::{Borrowed, Bytes, RetainBytes};
 
@@ -51,6 +51,7 @@ impl DeferredWire {
 impl Wire for DeferredWire {
     type InitConfig = ();
     type RuntimeContext = ();
+    type Open<'a> = ReadyOpen<Self>;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type SendStorage = SendBuf<1024>;
 
@@ -58,12 +59,12 @@ impl Wire for DeferredWire {
 
     const RAW_RECV: bool = true;
 
-    fn runtime_context(_: RuntimeLimits) -> std::io::Result<()> {
+    fn runtime_context(_: RuntimeLimits, _: ()) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn open(_: &(), _: &()) -> Option<(Self, Self::SendStorage)> {
-        Some((
+    fn prepare_open(_: &mut ()) -> Option<Self::Open<'_>> {
+        Some(ReadyOpen::new(
             Self {
                 rounds: 0,
                 pending: Vec::new(),
@@ -76,7 +77,7 @@ impl Wire for DeferredWire {
         !self.pending.is_empty() || !send.is_empty()
     }
 
-    fn process_recv<'a>(&mut self, _: &(), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
+    fn process_recv<'a>(&mut self, _: &mut (), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
         if !self.established() {
             self.rounds += 1;
             return None;

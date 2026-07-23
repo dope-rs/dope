@@ -95,6 +95,7 @@ where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
     E::Transport: 'static,
+    <A::Wire as dope_net::wire::Wire>::InitConfig: Default,
 {
     let listener = Listener::open_in(app, cfg, hash_builder, driver).expect("listener");
     let addr = listener.local_addr().expect("local addr");

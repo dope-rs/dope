@@ -11,7 +11,7 @@ use dope::manifold::Outcome;
 use dope::manifold::listener::{self, Application, SlotEgress};
 use dope_net::link::slot::Slot;
 use dope_net::wire::send::{Plain, Prepared, Storage, Vectored};
-use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
+use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
 use dope_test::{Gate, Wired};
 use o3::buffer::{Borrowed, Bytes, RetainBytes};
 
@@ -23,20 +23,21 @@ struct GracefulWire;
 impl Wire for GracefulWire {
     type InitConfig = ();
     type RuntimeContext = ();
+    type Open<'a> = ReadyOpen<Self>;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type SendStorage = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
 
-    fn runtime_context(_: RuntimeLimits) -> std::io::Result<()> {
+    fn runtime_context(_: RuntimeLimits, _: ()) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn open(_: &(), _: &()) -> Option<(Self, ())> {
-        Some((GracefulWire, ()))
+    fn prepare_open(_: &mut ()) -> Option<Self::Open<'_>> {
+        Some(ReadyOpen::new(GracefulWire, ()))
     }
 
-    fn process_recv<'a>(&mut self, _: &(), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
+    fn process_recv<'a>(&mut self, _: &mut (), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
         Some(Bytes::<Borrowed<'a>>::from(bytes))
     }
 
@@ -119,20 +120,21 @@ struct ControlWire {
 impl Wire for ControlWire {
     type InitConfig = ();
     type RuntimeContext = ();
+    type Open<'a> = ReadyOpen<Self>;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type SendStorage = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
 
-    fn runtime_context(_: RuntimeLimits) -> std::io::Result<()> {
+    fn runtime_context(_: RuntimeLimits, _: ()) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn open(_: &(), _: &()) -> Option<(Self, ())> {
-        Some((Self { pending: false }, ()))
+    fn prepare_open(_: &mut ()) -> Option<Self::Open<'_>> {
+        Some(ReadyOpen::new(Self { pending: false }, ()))
     }
 
-    fn process_recv<'a>(&mut self, _: &(), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
+    fn process_recv<'a>(&mut self, _: &mut (), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
         self.pending = true;
         Some(Bytes::<Borrowed<'a>>::from(bytes))
     }

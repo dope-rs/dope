@@ -98,8 +98,19 @@ where
     pub fn connector<const ID: u8, W: Wire>(
         &self,
         driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Connector<'_, 'd, ID, T, W>>
+    where
+        W::InitConfig: Default,
+    {
+        self.connector_with_wire(W::InitConfig::default(), driver)
+    }
+
+    pub fn connector_with_wire<const ID: u8, W: Wire>(
+        &self,
+        wire_config: W::InitConfig,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Connector<'_, 'd, ID, T, W>> {
-        Connector::with_app_config(
+        Connector::with_app_configs(
             AsyncApp {
                 port: self,
                 _wire: PhantomData,
@@ -107,6 +118,7 @@ where
             self.source.dialer(),
             self.connections.capacity(),
             self.egress,
+            wire_config,
             driver,
         )
     }

@@ -15,7 +15,7 @@ use dope_fiber::{Connector, ConnectorHandle, ConnectorPort, ConnectorPortFactory
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
-use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
+use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
 use o3::buffer::{Borrowed, Bytes};
 use o3::cell::BrandCell;
 
@@ -34,21 +34,25 @@ struct RecvGatedWire {
 
 impl Wire for RecvGatedWire {
     type InitConfig = Rc<Cell<usize>>;
-    type RuntimeContext = ();
+    type RuntimeContext = Rc<Cell<usize>>;
+    type Open<'a> = ReadyOpen<Self>;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type SendStorage = SendBuf<1024>;
 
     const RECLAIM: Reclaim = Reclaim::OnSubmit;
 
-    fn runtime_context(_: RuntimeLimits) -> std::io::Result<()> {
-        Ok(())
+    fn runtime_context(
+        _: RuntimeLimits,
+        config: Self::InitConfig,
+    ) -> std::io::Result<Self::RuntimeContext> {
+        Ok(config)
     }
 
-    fn open(attempts: &Self::InitConfig, _: &()) -> Option<(Self, Self::SendStorage)> {
-        Some((
+    fn prepare_open(runtime: &mut Self::RuntimeContext) -> Option<Self::Open<'_>> {
+        Some(ReadyOpen::new(
             Self {
                 established: false,
-                attempts: attempts.clone(),
+                attempts: runtime.clone(),
             },
             SendBuf::new(),
         ))
@@ -58,7 +62,11 @@ impl Wire for RecvGatedWire {
         !send.is_empty()
     }
 
-    fn process_recv<'a>(&mut self, _: &(), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
+    fn process_recv<'a>(
+        &mut self,
+        _: &mut Self::RuntimeContext,
+        bytes: &'a [u8],
+    ) -> Option<Self::Recv<'a>> {
         if !self.established {
             self.established = true;
             None
@@ -286,8 +294,9 @@ fn connector_parks_plaintext_until_wire_receives() {
 
     connector_exec(MAX_CONN).enter(|mut sess| {
         let (storage, mut driver) = sess.storage_and_driver();
-        let mut connector: GatedConn<'_, '_> = storage.connector(&mut driver).expect("connector");
-        connector.set_config(attempts.clone());
+        let connector: GatedConn<'_, '_> = storage
+            .connector_with_wire(attempts.clone(), &mut driver)
+            .expect("connector");
         let app = pin!(BrandCell::new(GatedApp { connector }));
         let conn = sess.storage().handle();
 
