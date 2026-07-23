@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use std::cell::RefCell;
 use std::convert::Infallible;
@@ -6,10 +6,10 @@ use std::pin::{Pin, pin};
 use std::task::Poll;
 
 use dope_fiber::{
-    Context, Fiber, FiberScope, OwnerFiber, RootWaker, SplitBytes, TaskQueue, TaskSlab, WaitQueue,
-    Waiter, Waker,
+    Context, Fiber, FiberScope, OwnerFiber, RootWaker, Slab, SplitBytes, SplitTask, TaskQueue,
+    TaskSlab, WaitQueue, Waiter, Waker, try_from_split_task,
 };
-use dope_test::{drain_tokens, poll_with_slot, tok, with_session};
+use dope_test::{drain_tokens, poll_with_slot, tok, with_context, with_session};
 use o3::buffer::Shared;
 
 fn register<'d>(queue: Pin<&WaitQueue>, waiter: Pin<&Waiter<'d>>, waker: Waker<'d>) -> bool {
@@ -119,6 +119,33 @@ struct BorrowedTask<'a> {
     pending: bool,
 }
 
+struct BorrowSplitTask;
+
+impl<'d> SplitTask<'d> for BorrowSplitTask {
+    type Input = bool;
+    type State = ();
+    type Context = ();
+    type Output = usize;
+    type Error = Infallible;
+
+    fn build<'req>(
+        view: dope_fiber::SplitView<'req>,
+        pending: Self::Input,
+        _state: &'req Self::State,
+        _context: &'req Self::Context,
+    ) -> Result<impl Fiber<'d, Output = Self::Output> + 'req, Self::Error>
+    where
+        'd: 'req,
+    {
+        let (head, body) = view.into_parts();
+        Ok(BorrowedTask {
+            head,
+            body,
+            pending,
+        })
+    }
+}
+
 impl<'d> Fiber<'d> for BorrowedTask<'_> {
     type Output = usize;
 
@@ -145,6 +172,7 @@ impl Drop for DropProbe<'_> {
 }
 
 #[test]
+#[allow(unsafe_code)]
 fn owner_backed_fiber_borrows_across_polls_and_drops_before_its_owner() {
     with_session(|mut session| {
         let ready = session
@@ -153,7 +181,9 @@ fn owner_backed_fiber_borrows_across_polls_and_drops_before_its_owner() {
             .expect("ready slot");
         let request = Shared::copy_from_slice(b"headbody");
         let owner = SplitBytes::new(request, None, 4);
-        let task =
+        // SAFETY: the view is moved only into `BorrowedTask`; the closure has
+        // no side channel through which it could escape.
+        let task = unsafe {
             OwnerFiber::try_from_split(owner, FiberScope::from_driver(session.driver()), |view| {
                 let (head, body) = view.into_parts();
                 Ok::<_, Infallible>(BorrowedTask {
@@ -162,7 +192,8 @@ fn owner_backed_fiber_borrows_across_polls_and_drops_before_its_owner() {
                     pending: true,
                 })
             })
-            .expect("infallible owner-backed construction");
+        }
+        .expect("infallible owner-backed construction");
         let mut task = pin!(task);
 
         assert_eq!(
@@ -192,4 +223,50 @@ fn owner_backed_fiber_borrows_across_polls_and_drops_before_its_owner() {
         size_of::<[usize; 4]>(),
     );
     assert_eq!(size_of::<FiberScope<'_>>(), 0);
+}
+
+#[test]
+fn safe_split_task_borrows_owned_bytes_across_polls() {
+    with_session(|mut session| {
+        let ready = session
+            .driver()
+            .make_ready_slot(tok(0))
+            .expect("ready slot");
+        let owner = SplitBytes::new(Shared::copy_from_slice(b"headbody"), None, 4);
+        let state = ();
+        let context = ();
+        let task = try_from_split_task::<BorrowSplitTask>(owner, true, &state, &context)
+            .expect("infallible split task");
+        assert_eq!(
+            size_of_val(&task),
+            size_of::<OwnerFiber<BorrowedTask<'static>, SplitBytes>>(),
+        );
+        let mut task = pin!(task);
+
+        assert_eq!(
+            poll_with_slot(&mut session, &ready, task.as_mut()),
+            Poll::Pending
+        );
+        assert_eq!(
+            poll_with_slot(&mut session, &ready, task.as_mut()),
+            Poll::Ready(8)
+        );
+    });
+}
+
+#[test]
+fn fiber_slab_accepts_a_fiber_borrowing_a_lexical_session_local() {
+    with_context(|mut context| {
+        let request = *b"headbody";
+        let task = BorrowedTask {
+            head: &request[..4],
+            body: &request[4..],
+            pending: false,
+        };
+        let mut slab: Slab<'_, BorrowedTask<'_>> = Slab::with_capacity(1);
+        let id = slab.insert(task).expect("task slot");
+
+        assert_eq!(slab.poll(&id, context.as_mut()), Some(Poll::Ready(8)));
+        assert!(slab.remove(id));
+    });
 }

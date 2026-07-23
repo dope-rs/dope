@@ -11,7 +11,7 @@ note: required because it appears within the type `Pinned`
    |
  6 | struct Pinned(PhantomPinned);
    |        ^^^^^^
-note: required by a bound in `BrandedCell::<'id, T, Tag>::borrow_mut`
+note: required by a bound in `o3::cell::brand::BrandedCell::<'id, T, Tag>::borrow_mut`
   --> $CARGO/o3-$VERSION/src/cell/brand.rs
    |
    |     pub fn borrow_mut<'a>(&'a self, token: &'a mut BrandedToken<'id, Tag>) -> &'a mut T

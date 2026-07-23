@@ -29,7 +29,7 @@ pub use net::connector::{
 };
 pub use net::listener::{Listener, ListenerHandle, ListenerPort, ListenerPortFactory};
 pub use one_shot::OneShot;
-pub use owner::{FiberScope, OwnerFiber, SplitBytes, SplitView};
+pub use owner::{FiberScope, OwnerFiber, SplitBytes, SplitTask, SplitView, try_from_split_task};
 pub use race::{Either, Race};
 pub use slab::{
     ErasedTaskId, FixedSlab, FixedSlabVacantEntry, Slab, SlabVacantEntry, TaskId, TaskSlab,
