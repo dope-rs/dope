@@ -8,6 +8,32 @@ use pin_project::pin_project;
 
 use crate::{Context, Fiber};
 
+/// Builds a fiber from an immutable split-byte view without allowing the view
+/// to escape its owner.
+///
+/// The method is generic over the request lifetime. A safe implementation
+/// therefore cannot store the view in longer-lived state supplied through
+/// [`Self::Input`], [`Self::State`], or [`Self::Context`]. The owned output and
+/// error types close the remaining ordinary escape paths.
+pub trait SplitTask<'d> {
+    type Input;
+    type State: ?Sized;
+    type Context: ?Sized;
+    type Output: 'static;
+    type Error: 'static;
+
+    fn build<'req>(
+        view: SplitView<'req>,
+        input: Self::Input,
+        state: &'req Self::State,
+        context: &'req Self::Context,
+    ) -> Result<impl Fiber<'d, Output = Self::Output> + 'req, Self::Error>
+    where
+        'd: 'req,
+        Self::State: 'req,
+        Self::Context: 'req;
+}
+
 /// A zero-sized proof of a generative driver lifetime.
 ///
 /// The private invariant marker prevents safe fabrication. Driver scopes are
@@ -126,23 +152,52 @@ impl<'a> SplitView<'a> {
 impl<F> OwnerFiber<F, SplitBytes> {
     /// Builds a fiber borrowing immutable views of its owned bytes.
     ///
-    /// `F::Output: 'static` prevents any owner-backed borrow from escaping the
-    /// fiber. An error is likewise required to be owned because the owner is
-    /// dropped when construction fails.
-    pub fn try_from_split<'d, E>(
+    /// # Safety
+    ///
+    /// `build` must not let the supplied view escape except inside the returned
+    /// fiber. In particular, it must not store the view through interior
+    /// mutability or another side channel. The returned fiber is dropped before
+    /// its owner, while owned output and error types close the two ordinary
+    /// return paths.
+    pub unsafe fn try_from_split<'d, E>(
         owner: SplitBytes,
         _scope: FiberScope<'d>,
         build: impl FnOnce(SplitView<'d>) -> Result<F, E>,
     ) -> Result<Self, E>
     where
-        F: Fiber<'d> + 'd,
+        F: Fiber<'d>,
         F::Output: 'static,
         E: 'static,
     {
-        // SAFETY: the only successful escape is F, which is installed before
-        // the owner in OwnerFiber and whose output cannot borrow the owner.
+        // SAFETY: the caller proves that the view escapes only in `F`.
         let view = unsafe { owner.domain_view() };
         let fiber = build(view)?;
         Ok(Self { fiber, owner })
     }
+}
+
+/// Builds an owner-backed task through a lifetime-generic safe factory.
+///
+/// The returned fiber is layout-equivalent to an [`OwnerFiber`] containing
+/// the factory's fiber and the byte owner. Construction performs no allocation
+/// and introduces no polling state machine.
+pub fn try_from_split_task<'req, 'd, T>(
+    owner: SplitBytes,
+    input: T::Input,
+    state: &'req T::State,
+    context: &'req T::Context,
+) -> Result<OwnerFiber<impl Fiber<'d, Output = T::Output> + 'req, SplitBytes>, T::Error>
+where
+    T: SplitTask<'d>,
+    'd: 'req,
+    T::State: 'req,
+    T::Context: 'req,
+{
+    // SAFETY: `SplitTask::build` is generic over `'req`, so a safe
+    // implementation cannot move this view into state with a longer lifetime.
+    // Its output and error are owned, and OwnerFiber drops the returned fiber
+    // before the allocation handles backing the view.
+    let view = unsafe { owner.domain_view() };
+    let fiber = T::build(view, input, state, context)?;
+    Ok(OwnerFiber { fiber, owner })
 }

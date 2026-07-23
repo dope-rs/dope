@@ -22,10 +22,11 @@ fn require_fiber<'d>(_: impl Fiber<'d>) {}
 fn main() {
     with_session(|session| {
         let owner = SplitBytes::new(Shared::copy_from_slice(b"request"), None, 7);
-        let task =
+        let task = unsafe {
             OwnerFiber::try_from_split(owner, FiberScope::from_driver(session.driver()), |view| {
                 Ok::<_, Infallible>(Escaping(view.head()))
             })
+        }
             .unwrap();
         require_fiber(task);
     });

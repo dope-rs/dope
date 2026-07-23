@@ -252,7 +252,7 @@ impl DispatcherSpec {
             quote! { <#fresh #(#params),*> }
         };
         let dispatch_arms = self.dispatch_arms(&brand);
-        let activate_arms = self.activate_arms();
+        let activate_arms = self.activate_arms(&brand);
         let tick_calls = self.tick_calls();
         let post_coordinate_tick_calls = if self.coordinate {
             self.tick_calls()
@@ -336,7 +336,7 @@ impl DispatcherSpec {
             .collect()
     }
 
-    fn activate_arms(&self) -> Vec<proc_macro2::TokenStream> {
+    fn activate_arms(&self, brand: &proc_macro2::TokenStream) -> Vec<proc_macro2::TokenStream> {
         self.fields
             .iter()
             .map(|f| {
@@ -344,7 +344,9 @@ impl DispatcherSpec {
                 let inner = f.inner_ty();
                 let body = f.wrap_body(|recv| {
                     quote! {
-                        let __typed = unsafe { ::dope::manifold::TypedToken::<#inner>::new_unchecked(__target) };
+                        let __typed =
+                            ::dope::manifold::TypedToken::<#inner>::try_new::<#brand>(__target)
+                                .expect("dispatcher selected the token route");
                         ::dope::manifold::Manifold::activate(#recv, __typed, __driver);
                     }
                 });

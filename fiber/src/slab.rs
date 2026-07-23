@@ -57,7 +57,7 @@ impl ErasedTaskId {
 
 fn poll_fiber<'d, F>(fiber: Pin<&mut F>, context: Pin<&mut Context<'_, 'd>>) -> Poll<F::Output>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     Fiber::poll(fiber, context)
 }
@@ -74,7 +74,7 @@ fn catch_drop_panic<R>(operation: impl FnOnce() -> R) -> Result<R, ()> {
 
 pub struct Slab<'d, F, Tag = ()>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     inner: ManuallyDrop<PinSlab<F, Tag>>,
     driver: PhantomData<fn(&'d ()) -> &'d ()>,
@@ -93,7 +93,7 @@ impl<F, Tag> SlabVacantEntry<'_, F, Tag> {
 
 impl<'d, F, Tag> Slab<'d, F, Tag>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -128,7 +128,7 @@ where
 
 impl<'d, F, Tag> Drop for Slab<'d, F, Tag>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     fn drop(&mut self) {
         for index in 0..self.inner.capacity() as u32 {
@@ -147,7 +147,7 @@ where
 /// its wake node. Dropping the target queue first safely detaches every node.
 pub struct TaskSlab<'d, F, T: Copy = usize, Tag = ()>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     // Field order is part of the safety invariant: fibers (which may retain
     // their waker in an async primitive) are dropped before wake contexts.
@@ -157,7 +157,7 @@ where
 
 impl<'d, F, T, Tag> TaskSlab<'d, F, T, Tag>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
     T: Copy,
 {
     pub fn with_capacity(capacity: usize, idle: T) -> Self {
@@ -256,7 +256,7 @@ where
 
 pub struct FixedSlab<'d, F, const N: usize, Tag = ()>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     inner: ManuallyDrop<FixedPinSlab<F, N, Tag>>,
     driver: PhantomData<fn(&'d ()) -> &'d ()>,
@@ -275,7 +275,7 @@ impl<F, const N: usize, Tag> FixedSlabVacantEntry<'_, F, N, Tag> {
 
 impl<'d, F, const N: usize, Tag> FixedSlab<'d, F, N, Tag>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     pub fn new() -> Self {
         const {
@@ -317,7 +317,7 @@ where
 
 impl<'d, F, const N: usize, Tag> Default for FixedSlab<'d, F, N, Tag>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     fn default() -> Self {
         Self::new()
@@ -326,7 +326,7 @@ where
 
 impl<'d, F, const N: usize, Tag> Drop for FixedSlab<'d, F, N, Tag>
 where
-    F: Fiber<'d> + 'd,
+    F: Fiber<'d>,
 {
     fn drop(&mut self) {
         for index in 0..self.inner.capacity() as u32 {

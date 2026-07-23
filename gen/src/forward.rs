@@ -90,7 +90,7 @@ impl Forward {
                     target: ::dope::manifold::TypedToken<Self>,
                     driver: &mut ::dope::DriverContext<'_, #brand>,
                 ) {
-                    let __typed = unsafe { ::dope::manifold::TypedToken::<#field_ty>::new_unchecked(target.into_inner()) };
+                    let __typed = target.retag::<#brand, #field_ty>();
                     let __field = self.project().#field;
                     ::dope::manifold::Manifold::activate(__field, __typed, driver)
                 }
