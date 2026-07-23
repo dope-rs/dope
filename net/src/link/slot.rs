@@ -331,7 +331,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
 
     pub fn recv_data<'a>(
         &mut self,
-        runtime: &W::RuntimeContext,
+        runtime: &mut W::RuntimeContext,
         more: bool,
         slice: &'a [u8],
     ) -> RecvDecision<W::Recv<'a>> {

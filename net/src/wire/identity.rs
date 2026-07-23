@@ -1,5 +1,5 @@
 use super::send::{Plain, Prepared, Storage, Vectored};
-use super::{Reclaim, RuntimeLimits, Wire};
+use super::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
 use crate::Bytes;
 use o3::buffer::Borrowed;
 
@@ -8,6 +8,7 @@ pub struct Identity;
 impl Wire for Identity {
     type InitConfig = ();
     type RuntimeContext = ();
+    type Open<'a> = ReadyOpen<Self>;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type SendStorage = ();
 
@@ -15,15 +16,15 @@ impl Wire for Identity {
 
     const RAW_RECV: bool = true;
 
-    fn runtime_context(_: RuntimeLimits) -> std::io::Result<()> {
+    fn runtime_context(_: RuntimeLimits, _: ()) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn open(_: &(), _: &()) -> Option<(Self, ())> {
-        Some((Self, ()))
+    fn prepare_open(_: &mut ()) -> Option<Self::Open<'_>> {
+        Some(ReadyOpen::new(Self, ()))
     }
 
-    fn process_recv<'a>(&mut self, _: &(), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
+    fn process_recv<'a>(&mut self, _: &mut (), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
         Some(Bytes::<Borrowed<'a>>::from(bytes))
     }
 

@@ -259,8 +259,8 @@ where
             let placed = this.pool.insert(
                 fixed_idx,
                 Core::new(fixed_fd, <E::Transport as Transport>::KERNEL_DISCARD),
-                this.wire_config,
                 conn_slot,
+                driver,
             );
             debug_assert!(placed, "accept-direct handed an occupied fixed slot");
             if !placed {

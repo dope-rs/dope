@@ -7,7 +7,7 @@ use dope::runtime::profile::Balanced;
 use dope_fiber::{ConnectorPort, Listener, ListenerPort};
 use dope_net::tcp::Tcp;
 use dope_net::wire::send::{Plain, Prepared, Storage, Vectored};
-use dope_net::wire::{Reclaim, RuntimeLimits, Wire};
+use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
 use o3::buffer::{Bytes, Leased, SharedPool};
 use o3::cell::BrandCell;
 
@@ -35,24 +35,28 @@ fn receive_capacity_is_validated_before_storage_build() {
 impl Wire for PooledWire {
     type InitConfig = ();
     type RuntimeContext = SharedPool;
+    type Open<'a> = ReadyOpen<Self>;
     type Recv<'a> = Bytes<Leased>;
     type SendStorage = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
 
-    fn runtime_context(limits: RuntimeLimits) -> std::io::Result<Self::RuntimeContext> {
+    fn runtime_context(
+        limits: RuntimeLimits,
+        _: Self::InitConfig,
+    ) -> std::io::Result<Self::RuntimeContext> {
         assert!(limits.max_retained_recv_chunks() >= QUEUE_CAP);
         SharedPool::try_new(limits.max_retained_recv_chunks() + 1, limits.max_recv_len())
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
     }
 
-    fn open(_: &Self::InitConfig, _: &Self::RuntimeContext) -> Option<(Self, ())> {
-        Some((Self, ()))
+    fn prepare_open(_: &mut Self::RuntimeContext) -> Option<Self::Open<'_>> {
+        Some(ReadyOpen::new(Self, ()))
     }
 
     fn process_recv<'a>(
         &mut self,
-        runtime: &Self::RuntimeContext,
+        runtime: &mut Self::RuntimeContext,
         bytes: &'a [u8],
     ) -> Option<Self::Recv<'a>> {
         let mut lease = runtime.try_acquire()?;

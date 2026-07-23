@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use super::core::{Core, Outbound};
 use super::slot::{RecvDecision, Slot};
 use crate::Transport;
-use crate::wire::{RuntimeLimits, Wire};
+use crate::wire::{OpenReservation, RuntimeLimits, Wire};
 use dope_core::backend::Sqe;
 use dope_core::driver::buffers::ProvidedBuffers;
 use dope_core::driver::control::ContextControl;
@@ -35,6 +35,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         max_connections: usize,
         max_retained_recv_chunks: usize,
         reservation: OutboundReservation,
+        wire_config: W::InitConfig,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         if max_connections > SLOT_MASK as usize + 1 {
@@ -43,13 +44,17 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
                 "dope: connection limit exceeds token slots",
             ));
         }
-        Ok(Self {
-            slab: TokenSlab::with_capacity(max_connections),
-            runtime: W::runtime_context(RuntimeLimits::new(
+        let runtime = W::runtime_context(
+            RuntimeLimits::new(
                 max_connections,
                 max_retained_recv_chunks,
                 driver.buffer_len(),
-            ))?,
+            ),
+            wire_config,
+        )?;
+        Ok(Self {
+            slab: TokenSlab::with_capacity(max_connections),
+            runtime,
             reservation,
             recv_rearm_pending: FixedQueue::with_capacity(max_connections),
             rearm_epoch: vec![Epoch::ZERO; max_connections].into_boxed_slice(),
@@ -72,6 +77,10 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
 
     pub fn capacity(&self) -> usize {
         self.slab.capacity()
+    }
+
+    pub fn wire_runtime(&mut self) -> &mut W::RuntimeContext {
+        &mut self.runtime
     }
 
     pub fn pending_recv_rearm(&self) -> bool {
@@ -105,18 +114,21 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         &mut self,
         idx: SlotIndex,
         core: Core<'d>,
-        config: &W::InitConfig,
         state: S,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> bool {
-        let Some((wire, send)) = W::open(config, &self.runtime) else {
+        let Some(reservation) = self.slab.vacant_entry_at(idx.raw()) else {
+            drop(driver.guard(core.into_fd()));
             return false;
         };
-        self.slab
-            .insert_at_with(idx.raw(), |key| {
-                let token = Token::from_key(key);
-                Slot::new(core, wire, send, token, state)
-            })
-            .is_some()
+        let Some(open) = W::prepare_open(&mut self.runtime) else {
+            drop(driver.guard(core.into_fd()));
+            return false;
+        };
+        let (wire, send) = open.commit();
+        let token = Token::from_key(reservation.key());
+        reservation.insert(Slot::new(core, wire, send, token, state));
+        true
     }
 
     pub fn get(&self, idx: SlotIndex) -> Option<&Slot<'d, W, S>> {
@@ -246,7 +258,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         let Some(parts) = ud.parts::<KeyTag<ID>>() else {
             return DispatchRecv::Drop;
         };
-        let runtime = &self.runtime;
+        let runtime = &mut self.runtime;
         let Some(slot) = self.slab.get_parts_mut(parts.slab()) else {
             return DispatchRecv::Drop;
         };
@@ -375,12 +387,10 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     pub fn submit_socket_with_state(
         &mut self,
         socket_params: (i32, i32, i32),
-        config: &W::InitConfig,
         make_state: impl FnOnce(SlotIndex) -> S,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Option<SlotIndex> {
         let reservation = self.slab.vacant_entry()?;
-        let (wire, send) = W::open(config, &self.runtime)?;
         let key = reservation.key();
         let idx = SlotIndex::new(key.index());
         let outbound_slot = self.reservation.slot(idx)?;
@@ -394,10 +404,15 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
                 return None;
             }
         };
+        let Some(open) = W::prepare_open(&mut self.runtime) else {
+            drop(driver.guard(fd));
+            return None;
+        };
         if driver.push(sqe).is_err() {
             drop(driver.guard(fd));
             return None;
         }
+        let (wire, send) = open.commit();
         let state = make_state(idx);
         let slot = Slot::<W, S>::new(Core::new(fd, T::KERNEL_DISCARD), wire, send, ud, state);
         reservation.insert(slot);

@@ -71,7 +71,6 @@ where
                     };
                     let submitted = fields.pool.submit_socket_with_state(
                         socket_params,
-                        fields.wire_config,
                         |slot| {
                             State::<A::Conn, A::Send>::new(
                                 key,

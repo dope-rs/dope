@@ -47,8 +47,11 @@ impl RuntimeLimits {
 }
 
 pub trait Wire: 'static + Sized {
-    type InitConfig: 'static + Clone + Default;
+    type InitConfig: 'static;
     type RuntimeContext: 'static;
+    type Open<'a>: OpenReservation<Self>
+    where
+        Self: 'a;
     type Recv<'a>: RetainBytes + 'a;
     type SendStorage: SendStorage;
 
@@ -56,12 +59,12 @@ pub trait Wire: 'static + Sized {
 
     const RAW_RECV: bool = false;
 
-    fn runtime_context(limits: RuntimeLimits) -> io::Result<Self::RuntimeContext>;
+    fn runtime_context(
+        limits: RuntimeLimits,
+        config: Self::InitConfig,
+    ) -> io::Result<Self::RuntimeContext>;
 
-    fn open(
-        cfg: &Self::InitConfig,
-        runtime: &Self::RuntimeContext,
-    ) -> Option<(Self, Self::SendStorage)>;
+    fn prepare_open(runtime: &mut Self::RuntimeContext) -> Option<Self::Open<'_>>;
 
     fn holds_plain(&self, _send: &Self::SendStorage) -> bool {
         false
@@ -69,7 +72,7 @@ pub trait Wire: 'static + Sized {
 
     fn process_recv<'a>(
         &mut self,
-        runtime: &Self::RuntimeContext,
+        runtime: &mut Self::RuntimeContext,
         bytes: &'a [u8],
     ) -> Option<Self::Recv<'a>>;
 
@@ -96,5 +99,23 @@ pub trait Wire: 'static + Sized {
 
     fn graceful_close<'a>(&'a mut self, send: Storage<'a, Self::SendStorage>) -> Prepared<'a> {
         send.empty(0)
+    }
+}
+
+pub trait OpenReservation<W: Wire> {
+    fn commit(self) -> (W, W::SendStorage);
+}
+
+pub struct ReadyOpen<W: Wire>(Option<(W, W::SendStorage)>);
+
+impl<W: Wire> ReadyOpen<W> {
+    pub fn new(wire: W, send: W::SendStorage) -> Self {
+        Self(Some((wire, send)))
+    }
+}
+
+impl<W: Wire> OpenReservation<W> for ReadyOpen<W> {
+    fn commit(mut self) -> (W, W::SendStorage) {
+        self.0.take().unwrap()
     }
 }
