@@ -1,3 +1,4 @@
+use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use dope_core::driver::completion::Completion;
@@ -7,7 +8,7 @@ use dope_core::backend::Sqe;
 use dope_core::driver::DriverContext;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::file::{self, OpenPath, OsFile};
-use dope_core::io::{Event, EventRef, OpenEvent, ReadEvent, WriteEvent};
+use dope_core::io::{Event, EventKind, EventRef, OpenEvent, ReadEvent, WriteEvent};
 use dope_test::{TempFile, with_driver};
 
 fn tok(n: u32) -> Token {
@@ -113,18 +114,15 @@ fn async_open_then_read_via_returned_fd() {
             .expect("push open");
 
         let event = drive_until(&mut driver, to);
-        let fd = match event.as_ref() {
-            EventRef::Open(_, OpenEvent::Opened(fd)) => {
-                assert!(*fd >= 0);
-                *fd
-            }
-            _ => panic!("expected open success, got {}", variant(&event)),
+        let fd = match event.into_kind() {
+            EventKind::Open(_, OpenEvent::Opened(fd)) => fd,
+            _ => panic!("expected open success"),
         };
 
         let mut dst = vec![0u8; payload.len()];
         let tr = tok(11);
         driver
-            .push(unsafe { Sqe::read(fd, &mut dst, 0, tr) })
+            .push(unsafe { Sqe::read(fd.as_raw_fd(), &mut dst, 0, tr) })
             .expect("push read");
 
         let event = drive_until(&mut driver, tr);
@@ -133,8 +131,6 @@ fn async_open_then_read_via_returned_fd() {
             _ => panic!("expected read, got {}", variant(&event)),
         };
         assert_eq!(&dst[..n], payload);
-
-        unsafe { libc::close(fd) };
     });
 }
 

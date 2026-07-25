@@ -1,4 +1,4 @@
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 
 use super::FileOutcome;
 use super::table::OperationTable;
@@ -68,7 +68,7 @@ impl<'d, const ID: u8> OpenTable<'d, ID> {
     pub(crate) fn complete(&self, token: Token, event: OpenEvent) {
         self.operations
             .complete(token, event, |_, event| match event {
-                OpenEvent::Opened(fd) => OpenDone::Opened(unsafe { OwnedFd::from_raw_fd(fd) }),
+                OpenEvent::Opened(fd) => OpenDone::Opened(fd),
                 OpenEvent::Failed(errno) => OpenDone::Failed(errno),
             });
     }
