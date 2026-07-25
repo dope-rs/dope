@@ -68,6 +68,6 @@ impl SignalState {
         driver: &mut DriverContext<'_, '_>,
     ) -> io::Result<()> {
         let fd = self.fd.as_ref().expect("live signal state must own its fd");
-        unsafe { driver.register_shutdown_fd(fd.as_fd()) }
+        driver.register_shutdown_fd(fd.as_fd())
     }
 }

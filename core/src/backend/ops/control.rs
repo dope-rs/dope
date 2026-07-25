@@ -9,7 +9,7 @@ pub(crate) trait ControlBackend {
     fn prepare_drop(backend: &mut Backend) {
         backend.shutdown();
     }
-    unsafe fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()>;
+    fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()>;
     fn reserve_outbound(backend: &mut Backend, count: u32) -> io::Result<OutboundReservation> {
         let base = backend.alloc_fixed_range(count)?;
         Ok(OutboundReservation::new(base, count))
@@ -48,10 +48,7 @@ mod linux {
     use super::{Backend, BorrowedFd, ControlBackend, PushError, Token, io};
 
     impl ControlBackend for Backend {
-        unsafe fn register_shutdown_fd(
-            backend: &mut Backend,
-            fd: BorrowedFd<'_>,
-        ) -> io::Result<()> {
+        fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()> {
             <Backend as SubmissionBackend>::push(backend, Sqe::poll_shutdown(fd.as_raw_fd()))
                 .map_err(io::Error::from)?;
             backend.uring.submit().map(|_| ())
@@ -121,7 +118,7 @@ mod kqueue {
     use super::{Backend, BorrowedFd, ControlBackend, PushError, Token, io};
 
     impl ControlBackend for Backend {
-        unsafe fn register_shutdown_fd(
+        fn register_shutdown_fd(
             backend: &mut Backend,
             fd: BorrowedFd<'_>,
         ) -> io::Result<()> {

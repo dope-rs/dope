@@ -21,7 +21,7 @@ impl ShutdownTrigger {
     }
 
     pub fn try_register(&self, driver: &mut DriverContext<'_, '_>) -> io::Result<()> {
-        unsafe { driver.register_shutdown_fd(self.pipe.read_end()) }
+        driver.register_shutdown_fd(self.pipe.read_end())
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {
