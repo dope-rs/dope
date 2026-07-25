@@ -17,7 +17,7 @@ dope-net = { path = "net", version = "0.11.0" }
 dope-fiber = { path = "fiber", version = "0.11.0" }
 dope-gen = { path = "gen", version = "0.11.0" }
 dope-test = { path = "test" }
-o3 = "0.7.1"
+o3 = "0.7.2"
 libc = "0.2"
 io-uring = "0.7"
 pin-project = "1"
