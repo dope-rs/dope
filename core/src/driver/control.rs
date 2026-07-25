@@ -9,9 +9,7 @@ use super::{DriverContext, OutboundReservation, PushError};
 
 pub trait ContextControl {
     fn prepare_drop(&mut self);
-    /// # Safety
-    /// `fd` must remain open through this call.
-    unsafe fn register_shutdown_fd(&mut self, fd: BorrowedFd<'_>) -> io::Result<()>;
+    fn register_shutdown_fd(&mut self, fd: BorrowedFd<'_>) -> io::Result<()>;
     fn reserve_outbound(&mut self, count: u32) -> io::Result<OutboundReservation>;
     fn reserve_route(&mut self, id: u8) -> bool;
     fn release_route(&mut self, id: u8);
@@ -31,8 +29,8 @@ impl ContextControl for DriverContext<'_, '_> {
         <Backend as ControlBackend>::prepare_drop(self.backend());
     }
 
-    unsafe fn register_shutdown_fd(&mut self, fd: BorrowedFd<'_>) -> io::Result<()> {
-        unsafe { <Backend as ControlBackend>::register_shutdown_fd(self.backend(), fd) }
+    fn register_shutdown_fd(&mut self, fd: BorrowedFd<'_>) -> io::Result<()> {
+        <Backend as ControlBackend>::register_shutdown_fd(self.backend(), fd)
     }
 
     fn reserve_outbound(&mut self, count: u32) -> io::Result<OutboundReservation> {
