@@ -49,7 +49,6 @@ pub struct State {
 impl BuildHasher for State {
     type Hasher = SipHasher13;
 
-    #[inline]
     fn build_hasher(&self) -> Self::Hasher {
         SipHasher13::new_with_keys(self.words[0], self.words[1])
     }

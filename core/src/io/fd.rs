@@ -42,7 +42,6 @@ impl Debug for Fd<'_> {
 impl<'d> Fd<'d> {
     /// # Safety
     /// `slot` must be reserved from `driver` and uniquely owned.
-    #[inline]
     pub unsafe fn from_raw_slot(slot: FdSlot, driver: DriverRef<'d>) -> Self {
         Self { slot, driver }
     }
@@ -51,7 +50,6 @@ impl<'d> Fd<'d> {
         self.slot
     }
 
-    #[inline]
     pub fn index(&self) -> u32 {
         self.slot.0
     }

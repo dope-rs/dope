@@ -348,7 +348,6 @@ impl<'poll, 'd> Context<'poll, 'd> {
         context.wake.wake();
     }
 
-    #[inline]
     pub fn waker(&self) -> Waker<'_> {
         unsafe { mem::transmute(self.wake) }
     }
@@ -380,7 +379,6 @@ impl<'poll, 'd> Context<'poll, 'd> {
         unsafe { mem::transmute(self.wake) }
     }
 
-    #[inline]
     pub fn wake(&self) {
         self.wake.wake();
     }
@@ -433,7 +431,6 @@ impl<'d> Waker<'d> {
         }
     }
 
-    #[inline]
     pub fn wake(self) {
         match self.target {
             WakeTarget::Node(node) => unsafe { Pin::new_unchecked(node.as_ref()) }.wake(),
