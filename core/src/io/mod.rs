@@ -9,10 +9,12 @@ pub mod socket;
 use std::error::Error as StdError;
 use std::fmt;
 use std::io::{self, Error};
+use std::os::fd::OwnedFd;
 
 use crate::driver::token;
 use crate::driver::token::{SHUTDOWN, Token, kind};
 use fd::FdSlot;
+use ffi::Handle;
 use provided::ProvidedLease;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,9 +92,8 @@ pub enum SyncEvent {
     Failed(i32),
 }
 
-#[derive(Clone, Copy)]
 pub enum OpenEvent {
-    Opened(i32),
+    Opened(OwnedFd),
     Failed(i32),
 }
 
@@ -186,7 +187,7 @@ enum DecodedEvent {
     Connect(Token, i32),
     Write(Token, WriteEvent),
     Sync(Token, SyncEvent),
-    Open(Token, OpenEvent),
+    Open(Token, i32),
     Read(Token, ReadEvent),
     Stat(Token, StatEvent),
     Shutdown,
@@ -255,14 +256,7 @@ impl DecodedEvent {
                 };
                 Ok(Self::Sync(token, e))
             }
-            kind::OPEN => {
-                let e = if c.result >= 0 {
-                    OpenEvent::Opened(c.result)
-                } else {
-                    OpenEvent::Failed(-c.result)
-                };
-                Ok(Self::Open(token, e))
-            }
+            kind::OPEN => Ok(Self::Open(token, c.result)),
             kind::READ => Ok(Self::Read(token, ReadEvent::from_result(c.result))),
             kind::STAT => {
                 let e = if c.result >= 0 {
@@ -343,7 +337,14 @@ impl<'d> Event<'d> {
             ),
             DecodedEvent::Write(token, event) => EventKind::Write(token, event),
             DecodedEvent::Sync(token, event) => EventKind::Sync(token, event),
-            DecodedEvent::Open(token, event) => EventKind::Open(token, event),
+            DecodedEvent::Open(token, result) => EventKind::Open(
+                token,
+                if result >= 0 {
+                    OpenEvent::Opened(Handle::take(result).into_owned())
+                } else {
+                    OpenEvent::Failed(-result)
+                },
+            ),
             DecodedEvent::Read(token, event) => EventKind::Read(token, event),
             DecodedEvent::Stat(token, event) => EventKind::Stat(token, event),
             DecodedEvent::Shutdown => EventKind::Shutdown,

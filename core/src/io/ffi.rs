@@ -26,6 +26,10 @@ impl Handle {
         }
     }
 
+    pub(crate) fn into_owned(self) -> OwnedFd {
+        self.fd
+    }
+
     fn check(rc: libc::c_int) -> io::Result<()> {
         if rc < 0 {
             Err(Error::last_os_error())
