@@ -75,7 +75,6 @@ impl<'d> CompletionWaker<'d> {
         }
     }
 
-    #[inline]
     pub fn wake(self) {
         match self.target {
             CompletionTarget::Ready(driver, key) => driver.activate_ready(key),
@@ -95,7 +94,6 @@ impl<'d> ReadyHandle<'d> {
         self.arena.set_target(self.key, target);
     }
 
-    #[inline]
     pub fn activate(self) {
         self.arena.activate(self.key);
     }
@@ -128,7 +126,6 @@ impl<'d> ReadySlot<'d> {
         self.arena.set_target(self.key, target);
     }
 
-    #[inline]
     pub fn activate(&self) {
         self.arena.activate(self.key);
     }
