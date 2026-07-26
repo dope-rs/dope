@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::convert::Infallible;
 use std::marker::PhantomPinned;
+use std::mem::size_of;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
@@ -20,13 +21,37 @@ use dope_fiber::abi::race::{Either, Race};
 use dope_fiber::abi::ready::Ready;
 use dope_fiber::extensions::SessionExt;
 use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes, SplitTask, try_from_split_task};
-use dope_fiber::slab::{Slab, TaskSlab};
+use dope_fiber::raw::slab::TaskSlab;
+use dope_fiber::raw::wait::{WaitQueue, Waiter};
+use dope_fiber::slab::{FixedSlab, Slab};
 use dope_fiber::task::queue::TaskQueue;
-use dope_fiber::task::{Context, RootWaker, Waker};
-use dope_fiber::wait::{WaitFn, WaitQueue, Waiter};
+use dope_fiber::task::{Context, RootWaker, TaskContext, Waker};
+use dope_fiber::wait::WaitFn;
 use dope_test::{drain_tokens, poll_with_slot, tok, with_context, with_session, with_session_for};
 use o3::buffer::Shared;
 use o3::cell::BrandCell;
+use o3::collections::{FixedPinSlab, PinSlab};
+
+#[test]
+fn raw_hot_path_boundaries_add_no_storage() {
+    assert_eq!(size_of::<WaitQueue>(), size_of::<[usize; 4]>());
+    assert_eq!(
+        size_of::<Waiter<'static>>(),
+        size_of::<[usize; 3]>() + size_of::<Option<Waker<'static>>>(),
+    );
+    assert_eq!(
+        size_of::<Slab<'static, Ready<()>>>(),
+        size_of::<PinSlab<Ready<()>>>(),
+    );
+    assert_eq!(
+        size_of::<FixedSlab<'static, Ready<()>, 1>>(),
+        size_of::<FixedPinSlab<Ready<()>, 1>>(),
+    );
+    assert_eq!(
+        size_of::<TaskSlab<'static, Ready<()>>>(),
+        size_of::<Slab<'static, Ready<()>>>() + size_of::<Pin<Box<[TaskContext]>>>(),
+    );
+}
 
 fn register<'d>(queue: Pin<&WaitQueue>, waiter: Pin<&Waiter<'d>>, waker: Waker<'d>) -> bool {
     queue.try_register_waker(waiter, waker)

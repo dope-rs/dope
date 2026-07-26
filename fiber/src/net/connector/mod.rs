@@ -9,7 +9,6 @@ use o3::collections::CellQueue;
 
 use connect::Connect;
 
-use crate::ConnEnv;
 use crate::Waker;
 use crate::io::Host;
 use dope::DriverContext;
@@ -19,6 +18,8 @@ use dope::manifold::connector::app::{ChunkOutcome, ConnApp, Requests};
 use dope::manifold::connector::core::Core;
 use dope::manifold::connector::source::DialKey;
 use dope::manifold::connector::source::explicit::{Explicit, ExplicitDialer};
+use dope::manifold::env::Bundle;
+use dope::runtime::profile::Balanced;
 use dope_net::Transport;
 use dope_net::link::egress::config::Config;
 use dope_net::link::slot::Slot;
@@ -318,7 +319,7 @@ where
 }
 
 pub type Connector<'scope, 'd, const ID: u8, T, W> =
-    Core<'d, ID, AsyncApp<'scope, 'd, T, W>, ExplicitDialer<'scope, T>, ConnEnv<T, W>>;
+    Core<'d, ID, AsyncApp<'scope, 'd, T, W>, ExplicitDialer<'scope, T>, Bundle<T, W, Balanced>>;
 
 pub struct ConnectorHandle<'scope, 'd, T: Transport>
 where
