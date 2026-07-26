@@ -35,12 +35,13 @@ pub(crate) trait ControlBackend {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::io::ErrorKind;
+    use std::io::{Error, ErrorKind};
     use std::os::fd::AsRawFd;
     use std::process::abort;
 
     use io_uring::opcode::SetSockOpt;
     use io_uring::types::{CancelBuilder, Fixed};
+    use libc::{c_int, c_void};
 
     use crate::backend::ops::submission::SubmissionBackend;
     use crate::backend::uring::sqe::Sqe;
@@ -50,7 +51,7 @@ mod linux {
     impl ControlBackend for Backend {
         fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()> {
             <Backend as SubmissionBackend>::push(backend, Sqe::poll_shutdown(fd.as_raw_fd()))
-                .map_err(io::Error::from)?;
+                .map_err(Error::from)?;
             backend.uring.submit().map(|_| ())
         }
 
@@ -85,14 +86,14 @@ mod linux {
             let Ok((key, stored)) = backend.setsockopt.insert_entry(value) else {
                 return Err(PushError);
             };
-            let optval_ptr = (&raw const *stored).cast::<libc::c_void>();
+            let optval_ptr = (&raw const *stored).cast::<c_void>();
             let ud = Token::from_key(key);
             let sqe = SetSockOpt::new(
                 Fixed(fixed_idx),
                 level,
                 optname,
                 optval_ptr,
-                size_of::<libc::c_int>() as u32,
+                size_of::<c_int>() as u32,
             )
             .build()
             .user_data(ud.raw());
@@ -108,8 +109,11 @@ mod linux {
 
 #[cfg(not(target_os = "linux"))]
 mod kqueue {
+    use std::io::Error;
     use std::os::fd::AsRawFd;
     use std::ptr::{null, null_mut};
+
+    use libc::{EV_ADD, EV_CLEAR, EVFILT_READ, c_int, kevent, setsockopt, socklen_t, uintptr_t};
 
     use crate::backend::kqueue::driver::retry::Retry;
     use crate::backend::kqueue::driver::udata::Udata;
@@ -118,23 +122,18 @@ mod kqueue {
     use super::{Backend, BorrowedFd, ControlBackend, PushError, Token, io};
 
     impl ControlBackend for Backend {
-        fn register_shutdown_fd(
-            backend: &mut Backend,
-            fd: BorrowedFd<'_>,
-        ) -> io::Result<()> {
-            let event = libc::kevent {
-                ident: fd.as_raw_fd() as libc::uintptr_t,
-                filter: libc::EVFILT_READ,
-                flags: libc::EV_ADD | libc::EV_CLEAR,
+        fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()> {
+            let event = kevent {
+                ident: fd.as_raw_fd() as uintptr_t,
+                filter: EVFILT_READ,
+                flags: EV_ADD | EV_CLEAR,
                 fflags: 0,
                 data: 0,
-                udata: Udata::pack(crate::backend::kqueue::driver::TAG_SHUTDOWN, 0, 0)
-                    .into_kevent(),
+                udata: Udata::shutdown().into_kevent(),
             };
-            let rc =
-                unsafe { libc::kevent(backend.kq.as_raw_fd(), &event, 1, null_mut(), 0, null()) };
+            let rc = unsafe { kevent(backend.kq.as_raw_fd(), &event, 1, null_mut(), 0, null()) };
             if rc < 0 {
-                Err(io::Error::last_os_error())
+                Err(Error::last_os_error())
             } else {
                 Ok(())
             }
@@ -167,12 +166,12 @@ mod kqueue {
                 return Err(PushError);
             };
             let rc = unsafe {
-                libc::setsockopt(
+                setsockopt(
                     raw,
-                    level as libc::c_int,
-                    optname as libc::c_int,
-                    (&value as *const libc::c_int).cast(),
-                    size_of::<libc::c_int>() as libc::socklen_t,
+                    level as c_int,
+                    optname as c_int,
+                    (&value as *const c_int).cast(),
+                    size_of::<c_int>() as socklen_t,
                 )
             };
             if rc == 0 { Ok(()) } else { Err(PushError) }

@@ -1,12 +1,10 @@
 use std::mem::size_of;
 use std::os::fd::{IntoRawFd, RawFd};
-use std::slice;
 
 use super::super::pending::PendingCompletion;
 use super::super::retry::Retry;
-use super::super::udata::Udata;
+use super::super::udata::{Event, Udata};
 use super::super::{Kqueue, MAX_DRAIN_PER_FD, PENDING_CAP};
-use super::super::{TAG_ACCEPT, TAG_RECV, TAG_RECV_MSG, TAG_SHUTDOWN, TAG_WRITE_RETRY};
 use super::arm::Arm;
 use super::{DrainOutcome, ReadKind, ReadSlot, Resume};
 use crate::platform::raw::abi::PlatformAbi;
@@ -16,26 +14,41 @@ use crate::driver::token::Token;
 use crate::io::ffi::Handle;
 use crate::io::socket::msg::IoVec;
 use crate::io::socket::msg::MsgHdr;
+use libc::EMFILE;
+use libc::ENOBUFS;
+use libc::EVFILT_TIMER;
+use libc::EVFILT_USER;
+use libc::MSG_TRUNC;
+use libc::accept;
+use std::slice::from_raw_parts_mut;
+use std::slice::from_ref;
+use libc::kevent;
+use libc::msghdr;
+use libc::recv;
+use libc::recvmsg;
+use libc::sockaddr;
+use libc::sockaddr_storage;
+use libc::socklen_t;
 
 pub(crate) trait Dispatch {
-    fn dispatch_event(&mut self, ev: &libc::kevent);
-    fn dispatch_accept(&mut self, slot_idx: usize, epoch: u32, ev: &libc::kevent);
+    fn dispatch_event(&mut self, ev: &kevent);
+    fn dispatch_accept(&mut self, slot_idx: usize, epoch: u32, ev: &kevent);
     fn drain_accept(
         &mut self,
         fd: RawFd,
         ud: Token,
-        addr_ptr: *mut libc::sockaddr,
-        addrlen_ptr: *mut libc::socklen_t,
+        addr_ptr: *mut sockaddr,
+        addrlen_ptr: *mut socklen_t,
         oneshot: bool,
     ) -> DrainOutcome;
-    fn dispatch_recv(&mut self, slot_idx: usize, epoch: u32, ev: &libc::kevent);
+    fn dispatch_recv(&mut self, slot_idx: usize, epoch: u32, ev: &kevent);
     fn drain_recv(&mut self, fd: RawFd, ud: Token) -> DrainOutcome;
-    fn dispatch_recv_msg(&mut self, slot_idx: usize, epoch: u32, ev: &libc::kevent);
+    fn dispatch_recv_msg(&mut self, slot_idx: usize, epoch: u32, ev: &kevent);
     fn drain_recv_msg(
         &mut self,
         fd: RawFd,
         ud: Token,
-        msg_tpl: *const libc::msghdr,
+        msg_tpl: *const msghdr,
     ) -> DrainOutcome;
     fn queue_resume(&mut self, resume: Resume);
     fn take_resume(&mut self, resume: Resume) -> bool;
@@ -43,29 +56,31 @@ pub(crate) trait Dispatch {
 }
 
 impl Dispatch for Kqueue {
-    fn dispatch_event(&mut self, ev: &libc::kevent) {
-        if ev.filter == libc::EVFILT_USER {
+    fn dispatch_event(&mut self, ev: &kevent) {
+        if ev.filter == EVFILT_USER {
             return;
         }
-        if ev.filter == libc::EVFILT_TIMER {
+        if ev.filter == EVFILT_TIMER {
             if let Some(ud) = Token::try_from_raw(ev.udata as usize as u64) {
                 self.push_pending(PendingCompletion::Timer { ud });
             }
             return;
         }
-        let raw = Udata::from_kevent(ev.udata);
-        let (tag, route, slot, epoch) = raw.unpack();
-        match tag {
-            TAG_ACCEPT => self.dispatch_accept(Udata::slot_key(route, slot), epoch, ev),
-            TAG_RECV => self.dispatch_recv(Udata::slot_key(route, slot), epoch, ev),
-            TAG_RECV_MSG => self.dispatch_recv_msg(Udata::slot_key(route, slot), epoch, ev),
-            TAG_WRITE_RETRY => self.dispatch_write_retry(slot, epoch),
-            TAG_SHUTDOWN => self.push_pending(PendingCompletion::Shutdown),
-            _ => {}
+        match Udata::from_kevent(ev.udata).decode() {
+            Some(Event::Accept { key, epoch }) => self.dispatch_accept(key.index(), epoch, ev),
+            Some(Event::Recv { key, epoch }) => self.dispatch_recv(key.index(), epoch, ev),
+            Some(Event::RecvMsg { key, epoch }) => {
+                self.dispatch_recv_msg(key.index(), epoch, ev);
+            }
+            Some(Event::WriteRetry { index, epoch }) => {
+                self.dispatch_write_retry(index, epoch);
+            }
+            Some(Event::Shutdown) => self.push_pending(PendingCompletion::Shutdown),
+            None => {}
         }
     }
 
-    fn dispatch_accept(&mut self, slot_idx: usize, epoch: u32, ev: &libc::kevent) {
+    fn dispatch_accept(&mut self, slot_idx: usize, epoch: u32, ev: &kevent) {
         let outcome = {
             let Some(slot) = self
                 .read_slots
@@ -94,7 +109,7 @@ impl Dispatch for Kqueue {
         match self.drain_accept(fd, ud, addr_ptr, addrlen_ptr, oneshot) {
             DrainOutcome::Done => {
                 if !oneshot {
-                    self.re_enable_read(fd, Udata::from_token(ud, TAG_ACCEPT));
+                    self.re_enable_read(fd, Udata::accept(ud));
                 } else if let Some(s) = self
                     .read_slots
                     .get_mut(&slot_idx)
@@ -116,8 +131,8 @@ impl Dispatch for Kqueue {
         &mut self,
         fd: RawFd,
         ud: Token,
-        addr_ptr: *mut libc::sockaddr,
-        addrlen_ptr: *mut libc::socklen_t,
+        addr_ptr: *mut sockaddr,
+        addrlen_ptr: *mut socklen_t,
         oneshot: bool,
     ) -> DrainOutcome {
         for _ in 0..MAX_DRAIN_PER_FD {
@@ -126,17 +141,17 @@ impl Dispatch for Kqueue {
             }
             if !addrlen_ptr.is_null() {
                 unsafe {
-                    *addrlen_ptr = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                    *addrlen_ptr = size_of::<sockaddr_storage>() as socklen_t;
                 }
             }
-            let raw = unsafe { libc::accept(fd, addr_ptr, addrlen_ptr) };
+            let raw = unsafe { accept(fd, addr_ptr, addrlen_ptr) };
             let more_flag = !oneshot;
             if raw >= 0 {
                 let Some(slot) = self.next_accept_slot() else {
                     self.close_raw(raw);
                     self.push_pending(PendingCompletion::Accept {
                         ud,
-                        result: -libc::EMFILE,
+                        result: -EMFILE,
                         more: more_flag,
                     });
                     return DrainOutcome::Done;
@@ -153,7 +168,7 @@ impl Dispatch for Kqueue {
                     self.close_raw(raw);
                     self.push_pending(PendingCompletion::Accept {
                         ud,
-                        result: -libc::EMFILE,
+                        result: -EMFILE,
                         more: more_flag,
                     });
                     return DrainOutcome::Done;
@@ -182,7 +197,7 @@ impl Dispatch for Kqueue {
         DrainOutcome::Yield
     }
 
-    fn dispatch_recv(&mut self, slot_idx: usize, epoch: u32, ev: &libc::kevent) {
+    fn dispatch_recv(&mut self, slot_idx: usize, epoch: u32, ev: &kevent) {
         let outcome = match self
             .read_slots
             .get_mut(&slot_idx)
@@ -205,7 +220,7 @@ impl Dispatch for Kqueue {
             }
         };
         match self.drain_recv(fd, ud) {
-            DrainOutcome::Done => self.re_enable_read(fd, Udata::from_token(ud, TAG_RECV)),
+            DrainOutcome::Done => self.re_enable_read(fd, Udata::recv(ud)),
             DrainOutcome::Yield => self.queue_resume(Resume {
                 key: slot_idx,
                 epoch,
@@ -223,7 +238,7 @@ impl Dispatch for Kqueue {
             let Some((bid, ptr, cap)) = self.provided.take() else {
                 return DrainOutcome::Yield;
             };
-            let n = unsafe { libc::recv(fd, ptr.cast(), cap, 0) };
+            let n = unsafe { recv(fd, ptr.cast(), cap, 0) };
             if n > 0 {
                 self.push_pending(PendingCompletion::Recv {
                     ud,
@@ -259,7 +274,7 @@ impl Dispatch for Kqueue {
         DrainOutcome::Yield
     }
 
-    fn dispatch_recv_msg(&mut self, slot_idx: usize, epoch: u32, ev: &libc::kevent) {
+    fn dispatch_recv_msg(&mut self, slot_idx: usize, epoch: u32, ev: &kevent) {
         let outcome = {
             let Some(slot) = self
                 .read_slots
@@ -287,7 +302,7 @@ impl Dispatch for Kqueue {
             }
         };
         match self.drain_recv_msg(fd, ud, msg_tpl) {
-            DrainOutcome::Done => self.re_enable_read(fd, Udata::from_token(ud, TAG_RECV_MSG)),
+            DrainOutcome::Done => self.re_enable_read(fd, Udata::recv_msg(ud)),
             DrainOutcome::Yield => self.queue_resume(Resume {
                 key: slot_idx,
                 epoch,
@@ -301,7 +316,7 @@ impl Dispatch for Kqueue {
         &mut self,
         fd: RawFd,
         ud: Token,
-        msg_tpl: *const libc::msghdr,
+        msg_tpl: *const msghdr,
     ) -> DrainOutcome {
         let template = unsafe { *msg_tpl };
         let namelen = template.msg_namelen as usize;
@@ -316,21 +331,21 @@ impl Dispatch for Kqueue {
                 self.provided.defer(bid);
                 self.push_pending(PendingCompletion::Recv {
                     ud,
-                    result: -libc::ENOBUFS,
+                    result: -ENOBUFS,
                     more: true,
                     bid: None,
                 });
                 return DrainOutcome::Done;
             }
             let iov = IoVec::from_mut_slice(unsafe {
-                slice::from_raw_parts_mut(ptr.add(namelen), cap - namelen)
+                from_raw_parts_mut(ptr.add(namelen), cap - namelen)
             });
             let mut local_msg = MsgHdr::empty();
             local_msg.set_name_ptr(ptr.cast(), template.msg_namelen);
-            local_msg.set_iov(slice::from_ref(&iov));
-            let n = unsafe { libc::recvmsg(fd, local_msg.as_mut_ptr(), 0) };
+            local_msg.set_iov(from_ref(&iov));
+            let n = unsafe { recvmsg(fd, local_msg.as_mut_ptr(), 0) };
             if n > 0 {
-                if local_msg.flags() & libc::MSG_TRUNC != 0 {
+                if local_msg.flags() & MSG_TRUNC != 0 {
                     self.provided.defer(bid);
                     continue;
                 }
@@ -425,7 +440,7 @@ impl Dispatch for Kqueue {
                     match self.drain_accept(fd, ud, addr_ptr, addrlen_ptr, oneshot) {
                         DrainOutcome::Done => {
                             if !oneshot {
-                                self.re_enable_read(fd, Udata::from_token(ud, TAG_ACCEPT))
+                                self.re_enable_read(fd, Udata::accept(ud))
                             } else if let Some(s) = self
                                 .read_slots
                                 .get_mut(&slot_idx)
@@ -450,7 +465,7 @@ impl Dispatch for Kqueue {
                     };
                     match self.drain_recv(fd, ud) {
                         DrainOutcome::Done => {
-                            self.re_enable_read(fd, Udata::from_token(ud, TAG_RECV))
+                            self.re_enable_read(fd, Udata::recv(ud))
                         }
                         DrainOutcome::Yield => self.queue_resume(item),
                         DrainOutcome::Closed => {}
@@ -468,7 +483,7 @@ impl Dispatch for Kqueue {
                     };
                     match self.drain_recv_msg(fd, ud, tpl) {
                         DrainOutcome::Done => {
-                            self.re_enable_read(fd, Udata::from_token(ud, TAG_RECV_MSG))
+                            self.re_enable_read(fd, Udata::recv_msg(ud))
                         }
                         DrainOutcome::Yield => self.queue_resume(item),
                         DrainOutcome::Closed => {}
