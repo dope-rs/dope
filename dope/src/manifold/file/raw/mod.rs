@@ -5,6 +5,21 @@ use std::ptr::NonNull;
 
 use dope_core::backend::Sqe;
 use dope_core::driver::token::Token;
+use dope_core::io::file::OpenPath;
+
+pub(super) struct OpenRequest {
+    path: OpenPath,
+}
+
+impl OpenRequest {
+    pub(super) fn new(path: OpenPath) -> Self {
+        Self { path }
+    }
+
+    pub(super) fn submission(&self, flags: i32, token: Token) -> Sqe {
+        unsafe { self.path.open_at(flags, token) }
+    }
+}
 
 pub(super) struct ReadRegion {
     ptr: NonNull<MaybeUninit<u8>>,

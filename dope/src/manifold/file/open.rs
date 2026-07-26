@@ -1,6 +1,7 @@
 use std::os::fd::OwnedFd;
 
 use super::FileOutcome;
+use super::raw::OpenRequest;
 use super::table::OperationTable;
 use dope::DriverContext;
 use dope_core::driver::ready::CompletionWaker;
@@ -14,12 +15,8 @@ pub enum OpenDone {
     Failed(i32),
 }
 
-struct OpenHold {
-    path: OpenPath,
-}
-
 pub(crate) struct OpenTable<'d, const ID: u8> {
-    operations: OperationTable<'d, OpenHold, OpenDone, KeyTag<ID, OPEN>>,
+    operations: OperationTable<'d, OpenRequest, OpenDone, KeyTag<ID, OPEN>>,
 }
 
 impl<'d, const ID: u8> OpenTable<'d, ID> {
@@ -44,8 +41,8 @@ impl<'d, const ID: u8> OpenTable<'d, ID> {
         driver: &mut DriverContext<'_, 'd>,
     ) -> Option<Token> {
         self.operations
-            .begin(OpenHold { path }, driver, |token, hold| {
-                Some((token, unsafe { hold.path.open_at(flags, token) }))
+            .begin(OpenRequest::new(path), driver, |token, request| {
+                Some((token, request.submission(flags, token)))
             })
             .ok()
     }
