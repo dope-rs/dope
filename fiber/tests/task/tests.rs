@@ -3,8 +3,9 @@ use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
 
+use dope_fiber::abi::Fiber;
 use dope_fiber::abi::batch::Batch;
-use dope_fiber::abi::{Fiber, ready};
+use dope_fiber::abi::ready::Ready;
 use dope_fiber::slab::{FixedSlab, Slab, TaskId};
 use dope_fiber::task::queue::TaskQueue;
 use dope_fiber::task::{Context, TaskContext, Waker};
@@ -256,7 +257,7 @@ fn generated_inline_batch_await_allocates_nothing() {
         let mut sum = 0;
         let (allocations, _) = allocations_during(|| {
             let fiber = dope_gen::fiber!('_ => async move {
-                let fibers = core::array::from_fn(dope_fiber::abi::ready);
+                let fibers = core::array::from_fn(Ready::new);
                 let outputs = Batch::<_, usize, 8>::from_array(fibers).await;
                 outputs.sum::<usize>()
             });
@@ -313,7 +314,7 @@ fn output_drop_panic_releases_the_remaining_array() {
     with_context(|mut cx| {
         let drops = counter();
         let fibers = core::array::from_fn(|index| {
-            dope_fiber::abi::ready(ProbeOutput {
+            Ready::new(ProbeOutput {
                 drops: Rc::clone(&drops),
                 value: 0,
                 panic: index == 0,
@@ -358,8 +359,8 @@ fn dynamic_fiber_slab_validates_generations() {
         let task = slab
             .vacant_entry()
             .expect("new dynamic fiber slab should have a vacant task slot")
-            .insert(ready(7));
-        assert!(slab.insert(ready(9)).is_none());
+            .insert(Ready::new(7));
+        assert!(slab.insert(Ready::new(9)).is_none());
         let erased = task.erase();
         assert_eq!(erased.index(), 0);
         let task = TaskId::from_erased(erased);
@@ -367,7 +368,7 @@ fn dynamic_fiber_slab_validates_generations() {
         assert_eq!(slab.poll(&task, context.as_mut()), Some(Poll::Ready(7)));
         assert!(slab.remove(task));
 
-        let next = slab.insert(ready(11)).unwrap();
+        let next = slab.insert(Ready::new(11)).unwrap();
         assert!(slab.poll(&stale, context.as_mut()).is_none());
         assert!(!slab.remove(stale));
         assert!(slab.remove(next));
@@ -382,7 +383,7 @@ fn fixed_fiber_slab_validates_generations() {
             .as_mut()
             .vacant_entry()
             .expect("new fixed fiber slab should have a vacant task slot")
-            .insert(ready(7));
+            .insert(Ready::new(7));
         let erased = task.erase();
         let task = TaskId::from_erased(erased);
         let stale = TaskId::from_erased(erased);
@@ -392,7 +393,7 @@ fn fixed_fiber_slab_validates_generations() {
         );
         assert!(slab.as_mut().remove(task));
 
-        let next = slab.as_mut().insert(ready(11)).unwrap();
+        let next = slab.as_mut().insert(Ready::new(11)).unwrap();
         assert!(slab.as_mut().poll(&stale, context.as_mut()).is_none());
         assert!(!slab.as_mut().remove(stale));
         assert!(slab.as_mut().remove(next));

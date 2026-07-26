@@ -6,12 +6,15 @@ use std::thread::{scope, sleep};
 use std::time::Duration;
 
 use dope::runtime::launcher::{Launcher, WorkerContext, WorkerEntry};
+use dope::runtime::trigger::ShutdownTrigger;
 
 pub struct Harness {
     bind: SocketAddr,
 }
 
 struct HarnessEntry<S>(PhantomData<fn(S)>);
+
+struct TriggerHarnessEntry<S>(PhantomData<fn(S)>);
 
 impl<S> WorkerEntry for HarnessEntry<S>
 where
@@ -24,8 +27,20 @@ where
     }
 }
 
+impl<S> WorkerEntry for TriggerHarnessEntry<S>
+where
+    S: FnOnce(WorkerContext, &ShutdownTrigger) -> io::Result<()> + Send,
+{
+    type Input = S;
+
+    fn run(server: Self::Input, context: WorkerContext) -> io::Result<()> {
+        let trigger = context.shutdown_trigger()?;
+        server(context, &trigger)
+    }
+}
+
 impl Harness {
-    fn new(bind: SocketAddr) -> Self {
+    pub const fn new(bind: SocketAddr) -> Self {
         Self { bind }
     }
 
@@ -50,6 +65,32 @@ impl Harness {
         let trigger = launcher.shutdown_trigger()?;
         scope(|scope| {
             let server = scope.spawn(move || launcher.run::<HarnessEntry<S>>(vec![server]));
+            let ready = Self::wait_for_ready(bind);
+            let outcome = ready.map(|()| catch_unwind(AssertUnwindSafe(|| client(bind))));
+            trigger.fire()?;
+            let _ = TcpStream::connect(bind);
+            let served = server.join();
+            let value = match outcome? {
+                Ok(value) => value,
+                Err(payload) => resume_unwind(payload),
+            };
+            match served {
+                Ok(run) => run.map(|()| value),
+                Err(payload) => resume_unwind(payload),
+            }
+        })
+    }
+
+    pub fn run_with_trigger<S, C, R>(&self, server: S, client: C) -> io::Result<R>
+    where
+        S: FnOnce(WorkerContext, &ShutdownTrigger) -> io::Result<()> + Send,
+        C: FnOnce(SocketAddr) -> R,
+    {
+        let bind = self.bind;
+        let launcher = Launcher::unbound(1)?;
+        let trigger = launcher.shutdown_trigger()?;
+        scope(|scope| {
+            let server = scope.spawn(move || launcher.run::<TriggerHarnessEntry<S>>(vec![server]));
             let ready = Self::wait_for_ready(bind);
             let outcome = ready.map(|()| catch_unwind(AssertUnwindSafe(|| client(bind))));
             trigger.fire()?;

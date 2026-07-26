@@ -9,6 +9,8 @@ use dope_net::link::egress::arena;
 use dope_net::link::slot::{DeferredEgress, PendingFlags, SendBuffer, Slot};
 use dope_net::wire::Wire;
 
+pub const WRITE_BUF_CAP: usize = send::WRITE_BUF_CAP;
+
 pub struct State<C: Default + 'static> {
     pub conn: C,
     pub(super) send: send::State,

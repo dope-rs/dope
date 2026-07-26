@@ -14,6 +14,7 @@ use self::recv::RecvPhase;
 use self::send::SendPhase;
 use self::source::SourcePhase;
 use super::app::ConnApp;
+use super::session::{Session, SessionApp};
 use super::source::{DialKey, Dialer};
 use super::state::State;
 use crate::DriverContext;
@@ -235,6 +236,99 @@ where
         self.as_mut().poll_source(driver);
         self.as_mut().poll_liveness(driver);
         self.flush_dirty(driver);
+    }
+}
+
+impl<'d, const ID: u8, N, S, E> Core<'d, ID, SessionApp<'d, N, E::Wire>, S, E>
+where
+    N: Session<'d>,
+    S: Dialer<E::Transport>,
+    E: Env,
+    E::Transport: Transport,
+{
+    pub fn new(
+        session: N,
+        upstreams: S,
+        max_connections: usize,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self>
+    where
+        <E::Wire as Wire>::InitConfig: Default,
+    {
+        Self::new_with_egress(
+            session,
+            upstreams,
+            max_connections,
+            Config::default(),
+            driver,
+        )
+    }
+
+    pub fn new_with_egress(
+        session: N,
+        upstreams: S,
+        max_connections: usize,
+        egress_config: Config,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self>
+    where
+        <E::Wire as Wire>::InitConfig: Default,
+    {
+        Self::new_with_configs(
+            session,
+            upstreams,
+            max_connections,
+            egress_config,
+            <E::Wire as Wire>::InitConfig::default(),
+            driver,
+        )
+    }
+
+    pub fn new_with_wire_config(
+        session: N,
+        upstreams: S,
+        max_connections: usize,
+        wire_config: <E::Wire as Wire>::InitConfig,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self> {
+        Self::new_with_configs(
+            session,
+            upstreams,
+            max_connections,
+            Config::default(),
+            wire_config,
+            driver,
+        )
+    }
+
+    pub fn new_with_configs(
+        session: N,
+        upstreams: S,
+        max_connections: usize,
+        egress_config: Config,
+        wire_config: <E::Wire as Wire>::InitConfig,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<Self> {
+        let app = SessionApp {
+            session,
+            wire: PhantomData,
+        };
+        Self::with_app_configs(
+            app,
+            upstreams,
+            max_connections,
+            egress_config,
+            wire_config,
+            driver,
+        )
+    }
+
+    pub fn session(&self) -> &N {
+        &self.app.session
+    }
+
+    pub fn session_mut(self: Pin<&mut Self>) -> &mut N {
+        &mut self.project().app.session
     }
 }
 

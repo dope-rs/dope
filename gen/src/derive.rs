@@ -3,11 +3,13 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 use syn::{Attribute, Error, Generics, Meta, Token};
 
-pub(crate) struct Derive;
+pub(crate) trait DeriveAttrs {
+    fn reject_packed(&self) -> Result<(), Error>;
+}
 
-impl Derive {
-    pub(crate) fn reject_packed(attrs: &[Attribute]) -> Result<(), Error> {
-        for attr in attrs {
+impl DeriveAttrs for [Attribute] {
+    fn reject_packed(&self) -> Result<(), Error> {
+        for attr in self {
             if !attr.path().is_ident("repr") {
                 continue;
             }
@@ -25,9 +27,15 @@ impl Derive {
         }
         Ok(())
     }
+}
 
-    pub(crate) fn brand_lifetime(generics: &Generics) -> (TokenStream, TokenStream) {
-        match generics.lifetimes().next() {
+pub(crate) trait DeriveGenerics {
+    fn brand_lifetime(&self) -> (TokenStream, TokenStream);
+}
+
+impl DeriveGenerics for Generics {
+    fn brand_lifetime(&self) -> (TokenStream, TokenStream) {
+        match self.lifetimes().next() {
             Some(lt) => {
                 let lt = &lt.lifetime;
                 (quote! { #lt }, quote! {})

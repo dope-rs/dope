@@ -2,18 +2,23 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Error, Fields, Ident, Type};
 
-use crate::derive::Derive;
+use crate::derive::{DeriveAttrs, DeriveGenerics};
 
-pub(crate) struct Forward;
+pub(crate) struct Forward(DeriveInput);
 
 impl Forward {
-    pub(crate) fn derive(input: DeriveInput) -> TokenStream {
-        if let Err(error) = Derive::reject_packed(&input.attrs) {
+    pub(crate) fn new(input: DeriveInput) -> Self {
+        Self(input)
+    }
+
+    pub(crate) fn expand(self) -> TokenStream {
+        let input = self.0;
+        if let Err(error) = input.attrs.reject_packed() {
             return error.to_compile_error().into();
         }
         let name = &input.ident;
         let (_, ty_generics, where_clause) = input.generics.split_for_impl();
-        let (brand, fresh) = Derive::brand_lifetime(&input.generics);
+        let (brand, fresh) = input.generics.brand_lifetime();
         let impl_generics = {
             let params = input.generics.params.iter();
             quote! { <#fresh #(#params),*> }

@@ -1,25 +1,20 @@
-mod affinity;
-mod alloc;
+mod checks;
 mod fiber;
 mod file;
 mod harness;
-mod panic;
 mod peer;
 mod rt;
 mod scenario;
 
 use std::time::Duration;
 
-pub use affinity::{not_send, not_sync, not_unpin, require_send};
-pub use alloc::{TrackingAlloc, allocations_during};
-pub use fiber::{
-    Gate, drive, poll_ready, poll_with_slot, pump_events, run_until, with_context,
+pub use checks::{
+    CountDrop, OrderedDrop, TrackingAlloc, allocations_during, assert_panics_with, assert_unwinds,
+    counter, expect_abort, not_send, not_sync, not_unpin, require_send, respawn_self,
 };
+pub use fiber::{Gate, drive, poll_ready, poll_with_slot, pump_events, run_until, with_context};
 pub use file::TempFile;
 pub use harness::Harness;
-pub use panic::{
-    CountDrop, OrderedDrop, assert_panics_with, assert_unwinds, counter, expect_abort, respawn_self,
-};
 pub use peer::{
     connect, connect_with_read_timeout, hold_connections, pattern, read_all, request_reply,
     reserve_addr, spawn_peer,

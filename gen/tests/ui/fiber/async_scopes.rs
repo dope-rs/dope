@@ -1,9 +1,12 @@
 extern crate dope;
 
+#[expect(unused_imports)]
+use dope_fiber::abi::ready::Ready;
+
 fn main() {
     let _ = dope_gen::fiber!('_ => async move {
         async fn escaped() {
-            dope_fiber::abi::ready(()).await;
+            Ready::new(()).await;
         }
         trait Trait {
             async fn escaped();
@@ -11,9 +14,9 @@ fn main() {
         struct Type;
         impl Trait for Type {
             async fn escaped() {
-                dope_fiber::abi::ready(()).await;
+                Ready::new(()).await;
             }
         }
-        let _ = async { dope_fiber::abi::ready(()).await };
+        let _ = async { Ready::new(()).await };
     });
 }

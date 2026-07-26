@@ -2,7 +2,7 @@ error[E0133]: call to unsafe function `OwnerFiber::<F, SplitBytes>::try_from_spl
   --> tests/ui/task/owner_fiber_builder_requires_unsafe.rs:12:13
    |
 12 | /             OwnerFiber::try_from_split(owner, FiberScope::from_driver(session.driver()), |_| {
-13 | |                 Ok::<_, Infallible>(pending::<()>())
+13 | |                 Ok::<_, Infallible>(Pending::<()>::new())
 14 | |             });
    | |______________^ call to unsafe function
    |

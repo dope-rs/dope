@@ -5,7 +5,7 @@ use syn::{
     PathArguments, Type,
 };
 
-use crate::derive::Derive;
+use crate::derive::{DeriveAttrs, DeriveGenerics};
 
 struct ManifoldField {
     name: Ident,
@@ -89,7 +89,7 @@ pub(crate) struct DispatcherSpec {
 
 impl DispatcherSpec {
     pub(crate) fn derive(input: DeriveInput) -> TokenStream {
-        if let Err(error) = Derive::reject_packed(&input.attrs) {
+        if let Err(error) = input.attrs.reject_packed() {
             return error.to_compile_error().into();
         }
         let name = input.ident;
@@ -246,7 +246,7 @@ impl DispatcherSpec {
     fn manifold_impl(&self) -> proc_macro2::TokenStream {
         let name = &self.name;
         let (_, ty_generics, where_clause) = self.generics.split_for_impl();
-        let (brand, fresh) = Derive::brand_lifetime(&self.generics);
+        let (brand, fresh) = self.generics.brand_lifetime();
         let impl_generics = {
             let params = self.generics.params.iter();
             quote! { <#fresh #(#params),*> }

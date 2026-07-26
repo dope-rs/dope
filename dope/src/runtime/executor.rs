@@ -21,10 +21,22 @@ pub trait StorageFactory: 'static {
     fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d>;
 }
 
+#[doc(hidden)]
+#[repr(transparent)]
+pub struct ValueStorage<T>(T);
+
 impl StorageFactory for () {
     type Output<'d> = ();
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {}
+}
+
+impl<T: 'static> StorageFactory for ValueStorage<T> {
+    type Output<'d> = T;
+
+    fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
+        self.0
+    }
 }
 
 impl<A: StorageFactory, B: StorageFactory> StorageFactory for (A, B) {
@@ -59,6 +71,14 @@ impl Executor<()> {
 }
 
 impl<S> Executor<S> {
+    pub fn with_storage<T: 'static>(self, storage: T) -> Executor<ValueStorage<T>> {
+        Executor {
+            storage: ValueStorage(storage),
+            driver: self.driver,
+            seed: self.seed,
+        }
+    }
+
     pub fn with_storage_factory<T: StorageFactory>(self, storage: T) -> Executor<T> {
         Executor {
             storage,

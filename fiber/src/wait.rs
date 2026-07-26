@@ -1,19 +1,19 @@
 use std::cell::Cell;
-use std::marker::PhantomPinned;
+use std::marker::{PhantomData, PhantomPinned};
 use std::pin::Pin;
+use std::process::abort;
 use std::ptr::NonNull;
+use std::task::Poll;
 
 use o3::marker::ThreadBound;
+use pin_project::pin_project;
 
+use crate::abi::Fiber;
 use crate::task::{Context, Waker};
 
 type WaiterPtr = NonNull<Waiter<'static>>;
 
-/// A bounded, allocation-free FIFO of pinned waiters.
-///
-/// The queue and its waiters unlink each other during `Drop`, so either side
-/// may be dropped first. All raw links stay inside this module; the public API
-/// requires both endpoints to be pinned before a link can be created.
+/// A bounded, allocation-free FIFO whose pinned endpoints unlink on drop.
 pub struct WaitQueue {
     head: Cell<Option<WaiterPtr>>,
     tail: Cell<Option<WaiterPtr>>,
@@ -32,6 +32,43 @@ pub struct Waiter<'d> {
     _thread: ThreadBound,
 }
 
+#[pin_project]
+pub struct WaitFn<'d, F, T> {
+    #[pin]
+    waiter: Waiter<'d>,
+    f: F,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<'d, F, T> WaitFn<'d, F, T>
+where
+    F: FnMut(Pin<&mut Context<'_, 'd>>, Pin<&Waiter<'d>>) -> Poll<T>,
+{
+    pub const fn new(f: F) -> Self {
+        Self {
+            waiter: Waiter::new(),
+            f,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'d, F, T> Fiber<'d> for WaitFn<'d, F, T>
+where
+    F: FnMut(Pin<&mut Context<'_, 'd>>, Pin<&Waiter<'d>>) -> Poll<T>,
+{
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, context: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
+        let this = self.project();
+        let result = (this.f)(context, this.waiter.as_ref());
+        if result.is_ready() {
+            this.waiter.as_ref().unregister();
+        }
+        result
+    }
+}
+
 impl WaitQueue {
     pub const fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -44,9 +81,8 @@ impl WaitQueue {
         }
     }
 
-    /// Projects one queue from a pinned slice without exposing the intrusive
-    /// queue's pinning proof to consumers.
-    pub fn get_pinned(queues: Pin<&[Self]>, index: usize) -> Option<Pin<&Self>> {
+    /// Projects one queue from a pinned slice.
+    pub fn pinned(queues: Pin<&[Self]>, index: usize) -> Option<Pin<&Self>> {
         let queue = queues.get_ref().get(index)?;
         // SAFETY: pinning a slice pins every element, and the shared slice
         // reference cannot move or replace an element.
@@ -86,8 +122,6 @@ impl WaitQueue {
             return false;
         }
 
-        // A waiter may move between queues. A failed registration above leaves
-        // its old registration intact; a successful one first detaches it.
         waiter.unregister();
         debug_assert!(waiter.previous.get().is_none());
         debug_assert!(waiter.next.get().is_none());
@@ -144,9 +178,9 @@ impl WaitQueue {
             return false;
         };
         let waiter = node.cast::<Waiter<'_>>();
-        let waker = self
-            .unlink(waiter)
-            .expect("dope-fiber: linked waiter missing its queue");
+        let Some(waker) = self.unlink(waiter) else {
+            abort();
+        };
         if wake {
             waker.wake();
         }

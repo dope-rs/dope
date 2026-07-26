@@ -1,13 +1,13 @@
 error[E0597]: `text` does not live long enough
- --> tests/ui/fiber/capture_borrow_escape.rs:5:32
+ --> tests/ui/fiber/capture_borrow_escape.rs:7:20
   |
-3 | fn leak<'d>(text: String) -> impl dope_fiber::abi::Fiber<'d, Output = &'d str> {
+5 | fn leak<'d>(text: String) -> impl dope_fiber::abi::Fiber<'d, Output = &'d str> {
   |             ---- binding `text` declared here
-4 |     dope_gen::fiber!('d => async move {
+6 |     dope_gen::fiber!('d => async move {
   |                                     - return type of async block is &'1 str
-5 |         dope_fiber::abi::ready((&text).as_str()).await
-  |         ----------             ^^^^^^^ borrowed value does not live long enough
+7 |         Ready::new((&text).as_str()).await
+  |         -----      ^^^^^^^ borrowed value does not live long enough
   |         |
   |         argument requires that `text` is borrowed for `'1`
-6 |     })
+8 |     })
   |     - `text` dropped here while still borrowed

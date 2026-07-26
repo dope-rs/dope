@@ -23,10 +23,10 @@ use dope::runtime::dispatcher::Idle;
 use dope::runtime::executor::Executor;
 use dope::runtime::launcher::WorkerContext;
 use dope::runtime::profile::Throughput;
-use dope_test::Harness;
 use dope_net::link::slot::Slot;
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
+use dope_test::Harness;
 use o3::buffer::RetainBytes;
 
 const CHILD: &str = "DOPE_LISTENER_TEARDOWN_CHILD";
