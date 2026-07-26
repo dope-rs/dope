@@ -7,7 +7,6 @@ pub mod pending;
 pub mod pollfn;
 pub mod race;
 pub mod ready;
-mod scoped;
 
 use core::pin::Pin;
 use core::task::Poll;

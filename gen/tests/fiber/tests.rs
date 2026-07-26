@@ -94,41 +94,6 @@ impl<'a, 'd> Fiber<'d> for DropPanic<'a> {
     }
 }
 
-struct DropPanicMaker<'a>(&'a Cell<usize>);
-
-impl<'a> dope_fiber::abi::__private::ScopedFactory<(), DropPanic<'a>> for DropPanicMaker<'a> {
-    unsafe fn make(self, _: *mut ()) -> DropPanic<'a> {
-        DropPanic { drops: self.0 }
-    }
-}
-
-#[test]
-fn scoped_child_drop_panic_cannot_redrop_child() {
-    with_context(|mut cx| {
-        let drops = Cell::new(0);
-        let context = unsafe { Pin::get_unchecked_mut(cx.as_mut()) as *mut Context<'_, '_> };
-        let mut fiber = pin!(dope_fiber::abi::__private::Scoped::new(
-            context,
-            (),
-            DropPanicMaker(&drops),
-        ));
-        assert_panics_with(
-            || {
-                let _ = Fiber::poll(fiber.as_mut(), cx.as_mut());
-            },
-            "child drop panic",
-        );
-        assert_eq!(drops.get(), 1);
-        assert_panics_with(
-            || {
-                let _ = Fiber::poll(fiber.as_mut(), cx.as_mut());
-            },
-            "after panic",
-        );
-        assert_eq!(drops.get(), 1);
-    });
-}
-
 #[test]
 fn generated_await_drop_panic_cannot_redrop_child() {
     with_context(|mut cx| {
