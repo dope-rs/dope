@@ -6,47 +6,50 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use crate::driver::Driver;
 use crate::platform::raw::abi::PlatformAbi;
 
-pub struct Pipe {
+pub(crate) struct PipeEnds {
     read: OwnedFd,
     write: OwnedFd,
+}
+
+pub struct Pipe {
+    ends: PipeEnds,
     _exclusive: PhantomData<Cell<()>>,
+}
+
+impl PipeEnds {
+    pub(crate) fn new(read: OwnedFd, write: OwnedFd) -> Self {
+        Self { read, write }
+    }
 }
 
 impl Pipe {
     pub fn new() -> io::Result<Self> {
-        let [read, write] = Driver::open_pipe()?;
-        Ok(Self::from_fds(read, write))
-    }
-
-    pub fn write_end(&self) -> BorrowedFd<'_> {
-        self.write.as_fd()
-    }
-
-    pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
-            read: self.read.try_clone()?,
-            write: self.write.try_clone()?,
+            ends: Driver::open_pipe()?,
             _exclusive: PhantomData,
         })
     }
 
-    pub fn from_fds(read: OwnedFd, write: OwnedFd) -> Self {
-        Self {
-            read,
-            write,
+    pub fn write_end(&self) -> BorrowedFd<'_> {
+        self.ends.write.as_fd()
+    }
+
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            ends: PipeEnds::new(self.ends.read.try_clone()?, self.ends.write.try_clone()?),
             _exclusive: PhantomData,
-        }
+        })
     }
 
     pub fn read_end(&self) -> BorrowedFd<'_> {
-        self.read.as_fd()
+        self.ends.read.as_fd()
     }
 
     pub fn notify(&self) -> io::Result<()> {
         let byte = 1u8;
         loop {
             let written =
-                unsafe { libc::write(self.write.as_raw_fd(), (&byte as *const u8).cast(), 1) };
+                unsafe { libc::write(self.ends.write.as_raw_fd(), (&byte as *const u8).cast(), 1) };
             if written == 1 {
                 return Ok(());
             }
