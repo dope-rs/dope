@@ -1,19 +1,17 @@
 use std::io;
-use std::mem::MaybeUninit;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::rc::Rc;
 
 use super::FileOutcome;
 use super::Metadata;
+use super::raw::StatRequest;
 use dope::DriverContext;
-use dope_core::backend::{Backend, Sqe};
+use dope_core::backend::Backend;
 use dope_core::driver::token::kind::STAT;
 use dope_core::driver::token::{KeyTag, Token};
 use dope_core::io::StatEvent;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
-
-type StatBuf = <Backend as Platform>::StatBuf;
 
 use super::table::OperationTable;
 use dope_core::driver::ready::CompletionWaker;
@@ -23,18 +21,8 @@ pub enum StatDone {
     Failed(io::Error),
 }
 
-enum StatSource {
-    Path(OpenPath),
-    Fd(Rc<OwnedFd>),
-}
-
-struct StatHold {
-    source: StatSource,
-    stat: MaybeUninit<StatBuf>,
-}
-
 pub(crate) struct StatTable<'d, const ID: u8> {
-    operations: OperationTable<'d, StatHold, StatDone, KeyTag<ID, STAT>>,
+    operations: OperationTable<'d, StatRequest, StatDone, KeyTag<ID, STAT>>,
 }
 
 impl<'d, const ID: u8> StatTable<'d, ID> {
@@ -57,7 +45,7 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
         path: OpenPath,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Option<Token> {
-        self.begin(StatSource::Path(path), driver)
+        self.begin(StatRequest::path(path), driver)
     }
 
     pub(crate) fn begin_fd(
@@ -65,26 +53,14 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
         fd: Rc<OwnedFd>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Option<Token> {
-        self.begin(StatSource::Fd(fd), driver)
+        self.begin(StatRequest::fd(fd), driver)
     }
 
-    fn begin(&self, source: StatSource, driver: &mut DriverContext<'_, 'd>) -> Option<Token> {
+    fn begin(&self, request: StatRequest, driver: &mut DriverContext<'_, 'd>) -> Option<Token> {
         self.operations
-            .begin(
-                StatHold {
-                    source,
-                    stat: MaybeUninit::zeroed(),
-                },
-                driver,
-                |token, hold| {
-                    let stat = hold.stat.as_mut_ptr();
-                    let sqe = match &hold.source {
-                        StatSource::Path(path) => Sqe::stat_path(path.as_ptr(), stat, token),
-                        StatSource::Fd(fd) => Sqe::stat_fd(fd.as_raw_fd(), stat, token),
-                    };
-                    Some((token, sqe))
-                },
-            )
+            .begin(request, driver, |token, request| {
+                Some((token, request.submission(token)))
+            })
             .ok()
     }
 
@@ -105,9 +81,9 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
 
     pub(crate) fn complete(&self, token: Token, event: StatEvent) {
         self.operations
-            .complete(token, event, |hold, event| match event {
+            .complete(token, event, |request, event| match event {
                 StatEvent::Done => {
-                    let raw = unsafe { hold.stat.assume_init_read() };
+                    let raw = request.complete();
                     match Backend::parse_meta(&raw) {
                         Ok(metadata) => StatDone::Metadata(Metadata::from_raw(metadata)),
                         Err(error) => StatDone::Failed(error),
