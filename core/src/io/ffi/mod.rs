@@ -1,4 +1,5 @@
-use std::io::{self, Error};
+use std::io;
+use std::io::Error;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
@@ -6,6 +7,22 @@ use crate::driver::Driver;
 use crate::io::socket::addr::Addr;
 use crate::io::socket::{Domain, Kind, ListenerConfig};
 use crate::platform::raw::abi::PlatformAbi;
+use libc::F_GETFL;
+use libc::F_SETFD;
+use libc::F_SETFL;
+use libc::FD_CLOEXEC;
+use libc::O_NONBLOCK;
+use libc::SO_REUSEADDR;
+use libc::SO_REUSEPORT;
+use libc::SOL_SOCKET;
+use libc::bind;
+use libc::c_int;
+use libc::c_void;
+use libc::fcntl;
+use libc::listen;
+use libc::setsockopt;
+use libc::socket;
+use libc::socklen_t;
 
 #[derive(Debug)]
 pub(crate) struct Handle {
@@ -30,7 +47,7 @@ impl Handle {
         self.fd
     }
 
-    fn check(rc: libc::c_int) -> io::Result<()> {
+    fn check(rc: c_int) -> io::Result<()> {
         if rc < 0 {
             Err(Error::last_os_error())
         } else {
@@ -40,25 +57,24 @@ impl Handle {
 
     pub(crate) fn set_cloexec(&self) -> io::Result<()> {
         // SAFETY: plain fcntl on our owned fd; no pointer arguments.
-        let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+        let rc = unsafe { fcntl(self.fd.as_raw_fd(), F_SETFD, FD_CLOEXEC) };
         Self::check(rc)
     }
 
     pub(crate) fn set_nonblocking(&self) -> io::Result<()> {
         // SAFETY: plain fcntl on our owned fd; no pointer arguments.
-        let flags = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_GETFL, 0) };
+        let flags = unsafe { fcntl(self.fd.as_raw_fd(), F_GETFL, 0) };
         if flags < 0 {
             return Err(Error::last_os_error());
         }
         // SAFETY: plain fcntl on our owned fd; no pointer arguments.
-        let rc =
-            unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        let rc = unsafe { fcntl(self.fd.as_raw_fd(), F_SETFL, flags | O_NONBLOCK) };
         Self::check(rc)
     }
 
     pub(crate) fn open(domain: Domain, kind: Kind) -> io::Result<Self> {
         // SAFETY: socket() takes no pointer arguments.
-        let raw = unsafe { libc::socket(domain.raw(), kind.raw(), 0) };
+        let raw = unsafe { socket(domain.raw(), kind.raw(), 0) };
         if raw < 0 {
             return Err(Error::last_os_error());
         }
@@ -71,30 +87,25 @@ impl Handle {
     pub(crate) fn bind(&self, addr: &Addr) -> io::Result<()> {
         // SAFETY: addr.ptr()/addr.socklen() describe a sockaddr that addr
         // keeps alive for the duration of the call.
-        let rc = unsafe { libc::bind(self.as_raw_fd(), addr.ptr(), addr.socklen()) };
+        let rc = unsafe { bind(self.as_raw_fd(), addr.ptr(), addr.socklen()) };
         Self::check(rc)
     }
 
     pub(crate) fn listen(&self, backlog: i32) -> io::Result<()> {
         // SAFETY: plain listen on our owned fd; no pointer arguments.
-        let rc = unsafe { libc::listen(self.as_raw_fd(), backlog) };
+        let rc = unsafe { listen(self.as_raw_fd(), backlog) };
         Self::check(rc)
     }
 
-    pub(crate) fn setsockopt_raw(
-        &self,
-        level: libc::c_int,
-        opt: libc::c_int,
-        value: libc::c_int,
-    ) -> io::Result<()> {
+    pub(crate) fn setsockopt_raw(&self, level: c_int, opt: c_int, value: c_int) -> io::Result<()> {
         // SAFETY: the option value is a live local for the duration of the call.
         let rc = unsafe {
-            libc::setsockopt(
+            setsockopt(
                 self.as_raw_fd(),
                 level,
                 opt,
-                &value as *const libc::c_int as *const libc::c_void,
-                size_of::<libc::c_int>() as libc::socklen_t,
+                &value as *const c_int as *const c_void,
+                size_of::<c_int>() as socklen_t,
             )
         };
         Self::check(rc)
@@ -102,10 +113,10 @@ impl Handle {
 
     pub(crate) fn apply_reuse(&self, config: &ListenerConfig) -> io::Result<()> {
         if config.reuse_addr {
-            self.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;
+            self.setsockopt_raw(SOL_SOCKET, SO_REUSEADDR, 1)?;
         }
         if config.reuse_port {
-            self.setsockopt_raw(libc::SOL_SOCKET, libc::SO_REUSEPORT, 1)?;
+            self.setsockopt_raw(SOL_SOCKET, SO_REUSEPORT, 1)?;
         }
         Ok(())
     }
