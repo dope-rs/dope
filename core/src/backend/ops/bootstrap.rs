@@ -25,8 +25,13 @@ mod linux {
     use std::os::fd::{AsRawFd, RawFd};
 
     use io_uring::opcode::FilesUpdate;
+    use libc::{
+        EMFILE, IPPROTO_TCP, SO_REUSEADDR, SO_REUSEPORT, SOL_SOCKET, TCP_DEFER_ACCEPT, TCP_FASTOPEN,
+    };
 
     use crate::backend::uring::sqe::Sqe;
+    use crate::driver::control::ContextControl;
+    use crate::driver::submission::Submission;
     use crate::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
     use crate::io::fd::FdSlot;
     use crate::io::ffi::Handle;
@@ -109,7 +114,7 @@ mod linux {
     }
 
     fn bootstrap_perform(driver: &mut DriverContext<'_, '_>, sqe: Sqe) -> io::Result<()> {
-        crate::driver::submission::Submission::push(driver, sqe)?;
+        Submission::push(driver, sqe)?;
         bootstrap_await(driver, 0, 0)
     }
 
@@ -143,29 +148,17 @@ mod linux {
         config: &ListenerConfig,
     ) -> io::Result<()> {
         if config.reuse_addr {
-            bootstrap_setsockopt(
-                driver,
-                slot,
-                libc::SOL_SOCKET as u32,
-                libc::SO_REUSEADDR as u32,
-                1,
-            )?;
+            bootstrap_setsockopt(driver, slot, SOL_SOCKET as u32, SO_REUSEADDR as u32, 1)?;
         }
         if config.reuse_port {
-            bootstrap_setsockopt(
-                driver,
-                slot,
-                libc::SOL_SOCKET as u32,
-                libc::SO_REUSEPORT as u32,
-                1,
-            )?;
+            bootstrap_setsockopt(driver, slot, SOL_SOCKET as u32, SO_REUSEPORT as u32, 1)?;
         }
         if let Some(qlen) = config.fast_open_backlog {
             bootstrap_setsockopt(
                 driver,
                 slot,
-                libc::IPPROTO_TCP as u32,
-                libc::TCP_FASTOPEN as u32,
+                IPPROTO_TCP as u32,
+                TCP_FASTOPEN as u32,
                 qlen as i32,
             )?;
         }
@@ -173,8 +166,8 @@ mod linux {
             bootstrap_setsockopt(
                 driver,
                 slot,
-                libc::IPPROTO_TCP as u32,
-                libc::TCP_DEFER_ACCEPT as u32,
+                IPPROTO_TCP as u32,
+                TCP_DEFER_ACCEPT as u32,
                 secs as i32,
             )?;
         }
@@ -188,7 +181,7 @@ mod linux {
         optname: u32,
         value: i32,
     ) -> io::Result<()> {
-        crate::driver::control::ContextControl::set(driver, slot, level, optname, value)?;
+        ContextControl::set(driver, slot, level, optname, value)?;
         bootstrap_await(driver, 0, 0)
     }
 
@@ -202,8 +195,8 @@ mod linux {
             .offset(slot as i32)
             .build()
             .user_data(BOOTSTRAP_UD.raw());
-        crate::driver::submission::Submission::push(driver, Sqe::from_entry(entry))?;
-        bootstrap_await(driver, 1, libc::EMFILE)?;
+        Submission::push(driver, Sqe::from_entry(entry))?;
+        bootstrap_await(driver, 1, EMFILE)?;
         driver.backend().files.set_live(FdSlot::new(slot));
         Ok(())
     }

@@ -4,9 +4,11 @@ pub(crate) struct Host;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::fs;
+    use std::fs::read_to_string;
     use std::io::{self, Error, ErrorKind};
     use std::mem::{MaybeUninit, size_of};
+
+    use libc::{S_IFMT, S_IFREG, getrandom, statx};
 
     use crate::io::file::RawMetadata;
     use crate::platform::raw::file::FileLimit;
@@ -20,7 +22,7 @@ mod linux {
             let mut data = words.as_mut_ptr().cast::<u8>();
             let mut len = size_of::<[u64; 2]>();
             while len != 0 {
-                let written = unsafe { libc::getrandom(data.cast(), len, 0) };
+                let written = unsafe { getrandom(data.cast(), len, 0) };
                 if written < 0 {
                     let error = Error::last_os_error();
                     if error.kind() == ErrorKind::Interrupted {
@@ -41,7 +43,7 @@ mod linux {
             Ok(unsafe { words.assume_init() })
         }
 
-        pub(crate) fn parse_meta(&self, raw: &libc::statx) -> io::Result<RawMetadata> {
+        pub(crate) fn parse_meta(&self, raw: &statx) -> io::Result<RawMetadata> {
             if raw.stx_mtime.tv_nsec >= 1_000_000_000 {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
@@ -51,7 +53,7 @@ mod linux {
             Ok(RawMetadata {
                 len: raw.stx_size,
                 modified: Some((raw.stx_mtime.tv_sec, raw.stx_mtime.tv_nsec)),
-                regular: u32::from(raw.stx_mode) & libc::S_IFMT == libc::S_IFREG,
+                regular: u32::from(raw.stx_mode) & S_IFMT == S_IFREG,
             })
         }
 
@@ -66,7 +68,7 @@ mod linux {
     }
 
     fn read_u32(path: &str) -> io::Result<u32> {
-        let value = fs::read_to_string(path)?;
+        let value = read_to_string(path)?;
         value
             .trim()
             .parse::<u32>()
@@ -81,6 +83,8 @@ mod kqueue {
     use std::mem::{MaybeUninit, size_of};
     use std::ptr::null_mut;
 
+    use libc::{S_IFMT, S_IFREG, c_int, getentropy, mode_t, stat, sysctlbyname};
+
     use crate::io::file::RawMetadata;
     use crate::platform::raw::file::FileLimit;
     use crate::platform::snapshot::Snapshot;
@@ -91,9 +95,7 @@ mod kqueue {
         pub(crate) fn entropy(&self) -> io::Result<[u64; 2]> {
             let mut words = MaybeUninit::<[u64; 2]>::uninit();
             loop {
-                if unsafe { libc::getentropy(words.as_mut_ptr().cast(), size_of::<[u64; 2]>()) }
-                    == 0
-                {
+                if unsafe { getentropy(words.as_mut_ptr().cast(), size_of::<[u64; 2]>()) } == 0 {
                     return Ok(unsafe { words.assume_init() });
                 }
                 let error = Error::last_os_error();
@@ -103,7 +105,7 @@ mod kqueue {
             }
         }
 
-        pub(crate) fn parse_meta(&self, raw: &libc::stat) -> io::Result<RawMetadata> {
+        pub(crate) fn parse_meta(&self, raw: &stat) -> io::Result<RawMetadata> {
             let len = u64::try_from(raw.st_size)
                 .map_err(|_| Error::new(ErrorKind::InvalidData, "stat returned a negative size"))?;
             let nanos = u32::try_from(raw.st_mtime_nsec).map_err(|_| {
@@ -121,7 +123,7 @@ mod kqueue {
             Ok(RawMetadata {
                 len,
                 modified: Some((raw.st_mtime, nanos)),
-                regular: (raw.st_mode as libc::mode_t) & libc::S_IFMT == libc::S_IFREG,
+                regular: (raw.st_mode as mode_t) & S_IFMT == S_IFREG,
             })
         }
 
@@ -137,12 +139,12 @@ mod kqueue {
     }
 
     fn sysctl_u32(name: &CStr) -> io::Result<u32> {
-        let mut value: libc::c_int = 0;
-        let mut len = size_of::<libc::c_int>();
+        let mut value: c_int = 0;
+        let mut len = size_of::<c_int>();
         let rc = unsafe {
-            libc::sysctlbyname(
+            sysctlbyname(
                 name.as_ptr(),
-                (&mut value as *mut libc::c_int).cast(),
+                (&mut value as *mut c_int).cast(),
                 &mut len,
                 null_mut(),
                 0,

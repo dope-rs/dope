@@ -1,13 +1,12 @@
 use std::io::{self, Error, ErrorKind};
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
-use std::slice;
 
 use io_uring::types;
 use o3::marker::ThreadBound;
 
 use crate::driver::token::SHUTDOWN;
-use crate::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token, kind};
+use crate::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
 use crate::io::fd::{Fd, FdSlot};
 use io_uring::opcode::Accept;
 use io_uring::opcode::AsyncCancel;
@@ -32,6 +31,41 @@ use io_uring::opcode::Write;
 use io_uring::squeue::Entry;
 use io_uring::squeue::Flags;
 use io_uring::types::DestinationSlot;
+use crate::driver::token::kind::ACCEPT;
+use libc::AT_EMPTY_PATH;
+use libc::AT_FDCWD;
+use crate::driver::token::kind::CLOSE;
+use crate::driver::token::kind::CLOSE_PREP;
+use crate::driver::token::kind::CONNECT;
+use crate::driver::token::kind::CREATE;
+use io_uring::types::Fixed;
+use libc::IPPROTO_TCP;
+use libc::MSG_NOSIGNAL;
+use libc::MSG_TRUNC;
+use crate::driver::token::kind::OPEN;
+use libc::POLLIN;
+use crate::driver::token::kind::READ;
+use crate::driver::token::kind::RECV;
+use crate::driver::token::kind::RECV_DISCARD;
+use crate::driver::token::kind::SEND;
+use crate::driver::token::kind::SOCKET;
+use crate::driver::token::kind::STAT;
+use libc::STATX_MTIME;
+use libc::STATX_SIZE;
+use libc::STATX_TYPE;
+use crate::driver::token::kind::TIMER;
+use io_uring::types::TimeoutFlags;
+use io_uring::types::Timespec;
+use crate::driver::token::kind::WRITE;
+use libc::c_char;
+use libc::c_int;
+use libc::c_void;
+use std::slice::from_raw_parts_mut;
+use libc::mode_t;
+use libc::msghdr;
+use libc::sockaddr;
+use libc::socklen_t;
+use libc::statx;
 
 #[derive(Clone, Copy)]
 pub struct Create {
@@ -64,7 +98,7 @@ impl Sqe {
 
     fn create(entry: Entry, slot: FdSlot, user_data: u64) -> Self {
         let token = Token::new(ROUTE_FRAMEWORK, SlotIndex::new(slot.raw()), Epoch::ZERO)
-            .with_kind(kind::CREATE);
+            .with_kind(CREATE);
         Self {
             entry: entry.user_data(token.raw()),
             create: Some(Create { slot, user_data }),
@@ -88,10 +122,10 @@ impl Sqe {
 
     pub fn send_at(slot: FdSlot, buf: &[u8], op: Token) -> Self {
         Self::new(
-            Send::new(types::Fixed(slot.raw()), buf.as_ptr(), buf.len() as u32)
-                .flags(libc::MSG_NOSIGNAL)
+            Send::new(Fixed(slot.raw()), buf.as_ptr(), buf.len() as u32)
+                .flags(MSG_NOSIGNAL)
                 .build()
-                .user_data(op.with_kind(kind::SEND).raw()),
+                .user_data(op.with_kind(SEND).raw()),
         )
     }
 
@@ -102,17 +136,17 @@ impl Sqe {
             Write::new(types::Fd(fd), buf.as_ptr(), buf.len() as u32)
                 .offset(offset)
                 .build()
-                .user_data(op.with_kind(kind::WRITE).raw()),
+                .user_data(op.with_kind(WRITE).raw()),
         )
     }
 
-    pub fn openat(dir: RawFd, path: *const libc::c_char, flags: i32, mode: u32, op: Token) -> Self {
+    pub fn openat(dir: RawFd, path: *const c_char, flags: i32, mode: u32, op: Token) -> Self {
         Self::new(
             OpenAt::new(types::Fd(dir), path)
                 .flags(flags)
-                .mode(mode as libc::mode_t)
+                .mode(mode as mode_t)
                 .build()
-                .user_data(op.with_kind(kind::OPEN).raw()),
+                .user_data(op.with_kind(OPEN).raw()),
         )
     }
 
@@ -120,9 +154,9 @@ impl Sqe {
     /// `fd` must stay open and `buf` stable and unaliased until completion.
     pub unsafe fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
         let buf = unsafe {
-            slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<MaybeUninit<u8>>(), buf.len())
+            from_raw_parts_mut(buf.as_mut_ptr().cast::<MaybeUninit<u8>>(), buf.len())
         };
-        unsafe { Self::read_uninit(fd, buf, offset, op.with_kind(kind::READ)) }
+        unsafe { Self::read_uninit(fd, buf, offset, op.with_kind(READ)) }
     }
 
     /// # Safety
@@ -141,22 +175,22 @@ impl Sqe {
         )
     }
 
-    pub fn stat_path(path: *const libc::c_char, stat: *mut libc::statx, op: Token) -> Self {
+    pub fn stat_path(path: *const c_char, stat: *mut statx, op: Token) -> Self {
         Self::new(
-            Statx::new(types::Fd(libc::AT_FDCWD), path, stat.cast::<types::statx>())
-                .mask(libc::STATX_TYPE | libc::STATX_SIZE | libc::STATX_MTIME)
+            Statx::new(types::Fd(AT_FDCWD), path, stat.cast::<types::statx>())
+                .mask(STATX_TYPE | STATX_SIZE | STATX_MTIME)
                 .build()
-                .user_data(op.with_kind(kind::STAT).raw()),
+                .user_data(op.with_kind(STAT).raw()),
         )
     }
 
-    pub fn stat_fd(fd: RawFd, stat: *mut libc::statx, op: Token) -> Self {
+    pub fn stat_fd(fd: RawFd, stat: *mut statx, op: Token) -> Self {
         Self::new(
             Statx::new(types::Fd(fd), c"".as_ptr(), stat.cast::<types::statx>())
-                .flags(libc::AT_EMPTY_PATH)
-                .mask(libc::STATX_TYPE | libc::STATX_SIZE | libc::STATX_MTIME)
+                .flags(AT_EMPTY_PATH)
+                .mask(STATX_TYPE | STATX_SIZE | STATX_MTIME)
                 .build()
-                .user_data(op.with_kind(kind::STAT).raw()),
+                .user_data(op.with_kind(STAT).raw()),
         )
     }
 
@@ -164,9 +198,9 @@ impl Sqe {
     /// `fd` must belong to the receiving driver and stay live until completion.
     pub unsafe fn recv_multi(fd: &Fd, buf_group: u16, op: Token) -> Self {
         Self::new(
-            RecvMulti::new(types::Fixed(fd.slot().raw()), buf_group)
+            RecvMulti::new(Fixed(fd.slot().raw()), buf_group)
                 .build()
-                .user_data(op.with_kind(kind::RECV).raw()),
+                .user_data(op.with_kind(RECV).raw()),
         )
     }
 
@@ -180,66 +214,66 @@ impl Sqe {
         let len = remaining.min(DISCARD_CAP) as u32;
         Self::new(
             Recv::new(
-                types::Fixed(fd.slot().raw()),
+                Fixed(fd.slot().raw()),
                 &SCRATCH as *const u8 as *mut u8,
                 len,
             )
-            .flags(libc::MSG_TRUNC)
+            .flags(MSG_TRUNC)
             .build()
-            .user_data(op.with_kind(kind::RECV_DISCARD).raw()),
+            .user_data(op.with_kind(RECV_DISCARD).raw()),
         )
     }
 
     pub fn accept_oneshot(
         listener: &Fd,
-        addr_ptr: *mut libc::sockaddr,
-        addrlen_ptr: *mut libc::socklen_t,
+        addr_ptr: *mut sockaddr,
+        addrlen_ptr: *mut socklen_t,
         op: Token,
     ) -> Self {
         Self::new(
-            Accept::new(types::Fixed(listener.slot().raw()), addr_ptr, addrlen_ptr)
+            Accept::new(Fixed(listener.slot().raw()), addr_ptr, addrlen_ptr)
                 .file_index(Some(DestinationSlot::auto_target()))
                 .flags(0)
                 .build()
-                .user_data(op.with_kind(kind::ACCEPT).raw()),
+                .user_data(op.with_kind(ACCEPT).raw()),
         )
     }
 
-    pub fn recv_msg_multi(fd: &Fd, msghdr: &libc::msghdr, buf_group: u16, op: Token) -> Self {
+    pub fn recv_msg_multi(fd: &Fd, msghdr: &msghdr, buf_group: u16, op: Token) -> Self {
         Self::new(
-            RecvMsgMulti::new(types::Fixed(fd.slot().raw()), msghdr, buf_group)
+            RecvMsgMulti::new(Fixed(fd.slot().raw()), msghdr, buf_group)
                 .build()
-                .user_data(op.with_kind(kind::RECV).raw()),
+                .user_data(op.with_kind(RECV).raw()),
         )
     }
 
-    pub fn send_msg(fd: &Fd, msg: &libc::msghdr, op: Token) -> Self {
+    pub fn send_msg(fd: &Fd, msg: &msghdr, op: Token) -> Self {
         Self::new(
-            SendMsg::new(types::Fixed(fd.slot().raw()), msg)
-                .flags(libc::MSG_NOSIGNAL as u32)
+            SendMsg::new(Fixed(fd.slot().raw()), msg)
+                .flags(MSG_NOSIGNAL as u32)
                 .build()
-                .user_data(op.with_kind(kind::SEND).raw()),
+                .user_data(op.with_kind(SEND).raw()),
         )
     }
 
     pub fn close_at(slot: FdSlot) -> Self {
         Self::new(
-            Close::new(types::Fixed(slot.raw()))
+            Close::new(Fixed(slot.raw()))
                 .build()
-                .user_data(Self::framework(slot, kind::CLOSE)),
+                .user_data(Self::framework(slot, CLOSE)),
         )
     }
 
     pub fn quickack(fd: &Fd) -> Self {
         const TCP_QUICKACK: u32 = 12;
-        static QUICKACK_ON: libc::c_int = 1;
+        static QUICKACK_ON: c_int = 1;
         Self::new(
             SetSockOpt::new(
-                types::Fixed(fd.slot().raw()),
-                libc::IPPROTO_TCP as u32,
+                Fixed(fd.slot().raw()),
+                IPPROTO_TCP as u32,
                 TCP_QUICKACK,
-                &QUICKACK_ON as *const libc::c_int as *const libc::c_void,
-                size_of::<libc::c_int>() as u32,
+                &QUICKACK_ON as *const c_int as *const c_void,
+                size_of::<c_int>() as u32,
             )
             .build()
             .user_data(0),
@@ -248,7 +282,7 @@ impl Sqe {
 
     pub fn shutdown(fd: &Fd, how: i32) -> Self {
         Self::new(
-            Shutdown::new(types::Fixed(fd.slot().raw()), how)
+            Shutdown::new(Fixed(fd.slot().raw()), how)
                 .build()
                 .user_data(0),
         )
@@ -256,16 +290,16 @@ impl Sqe {
 
     pub fn shutdown_linked_at(slot: FdSlot, how: i32) -> Self {
         Self::new(
-            Shutdown::new(types::Fixed(slot.raw()), how)
+            Shutdown::new(Fixed(slot.raw()), how)
                 .build()
                 .flags(Flags::IO_HARDLINK)
-                .user_data(Self::framework(slot, kind::CLOSE_PREP)),
+                .user_data(Self::framework(slot, CLOSE_PREP)),
         )
     }
 
     pub fn poll_shutdown(fd: RawFd) -> Self {
         Self::new(
-            PollAdd::new(types::Fd(fd), libc::POLLIN as u32)
+            PollAdd::new(types::Fd(fd), POLLIN as u32)
                 .build()
                 .user_data(SHUTDOWN.raw()),
         )
@@ -284,19 +318,19 @@ impl Sqe {
     /// The timer specification is referenced by the multishot operation and
     /// must therefore remain live until the driver is torn down or the timer
     /// is cancelled.
-    pub fn interval(timer: &'static types::Timespec, op: Token) -> Self {
+    pub fn interval(timer: &'static Timespec, op: Token) -> Self {
         Self::new(
             Timeout::new(timer)
                 .count(0)
-                .flags(types::TimeoutFlags::MULTISHOT)
+                .flags(TimeoutFlags::MULTISHOT)
                 .build()
-                .user_data(op.with_kind(kind::TIMER).raw()),
+                .user_data(op.with_kind(TIMER).raw()),
         )
     }
 
     pub fn cancel_create(slot: FdSlot) -> Self {
         Self::new(
-            AsyncCancel::new(Self::framework(slot, kind::CREATE))
+            AsyncCancel::new(Self::framework(slot, CREATE))
                 .build()
                 .user_data(0),
         )
@@ -326,36 +360,36 @@ impl Sqe {
                 .file_index(Some(dest))
                 .build(),
             slot,
-            op.with_kind(kind::SOCKET).raw(),
+            op.with_kind(SOCKET).raw(),
         ))
     }
 
     pub fn bind_at(
         slot: FdSlot,
-        addr_ptr: *const libc::sockaddr,
+        addr_ptr: *const sockaddr,
         addr_len: u32,
         op: Token,
     ) -> Self {
         Self::new(
-            Bind::new(types::Fixed(slot.raw()), addr_ptr, addr_len)
+            Bind::new(Fixed(slot.raw()), addr_ptr, addr_len)
                 .build()
-                .user_data(op.with_kind(kind::SOCKET).raw()),
+                .user_data(op.with_kind(SOCKET).raw()),
         )
     }
 
     pub fn listen_at(slot: FdSlot, backlog: i32, op: Token) -> Self {
         Self::new(
-            Listen::new(types::Fixed(slot.raw()), backlog)
+            Listen::new(Fixed(slot.raw()), backlog)
                 .build()
-                .user_data(op.with_kind(kind::SOCKET).raw()),
+                .user_data(op.with_kind(SOCKET).raw()),
         )
     }
 
-    pub fn connect(fd: &Fd, addr_ptr: *const libc::sockaddr, addr_len: u32, op: Token) -> Self {
+    pub fn connect(fd: &Fd, addr_ptr: *const sockaddr, addr_len: u32, op: Token) -> Self {
         Self::new(
-            Connect::new(types::Fixed(fd.slot().raw()), addr_ptr, addr_len)
+            Connect::new(Fixed(fd.slot().raw()), addr_ptr, addr_len)
                 .build()
-                .user_data(op.with_kind(kind::CONNECT).raw()),
+                .user_data(op.with_kind(CONNECT).raw()),
         )
     }
 }

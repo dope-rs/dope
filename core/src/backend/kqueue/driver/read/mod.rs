@@ -3,6 +3,11 @@ use std::os::fd::RawFd;
 use o3::collections::FixedHashTable;
 
 use crate::driver::token::Token;
+use libc::EV_ERROR;
+use libc::kevent;
+use libc::msghdr;
+use libc::sockaddr;
+use libc::socklen_t;
 
 pub(crate) mod arm;
 pub(crate) mod dispatch;
@@ -66,13 +71,13 @@ pub(super) struct SlotHeader {
 impl SlotHeader {
     pub(super) fn validate(
         &mut self,
-        ev: &libc::kevent,
+        ev: &kevent,
         epoch: u32,
     ) -> Result<(RawFd, Token), Option<(Token, i32)>> {
         if self.epoch != epoch || !self.armed {
             return Err(None);
         }
-        if (ev.flags & libc::EV_ERROR) != 0 && ev.data != 0 {
+        if (ev.flags & EV_ERROR) != 0 && ev.data != 0 {
             self.armed = false;
             return Err(Some((self.ud, ev.data as i32)));
         }
@@ -82,14 +87,14 @@ impl SlotHeader {
 
 pub(super) struct AcceptSlot {
     pub(super) hdr: SlotHeader,
-    pub(super) addr_ptr: *mut libc::sockaddr,
-    pub(super) addrlen_ptr: *mut libc::socklen_t,
+    pub(super) addr_ptr: *mut sockaddr,
+    pub(super) addrlen_ptr: *mut socklen_t,
     pub(super) oneshot: bool,
 }
 
 pub(super) struct RecvMsgSlot {
     pub(super) hdr: SlotHeader,
-    pub(super) msg_template: *const libc::msghdr,
+    pub(super) msg_template: *const msghdr,
 }
 
 pub(super) enum ReadSlot {

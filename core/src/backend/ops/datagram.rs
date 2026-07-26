@@ -1,9 +1,10 @@
 use crate::backend::Backend;
 use crate::io::datagram::RecvOutcome;
 use crate::io::provided::ProvidedLease;
+use libc::msghdr;
 
 pub(crate) trait DatagramBackend {
-    fn recv_packet(buffer: &ProvidedLease<'_>, msghdr: &libc::msghdr) -> RecvOutcome;
+    fn recv_packet(buffer: &ProvidedLease<'_>, msghdr: &msghdr) -> RecvOutcome;
 }
 
 #[cfg(target_os = "linux")]
@@ -12,10 +13,10 @@ mod linux {
 
     use crate::io::socket::addr::Addr;
 
-    use super::{Backend, DatagramBackend, ProvidedLease, RecvOutcome};
+    use super::{Backend, DatagramBackend, ProvidedLease, RecvOutcome, msghdr};
 
     impl DatagramBackend for Backend {
-        fn recv_packet(buffer: &ProvidedLease<'_>, msghdr: &libc::msghdr) -> RecvOutcome {
+        fn recv_packet(buffer: &ProvidedLease<'_>, msghdr: &msghdr) -> RecvOutcome {
             let raw = buffer.as_slice();
             let Ok(parsed) = RecvMsgOut::parse(raw, msghdr) else {
                 return RecvOutcome::Error(0);
@@ -45,10 +46,10 @@ mod linux {
 mod kqueue {
     use crate::io::socket::addr::Addr;
 
-    use super::{Backend, DatagramBackend, ProvidedLease, RecvOutcome};
+    use super::{Backend, DatagramBackend, ProvidedLease, RecvOutcome, msghdr};
 
     impl DatagramBackend for Backend {
-        fn recv_packet(buffer: &ProvidedLease<'_>, msghdr: &libc::msghdr) -> RecvOutcome {
+        fn recv_packet(buffer: &ProvidedLease<'_>, msghdr: &msghdr) -> RecvOutcome {
             let raw = buffer.as_slice();
             let namelen = msghdr.msg_namelen as usize;
             if raw.len() < namelen {
