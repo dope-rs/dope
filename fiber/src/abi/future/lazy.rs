@@ -4,7 +4,7 @@ use core::task::Poll;
 use pin_project::pin_project;
 
 use super::super::Fiber;
-use crate::task::Context;
+use crate::raw::task::Context;
 
 #[pin_project]
 pub struct Lazy<F, Fb> {

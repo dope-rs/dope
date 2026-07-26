@@ -102,75 +102,21 @@ impl Node {
             return;
         }
     }
-
-    fn ready_key(&self) -> ReadyKey<'static> {
-        self.root_key.get()
-    }
 }
 
 #[repr(C)]
-pub struct TaskContext<T: Copy = usize> {
+pub(crate) struct TaskContext<T: Copy = usize> {
     node: Node,
     queue: Cell<Option<NonNull<TaskQueue<T>>>>,
     index: Cell<usize>,
-    target: Cell<T>,
-}
-
-pub struct TaskBinding<'a, T: Copy = usize> {
-    task: Pin<&'a TaskContext<T>>,
-    _queue: PhantomData<Pin<&'a TaskQueue<T>>>,
-}
-
-impl<T: Copy> TaskBinding<'_, T> {
-    pub fn waker(&self) -> Waker<'_> {
-        unsafe { self.task.context_unchecked() }
-    }
-
-    pub fn wake(&self) {
-        self.task.wake();
-    }
-
-    pub fn set_target(&self, target: T) {
-        self.task.set_target(target);
-    }
-}
-
-impl<T: Copy> Drop for TaskBinding<'_, T> {
-    fn drop(&mut self) {
-        unsafe { self.task.unbind() };
-    }
-}
-
-impl TaskContext<usize> {
-    pub const fn new() -> Self {
-        Self::with_target(0)
-    }
 }
 
 impl<T: Copy> TaskContext<T> {
-    pub const fn with_target(target: T) -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             node: Node::new(),
             queue: Cell::new(None),
             index: Cell::new(usize::MAX),
-            target: Cell::new(target),
-        }
-    }
-
-    pub fn bind<'task, 'parent>(
-        self: Pin<&'task Self>,
-        queue: Pin<&'task TaskQueue<T>>,
-        target: T,
-        parent: Option<Waker<'parent>>,
-    ) -> TaskBinding<'task, T>
-    where
-        'parent: 'task,
-    {
-        let parent = parent.map(Waker::shorten);
-        unsafe { self.bind_inner(queue, target, parent) };
-        TaskBinding {
-            task: self,
-            _queue: PhantomData,
         }
     }
 
@@ -184,7 +130,6 @@ impl<T: Copy> TaskContext<T> {
         let index = queue.allocate(target, NonNull::from(self.get_ref()));
         self.queue.set(Some(NonNull::from(queue.get_ref())));
         self.index.set(index);
-        self.target.set(target);
         let node = unsafe { self.map_unchecked(|task| &task.node) };
         unsafe { node.bind(&queue.ready, index, parent) };
         Waker::from_node(NonNull::from(node.get_ref()))
@@ -197,12 +142,10 @@ impl<T: Copy> TaskContext<T> {
         self: Pin<&Self>,
         queue: Pin<&IndexQueue>,
         index: usize,
-        target: T,
         parent: Waker<'d>,
     ) -> Waker<'d> {
         assert!(self.index.get() == usize::MAX, "task context already bound");
         self.index.set(index);
-        self.target.set(target);
         let node = unsafe { self.map_unchecked(|task| &task.node) };
         unsafe { node.bind(&queue.ready, index, Some(parent)) };
         Waker::from_node(NonNull::from(node.get_ref()))
@@ -241,17 +184,6 @@ impl<T: Copy> TaskContext<T> {
         self.index.set(usize::MAX);
     }
 
-    pub fn set_target(self: Pin<&Self>, target: T) {
-        self.target.set(target);
-        if let Some(queue) = self.queue.get() {
-            unsafe { queue.as_ref() }.set_target(self.index.get(), target);
-        }
-    }
-
-    pub fn target(&self) -> T {
-        self.target.get()
-    }
-
     pub(crate) fn is_bound(&self) -> bool {
         self.index.get() != usize::MAX
     }
@@ -264,15 +196,9 @@ impl<T: Copy> TaskContext<T> {
         Waker::from_node(NonNull::from(node.get_ref()))
     }
 
-    pub fn wake(self: Pin<&Self>) {
+    pub(crate) fn wake(self: Pin<&Self>) {
         let node = unsafe { self.map_unchecked(|task| &task.node) };
         node.wake();
-    }
-}
-
-impl Default for TaskContext<usize> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -305,7 +231,7 @@ pub struct Context<'poll, 'd> {
 }
 
 impl<'poll, 'd> Context<'poll, 'd> {
-    pub fn from_waker(wake: Waker<'d>, driver: DriverContext<'poll, 'd>) -> Self {
+    pub(crate) fn from_waker(wake: Waker<'d>, driver: DriverContext<'poll, 'd>) -> Self {
         Self {
             wake,
             driver,
@@ -322,18 +248,13 @@ impl<'poll, 'd> Context<'poll, 'd> {
         Self::from_waker(Waker::from_ready(reference, key), driver)
     }
 
-    #[doc(hidden)]
-    pub fn ready_key(&self) -> ReadyKey<'d> {
-        self.wake.ready_key()
-    }
-
-    pub fn raw_task(self: Pin<&mut Self>) -> *mut () {
+    pub(crate) fn raw_task(self: Pin<&mut Self>) -> *mut () {
         unsafe { self.get_unchecked_mut() as *mut Self }.cast()
     }
 
     /// # Safety
     /// `task` names a live `Context<'_, 'd>` for the duration of the current poll.
-    pub unsafe fn from_raw_task(task: *mut ()) -> Context<'poll, 'd>
+    pub(crate) unsafe fn from_raw_task(task: *mut ()) -> Context<'poll, 'd>
     where
         'd: 'poll,
     {
@@ -343,22 +264,18 @@ impl<'poll, 'd> Context<'poll, 'd> {
 
     /// # Safety
     /// `task` names a live `Context` for the duration of the current poll.
-    pub unsafe fn wake_raw(task: *const ()) {
+    pub(crate) unsafe fn wake_raw(task: *const ()) {
         let context = unsafe { &*task.cast::<Context<'_, '_>>() };
         context.wake.wake();
     }
 
     pub fn waker(&self) -> Waker<'_> {
-        unsafe { transmute(self.wake) }
+        self.wake.shorten()
     }
 
     #[doc(hidden)]
     pub fn completion_waker(&self) -> CompletionWaker<'d> {
         self.wake.completion()
-    }
-
-    pub fn into_waker(self) -> Waker<'d> {
-        self.wake
     }
 
     pub fn driver_access(self: Pin<&mut Self>) -> DriverContext<'_, 'd> {
@@ -367,10 +284,6 @@ impl<'poll, 'd> Context<'poll, 'd> {
 
     pub fn region_token(self: Pin<&mut Self>) -> &mut RegionToken<'d> {
         self.project().driver.region_token()
-    }
-
-    pub(crate) fn child(self: Pin<&mut Self>, wake: Waker<'d>) -> Context<'_, 'd> {
-        Context::from_waker(wake, self.driver_access())
     }
 
     /// # Safety
@@ -405,7 +318,7 @@ impl<'d> Waker<'d> {
         }
     }
 
-    pub fn shorten<'a>(self) -> Waker<'a>
+    pub(crate) fn shorten<'a>(self) -> Waker<'a>
     where
         'd: 'a,
     {
@@ -420,14 +333,6 @@ impl<'d> Waker<'d> {
                 CompletionWaker::from_callback(node.cast(), wake_node)
             },
             WakeTarget::Ready(driver, key) => CompletionWaker::from_ready(driver, key),
-        }
-    }
-
-    #[doc(hidden)]
-    pub fn ready_key(self) -> ReadyKey<'d> {
-        match self.target {
-            WakeTarget::Node(node) => unsafe { node.as_ref() }.ready_key(),
-            WakeTarget::Ready(_, key) => key,
         }
     }
 
@@ -453,14 +358,6 @@ impl<'d> RootWaker<'d> {
     pub fn from_ready(driver: DriverRef<'d>, key: ReadyKey<'d>) -> Self {
         Self { driver, key }
     }
-
-    pub fn wake(self) {
-        self.driver.activate_ready(self.key);
-    }
-
-    pub(crate) fn into_waker(self) -> Waker<'d> {
-        Waker::from_ready(self.driver, self.key)
-    }
 }
 
 unsafe fn wake_node(target: NonNull<()>) {
@@ -468,13 +365,20 @@ unsafe fn wake_node(target: NonNull<()>) {
     unsafe { Pin::new_unchecked(node.as_ref()) }.wake();
 }
 
+impl<'d> From<RootWaker<'d>> for Waker<'d> {
+    fn from(root: RootWaker<'d>) -> Self {
+        Self::from_ready(root.driver, root.key)
+    }
+}
+
 impl PartialEq for Waker<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self.target, other.target) {
             (WakeTarget::Node(left), WakeTarget::Node(right)) => left == right,
-            (WakeTarget::Ready(_, left_key), WakeTarget::Ready(_, right_key)) => {
-                left_key == right_key
-            }
+            (
+                WakeTarget::Ready(left_driver, left_key),
+                WakeTarget::Ready(right_driver, right_key),
+            ) => left_driver == right_driver && left_key == right_key,
             _ => false,
         }
     }

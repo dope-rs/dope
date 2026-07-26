@@ -22,10 +22,10 @@ use dope_fiber::abi::ready::Ready;
 use dope_fiber::extensions::SessionExt;
 use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes, SplitTask, try_from_split_task};
 use dope_fiber::raw::slab::TaskSlab;
+use dope_fiber::raw::task::queue::TaskQueue;
+use dope_fiber::raw::task::{Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab};
-use dope_fiber::task::queue::TaskQueue;
-use dope_fiber::task::{Context, RootWaker, TaskContext, Waker};
 use dope_fiber::wait::WaitFn;
 use dope_test::{drain_tokens, poll_with_slot, tok, with_context, with_session, with_session_for};
 use o3::buffer::Shared;
@@ -49,8 +49,22 @@ fn raw_hot_path_boundaries_add_no_storage() {
     );
     assert_eq!(
         size_of::<TaskSlab<'static, Ready<()>>>(),
-        size_of::<Slab<'static, Ready<()>>>() + size_of::<Pin<Box<[TaskContext]>>>(),
+        size_of::<Slab<'static, Ready<()>>>() + size_of::<Pin<Box<[()]>>>(),
     );
+}
+
+#[test]
+fn waker_identity_is_the_exact_driver_and_wake_target() {
+    with_session(|sess| {
+        let first = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let second = sess.driver().make_ready_slot(tok(1)).expect("ready slot");
+        let registered = Cell::new(Some(Waker::from_ready(sess.driver(), first.key())));
+        let same = Waker::from_ready(sess.driver(), first.key());
+        let distinct = Waker::from_ready(sess.driver(), second.key());
+
+        assert!(registered.get().is_some_and(|current| current == same));
+        assert!(registered.get().is_some_and(|current| current != distinct));
+    });
 }
 
 fn register<'d>(queue: Pin<&WaitQueue>, waiter: Pin<&Waiter<'d>>, waker: Waker<'d>) -> bool {
@@ -226,13 +240,20 @@ fn persistent_task_binding_owns_both_drop_orders_without_unsafe_callers() {
     with_session(|sess| {
         let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let parent = RootWaker::from_ready(sess.driver(), ready.key());
-        let mut slab: TaskSlab<'_, PendingTask, usize> = TaskSlab::with_capacity(1, 0usize);
+        let mut slab: TaskSlab<'_, PendingTask, usize> = TaskSlab::with_capacity(1);
 
         let task = slab.insert(PendingTask).expect("task slot");
         let queue = Box::pin(TaskQueue::with_capacity(1));
         assert!(slab.bind(&task, queue.as_ref(), 17, parent));
         assert!(slab.wake(&task));
-        assert_eq!(queue.as_ref().pop(), Some(17));
+        assert_eq!(
+            queue
+                .as_ref()
+                .snapshot_root(parent)
+                .expect("ready snapshot")
+                .next(),
+            Some(17),
+        );
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
 
         // A connection queue may disappear before its scheduler entry.

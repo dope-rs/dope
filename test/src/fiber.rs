@@ -10,7 +10,7 @@ use dope::runtime::executor::Session;
 use dope::{Completion, Event};
 use dope_fiber::abi::Fiber;
 use dope_fiber::extensions::SessionExt;
-use dope_fiber::task::Context;
+use dope_fiber::raw::task::Context;
 use o3::cell::BrandCell;
 
 use crate::GUARD;

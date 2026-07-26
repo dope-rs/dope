@@ -195,6 +195,14 @@ impl Clone for DriverRef<'_> {
     }
 }
 
+impl PartialEq for DriverRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self.shared, other.shared)
+    }
+}
+
+impl Eq for DriverRef<'_> {}
+
 impl<'a, 'd> DriverContext<'a, 'd> {
     pub fn reborrow(&mut self) -> DriverContext<'_, 'd> {
         DriverContext {

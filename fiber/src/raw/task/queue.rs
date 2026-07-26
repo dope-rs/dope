@@ -43,10 +43,6 @@ impl IndexQueue {
 }
 
 impl<T: Copy> TaskQueue<T> {
-    pub fn new() -> Self {
-        Self::with_capacity(0)
-    }
-
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             ready: BatchSet::with_capacity(capacity),
@@ -84,27 +80,12 @@ impl<T: Copy> TaskQueue<T> {
         unsafe { self.free.with_mut(|free| free.push(index)) };
     }
 
-    pub(super) fn set_target(&self, index: usize, target: T) {
-        unsafe { self.values.with(|values| values[index].target.set(target)) };
-    }
-
     fn target(&self, index: usize) -> T {
         unsafe { self.values.with(|values| values[index].target.get()) }
     }
 
-    pub fn pop(self: Pin<&Self>) -> Option<T> {
-        self.ready.pop().map(|index| self.target(index))
-    }
-
     pub fn is_empty(self: Pin<&Self>) -> bool {
         self.ready.is_empty()
-    }
-
-    pub fn snapshot<'d>(
-        self: Pin<&'d Self>,
-        parent: Waker<'d>,
-    ) -> Option<impl Iterator<Item = T> + use<'d, T>> {
-        self.snapshot_inner(parent)
     }
 
     pub fn snapshot_root<'queue, 'root>(
@@ -114,7 +95,7 @@ impl<T: Copy> TaskQueue<T> {
     where
         'root: 'queue,
     {
-        self.snapshot_inner(parent.into_waker().shorten())
+        self.snapshot_inner(Waker::from(parent).shorten())
     }
 
     fn snapshot_inner<'d>(self: Pin<&'d Self>, parent: Waker<'d>) -> Option<TaskSnapshot<'d, T>> {
@@ -126,12 +107,6 @@ impl<T: Copy> TaskQueue<T> {
             parent,
             exhausted: false,
         })
-    }
-}
-
-impl<T: Copy> Default for TaskQueue<T> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

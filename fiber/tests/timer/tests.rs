@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use dope::manifold::timer::Timer;
 use dope_fiber::abi::batch::Batch;
+use dope_fiber::raw::task::Waker;
 use dope_fiber::sleep::TimerExt;
-use dope_fiber::task::Waker;
 
 use dope_test::{drain_tokens, poll_with_slot, tok, with_session};
 

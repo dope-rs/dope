@@ -6,7 +6,7 @@ use core::pin::Pin;
 use core::task::Poll;
 
 use super::Fiber;
-use crate::task::queue::IndexQueue;
+use crate::raw::task::queue::IndexQueue;
 use crate::{Context, TaskContext};
 
 const BATCH_POLL_BUDGET: usize = 32;
@@ -99,7 +99,7 @@ impl Drop for BatchTransaction {
 
 pub struct Batch<F, O, const N: usize> {
     slots: [BatchSlot<F, O>; N],
-    tasks: [TaskContext<u16>; N],
+    tasks: [TaskContext; N],
     ready: IndexQueue,
     len: usize,
     next_bind: usize,
@@ -112,14 +112,10 @@ impl<F, O, const N: usize> Batch<F, O, N> {
     pub fn new() -> Self {
         const {
             assert!(N > 0, "batch capacity must be > 0");
-            assert!(
-                N <= u16::MAX as usize,
-                "batch capacity exceeds ready queue target"
-            );
         }
         Self {
             slots: from_fn(|_| BatchSlot::new()),
-            tasks: from_fn(|index| TaskContext::with_target(index as u16)),
+            tasks: from_fn(|_| TaskContext::new()),
             ready: IndexQueue::with_capacity(N),
             len: 0,
             next_bind: 0,
@@ -264,15 +260,17 @@ where
                 if let Some(index) = unsafe { Pin::new_unchecked(&this.ready) }.pop() {
                     let task = unsafe { Pin::new_unchecked(&this.tasks[index]) };
                     let wake = unsafe { task.context_unchecked() };
-                    (index, cx.as_mut().child(wake))
+                    let child = Context::from_waker(wake, cx.as_mut().driver_access());
+                    (index, child)
                 } else if this.next_bind < this.len {
                     let index = this.next_bind;
                     this.next_bind += 1;
                     let parent = unsafe { cx.waker_unchecked() };
                     let task = unsafe { Pin::new_unchecked(&this.tasks[index]) };
                     let queue = unsafe { Pin::new_unchecked(&this.ready) };
-                    let wake = unsafe { task.bind_index(queue, index, index as u16, parent) };
-                    (index, cx.as_mut().child(wake))
+                    let wake = unsafe { task.bind_index(queue, index, parent) };
+                    let child = Context::from_waker(wake, cx.as_mut().driver_access());
+                    (index, child)
                 } else {
                     transaction.finish(BatchStatus::Idle);
                     return Poll::Pending;

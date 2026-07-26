@@ -9,7 +9,7 @@ error: lifetime may not live long enough
 15 |         self.0.set(Some(cx.waker()));
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'1` must outlive `'d`
    |
-   = note: requirement occurs because of the type `Cell<Option<dope_fiber::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::task::Waker<'_>>` invariant
+   = note: requirement occurs because of the type `Cell<Option<dope_fiber::raw::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::raw::task::Waker<'_>>` invariant
    = note: the struct `Cell<T>` is invariant over the parameter `T`
    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 
@@ -20,11 +20,11 @@ error: lifetime may not live long enough
    |      -- lifetime `'d` defined here
 ...
 14 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
-   |                                   -- has type `Pin<&mut dope_fiber::task::Context<'2, '_>>`
+   |                                   -- has type `Pin<&mut dope_fiber::raw::task::Context<'2, '_>>`
 15 |         self.0.set(Some(cx.waker()));
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'2` must outlive `'d`
    |
-   = note: requirement occurs because of the type `Cell<Option<dope_fiber::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::task::Waker<'_>>` invariant
+   = note: requirement occurs because of the type `Cell<Option<dope_fiber::raw::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::raw::task::Waker<'_>>` invariant
    = note: the struct `Cell<T>` is invariant over the parameter `T`
    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 

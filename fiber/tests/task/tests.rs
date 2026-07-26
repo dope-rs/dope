@@ -6,10 +6,11 @@ use std::task::Poll;
 use dope_fiber::abi::Fiber;
 use dope_fiber::abi::batch::Batch;
 use dope_fiber::abi::ready::Ready;
+use dope_fiber::raw::slab::TaskSlab;
+use dope_fiber::raw::task::queue::TaskQueue;
+use dope_fiber::raw::task::{Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab, TaskId};
-use dope_fiber::task::queue::TaskQueue;
-use dope_fiber::task::{Context, TaskContext, Waker};
 use dope_test::{
     allocations_during, assert_unwinds, counter, drain_tokens, poll_ready, tok, with_context,
     with_session,
@@ -547,19 +548,26 @@ fn waiter_survives_queue_drop_without_a_dangling_registration() {
 fn child_queue_wakes_parent_once() {
     with_session(|sess| {
         let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let queue = pin!(TaskQueue::new());
-        let task = pin!(TaskContext::new());
-        let binding = task.as_ref().bind(
-            queue.as_ref(),
-            17,
-            Some(Waker::from_ready(sess.driver(), parent.key())),
+        let parent = RootWaker::from_ready(sess.driver(), parent.key());
+        let queue = pin!(TaskQueue::with_capacity(0));
+        let mut tasks: TaskSlab<'_, PendingCount, usize> = TaskSlab::with_capacity(1);
+        let task = tasks
+            .insert(PendingCount(Rc::new(Cell::new(0))))
+            .expect("task");
+        assert!(tasks.bind(&task, queue.as_ref(), 17, parent));
+        assert!(tasks.wake(&task));
+        assert!(tasks.wake(&task));
+        assert_eq!(
+            queue
+                .as_ref()
+                .snapshot_root(parent)
+                .expect("ready snapshot")
+                .next(),
+            Some(17),
         );
-        let child = binding.waker();
-        child.wake();
-        child.wake();
-        assert_eq!(queue.as_ref().pop(), Some(17));
         assert!(queue.as_ref().is_empty());
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
+        assert!(tasks.remove(task));
     });
 }
 
@@ -567,25 +575,27 @@ fn child_queue_wakes_parent_once() {
 fn wake_of_an_unpolled_batch_member_is_coalesced() {
     with_session(|sess| {
         let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let parent_waker = Waker::from_ready(sess.driver(), parent.key());
-        let queue = pin!(TaskQueue::new());
-        let first = pin!(TaskContext::new());
-        let second = pin!(TaskContext::new());
-        let first_binding = first.as_ref().bind(queue.as_ref(), 10, Some(parent_waker));
-        let second_binding = second.as_ref().bind(queue.as_ref(), 11, Some(parent_waker));
-        let first_waker = first_binding.waker();
-        let second_waker = second_binding.waker();
-
-        first_waker.wake();
-        second_waker.wake();
+        let parent = RootWaker::from_ready(sess.driver(), parent.key());
+        let queue = pin!(TaskQueue::with_capacity(0));
+        let mut tasks: TaskSlab<'_, PendingCount, usize> = TaskSlab::with_capacity(2);
+        let first = tasks
+            .insert(PendingCount(Rc::new(Cell::new(0))))
+            .expect("first task");
+        let second = tasks
+            .insert(PendingCount(Rc::new(Cell::new(0))))
+            .expect("second task");
+        assert!(tasks.bind(&first, queue.as_ref(), 10, parent));
+        assert!(tasks.bind(&second, queue.as_ref(), 11, parent));
+        assert!(tasks.wake(&first));
+        assert!(tasks.wake(&second));
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
 
         let mut batch = queue
             .as_ref()
-            .snapshot(parent_waker.shorten())
+            .snapshot_root(parent)
             .expect("single live snapshot");
         assert_eq!(batch.next(), Some(10));
-        second_waker.wake();
+        assert!(tasks.wake(&second));
         assert_eq!(batch.next(), Some(11));
         assert_eq!(batch.next(), None);
         drop(batch);
@@ -593,44 +603,55 @@ fn wake_of_an_unpolled_batch_member_is_coalesced() {
         assert!(
             queue
                 .as_ref()
-                .snapshot(parent_waker.shorten())
+                .snapshot_root(parent)
                 .expect("previous snapshot dropped")
                 .next()
                 .is_none()
         );
         assert!(drain_tokens(sess.driver()).is_empty());
-
-        drop(first_binding);
-        drop(second_binding);
+        assert!(tasks.remove(first));
+        assert!(tasks.remove(second));
     });
 }
 
 #[test]
 fn task_queue_preserves_target_type() {
-    let target = WideTarget(u128::MAX - 17);
-    let queue = pin!(TaskQueue::<WideTarget>::new());
-    let task = pin!(TaskContext::with_target(WideTarget(0)));
-    {
-        let binding = task.as_ref().bind(queue.as_ref(), target, None);
-        binding.wake();
-        assert_eq!(queue.as_ref().pop(), Some(target));
-    };
+    with_session(|sess| {
+        let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let parent = RootWaker::from_ready(sess.driver(), ready.key());
+        let target = WideTarget(u128::MAX - 17);
+        let queue = pin!(TaskQueue::<WideTarget>::with_capacity(0));
+        let mut tasks: TaskSlab<'_, PendingCount, WideTarget> = TaskSlab::with_capacity(1);
+        let task = tasks
+            .insert(PendingCount(Rc::new(Cell::new(0))))
+            .expect("task");
+        assert!(tasks.bind(&task, queue.as_ref(), target, parent));
+        assert!(tasks.wake(&task));
+        assert_eq!(
+            queue
+                .as_ref()
+                .snapshot_root(parent)
+                .expect("ready snapshot")
+                .next(),
+            Some(target),
+        );
+        assert!(tasks.remove(task));
+    });
 }
 
 #[test]
 fn unbind_unlinks_queued_child() {
     with_session(|sess| {
         let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let queue = pin!(TaskQueue::new());
-        let task = pin!(TaskContext::new());
-        let binding = task.as_ref().bind(
-            queue.as_ref(),
-            19,
-            Some(Waker::from_ready(sess.driver(), parent.key())),
-        );
-        let child = binding.waker();
-        child.wake();
-        drop(binding);
+        let parent = RootWaker::from_ready(sess.driver(), parent.key());
+        let queue = pin!(TaskQueue::with_capacity(0));
+        let mut tasks: TaskSlab<'_, PendingCount, usize> = TaskSlab::with_capacity(1);
+        let task = tasks
+            .insert(PendingCount(Rc::new(Cell::new(0))))
+            .expect("task");
+        assert!(tasks.bind(&task, queue.as_ref(), 19, parent));
+        assert!(tasks.wake(&task));
+        assert!(tasks.remove(task));
         assert!(queue.as_ref().is_empty());
     });
 }

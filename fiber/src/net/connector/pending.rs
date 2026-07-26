@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::task::Waker;
+use crate::raw::task::Waker;
 use dope::manifold::connector::source::DialKey;
 
 pub(crate) trait Key: Copy + Eq {
