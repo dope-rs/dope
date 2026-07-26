@@ -84,6 +84,40 @@ fn waker_identity_is_the_exact_driver_and_wake_target() {
     });
 }
 
+struct WakeThenReady(bool);
+
+impl<'d> Fiber<'d> for WakeThenReady {
+    type Output = usize;
+
+    fn poll(mut self: Pin<&mut Self>, context: Pin<&mut Context<'_, 'd>>) -> Poll<usize> {
+        if self.0 {
+            return Poll::Ready(41);
+        }
+        self.0 = true;
+        context.wake();
+        Poll::Pending
+    }
+}
+
+#[test]
+fn nested_generated_bridge_preserves_the_exact_root_wake() {
+    with_session(|mut session| {
+        let slot = session
+            .driver()
+            .make_ready_slot(tok(7))
+            .expect("ready slot");
+        let child = dope_fiber::fiber!('_ => async move { WakeThenReady(false).await });
+        let mut parent = pin!(dope_fiber::fiber!('_ => async move { child.await + 1 }));
+
+        assert!(poll_with_slot(&mut session, &slot, parent.as_mut()).is_pending());
+        assert_eq!(drain_tokens(session.driver()), [tok(7)]);
+        assert_eq!(
+            poll_with_slot(&mut session, &slot, parent.as_mut()),
+            Poll::Ready(42),
+        );
+    });
+}
+
 fn register<'d>(queue: Pin<&WaitQueue>, waiter: Pin<&Waiter<'d>>, waker: Waker<'d>) -> bool {
     queue.try_register_waker(waiter, waker)
 }

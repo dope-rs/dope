@@ -1,3 +1,4 @@
+pub(crate) mod bridges;
 pub mod queue;
 
 use core::cell::Cell;
@@ -246,27 +247,6 @@ impl<'poll, 'd> Context<'poll, 'd> {
         driver: DriverContext<'poll, 'd>,
     ) -> Self {
         Self::from_waker(Waker::from_ready(reference, key), driver)
-    }
-
-    pub(crate) fn raw_task(self: Pin<&mut Self>) -> *mut () {
-        unsafe { self.get_unchecked_mut() as *mut Self }.cast()
-    }
-
-    /// # Safety
-    /// `task` names a live `Context<'_, 'd>` for the duration of the current poll.
-    pub(crate) unsafe fn from_raw_task(task: *mut ()) -> Context<'poll, 'd>
-    where
-        'd: 'poll,
-    {
-        let context = unsafe { &mut *task.cast::<Context<'_, 'd>>() };
-        Context::from_waker(context.wake, context.driver.reborrow())
-    }
-
-    /// # Safety
-    /// `task` names a live `Context` for the duration of the current poll.
-    pub(crate) unsafe fn wake_raw(task: *const ()) {
-        let context = unsafe { &*task.cast::<Context<'_, '_>>() };
-        context.wake.wake();
     }
 
     pub fn waker(&self) -> Waker<'_> {
