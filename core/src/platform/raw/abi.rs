@@ -9,6 +9,7 @@ use libc::{sockaddr_in, sockaddr_in6, sockaddr_un};
 
 use crate::driver::Driver;
 use crate::io::ffi::Handle;
+use crate::io::pipe::PipeEnds;
 use crate::io::socket::Pod;
 
 pub(crate) trait PlatformAbi {
@@ -17,7 +18,7 @@ pub(crate) trait PlatformAbi {
     fn sockaddr_un() -> sockaddr_un;
     fn finish_unix(addr: &mut sockaddr_un, len: libc::socklen_t);
     fn set_no_sigpipe(handle: &Handle) -> io::Result<()>;
-    fn open_pipe() -> io::Result<[OwnedFd; 2]>;
+    fn open_pipe() -> io::Result<PipeEnds>;
 
     fn encode_v4(addr: SocketAddrV4) -> sockaddr_in {
         let mut encoded = Self::sockaddr_v4();
@@ -64,8 +65,8 @@ pub(crate) trait PlatformAbi {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{
-        Driver, Error, FromRawFd, Handle, OwnedFd, PlatformAbi, Pod, RawFd, io, sockaddr_in,
-        sockaddr_in6, sockaddr_un,
+        Driver, Error, FromRawFd, Handle, OwnedFd, PipeEnds, PlatformAbi, Pod, RawFd, io,
+        sockaddr_in, sockaddr_in6, sockaddr_un,
     };
 
     impl PlatformAbi for Driver {
@@ -87,7 +88,7 @@ mod linux {
             Ok(())
         }
 
-        fn open_pipe() -> io::Result<[OwnedFd; 2]> {
+        fn open_pipe() -> io::Result<PipeEnds> {
             let mut fds = [0 as RawFd; 2];
             let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
             if rc != 0 {
@@ -96,7 +97,7 @@ mod linux {
             let [read, write] = fds;
             let read = unsafe { OwnedFd::from_raw_fd(read) };
             let write = unsafe { OwnedFd::from_raw_fd(write) };
-            Ok([read, write])
+            Ok(PipeEnds::new(read, write))
         }
     }
 }
@@ -104,7 +105,7 @@ mod linux {
 #[cfg(not(target_os = "linux"))]
 mod kqueue {
     use super::{
-        Driver, Error, FromRawFd, Handle, OwnedFd, PlatformAbi, Pod, RawFd, io, size_of,
+        Driver, Error, FromRawFd, Handle, OwnedFd, PipeEnds, PlatformAbi, Pod, RawFd, io, size_of,
         sockaddr_in, sockaddr_in6, sockaddr_un,
     };
 
@@ -133,7 +134,7 @@ mod kqueue {
             handle.setsockopt_raw(libc::SOL_SOCKET, libc::SO_NOSIGPIPE, 1)
         }
 
-        fn open_pipe() -> io::Result<[OwnedFd; 2]> {
+        fn open_pipe() -> io::Result<PipeEnds> {
             let mut fds = [0 as RawFd; 2];
             let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
             if rc != 0 {
@@ -151,7 +152,7 @@ mod kqueue {
             let [read, write] = fds;
             let read = unsafe { OwnedFd::from_raw_fd(read) };
             let write = unsafe { OwnedFd::from_raw_fd(write) };
-            Ok([read, write])
+            Ok(PipeEnds::new(read, write))
         }
     }
 }
