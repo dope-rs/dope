@@ -1,9 +1,7 @@
 use std::cell::Cell;
 use std::io;
 use std::marker::PhantomData;
-use std::os::fd::OwnedFd;
 use std::pin::Pin;
-use std::rc::Rc;
 
 mod metadata;
 mod open;
@@ -89,7 +87,7 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
     #[doc(hidden)]
     pub fn begin_read(
         &self,
-        source: Rc<OwnedFd>,
+        source: Source<'d>,
         buf: Vec<u8>,
         offset: u64,
         driver: &mut DriverContext<'_, 'd>,
@@ -109,10 +107,10 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
     #[doc(hidden)]
     pub fn begin_stat_fd(
         &self,
-        fd: Rc<OwnedFd>,
+        source: Source<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Option<Token> {
-        self.stats.begin_fd(fd, driver)
+        self.stats.begin_fd(source, driver)
     }
 
     #[doc(hidden)]

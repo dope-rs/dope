@@ -1,9 +1,9 @@
 use std::io;
 use std::mem::MaybeUninit;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, RawFd};
 use std::ptr::NonNull;
-use std::rc::Rc;
 
+use super::source::Source;
 use dope_core::backend::Backend;
 use dope_core::backend::Sqe;
 use dope_core::driver::token::Token;
@@ -26,17 +26,17 @@ impl OpenRequest {
     }
 }
 
-enum StatSource {
+enum StatSource<'d> {
     Path(OpenPath),
-    Fd(Rc<OwnedFd>),
+    Fd(Source<'d>),
 }
 
-pub(super) struct StatRequest {
-    source: StatSource,
+pub(super) struct StatRequest<'d> {
+    source: StatSource<'d>,
     output: MaybeUninit<StatBuf>,
 }
 
-impl StatRequest {
+impl<'d> StatRequest<'d> {
     pub(super) fn path(path: OpenPath) -> Self {
         Self {
             source: StatSource::Path(path),
@@ -44,9 +44,9 @@ impl StatRequest {
         }
     }
 
-    pub(super) fn fd(fd: Rc<OwnedFd>) -> Self {
+    pub(super) fn fd(source: Source<'d>) -> Self {
         Self {
-            source: StatSource::Fd(fd),
+            source: StatSource::Fd(source),
             output: MaybeUninit::zeroed(),
         }
     }

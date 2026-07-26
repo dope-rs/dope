@@ -1,9 +1,9 @@
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::rc::Rc;
+use std::os::fd::AsRawFd;
 
 use super::FileOutcome;
 use super::raw::ReadRegion;
+use super::source::Source;
 use super::table::OperationTable;
 use dope::DriverContext;
 use dope_core::backend::Sqe;
@@ -23,14 +23,14 @@ enum ReadFlight {
     Pending(ReadRegion),
 }
 
-struct ReadHold {
+struct ReadHold<'d> {
     buffer: Vec<u8>,
-    source: Rc<OwnedFd>,
+    source: Source<'d>,
     offset: u64,
     flight: ReadFlight,
 }
 
-impl ReadHold {
+impl ReadHold<'_> {
     fn prepare_submission(&mut self, token: Token) -> io::Result<Sqe> {
         if !matches!(self.flight, ReadFlight::Idle) {
             return Err(Self::invalid_flight());
@@ -80,7 +80,7 @@ impl ReadHold {
 }
 
 pub(crate) struct ReadTable<'d, const ID: u8> {
-    operations: OperationTable<'d, ReadHold, ReadDone, KeyTag<ID, READ>>,
+    operations: OperationTable<'d, ReadHold<'d>, ReadDone, KeyTag<ID, READ>>,
 }
 
 impl<'d, const ID: u8> ReadTable<'d, ID> {
@@ -100,7 +100,7 @@ impl<'d, const ID: u8> ReadTable<'d, ID> {
 
     pub(crate) fn begin(
         &self,
-        source: Rc<OwnedFd>,
+        source: Source<'d>,
         buffer: Vec<u8>,
         offset: u64,
         driver: &mut DriverContext<'_, 'd>,

@@ -1,8 +1,6 @@
 use std::io;
 use std::mem;
-use std::os::fd::OwnedFd;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::task::Poll;
 
 use super::Source;
@@ -13,12 +11,9 @@ use dope::driver::ready::CompletionWaker;
 use dope::driver::token::Token;
 use dope::manifold::file::{FileOutcome, Files, ReadDone};
 
-enum Phase {
+enum Phase<'d> {
     Ready(Vec<u8>),
-    Init {
-        source: Rc<OwnedFd>,
-        buffer: Vec<u8>,
-    },
+    Init { source: Source<'d>, buffer: Vec<u8> },
     Pending(Token),
     Done,
 }
@@ -26,7 +21,7 @@ enum Phase {
 pub struct Read<'h, 'd, const ID: u8, const N: usize> {
     host: &'h Files<'d, ID, N>,
     offset: u64,
-    phase: Phase,
+    phase: Phase<'d>,
 }
 
 impl<'h, 'd, const ID: u8, const N: usize> Read<'h, 'd, ID, N> {
@@ -40,7 +35,7 @@ impl<'h, 'd, const ID: u8, const N: usize> Read<'h, 'd, ID, N> {
             Phase::Ready(buffer)
         } else {
             Phase::Init {
-                source: source.lease(),
+                source: source.clone(),
                 buffer,
             }
         };
@@ -53,7 +48,7 @@ impl<'h, 'd, const ID: u8, const N: usize> Read<'h, 'd, ID, N> {
 
     fn begin(
         &self,
-        source: Rc<OwnedFd>,
+        source: Source<'d>,
         buffer: Vec<u8>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Result<Token, (Vec<u8>, io::Error)> {

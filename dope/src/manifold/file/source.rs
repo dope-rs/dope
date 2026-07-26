@@ -1,8 +1,9 @@
 use std::marker::PhantomData;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+#[repr(transparent)]
 pub struct Source<'d> {
     fd: Rc<OwnedFd>,
     brand: PhantomData<fn(&'d ()) -> &'d ()>,
@@ -16,9 +17,10 @@ impl<'d> Source<'d> {
             brand: PhantomData,
         }
     }
+}
 
-    #[doc(hidden)]
-    pub fn lease(&self) -> Rc<OwnedFd> {
-        Rc::clone(&self.fd)
+impl AsRawFd for Source<'_> {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
     }
 }
