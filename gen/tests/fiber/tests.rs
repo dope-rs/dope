@@ -9,7 +9,7 @@ use dope_fiber::abi::Fiber;
 use dope_fiber::abi::pending::Pending;
 use dope_fiber::abi::ready::Ready;
 use dope_fiber::extensions::AppSessionExt;
-use dope_fiber::task::Context;
+use dope_fiber::raw::task::Context;
 use dope_test::{CountDrop, OrderedDrop, assert_panics_with, poll_ready, with_context};
 
 #[test]

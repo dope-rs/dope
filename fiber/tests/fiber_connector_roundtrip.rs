@@ -163,7 +163,7 @@ where
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
-        cx: std::pin::Pin<&mut dope_fiber::task::Context<'_, 'd>>,
+        cx: std::pin::Pin<&mut dope_fiber::raw::task::Context<'_, 'd>>,
     ) -> std::task::Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
         if let Some(fiber) = &mut this.fiber {

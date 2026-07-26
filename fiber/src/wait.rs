@@ -5,8 +5,8 @@ use std::task::Poll;
 use pin_project::pin_project;
 
 use crate::abi::Fiber;
+use crate::raw::task::Context;
 use crate::raw::wait::Waiter;
-use crate::task::Context;
 
 #[pin_project]
 pub struct WaitFn<'d, F, T> {

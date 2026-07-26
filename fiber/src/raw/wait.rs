@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 
 use o3::marker::ThreadBound;
 
-use crate::task::{Context, Waker};
+use crate::raw::task::{Context, Waker};
 
 type WaiterPtr = NonNull<Waiter<'static>>;
 

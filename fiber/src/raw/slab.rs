@@ -4,9 +4,9 @@ use std::task::Poll;
 
 use dope::DriverContext;
 
+use crate::raw::task::queue::TaskQueue;
+use crate::raw::task::{RootWaker, TaskContext};
 use crate::slab::{Slab, TaskId};
-use crate::task::queue::TaskQueue;
-use crate::task::{RootWaker, TaskContext};
 use crate::{Context, Fiber};
 
 /// A fiber slab whose persistent wake nodes share each fiber's lifetime.
@@ -25,12 +25,12 @@ where
     F: Fiber<'d>,
     T: Copy,
 {
-    pub fn with_capacity(capacity: usize, idle: T) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
             fibers: Slab::with_capacity(capacity),
             contexts: Box::into_pin(
                 (0..capacity)
-                    .map(|_| TaskContext::with_target(idle))
+                    .map(|_| TaskContext::new())
                     .collect::<Box<[_]>>(),
             ),
         }
@@ -66,7 +66,7 @@ where
         // SAFETY: this slab owns the pinned context and corresponding fiber as
         // one entry. Queue drop detaches the context, while removal drops the
         // fiber before unbinding the context.
-        let _ = unsafe { context.bind_inner(queue, target, Some(parent.into_waker())) };
+        let _ = unsafe { context.bind_inner(queue, target, Some(parent.into())) };
         true
     }
 

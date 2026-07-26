@@ -4,7 +4,7 @@ use std::task::Poll;
 
 extern crate dope;
 use dope_fiber::abi::Fiber;
-use dope_fiber::task::{Context, Waker};
+use dope_fiber::raw::task::{Context, Waker};
 
 struct Escape<'d>(&'d Cell<Option<Waker<'d>>>);
 

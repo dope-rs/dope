@@ -4,7 +4,7 @@ use core::task::Poll;
 use pin_project::pin_project;
 
 use super::Fiber;
-use crate::task::Context;
+use crate::raw::task::Context;
 
 pub enum Either<L, R> {
     Left(L),
