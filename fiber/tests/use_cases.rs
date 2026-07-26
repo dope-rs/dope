@@ -15,6 +15,7 @@ use dope::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
 use dope::runtime::dispatcher::{Dispatcher, Idle};
 use dope::runtime::profile::RuntimeProfile;
 use dope_fiber::abi::Fiber;
+use dope_fiber::abi::batch::Batch;
 use dope_fiber::abi::future::lazy::Lazy;
 use dope_fiber::abi::pollfn::PollFn;
 use dope_fiber::abi::race::{Either, Race};
@@ -27,7 +28,9 @@ use dope_fiber::raw::task::{Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab};
 use dope_fiber::wait::WaitFn;
-use dope_test::{drain_tokens, poll_with_slot, tok, with_context, with_session, with_session_for};
+use dope_test::{
+    drain_tokens, poll_ready, poll_with_slot, tok, with_context, with_session, with_session_for,
+};
 use o3::buffer::Shared;
 use o3::cell::BrandCell;
 use o3::collections::{FixedPinSlab, PinSlab};
@@ -51,6 +54,20 @@ fn raw_hot_path_boundaries_add_no_storage() {
         size_of::<TaskSlab<'static, Ready<()>>>(),
         size_of::<Slab<'static, Ready<()>>>() + size_of::<Pin<Box<[()]>>>(),
     );
+}
+
+#[test]
+fn batch_reuses_slot_storage_and_accepts_zero_capacity() {
+    assert_eq!(
+        size_of::<Batch<[u8; 64], [u8; 1], 4>>(),
+        size_of::<Batch<[u8; 64], [u8; 64], 4>>(),
+    );
+
+    with_context(|mut context| {
+        let mut batch = pin!(Batch::<Ready<()>, (), 0>::from_array([]));
+        let mut output = poll_ready(batch.as_mut(), context.as_mut());
+        assert_eq!(output.next(), None);
+    });
 }
 
 #[test]

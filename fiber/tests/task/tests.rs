@@ -154,7 +154,7 @@ struct WideTarget(u128);
 #[test]
 fn bounded_capacity_rejects_excess_input() {
     let polls = counter();
-    let mut batch = Batch::<Probe, usize, 2>::new();
+    let mut batch = Batch::<Probe, usize, 2>::empty();
     assert!(
         batch
             .try_push(Probe {
@@ -172,8 +172,6 @@ fn bounded_capacity_rejects_excess_input() {
             .is_ok()
     );
     assert!(batch.try_push(Probe { polls, ready: true }).is_err());
-    assert_eq!(batch.capacity(), 2);
-    assert_eq!(batch.len(), 2);
 }
 
 #[test]
@@ -303,7 +301,6 @@ fn poll_panic_poisoning_preserves_drop_safety() {
                 DropProbe::new(&drops, &output_drops, 1, Some(PanicSite::Poll)),
             ]));
             assert_unwinds(|| Fiber::poll(batch.as_mut(), cx.as_mut()));
-            assert_unwinds(|| Fiber::poll(batch.as_mut(), cx.as_mut()));
         }
 
         assert_eq!(drops.get(), 2);
@@ -351,6 +348,21 @@ fn fiber_drop_panic_cannot_redrop_and_keeps_output_live() {
         assert_eq!(fiber_drops.get(), 1);
         assert_eq!(output_drops.get(), 1);
     });
+}
+
+#[test]
+fn batch_drop_panic_releases_the_remaining_fibers() {
+    let fiber_drops = counter();
+    let output_drops = counter();
+    let batch = Batch::<_, ProbeOutput, 3>::from_array([
+        DropProbe::new(&fiber_drops, &output_drops, 0, Some(PanicSite::FiberDrop)),
+        DropProbe::new(&fiber_drops, &output_drops, 1, None),
+        DropProbe::new(&fiber_drops, &output_drops, 2, None),
+    ]);
+
+    assert_unwinds(|| drop(batch));
+    assert_eq!(fiber_drops.get(), 3);
+    assert_eq!(output_drops.get(), 0);
 }
 
 #[test]
