@@ -49,7 +49,7 @@ pub(crate) struct Requests {
     pub(crate) close: bool,
 }
 
-pub struct Port<'d> {
+pub(crate) struct Port<'d> {
     entries: Box<[Entry<'d>]>,
     recv: RecvArena<'d>,
     deferred_requests: Option<CellQueue<Token>>,

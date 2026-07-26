@@ -1,5 +1,4 @@
-use std::io;
-use std::io::Error;
+use std::io::{self, Error};
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Poll;
@@ -26,12 +25,11 @@ use dope_net::Transport;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 
+use super::port::Port;
 use super::port::recv::arena::{RecvArena, RecvLayout};
-use super::port::{Port, Requests};
 use dope::Event;
 use dope::manifold::listener::state::{Aux, State};
 use dope::runtime::executor::StorageFactory;
-use std::io::ErrorKind;
 
 pub struct ListenerPort<'d> {
     connections: Port<'d>,
@@ -44,10 +42,6 @@ pub struct ListenerPortFactory {
 }
 
 impl<'d> ListenerPort<'d> {
-    pub fn with_capacity(capacity: usize) -> io::Result<Self> {
-        Ok(Self::with_layout(RecvLayout::new(capacity)?))
-    }
-
     fn with_layout(layout: RecvLayout) -> Self {
         let capacity = layout.connections();
         Self {
@@ -63,10 +57,6 @@ impl<'d> ListenerPort<'d> {
         })
     }
 
-    fn capacity(&self) -> usize {
-        self.connections.capacity()
-    }
-
     fn activate(&self, token: Token) -> bool {
         if !self.connections.activate_deferred(token) {
             return false;
@@ -76,38 +66,6 @@ impl<'d> ListenerPort<'d> {
         }
         self.waiters.as_ref().wake_one();
         true
-    }
-
-    fn pop(&self) -> Option<Token> {
-        self.accepts.pop_front()
-    }
-
-    fn push_recv<R: RetainBytes>(&self, token: Token, chunk: R) -> bool {
-        self.connections.push_recv(token, chunk)
-    }
-
-    fn push_retained(&self, token: Token, chunk: ProvidedView<'d>) -> bool {
-        self.connections.push_retained(token, chunk)
-    }
-
-    fn closed(&self, token: Token) {
-        self.connections.closed(token);
-    }
-
-    fn failed(&self, token: Token) {
-        self.connections.failed(token);
-    }
-
-    fn requests(&self, token: Token) -> Option<Requests> {
-        self.connections.requests(token)
-    }
-
-    fn pop_request(&self) -> Option<Token> {
-        self.connections.pop_deferred_request()
-    }
-
-    fn sync_send(&self, token: Token, inflight: bool) {
-        self.connections.sync_send(token, inflight);
     }
 
     pub fn handle(&self) -> ListenerHandle<'_, 'd> {
@@ -123,7 +81,7 @@ impl StorageFactory for ListenerPortFactory {
     }
 }
 
-pub(crate) struct AcceptQueue<'scope, 'd, W: Wire> {
+struct AcceptQueue<'scope, 'd, W: Wire> {
     port: &'scope ListenerPort<'d>,
     _wire: PhantomData<fn() -> W>,
 }
@@ -145,7 +103,12 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
         _aux: &mut Aux,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
-        if self.get_mut().port.push_recv(slot.token(), chunk) {
+        if self
+            .get_mut()
+            .port
+            .connections
+            .push_recv(slot.token(), chunk)
+        {
             Outcome::Overrun
         } else {
             Outcome::Ok
@@ -159,7 +122,12 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
         _aux: &mut Aux,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
-        if self.get_mut().port.push_retained(slot.token(), chunk) {
+        if self
+            .get_mut()
+            .port
+            .connections
+            .push_retained(slot.token(), chunk)
+        {
             Outcome::Overrun
         } else {
             Outcome::Ok
@@ -176,7 +144,7 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
     }
 
     fn close(self: Pin<&mut Self>, slot: &mut Slot<'d, W, State<()>>, _aux: &mut Aux) {
-        self.get_mut().port.closed(slot.token());
+        self.get_mut().port.connections.closed(slot.token());
     }
 
     fn accept(
@@ -223,98 +191,49 @@ where
     where
         W::InitConfig: Default,
     {
-        Self::bind_with_wire(
-            port,
-            driver,
-            Self::config(
-                port.capacity(),
-                addr,
-                backlog,
-                listener_config,
-                stream_config,
-            ),
-            W::InitConfig::default(),
-            hash_builder,
-        )
-    }
-
-    pub fn bind_with_wire(
-        port: &'scope ListenerPort<'d>,
-        driver: &mut DriverContext<'_, 'd>,
-        config: Config<T>,
-        wire_config: W::InitConfig,
-        hash_builder: hash::State,
-    ) -> io::Result<Self> {
-        if config.max_connections != port.capacity() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "fiber: listener config capacity does not match port",
-            ));
-        }
-        let inner = listener::Listener::open_in_with_wire(
+        let inner = listener::Listener::open_in(
             AcceptQueue::<W> {
                 port,
                 _wire: PhantomData,
             },
-            config,
-            wire_config,
+            Config {
+                max_connections: port.connections.capacity(),
+                bind: addr.clone(),
+                backlog,
+                stream: stream_config,
+                transport: listener_config,
+                egress: Default::default(),
+            },
             hash_builder,
             driver,
         )?;
         Ok(Self { inner, port })
     }
 
-    fn config(
-        capacity: usize,
-        addr: &T::Addr,
-        backlog: i32,
-        listener_config: T::ListenerConfig,
-        stream_config: T::StreamConfig,
-    ) -> Config<T> {
-        Config {
-            max_connections: capacity,
-            bind: addr.clone(),
-            backlog,
-            stream: stream_config,
-            transport: listener_config,
-            egress: Default::default(),
-        }
-    }
-
     fn sync_send(inner: Pin<&Inner<'scope, 'd, ID, T, W>>, port: &ListenerPort<'d>, conn: Token) {
         let pending = inner.has_pending_egress(conn);
-        port.sync_send(conn, pending);
+        port.connections.sync_send(conn, pending);
     }
 
     fn apply_requests(mut self: Pin<&mut Self>, conn: Token, driver: &mut DriverContext<'_, 'd>) {
         let port = self.as_ref().get_ref().port;
-        let requests = port.requests(conn);
+        let requests = port.connections.requests(conn);
+        // SAFETY: the deferred queue contains only tokens emitted by `inner`,
+        // whose route is the const `ID` carried by this wrapper.
         let typed = unsafe { TypedToken::<Inner<'scope, 'd, ID, T, W>>::new_unchecked(conn) };
         if let Some(requests) = requests {
-            let inner = unsafe { self.as_ref().map_unchecked(|s| &s.inner) }.get_ref();
+            let inner = self.as_ref().project_ref().inner.get_ref();
             if let Some(bytes) = requests.send
                 && !inner.mark_send(conn, bytes)
             {
-                port.failed(conn);
+                port.connections.failed(conn);
             }
             if requests.close {
                 inner.close(conn);
             }
         }
-        Manifold::activate(
-            unsafe { self.as_mut().map_unchecked_mut(|s| &mut s.inner) },
-            typed,
-            driver,
-        );
-        Self::sync_send(
-            unsafe { self.as_ref().map_unchecked(|s| &s.inner) },
-            port,
-            conn,
-        );
-    }
-
-    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut W::RuntimeContext {
-        unsafe { self.map_unchecked_mut(|listener| &mut listener.inner) }.wire_runtime()
+        Manifold::activate(self.as_mut().project().inner, typed, driver);
+        Self::sync_send(self.as_ref().project_ref().inner, port, conn);
     }
 }
 
@@ -329,10 +248,6 @@ impl<'scope, 'd> ListenerHandle<'scope, 'd> {
             host: self,
             waiter: Waiter::new(),
         }
-    }
-
-    fn stream(self, id: Token) -> Io<'scope, 'd> {
-        Io::new(&self.port.connections, id)
     }
 }
 
@@ -349,26 +264,18 @@ where
             _ => None,
         };
         let port = self.as_ref().get_ref().port;
-        Manifold::dispatch(
-            unsafe { self.as_mut().map_unchecked_mut(|s| &mut s.inner) },
-            ev,
-            driver,
-        );
+        Manifold::dispatch(self.as_mut().project().inner, ev, driver);
         if let Some(conn) = conn {
-            Self::sync_send(
-                unsafe { self.as_ref().map_unchecked(|s| &s.inner) },
-                port,
-                conn,
-            );
+            Self::sync_send(self.as_ref().project_ref().inner, port, conn);
         }
     }
 
     fn pre_park(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         let port = self.as_ref().get_ref().port;
-        while let Some(conn) = port.pop_request() {
+        while let Some(conn) = port.connections.pop_deferred_request() {
             self.as_mut().apply_requests(conn, driver);
         }
-        Manifold::pre_park(unsafe { self.map_unchecked_mut(|s| &mut s.inner) }, driver);
+        Manifold::pre_park(self.project().inner, driver);
     }
 
     fn activate(
@@ -380,16 +287,18 @@ where
     }
 
     fn idle(self: Pin<&Self>) -> Idle {
-        Manifold::idle(unsafe { self.map_unchecked(|s| &s.inner) })
+        Manifold::idle(self.project_ref().inner)
     }
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        Manifold::shutdown(unsafe { self.map_unchecked_mut(|s| &mut s.inner) }, driver);
+        Manifold::shutdown(self.project().inner, driver);
     }
 }
 
+#[pin_project]
 pub struct Accept<'scope, 'd> {
     host: ListenerHandle<'scope, 'd>,
+    #[pin]
     waiter: Waiter<'d>,
 }
 
@@ -397,16 +306,16 @@ impl<'scope, 'd> Fiber<'d> for Accept<'scope, 'd> {
     type Output = io::Result<Io<'scope, 'd>>;
 
     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let waiter = unsafe { Pin::new_unchecked(&this.waiter) };
+        let this = self.project();
+        let waiter = this.waiter;
         loop {
-            let Some(id) = this.host.port.pop() else {
+            let Some(id) = this.host.port.accepts.pop_front() else {
                 return if this
                     .host
                     .port
                     .waiters
                     .as_ref()
-                    .try_register(waiter, cx.as_ref())
+                    .try_register(waiter.as_ref(), cx.as_ref())
                 {
                     Poll::Pending
                 } else {
@@ -414,8 +323,8 @@ impl<'scope, 'd> Fiber<'d> for Accept<'scope, 'd> {
                 };
             };
             if this.host.port.connections.contains(id) {
-                waiter.unregister();
-                return Poll::Ready(Ok(this.host.stream(id)));
+                waiter.as_ref().unregister();
+                return Poll::Ready(Ok(Io::new(&this.host.port.connections, id)));
             }
         }
     }
