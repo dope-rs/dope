@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::convert::Infallible;
 use std::marker::PhantomPinned;
 use std::mem::size_of;
@@ -21,7 +21,7 @@ use dope_fiber::abi::pollfn::PollFn;
 use dope_fiber::abi::race::{Either, Race};
 use dope_fiber::abi::ready::Ready;
 use dope_fiber::extensions::SessionExt;
-use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes, SplitTask, try_from_split_task};
+use dope_fiber::owner::{SplitBytes, SplitTask};
 use dope_fiber::raw::slab::TaskSlab;
 use dope_fiber::raw::task::queue::TaskQueue;
 use dope_fiber::raw::task::{Context, RootWaker, Waker};
@@ -369,73 +369,15 @@ impl<'d> Fiber<'d> for BorrowedTask<'_> {
     }
 }
 
-struct DropProbe<'a> {
-    name: &'static str,
-    log: &'a RefCell<Vec<&'static str>>,
-}
-
-impl Drop for DropProbe<'_> {
+impl Drop for BorrowedTask<'_> {
     fn drop(&mut self) {
-        self.log.borrow_mut().push(self.name);
+        assert_eq!(self.head, b"head");
+        assert_eq!(self.body, b"body");
     }
 }
 
 #[test]
-#[allow(unsafe_code)]
-fn owner_backed_fiber_borrows_across_polls_and_drops_before_its_owner() {
-    with_session(|mut session| {
-        let ready = session
-            .driver()
-            .make_ready_slot(tok(0))
-            .expect("ready slot");
-        let request = Shared::copy_from_slice(b"headbody");
-        let owner = SplitBytes::new(request, None, 4);
-        // SAFETY: the view is moved only into `BorrowedTask`; the closure has
-        // no side channel through which it could escape.
-        let task = unsafe {
-            OwnerFiber::try_from_split(owner, FiberScope::from_driver(session.driver()), |view| {
-                let (head, body) = view.into_parts();
-                Ok::<_, Infallible>(BorrowedTask {
-                    head,
-                    body,
-                    pending: true,
-                })
-            })
-        }
-        .expect("infallible owner-backed construction");
-        let mut task = pin!(task);
-
-        assert_eq!(
-            poll_with_slot(&mut session, &ready, task.as_mut()),
-            Poll::Pending
-        );
-        assert_eq!(
-            poll_with_slot(&mut session, &ready, task.as_mut()),
-            Poll::Ready(8)
-        );
-    });
-
-    let log = RefCell::new(Vec::new());
-    drop(OwnerFiber::from_parts(
-        DropProbe {
-            name: "fiber",
-            log: &log,
-        },
-        DropProbe {
-            name: "owner",
-            log: &log,
-        },
-    ));
-    assert_eq!(&*log.borrow(), &["fiber", "owner"]);
-    assert_eq!(
-        size_of::<OwnerFiber<[usize; 4], ()>>(),
-        size_of::<[usize; 4]>(),
-    );
-    assert_eq!(size_of::<FiberScope<'_>>(), 0);
-}
-
-#[test]
-fn safe_split_task_borrows_owned_bytes_across_polls() {
+fn split_task_borrows_owned_bytes_across_polls_without_extra_state() {
     with_session(|mut session| {
         let ready = session
             .driver()
@@ -444,11 +386,12 @@ fn safe_split_task_borrows_owned_bytes_across_polls() {
         let owner = SplitBytes::new(Shared::copy_from_slice(b"headbody"), None, 4);
         let state = ();
         let context = ();
-        let task = try_from_split_task::<BorrowSplitTask>(owner, true, &state, &context)
+        let task = owner
+            .try_into_task::<BorrowSplitTask>(true, &state, &context)
             .expect("infallible split task");
         assert_eq!(
             size_of_val(&task),
-            size_of::<OwnerFiber<BorrowedTask<'static>, SplitBytes>>(),
+            size_of::<(BorrowedTask<'static>, SplitBytes)>(),
         );
         let mut task = pin!(task);
 
