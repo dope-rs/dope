@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::{Pin, pin};
+use std::process::abort;
 use std::task::Poll;
 
 use o3::collections::{FixedPinSlab, PinSlab, SlabKey, SlabKeyParts};
@@ -56,13 +57,6 @@ impl ErasedTaskId {
     pub fn index(self) -> usize {
         self.parts.index() as usize
     }
-}
-
-fn poll_fiber<'d, F>(fiber: Pin<&mut F>, context: Pin<&mut Context<'_, 'd>>) -> Poll<F::Output>
-where
-    F: Fiber<'d>,
-{
-    Fiber::poll(fiber, context)
 }
 
 fn catch_drop_panic<R>(operation: impl FnOnce() -> R) -> Result<R, ()> {
@@ -121,7 +115,7 @@ where
         context: Pin<&mut Context<'_, 'd>>,
     ) -> Option<Poll<F::Output>> {
         let fiber = self.inner.get_parts_mut(id.parts())?;
-        Some(poll_fiber(fiber, context))
+        Some(fiber.poll(context))
     }
 
     pub fn remove(&mut self, id: TaskId<Tag>) -> bool {
@@ -143,17 +137,13 @@ where
     }
 }
 
-/// A fiber slab whose wake nodes live and die with their fibers.
+/// A fiber slab whose persistent wake nodes share each fiber's lifetime.
 ///
-/// Unlike a scoped [`crate::TaskBinding`], bindings in this slab may remain
-/// active across polls. Removing an entry drops the fiber first, then unbinds
-/// its wake node. Dropping the target queue first safely detaches every node.
+/// Removal drops the fiber before its wake node; queue drop detaches every node.
 pub struct TaskSlab<'d, F, T: Copy = usize, Tag = ()>
 where
     F: Fiber<'d>,
 {
-    // Field order is part of the safety invariant: fibers (which may retain
-    // their waker in an async primitive) are dropped before wake contexts.
     fibers: Slab<'d, F, Tag>,
     contexts: Pin<Box<[TaskContext<T>]>>,
 }
@@ -247,9 +237,9 @@ where
         if !self.fibers.remove(id) {
             return false;
         }
-        let context = self
-            .context(index)
-            .expect("task slab context must cover every fiber slot");
+        let Some(context) = self.context(index) else {
+            abort();
+        };
         // SAFETY: the fiber has just been dropped, so none of its async
         // registrations can retain this wake node.
         unsafe { context.unbind() };
@@ -306,7 +296,7 @@ where
         context: Pin<&mut Context<'_, 'd>>,
     ) -> Option<Poll<F::Output>> {
         let fiber = self.inner().get_parts_mut(id.parts())?;
-        Some(poll_fiber(fiber, context))
+        Some(fiber.poll(context))
     }
 
     pub fn remove(mut self: Pin<&mut Self>, id: TaskId<Tag>) -> bool {

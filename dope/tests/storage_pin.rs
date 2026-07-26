@@ -43,3 +43,10 @@ fn storage_is_dropped_in_place_after_pinning() {
     let exec = common::exec().with_storage_factory(Factory);
     exec.enter(|session| session.storage_pin().record());
 }
+
+#[test]
+fn owned_storage_keeps_its_exact_type_in_the_session() {
+    common::exec()
+        .with_storage(String::from("handler"))
+        .enter(|session| assert_eq!(session.storage(), "handler"));
+}

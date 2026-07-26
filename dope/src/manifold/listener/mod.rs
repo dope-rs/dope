@@ -3,6 +3,7 @@ pub mod application;
 pub mod config;
 pub mod egress;
 mod idle;
+pub mod recv;
 mod send;
 pub mod state;
 

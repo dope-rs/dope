@@ -7,9 +7,9 @@ use quote::quote;
 use std::mem::replace;
 use syn::parse::{Parse, ParseStream};
 use syn::parse_quote;
-use syn::{Error, Expr, ExprAsync, ItemFn, Lifetime, ReturnType, Token, parse_macro_input};
+use syn::{Error, Expr, ExprAsync, ItemFn, Lifetime, ReturnType, Token};
 
-struct Input {
+pub(crate) struct Input {
     driver: Lifetime,
     expr: Expr,
 }
@@ -23,23 +23,31 @@ impl Parse for Input {
     }
 }
 
-pub(crate) struct Fiber;
+pub(crate) struct FiberFn {
+    driver: Lifetime,
+    item: ItemFn,
+}
 
-impl Fiber {
-    fn compile_error_tokens(errors: impl IntoIterator<Item = Error>) -> proc_macro2::TokenStream {
-        errors
-            .into_iter()
-            .map(|error| error.to_compile_error())
-            .collect::<proc_macro2::TokenStream>()
+impl FiberFn {
+    pub(crate) fn new(driver: Lifetime, item: ItemFn) -> Self {
+        Self { driver, item }
     }
+}
 
-    fn compile_errors(errors: impl IntoIterator<Item = Error>) -> TokenStream {
-        Self::compile_error_tokens(errors).into()
-    }
+fn compile_error_tokens(errors: impl IntoIterator<Item = Error>) -> proc_macro2::TokenStream {
+    errors
+        .into_iter()
+        .map(|error| error.to_compile_error())
+        .collect::<proc_macro2::TokenStream>()
+}
 
-    pub(crate) fn attribute(attr: TokenStream, input: TokenStream) -> TokenStream {
-        let driver = parse_macro_input!(attr as Lifetime);
-        let mut item = parse_macro_input!(input as ItemFn);
+fn compile_errors(errors: impl IntoIterator<Item = Error>) -> TokenStream {
+    compile_error_tokens(errors).into()
+}
+
+impl FiberFn {
+    pub(crate) fn expand(self) -> TokenStream {
+        let Self { driver, mut item } = self;
         if let Err(error) = item.modifiers.require_empty() {
             return error.to_compile_error().into();
         }
@@ -65,7 +73,7 @@ impl Fiber {
         };
         let brand = Ident::new("__dope_brand", Span::mixed_site());
         if let Err(errors) = Lowerer::lower(&brand, &mut item.block) {
-            return Self::compile_errors(errors);
+            return compile_errors(errors);
         }
         let block = replace(&mut *item.block, parse_quote! {{}});
         item.sig.output = parse_quote! {
@@ -80,31 +88,33 @@ impl Fiber {
         }};
         quote!(#item).into()
     }
+}
 
-    fn async_expression(expression: Expr) -> Result<ExprAsync, Box<Expr>> {
-        match expression {
-            Expr::Async(expression) => Ok(expression),
-            Expr::Group(mut group) => match Self::async_expression(*group.expr) {
-                Ok(expression) => Ok(expression),
-                Err(expression) => {
-                    group.expr = expression;
-                    Err(Box::new(Expr::Group(group)))
-                }
-            },
-            Expr::Paren(mut paren) => match Self::async_expression(*paren.expr) {
-                Ok(expression) => Ok(expression),
-                Err(expression) => {
-                    paren.expr = expression;
-                    Err(Box::new(Expr::Paren(paren)))
-                }
-            },
-            expression => Err(Box::new(expression)),
-        }
+fn async_expression(expression: Expr) -> Result<ExprAsync, Box<Expr>> {
+    match expression {
+        Expr::Async(expression) => Ok(expression),
+        Expr::Group(mut group) => match async_expression(*group.expr) {
+            Ok(expression) => Ok(expression),
+            Err(expression) => {
+                group.expr = expression;
+                Err(Box::new(Expr::Group(group)))
+            }
+        },
+        Expr::Paren(mut paren) => match async_expression(*paren.expr) {
+            Ok(expression) => Ok(expression),
+            Err(expression) => {
+                paren.expr = expression;
+                Err(Box::new(Expr::Paren(paren)))
+            }
+        },
+        expression => Err(Box::new(expression)),
     }
+}
 
-    pub(crate) fn expression(input: TokenStream) -> TokenStream {
-        let Input { driver, expr } = parse_macro_input!(input as Input);
-        let mut expression = match Self::async_expression(expr) {
+impl Input {
+    pub(crate) fn expand(self) -> TokenStream {
+        let Self { driver, expr } = self;
+        let mut expression = match async_expression(expr) {
             Ok(expression) => expression,
             Err(expr) => {
                 return quote! {
@@ -120,7 +130,7 @@ impl Fiber {
         }
         let brand = Ident::new("__dope_brand", Span::mixed_site());
         if let Err(errors) = Lowerer::lower(&brand, &mut expression.block) {
-            let errors = Self::compile_error_tokens(errors);
+            let errors = compile_error_tokens(errors);
             return quote! {{ #errors }}.into();
         }
         quote! {

@@ -1,13 +1,13 @@
 error: lifetime may not live long enough
-  --> tests/ui/task/split_task_view_cannot_escape.rs:26:9
+  --> tests/ui/task/split_task_view_cannot_escape.rs:27:9
    |
-10 | impl<'d, 'outer> SplitTask<'d> for Escape<'outer> {
+11 | impl<'d, 'outer> SplitTask<'d> for Escape<'outer> {
    |          ------ lifetime `'outer` defined here
 ...
-17 |     fn build<'req>(
+18 |     fn build<'req>(
    |              ---- lifetime `'req` defined here
 ...
-26 |         escaped.set(Some(view));
+27 |         escaped.set(Some(view));
    |         ^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'req` must outlive `'outer`
    |
    = help: consider adding the following bound: `'req: 'outer`

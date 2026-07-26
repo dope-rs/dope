@@ -2,6 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::convert::Infallible;
+use std::marker::PhantomPinned;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
@@ -13,15 +14,17 @@ use dope::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
 use dope::runtime::dispatcher::{Dispatcher, Idle};
 use dope::runtime::profile::RuntimeProfile;
 use dope_fiber::abi::Fiber;
+use dope_fiber::abi::future::lazy::Lazy;
+use dope_fiber::abi::pollfn::PollFn;
+use dope_fiber::abi::race::{Either, Race};
+use dope_fiber::abi::ready::Ready;
 use dope_fiber::extensions::SessionExt;
 use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes, SplitTask, try_from_split_task};
 use dope_fiber::slab::{Slab, TaskSlab};
 use dope_fiber::task::queue::TaskQueue;
 use dope_fiber::task::{Context, RootWaker, Waker};
-use dope_fiber::wait::{WaitQueue, Waiter};
-use dope_test::{
-    drain_tokens, poll_with_slot, tok, with_context, with_session, with_session_for,
-};
+use dope_fiber::wait::{WaitFn, WaitQueue, Waiter};
+use dope_test::{drain_tokens, poll_with_slot, tok, with_context, with_session, with_session_for};
 use o3::buffer::Shared;
 use o3::cell::BrandCell;
 
@@ -84,6 +87,102 @@ fn request_waiter_can_switch_queues_and_either_endpoint_may_drop_first() {
         drop(canceled);
         assert!(origin.is_empty());
         assert!(drain_tokens(sess.driver()).is_empty());
+    });
+}
+
+#[test]
+fn wait_operation_unregisters_on_completion() {
+    with_context(|mut context| {
+        let queue = pin!(WaitQueue::with_capacity(1));
+        let pending = Cell::new(true);
+        let operation = WaitFn::new(|context, waiter| {
+            if pending.replace(false) {
+                assert!(queue.as_ref().try_register(waiter, context.as_ref()));
+                return Poll::Pending;
+            }
+            Poll::Ready(7)
+        });
+        let mut operation = pin!(operation);
+
+        assert_eq!(
+            Fiber::poll(operation.as_mut(), context.as_mut()),
+            Poll::Pending
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(
+            Fiber::poll(operation.as_mut(), context.as_mut()),
+            Poll::Ready(7)
+        );
+        assert!(queue.is_empty());
+    });
+}
+
+#[test]
+fn race_drops_and_unlinks_the_losing_wait_operation() {
+    with_context(|mut context| {
+        let queue = pin!(WaitQueue::with_capacity(1));
+        let output = {
+            let operation = Race::new(
+                WaitFn::new(|context, waiter| {
+                    assert!(queue.as_ref().try_register(waiter, context.as_ref()));
+                    Poll::<()>::Pending
+                }),
+                Ready::new(17),
+            );
+            let mut operation = pin!(operation);
+            Fiber::poll(operation.as_mut(), context.as_mut())
+        };
+
+        assert!(matches!(output, Poll::Ready(Either::Right(17))));
+        assert!(queue.is_empty());
+    });
+}
+
+#[test]
+fn lazy_operation_builds_its_fiber_once_on_first_poll() {
+    with_context(|mut context| {
+        let builds = Cell::new(0);
+        let operation = Lazy::new(|| {
+            builds.set(builds.get() + 1);
+            Ready::new(29)
+        });
+        let mut operation = pin!(operation);
+
+        assert_eq!(builds.get(), 0);
+        assert_eq!(
+            Fiber::poll(operation.as_mut(), context.as_mut()),
+            Poll::Ready(29)
+        );
+        assert_eq!(builds.get(), 1);
+    });
+}
+
+#[test]
+fn abi_adapters_do_not_structurally_pin_private_payloads() {
+    fn assert_unpin<T: Unpin>(_: &T) {}
+
+    with_context(|mut context| {
+        let ready = Ready::new(PhantomPinned);
+        assert_unpin(&ready);
+        assert_eq!(size_of_val(&ready), size_of::<Option<PhantomPinned>>(),);
+        let mut ready = pin!(ready);
+        assert!(matches!(
+            Fiber::poll(ready.as_mut(), context.as_mut()),
+            Poll::Ready(_)
+        ));
+
+        let marker = PhantomPinned;
+        let poll = PollFn::new(move |_| {
+            let _ = &marker;
+            Poll::Ready(17)
+        });
+        assert_unpin(&poll);
+        assert_eq!(size_of_val(&poll), size_of::<PhantomPinned>());
+        let mut poll = pin!(poll);
+        assert_eq!(
+            Fiber::poll(poll.as_mut(), context.as_mut()),
+            Poll::Ready(17)
+        );
     });
 }
 

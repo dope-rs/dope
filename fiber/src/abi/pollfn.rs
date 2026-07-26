@@ -13,11 +13,13 @@ pub struct PollFn<'d, F, T> {
     marker: PhantomData<Marker<'d, T>>,
 }
 
+impl<'d, F, T> Unpin for PollFn<'d, F, T> {}
+
 impl<'d, F, T> PollFn<'d, F, T>
 where
     F: FnMut(Pin<&mut Context<'_, 'd>>) -> Poll<T>,
 {
-    pub(super) const fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         Self {
             f,
             marker: PhantomData,
@@ -32,7 +34,7 @@ where
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         (this.f)(cx)
     }
 }

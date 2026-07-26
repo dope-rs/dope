@@ -4,11 +4,11 @@ use o3::buffer::Shared;
 
 use crate::manifold::connector::source::DialKey;
 use dope_net::link::core::{Establish, Outbound};
+use dope_net::link::egress::queue::Queue;
+use dope_net::link::egress::stage::Stage;
 use dope_net::link::slot::PendingFlags;
 
-use dope_net::link::egress::queue::Queue;
-
-const IOV_CAP: usize = 32;
+pub const IOV_CAP: usize = 32;
 
 use dope_net::link::egress::arena::Arena;
 use dope_net::wire::send::Vectored;
@@ -20,15 +20,9 @@ pub struct State<C: Default, B: AsRef<[u8]> = Shared> {
     pub(super) pending: PendingFlags,
     pub(super) establish: Establish,
     pub(super) retired: bool,
-    /// Monotonic time of the last inbound bytes from the peer, stamped from the
-    /// turn clock on connect and on every recv. `None` until established. Read
-    /// only for established slots, by the connector's inbound-idle liveness
-    /// watchdog (`Core::poll_liveness`) — the sole detector of a silently
-    /// vanished / half-open peer that never surfaces a readable EOF.
+    /// Last inbound timestamp used to detect a silent peer.
     pub(super) last_recv: Option<Instant>,
-    /// Set by an app-initiated `CloseKind::Permanent` request so `close_slot`
-    /// kills the dial target (no redial) instead of the default recoverable
-    /// `disconnect`. Every other close path leaves this false (recoverable).
+    /// Whether the application requested a non-reconnecting close.
     pub(super) close_permanent: bool,
 }
 
@@ -52,8 +46,16 @@ impl<C: Default, B: AsRef<[u8]>> State<C, B> {
         }
     }
 
+    pub fn try_enqueue(&self, bytes: B) -> Result<(), B> {
+        self.egress.try_enqueue(bytes)
+    }
+
     pub(super) fn enqueue_send(&mut self, bytes: B) -> Result<(), B> {
         self.egress.try_enqueue(bytes)
+    }
+
+    pub fn wire_stage(&mut self) -> Stage<'_, B> {
+        self.egress.wire_stage()
     }
 
     pub fn egress_len(&self) -> usize {
@@ -66,5 +68,12 @@ impl<C: Default, B: AsRef<[u8]>> State<C, B> {
 
     pub(super) fn ack_send(&mut self, n: usize) {
         self.egress.ack(n);
+    }
+}
+
+impl<C: Default> State<C, Shared> {
+    #[must_use = "false = egress cap hit, nothing was enqueued"]
+    pub fn enqueue_all(&mut self, frames: &[Shared]) -> bool {
+        self.egress.try_enqueue_all(frames)
     }
 }

@@ -3,6 +3,8 @@ use std::pin::{Pin, pin};
 
 use dope::manifold::Manifold;
 use dope::runtime::dispatcher::Idle;
+use dope_fiber::abi::pending::Pending;
+use dope_fiber::abi::ready::Ready;
 use dope_test::{drive, with_session};
 
 struct Counter<const ID: u8> {
@@ -75,7 +77,7 @@ fn make_dispatcher() -> Dispatcher {
 async fn sum_repeated<'d>() -> usize {
     let mut sum = 0usize;
     for value in 1usize..=4 {
-        sum += dope_fiber::abi::ready(value).await;
+        sum += Ready::new(value).await;
     }
     sum
 }
@@ -83,7 +85,7 @@ async fn sum_repeated<'d>() -> usize {
 #[dope_gen::fiber_fn('d)]
 async fn wait_repeated<'d>() -> usize {
     loop {
-        dope_fiber::abi::pending::<()>().await;
+        Pending::<()>::new().await;
     }
 }
 
@@ -100,7 +102,7 @@ fn route_consts() {
 fn block_ticks_every_field() {
     with_session(|mut sess| {
         let app = pin!(o3::cell::BrandCell::new(make_dispatcher()));
-        drive(&mut sess, app.as_ref(), dope_fiber::abi::ready(()));
+        drive(&mut sess, app.as_ref(), Ready::new(()));
         let d = app.as_ref().borrow_pin_mut(sess.token());
         assert!(d.a.tick_calls.get() >= 1);
         assert!(d.b.tick_calls.get() >= 1);

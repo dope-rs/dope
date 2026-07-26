@@ -10,7 +10,7 @@ pub struct Pending<T> {
 }
 
 impl<T> Pending<T> {
-    pub(super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             output: PhantomData,
         }
