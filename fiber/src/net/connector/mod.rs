@@ -1,8 +1,9 @@
 pub mod connect;
 mod pending;
 
-use std::io;
+use std::io::{self, Error};
 use std::marker::PhantomData;
+use std::task::Poll;
 
 use o3::buffer::{RetainBytes, Shared};
 use o3::collections::CellQueue;
@@ -10,7 +11,6 @@ use o3::collections::CellQueue;
 use connect::Connect;
 
 use crate::Waker;
-use crate::io::Io;
 use dope::DriverContext;
 use dope::driver::token::{SlotIndex, Token};
 use dope::io::provided::ProvidedView;
@@ -21,36 +21,27 @@ use dope::manifold::connector::source::explicit::{Explicit, ExplicitDialer};
 use dope::manifold::env::Bundle;
 use dope::runtime::profile::Balanced;
 use dope_net::Transport;
-use dope_net::link::egress::config::Config;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
-use std::io::Error;
 
 use super::port::Port;
 use super::port::recv::arena::{RecvArena, RecvLayout};
 use dope::manifold::connector::state::State;
 use dope::runtime::executor::StorageFactory;
-use pending::{Pending, Resolve};
-
-enum Resolved {
-    Ready(Token),
-    Failed,
-}
+use pending::{Outcome, Pending};
 
 pub struct ConnectorPort<'d, T: Transport>
 where
     T::Addr: Clone,
 {
     connections: Port<'d>,
-    pending: Pending<'d, DialKey, Resolved>,
+    pending: Pending<'d>,
     cancels: CellQueue<(DialKey, SlotIndex)>,
     source: Explicit<T>,
-    egress: Config,
 }
 
 pub struct ConnectorPortFactory<T> {
     layout: RecvLayout,
-    egress: Config,
     transport: PhantomData<fn() -> T>,
 }
 
@@ -58,40 +49,19 @@ impl<'d, T: Transport> ConnectorPort<'d, T>
 where
     T::Addr: Clone,
 {
-    pub fn with_capacity(capacity: usize) -> io::Result<Self> {
-        Self::with_egress(capacity, Config::default())
-    }
-
-    pub fn with_egress(capacity: usize, egress: Config) -> io::Result<Self> {
-        Ok(Self::with_layout(RecvLayout::new(capacity)?, egress))
-    }
-
-    fn with_layout(layout: RecvLayout, egress: Config) -> Self {
+    fn with_layout(layout: RecvLayout) -> Self {
         let capacity = layout.connections();
         Self {
             connections: Port::with_layout(layout, false),
             pending: Pending::with_capacity(capacity),
             cancels: CellQueue::with_capacity(capacity),
             source: Explicit::with_capacity(capacity),
-            egress,
         }
     }
 
     pub fn factory(capacity: usize) -> io::Result<ConnectorPortFactory<T>> {
         Ok(ConnectorPortFactory {
             layout: RecvLayout::new(capacity)?,
-            egress: Config::default(),
-            transport: PhantomData,
-        })
-    }
-
-    pub fn factory_with_egress(
-        capacity: usize,
-        egress: Config,
-    ) -> io::Result<ConnectorPortFactory<T>> {
-        Ok(ConnectorPortFactory {
-            layout: RecvLayout::new(capacity)?,
-            egress,
             transport: PhantomData,
         })
     }
@@ -122,7 +92,7 @@ where
             },
             self.source.dialer(),
             self.connections.capacity(),
-            self.egress,
+            Default::default(),
             wire_config,
             driver,
         )
@@ -134,13 +104,13 @@ where
         Some(key)
     }
 
-    fn resolve(&self, key: DialKey, waker: Waker<'d>) -> ConnectOutcome {
+    fn resolve(&self, key: DialKey, waker: Waker<'d>) -> Poll<io::Result<Token>> {
         match self.pending.poll(key, waker) {
-            Resolve::Ready(Resolved::Ready(token)) => ConnectOutcome::Conn(token),
-            Resolve::Ready(Resolved::Failed) => {
-                ConnectOutcome::Failed(Error::other("fiber::Connector: connect failed"))
+            Poll::Ready(Outcome::Connected(token)) => Poll::Ready(Ok(token)),
+            Poll::Ready(Outcome::Failed) => {
+                Poll::Ready(Err(Error::other("fiber::Connector: connect failed")))
             }
-            Resolve::Pending => ConnectOutcome::Pending,
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -154,44 +124,10 @@ where
 
     fn connected(&self, key: DialKey, token: Token, wake: Waker<'d>) {
         if !self.connections.activate(token, wake) {
-            self.pending.settle(key, Resolved::Failed);
+            self.pending.settle(key, Outcome::Failed);
             return;
         }
-        self.pending.settle(key, Resolved::Ready(token));
-    }
-
-    fn connect_failed(&self, key: DialKey) {
-        self.pending.settle(key, Resolved::Failed);
-    }
-
-    fn push_recv<R: RetainBytes>(&self, token: Token, chunk: R) -> bool {
-        self.connections.push_recv(token, chunk)
-    }
-
-    fn push_retained(&self, token: Token, chunk: ProvidedView<'d>) -> bool {
-        self.connections.push_retained(token, chunk)
-    }
-
-    fn closed(&self, token: Token) {
-        self.connections.closed(token);
-    }
-
-    fn drain_requests(
-        &self,
-        token: Token,
-        push: impl FnMut(Shared) -> Result<(), Shared>,
-    ) -> Requests {
-        self.connections
-            .drain_requests(token, push)
-            .unwrap_or_default()
-    }
-
-    fn take_cancel(&self) -> Option<(DialKey, SlotIndex)> {
-        self.cancels.pop_front()
-    }
-
-    fn sync_send(&self, token: Token, inflight: bool) {
-        self.connections.sync_send(token, inflight);
+        self.pending.settle(key, Outcome::Connected(token));
     }
 }
 
@@ -203,14 +139,8 @@ where
     type Output<'d> = ConnectorPort<'d, T>;
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        ConnectorPort::with_layout(self.layout, self.egress)
+        ConnectorPort::with_layout(self.layout)
     }
-}
-
-enum ConnectOutcome {
-    Conn(Token),
-    Failed(Error),
-    Pending,
 }
 
 pub struct AsyncApp<'scope, 'd, T: Transport, W: Wire>
@@ -241,7 +171,7 @@ where
         chunk: R,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
-        if self.port.push_recv(slot.token(), chunk) {
+        if self.port.connections.push_recv(slot.token(), chunk) {
             ChunkOutcome::Overrun
         } else {
             ChunkOutcome::Ok
@@ -254,7 +184,7 @@ where
         chunk: ProvidedView<'d>,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
-        if self.port.push_retained(slot.token(), chunk) {
+        if self.port.connections.push_retained(slot.token(), chunk) {
             ChunkOutcome::Overrun
         } else {
             ChunkOutcome::Ok
@@ -275,7 +205,7 @@ where
     }
 
     fn connect_failed(&mut self, key: DialKey, _driver: &mut DriverContext<'_, '_>) {
-        self.port.connect_failed(key);
+        self.port.pending.settle(key, Outcome::Failed);
     }
 
     fn send(
@@ -285,6 +215,7 @@ where
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port
+            .connections
             .sync_send(slot.token(), slot.state.egress_len() != 0);
     }
 
@@ -293,7 +224,7 @@ where
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
-        self.port.closed(slot.token());
+        self.port.connections.closed(slot.token());
     }
 
     fn is_drained(
@@ -310,11 +241,14 @@ where
         push: impl FnMut(Shared) -> Result<(), Shared>,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
-        self.port.drain_requests(token, push)
+        self.port
+            .connections
+            .drain_requests(token, push)
+            .unwrap_or_default()
     }
 
     fn take_cancel(&self) -> Option<(DialKey, SlotIndex)> {
-        self.port.take_cancel()
+        self.port.cancels.pop_front()
     }
 }
 
@@ -345,9 +279,5 @@ where
 {
     pub fn connect(self, addr: T::Addr, config: T::StreamConfig) -> Connect<'scope, 'd, T> {
         Connect::new(self, addr, config)
-    }
-
-    fn stream(self, id: Token) -> Io<'scope, 'd> {
-        Io::new(&self.port.connections, id)
     }
 }

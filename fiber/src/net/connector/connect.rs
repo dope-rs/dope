@@ -1,13 +1,12 @@
-use std::io;
+use std::io::{self, Error};
 use std::pin::Pin;
 use std::task::Poll;
 
-use super::{ConnectOutcome, ConnectorHandle};
+use super::ConnectorHandle;
 use crate::io::Io;
 use crate::{Context, Fiber};
 use dope::manifold::connector::source::DialKey;
 use dope_net::Transport;
-use std::io::Error;
 
 enum Stage<T: Transport> {
     Init {
@@ -77,16 +76,19 @@ where
                 key
             }
         };
-        match this.host.port.resolve(key, unsafe { cx.waker_unchecked() }) {
-            ConnectOutcome::Conn(token) => {
+        // SAFETY: `Connect::drop` cancels this exact ticket before its task
+        // context can drop, removing the stored waker from `Pending`.
+        let waker = unsafe { cx.waker_unchecked() };
+        match this.host.port.resolve(key, waker) {
+            Poll::Ready(Ok(token)) => {
                 this.stage = Stage::Done;
-                Poll::Ready(Ok(this.host.stream(token)))
+                Poll::Ready(Ok(Io::new(&this.host.port.connections, token)))
             }
-            ConnectOutcome::Failed(error) => {
+            Poll::Ready(Err(error)) => {
                 this.stage = Stage::Done;
                 Poll::Ready(Err(error))
             }
-            ConnectOutcome::Pending => Poll::Pending,
+            Poll::Pending => Poll::Pending,
         }
     }
 }
