@@ -1,10 +1,7 @@
-use std::io;
-use std::os::fd::OwnedFd;
-use std::rc::Rc;
-
 use super::FileOutcome;
 use super::Metadata;
 use super::raw::StatRequest;
+use super::source::Source;
 use dope::DriverContext;
 use dope_core::backend::Backend;
 use dope_core::driver::token::kind::STAT;
@@ -12,6 +9,7 @@ use dope_core::driver::token::{KeyTag, Token};
 use dope_core::io::StatEvent;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
+use std::io;
 
 use super::table::OperationTable;
 use dope_core::driver::ready::CompletionWaker;
@@ -22,7 +20,7 @@ pub enum StatDone {
 }
 
 pub(crate) struct StatTable<'d, const ID: u8> {
-    operations: OperationTable<'d, StatRequest, StatDone, KeyTag<ID, STAT>>,
+    operations: OperationTable<'d, StatRequest<'d>, StatDone, KeyTag<ID, STAT>>,
 }
 
 impl<'d, const ID: u8> StatTable<'d, ID> {
@@ -50,13 +48,13 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
 
     pub(crate) fn begin_fd(
         &self,
-        fd: Rc<OwnedFd>,
+        source: Source<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Option<Token> {
-        self.begin(StatRequest::fd(fd), driver)
+        self.begin(StatRequest::fd(source), driver)
     }
 
-    fn begin(&self, request: StatRequest, driver: &mut DriverContext<'_, 'd>) -> Option<Token> {
+    fn begin(&self, request: StatRequest<'d>, driver: &mut DriverContext<'_, 'd>) -> Option<Token> {
         self.operations
             .begin(request, driver, |token, request| {
                 Some((token, request.submission(token)))

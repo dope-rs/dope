@@ -1,8 +1,6 @@
 use std::io;
 use std::io::Error;
-use std::os::fd::OwnedFd;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::task::Poll;
 
 use super::already_done;
@@ -11,27 +9,27 @@ use crate::{Context, Fiber};
 use dope::io::file::OpenPath;
 use dope::manifold::file::{FileOutcome, Files, StatDone};
 
-enum StatTarget {
-    Fd(Rc<OwnedFd>),
+enum StatTarget<'d> {
+    Fd(Source<'d>),
     Path(OpenPath),
 }
 
-enum StatStage {
-    Init(StatTarget),
+enum StatStage<'d> {
+    Init(StatTarget<'d>),
     Pending(dope::driver::token::Token),
     Done,
 }
 
 pub struct Stat<'h, 'd, const ID: u8, const N: usize> {
     host: &'h Files<'d, ID, N>,
-    stage: StatStage,
+    stage: StatStage<'d>,
 }
 
 impl<'h, 'd, const ID: u8, const N: usize> Stat<'h, 'd, ID, N> {
     pub fn source(host: &'h Files<'d, ID, N>, source: &Source<'d>) -> Self {
         Self {
             host,
-            stage: StatStage::Init(StatTarget::Fd(source.lease())),
+            stage: StatStage::Init(StatTarget::Fd(source.clone())),
         }
     }
 
