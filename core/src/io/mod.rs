@@ -11,9 +11,10 @@ use std::fmt;
 use std::io::{self, Error};
 use std::os::fd::OwnedFd;
 
+use crate::driver::DriverRef;
 use crate::driver::token;
 use crate::driver::token::{SHUTDOWN, Token, kind};
-use fd::FdSlot;
+use fd::{AcceptedSlot, FdSlot};
 use ffi::Handle;
 use provided::ProvidedLease;
 
@@ -120,9 +121,8 @@ pub enum StatEvent {
     Failed(i32),
 }
 
-#[derive(Clone, Copy)]
-pub enum AcceptEvent {
-    Accepted(FdSlot),
+pub enum AcceptEvent<'d> {
+    Accepted(AcceptedSlot<'d>),
     Failed,
 }
 
@@ -143,7 +143,7 @@ pub struct Event<'d> {
 }
 
 pub enum EventKind<'d> {
-    Accept(Token, bool, AcceptEvent),
+    Accept(Token, bool, AcceptEvent<'d>),
     Recv(Token, bool, RecvEvent<'d>),
     Send(Token, SendEvent),
     Timer(Token),
@@ -178,8 +178,14 @@ impl DecodedRecv {
 }
 
 #[derive(Clone, Copy)]
+enum DecodedAccept {
+    Accepted(FdSlot),
+    Failed,
+}
+
+#[derive(Clone, Copy)]
 enum DecodedEvent {
-    Accept(Token, bool, AcceptEvent),
+    Accept(Token, bool, DecodedAccept),
     Recv(Token, bool, DecodedRecv),
     Send(Token, SendEvent),
     Timer(Token),
@@ -202,8 +208,8 @@ impl DecodedEvent {
         match c.kind() {
             kind::ACCEPT => {
                 let e = match c.result {
-                    n if n >= 0 => AcceptEvent::Accepted(FdSlot::new(n as u32)),
-                    _ => AcceptEvent::Failed,
+                    n if n >= 0 => DecodedAccept::Accepted(FdSlot::new(n as u32)),
+                    _ => DecodedAccept::Failed,
                 };
                 Ok(Self::Accept(token, c.more(), e))
             }
@@ -275,7 +281,7 @@ impl DecodedEvent {
 }
 
 pub enum EventRef<'a, 'd> {
-    Accept(Token, bool, &'a AcceptEvent),
+    Accept(Token, bool, &'a AcceptEvent<'d>),
     Recv(Token, bool, &'a RecvEvent<'d>),
     Send(Token, &'a SendEvent),
     Timer(Token),
@@ -292,6 +298,7 @@ pub enum EventRef<'a, 'd> {
 impl<'d> Event<'d> {
     pub(crate) fn from_cqe(
         cqe: Cqe,
+        reference: DriverRef<'d>,
         provided: impl FnOnce(u32, u16) -> ProvidedLease<'d>,
     ) -> Result<Self, DecodeError> {
         let result = cqe.result;
@@ -300,7 +307,15 @@ impl<'d> Event<'d> {
             .has_buffer()
             .then(|| provided(result.max(0) as u32, cqe.bid_raw()));
         let kind = match DecodedEvent::decode(cqe)? {
-            DecodedEvent::Accept(token, more, event) => EventKind::Accept(token, more, event),
+            DecodedEvent::Accept(token, more, event) => {
+                let event = match event {
+                    DecodedAccept::Accepted(slot) => {
+                        AcceptEvent::Accepted(AcceptedSlot::from_completion(slot, reference))
+                    }
+                    DecodedAccept::Failed => AcceptEvent::Failed,
+                };
+                EventKind::Accept(token, more, event)
+            }
             DecodedEvent::Recv(token, more, event) => {
                 let event = match event {
                     DecodedRecv::Data { len, bid } => {
