@@ -1,9 +1,10 @@
-use std::mem;
 
-use crate::backend::uring::sqe;
 use crate::driver::token::SlotIndex;
 use crate::io::fd::FdSlot;
 use o3::collections::FixedQueue;
+use crate::backend::uring::sqe::Create;
+use crate::backend::uring::sqe::Sqe;
+use std::mem::replace;
 
 #[derive(Clone, Copy)]
 enum FileState {
@@ -21,7 +22,7 @@ pub(crate) enum Admission {
 
 pub(crate) struct FileTable {
     state: Box<[FileState]>,
-    pending: Box<[Option<(sqe::Create, sqe::Sqe)>]>,
+    pending: Box<[Option<(Create, Sqe)>]>,
     ready: FixedQueue<FdSlot>,
     deferred_close: FixedQueue<FdSlot>,
 }
@@ -52,7 +53,7 @@ impl FileTable {
         }
     }
 
-    pub(crate) fn begin_create(&mut self, create: sqe::Create) {
+    pub(crate) fn begin_create(&mut self, create: Create) {
         debug_assert!(matches!(
             self.state[create.slot.raw() as usize],
             FileState::Empty
@@ -63,7 +64,7 @@ impl FileTable {
         };
     }
 
-    pub(crate) fn defer_create(&mut self, create: sqe::Create, sqe: sqe::Sqe) {
+    pub(crate) fn defer_create(&mut self, create: Create, sqe: Sqe) {
         self.pending[create.slot.raw() as usize] = Some((create, sqe));
     }
 
@@ -77,7 +78,7 @@ impl FileTable {
         let FileState::Creating {
             user_data,
             close_pending,
-        } = mem::replace(state, FileState::Empty)
+        } = replace(state, FileState::Empty)
         else {
             return None;
         };
@@ -133,7 +134,7 @@ impl FileTable {
         }
     }
 
-    pub(super) fn flush_ready(&mut self, mut push: impl FnMut(&sqe::Sqe) -> bool) {
+    pub(super) fn flush_ready(&mut self, mut push: impl FnMut(&Sqe) -> bool) {
         while let Some(&slot) = self.ready.front() {
             let index = slot.raw() as usize;
             let Some((create, sqe)) = self.pending[index].take() else {

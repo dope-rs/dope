@@ -1,4 +1,6 @@
 use std::io::Error;
+use libc::EAGAIN;
+use libc::EWOULDBLOCK;
 
 #[derive(Clone, Copy)]
 pub(super) struct Errno(i32);
@@ -13,6 +15,6 @@ impl Errno {
     }
 
     pub(super) const fn is_block(self) -> bool {
-        self.0 == libc::EAGAIN || self.0 == libc::EWOULDBLOCK
+        self.0 == EAGAIN || self.0 == EWOULDBLOCK
     }
 }

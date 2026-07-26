@@ -6,6 +6,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
 use crate::backend::Sqe;
 use crate::driver::token::Token;
+use libc::AT_FDCWD;
+use libc::c_char;
 
 pub struct RawMetadata {
     pub len: u64,
@@ -73,14 +75,14 @@ impl OpenPath {
         Ok(Self { path })
     }
 
-    pub fn as_ptr(&self) -> *const libc::c_char {
+    pub fn as_ptr(&self) -> *const c_char {
         self.path.as_ptr()
     }
 
     /// # Safety
     /// `self` must remain valid until completion.
     pub unsafe fn open_at(&self, flags: i32, op: Token) -> Sqe {
-        Sqe::openat(libc::AT_FDCWD, self.path.as_ptr(), flags, 0, op)
+        Sqe::openat(AT_FDCWD, self.path.as_ptr(), flags, 0, op)
     }
 }
 

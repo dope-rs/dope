@@ -5,6 +5,9 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
 use crate::driver::Driver;
 use crate::platform::raw::abi::PlatformAbi;
+use libc::write;
+use std::io::Error;
+use std::io::ErrorKind;
 
 pub(crate) struct PipeEnds {
     read: OwnedFd,
@@ -49,14 +52,14 @@ impl Pipe {
         let byte = 1u8;
         loop {
             let written =
-                unsafe { libc::write(self.ends.write.as_raw_fd(), (&byte as *const u8).cast(), 1) };
+                unsafe { write(self.ends.write.as_raw_fd(), (&byte as *const u8).cast(), 1) };
             if written == 1 {
                 return Ok(());
             }
-            let error = io::Error::last_os_error();
+            let error = Error::last_os_error();
             match error.kind() {
-                io::ErrorKind::Interrupted => continue,
-                io::ErrorKind::WouldBlock => return Ok(()),
+                ErrorKind::Interrupted => continue,
+                ErrorKind::WouldBlock => return Ok(()),
                 _ => return Err(error),
             }
         }

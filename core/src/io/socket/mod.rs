@@ -2,6 +2,15 @@ pub mod addr;
 pub mod msg;
 
 use core::mem::MaybeUninit;
+use libc::AF_INET;
+use libc::AF_INET6;
+use libc::SOCK_DGRAM;
+use libc::SOCK_STREAM;
+use libc::c_int;
+use libc::sockaddr_in;
+use libc::sockaddr_in6;
+use libc::sockaddr_storage;
+use libc::sockaddr_un;
 use std::net::SocketAddr;
 
 #[derive(Clone, Copy, Debug)]
@@ -48,10 +57,10 @@ impl Domain {
         }
     }
 
-    pub const fn raw(self) -> libc::c_int {
+    pub const fn raw(self) -> c_int {
         match self {
-            Self::Inet4 => libc::AF_INET,
-            Self::Inet6 => libc::AF_INET6,
+            Self::Inet4 => AF_INET,
+            Self::Inet6 => AF_INET6,
         }
     }
 }
@@ -63,10 +72,10 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const fn raw(self) -> libc::c_int {
+    pub const fn raw(self) -> c_int {
         match self {
-            Self::Stream => libc::SOCK_STREAM,
-            Self::Dgram => libc::SOCK_DGRAM,
+            Self::Stream => SOCK_STREAM,
+            Self::Dgram => SOCK_DGRAM,
         }
     }
 }
@@ -79,7 +88,7 @@ pub(crate) unsafe trait Pod: Sized {
     }
 }
 
-unsafe impl Pod for libc::sockaddr_in {}
-unsafe impl Pod for libc::sockaddr_in6 {}
-unsafe impl Pod for libc::sockaddr_un {}
-unsafe impl Pod for libc::sockaddr_storage {}
+unsafe impl Pod for sockaddr_in {}
+unsafe impl Pod for sockaddr_in6 {}
+unsafe impl Pod for sockaddr_un {}
+unsafe impl Pod for sockaddr_storage {}

@@ -12,7 +12,11 @@ pub(crate) trait ExtBackend {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::io::{self, Error, ErrorKind};
-    use std::mem;
+    use std::mem::zeroed;
+
+    use libc::{
+        CPU_ISSET, CPU_SET, CPU_SETSIZE, CPU_ZERO, cpu_set_t, sched_getaffinity, sched_setaffinity,
+    };
 
     use super::{Backend, Config, ExtBackend};
 
@@ -22,18 +26,18 @@ mod linux {
         }
 
         fn init_thread(cpu_id: u16) -> io::Result<()> {
-            if cpu_id >= libc::CPU_SETSIZE as u16 {
+            if cpu_id >= CPU_SETSIZE as u16 {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     "dope: cpu index exceeds CPU_SETSIZE",
                 ));
             }
-            let mut set: libc::cpu_set_t = unsafe { mem::zeroed() };
+            let mut set: cpu_set_t = unsafe { zeroed() };
             unsafe {
-                libc::CPU_ZERO(&mut set);
-                libc::CPU_SET(cpu_id as usize, &mut set);
+                CPU_ZERO(&mut set);
+                CPU_SET(cpu_id as usize, &mut set);
             }
-            let rc = unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set) };
+            let rc = unsafe { sched_setaffinity(0, size_of::<cpu_set_t>(), &set) };
             if rc == 0 {
                 Ok(())
             } else {
@@ -42,14 +46,14 @@ mod linux {
         }
 
         fn allowed_cpus() -> io::Result<Vec<u16>> {
-            let mut set: libc::cpu_set_t = unsafe { mem::zeroed() };
-            let rc = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut set) };
+            let mut set: cpu_set_t = unsafe { zeroed() };
+            let rc = unsafe { sched_getaffinity(0, size_of::<cpu_set_t>(), &mut set) };
             if rc != 0 {
                 return Err(Error::last_os_error());
             }
             let mut cpus = Vec::new();
-            for cpu in 0..libc::CPU_SETSIZE as usize {
-                if unsafe { libc::CPU_ISSET(cpu, &set) } {
+            for cpu in 0..CPU_SETSIZE as usize {
+                if unsafe { CPU_ISSET(cpu, &set) } {
                     cpus.push(cpu as u16);
                 }
             }
