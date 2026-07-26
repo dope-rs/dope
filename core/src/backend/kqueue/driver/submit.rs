@@ -7,9 +7,36 @@ use super::retry::{Retry, WriteKind};
 use crate::platform::raw::abi::PlatformAbi;
 use crate::backend::kqueue::errno::Errno;
 use crate::driver::Driver;
-use crate::driver::token::{KIND_SHIFT, Token, kind};
+use crate::driver::token::{KIND_SHIFT, Token};
 use crate::io::fd::FdSlot;
 use crate::io::ffi::Handle;
+use crate::driver::token::kind::ACCEPT;
+use crate::driver::token::kind::CONNECT;
+use libc::EBADF;
+use libc::EINPROGRESS;
+use libc::EMFILE;
+use libc::EVFILT_TIMER;
+use libc::EV_DELETE;
+use crate::driver::token::kind::RECV;
+use crate::driver::token::kind::RECV_DISCARD;
+use crate::driver::token::kind::SEND;
+use crate::driver::token::kind::TIMER;
+use libc::c_char;
+use libc::c_uint;
+use libc::connect;
+use libc::kevent;
+use libc::msghdr;
+use std::ptr::null_mut;
+use libc::off_t;
+use libc::openat;
+use libc::pread;
+use libc::pwrite;
+use libc::send;
+use libc::sendmsg;
+use libc::sockaddr;
+use libc::socket;
+use libc::socklen_t;
+use libc::uintptr_t;
 
 pub(crate) trait Submit {
     fn cancel_inner(&mut self, target: Token) -> bool;
@@ -34,7 +61,7 @@ pub(crate) trait Submit {
         &mut self,
         ud: Token,
         dir: RawFd,
-        path: *const libc::c_char,
+        path: *const c_char,
         flags: i32,
         mode: u32,
     ) -> bool;
@@ -57,7 +84,7 @@ pub(crate) trait Submit {
     fn submit_connect(
         &mut self,
         slot: FdSlot,
-        addr_ptr: *const libc::sockaddr,
+        addr_ptr: *const sockaddr,
         addr_len: u32,
         ud: Token,
     ) -> bool;
@@ -65,24 +92,24 @@ pub(crate) trait Submit {
         &mut self,
         ud: Token,
         slot: FdSlot,
-        msg: *const libc::msghdr,
+        msg: *const msghdr,
     ) -> bool;
 }
 
 impl Submit for Kqueue {
     fn cancel_inner(&mut self, target: Token) -> bool {
         match (target.raw() >> KIND_SHIFT) as u8 {
-            kind::ACCEPT => self.cancel_accept_inner(target),
-            kind::RECV | kind::RECV_DISCARD => self.cancel_recv_inner(target),
-            kind::SEND | kind::CONNECT => self.cancel_write_inner(target),
-            kind::TIMER => {
-                self.changes.push(libc::kevent {
-                    ident: target.raw() as libc::uintptr_t,
-                    filter: libc::EVFILT_TIMER,
-                    flags: libc::EV_DELETE,
+            ACCEPT => self.cancel_accept_inner(target),
+            RECV | RECV_DISCARD => self.cancel_recv_inner(target),
+            SEND | CONNECT => self.cancel_write_inner(target),
+            TIMER => {
+                self.changes.push(kevent {
+                    ident: target.raw() as uintptr_t,
+                    filter: EVFILT_TIMER,
+                    flags: EV_DELETE,
                     fflags: 0,
                     data: 0,
-                    udata: std::ptr::null_mut(),
+                    udata: null_mut(),
                 });
                 self.flush_changes_if_full();
                 true
@@ -101,14 +128,14 @@ impl Submit for Kqueue {
         let Some(raw) = self.raw_fd(slot) else {
             self.push_pending(PendingCompletion::Write {
                 ud,
-                result: -libc::EBADF,
+                result: -EBADF,
             });
             return true;
         };
         if self.write_retry_fd.contains_key(&(raw as usize)) {
             return false;
         }
-        let n = unsafe { libc::send(raw, ptr.cast(), len as usize, 0) };
+        let n = unsafe { send(raw, ptr.cast(), len as usize, 0) };
         if n >= 0 {
             self.push_pending(PendingCompletion::Write {
                 ud,
@@ -154,7 +181,7 @@ impl Submit for Kqueue {
         len: u32,
         offset: u64,
     ) -> bool {
-        let n = unsafe { libc::pwrite(fd, ptr.cast(), len as usize, offset as libc::off_t) };
+        let n = unsafe { pwrite(fd, ptr.cast(), len as usize, offset as off_t) };
         self.complete_io(ud, n)
     }
 
@@ -162,11 +189,11 @@ impl Submit for Kqueue {
         &mut self,
         ud: Token,
         dir: RawFd,
-        path: *const libc::c_char,
+        path: *const c_char,
         flags: i32,
         mode: u32,
     ) -> bool {
-        let fd = unsafe { libc::openat(dir, path, flags, mode as libc::c_uint) };
+        let fd = unsafe { openat(dir, path, flags, mode as c_uint) };
         self.complete_io(ud, fd as isize)
     }
 
@@ -178,7 +205,7 @@ impl Submit for Kqueue {
         len: u32,
         offset: u64,
     ) -> bool {
-        let n = unsafe { libc::pread(fd, ptr.cast(), len as usize, offset as libc::off_t) };
+        let n = unsafe { pread(fd, ptr.cast(), len as usize, offset as off_t) };
         self.complete_io(ud, n)
     }
 
@@ -190,7 +217,7 @@ impl Submit for Kqueue {
         slot: FdSlot,
         ud: Token,
     ) -> bool {
-        let raw = unsafe { libc::socket(domain, socket_type, protocol) };
+        let raw = unsafe { socket(domain, socket_type, protocol) };
         if raw < 0 {
             return self.complete_create(ud, -Errno::last().raw(), slot);
         }
@@ -206,7 +233,7 @@ impl Submit for Kqueue {
                 Ok(()) => 0,
                 Err(_) => {
                     self.close_raw(raw);
-                    -libc::EMFILE
+                    -EMFILE
                 }
             }
         };
@@ -216,24 +243,24 @@ impl Submit for Kqueue {
     fn submit_connect(
         &mut self,
         slot: FdSlot,
-        addr_ptr: *const libc::sockaddr,
+        addr_ptr: *const sockaddr,
         addr_len: u32,
         ud: Token,
     ) -> bool {
         let Some(raw) = self.raw_fd(slot) else {
             self.push_pending(PendingCompletion::Write {
                 ud,
-                result: -libc::EBADF,
+                result: -EBADF,
             });
             return true;
         };
-        let rc = unsafe { libc::connect(raw, addr_ptr, addr_len as libc::socklen_t) };
+        let rc = unsafe { connect(raw, addr_ptr, addr_len as socklen_t) };
         if rc == 0 {
             self.push_pending(PendingCompletion::Write { ud, result: 0 });
             return true;
         }
         let errno = Errno::last();
-        if errno.raw() == libc::EINPROGRESS || errno.is_block() {
+        if errno.raw() == EINPROGRESS || errno.is_block() {
             return self.arm_write_retry(raw, ud, WriteKind::Connect { addr_ptr, addr_len });
         }
         self.push_pending(PendingCompletion::Write {
@@ -247,19 +274,19 @@ impl Submit for Kqueue {
         &mut self,
         ud: Token,
         slot: FdSlot,
-        msg: *const libc::msghdr,
+        msg: *const msghdr,
     ) -> bool {
         let Some(raw) = self.raw_fd(slot) else {
             self.push_pending(PendingCompletion::Write {
                 ud,
-                result: -libc::EBADF,
+                result: -EBADF,
             });
             return true;
         };
         if self.write_retry_fd.contains_key(&(raw as usize)) {
             return false;
         }
-        let n = unsafe { libc::sendmsg(raw, msg, 0) };
+        let n = unsafe { sendmsg(raw, msg, 0) };
         if n >= 0 {
             self.push_pending(PendingCompletion::Write {
                 ud,

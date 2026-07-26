@@ -4,9 +4,29 @@ use std::os::fd::RawFd;
 use super::pending::PendingCompletion;
 use super::read::arm::Arm;
 use super::udata::Udata;
-use super::{Kqueue, TAG_WRITE_RETRY};
+use super::Kqueue;
 use crate::backend::kqueue::errno::Errno;
 use crate::driver::token::{Epoch, SLOT_MASK, Token};
+use libc::EALREADY;
+use libc::ECANCELED;
+use libc::EINPROGRESS;
+use libc::EISCONN;
+use libc::EVFILT_WRITE;
+use libc::EV_ADD;
+use libc::EV_CLEAR;
+use libc::EV_ONESHOT;
+use libc::SOL_SOCKET;
+use libc::SO_ERROR;
+use libc::c_int;
+use libc::connect;
+use libc::getsockopt;
+use libc::kevent;
+use libc::msghdr;
+use libc::send;
+use libc::sendmsg;
+use libc::sockaddr;
+use libc::socklen_t;
+use libc::uintptr_t;
 
 #[derive(Clone, Copy)]
 pub(crate) struct WriteRetry {
@@ -27,10 +47,10 @@ pub(crate) enum WriteKind {
         len: u32,
     },
     SendMsg {
-        msg: *const libc::msghdr,
+        msg: *const msghdr,
     },
     Connect {
-        addr_ptr: *const libc::sockaddr,
+        addr_ptr: *const sockaddr,
         addr_len: u32,
     },
 }
@@ -74,7 +94,7 @@ impl Retry for Kqueue {
         };
         self.push_pending(PendingCompletion::Write {
             ud: retry.ud,
-            result: -libc::ECANCELED,
+            result: -ECANCELED,
         });
         true
     }
@@ -92,7 +112,7 @@ impl Retry for Kqueue {
 
     fn remove_write_retry(&mut self, idx: u32) -> Option<WriteRetry> {
         let epoch = self.write_retries[idx as usize].epoch.raw();
-        let udata = Udata::pack(TAG_WRITE_RETRY, idx, epoch).into_kevent();
+        let udata = Udata::write_retry(idx, epoch).into_kevent();
         let queued = self.changes.iter().any(|event| event.udata == udata);
         self.changes.retain(|event| event.udata != udata);
         let slot = &mut self.write_retries[idx as usize];
@@ -102,7 +122,7 @@ impl Retry for Kqueue {
             self.write_retry_free.push(idx);
         }
         if !queued {
-            self.disarm_filter(retry.fd, libc::EVFILT_WRITE);
+            self.disarm_filter(retry.fd, EVFILT_WRITE);
         }
         Some(retry)
     }
@@ -119,7 +139,7 @@ impl Retry for Kqueue {
         self.write_retry_fd.remove(&(retry.fd as usize));
         let result: i32 = match retry.kind {
             WriteKind::Send { ptr, len } => {
-                let rc = unsafe { libc::send(retry.fd, ptr.cast(), len as usize, 0) };
+                let rc = unsafe { send(retry.fd, ptr.cast(), len as usize, 0) };
                 if rc == -1 {
                     -Errno::last().raw()
                 } else {
@@ -127,7 +147,7 @@ impl Retry for Kqueue {
                 }
             }
             WriteKind::SendMsg { msg } => {
-                let rc = unsafe { libc::sendmsg(retry.fd, msg, 0) };
+                let rc = unsafe { sendmsg(retry.fd, msg, 0) };
                 if rc == -1 {
                     -Errno::last().raw()
                 } else {
@@ -135,25 +155,25 @@ impl Retry for Kqueue {
                 }
             }
             WriteKind::Connect { addr_ptr, addr_len } => {
-                let mut err = 0 as libc::c_int;
-                let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+                let mut err = 0 as c_int;
+                let mut len = size_of::<c_int>() as socklen_t;
                 let rc = unsafe {
-                    libc::getsockopt(
+                    getsockopt(
                         retry.fd,
-                        libc::SOL_SOCKET,
-                        libc::SO_ERROR,
-                        (&mut err as *mut libc::c_int).cast(),
+                        SOL_SOCKET,
+                        SO_ERROR,
+                        (&mut err as *mut c_int).cast(),
                         &mut len,
                     )
                 };
-                if rc == 0 && (err == libc::EINPROGRESS || err == libc::EALREADY) {
+                if rc == 0 && (err == EINPROGRESS || err == EALREADY) {
                     let rc =
-                        unsafe { libc::connect(retry.fd, addr_ptr, addr_len as libc::socklen_t) };
+                        unsafe { connect(retry.fd, addr_ptr, addr_len as socklen_t) };
                     if rc == 0 {
                         0
                     } else {
                         let errno = Errno::last();
-                        if errno.raw() == libc::EINPROGRESS || errno.raw() == libc::EALREADY {
+                        if errno.raw() == EINPROGRESS || errno.raw() == EALREADY {
                             let _ = self.arm_write_retry(
                                 retry.fd,
                                 retry.ud,
@@ -161,7 +181,7 @@ impl Retry for Kqueue {
                             );
                             return;
                         }
-                        if errno.raw() == libc::EISCONN {
+                        if errno.raw() == EISCONN {
                             0
                         } else {
                             -errno.raw()
@@ -227,11 +247,11 @@ impl Retry for Kqueue {
             self.take_write_retry(idx, epoch);
             return false;
         }
-        let udata = Udata::pack(TAG_WRITE_RETRY, idx, epoch);
-        self.changes.push(libc::kevent {
-            ident: fd as libc::uintptr_t,
-            filter: libc::EVFILT_WRITE,
-            flags: libc::EV_ADD | libc::EV_CLEAR | libc::EV_ONESHOT,
+        let udata = Udata::write_retry(idx, epoch);
+        self.changes.push(kevent {
+            ident: fd as uintptr_t,
+            filter: EVFILT_WRITE,
+            flags: EV_ADD | EV_CLEAR | EV_ONESHOT,
             fflags: 0,
             data: 0,
             udata: udata.into_kevent(),

@@ -1,13 +1,28 @@
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
-use std::slice;
 use std::time::Duration;
 
 use o3::marker::ThreadBound;
 
-use crate::driver::token::{Token, kind};
+use crate::driver::token::Token;
 use crate::io::fd::{Fd, FdSlot};
+use crate::driver::token::kind::ACCEPT;
+use crate::driver::token::kind::CONNECT;
+use crate::driver::token::kind::OPEN;
+use crate::driver::token::kind::READ;
+use crate::driver::token::kind::RECV;
+use crate::driver::token::kind::SEND;
+use crate::driver::token::kind::SOCKET;
+use crate::driver::token::kind::STAT;
+use crate::driver::token::kind::TIMER;
+use crate::driver::token::kind::WRITE;
+use libc::c_char;
+use std::slice::from_raw_parts_mut;
+use libc::msghdr;
+use libc::sockaddr;
+use libc::socklen_t;
+use libc::stat;
 
 #[derive(Clone, Copy)]
 pub struct TimerSpec {
@@ -40,7 +55,7 @@ pub enum SqeInner {
     },
     OpenAt {
         dir: RawFd,
-        path: *const libc::c_char,
+        path: *const c_char,
         flags: i32,
         mode: u32,
         ud: Token,
@@ -53,24 +68,24 @@ pub enum SqeInner {
         ud: Token,
     },
     StatPath {
-        path: *const libc::c_char,
-        stat: *mut libc::stat,
+        path: *const c_char,
+        stat: *mut stat,
         ud: Token,
     },
     StatFd {
         fd: RawFd,
-        stat: *mut libc::stat,
+        stat: *mut stat,
         ud: Token,
     },
     SendMsg {
         slot: FdSlot,
-        msg: *const libc::msghdr,
+        msg: *const msghdr,
         ud: Token,
     },
     AcceptOneshot {
         listener: FdSlot,
-        addr_ptr: *mut libc::sockaddr,
-        addrlen_ptr: *mut libc::socklen_t,
+        addr_ptr: *mut sockaddr,
+        addrlen_ptr: *mut socklen_t,
         ud: Token,
     },
     RecvMulti {
@@ -79,7 +94,7 @@ pub enum SqeInner {
     },
     RecvMsgMulti {
         slot: FdSlot,
-        msghdr: *const libc::msghdr,
+        msghdr: *const msghdr,
         ud: Token,
     },
     Quickack,
@@ -107,7 +122,7 @@ pub enum SqeInner {
     },
     Connect {
         slot: FdSlot,
-        addr_ptr: *const libc::sockaddr,
+        addr_ptr: *const sockaddr,
         addr_len: u32,
         ud: Token,
     },
@@ -129,7 +144,7 @@ impl Sqe {
             slot,
             ptr: buf.as_ptr(),
             len: buf.len() as u32,
-            ud: op.with_kind(kind::SEND),
+            ud: op.with_kind(SEND),
         })
     }
 
@@ -141,17 +156,17 @@ impl Sqe {
             ptr: buf.as_ptr(),
             len: buf.len() as u32,
             offset,
-            ud: op.with_kind(kind::WRITE),
+            ud: op.with_kind(WRITE),
         })
     }
 
-    pub fn openat(dir: RawFd, path: *const libc::c_char, flags: i32, mode: u32, op: Token) -> Self {
+    pub fn openat(dir: RawFd, path: *const c_char, flags: i32, mode: u32, op: Token) -> Self {
         Self::new(SqeInner::OpenAt {
             dir,
             path,
             flags,
             mode,
-            ud: op.with_kind(kind::OPEN),
+            ud: op.with_kind(OPEN),
         })
     }
 
@@ -159,9 +174,9 @@ impl Sqe {
     /// `fd` must stay open and `buf` stable and unaliased until completion.
     pub unsafe fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
         let buf = unsafe {
-            slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<MaybeUninit<u8>>(), buf.len())
+            from_raw_parts_mut(buf.as_mut_ptr().cast::<MaybeUninit<u8>>(), buf.len())
         };
-        unsafe { Self::read_uninit(fd, buf, offset, op.with_kind(kind::READ)) }
+        unsafe { Self::read_uninit(fd, buf, offset, op.with_kind(READ)) }
     }
 
     /// # Safety
@@ -181,19 +196,19 @@ impl Sqe {
         })
     }
 
-    pub fn stat_path(path: *const libc::c_char, stat: *mut libc::stat, op: Token) -> Self {
+    pub fn stat_path(path: *const c_char, stat: *mut stat, op: Token) -> Self {
         Self::new(SqeInner::StatPath {
             path,
             stat,
-            ud: op.with_kind(kind::STAT),
+            ud: op.with_kind(STAT),
         })
     }
 
-    pub fn stat_fd(fd: RawFd, stat: *mut libc::stat, op: Token) -> Self {
+    pub fn stat_fd(fd: RawFd, stat: *mut stat, op: Token) -> Self {
         Self::new(SqeInner::StatFd {
             fd,
             stat,
-            ud: op.with_kind(kind::STAT),
+            ud: op.with_kind(STAT),
         })
     }
 
@@ -202,7 +217,7 @@ impl Sqe {
     pub unsafe fn recv_multi(fd: &Fd, _buf_group: u16, op: Token) -> Self {
         Self::new(SqeInner::RecvMulti {
             slot: fd.slot(),
-            ud: op.with_kind(kind::RECV),
+            ud: op.with_kind(RECV),
         })
     }
 
@@ -216,31 +231,31 @@ impl Sqe {
 
     pub fn accept_oneshot(
         listener: &Fd,
-        addr_ptr: *mut libc::sockaddr,
-        addrlen_ptr: *mut libc::socklen_t,
+        addr_ptr: *mut sockaddr,
+        addrlen_ptr: *mut socklen_t,
         op: Token,
     ) -> Self {
         Self::new(SqeInner::AcceptOneshot {
             listener: listener.slot(),
             addr_ptr,
             addrlen_ptr,
-            ud: op.with_kind(kind::ACCEPT),
+            ud: op.with_kind(ACCEPT),
         })
     }
 
-    pub fn recv_msg_multi(fd: &Fd, msghdr: &libc::msghdr, _buf_group: u16, op: Token) -> Self {
+    pub fn recv_msg_multi(fd: &Fd, msghdr: &msghdr, _buf_group: u16, op: Token) -> Self {
         Self::new(SqeInner::RecvMsgMulti {
             slot: fd.slot(),
             msghdr: msghdr as *const _,
-            ud: op.with_kind(kind::RECV),
+            ud: op.with_kind(RECV),
         })
     }
 
-    pub fn send_msg(fd: &Fd, msg: &libc::msghdr, op: Token) -> Self {
+    pub fn send_msg(fd: &Fd, msg: &msghdr, op: Token) -> Self {
         Self::new(SqeInner::SendMsg {
             slot: fd.slot(),
             msg: msg as *const _,
-            ud: op.with_kind(kind::SEND),
+            ud: op.with_kind(SEND),
         })
     }
 
@@ -265,7 +280,7 @@ impl Sqe {
         Self::new(SqeInner::Interval {
             sec: timer.sec,
             nsec: timer.nsec,
-            ud: op.with_kind(kind::TIMER),
+            ud: op.with_kind(TIMER),
         })
     }
 
@@ -295,16 +310,16 @@ impl Sqe {
             socket_type,
             protocol,
             slot,
-            ud: op.with_kind(kind::SOCKET),
+            ud: op.with_kind(SOCKET),
         }))
     }
 
-    pub fn connect(fd: &Fd, addr_ptr: *const libc::sockaddr, addr_len: u32, op: Token) -> Self {
+    pub fn connect(fd: &Fd, addr_ptr: *const sockaddr, addr_len: u32, op: Token) -> Self {
         Self::new(SqeInner::Connect {
             slot: fd.slot(),
             addr_ptr,
             addr_len,
-            ud: op.with_kind(kind::CONNECT),
+            ud: op.with_kind(CONNECT),
         })
     }
 }

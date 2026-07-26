@@ -4,14 +4,30 @@ use std::ptr::null_mut;
 
 use super::super::pending::PendingCompletion;
 use super::super::udata::Udata;
-use super::super::{Kqueue, TAG_ACCEPT, TAG_RECV, TAG_RECV_MSG};
+use super::super::Kqueue;
 use super::{AcceptSlot, ReadSlot, RecvMsgSlot, SlotHeader};
 use crate::driver::token::Token;
 use crate::io::fd::FdSlot;
+use libc::EBADF;
+use libc::ECANCELED;
+use libc::EVFILT_READ;
+use libc::EV_ADD;
+use libc::EV_DELETE;
+use libc::EV_DISPATCH;
+use libc::EV_ENABLE;
+use libc::F_GETFL;
+use libc::F_SETFL;
+use libc::O_NONBLOCK;
+use libc::fcntl;
+use libc::kevent;
+use libc::msghdr;
+use libc::sockaddr;
+use libc::socklen_t;
+use libc::uintptr_t;
 
 pub(crate) enum RecvKind {
     Bytes,
-    Message(*const libc::msghdr),
+    Message(*const msghdr),
 }
 
 pub(crate) trait Arm {
@@ -23,8 +39,8 @@ pub(crate) trait Arm {
         &mut self,
         ud: Token,
         fd: RawFd,
-        addr_ptr: *mut libc::sockaddr,
-        addrlen_ptr: *mut libc::socklen_t,
+        addr_ptr: *mut sockaddr,
+        addrlen_ptr: *mut socklen_t,
     ) -> bool;
     fn cancel_accept_inner(&mut self, ud: Token) -> bool;
     fn arm_recv_inner(&mut self, ud: Token, slot: FdSlot, kind: RecvKind) -> bool;
@@ -33,18 +49,18 @@ pub(crate) trait Arm {
         &mut self,
         ud: Token,
         slot: FdSlot,
-        msg: *const libc::msghdr,
+        msg: *const msghdr,
     ) -> bool;
     fn cancel_recv_inner(&mut self, ud: Token) -> bool;
 }
 
 impl Arm for Kqueue {
     fn set_fd_nonblocking(raw: RawFd) -> io::Result<()> {
-        let flags = unsafe { libc::fcntl(raw, libc::F_GETFL, 0) };
+        let flags = unsafe { fcntl(raw, F_GETFL, 0) };
         if flags < 0 {
             return Err(Error::last_os_error());
         }
-        let rc = unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        let rc = unsafe { fcntl(raw, F_SETFL, flags | O_NONBLOCK) };
         if rc < 0 {
             Err(Error::last_os_error())
         } else {
@@ -54,10 +70,10 @@ impl Arm for Kqueue {
 
     fn arm_read_multi(&mut self, raw: RawFd, udata: Udata) -> io::Result<()> {
         Self::set_fd_nonblocking(raw)?;
-        self.changes.push(libc::kevent {
-            ident: raw as libc::uintptr_t,
-            filter: libc::EVFILT_READ,
-            flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_DISPATCH,
+        self.changes.push(kevent {
+            ident: raw as uintptr_t,
+            filter: EVFILT_READ,
+            flags: EV_ADD | EV_ENABLE | EV_DISPATCH,
             fflags: 0,
             data: 0,
             udata: udata.into_kevent(),
@@ -67,10 +83,10 @@ impl Arm for Kqueue {
     }
 
     fn re_enable_read(&mut self, raw: RawFd, udata: Udata) {
-        self.changes.push(libc::kevent {
-            ident: raw as libc::uintptr_t,
-            filter: libc::EVFILT_READ,
-            flags: libc::EV_ENABLE | libc::EV_DISPATCH,
+        self.changes.push(kevent {
+            ident: raw as uintptr_t,
+            filter: EVFILT_READ,
+            flags: EV_ENABLE | EV_DISPATCH,
             fflags: 0,
             data: 0,
             udata: udata.into_kevent(),
@@ -82,10 +98,10 @@ impl Arm for Kqueue {
         if filter == 0 {
             return;
         }
-        self.changes.push(libc::kevent {
-            ident: fd as libc::uintptr_t,
+        self.changes.push(kevent {
+            ident: fd as uintptr_t,
             filter,
-            flags: libc::EV_DELETE,
+            flags: EV_DELETE,
             fflags: 0,
             data: 0,
             udata: null_mut(),
@@ -97,10 +113,10 @@ impl Arm for Kqueue {
         &mut self,
         ud: Token,
         fd: RawFd,
-        addr_ptr: *mut libc::sockaddr,
-        addrlen_ptr: *mut libc::socklen_t,
+        addr_ptr: *mut sockaddr,
+        addrlen_ptr: *mut socklen_t,
     ) -> bool {
-        let slot_idx = Udata::slot_key(ud.route(), ud.slot().raw());
+        let slot_idx = Udata::read_key(ud);
         let epoch = ud.epoch().raw();
         if !self.insert_read(
             slot_idx,
@@ -120,7 +136,7 @@ impl Arm for Kqueue {
             return false;
         }
         if self
-            .arm_read_multi(fd, Udata::from_token(ud, TAG_ACCEPT))
+            .arm_read_multi(fd, Udata::accept(ud))
             .is_err()
         {
             self.remove_read(slot_idx);
@@ -130,7 +146,7 @@ impl Arm for Kqueue {
     }
 
     fn cancel_accept_inner(&mut self, ud: Token) -> bool {
-        let slot_idx = Udata::slot_key(ud.route(), ud.slot().raw());
+        let slot_idx = Udata::read_key(ud);
         let Some(slot) = self
             .read_slots
             .get_mut(&slot_idx)
@@ -145,10 +161,10 @@ impl Arm for Kqueue {
         slot.hdr.armed = false;
         let fd = slot.hdr.fd;
         let ud = slot.hdr.ud;
-        self.disarm_filter(fd, libc::EVFILT_READ);
+        self.disarm_filter(fd, EVFILT_READ);
         self.push_pending(PendingCompletion::Accept {
             ud,
-            result: -libc::ECANCELED,
+            result: -ECANCELED,
             more: false,
         });
         true
@@ -158,13 +174,13 @@ impl Arm for Kqueue {
         let Some(raw) = self.raw_fd(slot) else {
             self.push_pending(PendingCompletion::Recv {
                 ud,
-                result: -libc::EBADF,
+                result: -EBADF,
                 more: false,
                 bid: None,
             });
             return true;
         };
-        let slot_idx = Udata::slot_key(ud.route(), ud.slot().raw());
+        let slot_idx = Udata::read_key(ud);
         let epoch = ud.epoch().raw();
         let header = SlotHeader {
             fd: raw,
@@ -173,10 +189,10 @@ impl Arm for Kqueue {
             resume_queued: false,
             ud,
         };
-        let (tag, read) = match kind {
-            RecvKind::Bytes => (TAG_RECV, ReadSlot::Recv(header)),
+        let (udata, read) = match kind {
+            RecvKind::Bytes => (Udata::recv(ud), ReadSlot::Recv(header)),
             RecvKind::Message(msg_template) => (
-                TAG_RECV_MSG,
+                Udata::recv_msg(ud),
                 ReadSlot::RecvMsg(RecvMsgSlot {
                     hdr: header,
                     msg_template,
@@ -187,7 +203,7 @@ impl Arm for Kqueue {
             return false;
         }
         if self
-            .arm_read_multi(raw, Udata::from_token(ud, tag))
+            .arm_read_multi(raw, udata)
             .is_err()
         {
             self.remove_read(slot_idx);
@@ -204,13 +220,13 @@ impl Arm for Kqueue {
         &mut self,
         ud: Token,
         slot: FdSlot,
-        msg: *const libc::msghdr,
+        msg: *const msghdr,
     ) -> bool {
         self.arm_recv_inner(ud, slot, RecvKind::Message(msg))
     }
 
     fn cancel_recv_inner(&mut self, ud: Token) -> bool {
-        let slot_idx = Udata::slot_key(ud.route(), ud.slot().raw());
+        let slot_idx = Udata::read_key(ud);
         let needed = usize::from(
             self.read_slots
                 .get(&slot_idx)
@@ -232,10 +248,10 @@ impl Arm for Kqueue {
             slot.armed = false;
             let fd = slot.fd;
             let ud = slot.ud;
-            self.disarm_filter(fd, libc::EVFILT_READ);
+            self.disarm_filter(fd, EVFILT_READ);
             self.push_pending(PendingCompletion::Recv {
                 ud,
-                result: -libc::ECANCELED,
+                result: -ECANCELED,
                 more: false,
                 bid: None,
             });
@@ -249,10 +265,10 @@ impl Arm for Kqueue {
             slot.hdr.armed = false;
             let fd = slot.hdr.fd;
             let ud = slot.hdr.ud;
-            self.disarm_filter(fd, libc::EVFILT_READ);
+            self.disarm_filter(fd, EVFILT_READ);
             self.push_pending(PendingCompletion::Recv {
                 ud,
-                result: -libc::ECANCELED,
+                result: -ECANCELED,
                 more: false,
                 bid: None,
             });

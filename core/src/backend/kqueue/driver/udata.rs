@@ -1,46 +1,108 @@
-use crate::driver::token::{self, Token};
+use libc::c_void;
+
+use crate::driver::token::{
+    EPOCH_MASK, KIND_SHIFT, ROUTE_SHIFT, SLOT_BITS, SLOT_MASK, Token,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Udata(u64);
 
-impl Udata {
-    const EPOCH_MASK: u64 = token::EPOCH_MASK;
-    const SLOT_SHIFT: u32 = token::SLOT_BITS;
-    const SLOT_MASK: u64 = token::SLOT_MASK;
-    const TAG_SHIFT: u32 = 48;
-    const TAG_MASK: u64 = 0xFF;
-    const ROUTE_SHIFT: u32 = token::ROUTE_SHIFT;
-    const ROUTE_MASK: u64 = 0xFF;
+pub(super) enum Event {
+    Accept { key: ReadKey, epoch: u32 },
+    Recv { key: ReadKey, epoch: u32 },
+    RecvMsg { key: ReadKey, epoch: u32 },
+    WriteRetry { index: u32, epoch: u32 },
+    Shutdown,
+}
 
-    pub(super) fn slot_key(route: u8, slot: u32) -> usize {
-        ((route as usize) << token::SLOT_BITS) | (slot as usize)
+#[derive(Clone, Copy)]
+pub(super) struct ReadKey {
+    route: u8,
+    slot: u32,
+}
+
+impl ReadKey {
+    pub(super) const fn index(self) -> usize {
+        ((self.route as usize) << SLOT_BITS) | (self.slot as usize)
     }
+}
 
-    pub(crate) const fn pack(tag: u8, slot: u32, epoch: u32) -> Self {
-        let raw = (epoch as u64 & Self::EPOCH_MASK)
-            | ((slot as u64 & Self::SLOT_MASK) << Self::SLOT_SHIFT)
-            | ((tag as u64 & Self::TAG_MASK) << Self::TAG_SHIFT);
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum Tag {
+    Accept = 1,
+    Recv = 2,
+    RecvMsg = 3,
+    WriteRetry = 4,
+    Shutdown = 5,
+}
+
+impl Udata {
+    const fn pack(tag: Tag, slot: u32, epoch: u32) -> Self {
+        let raw = (epoch as u64 & EPOCH_MASK)
+            | ((slot as u64 & SLOT_MASK) << SLOT_BITS)
+            | ((tag as u64) << KIND_SHIFT);
         Self(raw)
     }
 
-    pub(super) fn unpack(self) -> (u8, u8, u32, u32) {
-        let epoch = (self.0 & Self::EPOCH_MASK) as u32;
-        let slot = ((self.0 >> Self::SLOT_SHIFT) & Self::SLOT_MASK) as u32;
-        let tag = ((self.0 >> Self::TAG_SHIFT) & Self::TAG_MASK) as u8;
-        let route = ((self.0 >> Self::ROUTE_SHIFT) & Self::ROUTE_MASK) as u8;
-        (tag, route, slot, epoch)
+    const fn from_token(token: Token, tag: Tag) -> Self {
+        let base = Self::pack(tag, token.slot().raw(), token.epoch().raw());
+        Self(base.0 | ((token.route() as u64) << ROUTE_SHIFT))
     }
 
-    pub(super) fn from_kevent(p: *mut libc::c_void) -> Self {
+    pub(super) const fn read_key(token: Token) -> usize {
+        ReadKey {
+            route: token.route(),
+            slot: token.slot().raw(),
+        }
+        .index()
+    }
+
+    pub(super) const fn accept(token: Token) -> Self {
+        Self::from_token(token, Tag::Accept)
+    }
+
+    pub(super) const fn recv(token: Token) -> Self {
+        Self::from_token(token, Tag::Recv)
+    }
+
+    pub(super) const fn recv_msg(token: Token) -> Self {
+        Self::from_token(token, Tag::RecvMsg)
+    }
+
+    pub(super) const fn write_retry(index: u32, epoch: u32) -> Self {
+        Self::pack(Tag::WriteRetry, index, epoch)
+    }
+
+    pub(crate) const fn shutdown() -> Self {
+        Self::pack(Tag::Shutdown, 0, 0)
+    }
+
+    pub(super) fn from_kevent(p: *mut c_void) -> Self {
         Self(p as usize as u64)
     }
 
-    pub(crate) fn into_kevent(self) -> *mut libc::c_void {
-        self.0 as usize as *mut libc::c_void
+    pub(crate) fn into_kevent(self) -> *mut c_void {
+        self.0 as usize as *mut c_void
     }
 
-    pub(super) fn from_token(token: Token, tag: u8) -> Self {
-        let base = Self::pack(tag, token.slot().raw(), token.epoch().raw());
-        Self(base.0 | ((token.route() as u64 & Self::ROUTE_MASK) << Self::ROUTE_SHIFT))
+    pub(super) fn decode(self) -> Option<Event> {
+        let epoch = (self.0 & EPOCH_MASK) as u32;
+        let slot = ((self.0 >> SLOT_BITS) & SLOT_MASK) as u32;
+        let tag = (self.0 >> KIND_SHIFT) as u8;
+        let route = (self.0 >> ROUTE_SHIFT) as u8;
+        let key = ReadKey { route, slot };
+
+        match tag {
+            tag if tag == Tag::Accept as u8 => Some(Event::Accept { key, epoch }),
+            tag if tag == Tag::Recv as u8 => Some(Event::Recv { key, epoch }),
+            tag if tag == Tag::RecvMsg as u8 => Some(Event::RecvMsg { key, epoch }),
+            tag if tag == Tag::WriteRetry as u8 => Some(Event::WriteRetry {
+                index: slot,
+                epoch,
+            }),
+            tag if tag == Tag::Shutdown as u8 => Some(Event::Shutdown),
+            _ => None,
+        }
     }
 }

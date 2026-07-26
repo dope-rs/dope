@@ -14,7 +14,7 @@ use o3::collections::FixedQueue;
 use crate::backend::kqueue::provided::{Backing, Provided};
 use crate::driver::Config;
 use crate::driver::route::Routes;
-use crate::driver::token::{SHUTDOWN, Token, kind};
+use crate::driver::token::{SHUTDOWN, Token};
 use crate::io::fd::FdSlot;
 use crate::io::ffi::Handle;
 use crate::io::file::RawMetadata;
@@ -30,12 +30,22 @@ use crate::platform::raw::host::HOST;
 use super::sqe::{Sqe, TimerSpec};
 use libc::uintptr_t;
 use std::ptr::{null, null_mut};
-
-const TAG_ACCEPT: u8 = 1;
-const TAG_RECV: u8 = 2;
-const TAG_RECV_MSG: u8 = 3;
-const TAG_WRITE_RETRY: u8 = 4;
-pub(crate) const TAG_SHUTDOWN: u8 = 5;
+use libc::EINTR;
+use libc::EVFILT_USER;
+use libc::EV_ADD;
+use libc::EV_CLEAR;
+use libc::EV_ENABLE;
+use libc::FD_CLOEXEC;
+use libc::F_SETFD;
+use libc::NOTE_TRIGGER;
+use crate::driver::token::kind::OPEN;
+use libc::{c_int, c_long};
+use libc::fcntl;
+use libc::kevent;
+use libc::kqueue;
+use libc::stat;
+use libc::time_t;
+use libc::timespec;
 
 const WAKE_IDENT: uintptr_t = uintptr_t::MAX;
 
@@ -45,7 +55,7 @@ const CHANGES_FLUSH_AT: usize = 4096;
 
 pub struct Kqueue {
     pub(crate) kq: OwnedFd,
-    pub(crate) changes: Vec<libc::kevent>,
+    pub(crate) changes: Vec<kevent>,
     read_slots: FixedMap<ReadSlot>,
     read_fd: FixedMap<usize>,
     write_retries: Vec<WriteRetrySlot>,
@@ -63,24 +73,24 @@ pub struct Kqueue {
 
 impl Kqueue {
     pub(crate) fn new(cfg: &Config) -> io::Result<(Self, usize)> {
-        let raw = unsafe { libc::kqueue() };
+        let raw = unsafe { kqueue() };
         if raw < 0 {
             return Err(Error::last_os_error());
         }
         let kq = unsafe { OwnedFd::from_raw_fd(raw) };
-        let rc = unsafe { libc::fcntl(kq.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+        let rc = unsafe { fcntl(kq.as_raw_fd(), F_SETFD, FD_CLOEXEC) };
         if rc < 0 {
             return Err(Error::last_os_error());
         }
-        let wake = libc::kevent {
+        let wake = kevent {
             ident: WAKE_IDENT,
-            filter: libc::EVFILT_USER,
-            flags: libc::EV_ADD | libc::EV_CLEAR,
+            filter: EVFILT_USER,
+            flags: EV_ADD | EV_CLEAR,
             fflags: 0,
             data: 0,
             udata: null_mut(),
         };
-        let rc = unsafe { libc::kevent(kq.as_raw_fd(), &wake, 1, null_mut(), 0, null()) };
+        let rc = unsafe { kevent(kq.as_raw_fd(), &wake, 1, null_mut(), 0, null()) };
         if rc < 0 {
             return Err(Error::last_os_error());
         }
@@ -188,7 +198,7 @@ impl Kqueue {
             }
             PendingCompletion::Recv { bid: Some(bid), .. } => self.provided.defer(bid),
             PendingCompletion::Write { ud, result }
-                if ud.with_kind(kind::OPEN) == ud && result >= 0 =>
+                if ud.with_kind(OPEN) == ud && result >= 0 =>
             {
                 self.close_raw(result);
             }
@@ -200,7 +210,7 @@ impl Kqueue {
     }
 
     pub(crate) fn quiesce_accept(&mut self, target: Token) {
-        let key = Udata::slot_key(target.route(), target.slot().raw());
+        let key = Udata::read_key(target);
         if self
             .read_slots
             .get(&key)
@@ -212,7 +222,7 @@ impl Kqueue {
     }
 
     pub(crate) fn quiesce_recv(&mut self, target: Token) {
-        let key = Udata::slot_key(target.route(), target.slot().raw());
+        let key = Udata::read_key(target);
         if self.read_slots.get(&key).is_some_and(|slot| match slot {
             ReadSlot::Recv(slot) => slot.ud == target,
             ReadSlot::RecvMsg(slot) => slot.hdr.ud == target,
@@ -264,7 +274,7 @@ impl Kqueue {
             target_count += 1;
         }
         self.changes
-            .retain(|event| event.ident != raw as libc::uintptr_t);
+            .retain(|event| event.ident != raw as uintptr_t);
         let mut extracted = self.pending.extract_targets(&targets[..target_count]);
         while let Some(completion) = self.pending.pop_extracted(&mut extracted) {
             self.reclaim(completion);
@@ -289,34 +299,34 @@ impl Kqueue {
 
     pub(crate) fn kevent_call(
         &mut self,
-        events: &mut [MaybeUninit<libc::kevent>],
+        events: &mut [MaybeUninit<kevent>],
         timeout: Option<Duration>,
     ) -> io::Result<usize> {
         let ts_storage;
-        let ts_ptr: *const libc::timespec = match timeout {
+        let ts_ptr: *const timespec = match timeout {
             None => null(),
             Some(d) => {
-                ts_storage = libc::timespec {
-                    tv_sec: d.as_secs() as libc::time_t,
-                    tv_nsec: d.subsec_nanos() as libc::c_long,
+                ts_storage = timespec {
+                    tv_sec: d.as_secs() as time_t,
+                    tv_nsec: d.subsec_nanos() as c_long,
                 };
                 &ts_storage
             }
         };
         let n = unsafe {
-            libc::kevent(
+            kevent(
                 self.kq.as_raw_fd(),
                 self.changes.as_ptr(),
-                self.changes.len() as libc::c_int,
+                self.changes.len() as c_int,
                 events.as_mut_ptr().cast(),
-                events.len() as libc::c_int,
+                events.len() as c_int,
                 ts_ptr,
             )
         };
         self.changes.clear();
         if n < 0 {
             let err = Error::last_os_error();
-            return if err.raw_os_error() == Some(libc::EINTR) {
+            return if err.raw_os_error() == Some(EINTR) {
                 Ok(0)
             } else {
                 Err(err)
@@ -337,11 +347,11 @@ impl Kqueue {
             "dope-kqueue: pending completion capacity exhausted"
         );
         if wake {
-            self.changes.push(libc::kevent {
+            self.changes.push(kevent {
                 ident: WAKE_IDENT,
-                filter: libc::EVFILT_USER,
-                flags: libc::EV_ENABLE,
-                fflags: libc::NOTE_TRIGGER,
+                filter: EVFILT_USER,
+                flags: EV_ENABLE,
+                fflags: NOTE_TRIGGER,
                 data: 0,
                 udata: null_mut(),
             });
@@ -359,7 +369,7 @@ impl Drop for Kqueue {
 impl Platform for Kqueue {
     type Sqe = Sqe;
     type Gso = Gso;
-    type StatBuf = libc::stat;
+    type StatBuf = stat;
     type TimerSpec = TimerSpec;
 
     fn entropy() -> io::Result<[u64; 2]> {
