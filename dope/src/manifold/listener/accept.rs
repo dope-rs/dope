@@ -177,10 +177,9 @@ impl<'d, T: Transport> Accept<'d, T> {
         &mut self,
         ud: Token,
         more: bool,
-        e: dope_core::io::AcceptEvent,
+        e: AcceptEvent<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome<'d> {
-        let driver_ref = self.fd.driver();
         let matches = self.arm.epoch_match(ud, self.accept_slot);
         let canceling = self.canceling;
         self.arm.complete(more);
@@ -191,7 +190,7 @@ impl<'d, T: Transport> Accept<'d, T> {
         match e {
             AcceptEvent::Failed => Outcome::Rejected,
             AcceptEvent::Accepted(slot) => {
-                let fd = unsafe { Fd::from_raw_slot(slot, driver_ref) };
+                let fd = slot.bind(self.fd.driver());
                 if !matches || canceling || fd.index() >= self.accept_slot.raw() {
                     drop(driver.guard(fd));
                     return Outcome::Rejected;
@@ -218,7 +217,7 @@ where
         self: Pin<&mut Self>,
         token: Token,
         more: bool,
-        event: dope_core::io::AcceptEvent,
+        event: AcceptEvent<'d>,
         driver: &mut DriverContext<'_, 'd>,
     );
 }
@@ -232,7 +231,7 @@ where
         mut self: Pin<&mut Self>,
         token: Token,
         more: bool,
-        e: dope_core::io::AcceptEvent,
+        e: AcceptEvent<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let (fixed_idx, overflow) = {

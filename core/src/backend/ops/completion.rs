@@ -61,12 +61,15 @@ mod linux {
                         }
                         Disposition::Public(user_data) => user_data,
                     };
-                    let event =
-                        Event::from_cqe(Cqe::new(user_data, result, item.flags()), |len, bid| {
+                    let event = Event::from_cqe(
+                        Cqe::new(user_data, result, item.flags()),
+                        reference,
+                        |len, bid| {
                             let (ptr, len) = provided.ptr_len(bid, len as usize);
                             let ptr = unsafe { NonNull::new_unchecked(ptr.cast_mut()) };
                             unsafe { ProvidedLease::from_raw_completion(reference, bid, ptr, len) }
-                        });
+                        },
+                    );
                     if let Ok(event) = event {
                         buf[n] = Some(event);
                         n += 1;
@@ -148,7 +151,7 @@ mod kqueue {
                     PendingCompletion::Timer { ud } => Cqe::new(ud.raw(), 0, 0),
                     PendingCompletion::Shutdown => Cqe::new(SHUTDOWN.raw(), 0, 0),
                 };
-                let event = Event::from_cqe(cqe, |len, bid| {
+                let event = Event::from_cqe(cqe, reference, |len, bid| {
                     let (ptr, len) = unsafe { backend.backing.ptr_len(bid, len as usize) };
                     unsafe { ProvidedLease::from_raw_completion(reference, bid, ptr, len) }
                 });

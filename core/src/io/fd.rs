@@ -21,6 +21,12 @@ impl FdSlot {
     }
 }
 
+#[repr(transparent)]
+pub struct AcceptedSlot<'d> {
+    slot: FdSlot,
+    _brand: PhantomData<fn(&'d ()) -> &'d ()>,
+}
+
 pub struct Fd<'d> {
     slot: FdSlot,
     driver: DriverRef<'d>,
@@ -36,6 +42,22 @@ pub struct FdGuard<'a, 'd> {
 impl Debug for Fd<'_> {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
         formatter.debug_tuple("Fd").field(&self.slot.0).finish()
+    }
+}
+
+impl<'d> AcceptedSlot<'d> {
+    pub(crate) fn from_completion(slot: FdSlot, _driver: DriverRef<'d>) -> Self {
+        Self {
+            slot,
+            _brand: PhantomData,
+        }
+    }
+
+    pub fn bind(self, driver: DriverRef<'d>) -> Fd<'d> {
+        Fd {
+            slot: self.slot,
+            driver,
+        }
     }
 }
 
