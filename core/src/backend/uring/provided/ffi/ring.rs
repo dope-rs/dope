@@ -1,12 +1,12 @@
-use std::{io, ptr::NonNull, slice};
+use std::{io, ptr::NonNull};
 
 use io_uring::Submitter;
 use io_uring::types::BufRingEntry;
 use std::io::{Error, ErrorKind};
 
-use crate::backend::uring::tail::Tail;
-
-use super::ffi::Mmap;
+use super::mmap::Mmap;
+use super::tail::Tail;
+use std::slice::from_raw_parts_mut;
 
 struct Entries {
     mem: Mmap,
@@ -29,7 +29,7 @@ impl Entries {
     }
 
     fn as_mut_slice(&mut self) -> &mut [BufRingEntry] {
-        unsafe { slice::from_raw_parts_mut(self.mem.as_mut_ptr().cast(), self.count as usize) }
+        unsafe { from_raw_parts_mut(self.mem.as_mut_ptr().cast(), self.count as usize) }
     }
 
     unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut BufRingEntry {
@@ -67,7 +67,7 @@ impl Buffers {
     }
 }
 
-pub(crate) struct Ring {
+pub(crate) struct ProvidedRing {
     tail_pos: u16,
     last_published: u16,
     mask: u16,
@@ -76,7 +76,7 @@ pub(crate) struct Ring {
     entries: Entries,
 }
 
-impl Ring {
+impl ProvidedRing {
     pub(crate) const BGID: u16 = 1;
 
     pub(crate) fn new(submitter: &Submitter<'_>, entries: u16, buf_len: usize) -> io::Result<Self> {
