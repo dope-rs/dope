@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::io;
 use std::marker::PhantomData;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
 use crate::driver::Driver;
 use crate::platform::raw::abi::PlatformAbi;
@@ -14,8 +14,8 @@ pub struct Pipe {
 
 impl Pipe {
     pub fn new() -> io::Result<Self> {
-        let fds = Driver::open_pipe()?;
-        Ok(Self::from_fds(fds[0], fds[1]))
+        let [read, write] = Driver::open_pipe()?;
+        Ok(Self::from_fds(read, write))
     }
 
     pub fn write_end(&self) -> BorrowedFd<'_> {
@@ -30,13 +30,11 @@ impl Pipe {
         })
     }
 
-    pub fn from_fds(read: RawFd, write: RawFd) -> Self {
-        unsafe {
-            Self {
-                read: OwnedFd::from_raw_fd(read),
-                write: OwnedFd::from_raw_fd(write),
-                _exclusive: PhantomData,
-            }
+    pub fn from_fds(read: OwnedFd, write: OwnedFd) -> Self {
+        Self {
+            read,
+            write,
+            _exclusive: PhantomData,
         }
     }
 
