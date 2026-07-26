@@ -16,13 +16,11 @@ pub(crate) trait CompletionBackend {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::ptr::NonNull;
-
     use io_uring::types::{SubmitArgs, Timespec};
+    use libc::ETIME;
 
     use crate::backend::uring::driver::Disposition;
     use crate::io::Cqe;
-    use crate::io::provided::ProvidedLease;
 
     use super::{Backend, CompletionBackend, DriverRef, Duration, Event, io};
 
@@ -46,29 +44,26 @@ mod linux {
                 while n < buf.len() {
                     let Some(item) = cq.next() else { break };
                     let result = item.result();
+                    let flags = item.flags();
                     let user_data = match Backend::complete_cqe(
                         setsockopt,
                         files,
                         routes,
                         item.user_data(),
                         result,
-                        item.flags(),
+                        flags,
                     ) {
                         Disposition::Drop | Disposition::Internal => continue,
                         Disposition::DropBuffer(bid) => {
-                            provided.defer(bid);
+                            provided.defer_completion(bid);
                             continue;
                         }
                         Disposition::Public(user_data) => user_data,
                     };
                     let event = Event::from_cqe(
-                        Cqe::new(user_data, result, item.flags()),
+                        Cqe::new(user_data, result, flags),
                         reference,
-                        |len, bid| {
-                            let (ptr, len) = provided.ptr_len(bid, len as usize);
-                            let ptr = unsafe { NonNull::new_unchecked(ptr.cast_mut()) };
-                            unsafe { ProvidedLease::from_raw_completion(reference, bid, ptr, len) }
-                        },
+                        |len, bid| Some(provided.complete(bid, len as usize)),
                     );
                     if let Ok(event) = event {
                         buf[n] = Some(event);
@@ -93,7 +88,7 @@ mod linux {
                     let args = SubmitArgs::new().timespec(&timespec);
                     match backend.uring.submitter().submit_with_args(1, &args) {
                         Ok(_) => Ok(()),
-                        Err(error) if error.raw_os_error() == Some(libc::ETIME) => Ok(()),
+                        Err(error) if error.raw_os_error() == Some(ETIME) => Ok(()),
                         Err(error) => Err(error),
                     }
                 }
@@ -106,15 +101,23 @@ mod linux {
 #[cfg(not(target_os = "linux"))]
 mod kqueue {
     use std::mem::MaybeUninit;
-    use std::slice;
+    use std::slice::from_raw_parts;
 
+    use libc::kevent;
+
+    use crate::backend::kqueue::driver::MAX_DRAIN_PER_FD;
     use crate::backend::kqueue::driver::pending::PendingCompletion;
     use crate::backend::kqueue::driver::read::dispatch::Dispatch;
     use crate::driver::token::SHUTDOWN;
-    use crate::io::provided::ProvidedLease;
+    use crate::io::provided::raw::buffer::BufferId;
     use crate::io::{BUFFER, BUFFER_SHIFT, Cqe, MORE};
 
     use super::{Backend, CompletionBackend, DriverRef, Duration, Event, io};
+
+    struct PendingCqe {
+        cqe: Cqe,
+        id: Option<BufferId>,
+    }
 
     impl CompletionBackend for Backend {
         fn drain<'d>(
@@ -130,10 +133,11 @@ mod kqueue {
                 let Some(pending) = backend.pending.pop_front() else {
                     break;
                 };
-                let cqe = match pending {
-                    PendingCompletion::Accept { ud, result, more } => {
-                        Cqe::new(ud.raw(), result, if more { MORE } else { 0 })
-                    }
+                let PendingCqe { cqe, id } = match pending {
+                    PendingCompletion::Accept { ud, result, more } => PendingCqe {
+                        cqe: Cqe::new(ud.raw(), result, if more { MORE } else { 0 }),
+                        id: None,
+                    },
                     PendingCompletion::Recv {
                         ud,
                         result,
@@ -141,19 +145,36 @@ mod kqueue {
                         bid,
                     } => {
                         let mut flags = if more { MORE } else { 0 };
-                        if let Some(bid) = bid {
-                            flags |= BUFFER | ((bid as u32) << BUFFER_SHIFT);
+                        if let Some(id) = bid.as_ref() {
+                            flags |= BUFFER | (((*id).into_raw() as u32) << BUFFER_SHIFT);
                         }
-                        Cqe::new(ud.raw(), result, flags)
+                        PendingCqe {
+                            cqe: Cqe::new(ud.raw(), result, flags),
+                            id: bid,
+                        }
                     }
-                    PendingCompletion::Write { ud, result } => Cqe::new(ud.raw(), result, 0),
-                    PendingCompletion::Create { ud, result, .. } => Cqe::new(ud.raw(), result, 0),
-                    PendingCompletion::Timer { ud } => Cqe::new(ud.raw(), 0, 0),
-                    PendingCompletion::Shutdown => Cqe::new(SHUTDOWN.raw(), 0, 0),
+                    PendingCompletion::Write { ud, result } => PendingCqe {
+                        cqe: Cqe::new(ud.raw(), result, 0),
+                        id: None,
+                    },
+                    PendingCompletion::Create { ud, result, .. } => PendingCqe {
+                        cqe: Cqe::new(ud.raw(), result, 0),
+                        id: None,
+                    },
+                    PendingCompletion::Timer { ud } => PendingCqe {
+                        cqe: Cqe::new(ud.raw(), 0, 0),
+                        id: None,
+                    },
+                    PendingCompletion::Shutdown => PendingCqe {
+                        cqe: Cqe::new(SHUTDOWN.raw(), 0, 0),
+                        id: None,
+                    },
                 };
                 let event = Event::from_cqe(cqe, reference, |len, bid| {
-                    let (ptr, len) = unsafe { backend.backing.ptr_len(bid, len as usize) };
-                    unsafe { ProvidedLease::from_raw_completion(reference, bid, ptr, len) }
+                    id.map(|id| {
+                        debug_assert_eq!(id.into_raw(), bid);
+                        backend.backing.complete(id, len as usize)
+                    })
                 });
                 if let Ok(event) = event {
                     buf[n] = Some(event);
@@ -165,14 +186,12 @@ mod kqueue {
 
         fn wait(backend: &mut Backend, timeout: Option<Duration>) -> io::Result<()> {
             backend.resume_pending();
-            let mut events: [MaybeUninit<libc::kevent>; 64] = [const { MaybeUninit::uninit() }; 64];
-            if backend.pending.remaining_capacity()
-                < events.len() * crate::backend::kqueue::driver::MAX_DRAIN_PER_FD
-            {
+            let mut events: [MaybeUninit<kevent>; 64] = [const { MaybeUninit::uninit() }; 64];
+            if backend.pending.remaining_capacity() < events.len() * MAX_DRAIN_PER_FD {
                 return Ok(());
             }
             let n = backend.kevent_call(&mut events, timeout)?;
-            let ready = unsafe { slice::from_raw_parts(events.as_ptr().cast::<libc::kevent>(), n) };
+            let ready = unsafe { from_raw_parts(events.as_ptr().cast::<kevent>(), n) };
             for event in ready {
                 backend.dispatch_event(event);
             }

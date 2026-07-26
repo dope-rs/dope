@@ -235,21 +235,23 @@ impl Dispatch for Kqueue {
             if self.pending.len() >= PENDING_CAP {
                 return DrainOutcome::Yield;
             }
-            let Some((bid, ptr, cap)) = self.provided.take() else {
+            let Some(mut buffer) = self.provided.take() else {
                 return DrainOutcome::Yield;
             };
+            let cap = buffer.capacity();
+            let ptr = buffer.as_mut_ptr();
             let n = unsafe { recv(fd, ptr.cast(), cap, 0) };
             if n > 0 {
                 self.push_pending(PendingCompletion::Recv {
                     ud,
                     result: n as i32,
                     more: true,
-                    bid: Some(bid),
+                    bid: Some(buffer.into_id()),
                 });
                 continue;
             }
             if n == 0 {
-                self.provided.defer(bid);
+                self.provided.defer(buffer.into_id());
                 self.push_pending(PendingCompletion::Recv {
                     ud,
                     result: 0,
@@ -259,7 +261,7 @@ impl Dispatch for Kqueue {
                 return DrainOutcome::Closed;
             }
             let errno = Errno::last();
-            self.provided.defer(bid);
+            self.provided.defer(buffer.into_id());
             if errno.is_block() {
                 return DrainOutcome::Done;
             }
@@ -324,11 +326,13 @@ impl Dispatch for Kqueue {
             if self.pending.len() >= PENDING_CAP {
                 return DrainOutcome::Yield;
             }
-            let Some((bid, ptr, cap)) = self.provided.take() else {
+            let Some(mut buffer) = self.provided.take() else {
                 return DrainOutcome::Yield;
             };
+            let cap = buffer.capacity();
+            let ptr = buffer.as_mut_ptr();
             if cap <= namelen {
-                self.provided.defer(bid);
+                self.provided.defer(buffer.into_id());
                 self.push_pending(PendingCompletion::Recv {
                     ud,
                     result: -ENOBUFS,
@@ -346,7 +350,7 @@ impl Dispatch for Kqueue {
             let n = unsafe { recvmsg(fd, local_msg.as_mut_ptr(), 0) };
             if n > 0 {
                 if local_msg.flags() & MSG_TRUNC != 0 {
-                    self.provided.defer(bid);
+                    self.provided.defer(buffer.into_id());
                     continue;
                 }
                 let total = namelen + n as usize;
@@ -354,7 +358,7 @@ impl Dispatch for Kqueue {
                     ud,
                     result: total as i32,
                     more: true,
-                    bid: Some(bid),
+                    bid: Some(buffer.into_id()),
                 });
                 continue;
             }
@@ -363,12 +367,12 @@ impl Dispatch for Kqueue {
                     ud,
                     result: namelen as i32,
                     more: true,
-                    bid: Some(bid),
+                    bid: Some(buffer.into_id()),
                 });
                 return DrainOutcome::Done;
             }
             let errno = Errno::last();
-            self.provided.defer(bid);
+            self.provided.defer(buffer.into_id());
             if errno.is_block() {
                 return DrainOutcome::Done;
             }

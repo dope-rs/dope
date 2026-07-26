@@ -8,21 +8,40 @@ pub mod socket;
 
 use std::error::Error as StdError;
 use std::fmt;
-use std::io::{self, Error};
+use std::io::Error;
 use std::os::fd::OwnedFd;
 
 use crate::driver::DriverRef;
-use crate::driver::token;
-use crate::driver::token::{SHUTDOWN, Token, kind};
+use crate::driver::token::KIND_SHIFT;
+use crate::driver::token::kind::ACCEPT;
+use crate::driver::token::kind::CONNECT;
+use crate::driver::token::kind::OPEN;
+use crate::driver::token::kind::READ;
+use crate::driver::token::kind::RECV;
+use crate::driver::token::kind::RECV_DISCARD;
+use crate::driver::token::kind::SEND;
+use crate::driver::token::kind::SOCKET;
+use crate::driver::token::kind::STAT;
+use crate::driver::token::kind::SYNC;
+use crate::driver::token::kind::TIMER;
+use crate::driver::token::kind::WRITE;
+use crate::driver::token::{SHUTDOWN, Token};
 use fd::{AcceptedSlot, FdSlot};
 use ffi::Handle;
+use libc::EAGAIN;
+use libc::ECANCELED;
+use libc::EINTR;
+use libc::ENOBUFS;
 use provided::ProvidedLease;
+use provided::raw::completion::CompletedBuffer;
+use std::fmt::Display;
+use std::fmt::Formatter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError;
 
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for DecodeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str("invalid completion")
     }
 }
@@ -50,7 +69,7 @@ impl Cqe {
     }
 
     pub(crate) fn kind(self) -> u8 {
-        (self.user_data >> token::KIND_SHIFT) as u8
+        (self.user_data >> KIND_SHIFT) as u8
     }
 
     fn more(self) -> bool {
@@ -128,12 +147,12 @@ pub enum AcceptEvent<'d> {
 
 pub enum SocketEvent {
     Created,
-    Failed(io::Error),
+    Failed(Error),
 }
 
 pub enum ConnectEvent {
     Connected,
-    Failed(io::Error),
+    Failed(Error),
 }
 
 pub struct Event<'d> {
@@ -170,8 +189,8 @@ enum DecodedRecv {
 impl DecodedRecv {
     fn from_errno(result: i32) -> Self {
         match -result {
-            libc::ECANCELED => Self::Cancelled,
-            libc::ENOBUFS | libc::EAGAIN | libc::EINTR => Self::Starved,
+            ECANCELED => Self::Cancelled,
+            ENOBUFS | EAGAIN | EINTR => Self::Starved,
             errno => Self::Failed(errno),
         }
     }
@@ -206,14 +225,14 @@ impl DecodedEvent {
             return Ok(Self::Shutdown);
         }
         match c.kind() {
-            kind::ACCEPT => {
+            ACCEPT => {
                 let e = match c.result {
                     n if n >= 0 => DecodedAccept::Accepted(FdSlot::new(n as u32)),
                     _ => DecodedAccept::Failed,
                 };
                 Ok(Self::Accept(token, c.more(), e))
             }
-            kind::RECV => {
+            RECV => {
                 let e = match c.result {
                     n if n > 0 => {
                         if !c.has_buffer() {
@@ -230,7 +249,7 @@ impl DecodedEvent {
                 };
                 Ok(Self::Recv(token, c.more(), e))
             }
-            kind::RECV_DISCARD => {
+            RECV_DISCARD => {
                 let e = match c.result {
                     n if n > 0 => DecodedRecv::Discarded { len: n as u32 },
                     0 => DecodedRecv::Eof,
@@ -238,7 +257,7 @@ impl DecodedEvent {
                 };
                 Ok(Self::Recv(token, c.more(), e))
             }
-            kind::SEND => {
+            SEND => {
                 let e = if c.result >= 0 {
                     SendEvent::Sent(c.result as u32)
                 } else {
@@ -246,7 +265,7 @@ impl DecodedEvent {
                 };
                 Ok(Self::Send(token, e))
             }
-            kind::WRITE => {
+            WRITE => {
                 let e = if c.result >= 0 {
                     WriteEvent::Wrote(c.result as u32)
                 } else {
@@ -254,7 +273,7 @@ impl DecodedEvent {
                 };
                 Ok(Self::Write(token, e))
             }
-            kind::SYNC => {
+            SYNC => {
                 let e = if c.result >= 0 {
                     SyncEvent::Synced
                 } else {
@@ -262,9 +281,9 @@ impl DecodedEvent {
                 };
                 Ok(Self::Sync(token, e))
             }
-            kind::OPEN => Ok(Self::Open(token, c.result)),
-            kind::READ => Ok(Self::Read(token, ReadEvent::from_result(c.result))),
-            kind::STAT => {
+            OPEN => Ok(Self::Open(token, c.result)),
+            READ => Ok(Self::Read(token, ReadEvent::from_result(c.result))),
+            STAT => {
                 let e = if c.result >= 0 {
                     StatEvent::Done
                 } else {
@@ -272,9 +291,9 @@ impl DecodedEvent {
                 };
                 Ok(Self::Stat(token, e))
             }
-            kind::TIMER => Ok(Self::Timer(token)),
-            kind::SOCKET => Ok(Self::Socket(token, c.result)),
-            kind::CONNECT => Ok(Self::Connect(token, c.result)),
+            TIMER => Ok(Self::Timer(token)),
+            SOCKET => Ok(Self::Socket(token, c.result)),
+            CONNECT => Ok(Self::Connect(token, c.result)),
             _ => Err(DecodeError),
         }
     }
@@ -299,13 +318,15 @@ impl<'d> Event<'d> {
     pub(crate) fn from_cqe(
         cqe: Cqe,
         reference: DriverRef<'d>,
-        provided: impl FnOnce(u32, u16) -> ProvidedLease<'d>,
+        provided: impl FnOnce(u32, u16) -> Option<CompletedBuffer>,
     ) -> Result<Self, DecodeError> {
         let result = cqe.result;
         let operation = cqe.kind();
         let mut provided = cqe
             .has_buffer()
-            .then(|| provided(result.max(0) as u32, cqe.bid_raw()));
+            .then(|| provided(result.max(0) as u32, cqe.bid_raw()))
+            .flatten()
+            .map(|completed| ProvidedLease::from_completion(reference, completed));
         let kind = match DecodedEvent::decode(cqe)? {
             DecodedEvent::Accept(token, more, event) => {
                 let event = match event {

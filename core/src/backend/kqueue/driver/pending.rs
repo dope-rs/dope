@@ -3,6 +3,8 @@ use std::mem::{MaybeUninit, replace};
 use super::FixedMap;
 use crate::driver::token::Token;
 use crate::io::fd::FdSlot;
+use crate::io::provided::raw::buffer::BufferId;
+use libc::ECANCELED;
 
 const NONE: u32 = u32::MAX;
 
@@ -17,7 +19,7 @@ pub(crate) enum PendingCompletion {
         ud: Token,
         result: i32,
         more: bool,
-        bid: Option<u16>,
+        bid: Option<BufferId>,
     },
     Write {
         ud: Token,
@@ -188,7 +190,7 @@ impl PendingQueue {
             else {
                 unreachable!()
             };
-            *result = -libc::ECANCELED;
+            *result = -ECANCELED;
             *slot = None;
             node.create_prev = NONE;
             node.create_next = NONE;
@@ -304,12 +306,12 @@ impl PendingQueue {
 
 impl PendingCompletion {
     fn token(&self) -> Option<Token> {
-        match *self {
+        match self {
             Self::Accept { ud, .. }
             | Self::Recv { ud, .. }
             | Self::Write { ud, .. }
             | Self::Create { ud, .. }
-            | Self::Timer { ud } => Some(ud),
+            | Self::Timer { ud } => Some(*ud),
             Self::Shutdown => None,
         }
     }

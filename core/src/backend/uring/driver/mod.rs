@@ -221,7 +221,7 @@ impl Uring {
                         item.result(),
                         item.flags(),
                     ) {
-                        provided.defer(bid);
+                        provided.defer_completion(bid);
                     }
                 }
                 cq.sync();
@@ -266,7 +266,7 @@ impl Uring {
                         item.flags(),
                     ) {
                         Disposition::Drop => {}
-                        Disposition::DropBuffer(bid) => provided.defer(bid),
+                        Disposition::DropBuffer(bid) => provided.defer_completion(bid),
                         Disposition::Internal | Disposition::Public(_) => {
                             found = Some(result);
                         }
