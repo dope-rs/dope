@@ -6,6 +6,7 @@ use core::task::{Poll, RawWaker, Waker};
 
 use super::waker::VTABLE;
 use crate::{Context, Fiber};
+use core::task;
 
 #[repr(transparent)]
 pub struct FutureFiber<'d, F> {
@@ -32,7 +33,7 @@ where
         let this = unsafe { self.get_unchecked_mut() };
         let raw = RawWaker::new(cx.as_mut().raw_task().cast_const(), &VTABLE);
         let waker = ManuallyDrop::new(unsafe { Waker::from_raw(raw) });
-        let mut future_cx = core::task::Context::from_waker(&waker);
+        let mut future_cx = task::Context::from_waker(&waker);
         unsafe { Pin::new_unchecked(&mut this.future) }.poll(&mut future_cx)
     }
 }

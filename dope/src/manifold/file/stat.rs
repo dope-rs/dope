@@ -1,5 +1,5 @@
 use super::FileOutcome;
-use super::Metadata;
+use super::metadata::Metadata;
 use super::raw::StatRequest;
 use super::source::Source;
 use dope::DriverContext;
@@ -9,14 +9,14 @@ use dope_core::driver::token::{KeyTag, Token};
 use dope_core::io::StatEvent;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
-use std::io;
 
 use super::table::OperationTable;
 use dope_core::driver::ready::CompletionWaker;
+use std::io::Error;
 
 pub enum StatDone {
     Metadata(Metadata),
-    Failed(io::Error),
+    Failed(Error),
 }
 
 pub(crate) struct StatTable<'d, const ID: u8> {
@@ -87,7 +87,7 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
                         Err(error) => StatDone::Failed(error),
                     }
                 }
-                StatEvent::Failed(errno) => StatDone::Failed(io::Error::from_raw_os_error(errno)),
+                StatEvent::Failed(errno) => StatDone::Failed(Error::from_raw_os_error(errno)),
             });
     }
 }

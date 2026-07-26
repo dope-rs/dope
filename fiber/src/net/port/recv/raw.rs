@@ -1,10 +1,9 @@
-use std::mem;
-
 use o3::cell::RawCell;
 
 use crate::io::RecvBuffer;
 
 use super::NONE;
+use std::mem::replace;
 
 enum SlotState<'d> {
     Free {
@@ -37,7 +36,7 @@ impl<'d> RecvSlot<'d> {
     pub(super) fn claim(&self) -> Option<u32> {
         unsafe {
             self.state.with_mut(|state| {
-                let previous = mem::replace(state, SlotState::Reserved);
+                let previous = replace(state, SlotState::Reserved);
                 match previous {
                     SlotState::Free { next } => Some(next),
                     other => {
@@ -139,7 +138,7 @@ impl<'d> RecvSlot<'d> {
                     Recycle::Free { next } => SlotState::Free { next },
                     Recycle::Reserved => SlotState::Reserved,
                 };
-                let previous = mem::replace(state, next_state);
+                let previous = replace(state, next_state);
                 match previous {
                     SlotState::Queued { value, .. } => Some(value),
                     other => {

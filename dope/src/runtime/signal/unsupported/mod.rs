@@ -1,6 +1,8 @@
 use std::io;
 
 use crate::DriverContext;
+use std::io::Error;
+use std::io::ErrorKind;
 
 pub(in crate::runtime) struct SignalState;
 
@@ -17,9 +19,9 @@ impl SignalState {
     }
 }
 
-fn unsupported() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
+fn unsupported() -> Error {
+    Error::new(
+        ErrorKind::Unsupported,
         "signal shutdown is only available on Linux",
     )
 }

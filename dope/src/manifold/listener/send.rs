@@ -10,15 +10,16 @@ use crate::DriverContext;
 use crate::manifold::env::Env;
 use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::token::{SlotIndex, Token};
+use dope_core::io::SendEvent;
 use dope_core::io::socket::msg::{IoVec, MsgHdr};
 use dope_net::link::pool::SendOutcome;
 use dope_net::link::slot::SendBuffer;
 use dope_net::wire::{Reclaim, Wire};
 
-pub const WRITE_BUF_CAP: usize = 16 * 1024;
+pub(super) const WRITE_BUF_CAP: usize = 16 * 1024;
 
 #[repr(transparent)]
-pub struct Buf([u8; WRITE_BUF_CAP]);
+pub(super) struct Buf([u8; WRITE_BUF_CAP]);
 
 impl Default for Buf {
     fn default() -> Self {
@@ -27,13 +28,13 @@ impl Default for Buf {
 }
 
 impl Buf {
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.0
     }
 }
 
 #[derive(Default)]
-pub enum SendSource {
+pub(super) enum SendSource {
     #[default]
     None,
     Static(&'static [u8]),
@@ -42,7 +43,7 @@ pub enum SendSource {
 }
 
 impl SendSource {
-    pub fn body(&self) -> &[u8] {
+    pub(super) fn body(&self) -> &[u8] {
         match self {
             Self::None => &[],
             Self::Static(s) => s,
@@ -61,7 +62,7 @@ impl SendSource {
     }
 }
 
-pub struct State {
+pub(super) struct State {
     pub write_buf_len: usize,
     pub inflight_plain: usize,
     pub consumed_plain: usize,
@@ -128,7 +129,7 @@ where
     fn pump_send(
         self: Pin<&mut Self>,
         token: Token,
-        event: dope_core::io::SendEvent,
+        event: SendEvent,
         driver: &mut DriverContext<'_, 'd>,
     );
 }
@@ -156,7 +157,7 @@ where
     fn pump_send(
         mut self: Pin<&mut Self>,
         token: Token,
-        e: dope_core::io::SendEvent,
+        e: SendEvent,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let mut this = self.as_mut().project();

@@ -9,6 +9,9 @@ use dope_core::backend::Sqe;
 use dope_core::driver::token::Token;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
+use std::io::Error;
+use std::io::ErrorKind;
+use std::slice::from_raw_parts_mut;
 
 type StatBuf = <Backend as Platform>::StatBuf;
 
@@ -79,21 +82,21 @@ impl ReadRegion {
     }
 
     pub(super) fn submission(self, fd: RawFd, offset: u64, token: Token) -> (Sqe, Self) {
-        let span = unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len as usize) };
+        let span = unsafe { from_raw_parts_mut(self.ptr.as_ptr(), self.len as usize) };
         let sqe = unsafe { Sqe::read_uninit(fd, span, offset, token) };
         (sqe, self)
     }
 
     pub(super) fn commit(self, buffer: &mut Vec<u8>, amount: u32) -> io::Result<()> {
         if amount > self.len {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(Error::new(
+                ErrorKind::InvalidData,
                 "dope::file: completion exceeded its prepared read region",
             ));
         }
         if buffer.as_mut_ptr().cast() != self.ptr.as_ptr() || buffer.len() < self.len as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(Error::new(
+                ErrorKind::InvalidData,
                 "dope::file: prepared read buffer changed before completion",
             ));
         }

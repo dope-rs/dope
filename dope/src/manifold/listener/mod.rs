@@ -1,11 +1,10 @@
-pub mod accept;
-mod application;
-mod config;
-mod egress;
+mod accept;
+pub mod application;
+pub mod config;
+pub mod egress;
 mod idle;
-pub mod recv;
-pub mod send;
-mod state;
+mod send;
+pub mod state;
 
 use std::io;
 use std::net::SocketAddr;
@@ -16,29 +15,29 @@ use std::pin::Pin;
 use std::process::abort;
 use std::time::Duration;
 
-pub use accept::Accept;
+use accept::Accept;
 use accept::AcceptPhase;
-pub use application::Application;
+use application::Application;
 use application::ApplicationPhase;
-pub use config::Config;
-pub use egress::SlotEgress;
+use config::Config;
 use egress::{EgressPhase, SlotFlow};
 use idle::{IdlePhase, IdleSet};
 use send::SendPhase;
-pub use state::{Aux, ConnView, State, WriteBuf};
+use state::{Aux, State};
 
 use crate::DriverContext;
 use crate::hash;
 use crate::manifold::Manifold;
-use crate::manifold::TypedToken;
 use crate::manifold::env::{Bundle, Env};
+use crate::manifold::typed::TypedToken;
 use crate::panic::abort_on_drop_panic;
-use crate::runtime::Idle;
+use crate::runtime::dispatcher::Idle;
 use crate::runtime::profile::Balanced;
 use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::OutboundReservation;
 use dope_core::driver::route::Route;
 use dope_core::driver::token::{SLOT_MASK, SlotIndex, Token};
+use dope_core::io::Event;
 use dope_core::io::EventKind;
 use dope_net::Transport;
 use dope_net::link::egress::arena::Arena;
@@ -49,8 +48,10 @@ use dope_net::link::slot::{
 use dope_net::tcp::Tcp;
 use dope_net::wire::Wire;
 use o3::buffer::Shared;
+use pin_project::pin_project;
+use pin_project::pinned_drop;
 
-#[pin_project::pin_project(PinnedDrop, !Unpin)]
+#[pin_project(PinnedDrop, !Unpin)]
 pub struct Listener<'d, const ID: u8, A, E = Bundle<Tcp, <A as Application<'d>>::Wire, Balanced>>
 where
     A: Application<'d>,
@@ -88,7 +89,7 @@ where
     }
 }
 
-#[pin_project::pinned_drop]
+#[pinned_drop]
 impl<'d, const ID: u8, A, E> PinnedDrop for Listener<'d, ID, A, E>
 where
     A: Application<'d>,
@@ -237,13 +238,10 @@ where
         }
     }
 
-    pub fn conn_view(&self, conn_id: Token) -> Option<ConnView<'_, A::Conn>> {
-        let (_, slot) = self.pool.by_target(conn_id)?;
-        let inflight = slot.owes_egress();
-        Some(ConnView {
-            state: &slot.state.conn,
-            inflight,
-        })
+    pub fn has_pending_egress(&self, conn_id: Token) -> bool {
+        self.pool
+            .by_target(conn_id)
+            .is_some_and(|(_, slot)| slot.owes_egress())
     }
 
     pub fn mark_send(&self, conn_id: Token, bytes: Shared) -> bool {
@@ -278,11 +276,7 @@ where
 {
     const ID: u8 = ID;
 
-    fn dispatch(
-        self: Pin<&mut Self>,
-        ev: dope_core::io::Event<'d>,
-        driver: &mut DriverContext<'_, 'd>,
-    ) {
+    fn dispatch(self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
         let mut this = self;
         match ev.into_kind() {
             EventKind::Recv(token, more, e) => this.as_mut().pump_recv(token, more, e, driver),

@@ -5,6 +5,7 @@ use core::task::Poll;
 
 use super::waker::VTABLE;
 use crate::{Context, Fiber};
+use core::task;
 
 #[repr(transparent)]
 pub struct FiberFuture<'d, F> {
@@ -27,7 +28,7 @@ where
 {
     type Output = F::Output;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
         debug_assert!(
             core::ptr::eq(cx.waker().vtable(), &VTABLE),
             "fiber polled with a foreign waker"

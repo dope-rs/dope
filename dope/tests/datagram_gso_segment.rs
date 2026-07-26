@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 
 use dope::manifold::Manifold;
 use dope::manifold::datagram::{Handler, Socket};
-use dope::runtime::Idle;
+use dope::runtime::dispatcher::Idle;
 use dope::{Event, EventKind};
 
 use common::Gate;

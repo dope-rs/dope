@@ -3,34 +3,37 @@ use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
 
-mod metadata;
-mod open;
+pub mod metadata;
+pub mod open;
 mod raw;
-mod read;
-mod source;
-mod stat;
+pub mod read;
+pub mod source;
+pub mod stat;
 mod table;
 
-pub use metadata::Metadata;
-pub use open::OpenDone;
-pub use read::ReadDone;
-pub use source::Source;
-pub use stat::StatDone;
+use open::OpenDone;
+use read::ReadDone;
+use stat::StatDone;
 
 use open::OpenTable;
 use read::ReadTable;
+use source::Source;
 use stat::StatTable;
 
+use crate::runtime::executor::StorageFactory;
 use dope::DriverContext;
 use dope::manifold::Manifold;
-use dope::manifold::TypedToken;
-use dope::runtime::Idle;
+use dope::manifold::typed::TypedToken;
+use dope::runtime::dispatcher::Idle;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::route::Route;
 use dope_core::driver::token::Token;
+use dope_core::io::Event;
 use dope_core::io::EventKind;
 use dope_core::io::file::OpenPath;
+use std::io::Error;
+use std::process::abort;
 
 pub enum FileOutcome<R> {
     Done(R),
@@ -91,7 +94,7 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
         buf: Vec<u8>,
         offset: u64,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Result<Token, (Vec<u8>, io::Error)> {
+    ) -> Result<Token, (Vec<u8>, Error)> {
         self.reads.begin(source, buf, offset, driver)
     }
 
@@ -169,13 +172,13 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
     }
 }
 
-impl<const ID: u8, const N: usize> dope::runtime::StorageFactory for FilesFactory<ID, N> {
+impl<const ID: u8, const N: usize> StorageFactory for FilesFactory<ID, N> {
     type Output<'d> = Files<'d, ID, N>;
 
     fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
         match Files::new(driver) {
             Ok(files) => files,
-            Err(_) => std::process::abort(),
+            Err(_) => abort(),
         }
     }
 }
@@ -187,11 +190,7 @@ pub struct FileManifold<'scope, 'd, const ID: u8, const N: usize> {
 impl<'scope, 'd, const ID: u8, const N: usize> Manifold<'d> for FileManifold<'scope, 'd, ID, N> {
     const ID: u8 = ID;
 
-    fn dispatch(
-        self: Pin<&mut Self>,
-        ev: dope_core::io::Event<'d>,
-        _driver: &mut DriverContext<'_, 'd>,
-    ) {
+    fn dispatch(self: Pin<&mut Self>, ev: Event<'d>, _driver: &mut DriverContext<'_, 'd>) {
         let this = self.as_ref().get_ref().files;
         match ev.into_kind() {
             EventKind::Open(token, e) => this.opens.complete(token, e),

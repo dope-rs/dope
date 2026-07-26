@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 use dope_test as common;
 
 extern crate dope;
-use dope::runtime::StorageFactory;
+use dope::runtime::executor::StorageFactory;
 
 struct Factory;
 

@@ -1,8 +1,8 @@
+use std::io;
 use std::marker::PhantomPinned;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::{io, iter};
 
 use pin_project::pin_project;
 
@@ -66,15 +66,20 @@ pub trait Handler<'d, const ID: u8> {
 const RECV_ARM_TAG: SlotIndex = SlotIndex::new(0);
 
 use dope_core::backend::Sqe;
-use dope_core::driver::token::{KeyTag, SLOT_MASK, SlotIndex, Token, TokenSlab, kind};
+use dope_core::driver::token::kind::RECV;
+use dope_core::driver::token::kind::SEND;
+use dope_core::driver::token::{KeyTag, SLOT_MASK, SlotIndex, Token, TokenSlab};
 use dope_core::io::RecvEvent;
 use dope_core::io::SendEvent;
 use dope_core::io::datagram::RecvOutcome;
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::msg::MsgHdr;
 use dope_net::multishot::Multishot;
+use libc::sockaddr_storage;
+use o3::buffer::Lease;
+use std::iter::once;
 
-type SendTag<const ID: u8> = KeyTag<ID, { kind::SEND }>;
+type SendTag<const ID: u8> = KeyTag<ID, { SEND }>;
 #[pin_project(!Unpin)]
 pub struct Socket<'d, const ID: u8> {
     route: Route<'d, ID>,
@@ -101,7 +106,7 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         let route = Route::reserve(driver)?;
         let (fixed_fd, bound_addr) = driver.bind_datagram_slot(addr)?;
         let mut msghdr_template = MsgHdr::empty();
-        msghdr_template.set_namelen(size_of::<libc::sockaddr_storage>() as u32);
+        msghdr_template.set_namelen(size_of::<sockaddr_storage>() as u32);
         let mut arm = Multishot::default();
         arm.request_rearm();
         Ok(Self {
@@ -130,26 +135,20 @@ impl<'d, const ID: u8> Socket<'d, ID> {
             return Err(payload);
         }
         let bytes = payload.len();
-        self.enqueue_all(
-            bytes,
-            iter::once(Outgoing::plain(Payload::Owned(payload), addr)),
-        );
+        self.enqueue_all(bytes, once(Outgoing::plain(Payload::Owned(payload), addr)));
         Ok(())
     }
 
     pub fn queue_buffer(
         self: Pin<&mut Self>,
-        payload: o3::buffer::Lease<'d>,
+        payload: Lease<'d>,
         addr: SocketAddr,
-    ) -> Result<(), o3::buffer::Lease<'d>> {
+    ) -> Result<(), Lease<'d>> {
         if !self.fits(1, payload.len()) {
             return Err(payload);
         }
         let bytes = payload.len();
-        self.enqueue_all(
-            bytes,
-            iter::once(Outgoing::plain(Payload::Buffer(payload), addr)),
-        );
+        self.enqueue_all(bytes, once(Outgoing::plain(Payload::Buffer(payload), addr)));
         Ok(())
     }
 
@@ -162,10 +161,7 @@ impl<'d, const ID: u8> Socket<'d, ID> {
             return Err(packet);
         }
         let bytes = packet.as_ref().len();
-        self.enqueue_all(
-            bytes,
-            iter::once(Outgoing::plain(Payload::Packet(packet), addr)),
-        );
+        self.enqueue_all(bytes, once(Outgoing::plain(Payload::Packet(packet), addr)));
         Ok(())
     }
 
@@ -231,7 +227,7 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         mut self: Pin<&mut Self>,
         ud: Token,
         more: bool,
-        e: dope_core::io::RecvEvent<'d>,
+        e: RecvEvent<'d>,
         handler: &mut H,
         driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -287,7 +283,7 @@ impl<'d, const ID: u8> Socket<'d, ID> {
     pub fn dispatch_send<H: Handler<'d, ID>>(
         mut self: Pin<&mut Self>,
         ud: Token,
-        e: dope_core::io::SendEvent,
+        e: SendEvent,
         handler: &mut H,
         driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -354,9 +350,8 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         let this = self.project();
         let mut targets = Vec::new();
         if this.recv_arm.is_armed() {
-            targets.push(
-                Token::new(ID, RECV_ARM_TAG, this.recv_arm.current_epoch()).with_kind(kind::RECV),
-            );
+            targets
+                .push(Token::new(ID, RECV_ARM_TAG, this.recv_arm.current_epoch()).with_kind(RECV));
         }
         for index in 0..this.in_flight.capacity() as u32 {
             if let Some(key) = this.in_flight.key(index) {

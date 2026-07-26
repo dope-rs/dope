@@ -2,31 +2,20 @@ use std::time::Instant;
 
 use o3::buffer::Shared;
 
-use super::Session;
 use crate::manifold::connector::source::DialKey;
 use dope_net::link::core::{Establish, Outbound};
-use dope_net::link::egress;
 use dope_net::link::slot::PendingFlags;
 
-pub use dope_net::link::egress::queue::Queue;
-pub use dope_net::link::egress::stage::Stage;
+use dope_net::link::egress::queue::Queue;
 
-pub const IOV_CAP: usize = 32;
+const IOV_CAP: usize = 32;
 
-use dope_core::driver::token::Token;
+use dope_net::link::egress::arena::Arena;
 use dope_net::wire::send::Vectored;
-use o3::cell::RegionToken;
-
-pub struct Ctx<'a, 'd, N: Session<'d>> {
-    pub conn_id: Token,
-    pub state: &'a mut N::ConnState,
-    pub sink: &'a mut egress::queue::Queue<IOV_CAP, N::Send>,
-    pub region: &'a mut RegionToken<'d>,
-}
 
 pub struct State<C: Default, B: AsRef<[u8]> = Shared> {
     pub conn: C,
-    pub(super) egress: egress::queue::Queue<IOV_CAP, B>,
+    pub(super) egress: Queue<IOV_CAP, B>,
     pub(super) dial: DialKey,
     pub(super) pending: PendingFlags,
     pub(super) establish: Establish,
@@ -50,7 +39,7 @@ impl<C: Default, B: AsRef<[u8]>> Outbound for State<C, B> {
 }
 
 impl<C: Default, B: AsRef<[u8]>> State<C, B> {
-    pub(super) fn new(dial: DialKey, lane: usize, arena: &egress::arena::Arena<B>) -> Self {
+    pub(super) fn new(dial: DialKey, lane: usize, arena: &Arena<B>) -> Self {
         Self {
             conn: C::default(),
             egress: arena.queue_for(lane),
@@ -63,16 +52,8 @@ impl<C: Default, B: AsRef<[u8]>> State<C, B> {
         }
     }
 
-    pub fn try_enqueue(&self, bytes: B) -> Result<(), B> {
-        self.egress.try_enqueue(bytes)
-    }
-
     pub(super) fn enqueue_send(&mut self, bytes: B) -> Result<(), B> {
         self.egress.try_enqueue(bytes)
-    }
-
-    pub fn wire_stage(&mut self) -> egress::stage::Stage<'_, B> {
-        self.egress.wire_stage()
     }
 
     pub fn egress_len(&self) -> usize {
@@ -85,12 +66,5 @@ impl<C: Default, B: AsRef<[u8]>> State<C, B> {
 
     pub(super) fn ack_send(&mut self, n: usize) {
         self.egress.ack(n);
-    }
-}
-
-impl<C: Default> State<C, Shared> {
-    #[must_use = "false = egress cap hit, nothing was enqueued"]
-    pub fn enqueue_all(&mut self, frames: &[Shared]) -> bool {
-        self.egress.try_enqueue_all(frames)
     }
 }

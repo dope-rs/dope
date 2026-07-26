@@ -5,9 +5,12 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use dope::driver::ready::ReadySlot;
-use dope::runtime::{Dispatcher, Session};
-use dope::{Completion, DriverContext, Event};
-use dope_fiber::{Context, Fiber, OneShot, SessionExt};
+use dope::runtime::dispatcher::Dispatcher;
+use dope::runtime::executor::Session;
+use dope::{Completion, Event};
+use dope_fiber::abi::Fiber;
+use dope_fiber::extensions::SessionExt;
+use dope_fiber::task::Context;
 use o3::cell::BrandCell;
 
 use crate::GUARD;
@@ -47,20 +50,6 @@ pub fn poll_ready<'d, F: Fiber<'d> + ?Sized>(
     match Fiber::poll(fiber, cx) {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("expected Ready"),
-    }
-}
-
-pub fn poll_until_ready<'d, F>(cx: Pin<&mut Context<'_, 'd>>, fiber: F) -> F::Output
-where
-    F: Fiber<'d>,
-{
-    let mut fiber = pin!(fiber);
-    let mut cx = cx;
-    loop {
-        match Fiber::poll(fiber.as_mut(), cx.as_mut()) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => continue,
-        }
     }
 }
 
@@ -155,10 +144,4 @@ pub fn pump_events<'scope, 'd, S>(
         }
     }
     done()
-}
-
-pub fn drop_pending<'d, F: Fiber<'d>>(driver: &mut DriverContext<'_, 'd>, op: F, tag: u8) {
-    let mut one = pin!(OneShot::new(op, tag, driver.driver_ref()).expect("ready slot"));
-    one.as_mut().pre_park(driver);
-    assert!(!one.as_ref().is_done());
 }

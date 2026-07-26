@@ -1,13 +1,10 @@
-mod explicit;
-mod health;
+pub mod explicit;
+pub mod health;
 
 use o3::collections::{SlabGeneration, SlabKey, SlabKeyParts};
 use std::time::Instant;
 
-pub use explicit::{Explicit, ExplicitDialer};
-pub use health::Static;
-
-use crate::io::socket;
+use crate::io::socket::addr::Addr;
 use dope_core::driver::token::SlotIndex;
 use dope_net::Transport;
 
@@ -54,7 +51,7 @@ pub trait Dialer<T: Transport> {
     fn has_pending(&self) -> bool {
         true
     }
-    fn sock_addr(&self, key: DialKey) -> Option<socket::addr::Addr>;
+    fn sock_addr(&self, key: DialKey) -> Option<Addr>;
     fn socket_params(&self, key: DialKey) -> Option<(i32, i32, i32)>;
     fn stream_config(&self, key: DialKey) -> Option<T::StreamConfig> {
         let _ = key;

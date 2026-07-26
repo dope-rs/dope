@@ -6,10 +6,13 @@ use std::task::Poll;
 
 use o3::collections::{FixedPinSlab, PinSlab, SlabKey, SlabKeyParts};
 
-use crate::task::{RootWaker, TaskContext, TaskQueue};
+use crate::task::queue::TaskQueue;
+use crate::task::{RootWaker, TaskContext};
 use crate::{Context, Fiber};
 use dope::DriverContext;
 use dope::panic::abort_on_drop_panic;
+use o3::collections::FixedPinSlabVacantEntry;
+use o3::collections::PinSlabVacantEntry;
 
 pub struct TaskId<Tag = ()> {
     parts: SlabKeyParts,
@@ -82,7 +85,7 @@ where
 
 #[must_use]
 pub struct SlabVacantEntry<'a, F, Tag = ()> {
-    inner: o3::collections::PinSlabVacantEntry<'a, F, Tag>,
+    inner: PinSlabVacantEntry<'a, F, Tag>,
 }
 
 impl<F, Tag> SlabVacantEntry<'_, F, Tag> {
@@ -264,7 +267,7 @@ where
 
 #[must_use]
 pub struct FixedSlabVacantEntry<'a, F, const N: usize, Tag = ()> {
-    inner: o3::collections::FixedPinSlabVacantEntry<'a, F, N, Tag>,
+    inner: FixedPinSlabVacantEntry<'a, F, N, Tag>,
 }
 
 impl<F, const N: usize, Tag> FixedSlabVacantEntry<'_, F, N, Tag> {

@@ -5,7 +5,7 @@ use super::egress::SlotFlow;
 use super::send;
 use super::send::Buf;
 use dope_core::driver::token::SlotIndex;
-use dope_net::link::egress;
+use dope_net::link::egress::arena;
 use dope_net::link::slot::{DeferredEgress, PendingFlags, SendBuffer, Slot};
 use dope_net::wire::Wire;
 
@@ -22,7 +22,7 @@ impl<C: Default + 'static> State<C> {
         conn: C,
         peer_ip: Option<IpAddr>,
         lane: usize,
-        arena: &egress::arena::Arena<SendBuffer>,
+        arena: &arena::Arena<SendBuffer>,
     ) -> Self {
         Self {
             conn,
@@ -105,9 +105,4 @@ impl Aux {
         };
         WriteBuf { bytes }
     }
-}
-
-pub struct ConnView<'a, T> {
-    pub state: &'a T,
-    pub inflight: bool,
 }

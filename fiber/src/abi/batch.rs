@@ -6,7 +6,7 @@ use core::pin::Pin;
 use core::task::Poll;
 
 use super::Fiber;
-use crate::task::IndexQueue;
+use crate::task::queue::IndexQueue;
 use crate::{Context, TaskContext};
 
 const BATCH_POLL_BUDGET: usize = 32;

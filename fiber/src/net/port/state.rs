@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::io::{self, Error, ErrorKind};
+use std::io::{Error, ErrorKind};
 
 use crate::Waker;
 use crate::io::RecvBuffer;
@@ -13,7 +13,7 @@ use super::result::{RecvInto, SendIdle};
 pub(crate) struct State<'d> {
     recv: RecvQueue,
     closed: Cell<bool>,
-    error: Cell<Option<io::Error>>,
+    error: Cell<Option<Error>>,
     recv_waiter: Cell<Option<Waker<'d>>>,
     send_waiter: Cell<Option<Waker<'d>>>,
     detached: Cell<bool>,
@@ -81,7 +81,7 @@ impl<'d> State<'d> {
         Self::wake(&self.send_waiter);
     }
 
-    pub(crate) fn signal_error(&self, e: io::Error) {
+    pub(crate) fn signal_error(&self, e: Error) {
         self.error.set(Some(e));
         self.closed.set(true);
         Self::wake(&self.recv_waiter);
@@ -98,7 +98,7 @@ impl<'d> State<'d> {
         self.closed.get()
     }
 
-    fn take_error(&self) -> Option<io::Error> {
+    fn take_error(&self) -> Option<Error> {
         self.error.take()
     }
 

@@ -8,7 +8,9 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application, SlotEgress};
+use dope::manifold::listener;
+use dope::manifold::listener::application::Application;
+use dope::manifold::listener::egress::SlotEgress;
 use dope_net::link::slot::Slot;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
 use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
@@ -142,8 +144,8 @@ impl<'d> Application<'d> for PreambleApp {
 
     fn accept(
         self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        aux: &mut listener::Aux,
+        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        aux: &mut listener::state::Aux,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         for frame in self.get_mut().frames {
@@ -157,9 +159,9 @@ impl<'d> Application<'d> for PreambleApp {
 
     fn chunk<R: RetainBytes>(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _chunk: R,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
@@ -167,9 +169,9 @@ impl<'d> Application<'d> for PreambleApp {
 
     fn send(
         self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         sent: usize,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
         let this = self.get_mut();
@@ -181,8 +183,8 @@ impl<'d> Application<'d> for PreambleApp {
 
     fn close(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
     ) {
         self.get_mut().gate.hit();
     }

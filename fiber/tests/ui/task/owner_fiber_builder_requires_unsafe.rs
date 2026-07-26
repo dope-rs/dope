@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 
-use dope_fiber::{FiberScope, OwnerFiber, SplitBytes, pending};
+use dope_fiber::abi::pending;
+use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes};
 use dope_test::with_session;
 use o3::buffer::Shared;
 

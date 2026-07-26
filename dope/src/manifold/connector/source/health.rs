@@ -2,7 +2,7 @@ use std::hash::BuildHasher;
 use std::time::{Duration, Instant};
 
 use super::{Action, DialEpoch, DialKey, Dialer};
-use crate::hash;
+use crate::hash::State;
 use dope_core::driver::token::SlotIndex;
 use dope_core::io::socket::addr::Addr;
 use dope_net::Transport;
@@ -58,7 +58,7 @@ pub struct Static<T: Transport> {
 }
 
 impl<T: Transport> Static<T> {
-    pub fn new(upstreams: Vec<T::Addr>, base_window: Duration, hash_builder: hash::State) -> Self {
+    pub fn new(upstreams: Vec<T::Addr>, base_window: Duration, hash_builder: State) -> Self {
         let n = upstreams.len();
         let seed = hash_builder.hash_one((n, base_window.as_nanos()));
         let mut ready = SlotQueue::with_capacity(n);

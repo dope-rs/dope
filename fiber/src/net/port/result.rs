@@ -1,13 +1,13 @@
-use std::io;
+use std::io::Error;
 
 pub enum RecvInto {
     Bytes(usize),
-    Failed(io::Error),
+    Failed(Error),
     Pending,
 }
 
 pub enum SendIdle {
     Idle,
-    Failed(io::Error),
+    Failed(Error),
     Pending,
 }

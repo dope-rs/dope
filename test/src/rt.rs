@@ -4,25 +4,30 @@ use std::pin::pin;
 use dope::driver::Driver;
 use dope::driver::profile::DriverProfile;
 use dope::driver::token::{Epoch, SlotIndex, Token};
+use dope::hash::State;
 use dope::manifold::env::{Bundle, Env};
 use dope::manifold::file::{Files, FilesFactory};
-use dope::manifold::listener::{Application, Config, Listener};
-use dope::runtime::profile;
-use dope::runtime::{Executor, Session};
+use dope::manifold::listener::Listener;
+use dope::manifold::listener::application::Application;
+use dope::manifold::listener::config::Config;
+use dope::runtime::executor::{Executor, Session};
+use dope::runtime::profile::Throughput;
 use dope::{DriverContext, DriverRef, driver};
 use dope_core::driver::ext::DriverExt;
-use dope_fiber::{ListenerPort, ListenerPortFactory};
+use dope_fiber::net::listener::{ListenerPort, ListenerPortFactory};
 use dope_net::tcp::Tcp;
+use dope_net::tcp::listener;
+use dope_net::wire::Wire;
 use dope_net::wire::identity::Identity;
 
-pub type Wired<W> = Bundle<Tcp, W, profile::Throughput>;
+pub type Wired<W> = Bundle<Tcp, W, Throughput>;
 
 pub type Plain = Wired<Identity>;
 
 pub type TcpConfig = Config<Tcp>;
 
 pub fn throughput_cfg() -> driver::Config {
-    driver::Config::for_profile::<profile::Throughput>()
+    driver::Config::for_profile::<Throughput>()
 }
 
 pub fn exec_for<P: DriverProfile>() -> Executor<()> {
@@ -30,7 +35,7 @@ pub fn exec_for<P: DriverProfile>() -> Executor<()> {
 }
 
 pub fn exec() -> Executor<()> {
-    exec_for::<profile::Throughput>()
+    exec_for::<Throughput>()
 }
 
 pub fn quic_exec(buf_entries: u32, buf_len: u32) -> Executor<()> {
@@ -70,9 +75,9 @@ pub fn listener_exec<P: DriverProfile>(
 
 pub fn tcp_host(
     max_connections: usize,
-    listener_config: dope_net::tcp::listener::Config,
+    listener_config: listener::Config,
 ) -> (Executor<()>, TcpConfig) {
-    let cfg = driver::Config::for_tcp_profile::<profile::Throughput>(max_connections);
+    let cfg = driver::Config::for_tcp_profile::<Throughput>(max_connections);
     let exec = Executor::new(cfg).expect("executor");
     let config = Config {
         max_connections,
@@ -88,14 +93,14 @@ pub fn tcp_host(
 pub fn open_listener<'d, const ID: u8, A, E>(
     app: A,
     cfg: Config<E::Transport>,
-    hash_builder: dope::hash::State,
+    hash_builder: State,
     driver: &mut DriverContext<'_, 'd>,
 ) -> (Listener<'d, ID, A, E>, SocketAddr)
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
     E::Transport: 'static,
-    <A::Wire as dope_net::wire::Wire>::InitConfig: Default,
+    <A::Wire as Wire>::InitConfig: Default,
 {
     let listener = Listener::open_in(app, cfg, hash_builder, driver).expect("listener");
     let addr = listener.local_addr().expect("local addr");

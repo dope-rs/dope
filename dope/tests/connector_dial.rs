@@ -7,9 +7,9 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 extern crate dope;
-use dope::manifold::connector::source::{
-    Action, DialKey, Dialer, Explicit, ExplicitDialer, Static,
-};
+use dope::manifold::connector::source::explicit::{Explicit, ExplicitDialer};
+use dope::manifold::connector::source::health::Static;
+use dope::manifold::connector::source::{Action, DialKey, Dialer};
 use dope_net::Transport;
 use dope_net::tcp::Tcp;
 

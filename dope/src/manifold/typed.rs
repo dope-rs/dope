@@ -42,7 +42,8 @@ impl<M> TypedToken<M> {
     /// ```compile_fail
     /// use std::pin::Pin;
     ///
-    /// use dope::manifold::{Manifold, TypedToken};
+    /// use dope::manifold::Manifold;
+    /// use dope::manifold::typed::TypedToken;
     /// use dope::{DriverContext, Token};
     ///
     /// struct Outer;

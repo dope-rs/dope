@@ -4,8 +4,9 @@ use lower::Lowerer;
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::quote;
-use std::mem;
+use std::mem::replace;
 use syn::parse::{Parse, ParseStream};
+use syn::parse_quote;
 use syn::{Error, Expr, ExprAsync, ItemFn, Lifetime, ReturnType, Token, parse_macro_input};
 
 struct Input {
@@ -59,23 +60,23 @@ impl Fiber {
         }
 
         let output = match &item.sig.output {
-            ReturnType::Default => syn::parse_quote! { () },
+            ReturnType::Default => parse_quote! { () },
             ReturnType::Type(_, ty) => (**ty).clone(),
         };
         let brand = Ident::new("__dope_brand", Span::mixed_site());
         if let Err(errors) = Lowerer::lower(&brand, &mut item.block) {
             return Self::compile_errors(errors);
         }
-        let block = mem::replace(&mut *item.block, syn::parse_quote! {{}});
-        item.sig.output = syn::parse_quote! {
-            -> impl ::dope_fiber::Fiber<#driver, Output = #output>
+        let block = replace(&mut *item.block, parse_quote! {{}});
+        item.sig.output = parse_quote! {
+            -> impl ::dope_fiber::abi::Fiber<#driver, Output = #output>
         };
-        *item.block = syn::parse_quote! {{
+        *item.block = parse_quote! {{
             let (#brand, __dope_seal) = unsafe {
-                ::dope_fiber::__private::Brand::<#driver>::scope()
+                ::dope_fiber::abi::__private::Brand::<#driver>::scope()
             };
             let __dope_future = async move #block;
-            ::dope_fiber::__private::Seal::future(__dope_seal, __dope_future)
+            ::dope_fiber::abi::__private::Seal::future(__dope_seal, __dope_future)
         }};
         quote!(#item).into()
     }
@@ -107,7 +108,7 @@ impl Fiber {
             Ok(expression) => expression,
             Err(expr) => {
                 return quote! {
-                    ::dope_fiber::IntoFiber::<#driver>::into_fiber(#expr)
+                    ::dope_fiber::abi::IntoFiber::<#driver>::into_fiber(#expr)
                 }
                 .into();
             }
@@ -125,10 +126,10 @@ impl Fiber {
         quote! {
             {
                 let (#brand, __dope_seal) = unsafe {
-                    ::dope_fiber::__private::Brand::<#driver>::scope()
+                    ::dope_fiber::abi::__private::Brand::<#driver>::scope()
                 };
                 let __dope_future = #expression;
-                ::dope_fiber::__private::Seal::future(__dope_seal, __dope_future)
+                ::dope_fiber::abi::__private::Seal::future(__dope_seal, __dope_future)
             }
         }
         .into()

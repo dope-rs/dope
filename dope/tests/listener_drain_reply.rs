@@ -6,7 +6,9 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application, SlotEgress};
+use dope::manifold::listener;
+use dope::manifold::listener::application::Application;
+use dope::manifold::listener::egress::SlotEgress;
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
 use dope_test::Gate;
@@ -23,9 +25,9 @@ impl<'d> Application<'d> for ReplyApp {
 
     fn chunk<R: RetainBytes>(
         self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _chunk: R,
-        aux: &mut listener::Aux,
+        aux: &mut listener::state::Aux,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         let payload = &self.get_mut().payload;
@@ -39,17 +41,17 @@ impl<'d> Application<'d> for ReplyApp {
 
     fn send(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _sent: usize,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
     }
 
     fn close(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
     ) {
         self.get_mut().gate.hit();
     }

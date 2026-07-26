@@ -2,20 +2,21 @@ use std::cell::Cell;
 use std::pin::Pin;
 use std::time::Instant;
 
-mod starved;
+#[doc(hidden)]
+pub mod starved;
 
 use starved::StarvedTree;
-#[doc(hidden)]
-pub use starved::Waiter;
+use starved::Waiter;
 
 use dope::manifold::Manifold;
-use dope::runtime::Idle;
+use dope::runtime::dispatcher::Idle;
 use o3::cell::RawCell;
 use o3::collections::IndexedMinHeap;
 use o3::marker::ThreadBound;
 
 use dope::{DriverContext, DriverRef};
 use dope_core::driver::ready::CompletionWaker;
+use std::marker::PhantomData;
 
 const NIL: u32 = u32::MAX;
 
@@ -41,7 +42,7 @@ struct Slot<'d> {
     wake: Cell<Option<CompletionWaker<'d>>>,
     deadline: Cell<Instant>,
     next: Cell<u32>,
-    _driver: std::marker::PhantomData<fn(&'d ()) -> &'d ()>,
+    _driver: PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -76,7 +77,7 @@ impl<'d, const ID: u8> Timer<'d, ID> {
                     wake: Cell::new(None),
                     deadline: Cell::new(filler),
                     next: Cell::new(if index == 0 { NIL } else { index as u32 - 1 }),
-                    _driver: std::marker::PhantomData,
+                    _driver: PhantomData,
                 })
                 .collect(),
             free: Cell::new(if cap == 0 { NIL } else { cap as u32 - 1 }),

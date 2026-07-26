@@ -11,10 +11,14 @@ use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::token::kind::READ;
 use dope_core::driver::token::{KeyTag, Token};
 use dope_core::io::ReadEvent;
+use std::io::Error;
+use std::io::ErrorKind;
+use std::mem::replace;
+use std::process::abort;
 
 pub enum ReadDone {
     Complete(usize),
-    Failed(io::Error),
+    Failed(Error),
 }
 
 enum ReadFlight {
@@ -36,8 +40,8 @@ impl ReadHold<'_> {
             return Err(Self::invalid_flight());
         }
         let region = ReadRegion::new(&mut self.buffer).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
+            Error::new(
+                ErrorKind::InvalidInput,
                 "dope::file: read buffer has no writable region",
             )
         })?;
@@ -47,9 +51,8 @@ impl ReadHold<'_> {
     }
 
     fn accept_submission(&mut self) {
-        let ReadFlight::Prepared(region) = std::mem::replace(&mut self.flight, ReadFlight::Idle)
-        else {
-            std::process::abort();
+        let ReadFlight::Prepared(region) = replace(&mut self.flight, ReadFlight::Idle) else {
+            abort();
         };
         self.flight = ReadFlight::Pending(region);
     }
@@ -59,21 +62,20 @@ impl ReadHold<'_> {
             std::mem::replace(&mut self.flight, ReadFlight::Idle),
             ReadFlight::Prepared(_)
         ) {
-            std::process::abort();
+            abort();
         }
     }
 
     fn finish(&mut self, amount: u32) -> io::Result<()> {
-        let ReadFlight::Pending(region) = std::mem::replace(&mut self.flight, ReadFlight::Idle)
-        else {
+        let ReadFlight::Pending(region) = replace(&mut self.flight, ReadFlight::Idle) else {
             return Err(Self::invalid_flight());
         };
         region.commit(&mut self.buffer, amount)
     }
 
-    fn invalid_flight() -> io::Error {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
+    fn invalid_flight() -> Error {
+        Error::new(
+            ErrorKind::InvalidData,
             "dope::file: read completion does not match a pending region",
         )
     }
@@ -104,7 +106,7 @@ impl<'d, const ID: u8> ReadTable<'d, ID> {
         buffer: Vec<u8>,
         offset: u64,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Result<Token, (Vec<u8>, io::Error)> {
+    ) -> Result<Token, (Vec<u8>, Error)> {
         self.operations
             .begin_prepared(
                 ReadHold {
@@ -152,7 +154,7 @@ impl<'d, const ID: u8> ReadTable<'d, ID> {
                     Err(error) => ReadDone::Failed(error),
                 },
                 ReadEvent::Failed(errno) => match hold.finish(0) {
-                    Ok(()) => ReadDone::Failed(io::Error::from_raw_os_error(errno)),
+                    Ok(()) => ReadDone::Failed(Error::from_raw_os_error(errno)),
                     Err(error) => ReadDone::Failed(error),
                 },
             });

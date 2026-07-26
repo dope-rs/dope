@@ -81,13 +81,13 @@ impl Forward {
                     let __field = self.project().#field;
                     ::dope::manifold::Manifold::pre_park(__field, driver)
                 }
-                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::runtime::Idle {
+                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::runtime::dispatcher::Idle {
                     let __field = self.project_ref().#field;
                     ::dope::manifold::Manifold::idle(__field)
                 }
                 fn activate(
                     self: ::core::pin::Pin<&mut Self>,
-                    target: ::dope::manifold::TypedToken<Self>,
+                    target: ::dope::manifold::typed::TypedToken<Self>,
                     driver: &mut ::dope::DriverContext<'_, #brand>,
                 ) {
                     let __typed = target.retag::<#brand, #field_ty>();

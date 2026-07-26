@@ -1,7 +1,7 @@
 use crate::DriverContext;
 use crate::manifold::Outcome;
 use crate::manifold::env::Env;
-use crate::manifold::listener::{Aux, Listener, State};
+use crate::manifold::listener::Listener;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::RecvEvent;
 use dope_core::io::provided::ProvidedView;
@@ -16,6 +16,7 @@ use std::pin::Pin;
 use super::egress::{Egress, EgressPhase, SlotFlow};
 use super::idle::IdlePhase;
 use super::send::SendPhase;
+use super::state::{Aux, State};
 
 pub trait Application<'d>: Sized {
     type Conn: Default + 'static;

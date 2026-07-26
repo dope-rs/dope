@@ -2,7 +2,7 @@ error: independent async scope is not a fiber
  --> tests/ui/fiber/async_scopes.rs:5:9
   |
 5 | /         async fn escaped() {
-6 | |             dope_fiber::ready(()).await;
+6 | |             dope_fiber::abi::ready(()).await;
 7 | |         }
   | |_________^
 
@@ -16,12 +16,12 @@ error: independent async scope is not a fiber
   --> tests/ui/fiber/async_scopes.rs:13:13
    |
 13 | /             async fn escaped() {
-14 | |                 dope_fiber::ready(()).await;
+14 | |                 dope_fiber::abi::ready(()).await;
 15 | |             }
    | |_____________^
 
 error: independent async scope is not a fiber
   --> tests/ui/fiber/async_scopes.rs:17:17
    |
-17 |         let _ = async { dope_fiber::ready(()).await };
-   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+17 |         let _ = async { dope_fiber::abi::ready(()).await };
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

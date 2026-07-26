@@ -6,8 +6,11 @@ use std::task::Poll;
 use super::already_done;
 use super::{Metadata, Source};
 use crate::{Context, Fiber};
+use dope::driver::token::Token;
 use dope::io::file::OpenPath;
-use dope::manifold::file::{FileOutcome, Files, StatDone};
+use dope::manifold::file::stat::StatDone;
+use dope::manifold::file::{FileOutcome, Files};
+use std::mem::replace;
 
 enum StatTarget<'d> {
     Fd(Source<'d>),
@@ -16,7 +19,7 @@ enum StatTarget<'d> {
 
 enum StatStage<'d> {
     Init(StatTarget<'d>),
-    Pending(dope::driver::token::Token),
+    Pending(Token),
     Done,
 }
 
@@ -56,7 +59,7 @@ impl<'h, 'd, const ID: u8, const N: usize> Fiber<'d> for Stat<'h, 'd, ID, N> {
 
     fn poll(self: Pin<&mut Self>, mut cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let token = match std::mem::replace(&mut this.stage, StatStage::Done) {
+        let token = match replace(&mut this.stage, StatStage::Done) {
             StatStage::Done => return Poll::Ready(Err(already_done())),
             StatStage::Pending(token) => token,
             StatStage::Init(target) => {

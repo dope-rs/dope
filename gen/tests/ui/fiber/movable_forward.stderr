@@ -12,7 +12,7 @@ error[E0308]: mismatched types
 note: method defined here
   --> $WORKSPACE/dope/src/manifold/mod.rs
    |
-   |     fn dispatch(
+   |     fn dispatch(self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
    |        ^^^^^^^^
    = note: this error originates in the derive macro `dope_gen::Forward` (in Nightly builds, run with -Z macro-backtrace for more info)
 

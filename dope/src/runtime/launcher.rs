@@ -3,17 +3,22 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io;
-use std::panic::{self, AssertUnwindSafe};
-use std::sync::mpsc;
-use std::thread;
+use std::panic::AssertUnwindSafe;
 
 use o3::marker::ThreadBound;
 
-use super::ShutdownTrigger;
+use super::trigger::ShutdownTrigger;
 use crate::DriverContext;
 use crate::driver::Driver;
 use crate::hash::Seed;
 use dope_core::driver::ext::DriverExt;
+use std::fmt::Debug;
+use std::io::ErrorKind;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
+use std::sync::mpsc::channel;
+use std::thread::Builder;
+use std::thread::scope;
 
 #[derive(Clone, Copy)]
 enum Placement {
@@ -117,7 +122,7 @@ impl Display for SpawnFailure {
     }
 }
 
-impl fmt::Debug for SpawnFailure {
+impl Debug for SpawnFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("SpawnFailure")
             .field("spawn", &self.spawn)
@@ -139,7 +144,7 @@ impl Display for WorkerFailure {
     }
 }
 
-impl fmt::Debug for WorkerFailure {
+impl Debug for WorkerFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("WorkerFailure")
             .field("worker", &self.worker)
@@ -254,14 +259,14 @@ impl Launcher {
     pub fn pinned(cpus: Vec<u16>) -> io::Result<Self> {
         if cpus.is_empty() {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+                ErrorKind::InvalidInput,
                 "Launcher::pinned requires at least one CPU",
             ));
         }
         let mut unique = HashSet::with_capacity(cpus.len());
         if cpus.iter().any(|cpu| !unique.insert(*cpu)) {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+                ErrorKind::InvalidInput,
                 "Launcher::pinned requires distinct CPUs",
             ));
         }
@@ -272,7 +277,7 @@ impl Launcher {
     pub fn unbound(workers: usize) -> io::Result<Self> {
         if workers == 0 {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+                ErrorKind::InvalidInput,
                 "Launcher::unbound requires at least one worker",
             ));
         }
@@ -295,7 +300,7 @@ impl Launcher {
     pub fn worker_stack_size(mut self, bytes: usize) -> io::Result<Self> {
         if bytes == 0 {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+                ErrorKind::InvalidInput,
                 "Launcher::worker_stack_size requires a non-zero size",
             ));
         }
@@ -319,7 +324,7 @@ impl Launcher {
         } = self;
         if placements.len() != inputs.len() {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+                ErrorKind::InvalidInput,
                 "Launcher::run requires one input per worker",
             ));
         }
@@ -338,16 +343,16 @@ impl Launcher {
             ));
         }
 
-        let outcome = thread::scope(|scope| -> io::Result<LaunchOutcome> {
-            let (completed, outcomes) = mpsc::channel();
+        let outcome = scope(|scope| -> io::Result<LaunchOutcome> {
+            let (completed, outcomes) = channel();
             let mut handles = Vec::with_capacity(worker_count);
             for (worker, placement, input, seed, worker_shutdown) in workers {
                 let completed = completed.clone();
-                let handle = thread::Builder::new()
+                let handle = Builder::new()
                     .name(format!("dope-worker-{worker}"))
                     .stack_size(worker_stack_size)
                     .spawn_scoped(scope, move || {
-                        let outcome = match panic::catch_unwind(AssertUnwindSafe(|| {
+                        let outcome = match catch_unwind(AssertUnwindSafe(|| {
                             enter::<E>(worker, placement, seed, worker_shutdown, input)
                         })) {
                             Ok(Ok(())) => WorkerOutcome::Success,
@@ -384,7 +389,7 @@ impl Launcher {
                             }
                         }
                         if let Some(payload) = worker_panic {
-                            panic::resume_unwind(payload);
+                            resume_unwind(payload);
                         }
                         let kind = spawn.kind();
                         return Err(io::Error::new(
@@ -432,7 +437,7 @@ impl Launcher {
         })?;
         match outcome {
             LaunchOutcome::Success => Ok(()),
-            LaunchOutcome::Panicked(payload) => panic::resume_unwind(payload),
+            LaunchOutcome::Panicked(payload) => resume_unwind(payload),
         }
     }
 }

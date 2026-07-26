@@ -4,7 +4,8 @@ use std::time::Duration;
 
 extern crate dope;
 use dope::runtime::profile::Balanced;
-use dope_fiber::{ConnectorPort, Listener, ListenerPort};
+use dope_fiber::net::connector::ConnectorPort;
+use dope_fiber::net::listener::{Listener, ListenerPort};
 use dope_net::tcp::Tcp;
 use dope_net::wire::send::{Plain, Prepared, Storage, Vectored};
 use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};

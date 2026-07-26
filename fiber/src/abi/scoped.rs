@@ -1,11 +1,11 @@
 use core::marker::PhantomPinned;
-use core::mem;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::task::Poll;
 
 use super::Fiber;
 use crate::Context;
+use core::mem::replace;
 
 pub trait ScopedFactory<O, F> {
     /// # Safety
@@ -79,7 +79,7 @@ where
             ScopedStatus::Poisoned => panic!("scoped fiber polled after panic"),
             ScopedStatus::Init(_) | ScopedStatus::Live => {}
         }
-        let status = mem::replace(&mut this.status, ScopedStatus::Polling);
+        let status = replace(&mut this.status, ScopedStatus::Polling);
         let transaction = ScopedTransaction(&mut this.status, true);
         if let ScopedStatus::Init(make) = status {
             this.fiber

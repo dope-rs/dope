@@ -1,5 +1,5 @@
 extern crate dope;
-use dope_fiber::{ErasedTaskId, TaskId};
+use dope_fiber::slab::{ErasedTaskId, TaskId};
 
 fn require_send<T: Send>() {}
 fn require_sync<T: Sync>() {}

@@ -2,44 +2,25 @@
 
 extern crate self as dope_fiber;
 
-mod abi;
-mod extensions;
+pub mod abi;
+pub mod extensions;
 pub mod file;
-mod io;
-mod net;
-mod one_shot;
-mod owner;
-mod race;
-mod slab;
-mod sleep;
-mod task;
-mod wait;
+pub mod io;
+pub mod net;
+pub mod one_shot;
+pub mod owner;
+pub mod slab;
+pub mod sleep;
+pub mod task;
+pub mod wait;
 
-pub use abi::{
-    __private, Batch, BatchOutput, Fiber, IntoFiber, Lazy, Pending, PollFn, Ready, WaitFn, pending,
-    poll_fn, ready, wait_fn,
-};
+use abi::{Fiber, IntoFiber};
 use dope::manifold::env::Bundle;
 use dope::runtime::profile::Balanced;
 pub use dope_gen::{fiber, fiber_fn};
-pub use extensions::{AppSessionExt, SessionExt, SlotExt};
-pub use io::Io;
-pub use net::connector::{
-    Connect, Connector, ConnectorHandle, ConnectorPort, ConnectorPortFactory,
-};
-pub use net::listener::{Listener, ListenerHandle, ListenerPort, ListenerPortFactory};
-pub use one_shot::OneShot;
-pub use owner::{FiberScope, OwnerFiber, SplitBytes, SplitTask, SplitView, try_from_split_task};
-pub use race::{Either, Race};
-pub use slab::{
-    ErasedTaskId, FixedSlab, FixedSlabVacantEntry, Slab, SlabVacantEntry, TaskId, TaskSlab,
-};
-pub use sleep::{Sleep, TimerExt};
-pub use task::{Context, RootWaker, TaskBinding, TaskContext, TaskQueue, Waker};
-pub use wait::{WaitQueue, Waiter};
-
-pub const fn race<L, R>(left: L, right: R) -> Race<L, R> {
-    Race::new(left, right)
-}
+use io::Io;
+use one_shot::OneShot;
+use task::{Context, TaskContext, Waker};
+use wait::{WaitQueue, Waiter};
 
 pub(crate) type ConnEnv<T, W> = Bundle<T, W, Balanced>;

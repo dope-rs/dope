@@ -1,10 +1,9 @@
-use std::ptr;
-use std::slice;
-
 use dope_core::io::socket::msg::IoVec;
 
 use super::super::EGRESS_QUANTUM;
 use super::super::metadata::raw::pool::MetadataPool;
+use std::ptr::null;
+use std::slice::from_raw_parts;
 
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Entry<B> {
@@ -40,7 +39,7 @@ impl<B> Entry<B> {
     pub(crate) fn retained(value: B) -> Self {
         Self::Retained {
             value,
-            data: ptr::null(),
+            data: null(),
             len: 0,
         }
     }
@@ -98,7 +97,7 @@ impl<B> Entry<B> {
         }
         let available = len - offset;
         let take = available.min(cap);
-        let bytes = unsafe { slice::from_raw_parts(data.add(offset), take) };
+        let bytes = unsafe { from_raw_parts(data.add(offset), take) };
         Some((IoVec::from_slice(bytes), available))
     }
 }

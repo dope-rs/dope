@@ -1,12 +1,20 @@
+use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
 use quote::quote;
-use std::mem;
+use std::mem::replace;
+use syn::Block;
 use syn::parse::Parse;
 use syn::parse::ParseStream;
 use syn::parse::Parser;
+use syn::parse_quote;
+use syn::parse_quote_spanned;
+use syn::parse2;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::visit_mut::{self, VisitMut};
+use syn::visit_mut::{
+    VisitMut, visit_expr_closure_mut, visit_impl_item_fn_mut, visit_item_fn_mut,
+    visit_trait_item_fn_mut,
+};
 use syn::{
     Error, Expr, ExprAsync, ExprAwait, ExprClosure, Ident, ImplItemFn, ItemFn, Macro, Pat, Token,
     TraitItemFn,
@@ -69,7 +77,7 @@ pub(super) struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    pub(super) fn lower(brand: &'a Ident, block: &mut syn::Block) -> Result<(), Vec<Error>> {
+    pub(super) fn lower(brand: &'a Ident, block: &mut Block) -> Result<(), Vec<Error>> {
         let mut lowerer = Self::new(brand);
         lowerer.visit_block_mut(block);
         lowerer.finish()
@@ -90,7 +98,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn contains_await(tokens: proc_macro2::TokenStream) -> bool {
+    fn contains_await(tokens: TokenStream) -> bool {
         tokens.into_iter().any(|token| match token {
             TokenTree::Group(group) => Self::contains_await(group.stream()),
             TokenTree::Ident(ident) => ident == "await",
@@ -123,7 +131,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn matches(&mut self, node: &mut Macro) -> syn::Result<()> {
-        let mut input = syn::parse2::<Matches>(node.tokens.clone())?;
+        let mut input = parse2::<Matches>(node.tokens.clone())?;
         self.visit_expr_mut(&mut input.expr);
         if let Some(guard) = &mut input.guard {
             self.visit_expr_mut(guard);
@@ -145,7 +153,7 @@ impl<'a> Lowerer<'a> {
         if node.tokens.is_empty() {
             return Ok(());
         }
-        match syn::parse2::<VecInput>(node.tokens.clone())? {
+        match parse2::<VecInput>(node.tokens.clone())? {
             VecInput::List(mut expressions) => {
                 for expression in &mut expressions {
                     self.visit_expr_mut(expression);
@@ -182,9 +190,9 @@ impl VisitMut for Lowerer<'_> {
         self.visit_expr_mut(&mut node.base);
         let brand = self.brand;
         let span = node.base.span();
-        let base = mem::replace(&mut *node.base, syn::parse_quote! { () });
-        *node.base = syn::parse_quote_spanned! {span=>
-            ::dope_fiber::__private::Brand::awaitable(&#brand, #base)
+        let base = replace(&mut *node.base, parse_quote! { () });
+        *node.base = parse_quote_spanned! {span=>
+            ::dope_fiber::abi::__private::Brand::awaitable(&#brand, #base)
         };
     }
 
@@ -196,7 +204,7 @@ impl VisitMut for Lowerer<'_> {
         if node.asyncness.is_some() {
             self.reject_async(node);
         } else {
-            visit_mut::visit_expr_closure_mut(self, node);
+            visit_expr_closure_mut(self, node);
         }
     }
 
@@ -204,7 +212,7 @@ impl VisitMut for Lowerer<'_> {
         if node.sig.asyncness.is_some() {
             self.reject_async(node);
         } else {
-            visit_mut::visit_item_fn_mut(self, node);
+            visit_item_fn_mut(self, node);
         }
     }
 
@@ -212,7 +220,7 @@ impl VisitMut for Lowerer<'_> {
         if node.sig.asyncness.is_some() {
             self.reject_async(node);
         } else {
-            visit_mut::visit_impl_item_fn_mut(self, node);
+            visit_impl_item_fn_mut(self, node);
         }
     }
 
@@ -220,7 +228,7 @@ impl VisitMut for Lowerer<'_> {
         if node.sig.asyncness.is_some() {
             self.reject_async(node);
         } else {
-            visit_mut::visit_trait_item_fn_mut(self, node);
+            visit_trait_item_fn_mut(self, node);
         }
     }
 
@@ -245,15 +253,15 @@ impl VisitMut for Lowerer<'_> {
                 let name = node.path.segments[0].ident.to_string();
                 let result = match name.as_str() {
                     "vec" => {
-                        node.path = syn::parse_quote!(::std::vec);
+                        node.path = parse_quote!(::std::vec);
                         self.vec(node)
                     }
                     "format" => {
-                        node.path = syn::parse_quote!(::std::format);
+                        node.path = parse_quote!(::std::format);
                         self.expressions(node)
                     }
                     "matches" => {
-                        node.path = syn::parse_quote!(::core::matches);
+                        node.path = parse_quote!(::core::matches);
                         self.matches(node)
                     }
                     _ => {

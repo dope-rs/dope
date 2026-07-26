@@ -3,16 +3,21 @@ use std::pin::Pin;
 use std::thread::JoinHandle;
 
 use dope::driver::token::Token;
-use dope::manifold::{Manifold, TypedToken};
-use dope::runtime::{Dispatcher, Idle, Session};
+use dope::manifold::Manifold;
+use dope::manifold::typed::TypedToken;
+use dope::runtime::dispatcher::{Dispatcher, Idle};
+use dope::runtime::executor::Session;
 use dope::{DriverContext, Event};
-use dope_fiber::Fiber;
+use dope_fiber::abi::Fiber;
 use o3::cell::BrandCell;
 
 use crate::{Gate, drive, request_reply, run_until, spawn_peer};
+use dope::manifold::listener::Listener;
+use pin_project::pin_project;
+use std::rc::Rc;
 
 /// Generic single-manifold dispatcher used by integration scenarios.
-#[pin_project::pin_project]
+#[pin_project]
 pub struct ManifoldHost<M> {
     #[pin]
     manifold: M,
@@ -54,8 +59,7 @@ where
     }
 }
 
-pub type ListenerHost<'d, const ID: u8, A, E> =
-    ManifoldHost<dope::manifold::listener::Listener<'d, ID, A, E>>;
+pub type ListenerHost<'d, const ID: u8, A, E> = ManifoldHost<Listener<'d, ID, A, E>>;
 
 /// Runtime side of a TCP scenario. It owns no resources and cannot escape `Executor::enter`.
 pub struct TcpCase<'a, 'scope, 'd, D> {
@@ -99,7 +103,7 @@ where
         drive(self.session, self.app.as_ref(), fiber)
     }
 
-    pub fn until(&mut self, gate: &std::rc::Rc<Gate>, want: u32) {
+    pub fn until(&mut self, gate: &Rc<Gate>, want: u32) {
         run_until(self.session, self.app.as_ref(), gate, want);
     }
 }

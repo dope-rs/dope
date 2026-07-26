@@ -15,7 +15,6 @@ use crate::manifold::env::Env;
 use crate::runtime::profile::RuntimeProfile;
 use dope_core::backend::Sqe;
 use dope_core::driver::submission::Submission;
-use dope_core::driver::token::kind;
 use dope_core::driver::token::kind::ACCEPT;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::AcceptEvent;
@@ -75,13 +74,13 @@ impl PeerCounts {
     }
 }
 
-pub enum Outcome<'d> {
+pub(super) enum Outcome<'d> {
     Accepted(Fd<'d>, Option<IpAddr>),
     Capped(IpAddr),
     Rejected,
 }
 
-pub struct Accept<'d, T: Transport> {
+pub(super) struct Accept<'d, T: Transport> {
     fd: Fd<'d>,
     arm: Multishot,
     accept_slot: SlotIndex,
@@ -93,7 +92,7 @@ pub struct Accept<'d, T: Transport> {
 }
 
 impl<'d, T: Transport> Accept<'d, T> {
-    pub fn new(
+    pub(super) fn new(
         fd: Fd<'d>,
         max_connections: u32,
         stream: T::StreamConfig,
@@ -113,19 +112,19 @@ impl<'d, T: Transport> Accept<'d, T> {
         }
     }
 
-    pub fn stream_config(&self) -> &T::StreamConfig {
+    pub(super) fn stream_config(&self) -> &T::StreamConfig {
         &self.stream
     }
 
-    pub fn needs_rearm(&self) -> bool {
+    pub(super) fn needs_rearm(&self) -> bool {
         self.arm.needs_rearm()
     }
 
-    pub fn request_rearm(&mut self) {
+    pub(super) fn request_rearm(&mut self) {
         self.arm.request_rearm();
     }
 
-    pub fn arm(&mut self, route: u8, driver: &mut DriverContext<'_, 'd>) {
+    pub(super) fn arm(&mut self, route: u8, driver: &mut DriverContext<'_, 'd>) {
         let Some(ud) = self.arm.begin(route, self.accept_slot) else {
             return;
         };
@@ -141,7 +140,7 @@ impl<'d, T: Transport> Accept<'d, T> {
         self.arm.settle(pushed);
     }
 
-    pub fn stop_accept(&mut self, route: u8, driver: &mut DriverContext<'_, 'd>) {
+    pub(super) fn stop_accept(&mut self, route: u8, driver: &mut DriverContext<'_, 'd>) {
         if self.arm.is_armed() {
             let token = Token::new(route, self.accept_slot, self.arm.current_epoch());
             let _ = driver.push(Sqe::cancel(token, ACCEPT));
@@ -153,13 +152,12 @@ impl<'d, T: Transport> Accept<'d, T> {
     pub(super) fn append_target(&self, route: u8, targets: &mut Vec<Token>) {
         if self.arm.is_armed() || self.canceling {
             targets.push(
-                Token::new(route, self.accept_slot, self.arm.current_epoch())
-                    .with_kind(kind::ACCEPT),
+                Token::new(route, self.accept_slot, self.arm.current_epoch()).with_kind(ACCEPT),
             );
         }
     }
 
-    pub fn release_peer_ip(&mut self, ip: IpAddr) {
+    pub(super) fn release_peer_ip(&mut self, ip: IpAddr) {
         let Some(counts) = self.per_ip_counts.as_mut() else {
             return;
         };
@@ -173,7 +171,7 @@ impl<'d, T: Transport> Accept<'d, T> {
         counts.acquire(ip, self.per_ip_limit)
     }
 
-    pub fn complete(
+    pub(super) fn complete(
         &mut self,
         ud: Token,
         more: bool,

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 extern crate dope;
 use dope::runtime::profile::Balanced;
-use dope_fiber::Listener;
+use dope_fiber::net::listener::Listener;
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
 use o3::cell::BrandCell;

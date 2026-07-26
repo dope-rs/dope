@@ -12,14 +12,18 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
 
-use dope::manifold::TypedToken;
 use dope::manifold::env::Bundle;
-use dope::manifold::listener::{self, Application, Config, Listener};
+use dope::manifold::listener;
+use dope::manifold::listener::Listener;
+use dope::manifold::listener::application::Application;
+use dope::manifold::listener::config::Config;
+use dope::manifold::typed::TypedToken;
 use dope::manifold::{Manifold, Outcome};
-use dope::runtime::WorkerContext;
+use dope::runtime::dispatcher::Idle;
+use dope::runtime::executor::Executor;
+use dope::runtime::launcher::WorkerContext;
 use dope::runtime::profile::Throughput;
-use dope::runtime::{Executor, Idle};
-use dope_extra::harness::Harness;
+use dope_test::Harness;
 use dope_net::link::slot::Slot;
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
@@ -46,9 +50,9 @@ impl<'d> Application<'d> for TeardownApp {
 
     fn chunk<R: RetainBytes>(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _chunk: R,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
@@ -56,24 +60,24 @@ impl<'d> Application<'d> for TeardownApp {
 
     fn send(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _sent: usize,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
     }
 
     fn close(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
     ) {
     }
 
     fn accept(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         let state = &self.get_mut().state;
@@ -85,8 +89,8 @@ impl<'d> Application<'d> for TeardownApp {
 
     fn teardown(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
     ) {
         let state = &self.get_mut().state;
         let calls = state.calls.get();

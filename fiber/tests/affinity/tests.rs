@@ -1,7 +1,10 @@
-use dope_fiber::{
-    Batch, ErasedTaskId, FixedSlab, FixedSlabVacantEntry, Ready, Slab, SlabVacantEntry,
-    TaskContext, TaskId, TaskQueue, Waker,
+use dope_fiber::abi::batch::Batch;
+use dope_fiber::abi::ready::Ready;
+use dope_fiber::slab::{
+    ErasedTaskId, FixedSlab, FixedSlabVacantEntry, Slab, SlabVacantEntry, TaskId,
 };
+use dope_fiber::task::queue::TaskQueue;
+use dope_fiber::task::{TaskContext, Waker};
 use dope_test::{not_send, not_sync, not_unpin};
 
 const _: fn() = || {

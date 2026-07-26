@@ -19,7 +19,6 @@ siphasher.workspace = true
 io-uring.workspace = true
 
 [dev-dependencies]
-dope-extra = { path = "../extra" }
 dope-fiber = { path = "../fiber" }
 dope-gen = { path = "../gen" }
 dope-test.workspace = true

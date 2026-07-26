@@ -9,9 +9,12 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 extern crate dope;
+use dope::runtime::dispatcher::Dispatcher;
+use dope::runtime::executor::{Executor, Session};
 use dope::runtime::profile::Balanced;
-use dope::runtime::{Dispatcher, Executor, Session};
-use dope_fiber::{Connector, ConnectorHandle, ConnectorPort, ConnectorPortFactory, Fiber, Io};
+use dope_fiber::abi::Fiber;
+use dope_fiber::io::Io;
+use dope_fiber::net::connector::{Connector, ConnectorHandle, ConnectorPort, ConnectorPortFactory};
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
@@ -160,7 +163,7 @@ where
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
-        cx: std::pin::Pin<&mut dope_fiber::Context<'_, 'd>>,
+        cx: std::pin::Pin<&mut dope_fiber::task::Context<'_, 'd>>,
     ) -> std::task::Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
         if let Some(fiber) = &mut this.fiber {

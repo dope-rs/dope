@@ -19,7 +19,6 @@ name = "dope"
 version = "0.11.0"
 dependencies = [
  "dope-core",
- "dope-extra",
  "dope-fiber",
  "dope-gen",
  "dope-net",
@@ -39,19 +38,6 @@ dependencies = [
  "io-uring",
  "libc",
  "o3",
-]
-
-[[package]]
-name = "dope-extra"
-version = "0.11.0"
-dependencies = [
- "dope",
- "dope-fiber",
- "dope-gen",
- "dope-test",
- "libc",
- "o3",
- "pin-project",
 ]
 
 [[package]]
@@ -78,7 +64,6 @@ dependencies = [
  "dope-test",
  "o3",
  "pin-project",
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 3.0.3",
@@ -189,15 +174,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "proc-macro-crate"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
-dependencies = [
- "toml_edit",
 ]
 
 [[package]]
@@ -337,18 +313,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml_edit"
-version = "0.25.13+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
-dependencies = [
- "indexmap",
- "toml_datetime",
- "toml_parser",
- "winnow",
-]
-
-[[package]]
 name = "toml_parser"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -413,9 +377,6 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "zmij"

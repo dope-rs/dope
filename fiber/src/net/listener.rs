@@ -16,16 +16,21 @@ use dope::EventRef;
 use dope::driver::token::Token;
 use dope::hash;
 use dope::io::provided::ProvidedView;
-use dope::manifold::TypedToken;
-use dope::manifold::listener::{Application, Config};
+use dope::manifold::listener::application::Application;
+use dope::manifold::listener::config::Config;
+use dope::manifold::typed::TypedToken;
 use dope::manifold::{Manifold, Outcome, listener};
-use dope::runtime::Idle;
+use dope::runtime::dispatcher::Idle;
 use dope_net::Transport;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 
 use super::port::recv::arena::{RecvArena, RecvLayout};
 use super::port::{Port, Requests};
+use dope::Event;
+use dope::manifold::listener::state::{Aux, State};
+use dope::runtime::executor::StorageFactory;
+use std::io::ErrorKind;
 
 pub struct ListenerPort<'d> {
     connections: Port<'d>,
@@ -109,7 +114,7 @@ impl<'d> ListenerPort<'d> {
     }
 }
 
-impl dope::runtime::StorageFactory for ListenerPortFactory {
+impl StorageFactory for ListenerPortFactory {
     type Output<'d> = ListenerPort<'d>;
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
@@ -134,9 +139,9 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
 
     fn chunk<R: RetainBytes>(
         self: Pin<&mut Self>,
-        slot: &mut Slot<'d, W, listener::State<()>>,
+        slot: &mut Slot<'d, W, State<()>>,
         chunk: R,
-        _aux: &mut listener::Aux,
+        _aux: &mut Aux,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
         if self.get_mut().port.push_recv(slot.token(), chunk) {
@@ -148,9 +153,9 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
 
     fn retained_chunk(
         self: Pin<&mut Self>,
-        slot: &mut Slot<'d, W, listener::State<()>>,
+        slot: &mut Slot<'d, W, State<()>>,
         chunk: ProvidedView<'d>,
-        _aux: &mut listener::Aux,
+        _aux: &mut Aux,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
         if self.get_mut().port.push_retained(slot.token(), chunk) {
@@ -162,25 +167,21 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
 
     fn send(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, W, listener::State<()>>,
+        _slot: &mut Slot<'d, W, State<()>>,
         _sent: usize,
-        _aux: &mut listener::Aux,
+        _aux: &mut Aux,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
     }
 
-    fn close(
-        self: Pin<&mut Self>,
-        slot: &mut Slot<'d, W, listener::State<()>>,
-        _aux: &mut listener::Aux,
-    ) {
+    fn close(self: Pin<&mut Self>, slot: &mut Slot<'d, W, State<()>>, _aux: &mut Aux) {
         self.get_mut().port.closed(slot.token());
     }
 
     fn accept(
         self: Pin<&mut Self>,
-        slot: &mut Slot<'d, W, listener::State<()>>,
-        _aux: &mut listener::Aux,
+        slot: &mut Slot<'d, W, State<()>>,
+        _aux: &mut Aux,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
         let port = self.get_mut().port;
@@ -244,8 +245,8 @@ where
         hash_builder: hash::State,
     ) -> io::Result<Self> {
         if config.max_connections != port.capacity() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
                 "fiber: listener config capacity does not match port",
             ));
         }
@@ -280,8 +281,8 @@ where
     }
 
     fn sync_send(inner: Pin<&Inner<'scope, 'd, ID, T, W>>, port: &ListenerPort<'d>, conn: Token) {
-        let inflight = inner.conn_view(conn).is_some_and(|view| view.inflight);
-        port.sync_send(conn, inflight);
+        let pending = inner.has_pending_egress(conn);
+        port.sync_send(conn, pending);
     }
 
     fn apply_requests(mut self: Pin<&mut Self>, conn: Token, driver: &mut DriverContext<'_, 'd>) {
@@ -346,7 +347,7 @@ where
 {
     const ID: u8 = ID;
 
-    fn dispatch(mut self: Pin<&mut Self>, ev: dope::Event<'d>, driver: &mut DriverContext<'_, 'd>) {
+    fn dispatch(mut self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
         let conn = match ev.as_ref() {
             EventRef::Send(conn, _) => Some(conn),
             _ => None,

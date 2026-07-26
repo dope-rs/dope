@@ -5,6 +5,9 @@ use std::mem::MaybeUninit;
 use o3::buffer::{Bytes, CapacityError, Leased, SharedLease, SharedPool, SpareFillError};
 
 use super::RuntimeLimits;
+use o3::buffer::PoolLayoutError;
+use std::fmt::Debug;
+use std::fmt::Formatter;
 
 pub enum Scratch {}
 
@@ -123,8 +126,8 @@ pub enum FillError<E> {
     Capacity,
 }
 
-impl<E: fmt::Debug> fmt::Debug for FillError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<E: Debug> Debug for FillError<E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Fill(error) => f.debug_tuple("Fill").field(error).finish(),
             Self::Capacity => f.write_str("Capacity"),
@@ -155,19 +158,19 @@ impl Buffered {
         scratch_per_connection: usize,
         scratch_capacity: usize,
         recv_extra_capacity: usize,
-    ) -> Result<Self, o3::buffer::PoolLayoutError> {
+    ) -> Result<Self, PoolLayoutError> {
         let scratch_slots = limits
             .max_connections()
             .checked_mul(scratch_per_connection)
-            .ok_or(o3::buffer::PoolLayoutError::SlotOverflow)?;
+            .ok_or(PoolLayoutError::SlotOverflow)?;
         let recv_slots = limits
             .max_retained_recv_chunks()
             .checked_add(1)
-            .ok_or(o3::buffer::PoolLayoutError::SlotOverflow)?;
+            .ok_or(PoolLayoutError::SlotOverflow)?;
         let recv_capacity = limits
             .max_recv_len()
             .checked_add(recv_extra_capacity)
-            .ok_or(o3::buffer::PoolLayoutError::CapacityOverflow)?;
+            .ok_or(PoolLayoutError::CapacityOverflow)?;
         Self::try_fixed(scratch_slots, scratch_capacity, recv_slots, recv_capacity)
     }
 
@@ -176,7 +179,7 @@ impl Buffered {
         scratch_capacity: usize,
         recv_slots: usize,
         recv_capacity: usize,
-    ) -> Result<Self, o3::buffer::PoolLayoutError> {
+    ) -> Result<Self, PoolLayoutError> {
         Ok(Self {
             scratch: SharedPool::try_new(scratch_slots, scratch_capacity)?,
             recv: RecvPool {

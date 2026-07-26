@@ -4,22 +4,35 @@ use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 
 use crate::DriverContext;
 use dope_core::driver::control::ContextControl;
+use std::io::Error;
+use libc::SFD_CLOEXEC;
+use libc::SIGINT;
+use libc::SIGTERM;
+use libc::SIG_BLOCK;
+use libc::SIG_SETMASK;
+use std::process::abort;
+use std::ptr::null_mut;
+use libc::pthread_sigmask;
+use libc::sigaddset;
+use libc::sigemptyset;
+use libc::signalfd;
+use libc::sigset_t;
 
 struct MaskGuard {
-    previous: libc::sigset_t,
+    previous: sigset_t,
 }
 
 impl Drop for MaskGuard {
     fn drop(&mut self) {
         let result = unsafe {
-            libc::pthread_sigmask(
-                libc::SIG_SETMASK,
+            pthread_sigmask(
+                SIG_SETMASK,
                 &self.previous,
-                std::ptr::null_mut(),
+                null_mut(),
             )
         };
         if result != 0 {
-            std::process::abort();
+            abort();
         }
     }
 }
@@ -37,24 +50,24 @@ impl Drop for SignalState {
 
 impl SignalState {
     pub(in crate::runtime) fn new() -> io::Result<Self> {
-        let mut set: libc::sigset_t = unsafe { zeroed() };
-        if unsafe { libc::sigemptyset(&mut set) } != 0
-            || unsafe { libc::sigaddset(&mut set, libc::SIGINT) } != 0
-            || unsafe { libc::sigaddset(&mut set, libc::SIGTERM) } != 0
+        let mut set: sigset_t = unsafe { zeroed() };
+        if unsafe { sigemptyset(&mut set) } != 0
+            || unsafe { sigaddset(&mut set, SIGINT) } != 0
+            || unsafe { sigaddset(&mut set, SIGTERM) } != 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(Error::last_os_error());
         }
 
-        let mut previous: libc::sigset_t = unsafe { zeroed() };
-        let result = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut previous) };
+        let mut previous: sigset_t = unsafe { zeroed() };
+        let result = unsafe { pthread_sigmask(SIG_BLOCK, &set, &mut previous) };
         if result != 0 {
-            return Err(io::Error::from_raw_os_error(result));
+            return Err(Error::from_raw_os_error(result));
         }
         let mask = MaskGuard { previous };
 
-        let raw = unsafe { libc::signalfd(-1, &set, libc::SFD_CLOEXEC) };
+        let raw = unsafe { signalfd(-1, &set, SFD_CLOEXEC) };
         if raw < 0 {
-            return Err(io::Error::last_os_error());
+            return Err(Error::last_os_error());
         }
 
         Ok(Self {

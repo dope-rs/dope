@@ -1,11 +1,11 @@
 use std::cell::Cell;
-use std::mem;
 
 use o3::cell::RawCell;
 
 use super::super::super::NONE;
 use super::super::super::config::Config;
 use super::super::super::credits::Credits;
+use std::mem::replace;
 
 struct Node<T> {
     value: Option<T>,
@@ -174,7 +174,7 @@ impl<T> MetadataPool<T> {
     pub(crate) fn drain_nodes(&self, head: &mut u32) {
         let mut drain = NodeDrain {
             pool: self,
-            head: mem::replace(head, NONE),
+            head: replace(head, NONE),
         };
         while let Some(value) = drain.take() {
             drop(value);

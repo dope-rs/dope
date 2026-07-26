@@ -2,12 +2,15 @@ use core::pin::Pin;
 use std::io;
 
 use dope::driver::ready::ReadySlot;
-use dope::driver::token::{Epoch, SlotIndex, Token, kind};
+use dope::driver::token::{Epoch, SlotIndex, Token};
 use dope::runtime::__private::RootTask;
 use dope::{DriverContext, DriverRef};
 use pin_project::pin_project;
 
 use crate::{Context, Fiber};
+use core::pin::pin;
+use core::task::Poll;
+use dope::driver::token::kind::ONE_SHOT;
 
 #[pin_project]
 pub struct OneShot<'d, F>
@@ -27,7 +30,7 @@ where
     F: Fiber<'d>,
 {
     pub fn new(fiber: F, route: u8, driver: DriverRef<'d>) -> io::Result<Self> {
-        let target = Token::new(route, SlotIndex::new(0), Epoch::INITIAL).with_kind(kind::ONE_SHOT);
+        let target = Token::new(route, SlotIndex::new(0), Epoch::INITIAL).with_kind(ONE_SHOT);
         Ok(Self {
             fiber: Some(fiber),
             output: None,
@@ -51,7 +54,7 @@ where
     pub fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         let this = unsafe { self.get_unchecked_mut() };
         let slot = unsafe { Pin::new_unchecked(&this.slot) };
-        let mut context = core::pin::pin!(Context::from_ready(
+        let mut context = pin!(Context::from_ready(
             driver.driver_ref(),
             slot.key(),
             driver.reborrow(),
@@ -59,7 +62,7 @@ where
         let Some(fiber) = this.fiber.as_mut() else {
             return;
         };
-        if let core::task::Poll::Ready(output) =
+        if let Poll::Ready(output) =
             Fiber::poll(unsafe { Pin::new_unchecked(fiber) }, context.as_mut())
         {
             this.output = Some(output);

@@ -4,14 +4,15 @@ pub mod env;
 pub mod file;
 pub mod listener;
 pub mod timer;
-mod typed;
+pub mod typed;
 
-pub use typed::TypedToken;
+use typed::TypedToken;
 
 use std::pin::Pin;
 
 use crate::DriverContext;
-use crate::runtime::Idle;
+use crate::runtime::dispatcher::Idle;
+use dope_core::io::Event;
 
 pub enum Outcome {
     Ok,
@@ -22,11 +23,7 @@ pub enum Outcome {
 pub trait Manifold<'d>: Sized {
     const ID: u8 = 0;
 
-    fn dispatch(
-        self: Pin<&mut Self>,
-        ev: dope_core::io::Event<'d>,
-        driver: &mut DriverContext<'_, 'd>,
-    ) {
+    fn dispatch(self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
         let _ = (ev, driver);
     }
 

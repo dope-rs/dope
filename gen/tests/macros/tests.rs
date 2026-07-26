@@ -1,65 +1,9 @@
 use std::cell::Cell;
-use std::marker::PhantomData;
 use std::pin::{Pin, pin};
 
 use dope::manifold::Manifold;
-use dope::manifold::connector::{self, Codec, Ctx, Requests, Stateless};
-use dope::runtime::Idle;
+use dope::runtime::dispatcher::Idle;
 use dope_test::{drive, with_session};
-use o3::buffer::Shared;
-
-struct TestCodec;
-
-impl Codec for TestCodec {
-    type Head = ();
-    type ParseState = ();
-
-    fn parse(&self, _state: &mut Self::ParseState, _buf: &Shared) -> Option<(Self::Head, usize)> {
-        None
-    }
-}
-
-struct TestProtocol {
-    codec: TestCodec,
-}
-
-struct TestIo<'d>(PhantomData<fn(&'d ()) -> &'d ()>);
-
-impl<'d> TestIo<'d> {
-    fn activate(
-        &self,
-        _token: dope::driver::token::Token,
-        _ready: dope::driver::ready::ReadyKey<'d>,
-    ) -> bool {
-        true
-    }
-
-    fn drain_requests(
-        &self,
-        _token: dope::driver::token::Token,
-        _push: impl FnMut(Vec<u8>) -> Result<(), Vec<u8>>,
-    ) -> Option<Requests> {
-        Some(Requests::default())
-    }
-}
-
-struct TestSession<'d> {
-    protocol: TestProtocol,
-    io: TestIo<'d>,
-}
-
-#[dope_gen::connector_session(codec = protocol.codec, io = io)]
-impl<'d> connector::Session<'d> for TestSession<'d> {
-    type Codec = TestCodec;
-    type ConnState = Stateless;
-    type Send = Vec<u8>;
-
-    fn connect(&mut self, _ctx: &mut Ctx<'_, 'd, Self>) {}
-
-    fn response(&mut self, _head: (), _ctx: &mut Ctx<'_, 'd, Self>) {}
-
-    fn disconnect(&mut self, _ctx: &mut Ctx<'_, 'd, Self>) {}
-}
 
 struct Counter<const ID: u8> {
     dispatch_calls: Cell<u32>,
@@ -131,7 +75,7 @@ fn make_dispatcher() -> Dispatcher {
 async fn sum_repeated<'d>() -> usize {
     let mut sum = 0usize;
     for value in 1usize..=4 {
-        sum += dope_fiber::ready(value).await;
+        sum += dope_fiber::abi::ready(value).await;
     }
     sum
 }
@@ -139,23 +83,11 @@ async fn sum_repeated<'d>() -> usize {
 #[dope_gen::fiber_fn('d)]
 async fn wait_repeated<'d>() -> usize {
     loop {
-        dope_fiber::pending::<()>().await;
+        dope_fiber::abi::pending::<()>().await;
     }
 }
 
-fn assert_usize_output<'d>(_: &impl dope_fiber::Fiber<'d, Output = usize>) {}
-
-#[test]
-fn connector_session_generates_structural_methods() {
-    let session = TestSession {
-        protocol: TestProtocol { codec: TestCodec },
-        io: TestIo(PhantomData),
-    };
-    assert!(std::ptr::eq(
-        connector::Session::codec(&session),
-        &session.protocol.codec
-    ));
-}
+fn assert_usize_output<'d>(_: &impl dope_fiber::abi::Fiber<'d, Output = usize>) {}
 
 #[test]
 fn route_consts() {
@@ -168,7 +100,7 @@ fn route_consts() {
 fn block_ticks_every_field() {
     with_session(|mut sess| {
         let app = pin!(o3::cell::BrandCell::new(make_dispatcher()));
-        drive(&mut sess, app.as_ref(), dope_fiber::ready(()));
+        drive(&mut sess, app.as_ref(), dope_fiber::abi::ready(()));
         let d = app.as_ref().borrow_pin_mut(sess.token());
         assert!(d.a.tick_calls.get() >= 1);
         assert!(d.b.tick_calls.get() >= 1);

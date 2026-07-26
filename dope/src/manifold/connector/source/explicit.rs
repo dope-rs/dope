@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::mem;
+use std::mem::take;
 use std::time::Instant;
 
 use o3::collections::CellSlab;
@@ -62,7 +62,7 @@ impl<'a, A, O> ExplicitState<'a, A, O> {
 
 impl<A, O> Drop for ExplicitState<'_, A, O> {
     fn drop(&mut self) {
-        let state = Cell::new(mem::take(&mut self.state));
+        let state = Cell::new(take(&mut self.state));
         let _ = self.slots.update_parts(self.key.parts(), |slot| {
             let current = slot.state.take();
             if matches!(current, DialSlot::Empty) {

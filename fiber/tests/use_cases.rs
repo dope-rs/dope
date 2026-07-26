@@ -1,16 +1,29 @@
 #![deny(unsafe_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::convert::Infallible;
 use std::pin::{Pin, pin};
+use std::rc::Rc;
 use std::task::Poll;
+use std::time::Duration;
 
-use dope_fiber::{
-    Context, Fiber, FiberScope, OwnerFiber, RootWaker, Slab, SplitBytes, SplitTask, TaskQueue,
-    TaskSlab, WaitQueue, Waiter, Waker, try_from_split_task,
+use dope::Event;
+use dope::driver::profile::DriverProfile;
+use dope::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
+use dope::runtime::dispatcher::{Dispatcher, Idle};
+use dope::runtime::profile::RuntimeProfile;
+use dope_fiber::abi::Fiber;
+use dope_fiber::extensions::SessionExt;
+use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes, SplitTask, try_from_split_task};
+use dope_fiber::slab::{Slab, TaskSlab};
+use dope_fiber::task::queue::TaskQueue;
+use dope_fiber::task::{Context, RootWaker, Waker};
+use dope_fiber::wait::{WaitQueue, Waiter};
+use dope_test::{
+    drain_tokens, poll_with_slot, tok, with_context, with_session, with_session_for,
 };
-use dope_test::{drain_tokens, poll_with_slot, tok, with_context, with_session};
 use o3::buffer::Shared;
+use o3::cell::BrandCell;
 
 fn register<'d>(queue: Pin<&WaitQueue>, waiter: Pin<&Waiter<'d>>, waker: Waker<'d>) -> bool {
     queue.try_register_waker(waiter, waker)
@@ -129,7 +142,7 @@ impl<'d> SplitTask<'d> for BorrowSplitTask {
     type Error = Infallible;
 
     fn build<'req>(
-        view: dope_fiber::SplitView<'req>,
+        view: dope_fiber::owner::SplitView<'req>,
         pending: Self::Input,
         _state: &'req Self::State,
         _context: &'req Self::Context,
@@ -268,5 +281,118 @@ fn fiber_slab_accepts_a_fiber_borrowing_a_lexical_session_local() {
 
         assert_eq!(slab.poll(&id, context.as_mut()), Some(Poll::Ready(8)));
         assert!(slab.remove(id));
+    });
+}
+
+struct ExactWakeProfile;
+
+impl DriverProfile for ExactWakeProfile {
+    const RING_ENTRIES: u32 = 64;
+    const READY_SLOTS: usize = 2;
+}
+
+impl RuntimeProfile for ExactWakeProfile {
+    const IDLE_WINDOW: Duration = Duration::ZERO;
+}
+
+struct ExactWakeState {
+    wait: Pin<Box<WaitQueue>>,
+    allowed: Cell<bool>,
+    polls: Cell<u32>,
+    ticks: Cell<u32>,
+    foreign_wakes: Cell<u32>,
+    foreign: Token,
+}
+
+#[pin_project::pin_project]
+struct ExactWakeFiber<'d> {
+    state: Rc<ExactWakeState>,
+    #[pin]
+    waiter: Waiter<'d>,
+}
+
+impl<'d> Fiber<'d> for ExactWakeFiber<'d> {
+    type Output = (u32, u32);
+
+    fn poll(self: Pin<&mut Self>, context: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
+        let this = self.project();
+        let state = &this.state;
+        state.polls.set(state.polls.get() + 1);
+        if state.allowed.get() {
+            return Poll::Ready((state.polls.get(), state.foreign_wakes.get()));
+        }
+        assert!(
+            state
+                .wait
+                .as_ref()
+                .try_register(this.waiter.as_ref(), context.as_ref())
+        );
+        Poll::Pending
+    }
+}
+
+struct ExactWakeDispatcher {
+    state: Rc<ExactWakeState>,
+}
+
+impl<'d> Dispatcher<'d> for ExactWakeDispatcher {
+    fn dispatch(
+        self: Pin<&mut Self>,
+        _event: Event<'d>,
+        _driver: &mut dope::DriverContext<'_, 'd>,
+    ) {
+    }
+
+    fn activate(self: Pin<&mut Self>, target: Token, _driver: &mut dope::DriverContext<'_, 'd>) {
+        let state = &self.as_ref().get_ref().state;
+        if target == state.foreign {
+            state.foreign_wakes.set(state.foreign_wakes.get() + 1);
+        }
+    }
+
+    fn pre_park(self: Pin<&mut Self>, _driver: &mut dope::DriverContext<'_, 'd>) {
+        let state = &self.as_ref().get_ref().state;
+        state.ticks.set(state.ticks.get() + 1);
+        if state.ticks.get() == 3 {
+            state.allowed.set(true);
+            state.wait.as_ref().wake();
+        }
+    }
+
+    fn idle(self: Pin<&Self>) -> Idle {
+        Idle::Busy
+    }
+}
+
+#[test]
+fn block_on_consumes_only_its_exact_wake_token() {
+    with_session_for::<ExactWakeProfile, _>(|mut session| {
+        let foreign = Token::new(ROUTE_FRAMEWORK, SlotIndex::new(0), Epoch::INITIAL);
+        let state = Rc::new(ExactWakeState {
+            wait: Box::pin(WaitQueue::with_capacity(1)),
+            allowed: Cell::new(false),
+            polls: Cell::new(0),
+            ticks: Cell::new(0),
+            foreign_wakes: Cell::new(0),
+            foreign,
+        });
+        let foreign_slot = session
+            .driver()
+            .make_ready_slot(foreign)
+            .expect("ready slot");
+        foreign_slot.activate();
+        let app = pin!(BrandCell::new(ExactWakeDispatcher {
+            state: Rc::clone(&state),
+        }));
+        let output = session
+            .block_on(
+                app.as_ref(),
+                ExactWakeFiber {
+                    state: Rc::clone(&state),
+                    waiter: Waiter::new(),
+                },
+            )
+            .expect("runtime park");
+        assert_eq!(output, (2, 1));
     });
 }

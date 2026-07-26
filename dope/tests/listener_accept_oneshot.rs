@@ -8,7 +8,8 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application};
+use dope::manifold::listener;
+use dope::manifold::listener::application::Application;
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
 use dope_test::Gate;
@@ -31,9 +32,9 @@ impl<'d> Application<'d> for TraceApp {
 
     fn chunk<R: RetainBytes>(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _chunk: R,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
@@ -41,17 +42,17 @@ impl<'d> Application<'d> for TraceApp {
 
     fn send(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _sent: usize,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
     }
 
     fn accept(
         self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
@@ -68,8 +69,8 @@ impl<'d> Application<'d> for TraceApp {
 
     fn close(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
     ) {
     }
 }
