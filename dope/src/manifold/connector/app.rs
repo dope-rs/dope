@@ -18,12 +18,9 @@ pub enum ChunkOutcome {
     ClosePermanent,
 }
 
-/// How an app-initiated close (returned from [`ConnApp::drain_requests`]) treats
-/// the dial target — the symmetric counterpart of the receive path's
-/// [`ChunkOutcome::CloseReconnect`] / [`ChunkOutcome::ClosePermanent`]. Without
-/// this a request off the receive path (a supervisor tick, a timer) could only
-/// ever reconnect, so a terminal fault it detected would redial into the same
-/// doomed connection forever.
+/// How [`ConnApp::drain_requests`] treats the dial target on close.
+/// This gives requests outside the receive path both recoverable and terminal
+/// outcomes, matching [`ChunkOutcome`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseKind {
     /// Drop the socket and redial (transient: idle timeout, rotation).
@@ -35,7 +32,6 @@ pub enum CloseKind {
 
 #[derive(Default)]
 pub struct Requests {
-    pub shutdown: Option<i32>,
     pub close: Option<CloseKind>,
 }
 
@@ -46,14 +42,9 @@ pub trait ConnApp<'d>: Sized {
 
     const RETAIN_RAW_RECV: bool = false;
 
-    /// Inbound-idle liveness bound for this app's connections. `Some(d)` opts in:
-    /// if no bytes arrive from the peer for longer than `d`, the connector forces
-    /// a *recoverable* reconnect (drops the socket, redials a fresh generation) —
-    /// the only way to detect a silently vanished / half-open peer, which never
-    /// surfaces a readable EOF. `None` (default) disables it at zero cost. The
-    /// value should exceed the protocol's own keepalive cadence (e.g. AMQP:
-    /// `2 ×` the negotiated heartbeat interval), and may change over a
-    /// connection's life (the bound is re-read when the deadline is (re)armed).
+    /// Returns the inbound-idle bound; `None` disables tracking at zero cost.
+    /// Expiry forces a recoverable reconnect, so the bound should exceed the
+    /// protocol keepalive cadence. It is re-read whenever the deadline is armed.
     fn inbound_idle_timeout(&self) -> Option<Duration> {
         None
     }

@@ -16,7 +16,6 @@ pub mod wait;
 
 use abi::{Fiber, IntoFiber};
 pub use dope_gen::{fiber, fiber_fn};
-use io::Io;
 use one_shot::OneShot;
 use raw::task::{Context, Waker};
 use raw::wait::{WaitQueue, Waiter};

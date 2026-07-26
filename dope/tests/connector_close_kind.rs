@@ -78,7 +78,6 @@ impl<'d> ConnApp<'d> for CloseKindApp {
         if self.pending.get() == Some(token) {
             self.pending.set(None);
             Requests {
-                shutdown: None,
                 close: Some(self.kind),
             }
         } else {

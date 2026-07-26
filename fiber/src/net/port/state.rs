@@ -2,10 +2,10 @@ use std::cell::Cell;
 use std::io::{Error, ErrorKind};
 
 use crate::Waker;
-use crate::io::RecvBuffer;
 use dope::io::provided::ProvidedView;
 use o3::buffer::RetainBytes;
 
+use super::recv::Buffer;
 use super::recv::arena::{PushError, RecvArena};
 use super::recv::queue::RecvQueue;
 use super::result::{RecvInto, SendIdle};
@@ -45,19 +45,19 @@ impl<'d> State<'d> {
 
     pub(crate) fn push_recv<R: RetainBytes>(&self, arena: &RecvArena<'d>, chunk: R) -> bool {
         let len = chunk.len();
-        self.push_recv_value(arena, len, || RecvBuffer::Owned(chunk.into_retained()))
+        self.push_recv_value(arena, len, || Buffer::Owned(chunk.into_retained()))
     }
 
     pub(crate) fn push_retained(&self, arena: &RecvArena<'d>, chunk: ProvidedView<'d>) -> bool {
         let len = chunk.len();
-        self.push_recv_value(arena, len, || RecvBuffer::Provided(chunk))
+        self.push_recv_value(arena, len, || Buffer::Provided(chunk))
     }
 
     fn push_recv_value(
         &self,
         arena: &RecvArena<'d>,
         len: usize,
-        value: impl FnOnce() -> RecvBuffer<'d>,
+        value: impl FnOnce() -> Buffer<'d>,
     ) -> bool {
         if len == 0 {
             return false;

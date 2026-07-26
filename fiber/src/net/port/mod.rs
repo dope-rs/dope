@@ -13,7 +13,7 @@ use dope::io::provided::ProvidedView;
 use std::io::Error;
 use std::io::ErrorKind;
 
-use dope::manifold::connector::app::{CloseKind, Requests as ConnectorRequests};
+use dope::manifold::connector::app::{self, CloseKind};
 use recv::arena::{RecvArena, RecvLayout};
 use result::{RecvInto, SendIdle};
 use state::State;
@@ -23,7 +23,6 @@ struct Entry<'d> {
     state: State<'d>,
     send: Cell<Option<Shared>>,
     send_pending: Cell<bool>,
-    shutdown: Cell<Option<i32>>,
     close: Cell<bool>,
     wake: Cell<Option<Waker<'d>>>,
     request_queued: Cell<bool>,
@@ -37,7 +36,6 @@ impl Default for Entry<'_> {
             state: State::default(),
             send: Cell::new(None),
             send_pending: Cell::new(false),
-            shutdown: Cell::new(None),
             close: Cell::new(false),
             wake: Cell::new(None),
             request_queued: Cell::new(false),
@@ -48,7 +46,6 @@ impl Default for Entry<'_> {
 
 pub(crate) struct Requests {
     pub(crate) send: Option<Shared>,
-    pub(crate) shutdown: Option<i32>,
     pub(crate) close: bool,
 }
 
@@ -128,7 +125,6 @@ impl<'d> Port<'d> {
         }
         entry.send.take();
         entry.send_pending.set(false);
-        entry.shutdown.set(None);
         entry.close.set(false);
         entry.wake.set(wake);
         entry.request_queued.set(false);
@@ -170,7 +166,7 @@ impl<'d> Port<'d> {
         &self,
         token: Token,
         mut push: impl FnMut(Shared) -> Result<(), Shared>,
-    ) -> Option<ConnectorRequests> {
+    ) -> Option<app::Requests> {
         let entry = self.entry(token)?;
         if let Some(send) = entry.send.take() {
             entry.send_pending.set(false);
@@ -179,8 +175,7 @@ impl<'d> Port<'d> {
                 entry.send_pending.set(true);
             }
         }
-        Some(ConnectorRequests {
-            shutdown: entry.shutdown.take(),
+        Some(app::Requests {
             close: entry.close.take().then_some(CloseKind::Reconnect),
         })
     }
@@ -194,7 +189,6 @@ impl<'d> Port<'d> {
         }
         Some(Requests {
             send,
-            shutdown: entry.shutdown.take(),
             close: entry.close.take(),
         })
     }
@@ -267,13 +261,6 @@ impl<'d> Port<'d> {
             return SendIdle::Idle;
         };
         Self::state(entry).send_status(entry.send_pending.get() || entry.inflight.get())
-    }
-
-    pub(crate) fn shutdown(&self, token: Token, how: i32) {
-        if let Some(entry) = self.entry(token) {
-            entry.shutdown.set(Some(how));
-            self.notify_requests(token, entry);
-        }
     }
 
     pub(crate) fn close(&self, token: Token) {

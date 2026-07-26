@@ -43,9 +43,7 @@ use dope_core::io::EventKind;
 use dope_net::Transport;
 use dope_net::link::egress::arena::Arena;
 use dope_net::link::pool::Pool;
-use dope_net::link::slot::{
-    PEND_CLOSE, PEND_EGRESS, PEND_SHUTDOWN, PendingQueue, SendBuffer, Slot,
-};
+use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, SendBuffer, Slot};
 use dope_net::tcp::Tcp;
 use dope_net::wire::Wire;
 use o3::buffer::Shared;
@@ -252,14 +250,6 @@ where
         let staged = slot.state.deferred.stage(bytes, false);
         self.dirty.mark(idx, &slot.state.pending, PEND_EGRESS);
         staged
-    }
-
-    pub fn shutdown(&self, conn_id: Token, how: i32) {
-        let Some((idx, slot)) = self.pool.by_target(conn_id) else {
-            return;
-        };
-        slot.state.pending.set_shutdown(how);
-        self.dirty.mark(idx, &slot.state.pending, PEND_SHUTDOWN);
     }
 
     pub fn close(&self, conn_id: Token) {

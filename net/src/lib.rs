@@ -10,9 +10,7 @@ pub use o3::buffer::{Bytes, Leased, RetainBytes};
 use std::io;
 use std::net::SocketAddr;
 
-use dope_core::backend::Sqe;
 use dope_core::driver::DriverContext;
-use dope_core::driver::submission::Submission;
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::addr::Addr;
 use std::time::Duration;
@@ -34,10 +32,6 @@ pub trait Transport: 'static + Sized {
         backlog: i32,
         config: &Self::ListenerConfig,
     ) -> io::Result<(Fd<'d>, SocketAddr)>;
-
-    fn submit_shutdown(driver: &mut DriverContext<'_, '_>, fd: &Fd<'_>, how: i32) -> bool {
-        driver.push(Sqe::shutdown(fd, how)).is_ok()
-    }
 
     fn submit_quickack(_driver: &mut DriverContext<'_, '_>, _fd: &Fd<'_>) -> bool {
         false

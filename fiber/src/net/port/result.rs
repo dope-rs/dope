@@ -1,12 +1,12 @@
 use std::io::Error;
 
-pub enum RecvInto {
+pub(crate) enum RecvInto {
     Bytes(usize),
     Failed(Error),
     Pending,
 }
 
-pub enum SendIdle {
+pub(crate) enum SendIdle {
     Idle,
     Failed(Error),
     Pending,

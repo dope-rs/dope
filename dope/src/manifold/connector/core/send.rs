@@ -4,7 +4,7 @@ use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::SendEvent;
 use dope_net::Transport;
 use dope_net::link::pool::SendOutcome;
-use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PEND_SHUTDOWN, PendingQueue, Slot};
+use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, Slot};
 use dope_net::wire::{Reclaim, Wire};
 
 use super::Core;
@@ -67,10 +67,6 @@ where
         );
         if enqueued {
             dirty.mark(idx, &slot.state.pending, PEND_EGRESS);
-        }
-        if let Some(how) = requests.shutdown {
-            slot.state.pending.set_shutdown(how);
-            dirty.mark(idx, &slot.state.pending, PEND_SHUTDOWN);
         }
         match requests.close {
             Some(CloseKind::Reconnect) => {
@@ -141,17 +137,6 @@ where
             };
             if flags & PEND_EGRESS != 0 {
                 self.as_mut().submit_egress(idx, driver);
-            }
-            if flags & PEND_SHUTDOWN != 0 {
-                let this = self.as_mut().project();
-                let how = this
-                    .pool
-                    .get(idx)
-                    .map(|slot| slot.state.pending.shutdown_how())
-                    .unwrap_or(0);
-                if let Some(fd) = this.pool.fd_of(idx) {
-                    let _ = <E::Transport as Transport>::submit_shutdown(driver, fd, how);
-                }
             }
             if flags & PEND_CLOSE != 0 {
                 self.as_mut().close_slot(idx, driver);
