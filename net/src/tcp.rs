@@ -50,10 +50,12 @@ pub mod stream {
     }
 }
 
+use listener::Config;
+
 pub struct Tcp;
 
 impl Tcp {
-    fn listener_config(config: &listener::Config) -> io::Result<ListenerConfig> {
+    fn listener_config(config: &Config) -> io::Result<ListenerConfig> {
         let defer_accept_secs = config
             .defer_accept
             .map(|duration| u32::try_from(duration.as_secs()))
@@ -71,7 +73,7 @@ impl Tcp {
 impl Transport for Tcp {
     type Addr = SocketAddr;
     type StreamConfig = stream::Config;
-    type ListenerConfig = listener::Config;
+    type ListenerConfig = Config;
 
     const KERNEL_DISCARD: bool = true;
 
@@ -87,7 +89,7 @@ impl Transport for Tcp {
         driver: &mut DriverContext<'_, 'd>,
         addr: &SocketAddr,
         backlog: i32,
-        config: &listener::Config,
+        config: &Config,
     ) -> io::Result<(Fd<'d>, SocketAddr)> {
         if backlog <= 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "backlog must be > 0"));
@@ -128,7 +130,7 @@ impl Transport for Tcp {
         );
     }
 
-    fn per_ip_limit(config: &listener::Config) -> Option<u32> {
+    fn per_ip_limit(config: &Config) -> Option<u32> {
         config.per_ip_limit
     }
 

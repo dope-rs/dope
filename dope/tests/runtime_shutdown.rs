@@ -4,10 +4,13 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::driver;
+use dope::runtime::dispatcher::{Dispatcher, Idle};
+use dope::runtime::executor::Executor;
 use dope::runtime::profile::Throughput;
-use dope::runtime::{Dispatcher, Executor, Idle, ShutdownTrigger};
+use dope::runtime::trigger::ShutdownTrigger;
 use dope::{DriverContext, Event};
-use dope_fiber::{AppSessionExt, Pending};
+use dope_fiber::abi::pending::Pending;
+use dope_fiber::extensions::AppSessionExt;
 
 struct CountingDispatcher {
     shutdowns: Rc<Cell<usize>>,
@@ -92,7 +95,7 @@ fn signal_shutdown_restores_the_calling_threads_mask() {
 
     let before = (membership(libc::SIGINT), membership(libc::SIGTERM));
     {
-        let _signal = dope::runtime::SignalShutdown::new().expect("signal shutdown");
+        let _signal = dope::runtime::trigger::SignalShutdown::new().expect("signal shutdown");
         assert_eq!(membership(libc::SIGINT), 1);
         assert_eq!(membership(libc::SIGTERM), 1);
     }

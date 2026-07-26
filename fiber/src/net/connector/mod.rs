@@ -1,4 +1,4 @@
-mod connect;
+pub mod connect;
 mod pending;
 
 use std::io;
@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use o3::buffer::{RetainBytes, Shared};
 use o3::collections::CellQueue;
 
-pub use connect::Connect;
+use connect::Connect;
 
 use crate::ConnEnv;
 use crate::Waker;
@@ -15,8 +15,10 @@ use crate::io::Host;
 use dope::DriverContext;
 use dope::driver::token::{SlotIndex, Token};
 use dope::io::provided::ProvidedView;
-use dope::manifold::connector::source::{DialKey, Explicit, ExplicitDialer};
-use dope::manifold::connector::{ChunkOutcome, ConnApp, Core, Requests, state};
+use dope::manifold::connector::app::{ChunkOutcome, ConnApp, Requests};
+use dope::manifold::connector::core::Core;
+use dope::manifold::connector::source::DialKey;
+use dope::manifold::connector::source::explicit::{Explicit, ExplicitDialer};
 use dope_net::Transport;
 use dope_net::link::egress::config::Config;
 use dope_net::link::slot::Slot;
@@ -25,6 +27,8 @@ use std::io::Error;
 
 use super::port::Port;
 use super::port::recv::arena::{RecvArena, RecvLayout};
+use dope::manifold::connector::state::State;
+use dope::runtime::executor::StorageFactory;
 use pending::{Pending, Resolve};
 
 enum Resolved {
@@ -190,7 +194,7 @@ where
     }
 }
 
-impl<T> dope::runtime::StorageFactory for ConnectorPortFactory<T>
+impl<T> StorageFactory for ConnectorPortFactory<T>
 where
     T: Transport + 'static,
     T::Addr: Clone,
@@ -204,7 +208,7 @@ where
 
 enum ConnectOutcome {
     Conn(Token),
-    Failed(io::Error),
+    Failed(Error),
     Pending,
 }
 
@@ -232,7 +236,7 @@ where
 
     fn chunk<R: RetainBytes>(
         &mut self,
-        slot: &mut Slot<'d, Self::Wire, state::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
         chunk: R,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -245,7 +249,7 @@ where
 
     fn retained_chunk(
         &mut self,
-        slot: &mut Slot<'d, Self::Wire, state::State<Self::Conn, Self::Send>>,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
         chunk: ProvidedView<'d>,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -259,7 +263,7 @@ where
     fn connected(
         &mut self,
         key: DialKey,
-        slot: &mut Slot<'d, Self::Wire, state::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port.connected(
@@ -275,7 +279,7 @@ where
 
     fn send(
         &mut self,
-        slot: &mut Slot<'d, Self::Wire, state::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
         _sent: usize,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -285,7 +289,7 @@ where
 
     fn close(
         &mut self,
-        slot: &mut Slot<'d, Self::Wire, state::State<Self::Conn>>,
+        slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port.closed(slot.token());
@@ -293,7 +297,7 @@ where
 
     fn is_drained(
         &self,
-        slot: &Slot<'d, Self::Wire, state::State<Self::Conn>>,
+        slot: &Slot<'d, Self::Wire, State<Self::Conn>>,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> bool {
         self.port.connections.readable_drained(slot.token())

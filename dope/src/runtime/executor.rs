@@ -7,11 +7,13 @@ use dope_core::driver::ext::DriverExt;
 use o3::cell::{BrandCell, BrandToken};
 
 use super::run::Run;
+use crate::driver::Config;
 use crate::driver::Driver;
 use crate::hash::Seed;
 use crate::runtime::__private::RootTask;
-use crate::runtime::Dispatcher;
-use crate::{DriverContext, DriverRef, driver};
+use crate::runtime::dispatcher::Dispatcher;
+use crate::{DriverContext, DriverRef};
+use std::ptr::from_ref;
 
 pub trait StorageFactory: 'static {
     type Output<'d>: 'd;
@@ -19,20 +21,10 @@ pub trait StorageFactory: 'static {
     fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d>;
 }
 
-pub struct ValueStorage<T>(T);
-
 impl StorageFactory for () {
     type Output<'d> = ();
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {}
-}
-
-impl<T: 'static> StorageFactory for ValueStorage<T> {
-    type Output<'d> = T;
-
-    fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        self.0
-    }
 }
 
 impl<A: StorageFactory, B: StorageFactory> StorageFactory for (A, B) {
@@ -52,11 +44,11 @@ pub struct Executor<S = ()> {
 }
 
 impl Executor<()> {
-    pub fn new(cfg: driver::Config) -> io::Result<Self> {
+    pub fn new(cfg: Config) -> io::Result<Self> {
         Self::with_seed(cfg, Seed::random()?)
     }
 
-    pub fn with_seed(cfg: driver::Config, seed: Seed) -> io::Result<Self> {
+    pub fn with_seed(cfg: Config, seed: Seed) -> io::Result<Self> {
         let driver = Driver::new(cfg)?;
         Ok(Self {
             storage: (),
@@ -67,14 +59,6 @@ impl Executor<()> {
 }
 
 impl<S> Executor<S> {
-    pub fn with_storage<T: 'static>(self, storage: T) -> Executor<ValueStorage<T>> {
-        Executor {
-            storage: ValueStorage(storage),
-            driver: self.driver,
-            seed: self.seed,
-        }
-    }
-
     pub fn with_storage_factory<T: StorageFactory>(self, storage: T) -> Executor<T> {
         Executor {
             storage,
@@ -117,7 +101,7 @@ pub struct Session<'scope, 'd: 'scope, S = ()> {
 }
 
 unsafe fn extend_storage<'d, S>(storage: Pin<&S>) -> Pin<&'d S> {
-    unsafe { Pin::new_unchecked(&*std::ptr::from_ref(storage.get_ref())) }
+    unsafe { Pin::new_unchecked(&*from_ref(storage.get_ref())) }
 }
 
 struct SessionCore<'d> {

@@ -1,9 +1,12 @@
 use std::pin::Pin;
 
 use dope::io::file::OpenPath;
+use dope::manifold::file::source::Source;
 use dope::manifold::file::{FileManifold, Files};
-use dope_fiber::Batch;
-use dope_fiber::file::{Open, Read, Source, Stat};
+use dope_fiber::abi::batch::Batch;
+use dope_fiber::file::open::Open;
+use dope_fiber::file::read::Read;
+use dope_fiber::file::stat::Stat;
 use dope_test::{TempFile, drive, file_exec};
 use o3::cell::BrandCell;
 
@@ -18,7 +21,7 @@ struct Host<'d, 'scope> {
     files: FileManifold<'scope, 'd, ID, 64>,
 }
 
-type Sess<'scope, 'd> = dope::runtime::Session<'scope, 'd, Files<'d, ID, 64>>;
+type Sess<'scope, 'd> = dope::runtime::executor::Session<'scope, 'd, Files<'d, ID, 64>>;
 
 fn host<'scope, 'd>(sess: &Sess<'scope, 'd>) -> Pin<Box<BrandCell<'d, Host<'d, 'scope>>>> {
     Box::pin(BrandCell::new(Host {

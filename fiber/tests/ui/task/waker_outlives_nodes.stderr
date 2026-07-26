@@ -1,42 +1,42 @@
 error[E0515]: cannot return value referencing local variable `binding`
-  --> tests/ui/task/waker_outlives_nodes.rs:10:5
+  --> tests/ui/task/waker_outlives_nodes.rs:11:5
    |
-10 |     binding.waker()
+11 |     binding.waker()
    |     -------^^^^^^^^
    |     |
    |     returns a value referencing data owned by the current function
    |     `binding` is borrowed here
 
 error[E0515]: cannot return value referencing temporary value
-  --> tests/ui/task/waker_outlives_nodes.rs:10:5
+  --> tests/ui/task/waker_outlives_nodes.rs:11:5
    |
- 8 |     let task = pin!(TaskContext::new());
+ 9 |     let task = pin!(TaskContext::new());
    |                ------------------------ temporary value created here
- 9 |     let binding = task.as_ref().bind(queue.as_ref(), 0, None);
-10 |     binding.waker()
+10 |     let binding = task.as_ref().bind(queue.as_ref(), 0, None);
+11 |     binding.waker()
    |     ^^^^^^^^^^^^^^^ returns a value referencing data owned by the current function
 
 error[E0515]: cannot return value referencing local variable `task`
-  --> tests/ui/task/waker_outlives_nodes.rs:10:5
+  --> tests/ui/task/waker_outlives_nodes.rs:11:5
    |
- 9 |     let binding = task.as_ref().bind(queue.as_ref(), 0, None);
+10 |     let binding = task.as_ref().bind(queue.as_ref(), 0, None);
    |                   ---- `task` is borrowed here
-10 |     binding.waker()
+11 |     binding.waker()
    |     ^^^^^^^^^^^^^^^ returns a value referencing data owned by the current function
 
 error[E0515]: cannot return value referencing temporary value
-  --> tests/ui/task/waker_outlives_nodes.rs:10:5
+  --> tests/ui/task/waker_outlives_nodes.rs:11:5
    |
- 7 |     let queue = pin!(TaskQueue::new());
+ 8 |     let queue = pin!(TaskQueue::new());
    |                 ---------------------- temporary value created here
 ...
-10 |     binding.waker()
+11 |     binding.waker()
    |     ^^^^^^^^^^^^^^^ returns a value referencing data owned by the current function
 
 error[E0515]: cannot return value referencing local variable `queue`
-  --> tests/ui/task/waker_outlives_nodes.rs:10:5
+  --> tests/ui/task/waker_outlives_nodes.rs:11:5
    |
- 9 |     let binding = task.as_ref().bind(queue.as_ref(), 0, None);
+10 |     let binding = task.as_ref().bind(queue.as_ref(), 0, None);
    |                                      ----- `queue` is borrowed here
-10 |     binding.waker()
+11 |     binding.waker()
    |     ^^^^^^^^^^^^^^^ returns a value referencing data owned by the current function

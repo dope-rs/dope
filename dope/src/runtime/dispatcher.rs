@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::DriverContext;
 use dope_core::driver::token::Token;
+use dope_core::io::Event;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Idle {
@@ -22,19 +23,15 @@ impl Idle {
     }
 }
 
-/// Application-side hooks driven by a [`Session`](super::Session).
+/// Application-side hooks driven by a [`Session`](super::executor::Session).
 ///
 /// The runtime serializes every callback on its worker thread. `shutdown` is
 /// invoked at most once for an app scope, including interruption and unwinding
-/// paths managed by [`Session::with_app`](super::Session::with_app).
+/// paths managed by [`Session::with_app`](super::executor::Session::with_app).
 pub trait Dispatcher<'d>: Sized {
     const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 
-    fn dispatch(
-        self: Pin<&mut Self>,
-        ev: dope_core::io::Event<'d>,
-        driver: &mut DriverContext<'_, 'd>,
-    );
+    fn dispatch(self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>);
 
     fn activate(self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>);
 

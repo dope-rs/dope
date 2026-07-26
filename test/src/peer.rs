@@ -3,9 +3,11 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 use crate::GUARD;
+use std::thread::JoinHandle;
+use std::thread::spawn;
 
 pub fn reserve_addr() -> SocketAddr {
-    let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve address");
+    let socket = TcpListener::bind("127.0.0.1:0").expect("reserve address");
     socket.local_addr().expect("local address")
 }
 
@@ -24,18 +26,18 @@ pub fn connect_with_read_timeout(addr: SocketAddr, timeout: Duration) -> TcpStre
 pub fn spawn_peer<T: Send + 'static>(
     addr: SocketAddr,
     script: impl FnOnce(&mut TcpStream) -> T + Send + 'static,
-) -> std::thread::JoinHandle<T> {
-    std::thread::spawn(move || {
+) -> JoinHandle<T> {
+    spawn(move || {
         let mut stream = connect(addr);
         script(&mut stream)
     })
 }
 
 /// Accepts and holds `count` silent loopback connections until all have arrived.
-pub fn hold_connections(count: usize) -> (SocketAddr, std::thread::JoinHandle<()>) {
+pub fn hold_connections(count: usize) -> (SocketAddr, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local addr");
-    let handle = std::thread::spawn(move || {
+    let handle = spawn(move || {
         let mut held = Vec::with_capacity(count);
         for _ in 0..count {
             let Ok((stream, _)) = listener.accept() else {
@@ -47,7 +49,7 @@ pub fn hold_connections(count: usize) -> (SocketAddr, std::thread::JoinHandle<()
     (addr, handle)
 }
 
-pub fn request_reply(addr: SocketAddr, request: Vec<u8>) -> std::thread::JoinHandle<Vec<u8>> {
+pub fn request_reply(addr: SocketAddr, request: Vec<u8>) -> JoinHandle<Vec<u8>> {
     spawn_peer(addr, move |stream| {
         stream.write_all(&request).expect("write request");
         read_all(stream)

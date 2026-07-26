@@ -1,6 +1,5 @@
 use std::io;
 use std::io::Error;
-use std::mem;
 use std::pin::Pin;
 use std::task::Poll;
 
@@ -9,7 +8,9 @@ use super::already_done;
 use crate::{Context, Fiber};
 use dope::driver::token::Token;
 use dope::io::file::OpenPath;
-use dope::manifold::file::{FileOutcome, Files, OpenDone};
+use dope::manifold::file::open::OpenDone;
+use dope::manifold::file::{FileOutcome, Files};
+use std::mem::replace;
 
 enum OpenStage {
     Init(OpenPath),
@@ -48,7 +49,7 @@ impl<'h, 'd, const ID: u8, const N: usize> Fiber<'d> for Open<'h, 'd, ID, N> {
 
     fn poll(self: Pin<&mut Self>, mut cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let token = match mem::replace(&mut this.stage, OpenStage::Done) {
+        let token = match replace(&mut this.stage, OpenStage::Done) {
             OpenStage::Done => return Poll::Ready(Err(already_done())),
             OpenStage::Pending(token) => token,
             OpenStage::Init(path) => {

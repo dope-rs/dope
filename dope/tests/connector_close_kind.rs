@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use dope::DriverContext;
 use dope::driver::token::Token;
+use dope::manifold::connector::app::{ChunkOutcome, CloseKind, ConnApp, Requests};
 use dope::manifold::connector::source::DialKey;
 use dope::manifold::connector::state::State;
-use dope::manifold::connector::{ChunkOutcome, CloseKind, ConnApp, Requests};
 use dope_net::wire::identity::Identity;
 use dope_test::{Gate, hold_connections};
 use o3::buffer::{RetainBytes, Shared};

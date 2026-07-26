@@ -1,4 +1,5 @@
-use dope_fiber::{FiberScope, OwnerFiber, Pending, SplitBytes};
+use dope_fiber::abi::pending::Pending;
+use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes};
 use dope_test::with_session;
 use o3::buffer::Shared;
 

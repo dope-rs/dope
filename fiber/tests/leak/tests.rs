@@ -2,8 +2,8 @@ use std::cell::RefCell;
 
 use dope::io::file::OpenPath;
 use dope::manifold::Manifold;
-use dope_fiber::OneShot;
-use dope_fiber::file::Open;
+use dope_fiber::file::open::Open;
+use dope_fiber::one_shot::OneShot;
 use dope_test::{TempFile, file_exec, pump_events};
 use o3::cell::BrandCell;
 

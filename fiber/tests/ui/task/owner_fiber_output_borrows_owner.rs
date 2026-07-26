@@ -3,7 +3,9 @@ use std::pin::Pin;
 use std::task::Poll;
 
 extern crate dope;
-use dope_fiber::{Context, Fiber, FiberScope, OwnerFiber, SplitBytes};
+use dope_fiber::abi::Fiber;
+use dope_fiber::owner::{FiberScope, OwnerFiber, SplitBytes};
+use dope_fiber::task::Context;
 use dope_test::with_session;
 use o3::buffer::Shared;
 

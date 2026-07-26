@@ -8,8 +8,10 @@ use std::time::{Duration, Instant};
 use dope::driver::Config;
 use dope::driver::ready::ReadySlot;
 use dope::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
+use dope::runtime::dispatcher::{Dispatcher, Idle};
+use dope::runtime::executor::Executor;
 use dope::runtime::profile::Throughput;
-use dope::runtime::{Dispatcher, Executor, Idle, ShutdownTrigger};
+use dope::runtime::trigger::ShutdownTrigger;
 use dope::{DriverContext, Event};
 use pin_project::pin_project;
 

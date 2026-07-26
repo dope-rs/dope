@@ -10,10 +10,10 @@ use o3::collections::CellQueue;
 use crate::Waker;
 use dope::driver::token::Token;
 use dope::io::provided::ProvidedView;
-use dope::manifold::connector;
 use std::io::Error;
 use std::io::ErrorKind;
 
+use dope::manifold::connector::app::{CloseKind, Requests as ConnectorRequests};
 use recv::arena::{RecvArena, RecvLayout};
 use result::{RecvInto, SendIdle};
 use state::State;
@@ -170,7 +170,7 @@ impl<'d> Port<'d> {
         &self,
         token: Token,
         mut push: impl FnMut(Shared) -> Result<(), Shared>,
-    ) -> Option<connector::Requests> {
+    ) -> Option<ConnectorRequests> {
         let entry = self.entry(token)?;
         if let Some(send) = entry.send.take() {
             entry.send_pending.set(false);
@@ -179,12 +179,9 @@ impl<'d> Port<'d> {
                 entry.send_pending.set(true);
             }
         }
-        Some(connector::Requests {
+        Some(ConnectorRequests {
             shutdown: entry.shutdown.take(),
-            close: entry
-                .close
-                .take()
-                .then_some(connector::CloseKind::Reconnect),
+            close: entry.close.take().then_some(CloseKind::Reconnect),
         })
     }
 

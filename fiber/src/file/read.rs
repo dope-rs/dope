@@ -1,5 +1,4 @@
 use std::io;
-use std::mem;
 use std::pin::Pin;
 use std::task::Poll;
 
@@ -9,7 +8,10 @@ use crate::{Context, Fiber};
 use dope::DriverContext;
 use dope::driver::ready::CompletionWaker;
 use dope::driver::token::Token;
-use dope::manifold::file::{FileOutcome, Files, ReadDone};
+use dope::manifold::file::read::ReadDone;
+use dope::manifold::file::{FileOutcome, Files};
+use std::io::Error;
+use std::mem::replace;
 
 enum Phase<'d> {
     Ready(Vec<u8>),
@@ -51,7 +53,7 @@ impl<'h, 'd, const ID: u8, const N: usize> Read<'h, 'd, ID, N> {
         source: Source<'d>,
         buffer: Vec<u8>,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Result<Token, (Vec<u8>, io::Error)> {
+    ) -> Result<Token, (Vec<u8>, Error)> {
         self.host.begin_read(source, buffer, self.offset, driver)
     }
 
@@ -77,7 +79,7 @@ impl<'h, 'd, const ID: u8, const N: usize> Fiber<'d> for Read<'h, 'd, ID, N> {
 
     fn poll(self: Pin<&mut Self>, mut cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let token = match mem::replace(&mut this.phase, Phase::Done) {
+        let token = match replace(&mut this.phase, Phase::Done) {
             Phase::Done => return Poll::Ready((Vec::new(), Err(already_done()))),
             Phase::Ready(buffer) => return Poll::Ready((buffer, Ok(0))),
             Phase::Pending(token) => token,

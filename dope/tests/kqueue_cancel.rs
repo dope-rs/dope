@@ -9,7 +9,8 @@ use std::pin::{Pin, pin};
 use dope::Completion;
 use dope::manifold::Manifold;
 use dope::manifold::Outcome;
-use dope::manifold::listener::{self, Application};
+use dope::manifold::listener;
+use dope::manifold::listener::application::Application;
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
 use o3::buffer::RetainBytes;
@@ -22,9 +23,9 @@ impl<'d> Application<'d> for App {
 
     fn chunk<R: RetainBytes>(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _chunk: R,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
@@ -32,17 +33,17 @@ impl<'d> Application<'d> for App {
 
     fn send(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
         _sent: usize,
-        _aux: &mut listener::Aux,
+        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
     }
 
     fn close(
         self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::State<Self::Conn>>,
-        _aux: &mut listener::Aux,
+        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _aux: &mut listener::state::Aux,
     ) {
     }
 }

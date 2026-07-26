@@ -1,8 +1,8 @@
 use std::ops::{Deref, DerefMut};
-use std::slice;
 
 use dope_core::io::socket::msg::{IoVec, MsgHdr};
 use o3::buffer::RollingBuffer;
+use std::slice::from_raw_parts;
 
 pub struct SendBuf<const CAP: usize> {
     buf: Box<RollingBuffer<CAP>>,
@@ -171,7 +171,7 @@ impl<'a> Vectored<'a> {
     pub fn iter(&self) -> impl Iterator<Item = &'a [u8]> + '_ {
         self.iovs
             .iter()
-            .map(|iov| unsafe { slice::from_raw_parts(iov.as_ptr(), iov.len()) })
+            .map(|iov| unsafe { from_raw_parts(iov.as_ptr(), iov.len()) })
     }
 
     #[must_use]

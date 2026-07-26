@@ -2,6 +2,7 @@ mod affinity;
 mod alloc;
 mod fiber;
 mod file;
+mod harness;
 mod panic;
 mod peer;
 mod rt;
@@ -12,10 +13,10 @@ use std::time::Duration;
 pub use affinity::{not_send, not_sync, not_unpin, require_send};
 pub use alloc::{TrackingAlloc, allocations_during};
 pub use fiber::{
-    Gate, drive, drop_pending, poll_ready, poll_until_ready, poll_with_slot, pump_events,
-    run_until, with_context,
+    Gate, drive, poll_ready, poll_with_slot, pump_events, run_until, with_context,
 };
 pub use file::TempFile;
+pub use harness::Harness;
 pub use panic::{
     CountDrop, OrderedDrop, assert_panics_with, assert_unwinds, counter, expect_abort, respawn_self,
 };
@@ -144,14 +145,15 @@ macro_rules! connector_case {
         let __dope_config = $crate::__private::dope::driver::Config::for_tcp_profile::<
             $crate::__private::dope::runtime::profile::Throughput,
         >($max_connections);
-        $crate::__private::dope::runtime::Executor::new(__dope_config)
+        $crate::__private::dope::runtime::executor::Executor::new(__dope_config)
             .expect("executor")
             .enter(|mut __dope_session| {
                 let __dope_seed = $crate::__private::dope::hash::Seed::new([1, 2]).state();
-                let __dope_dialer = $crate::__private::dope::manifold::connector::source::Static::<
-                    $crate::__private::dope_net::tcp::Tcp,
-                >::new(vec![__dope_addr], $backoff, __dope_seed);
-                let __dope_connector = $crate::__private::dope::manifold::connector::Core::<
+                let __dope_dialer =
+                    $crate::__private::dope::manifold::connector::source::health::Static::<
+                        $crate::__private::dope_net::tcp::Tcp,
+                    >::new(vec![__dope_addr], $backoff, __dope_seed);
+                let __dope_connector = $crate::__private::dope::manifold::connector::core::Core::<
                     $id,
                     _,
                     _,

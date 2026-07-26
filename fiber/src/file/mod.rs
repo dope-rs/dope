@@ -1,15 +1,11 @@
-mod open;
-mod read;
-mod stat;
+pub mod open;
+pub mod read;
+pub mod stat;
 
-use std::io;
 use std::io::Error;
 
-pub use dope::manifold::file::{Metadata, Source};
-pub use open::Open;
-pub use read::Read;
-pub use stat::Stat;
-
-fn already_done() -> io::Error {
+use dope::manifold::file::metadata::Metadata;
+use dope::manifold::file::source::Source;
+fn already_done() -> Error {
     Error::other("dope::file: fiber polled after completion")
 }

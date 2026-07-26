@@ -1,3 +1,4 @@
+use crate::wire::send::Vectored;
 use crate::wire::send::{Payload, Prepared};
 use dope_core::backend::Sqe;
 use dope_core::driver::DriverContext;
@@ -6,6 +7,7 @@ use dope_core::driver::token::Token;
 use dope_core::driver::token::kind::{RECV, RECV_DISCARD};
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::addr::Addr;
+use libc::sockaddr;
 
 enum Phase {
     Open,
@@ -28,7 +30,7 @@ pub enum Establish {
 }
 
 impl Establish {
-    pub fn begin(&mut self, addr: Addr) -> (*const libc::sockaddr, u32) {
+    pub fn begin(&mut self, addr: Addr) -> (*const sockaddr, u32) {
         *self = Self::Connecting(addr);
         let Self::Connecting(pinned) = self else {
             unreachable!()
@@ -272,7 +274,7 @@ impl<'d> Core<'d> {
         &mut self,
         driver: &mut DriverContext<'_, 'd>,
         ud: Token,
-        mut vectored: crate::wire::send::Vectored<'_>,
+        mut vectored: Vectored<'_>,
     ) -> bool {
         vectored.install();
         let fd = &self.fd;

@@ -131,7 +131,7 @@ impl DispatcherSpec {
         generics: Generics,
         named: &FieldsNamed,
         coordinate: bool,
-    ) -> Result<Self, syn::Error> {
+    ) -> Result<Self, Error> {
         let mut tagged: Vec<(Ident, Type, bool, bool)> = Vec::new();
         let mut any_tagged = false;
         let mut all: Vec<(Ident, Type, bool)> = Vec::new();
@@ -274,7 +274,7 @@ impl DispatcherSpec {
             quote! {}
         };
         quote! {
-            impl #impl_generics ::dope::runtime::Dispatcher<#brand> for #name #ty_generics #where_clause {
+            impl #impl_generics ::dope::runtime::dispatcher::Dispatcher<#brand> for #name #ty_generics #where_clause {
                 fn dispatch(
                     mut self: ::core::pin::Pin<&mut Self>,
                     __ev: ::dope::Event<#brand>,
@@ -306,7 +306,7 @@ impl DispatcherSpec {
                     #coordinate_tail
                     #(#post_coordinate_tick_calls)*
                 }
-                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::runtime::Idle {
+                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::runtime::dispatcher::Idle {
                     #idle_expr
                 }
                 fn shutdown(
@@ -345,7 +345,7 @@ impl DispatcherSpec {
                 let body = f.wrap_body(|recv| {
                     quote! {
                         let __typed =
-                            ::dope::manifold::TypedToken::<#inner>::try_new::<#brand>(__target)
+                            ::dope::manifold::typed::TypedToken::<#inner>::try_new::<#brand>(__target)
                                 .expect("dispatcher selected the token route");
                         ::dope::manifold::Manifold::activate(#recv, __typed, __driver);
                     }
@@ -383,13 +383,13 @@ impl DispatcherSpec {
 
     fn idle_expr(&self) -> proc_macro2::TokenStream {
         if self.fields.is_empty() {
-            return quote! { ::dope::runtime::Idle::Park(::core::option::Option::None) };
+            return quote! { ::dope::runtime::dispatcher::Idle::Park(::core::option::Option::None) };
         }
         let arms = self.fields.iter().map(|f| {
             f.wrap_body_ref(|recv| {
                 quote! {
                     match ::dope::manifold::Manifold::idle(#recv) {
-                        ::dope::runtime::Idle::Busy => return ::dope::runtime::Idle::Busy,
+                        ::dope::runtime::dispatcher::Idle::Busy => return ::dope::runtime::dispatcher::Idle::Busy,
                         __park => __acc = __acc.reduce(__park),
                     }
                 }
@@ -397,7 +397,7 @@ impl DispatcherSpec {
         });
         quote! {
             {
-                let mut __acc = ::dope::runtime::Idle::Park(::core::option::Option::None);
+                let mut __acc = ::dope::runtime::dispatcher::Idle::Park(::core::option::Option::None);
                 #(#arms)*
                 __acc
             }

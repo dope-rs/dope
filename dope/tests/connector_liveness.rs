@@ -19,9 +19,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use dope::DriverContext;
+use dope::manifold::connector::app::{ChunkOutcome, ConnApp};
 use dope::manifold::connector::source::DialKey;
 use dope::manifold::connector::state::State;
-use dope::manifold::connector::{ChunkOutcome, ConnApp};
 use dope_net::wire::identity::Identity;
 use dope_test::{Gate, hold_connections};
 use o3::buffer::{RetainBytes, Shared};

@@ -3,7 +3,9 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use dope::manifold::timer::Timer;
-use dope_fiber::{Batch, TimerExt, Waker};
+use dope_fiber::abi::batch::Batch;
+use dope_fiber::sleep::TimerExt;
+use dope_fiber::task::Waker;
 
 use dope_test::{drain_tokens, poll_with_slot, tok, with_session};
 
@@ -143,7 +145,7 @@ fn far_future_sleep_arms_without_overflow() {
     with_session(|mut sess| {
         let timer: Timer = Timer::with_capacity(1, sess.driver());
         let slot = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let mut sleep = pin!(dope_fiber::Sleep::new(&timer, Duration::MAX));
+        let mut sleep = pin!(dope_fiber::sleep::Sleep::new(&timer, Duration::MAX));
         assert!(
             matches!(
                 poll_with_slot(&mut sess, &slot, sleep.as_mut()),

@@ -1,6 +1,5 @@
 use std::io;
 use std::marker::PhantomData;
-use std::mem;
 use std::net::Shutdown;
 use std::pin::Pin;
 use std::task::Poll;
@@ -12,6 +11,10 @@ use crate::net::port::Port;
 use crate::net::port::result::{RecvInto, SendIdle};
 use crate::{Context, Fiber, Waker};
 use dope::driver::token::Token;
+use libc::SHUT_RD;
+use libc::SHUT_RDWR;
+use libc::SHUT_WR;
+use std::mem::take;
 
 pub trait Host<'d> {
     fn port(&self) -> &Port<'d>;
@@ -224,9 +227,9 @@ impl<'d, H: Host<'d>> Io<'d, H> {
 
     pub fn shutdown(&mut self, how: Shutdown) -> io::Result<()> {
         let how = match how {
-            Shutdown::Read => libc::SHUT_RD,
-            Shutdown::Write => libc::SHUT_WR,
-            Shutdown::Both => libc::SHUT_RDWR,
+            Shutdown::Read => SHUT_RD,
+            Shutdown::Write => SHUT_WR,
+            Shutdown::Both => SHUT_RDWR,
         };
         self.host().shutdown(self.id, how);
         Ok(())
@@ -336,7 +339,7 @@ impl<'d, H: Host<'d>> Fiber<'d> for Read<'_, 'd, H> {
             .registration
             .poll_recv(cx, &mut this.buf, &mut this.done);
         match result {
-            Poll::Ready(result) => Poll::Ready((result, mem::take(&mut this.buf))),
+            Poll::Ready(result) => Poll::Ready((result, take(&mut this.buf))),
             Poll::Pending => Poll::Pending,
         }
     }

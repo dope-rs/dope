@@ -1,4 +1,4 @@
-use std::mem;
+use std::mem::transmute;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -12,7 +12,7 @@ pub(crate) struct WireLease {
 impl WireLease {
     pub(crate) fn acquire(owner: Pin<Rc<BlockPool>>) -> Option<Self> {
         let block = owner.as_ref().try_acquire()?;
-        let block = unsafe { mem::transmute::<BlockLease<'_>, BlockLease<'static>>(block) };
+        let block = unsafe { transmute::<BlockLease<'_>, BlockLease<'static>>(block) };
         Some(Self {
             block,
             _pool: owner,

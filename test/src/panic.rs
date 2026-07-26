@@ -1,5 +1,8 @@
+use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::env::current_exe;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::process::Command;
 use std::process::ExitStatus;
 use std::rc::Rc;
 
@@ -7,7 +10,7 @@ pub fn assert_unwinds<R>(f: impl FnOnce() -> R) {
     assert!(catch_unwind(AssertUnwindSafe(f)).is_err());
 }
 
-fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+fn panic_text(payload: Box<dyn Any + Send>) -> String {
     match payload.downcast::<String>() {
         Ok(message) => *message,
         Err(payload) => payload
@@ -47,7 +50,7 @@ impl Drop for OrderedDrop {
 }
 
 pub fn respawn_self(test_name: &str, envs: &[(&str, &str)]) -> ExitStatus {
-    let mut cmd = std::process::Command::new(std::env::current_exe().expect("current test binary"));
+    let mut cmd = Command::new(current_exe().expect("current test binary"));
     cmd.arg("--exact").arg(test_name);
     for (key, value) in envs {
         cmd.env(key, value);

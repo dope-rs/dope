@@ -1,8 +1,8 @@
-mod queue;
+pub mod queue;
 
 use core::cell::Cell;
 use core::marker::{PhantomData, PhantomPinned};
-use core::mem;
+use core::mem::transmute;
 use core::pin::Pin;
 use core::ptr::NonNull;
 
@@ -12,8 +12,8 @@ use o3::cell::RegionToken;
 use o3::collections::BatchSet;
 use o3::marker::ThreadBound;
 
-pub(crate) use queue::IndexQueue;
-pub use queue::TaskQueue;
+use pin_project::pin_project;
+use queue::{IndexQueue, TaskQueue};
 
 struct Node {
     ready: Cell<Option<NonNull<BatchSet>>>,
@@ -59,10 +59,10 @@ impl Node {
             Some(WakeTarget::Ready(driver, key)) => {
                 self.parent.set(None);
                 self.root_driver.set(Some(unsafe {
-                    mem::transmute::<DriverRef<'_>, DriverRef<'static>>(driver)
+                    transmute::<DriverRef<'_>, DriverRef<'static>>(driver)
                 }));
                 self.root_key
-                    .set(unsafe { mem::transmute::<ReadyKey<'_>, ReadyKey<'static>>(key) });
+                    .set(unsafe { transmute::<ReadyKey<'_>, ReadyKey<'static>>(key) });
             }
             None => {
                 self.parent.set(None);
@@ -296,7 +296,7 @@ enum WakeTarget<'d> {
     Ready(DriverRef<'d>, ReadyKey<'d>),
 }
 
-#[pin_project::pin_project]
+#[pin_project]
 pub struct Context<'poll, 'd> {
     wake: Waker<'d>,
     driver: DriverContext<'poll, 'd>,
@@ -349,7 +349,7 @@ impl<'poll, 'd> Context<'poll, 'd> {
     }
 
     pub fn waker(&self) -> Waker<'_> {
-        unsafe { mem::transmute(self.wake) }
+        unsafe { transmute(self.wake) }
     }
 
     #[doc(hidden)]
@@ -376,7 +376,7 @@ impl<'poll, 'd> Context<'poll, 'd> {
     /// # Safety
     /// The wake target stays live for `'a`.
     pub unsafe fn waker_unchecked<'a>(&self) -> Waker<'a> {
-        unsafe { mem::transmute(self.wake) }
+        unsafe { transmute(self.wake) }
     }
 
     pub fn wake(&self) {
@@ -409,7 +409,7 @@ impl<'d> Waker<'d> {
     where
         'd: 'a,
     {
-        unsafe { mem::transmute(self) }
+        unsafe { transmute(self) }
     }
 
     /// Converts this task waker into the type-erased handle stored by Dope's

@@ -1,46 +1,46 @@
 error: lifetime may not live long enough
-  --> tests/ui/task/waker_escapes_fiber.rs:14:9
+  --> tests/ui/task/waker_escapes_fiber.rs:15:9
    |
-10 | impl<'d> Fiber<'d> for Escape<'d> {
+11 | impl<'d> Fiber<'d> for Escape<'d> {
    |      -- lifetime `'d` defined here
 ...
-13 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
+14 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
    |                                           - let's call the lifetime of this reference `'1`
-14 |         self.0.set(Some(cx.waker()));
+15 |         self.0.set(Some(cx.waker()));
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'1` must outlive `'d`
    |
-   = note: requirement occurs because of the type `Cell<Option<dope_fiber::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::Waker<'_>>` invariant
+   = note: requirement occurs because of the type `Cell<Option<dope_fiber::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::task::Waker<'_>>` invariant
    = note: the struct `Cell<T>` is invariant over the parameter `T`
    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 
 error: lifetime may not live long enough
-  --> tests/ui/task/waker_escapes_fiber.rs:14:9
+  --> tests/ui/task/waker_escapes_fiber.rs:15:9
    |
-10 | impl<'d> Fiber<'d> for Escape<'d> {
+11 | impl<'d> Fiber<'d> for Escape<'d> {
    |      -- lifetime `'d` defined here
 ...
-13 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
-   |                                   -- has type `Pin<&mut dope_fiber::Context<'2, '_>>`
-14 |         self.0.set(Some(cx.waker()));
+14 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
+   |                                   -- has type `Pin<&mut dope_fiber::task::Context<'2, '_>>`
+15 |         self.0.set(Some(cx.waker()));
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'2` must outlive `'d`
    |
-   = note: requirement occurs because of the type `Cell<Option<dope_fiber::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::Waker<'_>>` invariant
+   = note: requirement occurs because of the type `Cell<Option<dope_fiber::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::task::Waker<'_>>` invariant
    = note: the struct `Cell<T>` is invariant over the parameter `T`
    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 
 error[E0597]: `cx` does not live long enough
-  --> tests/ui/task/waker_escapes_fiber.rs:14:25
+  --> tests/ui/task/waker_escapes_fiber.rs:15:25
    |
-10 | impl<'d> Fiber<'d> for Escape<'d> {
+11 | impl<'d> Fiber<'d> for Escape<'d> {
    |      -- lifetime `'d` defined here
 ...
-13 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
+14 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
    |                                   -- binding `cx` declared here
-14 |         self.0.set(Some(cx.waker()));
+15 |         self.0.set(Some(cx.waker()));
    |         ----------------^^----------
    |         |               |
    |         |               borrowed value does not live long enough
    |         argument requires that `cx` is borrowed for `'d`
-15 |         Poll::Pending
-16 |     }
+16 |         Poll::Pending
+17 |     }
    |      - `cx` dropped here while still borrowed

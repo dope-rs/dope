@@ -2,7 +2,8 @@ use std::cell::Cell;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 
-use dope_fiber::{Fiber, SplitTask, SplitView};
+use dope_fiber::abi::Fiber;
+use dope_fiber::owner::{SplitTask, SplitView};
 
 struct Escape<'outer>(PhantomData<&'outer ()>);
 
@@ -23,7 +24,7 @@ impl<'d, 'outer> SplitTask<'d> for Escape<'outer> {
         'd: 'req,
     {
         escaped.set(Some(view));
-        Ok(dope_fiber::ready(()))
+        Ok(dope_fiber::abi::ready(()))
     }
 }
 

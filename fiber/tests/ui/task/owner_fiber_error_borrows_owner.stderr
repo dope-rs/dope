@@ -1,8 +1,8 @@
 error: lifetime may not live long enough
-  --> tests/ui/task/owner_fiber_error_borrows_owner.rs:10:17
+  --> tests/ui/task/owner_fiber_error_borrows_owner.rs:11:17
    |
- 6 |     with_session(|session| {
+ 7 |     with_session(|session| {
    |                   ------- has type `dope_test::__private::dope::runtime::executor::Session<'_, '1>`
 ...
-10 |                 Err::<Pending<()>, _>(view.head())
+11 |                 Err::<Pending<()>, _>(view.head())
    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'static`

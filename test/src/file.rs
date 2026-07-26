@@ -1,17 +1,21 @@
+use std::env::temp_dir;
+use std::fs::remove_file;
+use std::fs::write;
+use std::path::Path;
 pub struct TempFile(String);
 
 impl TempFile {
     pub fn with(tag: &str, contents: &[u8]) -> Self {
-        let path = std::env::temp_dir()
+        let path = temp_dir()
             .join(format!("dope_test_{}_{}", std::process::id(), tag))
             .to_string_lossy()
             .into_owned();
-        std::fs::write(&path, contents).expect("write temp");
+        write(&path, contents).expect("write temp");
         Self(path)
     }
 
-    pub fn path(&self) -> &std::path::Path {
-        std::path::Path::new(&self.0)
+    pub fn path(&self) -> &Path {
+        Path::new(&self.0)
     }
 
     pub fn path_str(&self) -> &str {
@@ -21,6 +25,6 @@ impl TempFile {
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = remove_file(&self.0);
     }
 }

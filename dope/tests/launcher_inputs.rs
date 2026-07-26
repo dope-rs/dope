@@ -5,8 +5,10 @@ use std::io;
 use std::pin::Pin;
 use std::sync::mpsc;
 
+use dope::runtime::dispatcher::{Dispatcher, Idle};
+use dope::runtime::executor::Executor;
+use dope::runtime::launcher::{Launcher, WorkerContext, WorkerEntry};
 use dope::runtime::profile::Throughput;
-use dope::runtime::{Dispatcher, Executor, Idle, Launcher, WorkerContext, WorkerEntry};
 use dope::{DriverContext, Event, driver};
 
 struct Probe;

@@ -3,7 +3,8 @@ use std::pin::Pin;
 use std::task::Poll;
 
 extern crate dope;
-use dope_fiber::{Context, Fiber, Waker};
+use dope_fiber::abi::Fiber;
+use dope_fiber::task::{Context, Waker};
 
 struct Escape<'d>(&'d Cell<Option<Waker<'d>>>);
 

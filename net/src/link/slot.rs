@@ -5,12 +5,14 @@ use o3::collections::CellQueue;
 use o3::marker::ThreadBound;
 
 use super::core::{Core, RecvError, Submit};
-use super::egress;
-
+use crate::link::egress::arena::Arena;
+use crate::link::egress::queue::Queue;
 use crate::link::pool::SendOutcome;
 use crate::wire::send::{Plain, Storage, Vectored};
 use crate::wire::{Reclaim, Wire};
 use dope_core::backend::Sqe;
+use dope_core::driver::DriverContext;
+use dope_core::driver::DriverRef;
 use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::kind::RECV;
 use dope_core::driver::token::{SlotIndex, Token};
@@ -113,20 +115,20 @@ impl From<Pooled> for SendBuffer {
 }
 
 pub struct DeferredEgress {
-    queue: egress::queue::Queue<DEFERRED_IOV, SendBuffer>,
+    queue: Queue<DEFERRED_IOV, SendBuffer>,
     close_after: Cell<bool>,
 }
 
 impl DeferredEgress {
     pub fn new() -> Self {
-        let arena = egress::arena::Arena::<SendBuffer>::default();
+        let arena = Arena::<SendBuffer>::default();
         Self {
             queue: arena.queue_for(0),
             close_after: Cell::new(false),
         }
     }
 
-    pub fn new_for(arena: &egress::arena::Arena<SendBuffer>, lane: usize) -> Self {
+    pub fn new_for(arena: &Arena<SendBuffer>, lane: usize) -> Self {
         Self {
             queue: arena.queue_for(lane),
             close_after: Cell::new(false),
@@ -214,7 +216,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         self.token
     }
 
-    pub fn close(self, driver: &mut dope_core::driver::DriverContext<'_, 'd>) {
+    pub fn close(self, driver: &mut DriverContext<'_, 'd>) {
         let guard = driver.guard(self.core.into_fd());
         drop(guard);
     }
@@ -241,7 +243,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
     }
 
     #[doc(hidden)]
-    pub fn driver(&self) -> dope_core::driver::DriverRef<'d> {
+    pub fn driver(&self) -> DriverRef<'d> {
         self.core.fd.driver()
     }
 
@@ -268,7 +270,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
 
     pub fn submit_plain(
         &mut self,
-        driver: &mut dope_core::driver::DriverContext<'_, 'd>,
+        driver: &mut DriverContext<'_, 'd>,
         plain: &[u8],
         ud: Token,
     ) -> usize {
@@ -288,7 +290,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         send: &mut W::SendStorage,
         plain: Vectored<'_>,
         ud: Token,
-        driver: &mut dope_core::driver::DriverContext<'_, 'd>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> usize {
         if core.is_send_inflight() {
             return 0;
@@ -299,11 +301,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         Self::finish_submit(wire, submit)
     }
 
-    pub fn flush_pending(
-        &mut self,
-        driver: &mut dope_core::driver::DriverContext<'_, 'd>,
-        ud: Token,
-    ) {
+    pub fn flush_pending(&mut self, driver: &mut DriverContext<'_, 'd>, ud: Token) {
         if self.core.is_send_inflight() {
             return;
         }
@@ -312,11 +310,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         Self::finish_submit(&mut self.wire, submit);
     }
 
-    pub fn seal_graceful(
-        &mut self,
-        driver: &mut dope_core::driver::DriverContext<'_, 'd>,
-        ud: Token,
-    ) -> bool {
+    pub fn seal_graceful(&mut self, driver: &mut DriverContext<'_, 'd>, ud: Token) -> bool {
         if self.core.request_graceful() && self.core.take_graceful() {
             let prepared = self.wire.graceful_close(Storage::new(&mut self.send, 0));
             let submit = self.core.submit_prepared(driver, ud, prepared);
@@ -358,11 +352,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         }
     }
 
-    pub fn begin_discard(
-        &mut self,
-        driver: &mut dope_core::driver::DriverContext<'_, 'd>,
-        n: u64,
-    ) -> bool {
+    pub fn begin_discard(&mut self, driver: &mut DriverContext<'_, 'd>, n: u64) -> bool {
         if n == 0
             || !W::RAW_RECV
             || !self.core.kernel_discard()
@@ -419,7 +409,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
 
     pub fn send_sent(
         &mut self,
-        driver: &mut dope_core::driver::DriverContext<'_, 'd>,
+        driver: &mut DriverContext<'_, 'd>,
         n: usize,
         ud: Token,
         idx: SlotIndex,

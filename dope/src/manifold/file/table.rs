@@ -6,6 +6,10 @@ use dope_core::driver::control::ContextControl;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::submission::Submission;
 use dope_core::driver::token::{Key, KeyTag, SLOT_MASK, Token, TokenCellSlab};
+use std::io::Error;
+use std::io::ErrorKind;
+use std::process::abort;
+use std::slice::from_ref;
 
 enum State<'d, R> {
     Submitted,
@@ -124,14 +128,14 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         prepare: impl FnOnce(Token, &mut H) -> io::Result<(T, Sqe)>,
         accepted: impl FnOnce(&mut H),
         aborted: impl FnOnce(&mut H),
-    ) -> Result<T, (H, io::Error)> {
+    ) -> Result<T, (H, Error)> {
         let key = self
             .entries
             .insert(Operation {
                 hold,
                 state: State::Submitted,
             })
-            .map_err(|operation| (operation.hold, io::Error::from(io::ErrorKind::WouldBlock)))?;
+            .map_err(|operation| (operation.hold, Error::from(ErrorKind::WouldBlock)))?;
         let entry = BeginEntry::new(&self.entries, key);
         let prepared = self.entries.update(key, |operation| {
             prepare(Token::from_key(key), &mut operation.hold)
@@ -139,7 +143,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         let (result, sqe) = match prepared {
             Some(Ok(prepared)) => prepared,
             Some(Err(error)) => return Err((entry.rollback(), error)),
-            None => std::process::abort(),
+            None => abort(),
         };
         if let Err(error) = driver.push(sqe) {
             let hold = entry.rollback();
@@ -151,7 +155,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
             .entries
             .update(key, |operation| accepted(&mut operation.hold));
         if accepted.is_none() {
-            std::process::abort();
+            abort();
         }
         entry.commit();
         Ok(result)
@@ -208,7 +212,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
             if !pending {
                 continue;
             }
-            driver.quiesce(std::slice::from_ref(&token));
+            driver.quiesce(from_ref(&token));
             let _ = self.entries.remove(key);
             quiesced = true;
         }

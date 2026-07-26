@@ -2,6 +2,7 @@ use super::send::{Plain, Prepared, Storage, Vectored};
 use super::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
 use crate::Bytes;
 use o3::buffer::Borrowed;
+use std::io;
 
 pub struct Identity;
 
@@ -16,7 +17,7 @@ impl Wire for Identity {
 
     const RAW_RECV: bool = true;
 
-    fn runtime_context(_: RuntimeLimits, _: ()) -> std::io::Result<()> {
+    fn runtime_context(_: RuntimeLimits, _: ()) -> io::Result<()> {
         Ok(())
     }
 

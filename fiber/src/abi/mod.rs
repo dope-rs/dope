@@ -1,24 +1,20 @@
 #[doc(hidden)]
 pub mod __private;
 
-mod batch;
+pub mod batch;
 mod future;
-mod pending;
-mod pollfn;
-mod ready;
+pub mod pending;
+pub mod pollfn;
+pub mod ready;
 mod scoped;
-mod waitfn;
 
 use core::pin::Pin;
 use core::task::Poll;
 
-use super::{Context, Waiter};
-pub use batch::{Batch, BatchOutput};
-pub use future::lazy::Lazy;
-pub use pending::Pending;
-pub use pollfn::PollFn;
-pub use ready::Ready;
-pub use waitfn::WaitFn;
+use super::Context;
+use pending::Pending;
+use pollfn::PollFn;
+use ready::Ready;
 
 pub const fn pending<T>() -> Pending<T> {
     Pending::new()
@@ -33,13 +29,6 @@ where
 
 pub const fn ready<T>(output: T) -> Ready<T> {
     Ready::new(output)
-}
-
-pub const fn wait_fn<'d, F, T>(f: F) -> WaitFn<'d, F, T>
-where
-    F: FnMut(Pin<&mut Context<'_, 'd>>, Pin<&Waiter<'d>>) -> Poll<T>,
-{
-    WaitFn::new(f)
 }
 
 pub trait Fiber<'d> {

@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::slice;
 
 use o3::buffer::Lease;
 
@@ -10,6 +9,7 @@ use dope_core::io::socket::addr::InetAddr;
 use dope_core::io::socket::msg::{IoVec, MsgHdr};
 
 use crate::DriverContext;
+use std::slice::from_ref;
 
 pub(super) enum Payload<'d> {
     Owned(Vec<u8>),
@@ -141,7 +141,7 @@ impl<'d> SendOp<'d> {
         let name_ptr = self.addr.mut_ptr();
         let name_len = self.addr.socklen();
         self.msg.set_name_ptr(name_ptr.cast(), name_len);
-        self.msg.set_iov(slice::from_ref(&self.iov));
+        self.msg.set_iov(from_ref(&self.iov));
         self.cmsg.attach(&mut self.msg, self.segment_size);
         &self.msg
     }

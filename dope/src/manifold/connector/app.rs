@@ -5,7 +5,7 @@ use super::source::DialKey;
 use super::state::State;
 use crate::DriverContext;
 use crate::io::provided::ProvidedView;
-use crate::runtime::Idle;
+use crate::runtime::dispatcher::Idle;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;

@@ -3,7 +3,8 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crate::{Context, Fiber};
-use dope::manifold::timer::{Ticket, Timer, Waiter};
+use dope::manifold::timer::starved::Waiter;
+use dope::manifold::timer::{Ticket, Timer};
 use dope::runtime::__private::saturating_deadline;
 
 pub trait TimerExt<'d, const ID: u8 = 0> {

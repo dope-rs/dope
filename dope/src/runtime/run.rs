@@ -9,7 +9,7 @@ use o3::cell::{BrandCell, BrandToken};
 
 use crate::driver::token::Token;
 use crate::runtime::__private::{RootTask, saturating_deadline};
-use crate::runtime::{Dispatcher, Idle};
+use crate::runtime::dispatcher::{Dispatcher, Idle};
 use crate::{DriverContext, Event};
 
 const DRAIN_BATCH: usize = 256;

@@ -3,10 +3,12 @@ use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
 
-use dope_fiber::{
-    Batch, Context, Fiber, FixedSlab, Slab, TaskContext, TaskId, TaskQueue, WaitQueue, Waiter,
-    Waker, ready,
-};
+use dope_fiber::abi::batch::Batch;
+use dope_fiber::abi::{Fiber, ready};
+use dope_fiber::slab::{FixedSlab, Slab, TaskId};
+use dope_fiber::task::queue::TaskQueue;
+use dope_fiber::task::{Context, TaskContext, Waker};
+use dope_fiber::wait::{WaitQueue, Waiter};
 use dope_test::{
     allocations_during, assert_unwinds, counter, drain_tokens, poll_ready, tok, with_context,
     with_session,
@@ -254,7 +256,7 @@ fn generated_inline_batch_await_allocates_nothing() {
         let mut sum = 0;
         let (allocations, _) = allocations_during(|| {
             let fiber = dope_gen::fiber!('_ => async move {
-                let fibers = core::array::from_fn(dope_fiber::ready);
+                let fibers = core::array::from_fn(dope_fiber::abi::ready);
                 let outputs = Batch::<_, usize, 8>::from_array(fibers).await;
                 outputs.sum::<usize>()
             });
@@ -311,7 +313,7 @@ fn output_drop_panic_releases_the_remaining_array() {
     with_context(|mut cx| {
         let drops = counter();
         let fibers = core::array::from_fn(|index| {
-            dope_fiber::ready(ProbeOutput {
+            dope_fiber::abi::ready(ProbeOutput {
                 drops: Rc::clone(&drops),
                 value: 0,
                 panic: index == 0,
