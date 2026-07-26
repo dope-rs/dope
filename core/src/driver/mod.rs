@@ -23,10 +23,15 @@ use o3::collections::CellQueue;
 use o3::marker::ThreadBound;
 
 use crate::backend::Backend;
+use crate::backend::ops::buffers::BufferBackend;
 use crate::io::fd::{Fd, FdGuard, FdSlot};
+use crate::io::provided::raw::buffer::BufferId;
 use crate::platform::Platform;
 use crate::platform::raw::file::FileLimit;
 
+use libc::MCL_CURRENT;
+use libc::MCL_FUTURE;
+use libc::mlockall;
 use profile::DriverProfile;
 use ready::{Arena, ReadyHandle, ReadyKey, ReadySlot};
 use token::{SlotIndex, Token};
@@ -35,7 +40,7 @@ type Invariant<'d> = PhantomData<fn(&'d ()) -> &'d ()>;
 
 struct Shared {
     arena: Box<Arena>,
-    returned_buffers: CellQueue<u16>,
+    returned_buffers: CellQueue<BufferId>,
     turn_clock: Cell<Instant>,
 }
 
@@ -72,7 +77,7 @@ impl<'d> RegionAccess<'_, 'd> {
 
 impl Driver {
     pub fn init_process() -> Result<()> {
-        unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
+        unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
         FileLimit::get()?.raise()
     }
 
@@ -174,9 +179,9 @@ impl<'d> DriverRef<'d> {
         self.shared.turn_clock.get()
     }
 
-    pub(crate) fn return_buffer(self, bid: u16) {
+    pub(crate) fn return_buffer(self, id: BufferId) {
         assert!(
-            self.shared.returned_buffers.push_back(bid).is_ok(),
+            self.shared.returned_buffers.push_back(id).is_ok(),
             "dope: provided-buffer return queue overflow"
         );
     }
@@ -232,9 +237,13 @@ impl<'a, 'd> DriverContext<'a, 'd> {
         self.backend
     }
 
+    pub(crate) fn release_buffer(&mut self, id: BufferId) {
+        <Backend as BufferBackend>::release_buffer(self.backend(), id);
+    }
+
     pub(crate) fn flush_returned_buffers(&mut self) {
-        while let Some(bid) = self.driver.shared.returned_buffers.pop_front() {
-            unsafe { buffers::ProvidedBuffers::release(self, bid) };
+        while let Some(id) = self.driver.shared.returned_buffers.pop_front() {
+            self.release_buffer(id);
         }
     }
     pub fn guard(&mut self, fd: Fd<'d>) -> FdGuard<'_, 'd> {
@@ -352,7 +361,7 @@ impl Config {
         self
     }
 
-    pub(crate) fn validate(&self) -> io::Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         Backend::snapshot()?
             .check_slots(self.fixed_file_slots)
             .map_err(io::Error::from)

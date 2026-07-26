@@ -1,16 +1,17 @@
 use crate::backend::Backend;
+use crate::io::provided::raw::buffer::BufferId;
 
 pub(crate) trait BufferBackend {
     fn buffer_group(backend: &Backend) -> u16;
     fn buffer_len(backend: &Backend) -> usize;
-    unsafe fn release_buffer(backend: &mut Backend, bid: u16);
+    fn release_buffer(backend: &mut Backend, id: BufferId);
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
     use crate::backend::uring::provided::ffi::ring::ProvidedRing;
 
-    use super::{Backend, BufferBackend};
+    use super::{Backend, BufferBackend, BufferId};
 
     impl BufferBackend for Backend {
         fn buffer_group(_backend: &Backend) -> u16 {
@@ -21,8 +22,8 @@ mod linux {
             backend.provided.buf_len()
         }
 
-        unsafe fn release_buffer(backend: &mut Backend, bid: u16) {
-            backend.provided.defer(bid);
+        fn release_buffer(backend: &mut Backend, id: BufferId) {
+            backend.provided.defer(id);
         }
     }
 }
@@ -31,7 +32,7 @@ mod linux {
 mod kqueue {
     use crate::backend::kqueue::driver::read::dispatch::Dispatch;
 
-    use super::{Backend, BufferBackend};
+    use super::{Backend, BufferBackend, BufferId};
 
     impl BufferBackend for Backend {
         fn buffer_group(_backend: &Backend) -> u16 {
@@ -42,8 +43,8 @@ mod kqueue {
             backend.provided.buf_len()
         }
 
-        unsafe fn release_buffer(backend: &mut Backend, bid: u16) {
-            backend.provided.defer(bid);
+        fn release_buffer(backend: &mut Backend, id: BufferId) {
+            backend.provided.defer(id);
             if !backend.resume.is_empty() {
                 backend.resume_pending();
             }

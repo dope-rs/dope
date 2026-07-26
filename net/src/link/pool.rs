@@ -9,8 +9,11 @@ use dope_core::backend::Sqe;
 use dope_core::driver::buffers::ProvidedBuffers;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::submission::Submission;
+use dope_core::driver::token::kind::CONNECT;
+use dope_core::driver::token::kind::CREATE;
+use dope_core::driver::token::kind::SEND;
 use dope_core::driver::token::{
-    Epoch, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, SlotIndex, Token, TokenSlab, kind,
+    Epoch, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, SlotIndex, Token, TokenSlab,
 };
 use dope_core::driver::{DriverContext, OutboundReservation};
 use dope_core::io::fd::Fd;
@@ -19,6 +22,9 @@ use dope_core::io::socket::addr::Addr;
 use dope_core::io::{ConnectEvent, RecvEvent, SendEvent, SocketEvent};
 use o3::buffer::ByteSpan;
 use o3::collections::FixedQueue;
+use std::io::Error;
+use std::io::ErrorKind;
+use std::mem::replace;
 
 pub struct Pool<'d, const ID: u8, T: Transport, W: Wire, S> {
     slab: TokenSlab<Slot<'d, W, S>, KeyTag<ID>>,
@@ -39,8 +45,8 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         if max_connections > SLOT_MASK as usize + 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
                 "dope: connection limit exceeds token slots",
             ));
         }
@@ -95,7 +101,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         for slot in self.slab.values() {
             let token = slot.token();
             if slot.core.is_send_inflight() {
-                targets.push(token.with_kind(kind::SEND));
+                targets.push(token.with_kind(SEND));
             }
             if slot.core.is_armed() {
                 targets.push(token.with_kind(slot.core.recv_cancel_kind()));
@@ -206,7 +212,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             let Some(idx) = self.recv_rearm_pending.pop_front() else {
                 break;
             };
-            let epoch = std::mem::replace(
+            let epoch = replace(
                 unsafe { self.rearm_epoch.get_unchecked_mut(idx.raw() as usize) },
                 Epoch::ZERO,
             );
@@ -234,7 +240,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         &mut self,
         driver: &mut DriverContext<'_, 'd>,
         ud: Token,
-        e: dope_core::io::SendEvent,
+        e: SendEvent,
     ) -> SendOutcome {
         let Some(parts) = ud.parts::<KeyTag<ID>>() else {
             return SendOutcome::Drop;
@@ -253,7 +259,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         &mut self,
         ud: Token,
         more: bool,
-        e: &'a dope_core::io::RecvEvent<'d>,
+        e: &'a RecvEvent<'d>,
     ) -> DispatchRecv<W::Recv<'a>> {
         let Some(parts) = ud.parts::<KeyTag<ID>>() else {
             return DispatchRecv::Drop;
@@ -293,7 +299,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         &mut self,
         ud: Token,
         more: bool,
-        event: dope_core::io::RecvEvent<'d>,
+        event: RecvEvent<'d>,
     ) -> DispatchRecv<Option<ProvidedView<'d>>> {
         let dispatch = match self.dispatch_recv(ud, more, &event) {
             DispatchRecv::Drop => DispatchRecv::Drop,
@@ -315,9 +321,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             DispatchRecv::Discarded(idx) => DispatchRecv::Discarded(idx),
             DispatchRecv::Chunk(idx, range) => {
                 let view = match (event, range) {
-                    (RecvEvent::Data(lease), Some((offset, len))) => {
-                        lease.into_view(offset, len).ok()
-                    }
+                    (RecvEvent::Data(lease), Some(range)) => lease.into_view(range).ok(),
                     _ => None,
                 };
                 DispatchRecv::Chunk(idx, view)
@@ -370,7 +374,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             let token = slot.token();
             let establish = slot.state.establish();
             if establish.is_connecting() {
-                targets.push(token.with_kind(kind::CONNECT));
+                targets.push(token.with_kind(CONNECT));
             } else if !establish.is_done() {
                 targets.push(
                     Token::new(
@@ -378,7 +382,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
                         SlotIndex::new(slot.core.fd.index()),
                         Epoch::ZERO,
                     )
-                    .with_kind(kind::CREATE),
+                    .with_kind(CREATE),
                 );
             }
         }
@@ -423,7 +427,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     pub fn drive_socket_cqe<X>(
         &mut self,
         ud: Token,
-        e: &dope_core::io::SocketEvent,
+        e: &SocketEvent,
         driver: &mut DriverContext<'_, 'd>,
         prepare: impl FnOnce(&Slot<'d, W, S>) -> (X, Option<(Addr, T::StreamConfig)>),
     ) -> SocketStep<X>
@@ -471,7 +475,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     pub fn drive_connect_cqe<X>(
         &mut self,
         ud: Token,
-        e: &dope_core::io::ConnectEvent,
+        e: &ConnectEvent,
         driver: &mut DriverContext<'_, 'd>,
         peek: impl FnOnce(&Slot<'d, W, S>) -> X,
     ) -> ConnectStep<X>

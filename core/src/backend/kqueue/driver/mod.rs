@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use o3::collections::FixedQueue;
 
-use crate::backend::kqueue::provided::{Backing, Provided};
+use crate::backend::kqueue::provided::ffi::pool::{Backing, ProvidedPool};
 use crate::driver::Config;
 use crate::driver::route::Routes;
 use crate::driver::token::{SHUTDOWN, Token};
@@ -63,7 +63,7 @@ pub struct Kqueue {
     write_retry_fd: FixedMap<u32>,
     pub(crate) resume: FixedQueue<Resume>,
     pub(crate) pending: PendingQueue,
-    pub(crate) provided: Provided,
+    pub(crate) provided: ProvidedPool,
     pub(crate) backing: Backing,
     fd_table: Vec<Option<RawFd>>,
     accept_limit: u32,
@@ -97,7 +97,7 @@ impl Kqueue {
         let fixed_file_slots = cfg.fixed_file_slots.max(cfg.accept_slots).max(1);
         let slots = fixed_file_slots as usize;
         let backing = Backing::new(cfg.provided.entries, cfg.provided.len as u32);
-        let provided = Provided::new(&backing, cfg.provided.entries);
+        let provided = ProvidedPool::new(&backing, cfg.provided.entries);
         Ok((
             Kqueue {
                 kq,

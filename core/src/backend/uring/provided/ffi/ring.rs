@@ -4,6 +4,10 @@ use io_uring::Submitter;
 use io_uring::types::BufRingEntry;
 use std::io::{Error, ErrorKind};
 
+use crate::io::provided::raw::buffer::BufferId;
+use crate::io::provided::raw::completion::CompletedBuffer;
+use crate::io::provided::raw::region::InitializedRegion;
+
 use super::mmap::Mmap;
 use super::tail::Tail;
 use std::slice::from_raw_parts_mut;
@@ -60,10 +64,17 @@ impl Buffers {
         self.mem.as_ptr() as u64 + (bid as usize * self.buf_len) as u64
     }
 
-    fn ptr_len(&self, bid: u16, len: usize) -> (*const u8, usize) {
+    fn region(&self, bid: u16, len: usize) -> InitializedRegion {
         let len = len.min(self.buf_len);
-        let ptr = unsafe { self.mem.as_ptr().add(bid as usize * self.buf_len) };
-        (ptr, len)
+        let ptr = unsafe {
+            NonNull::new_unchecked(
+                self.mem
+                    .as_ptr()
+                    .add(bid as usize * self.buf_len)
+                    .cast_mut(),
+            )
+        };
+        unsafe { InitializedRegion::new(ptr, len) }
     }
 }
 
@@ -127,11 +138,21 @@ impl ProvidedRing {
         self.buffers.buf_len()
     }
 
-    pub(crate) fn ptr_len(&self, bid: u16, len: usize) -> (*const u8, usize) {
-        self.buffers.ptr_len(bid & self.mask, len)
+    pub(crate) fn complete(&self, bid: u16, len: usize) -> CompletedBuffer {
+        let bid = bid & self.mask;
+        let id = unsafe { BufferId::new(bid) };
+        CompletedBuffer::new(id, self.buffers.region(bid, len))
     }
 
-    pub(crate) fn defer(&mut self, bid: u16) {
+    pub(crate) fn defer(&mut self, id: BufferId) {
+        self.defer_raw(id.into_raw());
+    }
+
+    pub(crate) fn defer_completion(&mut self, bid: u16) {
+        self.defer_raw(bid);
+    }
+
+    fn defer_raw(&mut self, bid: u16) {
         let bid = bid & self.mask;
         let slot = (self.tail_pos & self.mask) as usize;
         let addr = self.buffers.addr(bid);
