@@ -1,19 +1,14 @@
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::pin::{Pin, pin};
-use std::process::abort;
+use std::pin::Pin;
 use std::task::Poll;
 
 use o3::collections::{FixedPinSlab, PinSlab, SlabKey, SlabKeyParts};
+use pin_project::{pin_project, pinned_drop};
 
-use crate::task::queue::TaskQueue;
-use crate::task::{RootWaker, TaskContext};
 use crate::{Context, Fiber};
-use dope::DriverContext;
 use dope::panic::abort_on_drop_panic;
 use o3::collections::FixedPinSlabVacantEntry;
-use o3::collections::PinSlabVacantEntry;
 
 pub struct TaskId<Tag = ()> {
     parts: SlabKeyParts,
@@ -59,12 +54,12 @@ impl ErasedTaskId {
     }
 }
 
-fn catch_drop_panic<R>(operation: impl FnOnce() -> R) -> Result<R, ()> {
+fn remove_catching_drop_panic(operation: impl FnOnce() -> bool) -> bool {
     match catch_unwind(AssertUnwindSafe(operation)) {
-        Ok(value) => Ok(value),
+        Ok(removed) => removed,
         Err(payload) => {
             abort_on_drop_panic(payload);
-            Err(())
+            true
         }
     }
 }
@@ -73,19 +68,8 @@ pub struct Slab<'d, F, Tag = ()>
 where
     F: Fiber<'d>,
 {
-    inner: ManuallyDrop<PinSlab<F, Tag>>,
+    inner: PinSlab<F, Tag>,
     driver: PhantomData<fn(&'d ()) -> &'d ()>,
-}
-
-#[must_use]
-pub struct SlabVacantEntry<'a, F, Tag = ()> {
-    inner: PinSlabVacantEntry<'a, F, Tag>,
-}
-
-impl<F, Tag> SlabVacantEntry<'_, F, Tag> {
-    pub fn insert(self, fiber: F) -> TaskId<Tag> {
-        TaskId::from_key(self.inner.insert(fiber))
-    }
 }
 
 impl<'d, F, Tag> Slab<'d, F, Tag>
@@ -94,19 +78,17 @@ where
 {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            inner: ManuallyDrop::new(PinSlab::with_capacity(capacity)),
+            inner: PinSlab::with_capacity(capacity),
             driver: PhantomData,
         }
     }
 
     pub fn insert(&mut self, fiber: F) -> Option<TaskId<Tag>> {
-        self.vacant_entry().map(|entry| entry.insert(fiber))
+        self.inner.insert(fiber).ok().map(TaskId::from_key)
     }
 
-    pub fn vacant_entry(&mut self) -> Option<SlabVacantEntry<'_, F, Tag>> {
-        Some(SlabVacantEntry {
-            inner: self.inner.vacant_entry()?,
-        })
+    pub(crate) fn contains(&self, id: &TaskId<Tag>) -> bool {
+        self.inner.contains_parts(id.parts())
     }
 
     pub fn poll(
@@ -119,7 +101,7 @@ where
     }
 
     pub fn remove(&mut self, id: TaskId<Tag>) -> bool {
-        catch_drop_panic(|| self.inner.remove_parts(id.parts())).unwrap_or(true)
+        remove_catching_drop_panic(|| self.inner.remove_parts(id.parts()))
     }
 }
 
@@ -133,125 +115,16 @@ where
                 self.remove(task);
             }
         }
-        let _ = catch_drop_panic(|| unsafe { ManuallyDrop::drop(&mut self.inner) });
     }
 }
 
-/// A fiber slab whose persistent wake nodes share each fiber's lifetime.
-///
-/// Removal drops the fiber before its wake node; queue drop detaches every node.
-pub struct TaskSlab<'d, F, T: Copy = usize, Tag = ()>
-where
-    F: Fiber<'d>,
-{
-    fibers: Slab<'d, F, Tag>,
-    contexts: Pin<Box<[TaskContext<T>]>>,
-}
-
-impl<'d, F, T, Tag> TaskSlab<'d, F, T, Tag>
-where
-    F: Fiber<'d>,
-    T: Copy,
-{
-    pub fn with_capacity(capacity: usize, idle: T) -> Self {
-        Self {
-            fibers: Slab::with_capacity(capacity),
-            contexts: Box::into_pin(
-                (0..capacity)
-                    .map(|_| TaskContext::with_target(idle))
-                    .collect::<Box<[_]>>(),
-            ),
-        }
-    }
-
-    fn context(&self, index: usize) -> Option<Pin<&TaskContext<T>>> {
-        let context = self.contexts.as_ref().get_ref().get(index)?;
-        // SAFETY: pinning the boxed slice pins every context for the lifetime
-        // of this slab.
-        Some(unsafe { Pin::new_unchecked(context) })
-    }
-
-    pub fn insert(&mut self, fiber: F) -> Option<TaskId<Tag>> {
-        self.fibers.insert(fiber)
-    }
-
-    pub fn bind(
-        &self,
-        id: &TaskId<Tag>,
-        queue: Pin<&TaskQueue<T>>,
-        target: T,
-        parent: RootWaker<'d>,
-    ) -> bool {
-        if !self.fibers.inner.contains_parts(id.parts()) {
-            return false;
-        }
-        let Some(context) = self.context(id.index()) else {
-            return false;
-        };
-        if context.is_bound() {
-            return false;
-        }
-        // SAFETY: the slab owns the pinned context and its fiber as one entry.
-        // Queue Drop detaches the context, while entry removal drops the fiber
-        // before unbinding the context.
-        let _ = unsafe { context.bind_inner(queue, target, Some(parent.into_waker())) };
-        true
-    }
-
-    pub fn poll(
-        &mut self,
-        id: &TaskId<Tag>,
-        driver: &mut DriverContext<'_, 'd>,
-    ) -> Option<Poll<F::Output>> {
-        let index = id.index();
-        if !self.fibers.inner.contains_parts(id.parts()) {
-            return None;
-        }
-        let context = self.context(index)?;
-        if !context.is_bound() {
-            return None;
-        }
-        // SAFETY: the corresponding fiber is owned by this slab and is
-        // dropped before `context` can be unbound or freed.
-        let wake = unsafe { context.context_unchecked() };
-        let mut context = pin!(Context::from_waker(wake, driver.reborrow()));
-        self.fibers.poll(id, context.as_mut())
-    }
-
-    pub fn wake(&self, id: &TaskId<Tag>) -> bool {
-        if !self.fibers.inner.contains_parts(id.parts()) {
-            return false;
-        }
-        let Some(context) = self.context(id.index()) else {
-            return false;
-        };
-        if !context.is_bound() {
-            return false;
-        }
-        context.wake();
-        true
-    }
-
-    pub fn remove(&mut self, id: TaskId<Tag>) -> bool {
-        let index = id.index();
-        if !self.fibers.remove(id) {
-            return false;
-        }
-        let Some(context) = self.context(index) else {
-            abort();
-        };
-        // SAFETY: the fiber has just been dropped, so none of its async
-        // registrations can retain this wake node.
-        unsafe { context.unbind() };
-        true
-    }
-}
-
+#[pin_project(PinnedDrop, !Unpin)]
 pub struct FixedSlab<'d, F, const N: usize, Tag = ()>
 where
     F: Fiber<'d>,
 {
-    inner: ManuallyDrop<FixedPinSlab<F, N, Tag>>,
+    #[pin]
+    inner: FixedPinSlab<F, N, Tag>,
     driver: PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
@@ -275,7 +148,7 @@ where
             assert!(N > 0, "fiber slab capacity must be > 0");
         }
         Self {
-            inner: ManuallyDrop::new(FixedPinSlab::new()),
+            inner: FixedPinSlab::new(),
             driver: PhantomData,
         }
     }
@@ -286,7 +159,7 @@ where
 
     pub fn vacant_entry(self: Pin<&mut Self>) -> Option<FixedSlabVacantEntry<'_, F, N, Tag>> {
         Some(FixedSlabVacantEntry {
-            inner: self.inner().vacant_entry()?,
+            inner: self.project().inner.vacant_entry()?,
         })
     }
 
@@ -295,16 +168,12 @@ where
         id: &TaskId<Tag>,
         context: Pin<&mut Context<'_, 'd>>,
     ) -> Option<Poll<F::Output>> {
-        let fiber = self.inner().get_parts_mut(id.parts())?;
+        let fiber = self.project().inner.get_parts_mut(id.parts())?;
         Some(fiber.poll(context))
     }
 
     pub fn remove(mut self: Pin<&mut Self>, id: TaskId<Tag>) -> bool {
-        catch_drop_panic(|| self.as_mut().inner().remove_parts(id.parts())).unwrap_or(true)
-    }
-
-    fn inner(self: Pin<&mut Self>) -> Pin<&mut FixedPinSlab<F, N, Tag>> {
-        unsafe { self.map_unchecked_mut(|this| &mut *this.inner) }
+        remove_catching_drop_panic(|| self.as_mut().project().inner.remove_parts(id.parts()))
     }
 }
 
@@ -317,16 +186,22 @@ where
     }
 }
 
-impl<'d, F, const N: usize, Tag> Drop for FixedSlab<'d, F, N, Tag>
+#[pinned_drop]
+impl<'d, F, const N: usize, Tag> PinnedDrop for FixedSlab<'d, F, N, Tag>
 where
     F: Fiber<'d>,
 {
-    fn drop(&mut self) {
-        for index in 0..self.inner.capacity() as u32 {
-            if let Some(task) = self.inner.key(index).map(TaskId::from_key) {
-                unsafe { Pin::new_unchecked(&mut *self) }.remove(task);
+    fn drop(mut self: Pin<&mut Self>) {
+        for index in 0..self.as_ref().project_ref().inner.capacity() as u32 {
+            if let Some(task) = self
+                .as_ref()
+                .project_ref()
+                .inner
+                .key(index)
+                .map(TaskId::from_key)
+            {
+                self.as_mut().remove(task);
             }
         }
-        let _ = catch_drop_panic(|| unsafe { ManuallyDrop::drop(&mut self.inner) });
     }
 }

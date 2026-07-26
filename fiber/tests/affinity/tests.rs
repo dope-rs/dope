@@ -1,8 +1,7 @@
 use dope_fiber::abi::batch::Batch;
 use dope_fiber::abi::ready::Ready;
-use dope_fiber::slab::{
-    ErasedTaskId, FixedSlab, FixedSlabVacantEntry, Slab, SlabVacantEntry, TaskId,
-};
+use dope_fiber::raw::slab::TaskSlab;
+use dope_fiber::slab::{ErasedTaskId, FixedSlab, FixedSlabVacantEntry, Slab, TaskId};
 use dope_fiber::task::queue::TaskQueue;
 use dope_fiber::task::{TaskContext, Waker};
 use dope_test::{not_send, not_sync, not_unpin};
@@ -20,8 +19,8 @@ const _: fn() = || {
     not_sync::<ErasedTaskId, _>();
     not_send::<Slab<'static, Ready<()>>, _>();
     not_sync::<Slab<'static, Ready<()>>, _>();
-    not_send::<SlabVacantEntry<'static, Ready<()>>, _>();
-    not_sync::<SlabVacantEntry<'static, Ready<()>>, _>();
+    not_send::<TaskSlab<'static, Ready<()>>, _>();
+    not_sync::<TaskSlab<'static, Ready<()>>, _>();
     not_send::<FixedSlab<'static, Ready<()>, 1>, _>();
     not_sync::<FixedSlab<'static, Ready<()>, 1>, _>();
     not_send::<FixedSlabVacantEntry<'static, Ready<()>, 1>, _>();

@@ -8,7 +8,6 @@ use o3::buffer::RetainBytes;
 use o3::collections::CellQueue;
 use pin_project::pin_project;
 
-use crate::ConnEnv;
 use crate::io::{Host, Io};
 use crate::{Context, Fiber, WaitQueue, Waiter};
 use dope::DriverContext;
@@ -16,11 +15,13 @@ use dope::EventRef;
 use dope::driver::token::Token;
 use dope::hash;
 use dope::io::provided::ProvidedView;
+use dope::manifold::env::Bundle;
 use dope::manifold::listener::application::Application;
 use dope::manifold::listener::config::Config;
 use dope::manifold::typed::TypedToken;
 use dope::manifold::{Manifold, Outcome, listener};
 use dope::runtime::dispatcher::Idle;
+use dope::runtime::profile::Balanced;
 use dope_net::Transport;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
@@ -194,7 +195,7 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
 }
 
 type Inner<'scope, 'd, const ID: u8, T, W> =
-    listener::Listener<'d, ID, AcceptQueue<'scope, 'd, W>, ConnEnv<T, W>>;
+    listener::Listener<'d, ID, AcceptQueue<'scope, 'd, W>, Bundle<T, W, Balanced>>;
 
 #[pin_project(!Unpin)]
 pub struct Listener<'scope, 'd, const ID: u8, T: Transport, W: Wire>

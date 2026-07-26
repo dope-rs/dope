@@ -6,10 +6,10 @@ use std::task::Poll;
 use dope_fiber::abi::Fiber;
 use dope_fiber::abi::batch::Batch;
 use dope_fiber::abi::ready::Ready;
+use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab, TaskId};
 use dope_fiber::task::queue::TaskQueue;
 use dope_fiber::task::{Context, TaskContext, Waker};
-use dope_fiber::wait::{WaitQueue, Waiter};
 use dope_test::{
     allocations_during, assert_unwinds, counter, drain_tokens, poll_ready, tok, with_context,
     with_session,
@@ -356,13 +356,9 @@ fn fiber_drop_panic_cannot_redrop_and_keeps_output_live() {
 fn dynamic_fiber_slab_validates_generations() {
     with_context(|mut context| {
         let mut slab: Slab<'_, _> = Slab::with_capacity(1);
-        let task = slab
-            .vacant_entry()
-            .expect("new dynamic fiber slab should have a vacant task slot")
-            .insert(Ready::new(7));
+        let task = slab.insert(Ready::new(7)).unwrap();
         assert!(slab.insert(Ready::new(9)).is_none());
         let erased = task.erase();
-        assert_eq!(erased.index(), 0);
         let task = TaskId::from_erased(erased);
         let stale = TaskId::from_erased(erased);
         assert_eq!(slab.poll(&task, context.as_mut()), Some(Poll::Ready(7)));
@@ -402,6 +398,15 @@ fn fixed_fiber_slab_validates_generations() {
 
 #[test]
 fn fiber_slabs_contain_drop_panics() {
+    let dynamic = std::panic::catch_unwind(|| {
+        let mut slab: Slab<'_, _> = Slab::with_capacity(1);
+        let task = slab.insert(PanicDrop(true)).unwrap();
+        assert!(slab.remove(task));
+        let replacement = slab.insert(PanicDrop(false)).unwrap();
+        assert!(slab.remove(replacement));
+    });
+    assert!(dynamic.is_ok());
+
     let dynamic = std::panic::catch_unwind(|| {
         let mut slab: Slab<'_, _> = Slab::with_capacity(2);
         slab.insert(PanicDrop(true)).unwrap();
