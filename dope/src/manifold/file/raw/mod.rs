@@ -1,11 +1,16 @@
 use std::io;
 use std::mem::MaybeUninit;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::ptr::NonNull;
+use std::rc::Rc;
 
+use dope_core::backend::Backend;
 use dope_core::backend::Sqe;
 use dope_core::driver::token::Token;
 use dope_core::io::file::OpenPath;
+use dope_core::platform::Platform;
+
+type StatBuf = <Backend as Platform>::StatBuf;
 
 pub(super) struct OpenRequest {
     path: OpenPath,
@@ -18,6 +23,44 @@ impl OpenRequest {
 
     pub(super) fn submission(&self, flags: i32, token: Token) -> Sqe {
         unsafe { self.path.open_at(flags, token) }
+    }
+}
+
+enum StatSource {
+    Path(OpenPath),
+    Fd(Rc<OwnedFd>),
+}
+
+pub(super) struct StatRequest {
+    source: StatSource,
+    output: MaybeUninit<StatBuf>,
+}
+
+impl StatRequest {
+    pub(super) fn path(path: OpenPath) -> Self {
+        Self {
+            source: StatSource::Path(path),
+            output: MaybeUninit::zeroed(),
+        }
+    }
+
+    pub(super) fn fd(fd: Rc<OwnedFd>) -> Self {
+        Self {
+            source: StatSource::Fd(fd),
+            output: MaybeUninit::zeroed(),
+        }
+    }
+
+    pub(super) fn submission(&mut self, token: Token) -> Sqe {
+        let output = self.output.as_mut_ptr();
+        match &self.source {
+            StatSource::Path(path) => Sqe::stat_path(path.as_ptr(), output, token),
+            StatSource::Fd(fd) => Sqe::stat_fd(fd.as_raw_fd(), output, token),
+        }
+    }
+
+    pub(super) fn complete(&mut self) -> StatBuf {
+        unsafe { self.output.assume_init_read() }
     }
 }
 
