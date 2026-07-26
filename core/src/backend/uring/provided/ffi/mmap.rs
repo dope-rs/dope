@@ -2,18 +2,32 @@ use std::io::{self, Error, ErrorKind};
 use std::ptr::{NonNull, null_mut};
 
 use o3::marker::ThreadBound;
+use libc::MADV_HUGEPAGE;
+use libc::MADV_POPULATE_WRITE;
+use libc::MAP_ANONYMOUS;
+use libc::MAP_FAILED;
+use libc::MAP_NORESERVE;
+use libc::MAP_PRIVATE;
+use libc::PROT_READ;
+use libc::PROT_WRITE;
+use libc::_SC_PAGESIZE;
+use libc::c_int;
+use libc::madvise;
+use libc::mmap;
+use libc::munmap;
+use libc::sysconf;
 
 const MIN_PAGE_ALIGN: usize = 4096;
-const MAP_FLAGS: libc::c_int = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE;
+const MAP_FLAGS: c_int = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
 
-pub(super) struct Mmap {
+pub(in crate::backend::uring::provided) struct Mmap {
     ptr: NonNull<u8>,
     len: usize,
     _thread: ThreadBound,
 }
 
 impl Mmap {
-    pub(super) fn new_zeroed(len: usize) -> io::Result<Self> {
+    pub(in crate::backend::uring::provided) fn new_zeroed(len: usize) -> io::Result<Self> {
         if len == 0 || len > isize::MAX as usize {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
@@ -22,25 +36,25 @@ impl Mmap {
         }
         // SAFETY: anonymous mapping with no fd; len was validated above.
         let raw = unsafe {
-            libc::mmap(
+            mmap(
                 null_mut(),
                 len,
-                libc::PROT_READ | libc::PROT_WRITE,
+                PROT_READ | PROT_WRITE,
                 MAP_FLAGS,
                 -1,
                 0,
             )
         };
-        if raw == libc::MAP_FAILED {
+        if raw == MAP_FAILED {
             return Err(Error::last_os_error());
         }
         let Some(ptr) = NonNull::new(raw.cast()) else {
             // SAFETY: raw came from mmap with this exact len and is not used again.
-            unsafe { libc::munmap(raw, len) };
+            unsafe { munmap(raw, len) };
             return Err(Error::other("mmap returned null"));
         };
         // SAFETY: raw/len describe the mapping created above.
-        unsafe { libc::madvise(raw, len, libc::MADV_HUGEPAGE) };
+        unsafe { madvise(raw, len, MADV_HUGEPAGE) };
         Ok(Self {
             ptr,
             len,
@@ -48,13 +62,13 @@ impl Mmap {
         })
     }
 
-    pub(super) fn prewarm(&mut self) {
+    pub(in crate::backend::uring::provided) fn prewarm(&mut self) {
         // SAFETY: self.ptr/self.len describe our live mapping.
         if unsafe {
-            libc::madvise(
+            madvise(
                 self.ptr.as_ptr().cast(),
                 self.len,
-                libc::MADV_POPULATE_WRITE,
+                MADV_POPULATE_WRITE,
             ) == 0
         } {
             return;
@@ -69,17 +83,17 @@ impl Mmap {
         }
     }
 
-    pub(super) fn as_ptr(&self) -> *const u8 {
+    pub(in crate::backend::uring::provided) fn as_ptr(&self) -> *const u8 {
         self.ptr.as_ptr()
     }
 
-    pub(super) fn as_mut_ptr(&mut self) -> *mut u8 {
+    pub(in crate::backend::uring::provided) fn as_mut_ptr(&mut self) -> *mut u8 {
         self.ptr.as_ptr()
     }
 
     fn page_size() -> io::Result<usize> {
         // SAFETY: sysconf takes no pointer arguments.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page = unsafe { sysconf(_SC_PAGESIZE) };
         usize::try_from(page)
             .ok()
             .filter(|page| page.is_power_of_two())
@@ -90,6 +104,6 @@ impl Mmap {
 impl Drop for Mmap {
     fn drop(&mut self) {
         // SAFETY: ptr/len describe the mapping we own; nothing touches it afterwards.
-        unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
+        unsafe { munmap(self.ptr.as_ptr().cast(), self.len) };
     }
 }

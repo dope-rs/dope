@@ -1,2 +1,1 @@
-mod ffi;
-pub(crate) mod ring;
+pub(crate) mod ffi;

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 
 use o3::marker::ThreadBound;
 
-pub(super) struct Tail {
+pub(in crate::backend::uring::provided::ffi) struct Tail {
     ptr: NonNull<AtomicU16>,
     _thread: ThreadBound,
 }

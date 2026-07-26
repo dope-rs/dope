@@ -9,10 +9,10 @@ use std::process::abort;
 use io_uring::IoUring;
 
 use self::files::FileTable;
-use crate::backend::uring::provided::ring::Ring;
+use crate::backend::uring::provided::ffi::ring::ProvidedRing;
 use crate::driver::route::Routes;
 use crate::driver::token::{
-    KIND_SHIFT, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, Token, TokenSlab, kind,
+    KIND_SHIFT, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, Token, TokenSlab,
 };
 use crate::driver::{Config, PushError};
 use crate::io::fd::FdSlot;
@@ -26,10 +26,25 @@ use crate::platform::raw::host::HOST;
 use crate::io::file::RawMetadata;
 use crate::platform::Platform;
 use crate::platform::snapshot::Snapshot;
+use crate::driver::token::kind::ACCEPT;
+use crate::driver::token::kind::CLOSE;
+use crate::driver::token::kind::CLOSE_PREP;
+use crate::driver::token::kind::CREATE;
+use libc::EINVAL;
+use crate::driver::token::kind::OPEN;
+use crate::driver::token::kind::RECV;
+use crate::driver::token::kind::SETSOCKOPT;
+use libc::SHUT_RDWR;
+use libc::SYS_io_uring_register;
+use libc::c_int;
+use libc::c_long;
+use libc::close;
+use libc::statx;
+use libc::syscall;
 
 const SETSOCKOPT_CAP: usize = 4096;
 const _: () = assert!(SETSOCKOPT_CAP <= SLOT_MASK as usize + 1);
-type SetsockoptTag = KeyTag<ROUTE_FRAMEWORK, { kind::SETSOCKOPT }>;
+type SetsockoptTag = KeyTag<ROUTE_FRAMEWORK, { SETSOCKOPT }>;
 pub(crate) enum Disposition {
     Drop,
     DropBuffer(u16),
@@ -39,9 +54,9 @@ pub(crate) enum Disposition {
 
 pub struct Uring {
     pub(crate) uring: IoUring,
-    pub(crate) setsockopt: TokenSlab<libc::c_int, SetsockoptTag>,
+    pub(crate) setsockopt: TokenSlab<c_int, SetsockoptTag>,
     pub(crate) files: FileTable,
-    pub(crate) provided: Ring,
+    pub(crate) provided: ProvidedRing,
     next_slot: u32,
     accept_slots: u32,
     pub(crate) routes: Routes,
@@ -84,7 +99,7 @@ impl RingSetup {
     }
 
     fn build(&self) -> io::Result<IoUring> {
-        let may_fallback = |error: &io::Error| error.raw_os_error() == Some(libc::EINVAL);
+        let may_fallback = |error: &Error| error.raw_os_error() == Some(EINVAL);
         let mut built = self.attempt(true, true, self.defer_taskrun);
         if built.as_ref().err().is_some_and(may_fallback) {
             built = self.attempt(false, true, self.defer_taskrun);
@@ -110,19 +125,19 @@ impl RingSetup {
             len: u32,
             resv: u64,
         }
-        const FILE_ALLOC_RANGE: libc::c_long = 25;
+        const FILE_ALLOC_RANGE: c_long = 25;
         let range = Range {
             off: 0,
             len,
             resv: 0,
         };
         let rc = unsafe {
-            libc::syscall(
-                libc::SYS_io_uring_register,
-                AsRawFd::as_raw_fd(ring) as libc::c_long,
+            syscall(
+                SYS_io_uring_register,
+                AsRawFd::as_raw_fd(ring) as c_long,
                 FILE_ALLOC_RANGE,
-                &raw const range as usize as libc::c_long,
-                0 as libc::c_long,
+                &raw const range as usize as c_long,
+                0 as c_long,
             )
         };
         if rc < 0 {
@@ -147,7 +162,8 @@ impl Uring {
             .submitter()
             .register_files_sparse(cfg.fixed_file_slots)?;
         RingSetup::register_alloc_range(&uring, cfg.accept_slots)?;
-        let provided = Ring::new(&uring.submitter(), cfg.provided.entries, cfg.provided.len)?;
+        let provided =
+            ProvidedRing::new(&uring.submitter(), cfg.provided.entries, cfg.provided.len)?;
 
         let slots = cfg.fixed_file_slots as usize;
         Ok((
@@ -279,7 +295,7 @@ impl Uring {
     }
 
     fn release_setsockopt(
-        setsockopt: &mut TokenSlab<libc::c_int, SetsockoptTag>,
+        setsockopt: &mut TokenSlab<c_int, SetsockoptTag>,
         token: Token,
     ) -> bool {
         let Some(parts) = token.parts::<SetsockoptTag>() else {
@@ -290,7 +306,7 @@ impl Uring {
     }
 
     pub(crate) fn complete_cqe(
-        setsockopt: &mut TokenSlab<libc::c_int, SetsockoptTag>,
+        setsockopt: &mut TokenSlab<c_int, SetsockoptTag>,
         files: &mut FileTable,
         routes: &Routes,
         user_data: u64,
@@ -310,29 +326,29 @@ impl Uring {
         let op_kind = (user_data >> KIND_SHIFT) as u8;
         if token.route() == ROUTE_FRAMEWORK {
             return match op_kind {
-                kind::CLOSE_PREP => Disposition::Drop,
-                kind::CLOSE => {
+                CLOSE_PREP => Disposition::Drop,
+                CLOSE => {
                     files.complete_close(token.slot());
                     Disposition::Drop
                 }
-                kind::CREATE => files
+                CREATE => files
                     .complete_create(token.slot(), result)
                     .map_or(Disposition::Drop, Disposition::Public),
                 _ => Disposition::Public(user_data),
             };
         }
-        if op_kind == kind::ACCEPT {
+        if op_kind == ACCEPT {
             let poisoned = routes.is_poisoned(token.route());
             files.mark_accepted(result, poisoned);
             if poisoned {
                 return Disposition::Drop;
             }
-        } else if op_kind == kind::OPEN && result >= 0 && routes.is_poisoned(token.route()) {
+        } else if op_kind == OPEN && result >= 0 && routes.is_poisoned(token.route()) {
             unsafe {
-                libc::close(result);
+                close(result);
             }
             return Disposition::Drop;
-        } else if op_kind == kind::RECV && flags & BUFFER != 0 && routes.is_poisoned(token.route())
+        } else if op_kind == RECV && flags & BUFFER != 0 && routes.is_poisoned(token.route())
         {
             return Disposition::DropBuffer((flags >> BUFFER_SHIFT) as u16);
         }
@@ -340,7 +356,7 @@ impl Uring {
     }
 
     fn push_close_at(uring: &mut IoUring, slot: FdSlot) -> bool {
-        let shut = Sqe::shutdown_linked_at(slot, libc::SHUT_RDWR);
+        let shut = Sqe::shutdown_linked_at(slot, SHUT_RDWR);
         let close = Sqe::close_at(slot);
         let entries = [shut.entry().clone(), close.entry().clone()];
         unsafe { uring.submission().push_multiple(&entries) }.is_ok()
@@ -368,7 +384,7 @@ impl Uring {
 impl Platform for Uring {
     type Sqe = Sqe;
     type Gso = Gso;
-    type StatBuf = libc::statx;
+    type StatBuf = statx;
     type TimerSpec = Timespec;
 
     fn entropy() -> io::Result<[u64; 2]> {

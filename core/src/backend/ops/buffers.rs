@@ -13,13 +13,13 @@ pub(crate) trait BufferBackend {
 mod linux {
     use std::ptr::NonNull;
 
-    use crate::backend::uring::provided::ring::Ring;
+    use crate::backend::uring::provided::ffi::ring::ProvidedRing;
 
     use super::{Backend, BufferBackend};
 
     impl BufferBackend for Backend {
         fn buffer_group(_backend: &Backend) -> u16 {
-            Ring::BGID
+            ProvidedRing::BGID
         }
 
         fn buffer_len(backend: &Backend) -> usize {
