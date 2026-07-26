@@ -21,6 +21,7 @@ use dope_fiber::abi::pollfn::PollFn;
 use dope_fiber::abi::race::{Either, Race};
 use dope_fiber::abi::ready::Ready;
 use dope_fiber::extensions::SessionExt;
+use dope_fiber::io::Io;
 use dope_fiber::owner::{SplitBytes, SplitTask};
 use dope_fiber::raw::slab::TaskSlab;
 use dope_fiber::raw::task::queue::TaskQueue;
@@ -28,6 +29,7 @@ use dope_fiber::raw::task::{Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab};
 use dope_fiber::wait::WaitFn;
+use dope_net::link::slot::PendingFlags;
 use dope_test::{
     drain_tokens, poll_ready, poll_with_slot, tok, with_context, with_session, with_session_for,
 };
@@ -37,6 +39,11 @@ use o3::collections::{FixedPinSlab, PinSlab};
 
 #[test]
 fn raw_hot_path_boundaries_add_no_storage() {
+    assert_eq!(
+        size_of::<Io<'static, 'static>>(),
+        size_of::<(&'static (), Token)>(),
+    );
+    assert_eq!(size_of::<PendingFlags>(), size_of::<u8>());
     assert_eq!(size_of::<WaitQueue>(), size_of::<[usize; 4]>());
     assert_eq!(
         size_of::<Waiter<'static>>(),

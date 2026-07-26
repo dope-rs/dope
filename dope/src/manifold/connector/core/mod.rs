@@ -34,7 +34,7 @@ use dope_net::Transport;
 use dope_net::link::egress::arena::Arena;
 use dope_net::link::egress::config::Config;
 use dope_net::link::pool::Pool;
-use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PEND_SHUTDOWN, PendingQueue};
+use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue};
 use dope_net::wire::Wire;
 use pin_project::pin_project;
 
@@ -185,14 +185,6 @@ where
         config: <E::Transport as Transport>::StreamConfig,
     ) {
         *self.project().stream = config;
-    }
-
-    pub fn shutdown(&self, conn_id: Token, how: i32) {
-        let Some((idx, slot)) = self.pool.by_target(conn_id) else {
-            return;
-        };
-        slot.state.pending.set_shutdown(how);
-        self.dirty.mark(idx, &slot.state.pending, PEND_SHUTDOWN);
     }
 
     pub fn flush(&self, conn_id: Token) {

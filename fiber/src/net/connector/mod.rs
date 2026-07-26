@@ -10,7 +10,7 @@ use o3::collections::CellQueue;
 use connect::Connect;
 
 use crate::Waker;
-use crate::io::Host;
+use crate::io::Io;
 use dope::DriverContext;
 use dope::driver::token::{SlotIndex, Token};
 use dope::io::provided::ProvidedView;
@@ -346,13 +346,8 @@ where
     pub fn connect(self, addr: T::Addr, config: T::StreamConfig) -> Connect<'scope, 'd, T> {
         Connect::new(self, addr, config)
     }
-}
 
-impl<'scope, 'd, T: Transport> Host<'d> for ConnectorHandle<'scope, 'd, T>
-where
-    T::Addr: Clone,
-{
-    fn port(&self) -> &Port<'d> {
-        &self.port.connections
+    fn stream(self, id: Token) -> Io<'scope, 'd> {
+        Io::new(&self.port.connections, id)
     }
 }

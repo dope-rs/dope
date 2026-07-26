@@ -20,13 +20,11 @@ use dope_core::driver::token::{SlotIndex, Token};
 const DEFERRED_IOV: usize = 32;
 
 pub const PEND_EGRESS: u8 = 1;
-pub const PEND_SHUTDOWN: u8 = 2;
-pub const PEND_CLOSE: u8 = 4;
+pub const PEND_CLOSE: u8 = 2;
 
 #[derive(Default)]
 pub struct PendingFlags {
     flags: Cell<u8>,
-    shutdown_how: Cell<i32>,
     _thread: ThreadBound,
 }
 
@@ -43,14 +41,6 @@ impl PendingFlags {
 
     pub fn take_flags(&self) -> u8 {
         self.flags.take()
-    }
-
-    pub fn shutdown_how(&self) -> i32 {
-        self.shutdown_how.get()
-    }
-
-    pub fn set_shutdown(&self, how: i32) {
-        self.shutdown_how.set(how);
     }
 }
 

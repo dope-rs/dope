@@ -1,8 +1,6 @@
 use o3::cell::RawCell;
 
-use crate::io::RecvBuffer;
-
-use super::NONE;
+use super::{Buffer, NONE};
 use std::mem::replace;
 
 enum SlotState<'d> {
@@ -11,7 +9,7 @@ enum SlotState<'d> {
     },
     Reserved,
     Queued {
-        value: RecvBuffer<'d>,
+        value: Buffer<'d>,
         len: u32,
         next: u32,
     },
@@ -22,11 +20,11 @@ pub(super) enum Recycle {
     Reserved,
 }
 
-pub(super) struct RecvSlot<'d> {
+pub(super) struct Slot<'d> {
     state: RawCell<SlotState<'d>>,
 }
 
-impl<'d> RecvSlot<'d> {
+impl<'d> Slot<'d> {
     pub(super) fn free(next: u32) -> Self {
         Self {
             state: RawCell::new(SlotState::Free { next }),
@@ -67,7 +65,7 @@ impl<'d> RecvSlot<'d> {
         }
     }
 
-    pub(super) fn insert(&self, value: RecvBuffer<'d>, len: u32) -> Result<(), RecvBuffer<'d>> {
+    pub(super) fn insert(&self, value: Buffer<'d>, len: u32) -> Result<(), Buffer<'d>> {
         unsafe {
             self.state.with_mut(|state| match state {
                 SlotState::Reserved => {
@@ -131,7 +129,7 @@ impl<'d> RecvSlot<'d> {
         }
     }
 
-    pub(super) fn take(&self, recycle: Recycle) -> Option<RecvBuffer<'d>> {
+    pub(super) fn take(&self, recycle: Recycle) -> Option<Buffer<'d>> {
         unsafe {
             self.state.with_mut(|state| {
                 let next_state = match recycle {

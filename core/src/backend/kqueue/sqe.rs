@@ -98,10 +98,6 @@ pub enum SqeInner {
         ud: Token,
     },
     Quickack,
-    Shutdown {
-        slot: FdSlot,
-        how: i32,
-    },
     Cancel {
         target: Token,
     },
@@ -261,13 +257,6 @@ impl Sqe {
 
     pub fn quickack(_fd: &Fd) -> Self {
         Self::new(SqeInner::Quickack)
-    }
-
-    pub fn shutdown(fd: &Fd, how: i32) -> Self {
-        Self::new(SqeInner::Shutdown {
-            slot: fd.slot(),
-            how,
-        })
     }
 
     pub fn cancel(target: Token, kind: u8) -> Self {

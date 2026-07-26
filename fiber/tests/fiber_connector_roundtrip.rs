@@ -14,7 +14,7 @@ use dope::runtime::executor::{Executor, Session};
 use dope::runtime::profile::Balanced;
 use dope_fiber::abi::Fiber;
 use dope_fiber::io::Io;
-use dope_fiber::net::connector::{Connector, ConnectorHandle, ConnectorPort, ConnectorPortFactory};
+use dope_fiber::net::connector::{Connector, ConnectorPort, ConnectorPortFactory};
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
@@ -28,7 +28,7 @@ const ID: u8 = 0;
 const MAX_CONN: usize = 8;
 
 type Conn<'scope, 'd> = Connector<'scope, 'd, ID, Tcp, Identity>;
-type ConnIo<'scope, 'd> = Io<'d, ConnectorHandle<'scope, 'd, Tcp>>;
+type ConnIo<'scope, 'd> = Io<'scope, 'd>;
 
 struct RecvGatedWire {
     established: bool,

@@ -42,8 +42,8 @@ mod linux {
 #[cfg(not(target_os = "linux"))]
 mod kqueue {
     use libc::{
-        EBADF, EV_ADD, EVFILT_TIMER, NOTE_USECONDS, c_void, fstat, intptr_t, kevent, shutdown,
-        stat, uintptr_t,
+        EBADF, EV_ADD, EVFILT_TIMER, NOTE_USECONDS, c_void, fstat, intptr_t, kevent, stat,
+        uintptr_t,
     };
 
     use crate::backend::kqueue::driver::pending::PendingCompletion;
@@ -58,10 +58,7 @@ mod kqueue {
             if backend.pending.is_full()
                 && !matches!(
                     &sqe.0,
-                    SqeInner::Quickack
-                        | SqeInner::Shutdown { .. }
-                        | SqeInner::Cancel { .. }
-                        | SqeInner::CancelCreate { .. }
+                    SqeInner::Quickack | SqeInner::Cancel { .. } | SqeInner::CancelCreate { .. }
                 )
             {
                 return Err(PushError);
@@ -127,12 +124,6 @@ mod kqueue {
                     backend.submit_send_msg_tagged_inner(ud, slot, msg)
                 },
                 SqeInner::Quickack => true,
-                SqeInner::Shutdown { slot, how } => {
-                    if let Some(raw) = backend.raw_fd(slot) {
-                        unsafe { shutdown(raw, how) };
-                    }
-                    true
-                }
                 SqeInner::Cancel { target } => backend.cancel_inner(target),
                 SqeInner::Interval { sec, nsec, ud } => {
                     let micros = (i128::from(sec) * 1_000_000 + i128::from(nsec) / 1_000)

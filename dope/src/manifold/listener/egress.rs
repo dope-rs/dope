@@ -13,8 +13,7 @@ use crate::manifold::env::Env;
 use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::socket::msg::IoVec;
-use dope_net::Transport;
-use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PEND_SHUTDOWN, Slot};
+use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, Slot};
 use dope_net::wire::send::Vectored;
 use dope_net::wire::{Reclaim, Wire};
 
@@ -319,17 +318,6 @@ where
             }
             if flags & PEND_EGRESS != 0 {
                 self.as_mut().commit_chunk(idx, driver);
-            }
-            if flags & PEND_SHUTDOWN != 0 {
-                let this = self.as_mut().project();
-                let how = this
-                    .pool
-                    .get(idx)
-                    .map(|s| s.state.pending.shutdown_how())
-                    .unwrap_or(0);
-                if let Some(fd) = this.pool.fd_of(idx) {
-                    let _ = <E::Transport as Transport>::submit_shutdown(driver, fd, how);
-                }
             }
         }
     }

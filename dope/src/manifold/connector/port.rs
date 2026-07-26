@@ -346,7 +346,6 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
         self.with_receiver(token, |receiver| {
             receiver.drain(push);
             Requests {
-                shutdown: None,
                 close: receiver.take_close().then_some(CloseKind::Reconnect),
             }
         })

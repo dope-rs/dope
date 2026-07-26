@@ -280,14 +280,6 @@ impl Sqe {
         )
     }
 
-    pub fn shutdown(fd: &Fd, how: i32) -> Self {
-        Self::new(
-            Shutdown::new(Fixed(fd.slot().raw()), how)
-                .build()
-                .user_data(0),
-        )
-    }
-
     pub fn shutdown_linked_at(slot: FdSlot, how: i32) -> Self {
         Self::new(
             Shutdown::new(Fixed(slot.raw()), how)
@@ -314,10 +306,8 @@ impl Sqe {
     }
 
     /// Arms a kernel-owned recurring timer.
-    ///
-    /// The timer specification is referenced by the multishot operation and
-    /// must therefore remain live until the driver is torn down or the timer
-    /// is cancelled.
+    /// The multishot operation borrows `timer` until cancellation or driver
+    /// teardown.
     pub fn interval(timer: &'static Timespec, op: Token) -> Self {
         Self::new(
             Timeout::new(timer)

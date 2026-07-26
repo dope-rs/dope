@@ -3,7 +3,8 @@ use std::pin::Pin;
 use std::task::Poll;
 
 use super::{ConnectOutcome, ConnectorHandle};
-use crate::{Context, Fiber, Io};
+use crate::io::Io;
+use crate::{Context, Fiber};
 use dope::manifold::connector::source::DialKey;
 use dope_net::Transport;
 use std::io::Error;
@@ -59,7 +60,7 @@ impl<'scope, 'd, T: Transport> Fiber<'d> for Connect<'scope, 'd, T>
 where
     T::Addr: Clone,
 {
-    type Output = io::Result<Io<'d, ConnectorHandle<'scope, 'd, T>>>;
+    type Output = io::Result<Io<'scope, 'd>>;
 
     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -79,7 +80,7 @@ where
         match this.host.port.resolve(key, unsafe { cx.waker_unchecked() }) {
             ConnectOutcome::Conn(token) => {
                 this.stage = Stage::Done;
-                Poll::Ready(Ok(Io::new(this.host, token)))
+                Poll::Ready(Ok(this.host.stream(token)))
             }
             ConnectOutcome::Failed(error) => {
                 this.stage = Stage::Done;

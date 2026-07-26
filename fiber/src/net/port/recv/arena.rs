@@ -1,17 +1,15 @@
 use std::cell::Cell;
 use std::io::{self, Error, ErrorKind};
 
-use crate::io::RecvBuffer;
-
-use super::NONE;
 use super::queue::{QueueState, RecvQueue};
-use super::raw::{RecvSlot, Recycle};
+use super::slots::{Recycle, Slot};
+use super::{Buffer, NONE};
 
 const RECV_SLOTS_PER_CONN: usize = 4;
 const MIN_RECV_SLOTS: usize = 256;
 
 pub(in crate::net) struct RecvArena<'d> {
-    slots: Box<[RecvSlot<'d>]>,
+    slots: Box<[Slot<'d>]>,
     reserved_free: Cell<u32>,
     shared_free: Cell<u32>,
 }
@@ -65,7 +63,7 @@ impl<'d> RecvArena<'d> {
     pub(in crate::net::port) fn with_layout(layout: RecvLayout) -> Self {
         let slots: Box<[_]> = (0..layout.slots)
             .map(|index| {
-                RecvSlot::free(
+                Slot::free(
                     if index + 1 == layout.connections || index + 1 == layout.slots {
                         NONE
                     } else {
@@ -121,7 +119,7 @@ impl<'d> RecvArena<'d> {
     pub(in crate::net::port) fn push(
         &self,
         queue: &RecvQueue,
-        value: RecvBuffer<'d>,
+        value: Buffer<'d>,
         len: u32,
     ) -> Result<(), PushError> {
         let state = queue.state();
@@ -169,7 +167,7 @@ impl<'d> RecvArena<'d> {
         Ok(())
     }
 
-    pub(in crate::net::port) fn pop(&self, queue: &RecvQueue) -> Option<RecvBuffer<'d>> {
+    pub(in crate::net::port) fn pop(&self, queue: &RecvQueue) -> Option<Buffer<'d>> {
         let state = queue.state();
         let index = state.head()?;
         let slot = &self.slots[index as usize];

@@ -8,7 +8,7 @@ use o3::buffer::RetainBytes;
 use o3::collections::CellQueue;
 use pin_project::pin_project;
 
-use crate::io::{Host, Io};
+use crate::io::Io;
 use crate::{Context, Fiber, WaitQueue, Waiter};
 use dope::DriverContext;
 use dope::EventRef;
@@ -297,9 +297,6 @@ where
             {
                 port.failed(conn);
             }
-            if let Some(how) = requests.shutdown {
-                inner.shutdown(conn, how);
-            }
             if requests.close {
                 inner.close(conn);
             }
@@ -333,11 +330,9 @@ impl<'scope, 'd> ListenerHandle<'scope, 'd> {
             waiter: Waiter::new(),
         }
     }
-}
 
-impl<'scope, 'd> Host<'d> for ListenerHandle<'scope, 'd> {
-    fn port(&self) -> &Port<'d> {
-        &self.port.connections
+    fn stream(self, id: Token) -> Io<'scope, 'd> {
+        Io::new(&self.port.connections, id)
     }
 }
 
@@ -399,7 +394,7 @@ pub struct Accept<'scope, 'd> {
 }
 
 impl<'scope, 'd> Fiber<'d> for Accept<'scope, 'd> {
-    type Output = io::Result<Io<'d, ListenerHandle<'scope, 'd>>>;
+    type Output = io::Result<Io<'scope, 'd>>;
 
     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
@@ -420,7 +415,7 @@ impl<'scope, 'd> Fiber<'d> for Accept<'scope, 'd> {
             };
             if this.host.port.connections.contains(id) {
                 waiter.unregister();
-                return Poll::Ready(Ok(Io::new(this.host, id)));
+                return Poll::Ready(Ok(this.host.stream(id)));
             }
         }
     }
