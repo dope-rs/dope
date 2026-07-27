@@ -2,6 +2,8 @@ use std::pin::Pin;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use pin_project::{pin_project, pinned_drop};
+
 use crate::{Context, Fiber};
 use dope::manifold::timer::starved::Waiter;
 use dope::manifold::timer::{Ticket, Timer};
@@ -17,9 +19,11 @@ impl<'d, const ID: u8> TimerExt<'d, ID> for Timer<'d, ID> {
     }
 }
 
+#[pin_project(PinnedDrop, !Unpin)]
 pub struct Sleep<'a, 'd, const ID: u8 = 0> {
     deadline: Instant,
     ticket: Option<Ticket>,
+    #[pin]
     waiter: Waiter<'d>,
     timer: &'a Timer<'d, ID>,
 }
@@ -34,41 +38,9 @@ impl<'a, 'd, const ID: u8> Sleep<'a, 'd, ID> {
         }
     }
 
-    fn poll_step(&mut self, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
-        if Instant::now() >= self.deadline {
-            let waiter = unsafe { Pin::new_unchecked(&self.waiter) };
-            self.timer.unregister_starved(waiter);
-            self.cancel_step();
-            return Poll::Ready(());
-        }
-        let wake = cx.completion_waker();
-        match self.ticket {
-            None => match self.timer.try_arm(self.deadline, wake) {
-                Some(t) => {
-                    self.ticket = Some(t);
-                    let waiter = unsafe { Pin::new_unchecked(&self.waiter) };
-                    self.timer.unregister_starved(waiter);
-                }
-                None => {
-                    let waiter = unsafe { Pin::new_unchecked(&self.waiter) };
-                    self.timer.register_starved(waiter, self.deadline, wake);
-                }
-            },
-            Some(t) => {
-                if self.timer.is_fired(t) {
-                    self.timer.cancel(t);
-                    self.ticket = None;
-                    return Poll::Ready(());
-                }
-                self.timer.replace_waker(t, wake);
-            }
-        }
-        Poll::Pending
-    }
-
-    fn cancel_step(&mut self) {
-        if let Some(t) = self.ticket.take() {
-            self.timer.cancel(t);
+    fn cancel_ticket(ticket: &mut Option<Ticket>, timer: &Timer<'d, ID>) {
+        if let Some(t) = ticket.take() {
+            timer.cancel(t);
         }
     }
 }
@@ -77,15 +49,43 @@ impl<'d, const ID: u8> Fiber<'d> for Sleep<'_, 'd, ID> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
-        let this = unsafe { self.get_unchecked_mut() };
-        this.poll_step(cx)
+        if Instant::now() >= self.as_ref().get_ref().deadline {
+            let this = self.project();
+            this.timer.unregister_starved(this.waiter.as_ref());
+            Self::cancel_ticket(this.ticket, this.timer);
+            return Poll::Ready(());
+        }
+        let this = self.project();
+        let wake = cx.completion_waker();
+        match *this.ticket {
+            None => match this.timer.try_arm(*this.deadline, wake) {
+                Some(t) => {
+                    *this.ticket = Some(t);
+                    this.timer.unregister_starved(this.waiter.as_ref());
+                }
+                None => {
+                    this.timer
+                        .register_starved(this.waiter.as_ref(), *this.deadline, wake);
+                }
+            },
+            Some(t) => {
+                if this.timer.is_fired(t) {
+                    this.timer.cancel(t);
+                    *this.ticket = None;
+                    return Poll::Ready(());
+                }
+                this.timer.replace_waker(t, wake);
+            }
+        }
+        Poll::Pending
     }
 }
 
-impl<const ID: u8> Drop for Sleep<'_, '_, ID> {
-    fn drop(&mut self) {
-        let waiter = unsafe { Pin::new_unchecked(&self.waiter) };
-        self.timer.unregister_starved(waiter);
-        self.cancel_step();
+#[pinned_drop]
+impl<const ID: u8> PinnedDrop for Sleep<'_, '_, ID> {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        this.timer.unregister_starved(this.waiter.as_ref());
+        Self::cancel_ticket(this.ticket, this.timer);
     }
 }
