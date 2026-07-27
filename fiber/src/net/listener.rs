@@ -218,9 +218,6 @@ where
     fn apply_requests(mut self: Pin<&mut Self>, conn: Token, driver: &mut DriverContext<'_, 'd>) {
         let port = self.as_ref().get_ref().port;
         let requests = port.connections.requests(conn);
-        // SAFETY: the deferred queue contains only tokens emitted by `inner`,
-        // whose route is the const `ID` carried by this wrapper.
-        let typed = unsafe { TypedToken::<Inner<'scope, 'd, ID, T, W>>::new_unchecked(conn) };
         if let Some(requests) = requests {
             let inner = self.as_ref().project_ref().inner.get_ref();
             if let Some(bytes) = requests.send
@@ -232,7 +229,7 @@ where
                 inner.close(conn);
             }
         }
-        Manifold::activate(self.as_mut().project().inner, typed, driver);
+        self.as_mut().project().inner.activate(conn, driver);
         Self::sync_send(self.as_ref().project_ref().inner, port, conn);
     }
 }
@@ -264,7 +261,7 @@ where
             _ => None,
         };
         let port = self.as_ref().get_ref().port;
-        Manifold::dispatch(self.as_mut().project().inner, ev, driver);
+        self.as_mut().project().inner.dispatch(ev, driver);
         if let Some(conn) = conn {
             Self::sync_send(self.as_ref().project_ref().inner, port, conn);
         }
@@ -275,7 +272,7 @@ where
         while let Some(conn) = port.connections.pop_deferred_request() {
             self.as_mut().apply_requests(conn, driver);
         }
-        Manifold::pre_park(self.project().inner, driver);
+        self.project().inner.pre_park(driver);
     }
 
     fn activate(
@@ -287,11 +284,11 @@ where
     }
 
     fn idle(self: Pin<&Self>) -> Idle {
-        Manifold::idle(self.project_ref().inner)
+        self.project_ref().inner.idle()
     }
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        Manifold::shutdown(self.project().inner, driver);
+        self.project().inner.shutdown(driver);
     }
 }
 

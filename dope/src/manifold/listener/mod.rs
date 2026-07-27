@@ -258,6 +258,19 @@ where
         };
         self.dirty.mark(idx, &slot.state.pending, PEND_CLOSE);
     }
+
+    pub fn activate(mut self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>) {
+        let idx = {
+            let mut fields = self.as_mut().project();
+            let Some((idx, slot)) = fields.pool.by_target_mut(target) else {
+                return;
+            };
+            fields.app.as_mut().activate(slot, fields.aux, driver);
+            idx
+        };
+        self.as_mut().maybe_close_inherent(idx, driver);
+        self.flush_dirty(driver);
+    }
 }
 
 impl<'d, const ID: u8, A, E> Manifold<'d> for Listener<'d, ID, A, E>
@@ -290,18 +303,7 @@ where
         target: TypedToken<Self>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
-        let mut this = self;
-        let conn_id = target.into_inner();
-        let idx = {
-            let mut fields = this.as_mut().project();
-            let Some((idx, slot)) = fields.pool.by_target_mut(conn_id) else {
-                return;
-            };
-            fields.app.as_mut().activate(slot, fields.aux, driver);
-            idx
-        };
-        this.as_mut().maybe_close_inherent(idx, driver);
-        this.flush_dirty(driver);
+        self.activate(target.into_inner(), driver);
     }
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
