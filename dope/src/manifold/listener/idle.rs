@@ -48,12 +48,10 @@ impl IdleSet {
         if !self.ensure(i) {
             return;
         }
-        self.queue.remove(i);
         let deadline = now + self.window;
-        let Some(entry) = self.queue.vacant_entry(i) else {
+        if self.queue.refresh_back(i, deadline).is_err() {
             unreachable!()
-        };
-        entry.push_back(deadline);
+        }
     }
 
     pub(super) fn cancel(&mut self, idx: SlotIndex) {
