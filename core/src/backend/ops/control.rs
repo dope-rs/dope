@@ -43,7 +43,8 @@ mod linux {
     use io_uring::types::{CancelBuilder, Fixed};
     use libc::{c_int, c_void};
 
-    use crate::backend::ops::submission::SubmissionBackend;
+    use crate::backend::ops::raw::submission::SubmissionBackend;
+    use crate::backend::uring::raw::submission::Submission;
     use crate::backend::uring::sqe::Sqe;
 
     use super::{Backend, BorrowedFd, ControlBackend, PushError, Token, io};
@@ -97,7 +98,7 @@ mod linux {
             )
             .build()
             .user_data(ud.raw());
-            if unsafe { backend.uring.submission().push(&sqe) }.is_ok() {
+            if Submission::push_once(&mut backend.uring, &sqe).is_ok() {
                 Ok(())
             } else {
                 backend.setsockopt.remove(key);

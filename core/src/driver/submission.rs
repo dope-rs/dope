@@ -1,10 +1,10 @@
-use crate::backend::ops::submission::SubmissionBackend;
+use crate::backend::ops::raw::submission::SubmissionBackend;
 use crate::backend::{Backend, Sqe};
 
 use super::{DriverContext, PushError};
 
 pub mod raw {
-    use crate::backend::ops::submission::SubmissionBackend;
+    use crate::backend::ops::raw::submission::SubmissionBackend;
     use crate::backend::{Backend, RawSqe};
 
     use super::{DriverContext, PushError};

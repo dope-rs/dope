@@ -9,17 +9,18 @@ pub(crate) trait SubmissionBackend {
 #[cfg(target_os = "linux")]
 mod linux {
     use crate::backend::uring::driver::files::Admission;
+    use crate::backend::uring::raw::submission::Submission;
 
     use super::{Backend, PushError, Sqe, SubmissionBackend};
 
     impl SubmissionBackend for Backend {
         fn push(backend: &mut Backend, sqe: Sqe) -> Result<(), PushError> {
             let Some(create) = sqe.create_meta() else {
-                return Backend::entry_push(&mut backend.uring, sqe.entry());
+                return Submission::push(&mut backend.uring, sqe.entry());
             };
             match backend.files.admission(create.slot) {
                 Admission::Start => {
-                    Backend::entry_push(&mut backend.uring, sqe.entry())?;
+                    Submission::push(&mut backend.uring, sqe.entry())?;
                     backend.files.begin_create(create);
                     Ok(())
                 }
