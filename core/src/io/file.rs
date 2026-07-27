@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, Error, ErrorKind};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
-use crate::backend::Sqe;
+use crate::backend::RawSqe;
 use crate::driver::token::Token;
 use libc::AT_FDCWD;
 use libc::c_char;
@@ -56,12 +56,6 @@ impl OsFile {
     pub fn as_fd(&self) -> BorrowedFd<'_> {
         self.inner.as_fd()
     }
-
-    /// # Safety
-    /// `self` must stay open and `buf` stable and unaliased until completion.
-    pub unsafe fn read_at(&self, buf: &mut [u8], offset: u64, op: Token) -> Sqe {
-        unsafe { Sqe::read(self.inner.as_raw_fd(), buf, offset, op) }
-    }
 }
 
 pub struct OpenPath {
@@ -79,10 +73,8 @@ impl OpenPath {
         self.path.as_ptr()
     }
 
-    /// # Safety
-    /// `self` must remain valid until completion.
-    pub unsafe fn open_at(&self, flags: i32, op: Token) -> Sqe {
-        Sqe::openat(AT_FDCWD, self.path.as_ptr(), flags, 0, op)
+    pub fn open_at(&self, flags: i32, op: Token) -> RawSqe {
+        RawSqe::openat(AT_FDCWD, self.path.as_ptr(), flags, 0, op)
     }
 }
 

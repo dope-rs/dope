@@ -4,10 +4,10 @@ use o3::buffer::{Pooled, Shared};
 use o3::collections::CellQueue;
 use o3::marker::ThreadBound;
 
-use super::core::{Core, RecvError, Submit};
+use super::raw::core::{Core, RecvError, Submit};
 use crate::link::egress::arena::Arena;
 use crate::link::egress::queue::Queue;
-use crate::link::pool::SendOutcome;
+use crate::link::raw::pool::SendOutcome;
 use crate::wire::send::{Plain, Storage, Vectored};
 use crate::wire::{Reclaim, Wire};
 use dope_core::backend::Sqe;

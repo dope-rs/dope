@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use dope_core::io::{ConnectEvent, SocketEvent};
 use dope_net::Transport;
-use dope_net::link::pool::{ConnectStep, SocketStep};
+use dope_net::link::raw::pool::{ConnectStep, SocketStep};
 
 use super::Core;
 use super::send::SendPhase;

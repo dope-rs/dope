@@ -45,7 +45,7 @@ mod linux {
                     let Some(item) = cq.next() else { break };
                     let result = item.result();
                     let flags = item.flags();
-                    let user_data = match Backend::complete_cqe(
+                    let token = match Backend::complete_cqe(
                         setsockopt,
                         files,
                         routes,
@@ -58,13 +58,12 @@ mod linux {
                             provided.defer_completion(bid);
                             continue;
                         }
-                        Disposition::Public(user_data) => user_data,
+                        Disposition::Public(token) => token,
                     };
-                    let event = Event::from_cqe(
-                        Cqe::new(user_data, result, flags),
-                        reference,
-                        |len, bid| Some(provided.complete(bid, len as usize)),
-                    );
+                    let event =
+                        Event::from_cqe(Cqe::new(token, result, flags), reference, |len, bid| {
+                            Some(provided.complete(bid, len as usize))
+                        });
                     if let Ok(event) = event {
                         buf[n] = Some(event);
                         n += 1;
@@ -135,7 +134,7 @@ mod kqueue {
                 };
                 let PendingCqe { cqe, id } = match pending {
                     PendingCompletion::Accept { ud, result, more } => PendingCqe {
-                        cqe: Cqe::new(ud.raw(), result, if more { MORE } else { 0 }),
+                        cqe: Cqe::new(ud, result, if more { MORE } else { 0 }),
                         id: None,
                     },
                     PendingCompletion::Recv {
@@ -149,24 +148,24 @@ mod kqueue {
                             flags |= BUFFER | (((*id).into_raw() as u32) << BUFFER_SHIFT);
                         }
                         PendingCqe {
-                            cqe: Cqe::new(ud.raw(), result, flags),
+                            cqe: Cqe::new(ud, result, flags),
                             id: bid,
                         }
                     }
                     PendingCompletion::Write { ud, result } => PendingCqe {
-                        cqe: Cqe::new(ud.raw(), result, 0),
+                        cqe: Cqe::new(ud, result, 0),
                         id: None,
                     },
                     PendingCompletion::Create { ud, result, .. } => PendingCqe {
-                        cqe: Cqe::new(ud.raw(), result, 0),
+                        cqe: Cqe::new(ud, result, 0),
                         id: None,
                     },
                     PendingCompletion::Timer { ud } => PendingCqe {
-                        cqe: Cqe::new(ud.raw(), 0, 0),
+                        cqe: Cqe::new(ud, 0, 0),
                         id: None,
                     },
                     PendingCompletion::Shutdown => PendingCqe {
-                        cqe: Cqe::new(SHUTDOWN.raw(), 0, 0),
+                        cqe: Cqe::new(SHUTDOWN, 0, 0),
                         id: None,
                     },
                 };

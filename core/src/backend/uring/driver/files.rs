@@ -1,5 +1,5 @@
 
-use crate::driver::token::SlotIndex;
+use crate::driver::token::{SlotIndex, Token};
 use crate::io::fd::FdSlot;
 use o3::collections::FixedQueue;
 use crate::backend::uring::sqe::Create;
@@ -10,7 +10,10 @@ use std::mem::replace;
 enum FileState {
     Empty,
     Live,
-    Creating { user_data: u64, close_pending: bool },
+    Creating {
+        token: Token,
+        close_pending: bool,
+    },
     Closing,
 }
 
@@ -59,7 +62,7 @@ impl FileTable {
             FileState::Empty
         ));
         self.state[create.slot.raw() as usize] = FileState::Creating {
-            user_data: create.user_data,
+            token: create.token,
             close_pending: false,
         };
     }
@@ -72,11 +75,11 @@ impl FileTable {
         self.state[slot.raw() as usize] = FileState::Live;
     }
 
-    pub(super) fn complete_create(&mut self, slot: SlotIndex, result: i32) -> Option<u64> {
+    pub(super) fn complete_create(&mut self, slot: SlotIndex, result: i32) -> Option<Token> {
         let index = slot.raw() as usize;
         let state = self.state.get_mut(index)?;
         let FileState::Creating {
-            user_data,
+            token,
             close_pending,
         } = replace(state, FileState::Empty)
         else {
@@ -98,7 +101,7 @@ impl FileTable {
             };
             entry.push_back(FdSlot::new(index as u32));
         }
-        Some(user_data)
+        Some(token)
     }
 
     pub(super) fn complete_close(&mut self, slot: SlotIndex) {
@@ -179,11 +182,11 @@ impl FileTable {
                 }
             }
             FileState::Creating {
-                user_data,
+                token,
                 close_pending: false,
             } => {
                 self.state[index] = FileState::Creating {
-                    user_data,
+                    token,
                     close_pending: true,
                 };
             }

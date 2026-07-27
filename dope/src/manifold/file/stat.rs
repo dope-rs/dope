@@ -10,7 +10,7 @@ use dope_core::io::StatEvent;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
 
-use super::table::OperationTable;
+use super::raw::table::OperationTable;
 use dope_core::driver::ready::CompletionWaker;
 use std::io::Error;
 

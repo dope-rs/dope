@@ -3,6 +3,8 @@ use dope_test::{not_send, not_sync, require_send};
 const _: fn() = || {
     not_send::<dope_core::backend::Sqe, _>();
     not_sync::<dope_core::backend::Sqe, _>();
+    not_send::<dope_core::backend::RawSqe, _>();
+    not_sync::<dope_core::backend::RawSqe, _>();
     not_send::<dope_core::io::fd::Fd<'static>, _>();
     not_sync::<dope_core::io::fd::Fd<'static>, _>();
     not_send::<dope_core::driver::token::Token, _>();
@@ -21,6 +23,10 @@ fn external_pipe_is_send() {
 
 #[test]
 fn local_capabilities_keep_their_layout() {
+    assert_eq!(
+        size_of::<dope_core::backend::RawSqe>(),
+        size_of::<dope_core::backend::Sqe>()
+    );
     assert_eq!(size_of::<dope_core::io::fd::FdSlot>(), size_of::<u32>());
     assert_eq!(
         size_of::<dope_core::driver::ready::ReadyKey>(),

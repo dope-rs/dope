@@ -33,7 +33,7 @@ use dope_core::io::EventKind;
 use dope_net::Transport;
 use dope_net::link::egress::arena::Arena;
 use dope_net::link::egress::config::Config;
-use dope_net::link::pool::Pool;
+use dope_net::link::raw::pool::Pool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue};
 use dope_net::wire::Wire;
 use pin_project::pin_project;

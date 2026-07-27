@@ -1,8 +1,8 @@
-mod accept;
 pub mod application;
 pub mod config;
 pub mod egress;
 mod idle;
+mod raw;
 pub mod recv;
 mod send;
 pub mod state;
@@ -16,13 +16,12 @@ use std::pin::Pin;
 use std::process::abort;
 use std::time::Duration;
 
-use accept::Accept;
-use accept::AcceptPhase;
 use application::Application;
 use application::ApplicationPhase;
 use config::Config;
 use egress::{EgressPhase, SlotFlow};
 use idle::{IdlePhase, IdleSet};
+use raw::accept::{Accept, AcceptPhase};
 use send::SendPhase;
 use state::{Aux, State};
 
@@ -42,7 +41,7 @@ use dope_core::io::Event;
 use dope_core::io::EventKind;
 use dope_net::Transport;
 use dope_net::link::egress::arena::Arena;
-use dope_net::link::pool::Pool;
+use dope_net::link::raw::pool::Pool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, SendBuffer, Slot};
 use dope_net::tcp::Tcp;
 use dope_net::wire::Wire;

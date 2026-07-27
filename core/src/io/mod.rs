@@ -12,7 +12,6 @@ use std::io::Error;
 use std::os::fd::OwnedFd;
 
 use crate::driver::DriverRef;
-use crate::driver::token::KIND_SHIFT;
 use crate::driver::token::kind::ACCEPT;
 use crate::driver::token::kind::CONNECT;
 use crate::driver::token::kind::OPEN;
@@ -54,22 +53,22 @@ pub(crate) const BUFFER_SHIFT: u32 = 16;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Cqe {
-    user_data: u64,
+    token: Token,
     result: i32,
     flags: u32,
 }
 
 impl Cqe {
-    pub(crate) const fn new(user_data: u64, result: i32, flags: u32) -> Self {
+    pub(crate) const fn new(token: Token, result: i32, flags: u32) -> Self {
         Self {
-            user_data,
+            token,
             result,
             flags,
         }
     }
 
     pub(crate) fn kind(self) -> u8 {
-        (self.user_data >> KIND_SHIFT) as u8
+        self.token.kind()
     }
 
     fn more(self) -> bool {
@@ -92,6 +91,16 @@ pub enum RecvEvent<'d> {
     Cancelled,
     Starved,
     Failed(i32),
+}
+
+impl RecvEvent<'_> {
+    fn from_errno(result: i32) -> Self {
+        match -result {
+            ECANCELED => Self::Cancelled,
+            ENOBUFS | EAGAIN | EINTR => Self::Starved,
+            errno => Self::Failed(errno),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -176,129 +185,6 @@ pub enum EventKind<'d> {
     Shutdown,
 }
 
-#[derive(Clone, Copy)]
-enum DecodedRecv {
-    Data { len: u32, bid: u16 },
-    Discarded { len: u32 },
-    Eof,
-    Cancelled,
-    Starved,
-    Failed(i32),
-}
-
-impl DecodedRecv {
-    fn from_errno(result: i32) -> Self {
-        match -result {
-            ECANCELED => Self::Cancelled,
-            ENOBUFS | EAGAIN | EINTR => Self::Starved,
-            errno => Self::Failed(errno),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum DecodedAccept {
-    Accepted(FdSlot),
-    Failed,
-}
-
-#[derive(Clone, Copy)]
-enum DecodedEvent {
-    Accept(Token, bool, DecodedAccept),
-    Recv(Token, bool, DecodedRecv),
-    Send(Token, SendEvent),
-    Timer(Token),
-    Socket(Token, i32),
-    Connect(Token, i32),
-    Write(Token, WriteEvent),
-    Sync(Token, SyncEvent),
-    Open(Token, i32),
-    Read(Token, ReadEvent),
-    Stat(Token, StatEvent),
-    Shutdown,
-}
-
-impl DecodedEvent {
-    fn decode(c: Cqe) -> Result<Self, DecodeError> {
-        let token = Token::try_from_raw(c.user_data).ok_or(DecodeError)?;
-        if token == SHUTDOWN {
-            return Ok(Self::Shutdown);
-        }
-        match c.kind() {
-            ACCEPT => {
-                let e = match c.result {
-                    n if n >= 0 => DecodedAccept::Accepted(FdSlot::new(n as u32)),
-                    _ => DecodedAccept::Failed,
-                };
-                Ok(Self::Accept(token, c.more(), e))
-            }
-            RECV => {
-                let e = match c.result {
-                    n if n > 0 => {
-                        if !c.has_buffer() {
-                            debug_assert!(false, "RECV data cqe without buffer flag");
-                            return Err(DecodeError);
-                        }
-                        DecodedRecv::Data {
-                            len: n as u32,
-                            bid: c.bid_raw(),
-                        }
-                    }
-                    0 => DecodedRecv::Eof,
-                    n => DecodedRecv::from_errno(n),
-                };
-                Ok(Self::Recv(token, c.more(), e))
-            }
-            RECV_DISCARD => {
-                let e = match c.result {
-                    n if n > 0 => DecodedRecv::Discarded { len: n as u32 },
-                    0 => DecodedRecv::Eof,
-                    n => DecodedRecv::from_errno(n),
-                };
-                Ok(Self::Recv(token, c.more(), e))
-            }
-            SEND => {
-                let e = if c.result >= 0 {
-                    SendEvent::Sent(c.result as u32)
-                } else {
-                    SendEvent::Failed(-c.result)
-                };
-                Ok(Self::Send(token, e))
-            }
-            WRITE => {
-                let e = if c.result >= 0 {
-                    WriteEvent::Wrote(c.result as u32)
-                } else {
-                    WriteEvent::Failed(-c.result)
-                };
-                Ok(Self::Write(token, e))
-            }
-            SYNC => {
-                let e = if c.result >= 0 {
-                    SyncEvent::Synced
-                } else {
-                    SyncEvent::Failed(-c.result)
-                };
-                Ok(Self::Sync(token, e))
-            }
-            OPEN => Ok(Self::Open(token, c.result)),
-            READ => Ok(Self::Read(token, ReadEvent::from_result(c.result))),
-            STAT => {
-                let e = if c.result >= 0 {
-                    StatEvent::Done
-                } else {
-                    StatEvent::Failed(-c.result)
-                };
-                Ok(Self::Stat(token, e))
-            }
-            TIMER => Ok(Self::Timer(token)),
-            SOCKET => Ok(Self::Socket(token, c.result)),
-            CONNECT => Ok(Self::Connect(token, c.result)),
-            _ => Err(DecodeError),
-        }
-    }
-}
-
 pub enum EventRef<'a, 'd> {
     Accept(Token, bool, &'a AcceptEvent<'d>),
     Recv(Token, bool, &'a RecvEvent<'d>),
@@ -327,63 +213,108 @@ impl<'d> Event<'d> {
             .then(|| provided(result.max(0) as u32, cqe.bid_raw()))
             .flatten()
             .map(|completed| ProvidedLease::from_completion(reference, completed));
-        let kind = match DecodedEvent::decode(cqe)? {
-            DecodedEvent::Accept(token, more, event) => {
-                let event = match event {
-                    DecodedAccept::Accepted(slot) => {
-                        AcceptEvent::Accepted(AcceptedSlot::from_completion(slot, reference))
-                    }
-                    DecodedAccept::Failed => AcceptEvent::Failed,
-                };
-                EventKind::Accept(token, more, event)
-            }
-            DecodedEvent::Recv(token, more, event) => {
-                let event = match event {
-                    DecodedRecv::Data { len, bid } => {
+        let token = cqe.token;
+        let kind = if token == SHUTDOWN {
+            EventKind::Shutdown
+        } else {
+            match operation {
+                ACCEPT => {
+                    let event = if result >= 0 {
+                        AcceptEvent::Accepted(AcceptedSlot::from_completion(
+                            FdSlot::new(result as u32),
+                            reference,
+                        ))
+                    } else {
+                        AcceptEvent::Failed
+                    };
+                    EventKind::Accept(token, cqe.more(), event)
+                }
+                RECV => {
+                    let event = if result > 0 {
+                        if !cqe.has_buffer() {
+                            debug_assert!(false, "RECV data cqe without buffer flag");
+                            return Err(DecodeError);
+                        }
                         let lease = provided.take().ok_or(DecodeError)?;
-                        debug_assert_eq!(lease.as_slice().len(), len as usize);
-                        debug_assert_eq!(bid, cqe.bid_raw());
+                        debug_assert_eq!(lease.as_slice().len(), result as usize);
                         RecvEvent::Data(lease)
-                    }
-                    DecodedRecv::Discarded { len } => RecvEvent::Discarded { len },
-                    DecodedRecv::Eof => RecvEvent::Eof,
-                    DecodedRecv::Cancelled => RecvEvent::Cancelled,
-                    DecodedRecv::Starved => RecvEvent::Starved,
-                    DecodedRecv::Failed(errno) => RecvEvent::Failed(errno),
-                };
-                EventKind::Recv(token, more, event)
+                    } else if result == 0 {
+                        RecvEvent::Eof
+                    } else {
+                        RecvEvent::from_errno(result)
+                    };
+                    EventKind::Recv(token, cqe.more(), event)
+                }
+                RECV_DISCARD => {
+                    let event = if result > 0 {
+                        RecvEvent::Discarded { len: result as u32 }
+                    } else if result == 0 {
+                        RecvEvent::Eof
+                    } else {
+                        RecvEvent::from_errno(result)
+                    };
+                    EventKind::Recv(token, cqe.more(), event)
+                }
+                SEND => EventKind::Send(
+                    token,
+                    if result >= 0 {
+                        SendEvent::Sent(result as u32)
+                    } else {
+                        SendEvent::Failed(-result)
+                    },
+                ),
+                WRITE => EventKind::Write(
+                    token,
+                    if result >= 0 {
+                        WriteEvent::Wrote(result as u32)
+                    } else {
+                        WriteEvent::Failed(-result)
+                    },
+                ),
+                SYNC => EventKind::Sync(
+                    token,
+                    if result >= 0 {
+                        SyncEvent::Synced
+                    } else {
+                        SyncEvent::Failed(-result)
+                    },
+                ),
+                OPEN => EventKind::Open(
+                    token,
+                    if result >= 0 {
+                        OpenEvent::Opened(Handle::take(result).into_owned())
+                    } else {
+                        OpenEvent::Failed(-result)
+                    },
+                ),
+                READ => EventKind::Read(token, ReadEvent::from_result(result)),
+                STAT => EventKind::Stat(
+                    token,
+                    if result >= 0 {
+                        StatEvent::Done
+                    } else {
+                        StatEvent::Failed(-result)
+                    },
+                ),
+                TIMER => EventKind::Timer(token),
+                SOCKET => EventKind::Socket(
+                    token,
+                    if result >= 0 {
+                        SocketEvent::Created
+                    } else {
+                        SocketEvent::Failed(Error::from_raw_os_error(-result))
+                    },
+                ),
+                CONNECT => EventKind::Connect(
+                    token,
+                    if result >= 0 {
+                        ConnectEvent::Connected
+                    } else {
+                        ConnectEvent::Failed(Error::from_raw_os_error(-result))
+                    },
+                ),
+                _ => return Err(DecodeError),
             }
-            DecodedEvent::Send(token, event) => EventKind::Send(token, event),
-            DecodedEvent::Timer(token) => EventKind::Timer(token),
-            DecodedEvent::Socket(token, result) => EventKind::Socket(
-                token,
-                if result >= 0 {
-                    SocketEvent::Created
-                } else {
-                    SocketEvent::Failed(Error::from_raw_os_error(-result))
-                },
-            ),
-            DecodedEvent::Connect(token, result) => EventKind::Connect(
-                token,
-                if result >= 0 {
-                    ConnectEvent::Connected
-                } else {
-                    ConnectEvent::Failed(Error::from_raw_os_error(-result))
-                },
-            ),
-            DecodedEvent::Write(token, event) => EventKind::Write(token, event),
-            DecodedEvent::Sync(token, event) => EventKind::Sync(token, event),
-            DecodedEvent::Open(token, result) => EventKind::Open(
-                token,
-                if result >= 0 {
-                    OpenEvent::Opened(Handle::take(result).into_owned())
-                } else {
-                    OpenEvent::Failed(-result)
-                },
-            ),
-            DecodedEvent::Read(token, event) => EventKind::Read(token, event),
-            DecodedEvent::Stat(token, event) => EventKind::Stat(token, event),
-            DecodedEvent::Shutdown => EventKind::Shutdown,
         };
         Ok(Self {
             kind,

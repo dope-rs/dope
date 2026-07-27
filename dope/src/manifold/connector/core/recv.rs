@@ -5,7 +5,7 @@ use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::RecvEvent;
 use dope_core::io::provided::ProvidedView;
 use dope_net::Transport;
-use dope_net::link::pool::DispatchRecv;
+use dope_net::link::raw::pool::DispatchRecv;
 use dope_net::wire::Wire;
 use o3::buffer::RetainBytes;
 

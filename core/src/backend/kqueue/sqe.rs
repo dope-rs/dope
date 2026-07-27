@@ -1,5 +1,4 @@
 use std::io;
-use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
 use std::time::Duration;
 
@@ -18,7 +17,6 @@ use crate::driver::token::kind::STAT;
 use crate::driver::token::kind::TIMER;
 use crate::driver::token::kind::WRITE;
 use libc::c_char;
-use std::slice::from_raw_parts_mut;
 use libc::msghdr;
 use libc::sockaddr;
 use libc::socklen_t;
@@ -39,7 +37,7 @@ impl From<Duration> for TimerSpec {
     }
 }
 
-pub enum SqeInner {
+pub(crate) enum SqeInner {
     Send {
         slot: FdSlot,
         ptr: *const u8,
@@ -124,18 +122,33 @@ pub enum SqeInner {
     },
 }
 
-pub struct Sqe(pub SqeInner, ThreadBound);
+pub struct Sqe(pub(crate) SqeInner, ThreadBound);
+
+/// A submission borrowing caller-owned resources through completion.
+#[repr(transparent)]
+pub struct RawSqe(Sqe);
 
 impl Sqe {
     fn new(inner: SqeInner) -> Self {
         Self(inner, ThreadBound::NEW)
     }
 
+}
+
+impl RawSqe {
+    fn new(inner: SqeInner) -> Self {
+        Self(Sqe::new(inner))
+    }
+
+    pub(crate) fn into_sqe(self) -> Sqe {
+        self.0
+    }
+
     pub fn send(fd: &Fd, buf: &[u8], op: Token) -> Self {
         Self::send_at(fd.slot(), buf, op)
     }
 
-    pub fn send_at(slot: FdSlot, buf: &[u8], op: Token) -> Self {
+    fn send_at(slot: FdSlot, buf: &[u8], op: Token) -> Self {
         Self::new(SqeInner::Send {
             slot,
             ptr: buf.as_ptr(),
@@ -144,9 +157,7 @@ impl Sqe {
         })
     }
 
-    /// # Safety
-    /// `fd` must stay open and `buf` stable and unchanged until completion.
-    pub unsafe fn write_fd(fd: RawFd, buf: &[u8], offset: u64, op: Token) -> Self {
+    pub fn write_fd(fd: RawFd, buf: &[u8], offset: u64, op: Token) -> Self {
         Self::new(SqeInner::WriteFd {
             fd,
             ptr: buf.as_ptr(),
@@ -166,27 +177,15 @@ impl Sqe {
         })
     }
 
-    /// # Safety
-    /// `fd` must stay open and `buf` stable and unaliased until completion.
-    pub unsafe fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
-        let buf = unsafe {
-            from_raw_parts_mut(buf.as_mut_ptr().cast::<MaybeUninit<u8>>(), buf.len())
-        };
-        unsafe { Self::read_uninit(fd, buf, offset, op.with_kind(READ)) }
+    pub fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
+        Self::read_raw(fd, buf.as_mut_ptr(), buf.len(), offset, op.with_kind(READ))
     }
 
-    /// # Safety
-    /// `fd` must stay open and `buf` stable and unaliased until completion.
-    pub unsafe fn read_uninit(
-        fd: RawFd,
-        buf: &mut [MaybeUninit<u8>],
-        offset: u64,
-        op: Token,
-    ) -> Self {
+    pub fn read_raw(fd: RawFd, ptr: *mut u8, len: usize, offset: u64, op: Token) -> Self {
         Self::new(SqeInner::Read {
             fd,
-            ptr: buf.as_mut_ptr().cast(),
-            len: buf.len() as u32,
+            ptr,
+            len: len as u32,
             offset,
             ud: op,
         })
@@ -208,20 +207,14 @@ impl Sqe {
         })
     }
 
-    /// # Safety
-    /// `fd` must belong to the receiving driver and stay live until completion.
-    pub unsafe fn recv_multi(fd: &Fd, _buf_group: u16, op: Token) -> Self {
+    pub fn recv_multi(fd: &Fd, _buf_group: u16, op: Token) -> Self {
         Self::new(SqeInner::RecvMulti {
             slot: fd.slot(),
             ud: op.with_kind(RECV),
         })
     }
 
-    pub const SUPPORTS_RECV_DISCARD: bool = false;
-
-    /// # Safety
-    /// `fd` must belong to the receiving driver and stay live until completion.
-    pub unsafe fn recv_discard(_fd: &Fd, _remaining: u64, _op: Token) -> Self {
+    pub fn recv_discard(_fd: &Fd, _remaining: u64, _op: Token) -> Self {
         unreachable!()
     }
 
@@ -254,6 +247,10 @@ impl Sqe {
             ud: op.with_kind(SEND),
         })
     }
+}
+
+impl Sqe {
+    pub const SUPPORTS_RECV_DISCARD: bool = false;
 
     pub fn quickack(_fd: &Fd) -> Self {
         Self::new(SqeInner::Quickack)
@@ -287,7 +284,7 @@ impl Sqe {
         Self::socket_at(domain, socket_type, protocol, fd.slot(), op)
     }
 
-    pub fn socket_at(
+    pub(crate) fn socket_at(
         domain: i32,
         socket_type: i32,
         protocol: i32,
@@ -302,7 +299,9 @@ impl Sqe {
             ud: op.with_kind(SOCKET),
         }))
     }
+}
 
+impl RawSqe {
     pub fn connect(fd: &Fd, addr_ptr: *const sockaddr, addr_len: u32, op: Token) -> Self {
         Self::new(SqeInner::Connect {
             slot: fd.slot(),

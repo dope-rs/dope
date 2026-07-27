@@ -4,24 +4,25 @@ use std::pin::Pin;
 
 use o3::collections::FixedHashTable;
 
-use super::Listener;
-use super::application::Application;
-use super::idle::IdlePhase;
-use super::state::State;
 use crate::DriverContext;
 use crate::hash;
 use crate::manifold;
 use crate::manifold::env::Env;
+use crate::manifold::listener::Listener;
+use crate::manifold::listener::application::Application;
+use crate::manifold::listener::idle::IdlePhase;
+use crate::manifold::listener::state::State;
 use crate::runtime::profile::RuntimeProfile;
-use dope_core::backend::Sqe;
+use dope_core::backend::{RawSqe, Sqe};
 use dope_core::driver::submission::Submission;
+use dope_core::driver::submission::raw::Submission as _;
 use dope_core::driver::token::kind::ACCEPT;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::AcceptEvent;
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::addr::Addr;
 use dope_net::Transport;
-use dope_net::link::core::Core;
+use dope_net::link::raw::core::Core;
 use dope_net::multishot::Multishot;
 
 struct PeerCount {
@@ -74,13 +75,13 @@ impl PeerCounts {
     }
 }
 
-pub(super) enum Outcome<'d> {
+enum Outcome<'d> {
     Accepted(Fd<'d>, Option<IpAddr>),
     Capped(IpAddr),
     Rejected,
 }
 
-pub(super) struct Accept<'d, T: Transport> {
+pub(in crate::manifold::listener) struct Accept<'d, T: Transport> {
     fd: Fd<'d>,
     arm: Multishot,
     accept_slot: SlotIndex,
@@ -92,7 +93,7 @@ pub(super) struct Accept<'d, T: Transport> {
 }
 
 impl<'d, T: Transport> Accept<'d, T> {
-    pub(super) fn new(
+    pub(in crate::manifold::listener) fn new(
         fd: Fd<'d>,
         max_connections: u32,
         stream: T::StreamConfig,
@@ -112,35 +113,44 @@ impl<'d, T: Transport> Accept<'d, T> {
         }
     }
 
-    pub(super) fn stream_config(&self) -> &T::StreamConfig {
+    pub(in crate::manifold::listener) fn stream_config(&self) -> &T::StreamConfig {
         &self.stream
     }
 
-    pub(super) fn needs_rearm(&self) -> bool {
+    pub(in crate::manifold::listener) fn needs_rearm(&self) -> bool {
         self.arm.needs_rearm()
     }
 
-    pub(super) fn request_rearm(&mut self) {
+    pub(in crate::manifold::listener) fn request_rearm(&mut self) {
         self.arm.request_rearm();
     }
 
-    pub(super) fn arm(&mut self, route: u8, driver: &mut DriverContext<'_, 'd>) {
+    pub(in crate::manifold::listener) fn arm(
+        &mut self,
+        route: u8,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
         let Some(ud) = self.arm.begin(route, self.accept_slot) else {
             return;
         };
         self.peer_addr = Addr::empty();
-        let pushed = driver
-            .push(Sqe::accept_oneshot(
-                &self.fd,
-                self.peer_addr.mut_ptr(),
-                self.peer_addr.len_ptr(),
-                ud,
-            ))
-            .is_ok();
+        let sqe = RawSqe::accept_oneshot(
+            &self.fd,
+            self.peer_addr.mut_ptr(),
+            self.peer_addr.len_ptr(),
+            ud,
+        );
+        // SAFETY: `Accept` owns the fixed fd and peer-address output until the
+        // arm completes or is canceled and quiesced.
+        let pushed = unsafe { driver.push_raw(sqe) }.is_ok();
         self.arm.settle(pushed);
     }
 
-    pub(super) fn stop_accept(&mut self, route: u8, driver: &mut DriverContext<'_, 'd>) {
+    pub(in crate::manifold::listener) fn stop_accept(
+        &mut self,
+        route: u8,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
         if self.arm.is_armed() {
             let token = Token::new(route, self.accept_slot, self.arm.current_epoch());
             let _ = driver.push(Sqe::cancel(token, ACCEPT));
@@ -149,7 +159,7 @@ impl<'d, T: Transport> Accept<'d, T> {
         self.arm.quiesce();
     }
 
-    pub(super) fn append_target(&self, route: u8, targets: &mut Vec<Token>) {
+    pub(in crate::manifold::listener) fn append_target(&self, route: u8, targets: &mut Vec<Token>) {
         if self.arm.is_armed() || self.canceling {
             targets.push(
                 Token::new(route, self.accept_slot, self.arm.current_epoch()).with_kind(ACCEPT),
@@ -157,7 +167,7 @@ impl<'d, T: Transport> Accept<'d, T> {
         }
     }
 
-    pub(super) fn release_peer_ip(&mut self, ip: IpAddr) {
+    pub(in crate::manifold::listener) fn release_peer_ip(&mut self, ip: IpAddr) {
         let Some(counts) = self.per_ip_counts.as_mut() else {
             return;
         };
@@ -171,7 +181,7 @@ impl<'d, T: Transport> Accept<'d, T> {
         counts.acquire(ip, self.per_ip_limit)
     }
 
-    pub(super) fn complete(
+    fn complete(
         &mut self,
         ud: Token,
         more: bool,
@@ -206,7 +216,7 @@ impl<'d, T: Transport> Accept<'d, T> {
     }
 }
 
-pub(super) trait AcceptPhase<'d, const ID: u8, A, E>
+pub(in crate::manifold::listener) trait AcceptPhase<'d, const ID: u8, A, E>
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,

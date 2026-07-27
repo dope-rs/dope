@@ -5,6 +5,7 @@ use o3::buffer::{Pooled, Shared};
 use super::Listener;
 use super::application::Application;
 use super::idle::IdlePhase;
+use super::raw::submission::Submission;
 use super::send::SendSource;
 use super::state::State;
 use super::state::WriteBuf;
@@ -14,7 +15,6 @@ use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::socket::msg::IoVec;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, Slot};
-use dope_net::wire::send::Vectored;
 use dope_net::wire::{Reclaim, Wire};
 
 pub(super) enum Egress {
@@ -135,19 +135,7 @@ impl<'d, W: Wire, C: Default + 'static> SlotFlow<'d> for Slot<'d, W, State<C>> {
 
     fn hand_split(&mut self, iovs: [IoVec; 2], ud: Token, driver: &mut DriverContext<'_, 'd>) {
         let was_inflight = self.core.is_send_inflight();
-        let vectored = Vectored::new(
-            &iovs,
-            &mut self.state.send.pending_iovs,
-            &mut self.state.send.pending_msghdr,
-        );
-        let consumed = Slot::<W, State<C>>::submit_wire_vectored(
-            &mut self.core,
-            &mut self.wire,
-            &mut self.send,
-            vectored,
-            ud,
-            driver,
-        );
+        let consumed = Submission::new(self, &iovs, ud, driver).submit();
         let armed = self.core.is_send_inflight() && !was_inflight;
         self.state.send.record_handoff(consumed, armed);
     }
