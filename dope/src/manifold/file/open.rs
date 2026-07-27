@@ -2,7 +2,7 @@ use std::os::fd::OwnedFd;
 
 use super::FileOutcome;
 use super::raw::OpenRequest;
-use super::table::OperationTable;
+use super::raw::table::OperationTable;
 use dope::DriverContext;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::token::kind::OPEN;

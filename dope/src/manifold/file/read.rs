@@ -3,10 +3,10 @@ use std::os::fd::AsRawFd;
 
 use super::FileOutcome;
 use super::raw::ReadRegion;
+use super::raw::table::OperationTable;
 use super::source::Source;
-use super::table::OperationTable;
 use dope::DriverContext;
-use dope_core::backend::Sqe;
+use dope_core::backend::RawSqe;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::token::kind::READ;
 use dope_core::driver::token::{KeyTag, Token};
@@ -35,7 +35,7 @@ struct ReadHold<'d> {
 }
 
 impl ReadHold<'_> {
-    fn prepare_submission(&mut self, token: Token) -> io::Result<Sqe> {
+    fn prepare_submission(&mut self, token: Token) -> io::Result<RawSqe> {
         if !matches!(self.flight, ReadFlight::Idle) {
             return Err(Self::invalid_flight());
         }

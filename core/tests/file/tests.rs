@@ -2,9 +2,9 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use dope_core::driver::completion::Completion;
-use dope_core::driver::submission::Submission;
+use dope_core::driver::submission::raw::Submission as _;
 
-use dope_core::backend::Sqe;
+use dope_core::backend::RawSqe;
 use dope_core::driver::DriverContext;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::file::{self, OpenPath, OsFile};
@@ -65,8 +65,9 @@ fn async_read_returns_file_bytes() {
         for (i, (offset, buf_len, want)) in cases.into_iter().enumerate() {
             let mut dst = vec![0u8; buf_len];
             let t = tok(i as u32 + 1);
-            driver
-                .push(unsafe { f.read_at(&mut dst, offset, t) })
+            // SAFETY: the file and destination remain live and untouched
+            // until `drive_until` returns this read's completion.
+            unsafe { driver.push_raw(RawSqe::read(f.fd(), &mut dst, offset, t)) }
                 .expect("push read");
 
             let event = drive_until(&mut driver, t);
@@ -87,8 +88,8 @@ fn async_open_missing_path_reports_enoent() {
     with_driver(|mut driver| {
         let path = OpenPath::new("/nonexistent/dope/definitely/missing/file").expect("path");
         let t = tok(3);
-        driver
-            .push(unsafe { path.open_at(file::O_RDONLY | file::O_CLOEXEC, t) })
+        // SAFETY: `path` remains live until the matching completion.
+        unsafe { driver.push_raw(path.open_at(file::O_RDONLY | file::O_CLOEXEC, t)) }
             .expect("push open");
 
         let event = drive_until(&mut driver, t);
@@ -109,8 +110,8 @@ fn async_open_then_read_via_returned_fd() {
     with_driver(|mut driver| {
         let cpath = OpenPath::new(tmp.path_str()).expect("path");
         let to = tok(10);
-        driver
-            .push(unsafe { cpath.open_at(file::O_RDONLY | file::O_CLOEXEC, to) })
+        // SAFETY: `cpath` remains live until the matching completion.
+        unsafe { driver.push_raw(cpath.open_at(file::O_RDONLY | file::O_CLOEXEC, to)) }
             .expect("push open");
 
         let event = drive_until(&mut driver, to);
@@ -121,8 +122,8 @@ fn async_open_then_read_via_returned_fd() {
 
         let mut dst = vec![0u8; payload.len()];
         let tr = tok(11);
-        driver
-            .push(unsafe { Sqe::read(fd.as_raw_fd(), &mut dst, 0, tr) })
+        // SAFETY: `fd` and `dst` remain live and untouched through completion.
+        unsafe { driver.push_raw(RawSqe::read(fd.as_raw_fd(), &mut dst, 0, tr)) }
             .expect("push read");
 
         let event = drive_until(&mut driver, tr);
@@ -142,9 +143,8 @@ fn write_path_still_works() {
 
     with_driver(|mut driver| {
         let t = tok(30);
-        driver
-            .push(unsafe { Sqe::write_fd(f.fd(), payload, 0, t) })
-            .expect("push write");
+        // SAFETY: the file and static payload remain live through completion.
+        unsafe { driver.push_raw(RawSqe::write_fd(f.fd(), payload, 0, t)) }.expect("push write");
 
         let event = drive_until(&mut driver, t);
         match event.as_ref() {

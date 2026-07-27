@@ -1,10 +1,10 @@
 use std::net::UdpSocket;
 use std::time::Duration;
 
-use dope_core::backend::Sqe;
+use dope_core::backend::RawSqe;
 use dope_core::driver::bootstrap::Bootstrap;
 use dope_core::driver::completion::Completion;
-use dope_core::driver::submission::Submission;
+use dope_core::driver::submission::raw::Submission as _;
 use dope_core::driver::token::{Epoch, SlotIndex, Token, kind};
 use dope_test::with_driver;
 
@@ -30,9 +30,8 @@ fn close_retires_recv_before_raw_fd_reuse() {
         assert_eq!(opened.len(), 1);
         let reused = opened[0];
         let old_token = Token::new(1, SlotIndex::new(0), Epoch::INITIAL);
-        driver
-            .push(unsafe { Sqe::recv_multi(&old, 0, old_token) })
-            .expect("arm old recv");
+        // SAFETY: `old` stays registered until this receive is completed.
+        unsafe { driver.push_raw(RawSqe::recv_multi(&old, 0, old_token)) }.expect("arm old recv");
 
         let peer = UdpSocket::bind("127.0.0.1:0").expect("peer");
         peer.send_to(&[0x41; 32], old_addr).expect("send old");
@@ -48,9 +47,8 @@ fn close_retires_recv_before_raw_fd_reuse() {
             .expect("new socket");
         assert!(unsafe { libc::fcntl(reused, libc::F_GETFD) } >= 0);
         let new_token = Token::new(2, SlotIndex::new(0), Epoch::INITIAL);
-        driver
-            .push(unsafe { Sqe::recv_multi(&new, 0, new_token) })
-            .expect("arm new recv");
+        // SAFETY: `new` stays registered until this receive is completed.
+        unsafe { driver.push_raw(RawSqe::recv_multi(&new, 0, new_token)) }.expect("arm new recv");
         peer.send_to(b"new", new_addr).expect("send new");
         driver
             .wait(Some(Duration::from_secs(1)))

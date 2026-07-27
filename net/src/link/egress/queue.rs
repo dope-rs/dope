@@ -6,6 +6,7 @@ use super::NONE;
 use super::arena::PreparedChain;
 use super::metadata::{MetadataArena, MetadataQueue};
 use super::raw::entry::{Entry, PreparedEntry};
+use super::raw::preparation::Preparation;
 use super::stage::Stage;
 use super::wire::WireArena;
 use super::wire::raw::state::WireState;
@@ -82,13 +83,7 @@ impl<const IOV: usize, B: AsRef<[u8]>> Queue<IOV, B> {
 
     pub fn prepare_send(&mut self, bytes_cap: usize) -> Vectored<'_> {
         let n = self.fill_iovs(bytes_cap).len();
-        let Self {
-            iov_buf,
-            iov_storage,
-            msghdr_storage,
-            ..
-        } = self;
-        Vectored::new(&iov_buf[..n], iov_storage, msghdr_storage)
+        Preparation::new(self, n).prepare()
     }
 
     pub fn wire_stage(&mut self) -> Stage<'_, B> {
@@ -155,6 +150,19 @@ impl<const IOV: usize, B: AsRef<[u8]>> Queue<IOV, B> {
             index = next;
         }
         &self.iov_buf[..count]
+    }
+
+    pub(in crate::link::egress) fn iov_parts(
+        &mut self,
+        len: usize,
+    ) -> (&[IoVec], &mut [IoVec], &mut MsgHdr) {
+        let Self {
+            iov_buf,
+            iov_storage,
+            msghdr_storage,
+            ..
+        } = self;
+        (&iov_buf[..len], iov_storage, msghdr_storage)
     }
 
     pub fn ack(&self, n: usize) {

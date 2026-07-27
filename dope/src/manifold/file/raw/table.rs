@@ -1,10 +1,10 @@
 use std::io;
 
 use crate::DriverContext;
-use dope_core::backend::Sqe;
+use dope_core::backend::RawSqe;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::ready::CompletionWaker;
-use dope_core::driver::submission::Submission;
+use dope_core::driver::submission::raw::Submission as _;
 use dope_core::driver::token::{Key, KeyTag, SLOT_MASK, Token, TokenCellSlab};
 use std::io::Error;
 use std::io::ErrorKind;
@@ -59,12 +59,12 @@ impl<H, R, Tag> Drop for BeginEntry<'_, '_, H, R, Tag> {
     }
 }
 
-pub(super) struct OperationTable<'d, H, R, Tag> {
+pub(in crate::manifold::file) struct OperationTable<'d, H, R, Tag> {
     entries: TokenCellSlab<Operation<'d, H, R>, Tag>,
 }
 
 impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID, KIND>> {
-    pub(super) fn with_capacity(capacity: usize) -> Self {
+    pub(in crate::manifold::file) fn with_capacity(capacity: usize) -> Self {
         assert!(
             capacity <= SLOT_MASK as usize + 1,
             "dope: file table overflow"
@@ -74,11 +74,11 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub(in crate::manifold::file) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    pub(super) fn append_targets(&self, targets: &mut Vec<Token>) {
+    pub(in crate::manifold::file) fn append_targets(&self, targets: &mut Vec<Token>) {
         for key in self.entries.keys() {
             let token = Token::from_key(key);
             if self
@@ -94,11 +94,11 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         }
     }
 
-    pub(super) fn begin<T>(
+    pub(in crate::manifold::file) fn begin<T>(
         &self,
         hold: H,
         driver: &mut DriverContext<'_, 'd>,
-        make_sqe: impl FnOnce(Token, &mut H) -> Option<(T, Sqe)>,
+        make_sqe: impl FnOnce(Token, &mut H) -> Option<(T, RawSqe)>,
     ) -> Result<T, H> {
         let key = self
             .entries
@@ -114,18 +114,20 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         let Some(Some((result, sqe))) = prepared else {
             return Err(entry.rollback());
         };
-        if driver.push(sqe).is_err() {
+        // SAFETY: the operation and its `hold` were inserted before SQE
+        // construction and remain in the table until completion or quiesce.
+        if unsafe { driver.push_raw(sqe) }.is_err() {
             return Err(entry.rollback());
         }
         entry.commit();
         Ok(result)
     }
 
-    pub(super) fn begin_prepared<T>(
+    pub(in crate::manifold::file) fn begin_prepared<T>(
         &self,
         hold: H,
         driver: &mut DriverContext<'_, 'd>,
-        prepare: impl FnOnce(Token, &mut H) -> io::Result<(T, Sqe)>,
+        prepare: impl FnOnce(Token, &mut H) -> io::Result<(T, RawSqe)>,
         accepted: impl FnOnce(&mut H),
         aborted: impl FnOnce(&mut H),
     ) -> Result<T, (H, Error)> {
@@ -145,7 +147,9 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
             Some(Err(error)) => return Err((entry.rollback(), error)),
             None => abort(),
         };
-        if let Err(error) = driver.push(sqe) {
+        // SAFETY: `hold` owns every descriptor backing the raw SQE and stays
+        // table-resident until completion. Rejection rolls it back below.
+        if let Err(error) = unsafe { driver.push_raw(sqe) } {
             let hold = entry.rollback();
             let mut hold = hold;
             aborted(&mut hold);
@@ -161,7 +165,11 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         Ok(result)
     }
 
-    pub(super) fn poll(&self, token: Token, wake: CompletionWaker<'d>) -> Option<(H, R)> {
+    pub(in crate::manifold::file) fn poll(
+        &self,
+        token: Token,
+        wake: CompletionWaker<'d>,
+    ) -> Option<(H, R)> {
         let parts = token.parts::<KeyTag<ID, KIND>>()?;
         let (operation, ()) =
             self.entries
@@ -179,7 +187,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         }
     }
 
-    pub(super) fn request_cancel(&self, token: Token) -> Option<H> {
+    pub(in crate::manifold::file) fn request_cancel(&self, token: Token) -> Option<H> {
         let parts = token.parts::<KeyTag<ID, KIND>>()?;
         let settled = self
             .entries
@@ -198,7 +206,10 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
             .map(|operation| operation.hold)
     }
 
-    pub(super) fn flush_cancellations(&self, driver: &mut DriverContext<'_, 'd>) -> bool {
+    pub(in crate::manifold::file) fn flush_cancellations(
+        &self,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> bool {
         let keys: Vec<_> = self.entries.keys().collect();
         let mut quiesced = false;
         for key in keys {
@@ -219,7 +230,7 @@ impl<'d, H, R, const ID: u8, const KIND: u8> OperationTable<'d, H, R, KeyTag<ID,
         quiesced
     }
 
-    pub(super) fn complete<E>(
+    pub(in crate::manifold::file) fn complete<E>(
         &self,
         token: Token,
         event: E,

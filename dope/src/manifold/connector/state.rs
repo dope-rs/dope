@@ -3,9 +3,9 @@ use std::time::Instant;
 use o3::buffer::Shared;
 
 use crate::manifold::connector::source::DialKey;
-use dope_net::link::core::{Establish, Outbound};
 use dope_net::link::egress::queue::Queue;
 use dope_net::link::egress::stage::Stage;
+use dope_net::link::raw::core::{Establish, Outbound};
 use dope_net::link::slot::PendingFlags;
 
 pub const IOV_CAP: usize = 32;

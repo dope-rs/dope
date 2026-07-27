@@ -49,7 +49,7 @@ pub(crate) enum Disposition {
     Drop,
     DropBuffer(u16),
     Internal,
-    Public(u64),
+    Public(Token),
 }
 
 pub struct Uring {
@@ -334,7 +334,7 @@ impl Uring {
                 CREATE => files
                     .complete_create(token.slot(), result)
                     .map_or(Disposition::Drop, Disposition::Public),
-                _ => Disposition::Public(user_data),
+                _ => Disposition::Public(token),
             };
         }
         if op_kind == ACCEPT {
@@ -352,7 +352,7 @@ impl Uring {
         {
             return Disposition::DropBuffer((flags >> BUFFER_SHIFT) as u16);
         }
-        Disposition::Public(user_data)
+        Disposition::Public(token)
     }
 
     fn push_close_at(uring: &mut IoUring, slot: FdSlot) -> bool {

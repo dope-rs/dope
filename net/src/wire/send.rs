@@ -156,7 +156,10 @@ pub struct Vectored<'a> {
 }
 
 impl<'a> Vectored<'a> {
-    pub fn new(
+    /// # Safety
+    /// Described bytes stay fixed through the consuming send's completion,
+    /// even after `'a`; both storage borrows stay exclusive for `'a`.
+    pub unsafe fn from_raw(
         iovs: &'a [IoVec],
         iov_storage: &'a mut [IoVec],
         msghdr_storage: &'a mut MsgHdr,

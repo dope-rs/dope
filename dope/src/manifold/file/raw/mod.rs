@@ -3,15 +3,16 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, RawFd};
 use std::ptr::NonNull;
 
+pub(in crate::manifold::file) mod table;
+
 use super::source::Source;
 use dope_core::backend::Backend;
-use dope_core::backend::Sqe;
+use dope_core::backend::RawSqe;
 use dope_core::driver::token::Token;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
 use std::io::Error;
 use std::io::ErrorKind;
-use std::slice::from_raw_parts_mut;
 
 type StatBuf = <Backend as Platform>::StatBuf;
 
@@ -24,8 +25,8 @@ impl OpenRequest {
         Self { path }
     }
 
-    pub(super) fn submission(&self, flags: i32, token: Token) -> Sqe {
-        unsafe { self.path.open_at(flags, token) }
+    pub(super) fn submission(&self, flags: i32, token: Token) -> RawSqe {
+        self.path.open_at(flags, token)
     }
 }
 
@@ -54,11 +55,11 @@ impl<'d> StatRequest<'d> {
         }
     }
 
-    pub(super) fn submission(&mut self, token: Token) -> Sqe {
+    pub(super) fn submission(&mut self, token: Token) -> RawSqe {
         let output = self.output.as_mut_ptr();
         match &self.source {
-            StatSource::Path(path) => Sqe::stat_path(path.as_ptr(), output, token),
-            StatSource::Fd(fd) => Sqe::stat_fd(fd.as_raw_fd(), output, token),
+            StatSource::Path(path) => RawSqe::stat_path(path.as_ptr(), output, token),
+            StatSource::Fd(fd) => RawSqe::stat_fd(fd.as_raw_fd(), output, token),
         }
     }
 
@@ -81,9 +82,14 @@ impl ReadRegion {
         })
     }
 
-    pub(super) fn submission(self, fd: RawFd, offset: u64, token: Token) -> (Sqe, Self) {
-        let span = unsafe { from_raw_parts_mut(self.ptr.as_ptr(), self.len as usize) };
-        let sqe = unsafe { Sqe::read_uninit(fd, span, offset, token) };
+    pub(super) fn submission(self, fd: RawFd, offset: u64, token: Token) -> (RawSqe, Self) {
+        let sqe = RawSqe::read_raw(
+            fd,
+            self.ptr.as_ptr().cast(),
+            self.len as usize,
+            offset,
+            token,
+        );
         (sqe, self)
     }
 

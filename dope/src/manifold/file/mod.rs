@@ -9,7 +9,6 @@ mod raw;
 pub mod read;
 pub mod source;
 pub mod stat;
-mod table;
 
 use open::OpenDone;
 use read::ReadDone;

@@ -12,7 +12,7 @@ use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::SendEvent;
 use dope_core::io::socket::msg::{IoVec, MsgHdr};
-use dope_net::link::pool::SendOutcome;
+use dope_net::link::raw::pool::SendOutcome;
 use dope_net::link::slot::SendBuffer;
 use dope_net::wire::{Reclaim, Wire};
 

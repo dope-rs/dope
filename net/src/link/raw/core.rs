@@ -1,8 +1,9 @@
 use crate::wire::send::Vectored;
 use crate::wire::send::{Payload, Prepared};
-use dope_core::backend::Sqe;
+use dope_core::backend::{RawSqe, Sqe};
 use dope_core::driver::DriverContext;
 use dope_core::driver::submission::Submission;
+use dope_core::driver::submission::raw::Submission as _;
 use dope_core::driver::token::Token;
 use dope_core::driver::token::kind::{RECV, RECV_DISCARD};
 use dope_core::io::fd::Fd;
@@ -59,19 +60,19 @@ pub trait Outbound {
     fn establish(&mut self) -> &mut Establish;
 }
 
-pub(super) enum RecvError {
+pub(in crate::link) enum RecvError {
     Closed,
     Live { needs_rearm: bool },
 }
 
-pub(super) enum Submit {
+pub(in crate::link) enum Submit {
     Submitted(usize),
     Rejected(usize),
     Idle(usize),
 }
 
 pub struct Core<'d> {
-    pub(super) fd: Fd<'d>,
+    pub(in crate::link) fd: Fd<'d>,
     recv: RecvArm,
     phase: Phase,
     send_in_flight: bool,
@@ -101,11 +102,11 @@ impl<'d> Core<'d> {
         self.aborted = true;
     }
 
-    pub(super) fn into_fd(self) -> Fd<'d> {
+    pub(in crate::link) fn into_fd(self) -> Fd<'d> {
         self.fd
     }
 
-    pub(super) fn request_graceful(&mut self) -> bool {
+    pub(in crate::link) fn request_graceful(&mut self) -> bool {
         if self.aborted || self.graceful_requested {
             return false;
         }
@@ -113,7 +114,7 @@ impl<'d> Core<'d> {
         true
     }
 
-    pub(super) fn take_graceful(&mut self) -> bool {
+    pub(in crate::link) fn take_graceful(&mut self) -> bool {
         if self.send_in_flight || !self.graceful_requested || self.graceful_sealed {
             return false;
         }
@@ -121,7 +122,7 @@ impl<'d> Core<'d> {
         true
     }
 
-    pub(super) fn armed(&mut self, pushed: bool, discard: bool) {
+    pub(in crate::link) fn armed(&mut self, pushed: bool, discard: bool) {
         self.recv = if pushed {
             RecvArm::Armed { discard }
         } else {
@@ -133,7 +134,7 @@ impl<'d> Core<'d> {
         matches!(self.recv, RecvArm::Armed { .. })
     }
 
-    pub(super) fn needs_arm(&self) -> bool {
+    pub(in crate::link) fn needs_arm(&self) -> bool {
         matches!(self.recv, RecvArm::Exhausted) && !self.is_closing()
     }
 
@@ -161,7 +162,7 @@ impl<'d> Core<'d> {
         self.discard_remaining
     }
 
-    pub(super) fn is_discard_armed(&self) -> bool {
+    pub(in crate::link) fn is_discard_armed(&self) -> bool {
         matches!(self.recv, RecvArm::Armed { discard: true })
     }
 
@@ -173,7 +174,7 @@ impl<'d> Core<'d> {
         }
     }
 
-    pub(super) fn consume_discard(&mut self, len: usize) -> usize {
+    pub(in crate::link) fn consume_discard(&mut self, len: usize) -> usize {
         if self.discard_remaining == 0 {
             return 0;
         }
@@ -182,7 +183,7 @@ impl<'d> Core<'d> {
         take
     }
 
-    pub(super) fn recv_discarded(&mut self, n: u32) -> bool {
+    pub(in crate::link) fn recv_discarded(&mut self, n: u32) -> bool {
         self.discard_remaining = self.discard_remaining.saturating_sub(n as u64);
         self.settle_recv(false)
     }
@@ -192,7 +193,7 @@ impl<'d> Core<'d> {
         self.settle_recv(more);
     }
 
-    pub(super) fn recv_cancelled(&mut self, more: bool) -> RecvError {
+    pub(in crate::link) fn recv_cancelled(&mut self, more: bool) -> RecvError {
         let needs_rearm = self.settle_recv(more);
         if !more && self.is_closing() {
             RecvError::Closed
@@ -244,11 +245,11 @@ impl<'d> Core<'d> {
         self.send_in_flight
     }
 
-    pub(super) fn send_done(&mut self) {
+    pub(in crate::link) fn send_done(&mut self) {
         self.send_in_flight = false;
     }
 
-    pub(super) fn push_retry(
+    pub(in crate::link) fn push_retry(
         driver: &mut DriverContext<'_, 'd>,
         mut build: impl FnMut() -> Sqe,
     ) -> bool {
@@ -261,16 +262,34 @@ impl<'d> Core<'d> {
         false
     }
 
-    fn submit_single(&mut self, driver: &mut DriverContext<'_, 'd>, ud: Token, buf: &[u8]) -> bool {
+    unsafe fn push_raw_retry(
+        driver: &mut DriverContext<'_, 'd>,
+        mut build: impl FnMut() -> RawSqe,
+    ) -> bool {
+        if unsafe { driver.push_raw(build()) }.is_ok() {
+            return true;
+        }
+        if driver.flush_submissions() {
+            return unsafe { driver.push_raw(build()) }.is_ok();
+        }
+        false
+    }
+
+    unsafe fn submit_single(
+        &mut self,
+        driver: &mut DriverContext<'_, 'd>,
+        ud: Token,
+        buf: &[u8],
+    ) -> bool {
         let fd = &self.fd;
-        let submitted = Self::push_retry(driver, || Sqe::send(fd, buf, ud));
+        let submitted = unsafe { Self::push_raw_retry(driver, || RawSqe::send(fd, buf, ud)) };
         if submitted {
             self.send_in_flight = true;
         }
         submitted
     }
 
-    fn submit_vectored(
+    unsafe fn submit_vectored(
         &mut self,
         driver: &mut DriverContext<'_, 'd>,
         ud: Token,
@@ -279,14 +298,14 @@ impl<'d> Core<'d> {
         vectored.install();
         let fd = &self.fd;
         let msg = vectored.msghdr().raw();
-        let submitted = Self::push_retry(driver, || Sqe::send_msg(fd, msg, ud));
+        let submitted = unsafe { Self::push_raw_retry(driver, || RawSqe::send_msg(fd, msg, ud)) };
         if submitted {
             self.send_in_flight = true;
         }
         submitted
     }
 
-    pub(super) fn submit_prepared(
+    pub(in crate::link) fn submit_prepared(
         &mut self,
         driver: &mut DriverContext<'_, 'd>,
         ud: Token,
@@ -302,11 +321,15 @@ impl<'d> Core<'d> {
         let submitted = match payload {
             Payload::Empty => return Submit::Idle(consumed),
             Payload::Single([]) => return Submit::Idle(consumed),
-            Payload::Single(buf) => self.submit_single(driver, ud, buf),
+            // SAFETY: `Prepared` is produced from storage whose unsafe
+            // `SendStorage` contract keeps bytes stable until send completion.
+            Payload::Single(buf) => unsafe { self.submit_single(driver, ud, buf) },
             Payload::Vectored(vectored) if vectored.is_empty() => {
                 return Submit::Idle(consumed);
             }
-            Payload::Vectored(vectored) => self.submit_vectored(driver, ud, vectored),
+            // SAFETY: `Vectored` can only be constructed by a caller that
+            // guarantees every described region remains stable through send.
+            Payload::Vectored(vectored) => unsafe { self.submit_vectored(driver, ud, vectored) },
         };
         if submitted {
             Submit::Submitted(consumed)

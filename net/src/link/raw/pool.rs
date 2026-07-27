@@ -2,13 +2,14 @@ use std::io;
 use std::marker::PhantomData;
 
 use super::core::{Core, Outbound};
-use super::slot::{RecvDecision, Slot};
 use crate::Transport;
+use crate::link::slot::{RecvDecision, Slot};
 use crate::wire::{OpenReservation, RuntimeLimits, Wire};
-use dope_core::backend::Sqe;
+use dope_core::backend::{RawSqe, Sqe};
 use dope_core::driver::buffers::ProvidedBuffers;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::submission::Submission;
+use dope_core::driver::submission::raw::Submission as _;
 use dope_core::driver::token::kind::CONNECT;
 use dope_core::driver::token::kind::CREATE;
 use dope_core::driver::token::kind::SEND;
@@ -190,18 +191,14 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         }
         let remaining = slot.core.discard_remaining();
         let (sqe, discard) = if Sqe::SUPPORTS_RECV_DISCARD && remaining > 0 {
-            (
-                unsafe { Sqe::recv_discard(&slot.core.fd, remaining, ud) },
-                true,
-            )
+            (RawSqe::recv_discard(&slot.core.fd, remaining, ud), true)
         } else {
             let buf_group = driver.buffer_group();
-            (
-                unsafe { Sqe::recv_multi(&slot.core.fd, buf_group, ud) },
-                false,
-            )
+            (RawSqe::recv_multi(&slot.core.fd, buf_group, ud), false)
         };
-        let armed = driver.push(sqe).is_ok();
+        // SAFETY: the slot owns the registered fd through completion; receive
+        // memory comes from the driver's provided-buffer ring.
+        let armed = unsafe { driver.push_raw(sqe) }.is_ok();
         slot.core.armed(armed, discard);
         armed
     }
@@ -447,9 +444,11 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             {
                 T::submit_stream_config(driver, config, &slot.core.fd);
                 let (ptr, len) = slot.state.establish().begin(sock_addr);
-                let submitted = driver
-                    .push(Sqe::connect(&slot.core.fd, ptr, len, ud))
-                    .is_ok();
+                // SAFETY: `Establish` owns the address in this live slot until
+                // connect completion or the rejected-submission rollback.
+                let submitted =
+                    unsafe { driver.push_raw(RawSqe::connect(&slot.core.fd, ptr, len, ud)) }
+                        .is_ok();
                 if !submitted {
                     slot.state.establish().abort();
                 }

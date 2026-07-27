@@ -29,7 +29,7 @@ mod linux {
         EMFILE, IPPROTO_TCP, SO_REUSEADDR, SO_REUSEPORT, SOL_SOCKET, TCP_DEFER_ACCEPT, TCP_FASTOPEN,
     };
 
-    use crate::backend::uring::sqe::Sqe;
+    use crate::backend::{RawSqe, Sqe};
     use crate::driver::control::ContextControl;
     use crate::driver::submission::Submission;
     use crate::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
@@ -118,6 +118,13 @@ mod linux {
         bootstrap_await(driver, 0, 0)
     }
 
+    fn bootstrap_perform_raw(driver: &mut DriverContext<'_, '_>, sqe: RawSqe) -> io::Result<()> {
+        // SAFETY: each caller waits for this exact operation before any
+        // stack-backed address, fd array, or owned handle can leave scope.
+        unsafe { crate::driver::submission::raw::Submission::push_raw(driver, sqe) }?;
+        bootstrap_await(driver, 0, 0)
+    }
+
     fn bootstrap_bind_slot(
         driver: &mut DriverContext<'_, '_>,
         domain: Domain,
@@ -135,9 +142,9 @@ mod linux {
             bootstrap_apply_config(driver, idx, config)?;
         }
         let bound = Addr::from_std(addr);
-        bootstrap_perform(
+        bootstrap_perform_raw(
             driver,
-            Sqe::bind_at(slot, bound.ptr(), bound.socklen(), BOOTSTRAP_UD),
+            RawSqe::bind_at(slot, bound.ptr(), bound.socklen(), BOOTSTRAP_UD),
         )?;
         Ok(idx)
     }
@@ -195,7 +202,11 @@ mod linux {
             .offset(slot as i32)
             .build()
             .user_data(BOOTSTRAP_UD.raw());
-        Submission::push(driver, Sqe::from_entry(entry))?;
+        // SAFETY: `fds` remains live and unchanged through the synchronous
+        // bootstrap completion immediately below.
+        unsafe {
+            crate::driver::submission::raw::Submission::push_raw(driver, RawSqe::from_entry(entry))
+        }?;
         bootstrap_await(driver, 1, EMFILE)?;
         driver.backend().files.set_live(FdSlot::new(slot));
         Ok(())

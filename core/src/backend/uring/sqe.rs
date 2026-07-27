@@ -1,5 +1,4 @@
 use std::io::{self, Error, ErrorKind};
-use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
 
 use io_uring::types;
@@ -60,7 +59,6 @@ use crate::driver::token::kind::WRITE;
 use libc::c_char;
 use libc::c_int;
 use libc::c_void;
-use std::slice::from_raw_parts_mut;
 use libc::mode_t;
 use libc::msghdr;
 use libc::sockaddr;
@@ -68,9 +66,9 @@ use libc::socklen_t;
 use libc::statx;
 
 #[derive(Clone, Copy)]
-pub struct Create {
-    pub slot: FdSlot,
-    pub user_data: u64,
+pub(crate) struct Create {
+    pub(crate) slot: FdSlot,
+    pub(crate) token: Token,
 }
 
 pub struct Sqe {
@@ -79,12 +77,16 @@ pub struct Sqe {
     _thread: ThreadBound,
 }
 
+/// A submission borrowing caller-owned resources through completion.
+#[repr(transparent)]
+pub struct RawSqe(Sqe);
+
 impl Sqe {
-    pub fn entry(&self) -> &Entry {
+    pub(crate) fn entry(&self) -> &Entry {
         &self.entry
     }
 
-    pub fn create_meta(&self) -> Option<Create> {
+    pub(crate) fn create_meta(&self) -> Option<Create> {
         self.create
     }
 
@@ -96,12 +98,12 @@ impl Sqe {
         }
     }
 
-    fn create(entry: Entry, slot: FdSlot, user_data: u64) -> Self {
-        let token = Token::new(ROUTE_FRAMEWORK, SlotIndex::new(slot.raw()), Epoch::ZERO)
+    fn create(entry: Entry, slot: FdSlot, token: Token) -> Self {
+        let framework_token = Token::new(ROUTE_FRAMEWORK, SlotIndex::new(slot.raw()), Epoch::ZERO)
             .with_kind(CREATE);
         Self {
-            entry: entry.user_data(token.raw()),
-            create: Some(Create { slot, user_data }),
+            entry: entry.user_data(framework_token.raw()),
+            create: Some(Create { slot, token }),
             _thread: ThreadBound::NEW,
         }
     }
@@ -112,7 +114,18 @@ impl Sqe {
             .raw()
     }
 
-    pub fn from_entry(entry: Entry) -> Self {
+}
+
+impl RawSqe {
+    fn new(entry: Entry) -> Self {
+        Self(Sqe::new(entry))
+    }
+
+    pub(crate) fn into_sqe(self) -> Sqe {
+        self.0
+    }
+
+    pub(crate) fn from_entry(entry: Entry) -> Self {
         Self::new(entry)
     }
 
@@ -120,7 +133,7 @@ impl Sqe {
         Self::send_at(fd.slot(), buf, op)
     }
 
-    pub fn send_at(slot: FdSlot, buf: &[u8], op: Token) -> Self {
+    fn send_at(slot: FdSlot, buf: &[u8], op: Token) -> Self {
         Self::new(
             Send::new(Fixed(slot.raw()), buf.as_ptr(), buf.len() as u32)
                 .flags(MSG_NOSIGNAL)
@@ -129,9 +142,7 @@ impl Sqe {
         )
     }
 
-    /// # Safety
-    /// `fd` must stay open and `buf` stable and unchanged until completion.
-    pub unsafe fn write_fd(fd: RawFd, buf: &[u8], offset: u64, op: Token) -> Self {
+    pub fn write_fd(fd: RawFd, buf: &[u8], offset: u64, op: Token) -> Self {
         Self::new(
             Write::new(types::Fd(fd), buf.as_ptr(), buf.len() as u32)
                 .offset(offset)
@@ -150,25 +161,13 @@ impl Sqe {
         )
     }
 
-    /// # Safety
-    /// `fd` must stay open and `buf` stable and unaliased until completion.
-    pub unsafe fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
-        let buf = unsafe {
-            from_raw_parts_mut(buf.as_mut_ptr().cast::<MaybeUninit<u8>>(), buf.len())
-        };
-        unsafe { Self::read_uninit(fd, buf, offset, op.with_kind(READ)) }
+    pub fn read(fd: RawFd, buf: &mut [u8], offset: u64, op: Token) -> Self {
+        Self::read_raw(fd, buf.as_mut_ptr(), buf.len(), offset, op.with_kind(READ))
     }
 
-    /// # Safety
-    /// `fd` must stay open and `buf` stable and unaliased until completion.
-    pub unsafe fn read_uninit(
-        fd: RawFd,
-        buf: &mut [MaybeUninit<u8>],
-        offset: u64,
-        op: Token,
-    ) -> Self {
+    pub fn read_raw(fd: RawFd, ptr: *mut u8, len: usize, offset: u64, op: Token) -> Self {
         Self::new(
-            Read::new(types::Fd(fd), buf.as_mut_ptr().cast(), buf.len() as u32)
+            Read::new(types::Fd(fd), ptr, len as u32)
                 .offset(offset)
                 .build()
                 .user_data(op.raw()),
@@ -194,9 +193,7 @@ impl Sqe {
         )
     }
 
-    /// # Safety
-    /// `fd` must belong to the receiving driver and stay live until completion.
-    pub unsafe fn recv_multi(fd: &Fd, buf_group: u16, op: Token) -> Self {
+    pub fn recv_multi(fd: &Fd, buf_group: u16, op: Token) -> Self {
         Self::new(
             RecvMulti::new(Fixed(fd.slot().raw()), buf_group)
                 .build()
@@ -204,11 +201,7 @@ impl Sqe {
         )
     }
 
-    pub const SUPPORTS_RECV_DISCARD: bool = true;
-
-    /// # Safety
-    /// `fd` must belong to the receiving driver and stay live until completion.
-    pub unsafe fn recv_discard(fd: &Fd, remaining: u64, op: Token) -> Self {
+    pub fn recv_discard(fd: &Fd, remaining: u64, op: Token) -> Self {
         const DISCARD_CAP: u64 = 1 << 30;
         static SCRATCH: u8 = 0;
         let len = remaining.min(DISCARD_CAP) as u32;
@@ -255,8 +248,12 @@ impl Sqe {
                 .user_data(op.with_kind(SEND).raw()),
         )
     }
+}
 
-    pub fn close_at(slot: FdSlot) -> Self {
+impl Sqe {
+    pub const SUPPORTS_RECV_DISCARD: bool = true;
+
+    pub(crate) fn close_at(slot: FdSlot) -> Self {
         Self::new(
             Close::new(Fixed(slot.raw()))
                 .build()
@@ -280,7 +277,7 @@ impl Sqe {
         )
     }
 
-    pub fn shutdown_linked_at(slot: FdSlot, how: i32) -> Self {
+    pub(crate) fn shutdown_linked_at(slot: FdSlot, how: i32) -> Self {
         Self::new(
             Shutdown::new(Fixed(slot.raw()), how)
                 .build()
@@ -289,7 +286,7 @@ impl Sqe {
         )
     }
 
-    pub fn poll_shutdown(fd: RawFd) -> Self {
+    pub(crate) fn poll_shutdown(fd: RawFd) -> Self {
         Self::new(
             PollAdd::new(types::Fd(fd), POLLIN as u32)
                 .build()
@@ -336,7 +333,7 @@ impl Sqe {
         Self::socket_at(domain, socket_type, protocol, fd.slot(), op)
     }
 
-    pub fn socket_at(
+    pub(crate) fn socket_at(
         domain: i32,
         socket_type: i32,
         protocol: i32,
@@ -350,11 +347,13 @@ impl Sqe {
                 .file_index(Some(dest))
                 .build(),
             slot,
-            op.with_kind(SOCKET).raw(),
+            op.with_kind(SOCKET),
         ))
     }
+}
 
-    pub fn bind_at(
+impl RawSqe {
+    pub(crate) fn bind_at(
         slot: FdSlot,
         addr_ptr: *const sockaddr,
         addr_len: u32,
@@ -363,18 +362,22 @@ impl Sqe {
         Self::new(
             Bind::new(Fixed(slot.raw()), addr_ptr, addr_len)
                 .build()
-                .user_data(op.with_kind(SOCKET).raw()),
+            .user_data(op.with_kind(SOCKET).raw()),
         )
     }
+}
 
-    pub fn listen_at(slot: FdSlot, backlog: i32, op: Token) -> Self {
+impl Sqe {
+    pub(crate) fn listen_at(slot: FdSlot, backlog: i32, op: Token) -> Self {
         Self::new(
             Listen::new(Fixed(slot.raw()), backlog)
                 .build()
                 .user_data(op.with_kind(SOCKET).raw()),
         )
     }
+}
 
+impl RawSqe {
     pub fn connect(fd: &Fd, addr_ptr: *const sockaddr, addr_len: u32, op: Token) -> Self {
         Self::new(
             Connect::new(Fixed(fd.slot().raw()), addr_ptr, addr_len)

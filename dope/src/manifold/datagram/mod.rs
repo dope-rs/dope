@@ -7,18 +7,18 @@ use std::rc::Rc;
 use pin_project::pin_project;
 
 use dope_core::driver::bootstrap::Bootstrap;
-use dope_core::driver::buffers::ProvidedBuffers;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::datagram::Datagram;
 use dope_core::driver::route::Route;
-use dope_core::driver::submission::Submission;
 use dope_core::io::provided::ProvidedLease;
 use o3::collections::FixedQueue;
 
 use crate::DriverContext;
 
+mod raw;
 mod send;
 
+use raw::io::Io;
 use send::Outgoing;
 use send::Payload;
 use send::SendOp;
@@ -65,7 +65,6 @@ pub trait Handler<'d, const ID: u8> {
 
 const RECV_ARM_TAG: SlotIndex = SlotIndex::new(0);
 
-use dope_core::backend::Sqe;
 use dope_core::driver::token::kind::RECV;
 use dope_core::driver::token::kind::SEND;
 use dope_core::driver::token::{KeyTag, SLOT_MASK, SlotIndex, Token, TokenSlab};
@@ -213,10 +212,12 @@ impl<'d, const ID: u8> Socket<'d, ID> {
     }
 
     pub fn tick(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        if self.recv_arm.needs_rearm() {
-            self.as_mut().arm_recv(driver);
+        let needs_rearm = self.recv_arm.needs_rearm();
+        let mut io = Io::new(self.as_mut(), driver);
+        if needs_rearm {
+            io.arm_recv();
         }
-        self.flush_outgoing(driver);
+        io.flush_outgoing();
     }
 
     pub fn needs_flush(&self) -> bool {
@@ -297,52 +298,6 @@ impl<'d, const ID: u8> Socket<'d, ID> {
         }
         if let SendEvent::Failed(errno) = e {
             handler.error(errno, self);
-        }
-    }
-
-    fn arm_recv(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        let this = self.project();
-        let Some(ud) = this.recv_arm.begin(ID, RECV_ARM_TAG) else {
-            return;
-        };
-        let buf_group = driver.buffer_group();
-        let sqe = Sqe::recv_msg_multi(this.fixed_fd, this.recv_msghdr.raw(), buf_group, ud);
-        let pushed = driver.push(sqe).is_ok();
-        this.recv_arm.settle(pushed);
-    }
-
-    fn flush_outgoing(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        let this = self.project();
-        while this.in_flight.len() < this.in_flight.capacity() {
-            let Some(out) = this.pending_outgoing.pop_front() else {
-                break;
-            };
-            let op = SendOp::new(out);
-            let (key, msghdr) = match this.in_flight.insert_entry(op) {
-                Ok((key, op)) => (key, op.fill_msghdr()),
-                Err(op) => {
-                    let out = op.into_outgoing();
-                    let Some(entry) = this.pending_outgoing.vacant_entry() else {
-                        unreachable!()
-                    };
-                    entry.push_front(out);
-                    break;
-                }
-            };
-            let ud = Token::from_key(key);
-            let pushed = driver
-                .push(Sqe::send_msg(this.fixed_fd, msghdr.raw(), ud))
-                .is_ok();
-            if !pushed {
-                if let Some(op) = this.in_flight.remove(key) {
-                    let out = op.into_outgoing();
-                    let Some(entry) = this.pending_outgoing.vacant_entry() else {
-                        unreachable!()
-                    };
-                    entry.push_front(out);
-                }
-                break;
-            }
         }
     }
 
