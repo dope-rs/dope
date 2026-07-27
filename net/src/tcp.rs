@@ -3,8 +3,8 @@ use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::Transport;
 use crate::option::StreamOption;
+use crate::{ListenerTransport, Transport};
 use dope_core::backend::Sqe;
 use dope_core::driver::DriverContext;
 use dope_core::driver::bootstrap::Bootstrap;
@@ -130,7 +130,6 @@ impl Tcp {
 impl Transport for Tcp {
     type Addr = SocketAddr;
     type StreamConfig = stream::Config;
-    type ListenerConfig = Config;
 
     const KERNEL_DISCARD: bool = true;
 
@@ -142,17 +141,8 @@ impl Transport for Tcp {
         (Domain::for_addr(addr).raw(), Kind::Stream.raw(), 0)
     }
 
-    fn bind_listener_slot<'d>(
-        driver: &mut DriverContext<'_, 'd>,
-        addr: &SocketAddr,
-        backlog: i32,
-        config: &Config,
-    ) -> io::Result<(Fd<'d>, SocketAddr)> {
-        if backlog <= 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "backlog must be > 0"));
-        }
-        let config = Self::listener_config(config)?;
-        driver.bind_listener_slot(*addr, backlog, &config)
+    fn submit_quickack(driver: &mut DriverContext<'_, '_>, fd: &Fd<'_>) -> bool {
+        driver.push(Sqe::quickack(fd)).is_ok()
     }
 
     fn validate_stream_config(config: stream::Config) -> io::Result<()> {
@@ -202,17 +192,30 @@ impl Transport for Tcp {
             )
     }
 
-    fn per_ip_limit(config: &Config) -> Option<u32> {
-        config.per_ip_limit
-    }
-
-    fn submit_quickack(driver: &mut DriverContext<'_, '_>, fd: &Fd<'_>) -> bool {
-        driver.push(Sqe::quickack(fd)).is_ok()
-    }
-
     fn apply_profile_defaults(config: &mut stream::Config, user_timeout: Option<Duration>) {
         if StreamOption::supports_user_timeout() {
             config.user_timeout = config.user_timeout.or(user_timeout);
         }
+    }
+}
+
+impl ListenerTransport for Tcp {
+    type ListenerConfig = Config;
+
+    fn bind_listener_slot<'d>(
+        driver: &mut DriverContext<'_, 'd>,
+        addr: &SocketAddr,
+        backlog: i32,
+        config: &Config,
+    ) -> io::Result<(Fd<'d>, SocketAddr)> {
+        if backlog <= 0 {
+            return Err(Error::new(ErrorKind::InvalidInput, "backlog must be > 0"));
+        }
+        let config = Self::listener_config(config)?;
+        driver.bind_listener_slot(*addr, backlog, &config)
+    }
+
+    fn per_ip_limit(config: &Config) -> Option<u32> {
+        config.per_ip_limit
     }
 }

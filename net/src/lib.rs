@@ -18,20 +18,12 @@ use std::time::Duration;
 pub trait Transport: 'static + Sized {
     type Addr;
     type StreamConfig: Default + Copy + 'static;
-    type ListenerConfig: Default + Clone + 'static;
 
     const KERNEL_DISCARD: bool = false;
 
     fn to_sock_addr(addr: &Self::Addr) -> io::Result<Addr>;
 
     fn socket_params(addr: &Self::Addr) -> (i32, i32, i32);
-
-    fn bind_listener_slot<'d>(
-        driver: &mut DriverContext<'_, 'd>,
-        addr: &Self::Addr,
-        backlog: i32,
-        config: &Self::ListenerConfig,
-    ) -> io::Result<(Fd<'d>, SocketAddr)>;
 
     fn submit_quickack(_driver: &mut DriverContext<'_, '_>, _fd: &Fd<'_>) -> bool {
         false
@@ -50,9 +42,20 @@ pub trait Transport: 'static + Sized {
         true
     }
 
+    fn apply_profile_defaults(_config: &mut Self::StreamConfig, _user_timeout: Option<Duration>) {}
+}
+
+pub trait ListenerTransport: Transport {
+    type ListenerConfig: Default + Clone + 'static;
+
+    fn bind_listener_slot<'d>(
+        driver: &mut DriverContext<'_, 'd>,
+        addr: &Self::Addr,
+        backlog: i32,
+        config: &Self::ListenerConfig,
+    ) -> io::Result<(Fd<'d>, SocketAddr)>;
+
     fn per_ip_limit(_config: &Self::ListenerConfig) -> Option<u32> {
         None
     }
-
-    fn apply_profile_defaults(_config: &mut Self::StreamConfig, _user_timeout: Option<Duration>) {}
 }
