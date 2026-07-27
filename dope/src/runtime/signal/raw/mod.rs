@@ -1,22 +1,15 @@
-use std::io;
+use std::io::{self, Error};
 use std::mem::zeroed;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+use std::process::abort;
+use std::ptr::null_mut;
 
 use crate::DriverContext;
 use dope_core::driver::control::ContextControl;
-use std::io::Error;
-use libc::SFD_CLOEXEC;
-use libc::SIGINT;
-use libc::SIGTERM;
-use libc::SIG_BLOCK;
-use libc::SIG_SETMASK;
-use std::process::abort;
-use std::ptr::null_mut;
-use libc::pthread_sigmask;
-use libc::sigaddset;
-use libc::sigemptyset;
-use libc::signalfd;
-use libc::sigset_t;
+use libc::{
+    pthread_sigmask, sigaddset, sigemptyset, signalfd, sigset_t, SFD_CLOEXEC, SIGINT, SIGTERM,
+    SIG_BLOCK, SIG_SETMASK,
+};
 
 struct MaskGuard {
     previous: sigset_t,
@@ -24,13 +17,7 @@ struct MaskGuard {
 
 impl Drop for MaskGuard {
     fn drop(&mut self) {
-        let result = unsafe {
-            pthread_sigmask(
-                SIG_SETMASK,
-                &self.previous,
-                null_mut(),
-            )
-        };
+        let result = unsafe { pthread_sigmask(SIG_SETMASK, &self.previous, null_mut()) };
         if result != 0 {
             abort();
         }
@@ -38,14 +25,9 @@ impl Drop for MaskGuard {
 }
 
 pub(in crate::runtime) struct SignalState {
-    fd: Option<OwnedFd>,
+    // Fields drop in declaration order: close the signal fd before restoring the mask.
+    fd: OwnedFd,
     _mask: MaskGuard,
-}
-
-impl Drop for SignalState {
-    fn drop(&mut self) {
-        drop(self.fd.take());
-    }
 }
 
 impl SignalState {
@@ -71,7 +53,7 @@ impl SignalState {
         }
 
         Ok(Self {
-            fd: Some(unsafe { OwnedFd::from_raw_fd(raw) }),
+            fd: unsafe { OwnedFd::from_raw_fd(raw) },
             _mask: mask,
         })
     }
@@ -80,7 +62,6 @@ impl SignalState {
         &self,
         driver: &mut DriverContext<'_, '_>,
     ) -> io::Result<()> {
-        let fd = self.fd.as_ref().expect("live signal state must own its fd");
-        driver.register_shutdown_fd(fd.as_fd())
+        driver.register_shutdown_fd(self.fd.as_fd())
     }
 }

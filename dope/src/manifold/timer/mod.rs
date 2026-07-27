@@ -60,11 +60,6 @@ pub struct Timer<'d, const ID: u8 = 0> {
     heap: RawCell<IndexedMinHeap<HeapKey>>,
 }
 
-#[derive(Clone, Copy)]
-pub struct Session<'d, const ID: u8 = 0> {
-    timer: &'d Timer<'d, ID>,
-}
-
 impl<'d, const ID: u8> Timer<'d, ID> {
     pub fn with_capacity(cap: usize, _driver: DriverRef<'d>) -> Self {
         assert!(cap <= u32::MAX as usize);
@@ -86,10 +81,6 @@ impl<'d, const ID: u8> Timer<'d, ID> {
             starved: StarvedTree::new(),
             heap: RawCell::new(IndexedMinHeap::with_capacity(cap)),
         }
-    }
-
-    pub fn session(&'d self) -> Session<'d, ID> {
-        Session { timer: self }
     }
 
     #[doc(hidden)]
@@ -262,24 +253,14 @@ impl<'d, const ID: u8> Timer<'d, ID> {
     }
 }
 
-impl<const ID: u8> Timer<'_, ID> {
-    pub fn pre_park(self: Pin<&Self>, driver: &mut DriverContext<'_, '_>) {
-        Pin::get_ref(self).expire(driver.turn_now());
-    }
-
-    pub fn idle(self: Pin<&Self>) -> Idle {
-        Idle::Park(Pin::get_ref(self).earliest())
-    }
-}
-
-impl<'d, const ID: u8> Manifold<'d> for Session<'d, ID> {
+impl<'d, const ID: u8> Manifold<'d> for &'d Timer<'d, ID> {
     const ID: u8 = ID;
 
     fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        self.as_ref().get_ref().timer.expire(driver.turn_now());
+        self.get_mut().expire(driver.turn_now());
     }
 
     fn idle(self: Pin<&Self>) -> Idle {
-        Idle::Park(self.get_ref().timer.earliest())
+        Idle::Park(self.get_ref().earliest())
     }
 }

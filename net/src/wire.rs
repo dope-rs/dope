@@ -106,16 +106,20 @@ pub trait OpenReservation<W: Wire> {
     fn commit(self) -> (W, W::SendStorage);
 }
 
-pub struct ReadyOpen<W: Wire>(Option<(W, W::SendStorage)>);
+pub struct ReadyOpen<W: Wire> {
+    committed: (W, W::SendStorage),
+}
 
 impl<W: Wire> ReadyOpen<W> {
     pub fn new(wire: W, send: W::SendStorage) -> Self {
-        Self(Some((wire, send)))
+        Self {
+            committed: (wire, send),
+        }
     }
 }
 
 impl<W: Wire> OpenReservation<W> for ReadyOpen<W> {
-    fn commit(mut self) -> (W, W::SendStorage) {
-        self.0.take().unwrap()
+    fn commit(self) -> (W, W::SendStorage) {
+        self.committed
     }
 }
