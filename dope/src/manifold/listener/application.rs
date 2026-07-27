@@ -5,7 +5,7 @@ use crate::manifold::listener::Listener;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::RecvEvent;
 use dope_core::io::provided::ProvidedView;
-use dope_net::link::raw::pool::DispatchRecv;
+use dope_net::link::raw::event::DispatchRecv;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 use o3::buffer::{Borrowed, Bytes, RetainBytes};

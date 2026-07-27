@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use crate::Transport;
-use crate::option::SocketOption;
+use crate::option::StreamOption;
 use dope_core::driver::DriverContext;
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::addr::Addr;
@@ -27,6 +27,15 @@ pub mod stream {
 use listener::Config;
 
 pub struct Unix;
+
+impl Unix {
+    fn stream_options(config: stream::Config) -> [Option<StreamOption>; 2] {
+        [
+            config.recv_buffer_size.map(StreamOption::RecvBuffer),
+            config.send_buffer_size.map(StreamOption::SendBuffer),
+        ]
+    }
+}
 
 impl Transport for Unix {
     type Addr = PathBuf;
@@ -56,18 +65,23 @@ impl Transport for Unix {
         ))
     }
 
-    fn submit_stream_config(
+    fn validate_stream_config(config: stream::Config) -> io::Result<()> {
+        StreamOption::validate_all(Self::stream_options(config))
+    }
+
+    fn submit_stream_tuning(
         driver: &mut DriverContext<'_, '_>,
         config: stream::Config,
         fd: &Fd<'_>,
-    ) {
-        SocketOption::submit_all(
-            [
-                config.recv_buffer_size.map(SocketOption::RecvBuffer),
-                config.send_buffer_size.map(SocketOption::SendBuffer),
-            ],
+    ) -> bool {
+        StreamOption::submit(
+            config.recv_buffer_size.map(StreamOption::RecvBuffer),
             driver,
             fd,
-        );
+        ) && StreamOption::submit(
+            config.send_buffer_size.map(StreamOption::SendBuffer),
+            driver,
+            fd,
+        )
     }
 }

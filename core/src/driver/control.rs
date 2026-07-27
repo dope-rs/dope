@@ -2,7 +2,9 @@ use std::io;
 use std::os::fd::BorrowedFd;
 
 use crate::backend::Backend;
-use crate::backend::ops::control::ControlBackend;
+use crate::backend::ops::raw::control::ControlBackend;
+use crate::io::fd::Fd;
+use crate::io::socket::option::SocketOption;
 
 use super::token::Token;
 use super::{DriverContext, OutboundReservation, PushError};
@@ -15,12 +17,11 @@ pub trait ContextControl {
     fn release_route(&mut self, id: u8);
     fn poison_route(&mut self, id: u8);
     fn quiesce(&mut self, targets: &[Token]) -> bool;
-    fn set(
+    /// Queues an option without waiting for its kernel completion.
+    fn submit_option(
         &mut self,
-        fixed_idx: u32,
-        level: u32,
-        optname: u32,
-        value: i32,
+        fd: &Fd<'_>,
+        option: impl Into<SocketOption>,
     ) -> Result<(), PushError>;
 }
 
@@ -53,13 +54,18 @@ impl ContextControl for DriverContext<'_, '_> {
         <Backend as ControlBackend>::quiesce(self.backend(), targets)
     }
 
-    fn set(
+    fn submit_option(
         &mut self,
-        fixed_idx: u32,
-        level: u32,
-        optname: u32,
-        value: i32,
+        fd: &Fd<'_>,
+        option: impl Into<SocketOption>,
     ) -> Result<(), PushError> {
-        <Backend as ControlBackend>::set(self.backend(), fixed_idx, level, optname, value)
+        let option = option.into();
+        <Backend as ControlBackend>::submit_option(
+            self.backend(),
+            fd.slot(),
+            option.level(),
+            option.name(),
+            option.value(),
+        )
     }
 }

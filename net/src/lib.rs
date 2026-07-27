@@ -37,11 +37,17 @@ pub trait Transport: 'static + Sized {
         false
     }
 
-    fn submit_stream_config(
+    fn validate_stream_config(_config: Self::StreamConfig) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Queues best-effort tuning without waiting for kernel completion.
+    fn submit_stream_tuning(
         _driver: &mut DriverContext<'_, '_>,
         _config: Self::StreamConfig,
         _fd: &Fd<'_>,
-    ) {
+    ) -> bool {
+        true
     }
 
     fn per_ip_limit(_config: &Self::ListenerConfig) -> Option<u32> {

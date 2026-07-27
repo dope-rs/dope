@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::Transport;
-use crate::option::SocketOption;
+use crate::option::StreamOption;
 use dope_core::backend::Sqe;
 use dope_core::driver::DriverContext;
 use dope_core::driver::bootstrap::Bootstrap;
@@ -40,33 +40,90 @@ pub mod stream {
         pub keep_alive_retries: Option<u32>,
         pub user_timeout: Option<Duration>,
     }
+}
 
-    impl Config {
-        pub(super) const fn keep_alive_tuned(self) -> bool {
-            self.keep_alive_idle.is_some()
-                || self.keep_alive_interval.is_some()
-                || self.keep_alive_retries.is_some()
+use listener::Config;
+
+trait ListenerPlatform {
+    fn listener_options(&self) -> io::Result<(Option<i32>, Option<i32>)>;
+}
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::{Config, Error, ErrorKind, ListenerPlatform, StreamOption, io};
+
+    impl ListenerPlatform for Config {
+        fn listener_options(&self) -> io::Result<(Option<i32>, Option<i32>)> {
+            let fast_open_backlog = self
+                .fast_open_backlog
+                .map(i32::try_from)
+                .transpose()
+                .map_err(|_| {
+                    Error::new(ErrorKind::InvalidInput, "fast-open backlog exceeds c_int")
+                })?;
+            let defer_accept_secs = self
+                .defer_accept
+                .map(|duration| {
+                    StreamOption::seconds_raw(duration).ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidInput,
+                            "deferred accept must fit positive c_int seconds",
+                        )
+                    })
+                })
+                .transpose()?;
+            Ok((fast_open_backlog, defer_accept_secs))
         }
     }
 }
 
-use listener::Config;
+#[cfg(not(target_os = "linux"))]
+mod platform {
+    use super::{Config, Error, ErrorKind, ListenerPlatform, io};
+
+    impl ListenerPlatform for Config {
+        fn listener_options(&self) -> io::Result<(Option<i32>, Option<i32>)> {
+            if self.fast_open_backlog.is_some() || self.defer_accept.is_some() {
+                Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "TCP fast open and deferred accept require Linux",
+                ))
+            } else {
+                Ok((None, None))
+            }
+        }
+    }
+}
 
 pub struct Tcp;
 
 impl Tcp {
     fn listener_config(config: &Config) -> io::Result<ListenerConfig> {
-        let defer_accept_secs = config
-            .defer_accept
-            .map(|duration| u32::try_from(duration.as_secs()))
-            .transpose()
-            .map_err(|_| Error::new(ErrorKind::InvalidInput, "defer_accept exceeds u32 seconds"))?;
+        let (fast_open_backlog, defer_accept_secs) = config.listener_options()?;
         Ok(ListenerConfig {
             reuse_addr: true,
             reuse_port: config.reuse_port,
-            fast_open_backlog: config.fast_open_backlog,
+            fast_open_backlog,
             defer_accept_secs,
         })
+    }
+
+    fn stream_options(config: stream::Config) -> [Option<StreamOption>; 9] {
+        [
+            config.quick_ack.map(StreamOption::QuickAck),
+            config.no_delay.map(StreamOption::NoDelay),
+            config.keep_alive.map(StreamOption::KeepAlive),
+            config.recv_buffer_size.map(StreamOption::RecvBuffer),
+            config.send_buffer_size.map(StreamOption::SendBuffer),
+            config.keep_alive_idle.map(StreamOption::KeepAliveIdle),
+            config
+                .keep_alive_interval
+                .map(StreamOption::KeepAliveInterval),
+            config
+                .keep_alive_retries
+                .map(StreamOption::KeepAliveRetries),
+            config.user_timeout.map(StreamOption::UserTimeout),
+        ]
     }
 }
 
@@ -98,36 +155,51 @@ impl Transport for Tcp {
         driver.bind_listener_slot(*addr, backlog, &config)
     }
 
-    fn submit_stream_config(
+    fn validate_stream_config(config: stream::Config) -> io::Result<()> {
+        StreamOption::validate_all(Self::stream_options(config))
+    }
+
+    fn submit_stream_tuning(
         driver: &mut DriverContext<'_, '_>,
         config: stream::Config,
         fd: &Fd<'_>,
-    ) {
-        let tuned = config.keep_alive_tuned();
-        SocketOption::submit_all(
-            [
-                config.quick_ack.map(SocketOption::QuickAck),
-                config.no_delay.map(SocketOption::NoDelay),
-                config.keep_alive.map(SocketOption::KeepAlive),
-                config.recv_buffer_size.map(SocketOption::RecvBuffer),
-                config.send_buffer_size.map(SocketOption::SendBuffer),
-                config
-                    .keep_alive_idle
-                    .filter(|_| tuned)
-                    .map(SocketOption::KeepAliveIdle),
-                config
-                    .keep_alive_interval
-                    .filter(|_| tuned)
-                    .map(SocketOption::KeepAliveInterval),
-                config
-                    .keep_alive_retries
-                    .filter(|_| tuned)
-                    .map(SocketOption::KeepAliveRetries),
-                config.user_timeout.map(SocketOption::UserTimeout),
-            ],
+    ) -> bool {
+        StreamOption::submit(
+            config.user_timeout.map(StreamOption::UserTimeout),
             driver,
             fd,
-        );
+        ) && StreamOption::submit(config.quick_ack.map(StreamOption::QuickAck), driver, fd)
+            && StreamOption::submit(config.no_delay.map(StreamOption::NoDelay), driver, fd)
+            && StreamOption::submit(config.keep_alive.map(StreamOption::KeepAlive), driver, fd)
+            && StreamOption::submit(
+                config.recv_buffer_size.map(StreamOption::RecvBuffer),
+                driver,
+                fd,
+            )
+            && StreamOption::submit(
+                config.send_buffer_size.map(StreamOption::SendBuffer),
+                driver,
+                fd,
+            )
+            && StreamOption::submit(
+                config.keep_alive_idle.map(StreamOption::KeepAliveIdle),
+                driver,
+                fd,
+            )
+            && StreamOption::submit(
+                config
+                    .keep_alive_interval
+                    .map(StreamOption::KeepAliveInterval),
+                driver,
+                fd,
+            )
+            && StreamOption::submit(
+                config
+                    .keep_alive_retries
+                    .map(StreamOption::KeepAliveRetries),
+                driver,
+                fd,
+            )
     }
 
     fn per_ip_limit(config: &Config) -> Option<u32> {
@@ -139,6 +211,8 @@ impl Transport for Tcp {
     }
 
     fn apply_profile_defaults(config: &mut stream::Config, user_timeout: Option<Duration>) {
-        config.user_timeout = config.user_timeout.or(user_timeout);
+        if StreamOption::supports_user_timeout() {
+            config.user_timeout = config.user_timeout.or(user_timeout);
+        }
     }
 }

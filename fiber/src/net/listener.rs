@@ -26,7 +26,7 @@ use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 
 use super::port::Port;
-use super::port::recv::arena::{RecvArena, RecvLayout};
+use super::port::recv::arena::RecvLayout;
 use dope::Event;
 use dope::manifold::listener::state::{Aux, State};
 use dope::runtime::executor::StorageFactory;
@@ -93,7 +93,7 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
     const RETAIN_RAW_RECV: bool = true;
 
     fn max_retained_recv_chunks(max_connections: usize) -> io::Result<usize> {
-        RecvArena::capacity_for(max_connections)
+        RecvLayout::new(max_connections).map(RecvLayout::slots)
     }
 
     fn chunk<R: RetainBytes>(

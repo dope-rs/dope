@@ -29,8 +29,8 @@ mod linux {
         EMFILE, IPPROTO_TCP, SO_REUSEADDR, SO_REUSEPORT, SOL_SOCKET, TCP_DEFER_ACCEPT, TCP_FASTOPEN,
     };
 
+    use crate::backend::ops::raw::control::ControlBackend;
     use crate::backend::{RawSqe, Sqe};
-    use crate::driver::control::ContextControl;
     use crate::driver::submission::Submission;
     use crate::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
     use crate::io::fd::FdSlot;
@@ -155,28 +155,16 @@ mod linux {
         config: &ListenerConfig,
     ) -> io::Result<()> {
         if config.reuse_addr {
-            bootstrap_setsockopt(driver, slot, SOL_SOCKET as u32, SO_REUSEADDR as u32, 1)?;
+            bootstrap_setsockopt(driver, slot, SOL_SOCKET, SO_REUSEADDR, 1)?;
         }
         if config.reuse_port {
-            bootstrap_setsockopt(driver, slot, SOL_SOCKET as u32, SO_REUSEPORT as u32, 1)?;
+            bootstrap_setsockopt(driver, slot, SOL_SOCKET, SO_REUSEPORT, 1)?;
         }
         if let Some(qlen) = config.fast_open_backlog {
-            bootstrap_setsockopt(
-                driver,
-                slot,
-                IPPROTO_TCP as u32,
-                TCP_FASTOPEN as u32,
-                qlen as i32,
-            )?;
+            bootstrap_setsockopt(driver, slot, IPPROTO_TCP, TCP_FASTOPEN, qlen)?;
         }
         if let Some(secs) = config.defer_accept_secs {
-            bootstrap_setsockopt(
-                driver,
-                slot,
-                IPPROTO_TCP as u32,
-                TCP_DEFER_ACCEPT as u32,
-                secs as i32,
-            )?;
+            bootstrap_setsockopt(driver, slot, IPPROTO_TCP, TCP_DEFER_ACCEPT, secs)?;
         }
         Ok(())
     }
@@ -184,11 +172,17 @@ mod linux {
     fn bootstrap_setsockopt(
         driver: &mut DriverContext<'_, '_>,
         slot: u32,
-        level: u32,
-        optname: u32,
+        level: i32,
+        name: i32,
         value: i32,
     ) -> io::Result<()> {
-        ContextControl::set(driver, slot, level, optname, value)?;
+        <Backend as ControlBackend>::submit_option(
+            driver.backend(),
+            FdSlot::new(slot),
+            level,
+            name,
+            value,
+        )?;
         bootstrap_await(driver, 0, 0)
     }
 
