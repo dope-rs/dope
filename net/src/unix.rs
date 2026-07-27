@@ -1,20 +1,13 @@
 use std::io;
-use std::io::{Error, ErrorKind};
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::Transport;
 use crate::option::StreamOption;
 use dope_core::driver::DriverContext;
 use dope_core::io::fd::Fd;
-use dope_core::io::socket::addr::Addr;
+use dope_core::io::socket::addr::Addr as RawAddr;
 use libc::AF_UNIX;
 use libc::SOCK_STREAM;
-
-pub mod listener {
-    #[derive(Clone, Copy, Default)]
-    pub struct Config;
-}
 
 pub mod stream {
     #[derive(Clone, Copy, Default)]
@@ -24,9 +17,17 @@ pub mod stream {
     }
 }
 
-use listener::Config;
-
 pub struct Unix;
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub struct Addr(RawAddr);
+
+impl Addr {
+    pub fn from_path(path: &Path) -> io::Result<Self> {
+        Ok(Self(RawAddr::from_unix_path(path)?))
+    }
+}
 
 impl Unix {
     fn stream_options(config: stream::Config) -> [Option<StreamOption>; 2] {
@@ -38,31 +39,15 @@ impl Unix {
 }
 
 impl Transport for Unix {
-    type Addr = PathBuf;
+    type Addr = Addr;
     type StreamConfig = stream::Config;
-    type ListenerConfig = Config;
 
-    fn to_sock_addr(addr: &PathBuf) -> io::Result<Addr> {
-        Addr::from_unix_path(addr)
+    fn to_sock_addr(addr: &Addr) -> io::Result<RawAddr> {
+        Ok(addr.0)
     }
 
-    fn socket_params(_addr: &PathBuf) -> (i32, i32, i32) {
+    fn socket_params(_addr: &Addr) -> (i32, i32, i32) {
         (AF_UNIX, SOCK_STREAM, 0)
-    }
-
-    fn bind_listener_slot<'d>(
-        _driver: &mut DriverContext<'_, 'd>,
-        _addr: &PathBuf,
-        backlog: i32,
-        _config: &Config,
-    ) -> io::Result<(Fd<'d>, SocketAddr)> {
-        if backlog <= 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "backlog must be > 0"));
-        }
-        Err(Error::new(
-            ErrorKind::Unsupported,
-            "dope: unix listener fixed-slot bootstrap not yet wired",
-        ))
     }
 
     fn validate_stream_config(config: stream::Config) -> io::Result<()> {

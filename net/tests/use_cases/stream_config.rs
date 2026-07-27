@@ -1,6 +1,8 @@
 use std::io::ErrorKind;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use dope_net::ListenerTransport;
 use dope_net::Transport;
 use dope_net::tcp::Tcp;
 use dope_net::tcp::stream::Config as TcpConfig;

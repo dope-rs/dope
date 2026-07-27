@@ -1,8 +1,8 @@
-use dope_net::Transport;
+use dope_net::ListenerTransport;
 use dope_net::link::egress::config;
 
 #[derive(Clone, Debug)]
-pub struct Config<T: Transport> {
+pub struct Config<T: ListenerTransport> {
     pub max_connections: usize,
     pub bind: T::Addr,
     pub backlog: i32,

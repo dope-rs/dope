@@ -15,6 +15,7 @@ use dope::runtime::profile::Throughput;
 use dope::{DriverContext, DriverRef, driver};
 use dope_core::driver::ext::DriverExt;
 use dope_fiber::net::listener::{ListenerPort, ListenerPortFactory};
+use dope_net::ListenerTransport;
 use dope_net::tcp::Tcp;
 use dope_net::tcp::listener;
 use dope_net::wire::Wire;
@@ -99,7 +100,7 @@ pub fn open_listener<'d, const ID: u8, A, E>(
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
-    E::Transport: 'static,
+    E::Transport: ListenerTransport,
     <A::Wire as Wire>::InitConfig: Default,
 {
     let listener = Listener::open_in(app, cfg, hash_builder, driver).expect("listener");

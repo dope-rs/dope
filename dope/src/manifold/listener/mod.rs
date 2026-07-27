@@ -39,12 +39,12 @@ use dope_core::driver::route::Route;
 use dope_core::driver::token::{SLOT_MASK, SlotIndex, Token};
 use dope_core::io::Event;
 use dope_core::io::EventKind;
-use dope_net::Transport;
 use dope_net::link::egress::arena::Arena;
 use dope_net::link::raw::pool::Pool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, SendBuffer, Slot};
 use dope_net::tcp::Tcp;
 use dope_net::wire::Wire;
+use dope_net::{ListenerTransport, Transport};
 use o3::buffer::Shared;
 use pin_project::pin_project;
 use pin_project::pinned_drop;
@@ -121,6 +121,7 @@ where
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
+        E::Transport: ListenerTransport,
         <A::Wire as Wire>::InitConfig: Default,
     {
         Self::open_in_with_wire(
@@ -138,7 +139,10 @@ where
         wire_config: <A::Wire as Wire>::InitConfig,
         hash_builder: hash::State,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> io::Result<Self> {
+    ) -> io::Result<Self>
+    where
+        E::Transport: ListenerTransport,
+    {
         let mut listener = Self::assemble(app, config, wire_config, hash_builder, driver)?;
         listener.accept.request_rearm();
         Ok(listener)
@@ -150,7 +154,10 @@ where
         wire_config: <A::Wire as Wire>::InitConfig,
         hash_builder: hash::State,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> io::Result<Self> {
+    ) -> io::Result<Self>
+    where
+        E::Transport: ListenerTransport,
+    {
         let Config {
             max_connections,
             bind,
@@ -166,10 +173,11 @@ where
             "max_connections must be in 1..=1<<24"
         );
         let route = Route::reserve(driver)?;
-        let (listener_fd, bound_addr) =
-            <E::Transport as Transport>::bind_listener_slot(driver, &bind, backlog, &transport)?;
-        let per_ip_limit =
-            <E::Transport as Transport>::per_ip_limit(&transport).unwrap_or(E::Profile::PER_IP_CAP);
+        let (listener_fd, bound_addr) = <E::Transport as ListenerTransport>::bind_listener_slot(
+            driver, &bind, backlog, &transport,
+        )?;
+        let per_ip_limit = <E::Transport as ListenerTransport>::per_ip_limit(&transport)
+            .unwrap_or(E::Profile::PER_IP_CAP);
         Ok(Self {
             route,
             pool: Pool::new(

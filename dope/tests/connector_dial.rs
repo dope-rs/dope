@@ -33,9 +33,6 @@ fn explicit_dialer_is_a_zero_overhead_borrowed_view() {
 #[derive(Clone, Copy, Default)]
 struct ConversionStreamConfig;
 
-#[derive(Clone, Default)]
-struct ConversionListenerConfig;
-
 #[derive(Clone, Copy, Default)]
 enum ConversionMode {
     #[default]
@@ -100,7 +97,6 @@ impl ConversionTransport {
 impl Transport for ConversionTransport {
     type Addr = ConversionAddr;
     type StreamConfig = ConversionStreamConfig;
-    type ListenerConfig = ConversionListenerConfig;
 
     fn to_sock_addr(addr: &Self::Addr) -> io::Result<dope::io::socket::addr::Addr> {
         match addr.control.mode.get() {
@@ -124,15 +120,6 @@ impl Transport for ConversionTransport {
             panic!("socket params panic");
         }
         (libc::AF_INET, libc::SOCK_STREAM, 0)
-    }
-
-    fn bind_listener_slot<'d>(
-        _driver: &mut dope::DriverContext<'_, 'd>,
-        _addr: &Self::Addr,
-        _backlog: i32,
-        _config: &Self::ListenerConfig,
-    ) -> io::Result<(dope_core::io::fd::Fd<'d>, SocketAddr)> {
-        unreachable!()
     }
 }
 

@@ -21,9 +21,9 @@ use dope::manifold::typed::TypedToken;
 use dope::manifold::{Manifold, Outcome, listener};
 use dope::runtime::dispatcher::Idle;
 use dope::runtime::profile::Balanced;
-use dope_net::Transport;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
+use dope_net::{ListenerTransport, Transport};
 
 use super::port::Port;
 use super::port::recv::arena::RecvLayout;
@@ -189,6 +189,7 @@ where
         hash_builder: hash::State,
     ) -> io::Result<Self>
     where
+        T: ListenerTransport,
         W::InitConfig: Default,
     {
         let inner = listener::Listener::open_in(
