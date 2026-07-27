@@ -339,7 +339,7 @@ where
     pub fn pre_park(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         {
             let this = self.as_mut().project();
-            Pin::new(&*this.timer).pre_park(driver);
+            this.timer.expire(driver.turn_now());
             this.app.pre_park();
         }
         self.rouse(driver);
@@ -355,7 +355,7 @@ where
         if !this.dirty.is_empty() || (E::Profile::HYBRID_PARK && this.pool.pending_recv_rearm()) {
             return Idle::Busy;
         }
-        Pin::new(this.timer).idle().reduce(this.app.idle())
+        Idle::Park(this.timer.earliest()).reduce(this.app.idle())
     }
 
     pub fn shutdown_all(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {

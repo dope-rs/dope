@@ -1,3 +1,5 @@
+use dope::manifold::{Manifold, timer::Timer};
+
 trait AmbiguousIfSend<A> {}
 
 impl<T: ?Sized> AmbiguousIfSend<()> for T {}
@@ -13,6 +15,7 @@ impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
 const _: fn() = || {
     fn not_send<T: ?Sized + AmbiguousIfSend<A>, A>() {}
     fn not_sync<T: ?Sized + AmbiguousIfSync<A>, A>() {}
+    fn require_manifold<'d, M: Manifold<'d>>() {}
     fn require_send<T: Send>() {}
 
     not_send::<dope::driver::Driver, _>();
@@ -37,14 +40,18 @@ const _: fn() = || {
     not_sync::<dope::io::file::OsFile, _>();
     not_send::<dope::manifold::timer::Ticket, _>();
     not_sync::<dope::manifold::timer::Ticket, _>();
-    not_send::<dope::manifold::timer::Timer<'static>, _>();
-    not_sync::<dope::manifold::timer::Timer<'static>, _>();
+    not_send::<Timer<'static>, _>();
+    not_sync::<Timer<'static>, _>();
+    require_manifold::<&'static Timer<'static, 7>>();
     not_send::<dope::manifold::connector::source::DialKey, _>();
     not_sync::<dope::manifold::connector::source::DialKey, _>();
 };
 
 #[test]
 fn local_capabilities_keep_their_layout() {
+    type TimerManifold = &'static Timer<'static, 7>;
+
+    assert_eq!(<TimerManifold as Manifold<'static>>::ID, 7);
     assert_eq!(
         size_of::<dope::manifold::timer::Ticket>(),
         2 * size_of::<u32>()
