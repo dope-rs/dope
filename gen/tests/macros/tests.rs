@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::pin::{Pin, pin};
 
 use dope::manifold::Manifold;
@@ -65,6 +66,16 @@ struct Dispatcher {
     c: Counter<1>,
 }
 
+#[pin_project::pin_project]
+#[derive(dope_gen::Forward)]
+struct ScopedForward<'scope, 'd> {
+    #[pin]
+    #[forward('d)]
+    inner: Counter<7>,
+    scope: PhantomData<&'scope ()>,
+    driver: PhantomData<&'d ()>,
+}
+
 fn make_dispatcher() -> Dispatcher {
     Dispatcher {
         a: Counter::new(false),
@@ -96,6 +107,19 @@ fn route_consts() {
     assert_eq!(Dispatcher::A_ROUTE, 3);
     assert_eq!(Dispatcher::B_ROUTE, 0);
     assert_eq!(Dispatcher::C_ROUTE, 1);
+}
+
+#[test]
+fn forward_can_name_nonleading_driver_lifetime() {
+    fn assert_manifold<'d>(_: &impl Manifold<'d>) {}
+
+    let app = ScopedForward {
+        inner: Counter::new(false),
+        scope: PhantomData,
+        driver: PhantomData,
+    };
+    assert_manifold(&app);
+    assert_eq!(ScopedForward::<'_, '_>::ID, 7);
 }
 
 #[test]

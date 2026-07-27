@@ -1,7 +1,9 @@
-use std::io;
+use std::io::{self, Error, ErrorKind};
 use std::marker::PhantomData;
 
+use self::rearm::Rearm;
 use super::core::{Core, Outbound};
+use super::event::{ConnectStep, DispatchRecv, SendOutcome, SocketStep};
 use crate::Transport;
 use crate::link::slot::{RecvDecision, Slot};
 use crate::wire::{OpenReservation, RuntimeLimits, Wire};
@@ -10,9 +12,7 @@ use dope_core::driver::buffers::ProvidedBuffers;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::submission::Submission;
 use dope_core::driver::submission::raw::Submission as _;
-use dope_core::driver::token::kind::CONNECT;
-use dope_core::driver::token::kind::CREATE;
-use dope_core::driver::token::kind::SEND;
+use dope_core::driver::token::kind::{CONNECT, CREATE, SEND};
 use dope_core::driver::token::{
     Epoch, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, SlotIndex, Token, TokenSlab,
 };
@@ -22,17 +22,15 @@ use dope_core::io::provided::ProvidedView;
 use dope_core::io::socket::addr::Addr;
 use dope_core::io::{ConnectEvent, RecvEvent, SendEvent, SocketEvent};
 use o3::buffer::ByteSpan;
-use o3::collections::FixedQueue;
-use std::io::Error;
-use std::io::ErrorKind;
 use std::mem::replace;
+
+mod rearm;
 
 pub struct Pool<'d, const ID: u8, T: Transport, W: Wire, S> {
     slab: TokenSlab<Slot<'d, W, S>, KeyTag<ID>>,
     runtime: W::RuntimeContext,
     reservation: OutboundReservation,
-    recv_rearm_pending: FixedQueue<SlotIndex>,
-    rearm_epoch: Box<[Epoch]>,
+    rearm: Rearm<ID>,
     poison_route: bool,
     _t: PhantomData<T>,
 }
@@ -63,23 +61,10 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             slab: TokenSlab::with_capacity(max_connections),
             runtime,
             reservation,
-            recv_rearm_pending: FixedQueue::with_capacity(max_connections),
-            rearm_epoch: vec![Epoch::ZERO; max_connections].into_boxed_slice(),
+            rearm: Rearm::with_capacity(max_connections),
             poison_route: false,
             _t: PhantomData,
         })
-    }
-
-    fn queue_rearm(&mut self, token: Token) {
-        let index = token.slot().raw() as usize;
-        let epoch = unsafe { self.rearm_epoch.get_unchecked_mut(index) };
-        if *epoch == Epoch::ZERO {
-            let Some(entry) = self.recv_rearm_pending.vacant_entry() else {
-                unreachable!()
-            };
-            entry.push_back(token.slot());
-        }
-        *epoch = token.epoch();
     }
 
     pub fn capacity(&self) -> usize {
@@ -91,7 +76,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     }
 
     pub fn pending_recv_rearm(&self) -> bool {
-        !self.recv_rearm_pending.is_empty()
+        !self.rearm.pending.is_empty()
     }
 
     pub fn needs_route_poison(&self) -> bool {
@@ -111,9 +96,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     }
 
     pub fn fd_of(&self, idx: SlotIndex) -> Option<&Fd<'d>> {
-        self.slab
-            .get_index(idx.raw())
-            .map(|(slot, _)| &slot.core.fd)
+        self.get(idx).map(|slot| &slot.core.fd)
     }
 
     #[must_use]
@@ -176,7 +159,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             (key, Self::submit_recv(slot, ud, driver))
         };
         if !armed {
-            self.queue_rearm(Token::from_key(key));
+            self.rearm.queue(Token::from_key(key));
         }
         armed
     }
@@ -204,13 +187,14 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     }
 
     pub fn flush_rearm(&mut self, driver: &mut DriverContext<'_, 'd>) {
-        let n = self.recv_rearm_pending.len();
-        for _ in 0..n {
-            let Some(idx) = self.recv_rearm_pending.pop_front() else {
+        let count = self.rearm.pending.len();
+        for _ in 0..count {
+            let Some(idx) = self.rearm.pending.pop_front() else {
                 break;
             };
+            // SAFETY: every queued index was admitted by `Rearm::queue`.
             let epoch = replace(
-                unsafe { self.rearm_epoch.get_unchecked_mut(idx.raw() as usize) },
+                unsafe { self.rearm.epochs.get_unchecked_mut(idx.raw() as usize) },
                 Epoch::ZERO,
             );
             if epoch == Epoch::ZERO {
@@ -226,9 +210,8 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             if !slot.core.needs_arm() {
                 continue;
             }
-            let armed = Self::submit_recv(slot, token, driver);
-            if !armed {
-                self.queue_rearm(token);
+            if !Self::submit_recv(slot, token, driver) {
+                self.rearm.queue(token);
             }
         }
     }
@@ -239,13 +222,9 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         ud: Token,
         e: SendEvent,
     ) -> SendOutcome {
-        let Some(parts) = ud.parts::<KeyTag<ID>>() else {
+        let Some((idx, slot)) = self.by_target_mut(ud) else {
             return SendOutcome::Drop;
         };
-        let Some(slot) = self.slab.get_parts_mut(parts.slab()) else {
-            return SendOutcome::Drop;
-        };
-        let idx = SlotIndex::new(parts.index());
         match e {
             SendEvent::Sent(n) => slot.send_sent(driver, n as usize, ud, idx),
             SendEvent::Failed(_) => slot.send_failed(idx),
@@ -281,7 +260,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             _ => false,
         };
         if needs_rearm {
-            self.queue_rearm(ud);
+            self.rearm.queue(ud);
         }
         match decision {
             RecvDecision::Drop => DispatchRecv::Drop,
@@ -292,42 +271,35 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         }
     }
 
+    fn map_dispatch<C, X>(dispatch: DispatchRecv<C>, map: impl FnOnce(C) -> X) -> DispatchRecv<X> {
+        match dispatch {
+            DispatchRecv::Drop => DispatchRecv::Drop,
+            DispatchRecv::Close(idx) => DispatchRecv::Close(idx),
+            DispatchRecv::Chunk(idx, chunk) => DispatchRecv::Chunk(idx, map(chunk)),
+            DispatchRecv::NoChunk(idx) => DispatchRecv::NoChunk(idx),
+            DispatchRecv::Discarded(idx) => DispatchRecv::Discarded(idx),
+        }
+    }
+
     pub fn dispatch_retained_recv(
         &mut self,
         ud: Token,
         more: bool,
         event: RecvEvent<'d>,
     ) -> DispatchRecv<Option<ProvidedView<'d>>> {
-        let dispatch = match self.dispatch_recv(ud, more, &event) {
-            DispatchRecv::Drop => DispatchRecv::Drop,
-            DispatchRecv::Close(idx) => DispatchRecv::Close(idx),
-            DispatchRecv::NoChunk(idx) => DispatchRecv::NoChunk(idx),
-            DispatchRecv::Discarded(idx) => DispatchRecv::Discarded(idx),
-            DispatchRecv::Chunk(idx, chunk) => {
-                let range = match &event {
-                    RecvEvent::Data(lease) => lease.range_of(chunk.as_slice()),
-                    _ => None,
-                };
-                DispatchRecv::Chunk(idx, range)
-            }
-        };
-        match dispatch {
-            DispatchRecv::Drop => DispatchRecv::Drop,
-            DispatchRecv::Close(idx) => DispatchRecv::Close(idx),
-            DispatchRecv::NoChunk(idx) => DispatchRecv::NoChunk(idx),
-            DispatchRecv::Discarded(idx) => DispatchRecv::Discarded(idx),
-            DispatchRecv::Chunk(idx, range) => {
-                let view = match (event, range) {
-                    (RecvEvent::Data(lease), Some(range)) => lease.into_view(range).ok(),
-                    _ => None,
-                };
-                DispatchRecv::Chunk(idx, view)
-            }
-        }
+        let dispatch =
+            Self::map_dispatch(self.dispatch_recv(ud, more, &event), |chunk| match &event {
+                RecvEvent::Data(lease) => lease.range_of(chunk.as_slice()),
+                _ => None,
+            });
+        Self::map_dispatch(dispatch, |range| match (event, range) {
+            (RecvEvent::Data(lease), Some(range)) => lease.into_view(range).ok(),
+            _ => None,
+        })
     }
 
     pub fn set_close_after(&mut self, idx: SlotIndex) {
-        if let Some((slot, _)) = self.slab.get_index_mut(idx.raw()) {
+        if let Some(slot) = self.get_mut(idx) {
             slot.core.set_close_after();
         }
     }
@@ -351,9 +323,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         }
         slot.close(driver);
     }
-}
 
-impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     pub fn send_slot(&mut self, idx: SlotIndex) -> Option<(&mut Slot<'d, W, S>, Token)> {
         let (slot, key) = self.slab.get_index_mut(idx.raw())?;
         let ud = Token::from_key(key);
@@ -434,7 +404,6 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         let Some(parts) = ud.parts::<KeyTag<ID>>() else {
             return SocketStep::Failed { peeked: None };
         };
-        let idx = SlotIndex::new(parts.index());
         let (peeked, submitted) = {
             let Some(slot) = self.slab.get_parts_mut(parts.slab()) else {
                 return SocketStep::Failed { peeked: None };
@@ -442,24 +411,25 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             let (peeked, prepared) = prepare(&*slot);
             let submitted = if let (SocketEvent::Created, Some((sock_addr, config))) = (e, prepared)
             {
-                T::submit_stream_config(driver, config, &slot.core.fd);
-                let (ptr, len) = slot.state.establish().begin(sock_addr);
-                // SAFETY: `Establish` owns the address in this live slot until
-                // connect completion or the rejected-submission rollback.
-                let submitted =
-                    unsafe { driver.push_raw(RawSqe::connect(&slot.core.fd, ptr, len, ud)) }
-                        .is_ok();
-                if !submitted {
-                    slot.state.establish().abort();
+                if T::submit_stream_tuning(driver, config, &slot.core.fd) {
+                    let (ptr, len) = slot.state.establish().begin(sock_addr);
+                    // SAFETY: `Establish` owns the address through completion or rollback.
+                    let submitted =
+                        unsafe { driver.push_raw(RawSqe::connect(&slot.core.fd, ptr, len, ud)) }
+                            .is_ok();
+                    if !submitted {
+                        slot.state.establish().abort();
+                    }
+                    submitted
+                } else {
+                    false
                 }
-                submitted
             } else {
                 false
             };
             (peeked, submitted)
         };
         if submitted {
-            let _ = (idx, peeked);
             SocketStep::Connecting
         } else {
             if let Some(slot) = self.slab.remove_parts(parts.slab()) {
@@ -508,37 +478,11 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             if let Some(slot) = self.slab.remove_parts(parts.slab()) {
                 slot.close(driver);
             }
-            let _ = idx;
             return ConnectStep::Failed { peeked };
         }
         if !armed {
-            self.queue_rearm(ud);
+            self.rearm.queue(ud);
         }
         ConnectStep::Connected { idx, peeked }
     }
-}
-
-pub enum SocketStep<X> {
-    Connecting,
-    Failed { peeked: Option<X> },
-}
-
-pub enum ConnectStep<X> {
-    Connected { idx: SlotIndex, peeked: X },
-    Failed { peeked: X },
-    Drop { peeked: Option<X> },
-}
-
-pub enum DispatchRecv<C> {
-    Drop,
-    Close(SlotIndex),
-    Chunk(SlotIndex, C),
-    NoChunk(SlotIndex),
-    Discarded(SlotIndex),
-}
-
-pub enum SendOutcome {
-    Sent { idx: SlotIndex, n: usize },
-    Close(SlotIndex),
-    Drop,
 }

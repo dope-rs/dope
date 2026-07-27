@@ -53,7 +53,6 @@ where
     egress_arena: Arena<A::Send>,
     pub(super) app: A,
     pub(super) upstreams: S,
-    stream: <E::Transport as Transport>::StreamConfig,
     dirty: PendingQueue,
     backoff_timer: Option<Ticket>,
     liveness_timer: Option<Ticket>,
@@ -154,7 +153,6 @@ where
             egress_arena: Arena::with_config(egress_config, max_connections),
             app,
             upstreams,
-            stream: <E::Transport as Transport>::StreamConfig::default(),
             dirty: PendingQueue::with_capacity(max_connections),
             backoff_timer: None,
             liveness_timer: None,
@@ -175,16 +173,11 @@ where
     ) -> Option<DialKey> {
         let driver = self.as_ref().get_ref().route.driver();
         let this = self.as_mut().project();
-        let key = this.upstreams.dial(addr, *this.stream)?;
+        let key = this
+            .upstreams
+            .dial(addr, <E::Transport as Transport>::StreamConfig::default())?;
         driver.activate_ready(self.as_ref().backoff_key());
         Some(key)
-    }
-
-    pub fn set_stream_config(
-        self: Pin<&mut Self>,
-        config: <E::Transport as Transport>::StreamConfig,
-    ) {
-        *self.project().stream = config;
     }
 
     pub fn flush(&self, conn_id: Token) {

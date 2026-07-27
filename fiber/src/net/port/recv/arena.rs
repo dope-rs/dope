@@ -46,7 +46,7 @@ impl RecvLayout {
         Ok(Self { connections, slots })
     }
 
-    fn slots(self) -> usize {
+    pub(in crate::net) fn slots(self) -> usize {
         self.slots
     }
 
@@ -56,10 +56,6 @@ impl RecvLayout {
 }
 
 impl<'d> RecvArena<'d> {
-    pub(in crate::net) fn capacity_for(connections: usize) -> io::Result<usize> {
-        RecvLayout::new(connections).map(RecvLayout::slots)
-    }
-
     pub(in crate::net::port) fn with_layout(layout: RecvLayout) -> Self {
         let slots: Box<[_]> = (0..layout.slots)
             .map(|index| {

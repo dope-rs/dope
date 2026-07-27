@@ -258,11 +258,14 @@ where
             let conn_slot =
                 State::<A::Conn>::new(conn, peer_ip, fixed_idx_raw as usize, this.egress_arena);
             let _ = <E::Transport as Transport>::submit_quickack(driver, &fixed_fd);
-            <E::Transport as Transport>::submit_stream_config(
+            if !<E::Transport as Transport>::submit_stream_tuning(
                 driver,
                 *this.accept.stream_config(),
                 &fixed_fd,
-            );
+            ) {
+                drop(driver.guard(fixed_fd));
+                return;
+            }
             let placed = this.pool.insert(
                 fixed_idx,
                 Core::new(fixed_fd, <E::Transport as Transport>::KERNEL_DISCARD),

@@ -4,6 +4,8 @@ use std::os::fd::BorrowedFd;
 use crate::backend::Backend;
 use crate::driver::token::Token;
 use crate::driver::{OutboundReservation, PushError};
+use crate::io::fd::FdSlot;
+use libc::c_int;
 
 pub(crate) trait ControlBackend {
     fn prepare_drop(backend: &mut Backend) {
@@ -24,12 +26,12 @@ pub(crate) trait ControlBackend {
         backend.routes.poison(id);
     }
     fn quiesce(backend: &mut Backend, targets: &[Token]) -> bool;
-    fn set(
+    fn submit_option(
         backend: &mut Backend,
-        fixed_idx: u32,
-        level: u32,
-        optname: u32,
-        value: i32,
+        slot: FdSlot,
+        level: c_int,
+        name: c_int,
+        value: c_int,
     ) -> Result<(), PushError>;
 }
 
@@ -47,7 +49,7 @@ mod linux {
     use crate::backend::uring::raw::submission::Submission;
     use crate::backend::uring::sqe::Sqe;
 
-    use super::{Backend, BorrowedFd, ControlBackend, PushError, Token, io};
+    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, Token, io};
 
     impl ControlBackend for Backend {
         fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()> {
@@ -77,12 +79,12 @@ mod linux {
             true
         }
 
-        fn set(
+        fn submit_option(
             backend: &mut Backend,
-            fixed_idx: u32,
-            level: u32,
-            optname: u32,
-            value: i32,
+            slot: FdSlot,
+            level: c_int,
+            name: c_int,
+            value: c_int,
         ) -> Result<(), PushError> {
             let Ok((key, stored)) = backend.setsockopt.insert_entry(value) else {
                 return Err(PushError);
@@ -90,9 +92,9 @@ mod linux {
             let optval_ptr = (&raw const *stored).cast::<c_void>();
             let ud = Token::from_key(key);
             let sqe = SetSockOpt::new(
-                Fixed(fixed_idx),
-                level,
-                optname,
+                Fixed(slot.raw()),
+                level as u32,
+                name as u32,
                 optval_ptr,
                 size_of::<c_int>() as u32,
             )
@@ -116,11 +118,9 @@ mod kqueue {
 
     use libc::{EV_ADD, EV_CLEAR, EVFILT_READ, c_int, kevent, setsockopt, socklen_t, uintptr_t};
 
+    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, Token, io};
     use crate::backend::kqueue::driver::retry::Retry;
     use crate::backend::kqueue::driver::udata::Udata;
-    use crate::io::fd::FdSlot;
-
-    use super::{Backend, BorrowedFd, ControlBackend, PushError, Token, io};
 
     impl ControlBackend for Backend {
         fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()> {
@@ -156,21 +156,21 @@ mod kqueue {
             false
         }
 
-        fn set(
+        fn submit_option(
             backend: &mut Backend,
-            fixed_idx: u32,
-            level: u32,
-            optname: u32,
-            value: i32,
+            slot: FdSlot,
+            level: c_int,
+            name: c_int,
+            value: c_int,
         ) -> Result<(), PushError> {
-            let Some(raw) = backend.raw_fd(FdSlot::new(fixed_idx)) else {
+            let Some(raw) = backend.raw_fd(slot) else {
                 return Err(PushError);
             };
             let rc = unsafe {
                 setsockopt(
                     raw,
-                    level as c_int,
-                    optname as c_int,
+                    level,
+                    name,
                     (&value as *const c_int).cast(),
                     size_of::<c_int>() as socklen_t,
                 )

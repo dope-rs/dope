@@ -1,4 +1,4 @@
-use std::io::{self, Error};
+use std::io;
 use std::pin::Pin;
 use std::task::Poll;
 
@@ -17,6 +17,7 @@ enum Stage<T: Transport> {
     Done,
 }
 
+/// A connect operation that owns any waker registration made for its dial ticket.
 pub struct Connect<'scope, 'd, T: Transport>
 where
     T::Addr: Clone,
@@ -67,17 +68,17 @@ where
             Stage::Done => return Poll::Pending,
             Stage::Ticket(key) => key,
             Stage::Init { ref addr, config } => {
-                let Some(key) = this.host.port.dial(addr.clone(), config) else {
-                    return Poll::Ready(Err(Error::other(
-                        "fiber::Connector: pending pool exhausted",
-                    )));
+                let key = match this.host.port.dial(addr.clone(), config) {
+                    Ok(key) => key,
+                    Err(error) => return Poll::Ready(Err(error)),
                 };
                 this.stage = Stage::Ticket(key);
                 key
             }
         };
-        // SAFETY: `Connect::drop` cancels this exact ticket before its task
-        // context can drop, removing the stored waker from `Pending`.
+        // SAFETY: fields are private, so a live ticket can only be owned by
+        // this `Connect`. Its Drop cancels that exact ticket and removes the
+        // copied waker before the task context backing it can disappear.
         let waker = unsafe { cx.waker_unchecked() };
         match this.host.port.resolve(key, waker) {
             Poll::Ready(Ok(token)) => {

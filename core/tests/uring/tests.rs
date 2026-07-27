@@ -3,6 +3,7 @@ use std::time::Duration;
 use dope_core::driver::bootstrap::Bootstrap;
 use dope_core::driver::completion::Completion;
 use dope_core::driver::control::ContextControl;
+use dope_core::io::socket::option::SocketOption;
 use dope_test::with_driver;
 
 #[test]
@@ -13,11 +14,9 @@ fn setsockopt_completion_is_consumed() {
             .expect("bind datagram");
 
         driver
-            .set(
-                socket.index(),
-                libc::SOL_SOCKET as u32,
-                libc::SO_REUSEADDR as u32,
-                1,
+            .submit_option(
+                &socket,
+                SocketOption::new(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1),
             )
             .expect("submit setsockopt");
 

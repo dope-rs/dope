@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use dope_core::io::{ConnectEvent, SocketEvent};
 use dope_net::Transport;
-use dope_net::link::raw::pool::{ConnectStep, SocketStep};
+use dope_net::link::raw::event::{ConnectStep, SocketStep};
 
 use super::Core;
 use super::send::SendPhase;
@@ -50,7 +50,7 @@ where
     ) {
         let now = driver.turn_now();
         let this = self.project();
-        let stream = *this.stream;
+        let stream = <E::Transport as Transport>::StreamConfig::default();
         let upstreams = &mut *this.upstreams;
         let step = this.pool.drive_socket_cqe(token, &event, driver, |slot| {
             let dial = slot.state.dial;

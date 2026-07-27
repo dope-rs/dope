@@ -160,6 +160,7 @@ where
             egress,
         } = config;
         <E::Transport as Transport>::apply_profile_defaults(&mut stream, E::Profile::USER_TIMEOUT);
+        <E::Transport as Transport>::validate_stream_config(stream)?;
         assert!(
             max_connections > 0 && max_connections <= SLOT_MASK as usize + 1,
             "max_connections must be in 1..=1<<24"

@@ -1,5 +1,5 @@
-pub mod connect;
 mod pending;
+pub mod raw;
 
 use std::io::{self, Error};
 use std::marker::PhantomData;
@@ -7,8 +7,6 @@ use std::task::Poll;
 
 use o3::buffer::{RetainBytes, Shared};
 use o3::collections::CellQueue;
-
-use connect::Connect;
 
 use crate::Waker;
 use dope::DriverContext;
@@ -25,10 +23,11 @@ use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 
 use super::port::Port;
-use super::port::recv::arena::{RecvArena, RecvLayout};
+use super::port::recv::arena::RecvLayout;
 use dope::manifold::connector::state::State;
 use dope::runtime::executor::StorageFactory;
 use pending::{Outcome, Pending};
+use raw::Connect;
 
 pub struct ConnectorPort<'d, T: Transport>
 where
@@ -85,7 +84,7 @@ where
         wire_config: W::InitConfig,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Connector<'_, 'd, ID, T, W>> {
-        Connector::with_app_configs(
+        let core = Core::with_app_configs(
             AsyncApp {
                 port: self,
                 _wire: PhantomData,
@@ -95,13 +94,18 @@ where
             Default::default(),
             wire_config,
             driver,
-        )
+        )?;
+        Ok(Connector { core })
     }
 
-    fn dial(&self, addr: T::Addr, config: T::StreamConfig) -> Option<DialKey> {
-        let key = self.source.dial_shared(addr, config)?;
+    fn dial(&self, addr: T::Addr, config: T::StreamConfig) -> io::Result<DialKey> {
+        T::validate_stream_config(config)?;
+        let key = self
+            .source
+            .dial_shared(addr, config)
+            .ok_or_else(|| Error::other("fiber::Connector: pending pool exhausted"))?;
         self.pending.reserve(key);
-        Some(key)
+        Ok(key)
     }
 
     fn resolve(&self, key: DialKey, waker: Waker<'d>) -> Poll<io::Result<Token>> {
@@ -143,7 +147,7 @@ where
     }
 }
 
-pub struct AsyncApp<'scope, 'd, T: Transport, W: Wire>
+struct AsyncApp<'scope, 'd, T: Transport, W: Wire>
 where
     T::Addr: Clone,
 {
@@ -162,7 +166,7 @@ where
     const RETAIN_RAW_RECV: bool = true;
 
     fn max_retained_recv_chunks(max_connections: usize) -> io::Result<usize> {
-        RecvArena::capacity_for(max_connections)
+        RecvLayout::new(max_connections).map(RecvLayout::slots)
     }
 
     fn chunk<R: RetainBytes>(
@@ -252,8 +256,18 @@ where
     }
 }
 
-pub type Connector<'scope, 'd, const ID: u8, T, W> =
-    Core<'d, ID, AsyncApp<'scope, 'd, T, W>, ExplicitDialer<'scope, T>, Bundle<T, W, Balanced>>;
+#[pin_project::pin_project]
+#[derive(dope_gen::Forward)]
+#[repr(transparent)]
+pub struct Connector<'scope, 'd, const ID: u8, T: Transport, W: Wire>
+where
+    T::Addr: Clone,
+{
+    #[pin]
+    #[forward('d)]
+    core:
+        Core<'d, ID, AsyncApp<'scope, 'd, T, W>, ExplicitDialer<'scope, T>, Bundle<T, W, Balanced>>,
+}
 
 pub struct ConnectorHandle<'scope, 'd, T: Transport>
 where

@@ -3,7 +3,7 @@ use std::pin::Pin;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::SendEvent;
 use dope_net::Transport;
-use dope_net::link::raw::pool::SendOutcome;
+use dope_net::link::raw::event::SendOutcome;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, Slot};
 use dope_net::wire::{Reclaim, Wire};
 

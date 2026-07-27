@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Error, Fields, Ident, Type};
+use syn::{Attribute, Data, DeriveInput, Error, Fields, Ident, Lifetime, Meta, Type};
 
 use crate::derive::{DeriveAttrs, DeriveGenerics};
 
@@ -18,12 +18,6 @@ impl Forward {
         }
         let name = &input.ident;
         let (_, ty_generics, where_clause) = input.generics.split_for_impl();
-        let (brand, fresh) = input.generics.brand_lifetime();
-        let impl_generics = {
-            let params = input.generics.params.iter();
-            quote! { <#fresh #(#params),*> }
-        };
-
         let data = match &input.data {
             Data::Struct(s) => s,
             _ => {
@@ -40,15 +34,15 @@ impl Forward {
                     .into();
             }
         };
-        let mut marked: Vec<(&Ident, &Type)> = Vec::new();
+        let mut marked: Vec<(&Ident, &Type, &Attribute)> = Vec::new();
         for f in fields {
-            if f.attrs.iter().any(|a| a.path().is_ident("forward"))
+            if let Some(attr) = f.attrs.iter().find(|a| a.path().is_ident("forward"))
                 && let Some(ident) = &f.ident
             {
-                marked.push((ident, &f.ty));
+                marked.push((ident, &f.ty, attr));
             }
         }
-        let (field, field_ty) = match marked.as_slice() {
+        let (field, field_ty, attr) = match marked.as_slice() {
             [one] => *one,
             [] => {
                 return Error::new_spanned(
@@ -63,6 +57,34 @@ impl Forward {
                     .to_compile_error()
                     .into();
             }
+        };
+        let (brand, fresh) = match &attr.meta {
+            Meta::Path(_) => input.generics.brand_lifetime(),
+            Meta::List(_) => {
+                let brand = match attr.parse_args::<Lifetime>() {
+                    Ok(brand) => brand,
+                    Err(error) => return error.to_compile_error().into(),
+                };
+                if !input
+                    .generics
+                    .lifetimes()
+                    .any(|lifetime| lifetime.lifetime == brand)
+                {
+                    return Error::new_spanned(brand, "forward lifetime is not a type parameter")
+                        .to_compile_error()
+                        .into();
+                }
+                (quote! { #brand }, quote! {})
+            }
+            Meta::NameValue(_) => {
+                return Error::new_spanned(attr, "expected `#[forward]` or `#[forward('d)]`")
+                    .to_compile_error()
+                    .into();
+            }
+        };
+        let impl_generics = {
+            let params = input.generics.params.iter();
+            quote! { <#fresh #(#params),*> }
         };
 
         quote! {

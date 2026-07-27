@@ -1,5 +1,6 @@
 pub mod addr;
 pub mod msg;
+pub mod option;
 
 use core::mem::MaybeUninit;
 use libc::AF_INET;
@@ -17,8 +18,8 @@ use std::net::SocketAddr;
 pub struct ListenerConfig {
     pub reuse_addr: bool,
     pub reuse_port: bool,
-    pub fast_open_backlog: Option<u32>,
-    pub defer_accept_secs: Option<u32>,
+    pub fast_open_backlog: Option<c_int>,
+    pub defer_accept_secs: Option<c_int>,
 }
 
 impl Default for ListenerConfig {
