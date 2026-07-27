@@ -7,11 +7,13 @@ use std::mem::size_of;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dope::Event;
 use dope::driver::profile::DriverProfile;
 use dope::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
+use dope::manifold::timer::starved::Waiter as TimerWaiter;
+use dope::manifold::timer::{Ticket, Timer};
 use dope::runtime::dispatcher::{Dispatcher, Idle};
 use dope::runtime::profile::RuntimeProfile;
 use dope_fiber::abi::Fiber;
@@ -28,6 +30,7 @@ use dope_fiber::raw::task::queue::TaskQueue;
 use dope_fiber::raw::task::{Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab};
+use dope_fiber::sleep::Sleep;
 use dope_fiber::wait::WaitFn;
 use dope_net::link::slot::PendingFlags;
 use dope_test::{
@@ -60,6 +63,15 @@ fn raw_hot_path_boundaries_add_no_storage() {
     assert_eq!(
         size_of::<TaskSlab<'static, Ready<()>>>(),
         size_of::<Slab<'static, Ready<()>>>() + size_of::<Pin<Box<[()]>>>(),
+    );
+    assert_eq!(
+        size_of::<Sleep<'static, 'static>>(),
+        size_of::<(
+            Instant,
+            Option<Ticket>,
+            TimerWaiter<'static>,
+            &'static Timer<'static>,
+        )>(),
     );
 }
 
