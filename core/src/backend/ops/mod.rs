@@ -4,4 +4,3 @@ pub(crate) mod control;
 pub(crate) mod datagram;
 pub(crate) mod ext;
 pub(crate) mod raw;
-pub(crate) mod submission;

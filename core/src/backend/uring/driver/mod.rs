@@ -14,14 +14,14 @@ use crate::driver::route::Routes;
 use crate::driver::token::{
     KIND_SHIFT, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, Token, TokenSlab,
 };
-use crate::driver::{Config, PushError};
+use crate::driver::Config;
 use crate::io::fd::FdSlot;
 use crate::io::{BUFFER, BUFFER_SHIFT};
-use io_uring::squeue::Entry;
 use io_uring::types::{CancelBuilder, Timespec};
 use sqe::Sqe;
 
 use super::platform::gso::Gso;
+use super::raw::submission::Submission;
 use crate::platform::raw::host::HOST;
 use crate::io::file::RawMetadata;
 use crate::platform::Platform;
@@ -34,7 +34,6 @@ use libc::EINVAL;
 use crate::driver::token::kind::OPEN;
 use crate::driver::token::kind::RECV;
 use crate::driver::token::kind::SETSOCKOPT;
-use libc::SHUT_RDWR;
 use libc::SYS_io_uring_register;
 use libc::c_int;
 use libc::c_long;
@@ -233,14 +232,6 @@ impl Uring {
         }
     }
 
-    pub(crate) fn entry_push(uring: &mut IoUring, entry: &Entry) -> Result<(), PushError> {
-        if unsafe { uring.submission().push(entry) }.is_ok() {
-            return Ok(());
-        }
-        uring.submit().map_err(|_| PushError)?;
-        unsafe { uring.submission().push(entry) }.map_err(|_| PushError)
-    }
-
     pub(crate) fn await_one(&mut self) -> io::Result<i32> {
         loop {
             self.uring.submitter().submit_and_wait(1)?;
@@ -355,28 +346,21 @@ impl Uring {
         Disposition::Public(token)
     }
 
-    fn push_close_at(uring: &mut IoUring, slot: FdSlot) -> bool {
-        let shut = Sqe::shutdown_linked_at(slot, SHUT_RDWR);
-        let close = Sqe::close_at(slot);
-        let entries = [shut.entry().clone(), close.entry().clone()];
-        unsafe { uring.submission().push_multiple(&entries) }.is_ok()
-    }
-
     pub(crate) fn flush_deferred_close(&mut self) {
         let Self { uring, files, .. } = self;
-        files.flush_deferred_close(|slot| Self::push_close_at(uring, slot));
+        files.flush_deferred_close(|slot| Submission::try_close(uring, slot));
     }
 
     pub(crate) fn flush_ready_create(&mut self) {
         let Self { uring, files, .. } = self;
-        files.flush_ready(|sqe| Self::entry_push(uring, sqe.entry()).is_ok());
+        files.flush_ready(|sqe| Submission::push(uring, sqe.entry()).is_ok());
     }
 
     pub(crate) fn close_fd(&mut self, slot: FdSlot) {
         let Self { uring, files, .. } = self;
         files.release(slot, |slot| {
-            Self::push_close_at(uring, slot)
-                || (uring.submit().is_ok() && Self::push_close_at(uring, slot))
+            Submission::try_close(uring, slot)
+                || (uring.submit().is_ok() && Submission::try_close(uring, slot))
         });
     }
 }
