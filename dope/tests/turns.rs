@@ -27,7 +27,7 @@ struct CascadingReady<'d> {
 struct TurnClockProbe<'d> {
     ready: ReadySlot<'d>,
     batch_times: Rc<Cell<Option<(Instant, Instant)>>>,
-    pre_park_time: Rc<Cell<Option<Instant>>>,
+    first_pre_park_time: Rc<Cell<Option<Instant>>>,
 }
 
 impl<'d> Dispatcher<'d> for CascadingReady<'d> {
@@ -66,7 +66,10 @@ impl<'d> Dispatcher<'d> for TurnClockProbe<'d> {
     }
 
     fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        self.project().pre_park_time.set(Some(driver.turn_now()));
+        let this = self.project();
+        if this.first_pre_park_time.get().is_none() {
+            this.first_pre_park_time.set(Some(driver.turn_now()));
+        }
     }
 
     fn idle(self: Pin<&Self>) -> Idle {
@@ -108,7 +111,7 @@ fn ready_cascade_is_followed_but_bounded_per_driver_turn() {
 #[test]
 fn turn_clock_is_stable_during_callbacks_and_refreshed_before_park() {
     let batch_times = Rc::new(Cell::new(None));
-    let pre_park_time = Rc::new(Cell::new(None));
+    let first_pre_park_time = Rc::new(Cell::new(None));
     let config = Config::for_tcp_profile::<Throughput>(1);
     Executor::new(config)
         .expect("executor")
@@ -124,7 +127,7 @@ fn turn_clock_is_stable_during_callbacks_and_refreshed_before_park() {
                 TurnClockProbe {
                     ready,
                     batch_times: Rc::clone(&batch_times),
-                    pre_park_time: Rc::clone(&pre_park_time),
+                    first_pre_park_time: Rc::clone(&first_pre_park_time),
                 },
                 |mut app| app.run(),
             )
@@ -132,7 +135,7 @@ fn turn_clock_is_stable_during_callbacks_and_refreshed_before_park() {
         .expect("runtime turn");
 
     let (batch_start, batch_end) = batch_times.get().expect("ready callback");
-    let pre_park = pre_park_time.get().expect("pre-park callback");
+    let pre_park = first_pre_park_time.get().expect("pre-park callback");
     assert_eq!(batch_start, batch_end);
     assert!(pre_park > batch_end);
 }
