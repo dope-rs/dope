@@ -2,11 +2,12 @@ use std::cell::Cell;
 use std::pin::Pin;
 use std::time::Instant;
 
-#[doc(hidden)]
-pub mod starved;
+mod starved;
 
-use starved::StarvedTree;
-use starved::Waiter;
+#[doc(hidden)]
+pub use starved::StarvedWaiter;
+
+use starved::StarvedQueue;
 
 use dope::manifold::Manifold;
 use dope::runtime::dispatcher::Idle;
@@ -15,7 +16,7 @@ use o3::collections::IndexedMinHeap;
 use o3::marker::ThreadBound;
 
 use dope::{DriverContext, DriverRef};
-use dope_core::driver::ready::CompletionWaker;
+use dope_core::driver::ready::{CompletionSlot, CompletionWaker};
 use std::marker::PhantomData;
 
 const NIL: u32 = u32::MAX;
@@ -39,7 +40,7 @@ enum State {
 struct Slot<'d> {
     epoch: Cell<u32>,
     state: Cell<State>,
-    wake: Cell<Option<CompletionWaker<'d>>>,
+    wake: CompletionSlot<'d>,
     deadline: Cell<Instant>,
     next: Cell<u32>,
     _driver: PhantomData<fn(&'d ()) -> &'d ()>,
@@ -56,7 +57,7 @@ pub struct Timer<'d, const ID: u8 = 0> {
     free: Cell<u32>,
     pending_arm: Cell<u32>,
     pending_cancel: Cell<u32>,
-    starved: StarvedTree<'d>,
+    starved: StarvedQueue<'d>,
     heap: RawCell<IndexedMinHeap<HeapKey>>,
 }
 
@@ -69,7 +70,7 @@ impl<'d, const ID: u8> Timer<'d, ID> {
                 .map(|index| Slot {
                     epoch: Cell::new(0),
                     state: Cell::new(State::Free),
-                    wake: Cell::new(None),
+                    wake: CompletionSlot::empty(),
                     deadline: Cell::new(filler),
                     next: Cell::new(if index == 0 { NIL } else { index as u32 - 1 }),
                     _driver: PhantomData,
@@ -78,7 +79,7 @@ impl<'d, const ID: u8> Timer<'d, ID> {
             free: Cell::new(if cap == 0 { NIL } else { cap as u32 - 1 }),
             pending_arm: Cell::new(NIL),
             pending_cancel: Cell::new(NIL),
-            starved: StarvedTree::new(),
+            starved: StarvedQueue::new(),
             heap: RawCell::new(IndexedMinHeap::with_capacity(cap)),
         }
     }
@@ -86,7 +87,7 @@ impl<'d, const ID: u8> Timer<'d, ID> {
     #[doc(hidden)]
     pub fn register_starved(
         &self,
-        waiter: Pin<&Waiter<'d>>,
+        waiter: Pin<&StarvedWaiter<'d>>,
         deadline: Instant,
         wake: CompletionWaker<'d>,
     ) {
@@ -94,26 +95,30 @@ impl<'d, const ID: u8> Timer<'d, ID> {
     }
 
     #[doc(hidden)]
-    pub fn unregister_starved(&self, waiter: Pin<&Waiter<'d>>) {
+    pub fn unregister_starved(&self, waiter: Pin<&StarvedWaiter<'d>>) {
         self.starved.unregister(waiter);
         if self.free.get() != NIL {
             self.starved.wake_min();
         }
     }
 
-    pub fn try_arm(&self, deadline: Instant, wake: CompletionWaker<'d>) -> Option<Ticket> {
+    pub fn try_arm(
+        &self,
+        deadline: Instant,
+        wake: CompletionWaker<'d>,
+    ) -> Result<Ticket, CompletionWaker<'d>> {
         let slot = self.free.get();
         if slot == NIL {
-            return None;
+            return Err(wake);
         }
         let s = &self.slots[slot as usize];
         self.free.set(s.next.get());
         s.state.set(State::Armed);
-        s.wake.set(Some(wake));
+        s.wake.set(wake);
         s.deadline.set(deadline);
         s.next.set(self.pending_arm.get());
         self.pending_arm.set(slot);
-        Some(Ticket {
+        Ok(Ticket {
             slot,
             epoch: s.epoch.get(),
             _thread: ThreadBound::NEW,
@@ -132,7 +137,7 @@ impl<'d, const ID: u8> Timer<'d, ID> {
             && s.epoch.get() == ticket.epoch
             && s.state.get() == State::Armed
         {
-            s.wake.set(Some(wake));
+            s.wake.set(wake);
         }
     }
 
@@ -159,7 +164,7 @@ impl<'d, const ID: u8> Timer<'d, ID> {
 
     fn release(&self, slot: u32) {
         let s = &self.slots[slot as usize];
-        s.wake.set(None);
+        s.wake.clear();
         let Some(epoch) = s.epoch.get().checked_add(1) else {
             s.state.set(State::Retired);
             s.next.set(NIL);
@@ -238,14 +243,12 @@ impl<'d, const ID: u8> Timer<'d, ID> {
                 continue;
             }
             s.state.set(State::Fired);
-            if let Some(wake) = s.wake.get() {
-                wake.wake();
-            }
+            s.wake.wake();
         }
     }
 
     fn with_heap<R>(&self, f: impl FnOnce(&IndexedMinHeap<HeapKey>) -> R) -> R {
-        unsafe { self.heap.with(f) }
+        self.heap.with(f)
     }
 
     fn with_heap_mut<R>(&self, f: impl FnOnce(&mut IndexedMinHeap<HeapKey>) -> R) -> R {

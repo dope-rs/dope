@@ -46,7 +46,7 @@ impl Udata {
     }
 
     const fn from_token(token: Token, tag: Tag) -> Self {
-        let base = Self::pack(tag, token.slot().raw(), token.epoch().raw());
+        let base = Self::pack(tag, token.slot().raw(), token.epoch_raw());
         Self(base.0 | ((token.route() as u64) << ROUTE_SHIFT))
     }
 

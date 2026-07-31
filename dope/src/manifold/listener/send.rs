@@ -3,9 +3,10 @@ use std::pin::Pin;
 use o3::buffer::{Pooled, Shared};
 
 use super::Listener;
-use super::application::Application;
+use super::application::{Application, ApplicationHooks};
 use super::egress::{EgressPhase, SlotFlow};
 use super::idle::IdlePhase;
+use super::state::EgressCtx;
 use crate::DriverContext;
 use crate::manifold::env::Env;
 use crate::runtime::profile::RuntimeProfile;
@@ -134,7 +135,7 @@ where
     );
 }
 
-impl<'d, const ID: u8, A, E> SendPhase<'d, ID, A, E> for Listener<'d, ID, A, E>
+impl<'pool, 'd, const ID: u8, A, E> SendPhase<'d, ID, A, E> for Listener<'pool, 'd, ID, A, E>
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
@@ -178,16 +179,23 @@ where
             .map(|s| s.state.send.total_plain == 0)
             .unwrap_or(false);
         if queue_path {
-            if let Some(slot) = this.pool.get_mut(idx)
-                && matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnComplete)
-            {
-                slot.state.deferred.ack(sent);
+            if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnComplete) {
+                let valid = this.pool.get_mut(idx).is_some_and(|slot| {
+                    slot.state
+                        .deferred
+                        .try_ack(&mut this.egress_arena.queue_for(idx.raw() as usize), sent)
+                });
+                if !valid {
+                    self.close_inherent(idx, driver);
+                    return;
+                }
             }
             {
                 let Some(slot) = this.pool.get_mut(idx) else {
                     return;
                 };
-                this.app.as_mut().send(slot, sent, this.aux, driver);
+                let egress = EgressCtx::for_slot(this.aux, this.egress_arena, idx);
+                A::Hooks::send(this.app.as_mut(), slot, egress, sent, driver);
             }
             self.as_mut().commit_chunk(idx, driver);
             return;
@@ -209,7 +217,7 @@ where
             .map(|s| s.state.send.consumed_plain < s.state.send.total_plain)
             .unwrap_or(false);
         if needs_more {
-            let send_ud = Token::new(ID, idx, token.epoch());
+            let send_ud = token.with_kind(0);
             let armed = if let Some(slot) = this.pool.get_mut(idx) {
                 let write_buf = this.aux.write_buf_raw(slot);
                 slot.resume_send(write_buf, send_ud, driver);
@@ -232,7 +240,8 @@ where
                 !slot.core.is_send_inflight(),
                 "arena buffer reused while a SEND SQE is still in flight"
             );
-            this.app.as_mut().send(slot, total, this.aux, driver);
+            let egress = EgressCtx::for_slot(this.aux, this.egress_arena, idx);
+            A::Hooks::send(this.app.as_mut(), slot, egress, total, driver);
         }
         self.as_mut().maybe_close_inherent(idx, driver);
     }

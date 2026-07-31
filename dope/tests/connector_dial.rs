@@ -153,6 +153,14 @@ fn conv_addr(
     }
 }
 
+fn static_conv_addr(port: u16, control: &Rc<ConversionControl>) -> ConversionAddr {
+    ConversionAddr {
+        socket: addr(port),
+        dialer: Weak::new(),
+        control: control.clone(),
+    }
+}
+
 fn conversion_env() -> (
     Rc<Explicit<ConversionTransport>>,
     Rc<ConversionControl>,
@@ -289,6 +297,90 @@ fn dialed_slot_is_one_shot_and_reused() {
     );
     assert_ne!(key, next, "reused slot must advance its generation");
     assert!(d.sock_addr(next).is_some());
+}
+
+#[test]
+fn queued_dynamic_outcomes_cannot_split_membership() {
+    let mut d = static_dialer(vec![], Duration::from_millis(50), 1);
+    let now = Instant::now();
+    let key = d.dial(addr(9010), Default::default()).expect("dial");
+
+    d.connect_outcome(key, false, now);
+    assert_eq!(
+        expect_connect(&mut d, now),
+        key,
+        "an outcome before submission must not detach the queued dial"
+    );
+
+    d.connect_deferred(key, now);
+    assert_eq!(
+        expect_connect(&mut d, now),
+        key,
+        "a deferred submission must return the same dial to the ready queue"
+    );
+}
+
+#[test]
+fn killing_a_queued_dynamic_dial_releases_exactly_one_slot() {
+    let mut d = static_dialer(vec![], Duration::from_millis(50), 2);
+    let now = Instant::now();
+    let stale = d.dial(addr(9011), Default::default()).expect("dial");
+
+    d.kill(stale);
+    assert!(!d.has_pending());
+    let replacement = d.dial(addr(9012), Default::default()).expect("replacement");
+
+    assert_eq!(stale.index(), replacement.index());
+    assert_ne!(stale, replacement);
+    assert!(d.sock_addr(stale).is_none());
+    assert_eq!(expect_connect(&mut d, now), replacement);
+}
+
+#[test]
+fn reviving_a_dynamic_dial_removes_it_from_the_free_queue() {
+    let mut d = static_dialer(vec![], Duration::from_millis(50), 1);
+    let now = Instant::now();
+    let first = d.dial(addr(9015), Default::default()).expect("dial");
+    assert_eq!(expect_connect(&mut d, now), first);
+    d.connect_outcome(first, true, now);
+    d.disconnect(first, now);
+
+    d.revive();
+    let revived = expect_connect(&mut d, now);
+
+    assert_ne!(first, revived);
+    assert!(
+        d.dial(addr(9016), Default::default()).is_none(),
+        "the revived slot must no longer be available for replacement"
+    );
+}
+
+#[test]
+fn panicking_dynamic_replacement_leaves_the_new_dial_committed() {
+    let control = Rc::new(ConversionControl::default());
+    let mut d = Static::<ConversionTransport>::new(
+        vec![],
+        Duration::from_millis(50),
+        dope::hash::Seed::new([1, 2]).state(),
+    );
+    d.resize(1);
+    let now = Instant::now();
+    let first = d
+        .dial(static_conv_addr(9013, &control), ConversionStreamConfig)
+        .expect("dial");
+    assert_eq!(expect_connect(&mut d, now), first);
+    d.connect_outcome(first, true, now);
+    d.disconnect(first, now);
+
+    control.mode.set(ConversionMode::PanicDrop);
+    assert_unwinds(|| {
+        let _ = d.dial(static_conv_addr(9014, &control), ConversionStreamConfig);
+    });
+
+    let replacement = expect_connect(&mut d, now);
+    assert_ne!(first, replacement);
+    assert!(d.sock_addr(first).is_none());
+    assert!(d.sock_addr(replacement).is_some());
 }
 
 #[test]

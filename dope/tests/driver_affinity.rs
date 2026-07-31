@@ -34,8 +34,10 @@ const _: fn() = || {
     require_send::<dope::runtime::trigger::ShutdownTrigger>();
     not_send::<dope::runtime::trigger::SignalShutdown, _>();
     not_sync::<dope::runtime::trigger::SignalShutdown, _>();
-    not_send::<dope::driver::OutboundReservation, _>();
-    not_sync::<dope::driver::OutboundReservation, _>();
+    not_send::<dope::driver::OutboundReservation<'static>, _>();
+    not_sync::<dope::driver::OutboundReservation<'static>, _>();
+    not_send::<dope::driver::OutboundSlot<'static>, _>();
+    not_sync::<dope::driver::OutboundSlot<'static>, _>();
     not_send::<dope::io::file::OsFile, _>();
     not_sync::<dope::io::file::OsFile, _>();
     not_send::<dope::manifold::timer::Ticket, _>();
@@ -61,7 +63,11 @@ fn local_capabilities_keep_their_layout() {
         2 * size_of::<u32>()
     );
     assert_eq!(
-        size_of::<dope::driver::OutboundReservation>(),
+        size_of::<dope::driver::OutboundReservation<'static>>(),
         2 * size_of::<u32>()
+    );
+    assert_eq!(
+        size_of::<dope::driver::OutboundSlot<'static>>(),
+        size_of::<u32>()
     );
 }

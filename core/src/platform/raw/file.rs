@@ -1,8 +1,12 @@
-use libc::RLIMIT_NOFILE;
-use libc::getrlimit;
-use libc::rlimit;
-use libc::setrlimit;
+use libc::{MCL_CURRENT, MCL_FUTURE, RLIMIT_NOFILE, getrlimit, mlockall, rlimit, setrlimit};
 use std::io::{self, Error};
+
+pub(crate) fn lock_memory_best_effort() {
+    // SAFETY: `mlockall` takes flags only and does not dereference caller memory.
+    // Locking is an optimization: lacking the required limit or capability must
+    // not prevent the runtime from starting.
+    let _ = unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
+}
 
 pub(crate) struct FileLimit(rlimit);
 

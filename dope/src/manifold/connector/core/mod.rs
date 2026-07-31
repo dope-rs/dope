@@ -4,7 +4,7 @@ mod recv;
 mod send;
 mod source;
 
-use std::io;
+use std::io::{self, Error, ErrorKind};
 use std::marker::PhantomData;
 use std::pin::Pin;
 
@@ -22,18 +22,18 @@ use crate::manifold::Manifold;
 use crate::manifold::env::Env;
 use crate::manifold::timer::{Ticket, Timer};
 use crate::manifold::typed::TypedToken;
-use crate::runtime::dispatcher::Idle;
+use crate::runtime::dispatcher::{FinishContext, Idle};
 use crate::runtime::profile::RuntimeProfile;
-use dope_core::driver::control::ContextControl;
 use dope_core::driver::ready::{ReadyKey, ReadySlot};
 use dope_core::driver::route::Route;
-use dope_core::driver::token::{Epoch, SlotIndex, Token};
+use dope_core::driver::token::{Epoch, Token, TokenCapacity};
 use dope_core::io::Event;
-use dope_core::io::EventKind;
 use dope_net::Transport;
 use dope_net::link::egress::arena::Arena;
 use dope_net::link::egress::config::Config;
+use dope_net::link::egress::storage::Storage;
 use dope_net::link::raw::pool::Pool;
+use dope_net::link::raw::pool::outbound::OutboundPool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue};
 use dope_net::wire::Wire;
 use pin_project::pin_project;
@@ -41,7 +41,7 @@ use pin_project::pin_project;
 type ConnPool<'d, const ID: u8, T, W, C, S> = Pool<'d, ID, T, W, State<C, S>>;
 
 #[pin_project(!Unpin)]
-pub struct Core<'d, const ID: u8, A, S, E>
+pub struct Core<'pool, 'd, const ID: u8, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -50,7 +50,7 @@ where
 {
     route: Route<'d, ID>,
     pub(super) pool: ConnPool<'d, ID, E::Transport, A::Wire, A::Conn, A::Send>,
-    egress_arena: Arena<A::Send>,
+    egress_arena: Arena<'pool, A::Send>,
     pub(super) app: A,
     pub(super) upstreams: S,
     dirty: PendingQueue,
@@ -63,7 +63,7 @@ where
     _e: PhantomData<E>,
 }
 
-impl<'d, const ID: u8, A, S, E> Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -74,17 +74,19 @@ where
         app: A,
         upstreams: S,
         max_connections: usize,
+        egress_storage: &'pool Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
-        <A::Wire as Wire>::InitConfig: Default,
+        <A::Wire as Wire>::InitConfig<'d>: Default,
     {
         Self::with_app_configs(
             app,
             upstreams,
             max_connections,
             Config::default(),
-            <A::Wire as Wire>::InitConfig::default(),
+            <A::Wire as Wire>::InitConfig::<'d>::default(),
+            egress_storage,
             driver,
         )
     }
@@ -93,7 +95,8 @@ where
         app: A,
         upstreams: S,
         max_connections: usize,
-        wire_config: <A::Wire as Wire>::InitConfig,
+        wire_config: <A::Wire as Wire>::InitConfig<'d>,
+        egress_storage: &'pool Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         Self::with_app_configs(
@@ -102,6 +105,7 @@ where
             max_connections,
             Config::default(),
             wire_config,
+            egress_storage,
             driver,
         )
     }
@@ -111,17 +115,19 @@ where
         upstreams: S,
         max_connections: usize,
         egress_config: Config,
+        egress_storage: &'pool Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
-        <A::Wire as Wire>::InitConfig: Default,
+        <A::Wire as Wire>::InitConfig<'d>: Default,
     {
         Self::with_app_configs(
             app,
             upstreams,
             max_connections,
             egress_config,
-            <A::Wire as Wire>::InitConfig::default(),
+            <A::Wire as Wire>::InitConfig::<'d>::default(),
+            egress_storage,
             driver,
         )
     }
@@ -131,32 +137,57 @@ where
         mut upstreams: S,
         max_connections: usize,
         egress_config: Config,
-        wire_config: <A::Wire as Wire>::InitConfig,
+        wire_config: <A::Wire as Wire>::InitConfig<'d>,
+        egress_storage: &'pool Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
-        let route = Route::reserve(driver)?;
-        let reservation = driver.reserve_outbound(max_connections as u32)?;
-        let backoff_sentinel =
-            Token::new(ID, SlotIndex::new(max_connections as u32), Epoch::INITIAL);
-        let backoff_slot = driver.driver_ref().make_ready_slot(backoff_sentinel)?;
+        let Some(capacity) = TokenCapacity::new(max_connections).filter(|_| max_connections != 0)
+        else {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "dope: connector capacity must be in 1..=2^24-1",
+            ));
+        };
+        let Some(backoff_index) = capacity.sentinel() else {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "dope: connector capacity must be in 1..=2^24-1",
+            ));
+        };
+        let max_retained_recv_chunks = A::max_retained_recv_chunks(max_connections)?;
         upstreams.resize(max_connections);
-        let pool = Pool::new(
-            max_connections,
-            A::max_retained_recv_chunks(max_connections)?,
-            reservation,
+        let prepared_pool = Pool::prepare_with_recv_credit(
+            capacity,
+            max_retained_recv_chunks,
+            A::RETAIN_RAW_RECV,
             wire_config,
             driver,
         )?;
+        if egress_storage.config() != egress_config {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "connector egress storage does not match its egress config",
+            ));
+        }
+        let egress_arena = Arena::with_config(egress_storage, egress_config, max_connections);
+        let dirty = PendingQueue::with_capacity(max_connections);
+        let timer = Timer::with_capacity(2, driver.driver_ref());
+        let backoff_sentinel = Token::new(ID, backoff_index, Epoch::INITIAL);
+        let backoff_slot = driver.driver_ref().make_ready_slot(backoff_sentinel)?;
+        let mut route = Route::reserve_transaction(driver)?;
+        let reservation = route.driver().reserve_outbound(capacity.get() as u32)?;
+        let pool = prepared_pool.bind(reservation);
+        let route = route.commit();
         Ok(Self {
             route,
             pool,
-            egress_arena: Arena::with_config(egress_config, max_connections),
+            egress_arena,
             app,
             upstreams,
-            dirty: PendingQueue::with_capacity(max_connections),
+            dirty,
             backoff_timer: None,
             liveness_timer: None,
-            timer: Timer::with_capacity(2, driver.driver_ref()),
+            timer,
             backoff_slot,
             draining: false,
             _e: PhantomData,
@@ -212,7 +243,7 @@ where
         &self.app
     }
 
-    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut <A::Wire as Wire>::RuntimeContext {
+    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut <A::Wire as Wire>::RuntimeContext<'d> {
         self.project().pool.wire_runtime()
     }
 
@@ -224,7 +255,7 @@ where
     }
 }
 
-impl<'d, const ID: u8, N, S, E> Core<'d, ID, SessionApp<'d, N, E::Wire>, S, E>
+impl<'d, const ID: u8, N, S, E> Core<'d, 'd, ID, SessionApp<'d, N, E::Wire>, S, E>
 where
     N: Session<'d>,
     S: Dialer<E::Transport>,
@@ -235,16 +266,18 @@ where
         session: N,
         upstreams: S,
         max_connections: usize,
+        egress_storage: &'d Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
-        <E::Wire as Wire>::InitConfig: Default,
+        <E::Wire as Wire>::InitConfig<'d>: Default,
     {
         Self::new_with_egress(
             session,
             upstreams,
             max_connections,
             Config::default(),
+            egress_storage,
             driver,
         )
     }
@@ -254,17 +287,19 @@ where
         upstreams: S,
         max_connections: usize,
         egress_config: Config,
+        egress_storage: &'d Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
-        <E::Wire as Wire>::InitConfig: Default,
+        <E::Wire as Wire>::InitConfig<'d>: Default,
     {
         Self::new_with_configs(
             session,
             upstreams,
             max_connections,
             egress_config,
-            <E::Wire as Wire>::InitConfig::default(),
+            <E::Wire as Wire>::InitConfig::<'d>::default(),
+            egress_storage,
             driver,
         )
     }
@@ -273,7 +308,8 @@ where
         session: N,
         upstreams: S,
         max_connections: usize,
-        wire_config: <E::Wire as Wire>::InitConfig,
+        wire_config: <E::Wire as Wire>::InitConfig<'d>,
+        egress_storage: &'d Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         Self::new_with_configs(
@@ -282,6 +318,7 @@ where
             max_connections,
             Config::default(),
             wire_config,
+            egress_storage,
             driver,
         )
     }
@@ -291,7 +328,8 @@ where
         upstreams: S,
         max_connections: usize,
         egress_config: Config,
-        wire_config: <E::Wire as Wire>::InitConfig,
+        wire_config: <E::Wire as Wire>::InitConfig<'d>,
+        egress_storage: &'d Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         let app = SessionApp {
@@ -304,6 +342,7 @@ where
             max_connections,
             egress_config,
             wire_config,
+            egress_storage,
             driver,
         )
     }
@@ -317,7 +356,7 @@ where
     }
 }
 
-impl<'d, const ID: u8, A, S, E> Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -325,11 +364,11 @@ where
     E::Transport: Transport,
 {
     pub fn dispatch(mut self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
-        match ev.into_kind() {
-            EventKind::Recv(token, more, e) => self.as_mut().handle_recv(token, more, e, driver),
-            EventKind::Send(token, e) => self.as_mut().handle_send(token, e, driver),
-            EventKind::Socket(token, e) => self.as_mut().socket(token, e, driver),
-            EventKind::Connect(token, e) => self.as_mut().connect(token, e, driver),
+        match ev {
+            Event::Recv(token, more, e) => self.as_mut().handle_recv(token, more, e, driver),
+            Event::Send(token, e) => self.as_mut().handle_send(token, e, driver),
+            Event::Socket(token, e) => self.as_mut().socket(token, e, driver),
+            Event::Connect(token, e) => self.as_mut().connect(token, e, driver),
             _ => {}
         }
         self.as_mut().project().pool.flush_rearm(driver);
@@ -346,6 +385,7 @@ where
     }
 
     pub fn activate(mut self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>) {
+        self.as_mut().resume_recv(target, driver);
         self.as_mut().apply_requests(target, driver);
         self.rouse(driver);
     }
@@ -366,24 +406,31 @@ where
                 this.timer.cancel(t);
             }
         }
-        let cap = self.as_ref().project_ref().pool.capacity() as u32;
-        for raw in 0..cap {
-            self.as_mut().close_slot(SlotIndex::new(raw), driver);
+        let capacity = self.as_ref().project_ref().pool.capacity();
+        for idx in capacity.slots() {
+            self.as_mut().close_slot(idx, driver);
         }
         self.as_mut().flush_dirty(driver);
         let fields = self.project();
-        let mut targets = Vec::new();
-        fields.pool.append_io_targets(&mut targets);
-        fields.pool.append_outbound_targets(&mut targets);
-        let poison = fields.pool.needs_route_poison() || !targets.is_empty();
-        if !targets.is_empty() {
-            driver.quiesce(&targets);
-        }
+        let mut quiesce = driver.quiesce_batch();
+        fields
+            .pool
+            .for_each_io_target(|target| quiesce.cancel(target));
+        fields
+            .pool
+            .for_each_outbound_target(|target| quiesce.cancel(target));
+        let outcome = quiesce.finish();
+        let poison = fields.pool.needs_route_poison() || outcome.has_targets();
         fields.route.finish(driver, poison);
+    }
+
+    pub fn finish(self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        let reservation = self.project().pool.take_outbound_reservation();
+        context.retire_outbound(reservation);
     }
 }
 
-impl<'d, const ID: u8, A, S, E> Manifold<'d> for Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> Manifold<'d> for Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -414,5 +461,9 @@ where
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         self.shutdown_all(driver);
+    }
+
+    fn finish(self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        self.finish(context);
     }
 }

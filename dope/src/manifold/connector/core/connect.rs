@@ -3,6 +3,7 @@ use std::pin::Pin;
 use dope_core::io::{ConnectEvent, SocketEvent};
 use dope_net::Transport;
 use dope_net::link::raw::event::{ConnectStep, SocketStep};
+use dope_net::link::raw::pool::outbound::OutboundPool;
 
 use super::Core;
 use super::send::SendPhase;
@@ -11,6 +12,7 @@ use crate::DriverContext;
 use crate::manifold::connector::app::ConnApp;
 use crate::manifold::connector::source::Dialer;
 use crate::manifold::env::Env;
+use crate::runtime::__private::Deadline;
 use dope_core::driver::token::Token;
 
 pub(super) trait ConnectPhase<'d, const ID: u8, A, S, E>
@@ -35,7 +37,8 @@ where
     );
 }
 
-impl<'d, const ID: u8, A, S, E> ConnectPhase<'d, ID, A, S, E> for Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> ConnectPhase<'d, ID, A, S, E>
+    for Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -96,14 +99,15 @@ where
             let this = self.as_mut().project();
             if let Some(slot) = this.pool.get_mut(idx) {
                 slot.state.last_recv = Some(now);
-                this.app.connected(key, slot, driver);
+                let egress = this.egress_arena.queue_for(slot.state.lane);
+                this.app.connected(key, slot, egress, driver);
             }
         }
         self.as_mut().submit_egress(idx, driver);
         if self.as_ref().project_ref().liveness_timer.is_none()
             && let Some(timeout) = self.as_ref().project_ref().app.inbound_idle_timeout()
         {
-            self.as_mut().arm_liveness(now + timeout);
+            self.as_mut().arm_liveness(Deadline::after(now, timeout));
         }
         self.project().upstreams.connect_outcome(key, true, now);
     }

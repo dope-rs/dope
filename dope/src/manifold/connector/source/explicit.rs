@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::mem::take;
 use std::time::Instant;
 
-use o3::collections::CellSlab;
+use o3::collections::{CellSlab, CellSlotQueue};
 
 use super::{Action, DialKey, Dialer};
 use dope_core::driver::token::SlotIndex;
@@ -28,8 +28,6 @@ enum PendingTransition {
 struct ExplicitSlot<A, O> {
     state: Cell<DialSlot<A, O>>,
     binding: Cell<Option<SlotIndex>>,
-    pending_next: Cell<Option<DialKey>>,
-    pending_prev: Cell<Option<DialKey>>,
 }
 
 impl<A, O> ExplicitSlot<A, O> {
@@ -37,8 +35,6 @@ impl<A, O> ExplicitSlot<A, O> {
         Self {
             state: Cell::new(DialSlot::Queued(addr, config)),
             binding: Cell::new(None),
-            pending_next: Cell::new(None),
-            pending_prev: Cell::new(None),
         }
     }
 }
@@ -76,8 +72,7 @@ impl<A, O> Drop for ExplicitState<'_, A, O> {
 
 pub struct Explicit<T: Transport> {
     slots: CellSlab<ExplicitSlot<T::Addr, T::StreamConfig>, ExplicitTag>,
-    pending: Cell<Option<DialKey>>,
-    pending_tail: Cell<Option<DialKey>>,
+    pending: CellSlotQueue<DialKey>,
 }
 
 pub struct ExplicitDialer<'a, T: Transport> {
@@ -96,8 +91,7 @@ impl<T: Transport> Default for Explicit<T> {
     fn default() -> Self {
         Self {
             slots: CellSlab::with_capacity(0),
-            pending: Cell::new(None),
-            pending_tail: Cell::new(None),
+            pending: CellSlotQueue::with_capacity(0),
         }
     }
 }
@@ -107,8 +101,7 @@ impl<T: Transport> Explicit<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: CellSlab::with_capacity(capacity),
-            pending: Cell::new(None),
-            pending_tail: Cell::new(None),
+            pending: CellSlotQueue::with_capacity(capacity),
         }
     }
 
@@ -118,6 +111,7 @@ impl<T: Transport> Explicit<T> {
 
     pub fn resize(&mut self, max_connections: usize) {
         if max_connections > self.capacity() {
+            self.pending.grow_to(max_connections);
             self.slots.grow_to(max_connections);
         }
     }
@@ -143,75 +137,18 @@ impl<T: Transport> Explicit<T> {
     }
 
     fn push_pending(&self, key: DialKey) {
-        let tail = self.pending_tail.replace(Some(key));
-        unsafe {
-            self.update_slot(key, |slot| {
-                slot.pending_prev.set(tail);
-                slot.pending_next.set(None);
-            })
-            .unwrap_unchecked()
-        };
-        match tail {
-            Some(tail) => unsafe {
-                self.update_slot(tail, |slot| slot.pending_next.set(Some(key)))
-                    .unwrap_unchecked()
-            },
-            None => self.pending.set(Some(key)),
-        }
+        self.pending
+            .push_back(key.index() as usize, key)
+            .unwrap_or_else(|_| unreachable!("dial index is vacant in the pending queue"));
     }
 
     fn pop_pending(&self) -> Option<DialKey> {
-        let key = self.pending.take()?;
-        let next = unsafe {
-            self.update_slot(key, |slot| {
-                slot.pending_prev.set(None);
-                slot.pending_next.take()
-            })
-            .unwrap_unchecked()
-        };
-        self.pending.set(next);
-        match next {
-            Some(next) => unsafe {
-                self.update_slot(next, |slot| slot.pending_prev.set(None))
-                    .unwrap_unchecked()
-            },
-            None => self.pending_tail.set(None),
-        }
-        Some(key)
-    }
-
-    fn remove_pending(&self, key: DialKey) {
-        let Some((prev, next)) = self.update_slot(key, |slot| {
-            (slot.pending_prev.take(), slot.pending_next.take())
-        }) else {
-            return;
-        };
-        if prev.is_none()
-            && next.is_none()
-            && self.pending.get() != Some(key)
-            && self.pending_tail.get() != Some(key)
-        {
-            return;
-        }
-        match prev {
-            Some(prev) => unsafe {
-                self.update_slot(prev, |slot| slot.pending_next.set(next))
-                    .unwrap_unchecked()
-            },
-            None => self.pending.set(next),
-        }
-        match next {
-            Some(next) => unsafe {
-                self.update_slot(next, |slot| slot.pending_prev.set(prev))
-                    .unwrap_unchecked()
-            },
-            None => self.pending_tail.set(prev),
-        }
+        self.pending.pop_front()
     }
 
     fn free(&self, key: DialKey) -> Option<SlotIndex> {
-        self.remove_pending(key);
         let slot = self.slots.remove_parts(key.parts())?;
+        let _ = self.pending.remove(key.index() as usize);
         let binding = slot.binding.get();
         drop(slot);
         binding
@@ -315,7 +252,7 @@ impl<T: Transport> Dialer<T> for ExplicitDialer<'_, T> {
     }
 
     fn has_pending(&self) -> bool {
-        self.source.pending.get().is_some()
+        !self.source.pending.is_empty()
     }
 
     fn sock_addr(&self, key: DialKey) -> Option<Addr> {

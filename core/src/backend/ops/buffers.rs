@@ -4,26 +4,31 @@ use crate::io::provided::raw::buffer::BufferId;
 pub(crate) trait BufferBackend {
     fn buffer_group(backend: &Backend) -> u16;
     fn buffer_len(backend: &Backend) -> usize;
+    fn buffer_count(backend: &Backend) -> usize;
     fn release_buffer(backend: &mut Backend, id: BufferId);
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::backend::uring::provided::ffi::ring::ProvidedRing;
+    use crate::backend::uring::provided::ffi::ring::RegisteredRing;
 
     use super::{Backend, BufferBackend, BufferId};
 
     impl BufferBackend for Backend {
         fn buffer_group(_backend: &Backend) -> u16 {
-            ProvidedRing::BGID
+            RegisteredRing::BGID
         }
 
         fn buffer_len(backend: &Backend) -> usize {
-            backend.provided.buf_len()
+            backend.ring.provided().buf_len()
+        }
+
+        fn buffer_count(backend: &Backend) -> usize {
+            backend.ring.provided().entries()
         }
 
         fn release_buffer(backend: &mut Backend, id: BufferId) {
-            backend.provided.defer(id);
+            backend.ring.provided_mut().defer(id);
         }
     }
 }
@@ -41,6 +46,10 @@ mod kqueue {
 
         fn buffer_len(backend: &Backend) -> usize {
             backend.provided.buf_len()
+        }
+
+        fn buffer_count(backend: &Backend) -> usize {
+            backend.provided.entries()
         }
 
         fn release_buffer(backend: &mut Backend, id: BufferId) {

@@ -2,9 +2,9 @@ use std::pin::pin;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use dope::driver::ready::CompletionWaker;
 use dope::manifold::timer::Timer;
 use dope_fiber::abi::batch::Batch;
-use dope_fiber::raw::task::Waker;
 use dope_fiber::sleep::TimerExt;
 
 use dope_test::{drain_tokens, poll_with_slot, tok, with_session};
@@ -30,18 +30,26 @@ fn sleep_expires_after_deadline() {
 fn earliest_tracks_min_deadline() {
     with_session(|sess| {
         let slot = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let wake = Waker::from_ready(sess.driver(), slot.key());
         let timer: Timer = Timer::with_capacity(3, sess.driver());
         assert!(timer.earliest().is_none());
         let now = Instant::now();
         timer
-            .try_arm(now + Duration::from_secs(10), wake.completion())
+            .try_arm(
+                now + Duration::from_secs(10),
+                CompletionWaker::from_ready(sess.driver(), slot.key()),
+            )
             .expect("arm");
         timer
-            .try_arm(now + Duration::from_secs(2), wake.completion())
+            .try_arm(
+                now + Duration::from_secs(2),
+                CompletionWaker::from_ready(sess.driver(), slot.key()),
+            )
             .expect("arm");
         timer
-            .try_arm(now + Duration::from_secs(5), wake.completion())
+            .try_arm(
+                now + Duration::from_secs(5),
+                CompletionWaker::from_ready(sess.driver(), slot.key()),
+            )
             .expect("arm");
         let pending_min = timer
             .earliest()
@@ -57,14 +65,19 @@ fn earliest_tracks_min_deadline() {
 fn expire_fires_due_entries_only() {
     with_session(|sess| {
         let slot = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
-        let wake = Waker::from_ready(sess.driver(), slot.key());
         let timer: Timer = Timer::with_capacity(2, sess.driver());
         let now = Instant::now();
         let due = timer
-            .try_arm(now - Duration::from_secs(1), wake.completion())
+            .try_arm(
+                now - Duration::from_secs(1),
+                CompletionWaker::from_ready(sess.driver(), slot.key()),
+            )
             .expect("arm");
         let pending = timer
-            .try_arm(now + Duration::from_secs(100), wake.completion())
+            .try_arm(
+                now + Duration::from_secs(100),
+                CompletionWaker::from_ready(sess.driver(), slot.key()),
+            )
             .expect("arm");
         timer.expire(now);
         assert!(timer.is_fired(due));
@@ -157,12 +170,12 @@ fn far_future_sleep_arms_without_overflow() {
 }
 
 #[test]
-fn starved_tree_survives_rotations_and_arbitrary_cancellation() {
+fn starved_queue_survives_rotations_and_arbitrary_cancellation() {
     with_session(|mut sess| {
         let timer: Timer = Timer::with_capacity(0, sess.driver());
         let slots = sess
             .driver()
-            .make_ready_slots((0..64u32).map(tok))
+            .make_ready_slots((0..64u16).map(tok))
             .expect("ready slots");
         let mut sleeps = Vec::new();
         for index in 0..64u32 {

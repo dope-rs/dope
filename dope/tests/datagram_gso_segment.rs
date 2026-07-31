@@ -7,14 +7,15 @@ use o3::cell::BrandCell;
 
 use std::cell::Cell;
 use std::net::{SocketAddr, UdpSocket};
+use std::num::NonZeroU16;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::thread::JoinHandle;
 
+use dope::Event;
 use dope::manifold::Manifold;
 use dope::manifold::datagram::{Handler, Socket};
-use dope::runtime::dispatcher::Idle;
-use dope::{Event, EventKind};
+use dope::runtime::dispatcher::{FinishContext, Idle};
 
 use common::Gate;
 
@@ -52,12 +53,12 @@ impl<'d> Manifold<'d> for Sender<'d> {
     fn dispatch(mut self: Pin<&mut Self>, ev: Event<'d>, driver: &mut dope::DriverContext<'_, 'd>) {
         let mut sender = self.as_mut();
         let mut this = sender.as_mut().project();
-        match ev.into_kind() {
-            EventKind::Recv(token, more, e) => {
+        match ev {
+            Event::Recv(token, more, e) => {
                 this.sock
                     .dispatch_recv(token, more, e, this.handler, driver)
             }
-            EventKind::Send(token, e) => {
+            Event::Send(token, e) => {
                 this.sock
                     .as_mut()
                     .dispatch_send(token, e, this.handler, driver);
@@ -78,6 +79,14 @@ impl<'d> Manifold<'d> for Sender<'d> {
             Idle::Park(None)
         }
     }
+
+    fn shutdown(mut self: Pin<&mut Self>, driver: &mut dope::DriverContext<'_, 'd>) {
+        self.as_mut().project().sock.shutdown(driver);
+    }
+
+    fn finish(mut self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        self.as_mut().project().sock.finish(context);
+    }
 }
 
 #[pin_project::pin_project]
@@ -89,11 +98,11 @@ struct App<'d> {
 }
 
 #[test]
-fn gso_runs_within_and_past_cap() {
-    run_case(&[1000, 1000, 1000, 500], 1);
-    let mut lens = vec![1200usize; 99];
+fn gso_runs_as_one_owned_send() {
+    run_case(&[1000, 1000, 1000, 500]);
+    let mut lens = vec![1000usize; 63];
     lens.push(500);
-    run_case(&lens, 2);
+    run_case(&lens);
 }
 
 #[test]
@@ -139,7 +148,7 @@ fn udp_collector(want_datagrams: usize) -> (SocketAddr, JoinHandle<(usize, Vec<u
     (dst, handle)
 }
 
-fn run_case(lens: &[usize], sends: u32) {
+fn run_case(lens: &[usize]) {
     let total: usize = lens.iter().sum();
     let want_datagrams = lens.len();
     let (dst, collector) = udp_collector(want_datagrams);
@@ -163,7 +172,7 @@ fn run_case(lens: &[usize], sends: u32) {
         }));
 
         let want = common::pattern(total);
-        let segments: Vec<_> = lens.iter().map(|&len| len as u32).collect();
+        let segment_size = NonZeroU16::new(lens[0] as u16).expect("non-zero segment size");
         let queued = app
             .as_ref()
             .borrow_pin_mut(sess.token())
@@ -171,8 +180,8 @@ fn run_case(lens: &[usize], sends: u32) {
             .sender
             .project()
             .sock
-            .queue_segments(want.clone(), &segments, dst);
-        assert!(queued.is_ok(), "queue_segments must accept the send");
+            .queue_gso(want.clone(), segment_size, dst);
+        assert!(queued.is_ok(), "queue_gso must accept the send");
 
         {
             let (token, mut driver) = sess.token_and_driver();
@@ -181,7 +190,7 @@ fn run_case(lens: &[usize], sends: u32) {
             sender.sock.as_mut().tick(&mut driver);
         }
 
-        common::run_until(&mut sess, app.as_ref(), &gate, sends);
+        common::run_until(&mut sess, app.as_ref(), &gate, 1);
         let (seen, got) = collector.join().expect("collector join");
 
         if errno.get() == Some(libc::EINVAL) {

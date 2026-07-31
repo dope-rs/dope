@@ -56,6 +56,23 @@ impl FileTable {
         }
     }
 
+    pub(super) fn range_empty(&self, base: u32, len: u32) -> bool {
+        let Some(end) = base.checked_add(len).map(|end| end as usize) else {
+            return false;
+        };
+        let base = base as usize;
+        let Some(states) = self.state.get(base..end) else {
+            return false;
+        };
+        let Some(pending) = self.pending.get(base..end) else {
+            return false;
+        };
+        states
+            .iter()
+            .all(|state| matches!(state, FileState::Empty))
+            && pending.iter().all(Option::is_none)
+    }
+
     pub(crate) fn begin_create(&mut self, create: Create) {
         debug_assert!(matches!(
             self.state[create.slot.raw() as usize],
@@ -91,7 +108,7 @@ impl FileTable {
                 let Some(entry) = self.deferred_close.vacant_entry() else {
                     unreachable!()
                 };
-                entry.push_back(FdSlot::new(index as u32));
+                entry.push_back(FdSlot::from_index(slot));
             } else {
                 *state = FileState::Live;
             }
@@ -99,7 +116,7 @@ impl FileTable {
             let Some(entry) = self.ready.vacant_entry() else {
                 unreachable!()
             };
-            entry.push_back(FdSlot::new(index as u32));
+            entry.push_back(FdSlot::from_index(slot));
         }
         Some(token)
     }
@@ -115,7 +132,7 @@ impl FileTable {
             let Some(entry) = self.ready.vacant_entry() else {
                 unreachable!()
             };
-            entry.push_back(FdSlot::new(index as u32));
+            entry.push_back(FdSlot::from_index(slot));
         }
     }
 
@@ -123,14 +140,17 @@ impl FileTable {
         if result < 0 {
             return;
         }
-        if let Some(state) = self.state.get_mut(result as usize) {
+        let Some(slot) = FdSlot::try_from_raw(result as u32) else {
+            return;
+        };
+        if let Some(state) = self.state.get_mut(slot.raw() as usize) {
             debug_assert!(matches!(*state, FileState::Empty));
             if close_pending {
                 *state = FileState::Closing;
                 let Some(entry) = self.deferred_close.vacant_entry() else {
                     unreachable!()
                 };
-                entry.push_back(FdSlot::new(result as u32));
+                entry.push_back(slot);
             } else {
                 *state = FileState::Live;
             }

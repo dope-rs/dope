@@ -5,26 +5,52 @@ use std::process::abort;
 use std::ptr::NonNull;
 
 use o3::marker::ThreadBound;
+use pin_project::{pin_project, pinned_drop};
 
-use crate::raw::task::{Context, Waker};
+use crate::raw::link::{PinnedLink, StableLinkSource};
+use crate::raw::pinned_slice;
+use crate::raw::task::{CompletionOwner, CompletionRegistrar, Context};
+use dope::driver::ready::{CompletionSlot, CompletionWaker};
 
-type WaiterPtr = NonNull<Waiter<'static>>;
+type WaiterLink = PinnedLink<Waiter<'static>>;
+
+struct WaitLinkSource<T>(NonNull<T>);
+
+// SAFETY: this private source is constructed only for a live bidirectional
+// registration. Either endpoint's Drop revokes both directions first.
+unsafe impl<T> StableLinkSource<T> for WaitLinkSource<T> {
+    fn pointer(self) -> NonNull<T> {
+        self.0
+    }
+}
+
+// SAFETY: the pinned waiter owns the completion handle. Waiter Drop unlinks
+// it, and queue Drop detaches every waiter before either endpoint disappears.
+unsafe impl<'d> CompletionRegistrar<'d> for CompletionOwner<(Pin<&WaitQueue>, Pin<&Waiter<'d>>)> {
+    type Output = bool;
+
+    #[inline(always)]
+    fn register(self, wake: CompletionWaker<'d>) -> Self::Output {
+        let (queue, waiter) = self.0;
+        queue.try_register_completion(waiter, wake)
+    }
+}
 
 /// A bounded, allocation-free FIFO whose pinned endpoints unlink on drop.
+#[pin_project(PinnedDrop, !Unpin)]
 pub struct WaitQueue {
-    head: Cell<Option<WaiterPtr>>,
-    tail: Cell<Option<WaiterPtr>>,
+    head: Cell<Option<WaiterLink>>,
+    tail: Cell<Option<WaiterLink>>,
     len: Cell<usize>,
     capacity: usize,
-    _pin: PhantomPinned,
     _thread: ThreadBound,
 }
 
 pub struct Waiter<'d> {
-    queue: Cell<Option<NonNull<WaitQueue>>>,
-    previous: Cell<Option<WaiterPtr>>,
-    next: Cell<Option<WaiterPtr>>,
-    wake: Cell<Option<Waker<'d>>>,
+    queue: Cell<Option<PinnedLink<WaitQueue>>>,
+    previous: Cell<Option<WaiterLink>>,
+    next: Cell<Option<WaiterLink>>,
+    wake: CompletionSlot<'d>,
     _pin: PhantomPinned,
     _thread: ThreadBound,
 }
@@ -36,21 +62,18 @@ impl WaitQueue {
             tail: Cell::new(None),
             len: Cell::new(0),
             capacity,
-            _pin: PhantomPinned,
             _thread: ThreadBound::NEW,
         }
     }
 
     /// Projects one queue from a pinned slice.
     pub fn pinned(queues: Pin<&[Self]>, index: usize) -> Option<Pin<&Self>> {
-        let queue = queues.get_ref().get(index)?;
-        // SAFETY: pinning a slice pins every element, and the shared slice
-        // reference cannot move or replace an element.
-        Some(unsafe { Pin::new_unchecked(queue) })
+        pinned_slice::get(queues, index)
     }
 
     fn contains<'d>(self: Pin<&Self>, waiter: Pin<&Waiter<'d>>) -> bool {
-        waiter.queue.get() == Some(NonNull::from(self.get_ref()))
+        let queue = PinnedLink::from_stable(WaitLinkSource(NonNull::from(self.get_ref())));
+        waiter.queue.get() == Some(queue)
     }
 
     pub fn can_register<'d>(self: Pin<&Self>, waiter: Pin<&Waiter<'d>>) -> bool {
@@ -63,19 +86,17 @@ impl WaitQueue {
         waiter: Pin<&Waiter<'d>>,
         context: Pin<&Context<'_, 'd>>,
     ) -> bool {
-        // SAFETY: `waiter` carries the same driver brand `'d` and owns the
-        // copied waker until it is unlinked or dropped.
-        self.try_register_waker(waiter, unsafe { context.waker_unchecked() })
+        context.register_completion(CompletionOwner((self, waiter)))
     }
 
     #[doc(hidden)]
-    pub fn try_register_waker<'d>(
+    pub fn try_register_completion<'d>(
         self: Pin<&Self>,
         waiter: Pin<&Waiter<'d>>,
-        waker: Waker<'d>,
+        wake: CompletionWaker<'d>,
     ) -> bool {
         if self.contains(waiter) {
-            waiter.wake.set(Some(waker));
+            waiter.wake.set(wake);
             return true;
         }
         if self.len.get() == self.capacity {
@@ -86,16 +107,16 @@ impl WaitQueue {
         debug_assert!(waiter.previous.get().is_none());
         debug_assert!(waiter.next.get().is_none());
 
-        let queue = NonNull::from(self.get_ref());
-        let node = NonNull::from(waiter.get_ref()).cast::<Waiter<'static>>();
+        let queue = PinnedLink::from_stable(WaitLinkSource(NonNull::from(self.get_ref())));
+        let node = PinnedLink::from_stable(WaitLinkSource(
+            NonNull::from(waiter.get_ref()).cast::<Waiter<'static>>(),
+        ));
         let previous = self.tail.get();
         waiter.queue.set(Some(queue));
         waiter.previous.set(previous);
-        waiter.wake.set(Some(waker));
+        waiter.wake.set(wake);
         if let Some(previous) = previous {
-            // SAFETY: every pointer in this queue names a live pinned waiter.
-            // We only update its interior link cell on this single thread.
-            unsafe { previous.as_ref() }.next.set(Some(node));
+            previous.get().next.set(Some(node));
         } else {
             self.head.set(Some(node));
         }
@@ -104,27 +125,22 @@ impl WaitQueue {
         true
     }
 
-    fn unlink<'d>(self: Pin<&Self>, waiter: NonNull<Waiter<'d>>) -> Option<Waker<'d>> {
-        // SAFETY: callers obtain this pointer either from a pinned `Waiter` or
-        // from this queue's links. Both Drop implementations unlink before an
-        // endpoint's storage can cease to be live.
-        let waiter = unsafe { waiter.as_ref() };
-        if waiter.queue.get() != Some(NonNull::from(self.get_ref())) {
+    fn unlink<'d>(self: Pin<&Self>, waiter: PinnedLink<Waiter<'d>>) -> Option<CompletionWaker<'d>> {
+        let waiter = waiter.get();
+        let queue = PinnedLink::from_stable(WaitLinkSource(NonNull::from(self.get_ref())));
+        if waiter.queue.get() != Some(queue) {
             return None;
         }
 
         let previous = waiter.previous.take();
         let next = waiter.next.take();
         if let Some(previous) = previous {
-            // SAFETY: linked neighbours are live and pinned by the invariant
-            // stated on `WaitQueue`.
-            unsafe { previous.as_ref() }.next.set(next);
+            previous.get().next.set(next);
         } else {
             self.head.set(next);
         }
         if let Some(next) = next {
-            // SAFETY: same invariant as for `previous` above.
-            unsafe { next.as_ref() }.previous.set(previous);
+            next.get().previous.set(previous);
         } else {
             self.tail.set(previous);
         }
@@ -137,8 +153,7 @@ impl WaitQueue {
         let Some(node) = self.head.get() else {
             return false;
         };
-        let waiter = node.cast::<Waiter<'_>>();
-        let Some(waker) = self.unlink(waiter) else {
+        let Some(waker) = self.unlink(node) else {
             abort();
         };
         if wake {
@@ -164,13 +179,10 @@ impl WaitQueue {
     }
 }
 
-impl Drop for WaitQueue {
-    fn drop(&mut self) {
-        // SAFETY: a linked queue can only have been accessed through a `Pin`.
-        // Its address remains stable through Drop, and `pop_next` clears every
-        // waiter's back-link before the queue storage goes away.
-        let queue = unsafe { Pin::new_unchecked(&*self) };
-        while queue.pop_next(false) {}
+#[pinned_drop]
+impl PinnedDrop for WaitQueue {
+    fn drop(self: Pin<&mut Self>) {
+        while self.as_ref().pop_next(false) {}
     }
 }
 
@@ -180,7 +192,7 @@ impl<'d> Waiter<'d> {
             queue: Cell::new(None),
             previous: Cell::new(None),
             next: Cell::new(None),
-            wake: Cell::new(None),
+            wake: CompletionSlot::empty(),
             _pin: PhantomPinned,
             _thread: ThreadBound::NEW,
         }
@@ -190,11 +202,8 @@ impl<'d> Waiter<'d> {
         let Some(queue) = self.queue.get() else {
             return false;
         };
-        // SAFETY: a live registration guarantees the queue is still live and
-        // pinned. Queue::drop clears every registration before returning.
-        unsafe { Pin::new_unchecked(queue.as_ref()) }
-            .unlink(NonNull::from(self.get_ref()))
-            .is_some()
+        let waiter = PinnedLink::from_stable(WaitLinkSource(NonNull::from(self.get_ref())));
+        queue.get().unlink(waiter).is_some()
     }
 
     pub fn is_registered(&self) -> bool {
@@ -213,10 +222,7 @@ impl Drop for Waiter<'_> {
         let Some(queue) = self.queue.get() else {
             return;
         };
-        // SAFETY: Drop cannot move this waiter before it runs. A non-null
-        // back-link means queue Drop has not detached it, so the pinned queue
-        // and its links are still live.
-        let queue = unsafe { Pin::new_unchecked(queue.as_ref()) };
-        let _ = queue.unlink(NonNull::from(&*self));
+        let waiter = PinnedLink::from_stable(WaitLinkSource(NonNull::from(&*self)));
+        let _ = queue.get().unlink(waiter);
     }
 }

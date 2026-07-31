@@ -5,7 +5,8 @@ pub mod tcp;
 pub mod unix;
 pub mod wire;
 
-pub use o3::buffer::{Bytes, Leased, RetainBytes};
+pub use dope_core::io::provided::{ProvidedLease, ProvidedView};
+pub use o3::buffer::{Borrowed, Bytes, Leased, RetainBytes, Retained};
 
 use std::io;
 use std::net::SocketAddr;

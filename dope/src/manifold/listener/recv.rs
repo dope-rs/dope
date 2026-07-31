@@ -52,16 +52,20 @@ impl<const HEAD_CAP: usize, const HARD_CAP: usize> Recv<HEAD_CAP, HARD_CAP> {
         self.accumulator.as_ref()?.snapshot()
     }
 
-    pub fn advance(&mut self, amount: usize) {
+    pub fn try_advance(&mut self, amount: usize) -> bool {
         let Some(accumulator) = self.accumulator.as_mut() else {
-            return;
+            return amount == 0;
         };
-        accumulator.advance(amount);
+        let Ok(prefix) = accumulator.try_consume_prefix(amount) else {
+            return false;
+        };
+        prefix.commit();
         if accumulator.is_empty() {
             self.accumulator = None;
         } else {
             accumulator.compact();
         }
+        true
     }
 
     pub fn extend(&mut self, src: &[u8]) -> ExtendOutcome {
@@ -96,7 +100,7 @@ impl<const HEAD_CAP: usize, const HARD_CAP: usize> Recv<HEAD_CAP, HARD_CAP> {
     }
 
     fn new_accumulator() -> SnapshotBuf<HARD_CAP> {
-        SnapshotBuf::with_capacity(INITIAL_CAPACITY.min(HARD_CAP))
+        SnapshotBuf::with_capacity_up_to(INITIAL_CAPACITY)
     }
 
     fn extend_capped(

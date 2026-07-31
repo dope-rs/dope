@@ -4,20 +4,21 @@ members = ["core", "net", "dope", "fiber", "gen", "test"]
 
 [workspace.package]
 edition = "2024"
-version = "0.12.0"
+version = "0.13.0"
 description = "The manifold runtime"
 repository = "https://github.com/dope-rs/dope"
+readme = "README.md"
 license = "MIT"
 authors = ["inq <gofiri@gmail.com>"]
 
 [workspace.dependencies]
-dope = { path = "dope", version = "0.12.0" }
-dope-core = { path = "core", version = "0.12.0" }
-dope-net = { path = "net", version = "0.12.0" }
-dope-fiber = { path = "fiber", version = "0.12.0" }
-dope-gen = { path = "gen", version = "0.12.0" }
+dope = { path = "dope", version = "0.13.0" }
+dope-core = { path = "core", version = "0.13.0" }
+dope-net = { path = "net", version = "0.13.0" }
+dope-fiber = { path = "fiber", version = "0.13.0" }
+dope-gen = { path = "gen", version = "0.13.0" }
 dope-test = { path = "test" }
-o3 = "0.7.3"
+o3 = "0.9"
 libc = "0.2"
 io-uring = "0.7"
 pin-project = "1"

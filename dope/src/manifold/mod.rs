@@ -11,7 +11,7 @@ use typed::TypedToken;
 use std::pin::Pin;
 
 use crate::DriverContext;
-use crate::runtime::dispatcher::Idle;
+use crate::runtime::dispatcher::{FinishContext, Idle};
 use dope_core::io::Event;
 
 pub enum Outcome {
@@ -43,5 +43,9 @@ pub trait Manifold<'d>: Sized {
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         let _ = driver;
+    }
+
+    fn finish(self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        let _ = context;
     }
 }

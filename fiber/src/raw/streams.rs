@@ -7,7 +7,10 @@ use o3::buffer::Shared;
 
 use crate::io::Io;
 use crate::net::port::result::{RecvInto, SendIdle};
+use crate::raw::task::CompletionRegistrar;
 use crate::{Context, Fiber};
+use dope::driver::ready::CompletionWaker;
+use dope_net::wire::{RecvTarget, Wire};
 
 #[derive(Clone, Copy)]
 enum Interest {
@@ -15,14 +18,14 @@ enum Interest {
     Send,
 }
 
-struct Registration<'a, 'scope, 'd> {
-    io: &'a mut Io<'scope, 'd>,
+struct Registration<'a, 'scope, 'd, W: Wire> {
+    io: &'a mut Io<'scope, 'd, W>,
     interest: Interest,
     armed: bool,
 }
 
-impl<'a, 'scope, 'd> Registration<'a, 'scope, 'd> {
-    fn new(io: &'a mut Io<'scope, 'd>, interest: Interest) -> Self {
+impl<'a, 'scope, 'd, W: Wire> Registration<'a, 'scope, 'd, W> {
+    fn new(io: &'a mut Io<'scope, 'd, W>, interest: Interest) -> Self {
         Self {
             io,
             interest,
@@ -30,16 +33,17 @@ impl<'a, 'scope, 'd> Registration<'a, 'scope, 'd> {
         }
     }
 
-    fn arm(&mut self, context: Pin<&mut Context<'_, 'd>>) {
-        // SAFETY: the registration exclusively borrows the stream and clears
-        // its port waiter on cancellation before the task context can drop.
-        let waker = unsafe { context.waker_unchecked() };
+    fn retain(&mut self, wake: CompletionWaker<'d>) {
+        self.armed = true;
         let (port, id) = self.io.handle();
         match self.interest {
-            Interest::Recv => port.recv_waker(id, waker),
-            Interest::Send => port.send_waker(id, waker),
+            Interest::Recv => port.recv_waker(id, wake),
+            Interest::Send => port.send_waker(id, wake),
         }
-        self.armed = true;
+    }
+
+    fn arm(&mut self, context: Pin<&mut Context<'_, 'd>>) {
+        context.as_ref().register_completion(&mut *self);
     }
 
     fn clear(&mut self) {
@@ -60,16 +64,16 @@ impl<'a, 'scope, 'd> Registration<'a, 'scope, 'd> {
 
     fn poll_recv(
         &mut self,
-        context: Pin<&mut Context<'_, 'd>>,
-        dst: &mut [u8],
+        mut context: Pin<&mut Context<'_, 'd>>,
+        target: &mut RecvTarget<'_>,
         done: &mut bool,
-    ) -> Poll<io::Result<usize>> {
+    ) -> Poll<io::Result<()>> {
         let (port, id) = self.io.handle();
-        let result = if dst.is_empty() {
-            Poll::Ready(Ok(0))
+        let result = if target.remaining() == 0 {
+            Poll::Ready(Ok(()))
         } else {
-            match port.recv_into(id, dst) {
-                RecvInto::Bytes(count) => Poll::Ready(Ok(count)),
+            match port.recv_into(id, target, context.as_mut().region_token()) {
+                RecvInto::Ready => Poll::Ready(Ok(())),
                 RecvInto::Failed(error) => Poll::Ready(Err(error)),
                 RecvInto::Pending => {
                     self.arm(context);
@@ -106,21 +110,31 @@ impl<'a, 'scope, 'd> Registration<'a, 'scope, 'd> {
     }
 }
 
-impl Drop for Registration<'_, '_, '_> {
+// SAFETY: Registration exclusively borrows the stream and clears its exact
+// port waiter on cancellation or Drop before the task context can disappear.
+unsafe impl<'d, W: Wire> CompletionRegistrar<'d> for &mut Registration<'_, '_, 'd, W> {
+    type Output = ();
+
+    fn register(self, wake: CompletionWaker<'d>) {
+        self.retain(wake);
+    }
+}
+
+impl<W: Wire> Drop for Registration<'_, '_, '_, W> {
     fn drop(&mut self) {
         self.clear();
     }
 }
 
-pub(crate) struct WriteAll<'a, 'scope, 'd> {
-    registration: Registration<'a, 'scope, 'd>,
+pub(crate) struct WriteAll<'a, 'scope, 'd, W: Wire> {
+    registration: Registration<'a, 'scope, 'd, W>,
     data: &'a [u8],
     submitted: bool,
     done: bool,
 }
 
-impl<'a, 'scope, 'd> WriteAll<'a, 'scope, 'd> {
-    pub(crate) fn new(io: &'a mut Io<'scope, 'd>, data: &'a [u8]) -> Self {
+impl<'a, 'scope, 'd, W: Wire> WriteAll<'a, 'scope, 'd, W> {
+    pub(crate) fn new(io: &'a mut Io<'scope, 'd, W>, data: &'a [u8]) -> Self {
         Self {
             registration: Registration::new(io, Interest::Send),
             data,
@@ -130,7 +144,7 @@ impl<'a, 'scope, 'd> WriteAll<'a, 'scope, 'd> {
     }
 }
 
-impl<'d> Fiber<'d> for WriteAll<'_, '_, 'd> {
+impl<'d, W: Wire> Fiber<'d> for WriteAll<'_, '_, 'd, W> {
     type Output = io::Result<()>;
 
     fn poll(self: Pin<&mut Self>, context: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
@@ -149,14 +163,14 @@ impl<'d> Fiber<'d> for WriteAll<'_, '_, 'd> {
     }
 }
 
-pub(crate) struct WriteAllShared<'a, 'scope, 'd> {
-    registration: Registration<'a, 'scope, 'd>,
+pub(crate) struct WriteAllShared<'a, 'scope, 'd, W: Wire> {
+    registration: Registration<'a, 'scope, 'd, W>,
     bytes: Option<Shared>,
     done: bool,
 }
 
-impl<'a, 'scope, 'd> WriteAllShared<'a, 'scope, 'd> {
-    pub(crate) fn new(io: &'a mut Io<'scope, 'd>, bytes: Shared) -> Self {
+impl<'a, 'scope, 'd, W: Wire> WriteAllShared<'a, 'scope, 'd, W> {
+    pub(crate) fn new(io: &'a mut Io<'scope, 'd, W>, bytes: Shared) -> Self {
         Self {
             registration: Registration::new(io, Interest::Send),
             bytes: Some(bytes),
@@ -165,7 +179,7 @@ impl<'a, 'scope, 'd> WriteAllShared<'a, 'scope, 'd> {
     }
 }
 
-impl<'d> Fiber<'d> for WriteAllShared<'_, '_, 'd> {
+impl<'d, W: Wire> Fiber<'d> for WriteAllShared<'_, '_, 'd, W> {
     type Output = io::Result<()>;
 
     fn poll(self: Pin<&mut Self>, context: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
@@ -186,14 +200,14 @@ impl<'d> Fiber<'d> for WriteAllShared<'_, '_, 'd> {
     }
 }
 
-pub(crate) struct Read<'a, 'scope, 'd> {
-    registration: Registration<'a, 'scope, 'd>,
+pub(crate) struct Read<'a, 'scope, 'd, W: Wire> {
+    registration: Registration<'a, 'scope, 'd, W>,
     buf: Vec<u8>,
     done: bool,
 }
 
-impl<'a, 'scope, 'd> Read<'a, 'scope, 'd> {
-    pub(crate) fn new(io: &'a mut Io<'scope, 'd>, buf: Vec<u8>) -> Self {
+impl<'a, 'scope, 'd, W: Wire> Read<'a, 'scope, 'd, W> {
+    pub(crate) fn new(io: &'a mut Io<'scope, 'd, W>, buf: Vec<u8>) -> Self {
         Self {
             registration: Registration::new(io, Interest::Recv),
             buf,
@@ -202,15 +216,16 @@ impl<'a, 'scope, 'd> Read<'a, 'scope, 'd> {
     }
 }
 
-impl<'d> Fiber<'d> for Read<'_, '_, 'd> {
-    type Output = (io::Result<usize>, Vec<u8>);
+impl<'d, W: Wire> Fiber<'d> for Read<'_, '_, 'd, W> {
+    type Output = (io::Result<()>, Vec<u8>);
 
     fn poll(self: Pin<&mut Self>, context: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.get_mut();
         assert!(!this.done, "fiber::Io::read polled after completion");
+        let mut target = RecvTarget::new(&mut this.buf);
         let result = this
             .registration
-            .poll_recv(context, &mut this.buf, &mut this.done);
+            .poll_recv(context, &mut target, &mut this.done);
         match result {
             Poll::Ready(result) => Poll::Ready((result, take(&mut this.buf))),
             Poll::Pending => Poll::Pending,

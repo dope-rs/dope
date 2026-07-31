@@ -1,5 +1,5 @@
 use std::ptr::NonNull;
-use std::slice::from_raw_parts;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 pub(crate) struct InitializedRegion {
     pub(in crate::io::provided) ptr: NonNull<u8>,
@@ -16,6 +16,12 @@ impl InitializedRegion {
 
     pub(in crate::io::provided) fn as_slice(&self) -> &[u8] {
         unsafe { from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+
+    pub(in crate::io::provided) fn as_mut_slice(&mut self) -> &mut [u8] {
+        // `InitializedRegion` is reached through the unique `&mut ProvidedLease`;
+        // no view is constructed until that lease is consumed.
+        unsafe { from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 
     pub(in crate::io::provided) fn subregion(&self, offset: usize, len: usize) -> Option<Self> {

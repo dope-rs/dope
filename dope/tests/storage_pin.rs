@@ -50,3 +50,13 @@ fn owned_storage_keeps_its_exact_type_in_the_session() {
         .with_storage(String::from("handler"))
         .enter(|session| assert_eq!(session.storage(), "handler"));
 }
+
+#[test]
+fn storage_and_driver_can_be_borrowed_together() {
+    common::exec()
+        .with_storage(String::from("handler"))
+        .enter(|mut session| {
+            let (storage, _driver) = session.storage_and_driver();
+            assert_eq!(storage.get_ref(), "handler");
+        });
+}

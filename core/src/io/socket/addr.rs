@@ -1,6 +1,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::os::fd::RawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use crate::driver::Driver;
@@ -8,6 +9,8 @@ use crate::io::socket::Pod;
 use crate::platform::raw::abi::PlatformAbi;
 use libc::AF_INET;
 use libc::AF_INET6;
+use libc::AF_UNIX;
+use libc::c_char;
 use libc::getsockname;
 use libc::sa_family_t;
 use libc::sockaddr;
@@ -131,8 +134,22 @@ impl Addr {
     }
 
     pub fn from_unix_path(path: &Path) -> io::Result<Self> {
-        let (sa, len) = Driver::encode_unix(path)?;
-        Ok(Self::from_payload(sa, len))
+        let bytes = path.as_os_str().as_bytes();
+        if bytes.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidInput, "empty path"));
+        }
+        let mut encoded = Driver::sockaddr_un();
+        encoded.sun_family = AF_UNIX as _;
+        let max = encoded.sun_path.len().saturating_sub(1);
+        if bytes.len() > max {
+            return Err(Error::new(ErrorKind::InvalidInput, "path too long"));
+        }
+        for (index, byte) in bytes.iter().enumerate() {
+            encoded.sun_path[index] = *byte as c_char;
+        }
+        let len = (size_of::<sa_family_t>() + bytes.len() + 1) as socklen_t;
+        Driver::finish_unix(&mut encoded, len);
+        Ok(Self::from_payload(encoded, len))
     }
 
     pub fn from_getsockname(fd: RawFd) -> io::Result<Self> {

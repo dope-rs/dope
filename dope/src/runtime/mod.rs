@@ -22,9 +22,13 @@ pub mod __private {
         fn take_output(self: Pin<&mut Self>) -> Option<T>;
     }
 
-    pub fn saturating_deadline(base: Instant, duration: Duration) -> Instant {
-        base.checked_add(duration)
-            .or_else(|| base.checked_add(FAR_FUTURE))
-            .unwrap_or(base)
+    pub struct Deadline;
+
+    impl Deadline {
+        pub fn after(base: Instant, duration: Duration) -> Instant {
+            base.checked_add(duration)
+                .or_else(|| base.checked_add(FAR_FUTURE))
+                .unwrap_or(base)
+        }
     }
 }

@@ -2,32 +2,34 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use super::Listener;
-use super::application::Application;
+use super::application::{Application, ApplicationHooks};
+use super::state::EgressCtx;
 use crate::DriverContext;
 use crate::manifold::env::Env;
+use crate::runtime::__private::Deadline;
 use crate::runtime::profile::RuntimeProfile;
 use dope_core::backend::Sqe;
 use dope_core::driver::submission::Submission;
-use dope_core::driver::token::SlotIndex;
+use dope_core::driver::token::{SlotIndex, TokenCapacity};
 use o3::collections::SlotQueue;
 
 pub(super) struct IdleSet {
     queue: SlotQueue<Instant>,
     window: Duration,
-    cap: usize,
+    capacity: TokenCapacity,
 }
 
 impl IdleSet {
-    pub(super) fn new(cap: usize, window: Duration) -> Self {
+    pub(super) fn new(capacity: TokenCapacity, window: Duration) -> Self {
         Self {
             queue: SlotQueue::with_capacity(0),
             window,
-            cap,
+            capacity,
         }
     }
 
     fn ensure(&mut self, index: usize) -> bool {
-        if index >= self.cap {
+        if self.capacity.slot(index).is_none() {
             return false;
         }
         if self.queue.capacity() <= index {
@@ -36,7 +38,7 @@ impl IdleSet {
                 .capacity()
                 .saturating_mul(2)
                 .max(index + 1)
-                .min(self.cap);
+                .min(self.capacity.get());
             self.queue.grow_to(capacity);
         }
         true
@@ -48,7 +50,7 @@ impl IdleSet {
         if !self.ensure(i) {
             return;
         }
-        let deadline = now + self.window;
+        let deadline = Deadline::after(now, self.window);
         if self.queue.refresh_back(i, deadline).is_err() {
             unreachable!()
         }
@@ -64,7 +66,7 @@ impl IdleSet {
             return None;
         }
         self.queue.pop_front();
-        Some(SlotIndex::new(index as u32))
+        self.capacity.slot(index)
     }
 
     pub(super) fn earliest(&self) -> Option<Instant> {
@@ -88,7 +90,7 @@ where
     fn close_inherent(self: Pin<&mut Self>, idx: SlotIndex, driver: &mut DriverContext<'_, 'd>);
 }
 
-impl<'d, const ID: u8, A, E> IdlePhase<'d, ID, A, E> for Listener<'d, ID, A, E>
+impl<'pool, 'd, const ID: u8, A, E> IdlePhase<'d, ID, A, E> for Listener<'pool, 'd, ID, A, E>
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
@@ -144,11 +146,13 @@ where
             return;
         }
         if let Some(slot) = this.pool.get_mut(idx) {
-            this.app.as_mut().close(slot, this.aux);
+            let egress = EgressCtx::for_slot(this.aux, this.egress_arena, idx);
+            A::Hooks::close(this.app.as_mut(), slot, egress);
             if let Some(ip) = slot.state.peer_ip.take() {
                 this.accept.release_peer_ip(ip);
             }
         }
+        this.egress_arena.clear(idx.raw() as usize);
         this.pool.try_close(idx, driver);
     }
 }

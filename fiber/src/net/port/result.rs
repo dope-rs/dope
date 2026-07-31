@@ -1,7 +1,7 @@
 use std::io::Error;
 
 pub(crate) enum RecvInto {
-    Bytes(usize),
+    Ready,
     Failed(Error),
     Pending,
 }

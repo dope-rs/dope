@@ -8,8 +8,8 @@ use dope_core::driver::completion::Completion;
 use o3::cell::{BrandCell, BrandToken};
 
 use crate::driver::token::Token;
-use crate::runtime::__private::{RootTask, saturating_deadline};
-use crate::runtime::dispatcher::{Dispatcher, Idle};
+use crate::runtime::__private::{Deadline, RootTask};
+use crate::runtime::dispatcher::{Dispatcher, FinishContext, Idle};
 use crate::{DriverContext, Event};
 
 const DRAIN_BATCH: usize = 256;
@@ -161,7 +161,7 @@ where
     }
 
     fn drain(&mut self, drain_window: Duration) -> io::Result<()> {
-        let deadline = saturating_deadline(Instant::now(), drain_window);
+        let deadline = Deadline::after(Instant::now(), drain_window);
         loop {
             if Instant::now() >= deadline {
                 return Ok(());
@@ -196,6 +196,11 @@ where
                 &mut self.driver.reborrow(),
             );
         }
-        self.drain(drain_window)
+        let drained = self.drain(drain_window);
+        if should_shutdown {
+            let mut context = FinishContext::new(self.driver.reborrow());
+            Dispatcher::finish(self.cell.borrow_pin_mut(self.token), &mut context);
+        }
+        drained
     }
 }

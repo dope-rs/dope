@@ -117,7 +117,7 @@ impl Arm for Kqueue {
         addrlen_ptr: *mut socklen_t,
     ) -> bool {
         let slot_idx = Udata::read_key(ud);
-        let epoch = ud.epoch().raw();
+        let epoch = ud.epoch_raw();
         if !self.insert_read(
             slot_idx,
             ReadSlot::Accept(AcceptSlot {
@@ -181,7 +181,7 @@ impl Arm for Kqueue {
             return true;
         };
         let slot_idx = Udata::read_key(ud);
-        let epoch = ud.epoch().raw();
+        let epoch = ud.epoch_raw();
         let header = SlotHeader {
             fd: raw,
             epoch,

@@ -1,3 +1,2 @@
-pub(super) mod mmap;
+pub(super) mod mapping;
 pub(crate) mod ring;
-mod tail;

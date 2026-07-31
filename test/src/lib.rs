@@ -69,6 +69,7 @@ macro_rules! tcp_case {
                 $app,
                 __dope_config,
                 __dope_hash,
+                __dope_session.storage(),
                 &mut __dope_session.driver_access(),
             );
             let __dope_host = ::std::pin::pin!($crate::__private::BrandCell::new(
@@ -142,6 +143,7 @@ macro_rules! connector_case {
         >($max_connections);
         $crate::__private::dope::runtime::executor::Executor::new(__dope_config)
             .expect("executor")
+            .with_storage($crate::__private::dope_net::link::egress::storage::Storage::default())
             .enter(|mut __dope_session| {
                 let __dope_seed = $crate::__private::dope::hash::Seed::new([1, 2]).state();
                 let __dope_dialer =
@@ -157,6 +159,7 @@ macro_rules! connector_case {
                     $app,
                     __dope_dialer,
                     $max_connections,
+                    __dope_session.storage(),
                     &mut __dope_session.driver_access(),
                 )
                 .expect("connector");

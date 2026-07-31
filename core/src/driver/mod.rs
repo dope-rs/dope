@@ -27,14 +27,10 @@ use crate::backend::ops::buffers::BufferBackend;
 use crate::io::fd::{Fd, FdGuard, FdSlot};
 use crate::io::provided::raw::buffer::BufferId;
 use crate::platform::Platform;
-use crate::platform::raw::file::FileLimit;
-
-use libc::MCL_CURRENT;
-use libc::MCL_FUTURE;
-use libc::mlockall;
+use crate::platform::raw::file::{FileLimit, lock_memory_best_effort};
 use profile::DriverProfile;
 use ready::{Arena, ReadyHandle, ReadyKey, ReadySlot};
-use token::{SlotIndex, Token};
+use token::{SlotIndex, Token, TokenCapacity};
 
 type Invariant<'d> = PhantomData<fn(&'d ()) -> &'d ()>;
 
@@ -55,29 +51,22 @@ pub struct DriverRef<'d> {
     _brand: Invariant<'d>,
 }
 
+pub struct Scope<'d> {
+    driver: DriverRef<'d>,
+    backend: &'d mut Backend,
+    region: RegionToken<'d>,
+    token: BrandToken<'d>,
+}
+
 pub struct DriverContext<'a, 'd> {
     driver: DriverRef<'d>,
     backend: &'a mut Backend,
-    region: RegionAccess<'a, 'd>,
-}
-
-enum RegionAccess<'a, 'd> {
-    Owned(RegionToken<'d>),
-    Borrowed(&'a mut RegionToken<'d>),
-}
-
-impl<'d> RegionAccess<'_, 'd> {
-    fn token(&mut self) -> &mut RegionToken<'d> {
-        match self {
-            Self::Owned(token) => token,
-            Self::Borrowed(token) => token,
-        }
-    }
+    region: &'a mut RegionToken<'d>,
 }
 
 impl Driver {
     pub fn init_process() -> Result<()> {
-        unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) };
+        lock_memory_best_effort();
         FileLimit::get()?.raise()
     }
 
@@ -98,30 +87,21 @@ impl Driver {
         })
     }
 
-    pub fn scope<R>(
-        self: Pin<&mut Self>,
-        f: impl for<'d> FnOnce(DriverContext<'d, 'd>, BrandToken<'d>) -> R,
-    ) -> R {
+    pub fn scope<R>(self: Pin<&mut Self>, f: impl for<'d> FnOnce(Scope<'d>) -> R) -> R {
+        // SAFETY: the pointer is used only within the synchronous branded scope,
+        // while the pinned exclusive borrow remains active.
         let this = unsafe { self.get_unchecked_mut() as *mut Self };
         BrandToken::scope_with_region(move |token, region| {
-            // SAFETY: the pinned exclusive borrow covers this synchronous scope. The
-            // higher-ranked closure prevents the generated lifetime from escaping.
+            // SAFETY: the higher-ranked closure prevents the generated lifetime
+            // and every reference derived from this pointer from escaping.
             let this = unsafe { &mut *this };
-            f(
-                DriverContext {
-                    driver: DriverRef::new(&this.shared),
-                    backend: &mut this.backend,
-                    region: RegionAccess::Owned(region),
-                },
+            f(Scope {
+                driver: DriverRef::new(&this.shared),
+                backend: &mut this.backend,
+                region,
                 token,
-            )
+            })
         })
-    }
-}
-
-impl Shared {
-    fn arena(&self) -> &Arena {
-        &self.arena
     }
 }
 
@@ -134,11 +114,15 @@ impl<'d> DriverRef<'d> {
     }
 
     fn arena(self) -> &'d Arena {
-        self.shared.arena()
+        &self.shared.arena
     }
 
     pub(crate) fn fixed_ready(self, slot: FdSlot) -> ReadyHandle<'d> {
         self.arena().fixed_slot(slot)
+    }
+
+    pub(crate) fn fixed_fd_slot(self, raw: u32) -> Option<FdSlot> {
+        self.arena().fd_slot(raw)
     }
 
     pub fn make_ready_slot(self, target: Token) -> Result<ReadySlot<'d>> {
@@ -159,6 +143,21 @@ impl<'d> DriverRef<'d> {
 
     pub fn activate_ready(self, key: ReadyKey<'d>) {
         self.arena().activate(key);
+    }
+
+    #[doc(hidden)]
+    pub fn arm_recv_credit(self, key: ReadyKey<'d>, target: Token) -> bool {
+        self.arena().arm_recv_credit(key, target)
+    }
+
+    #[doc(hidden)]
+    pub fn release_recv_credit(self, key: ReadyKey<'d>, target: Token) {
+        self.arena().release_recv_credit(key, target);
+    }
+
+    #[doc(hidden)]
+    pub fn take_recv_credit(self, key: ReadyKey<'d>, target: Token) -> bool {
+        self.arena().take_recv_credit(key, target)
     }
 
     pub fn drain_ready(self, activate: impl FnMut(Token)) {
@@ -203,17 +202,51 @@ impl PartialEq for DriverRef<'_> {
 
 impl Eq for DriverRef<'_> {}
 
+impl<'d> Scope<'d> {
+    pub fn context(&mut self) -> DriverContext<'_, 'd> {
+        DriverContext {
+            driver: self.driver,
+            backend: &mut *self.backend,
+            region: &mut self.region,
+        }
+    }
+
+    pub fn token(&mut self) -> &mut BrandToken<'d> {
+        &mut self.token
+    }
+
+    pub fn token_and_context(&mut self) -> (&mut BrandToken<'d>, DriverContext<'_, 'd>) {
+        (
+            &mut self.token,
+            DriverContext {
+                driver: self.driver,
+                backend: &mut *self.backend,
+                region: &mut self.region,
+            },
+        )
+    }
+
+    pub fn driver_ref(&self) -> DriverRef<'d> {
+        self.driver
+    }
+}
+
 impl<'a, 'd> DriverContext<'a, 'd> {
     pub fn reborrow(&mut self) -> DriverContext<'_, 'd> {
         DriverContext {
             driver: self.driver,
-            backend: self.backend,
-            region: RegionAccess::Borrowed(self.region.token()),
+            backend: &mut *self.backend,
+            region: &mut *self.region,
         }
     }
 
     pub fn region_token(&mut self) -> &mut RegionToken<'d> {
-        self.region.token()
+        self.region
+    }
+
+    #[doc(hidden)]
+    pub fn region_token_ref(&self) -> &RegionToken<'d> {
+        self.region
     }
 
     pub fn driver_ref(&self) -> DriverRef<'d> {
@@ -255,15 +288,8 @@ impl<'a, 'd> DriverContext<'a, 'd> {
         }
     }
     pub fn guard(&mut self, fd: Fd<'d>) -> FdGuard<'_, 'd> {
-        let (slot, driver) = fd.into_parts();
-        FdGuard::new(self.backend(), slot, driver)
-    }
-
-    /// # Safety
-    /// `slot` must be reserved from this access and uniquely owned.
-    pub unsafe fn guard_raw(&mut self, slot: FdSlot) -> FdGuard<'_, 'd> {
-        let driver = self.driver_ref();
-        FdGuard::new(self.backend(), slot, driver)
+        let (slot, driver, retire_slot) = fd.into_parts();
+        FdGuard::new(self.backend(), slot, driver, retire_slot)
     }
 }
 
@@ -331,7 +357,7 @@ impl Config {
     }
 
     pub fn for_tcp_profile<P: DriverProfile>(max_connections: usize) -> Self {
-        let max_connections = max_connections as u32;
+        let max_connections = u32::try_from(max_connections).unwrap_or(u32::MAX);
         let accept_slots =
             max_connections.min(P::FIXED_FILE_SLOTS.saturating_sub(P::OUTBOUND_RESERVE));
         Self {
@@ -370,6 +396,18 @@ impl Config {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        if self.accept_slots > self.fixed_file_slots {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "dope: accept slots exceed fixed-file capacity",
+            ));
+        }
+        if TokenCapacity::new(self.fixed_file_slots as usize).is_none() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "dope: fixed-file capacity exceeds token slots",
+            ));
+        }
         Backend::snapshot()?
             .check_slots(self.fixed_file_slots)
             .map_err(io::Error::from)
@@ -420,26 +458,31 @@ impl From<PushError> for io::Error {
     }
 }
 
-pub struct OutboundReservation {
+pub struct OutboundReservation<'d> {
     base: u32,
     capacity: u32,
+    _brand: Invariant<'d>,
     _thread: ThreadBound,
 }
 
 #[derive(Clone, Copy)]
-pub struct OutboundSlot(FdSlot);
+pub struct OutboundSlot<'d> {
+    fd: FdSlot,
+    _brand: Invariant<'d>,
+}
 
-impl OutboundSlot {
-    pub fn fd(self) -> FdSlot {
-        self.0
+impl<'d> OutboundSlot<'d> {
+    pub fn bind(self, driver: DriverRef<'d>) -> Fd<'d> {
+        Fd::from_range_slot(self.fd, driver)
     }
 }
 
-impl OutboundReservation {
+impl<'d> OutboundReservation<'d> {
     pub(crate) fn new(base: u32, capacity: u32) -> Self {
         Self {
             base,
             capacity,
+            _brand: PhantomData,
             _thread: ThreadBound::NEW,
         }
     }
@@ -448,16 +491,23 @@ impl OutboundReservation {
         Self {
             base: 0,
             capacity: 0,
+            _brand: PhantomData,
             _thread: ThreadBound::NEW,
         }
     }
 
-    pub fn slot(&self, local: SlotIndex) -> Option<OutboundSlot> {
+    pub fn slot(&self, local: SlotIndex) -> Option<OutboundSlot<'d>> {
         if local.raw() >= self.capacity {
             return None;
         }
-        Some(OutboundSlot(FdSlot::new(
-            self.base.checked_add(local.raw())?,
-        )))
+        let index = SlotIndex::try_new(self.base.checked_add(local.raw())?)?;
+        Some(OutboundSlot {
+            fd: FdSlot::from_index(index),
+            _brand: PhantomData,
+        })
+    }
+
+    pub(crate) fn into_range(self) -> (u32, u32) {
+        (self.base, self.capacity)
     }
 }

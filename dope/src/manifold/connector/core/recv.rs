@@ -3,10 +3,9 @@ use std::time::Instant;
 
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::RecvEvent;
-use dope_core::io::provided::ProvidedView;
 use dope_net::Transport;
 use dope_net::link::raw::event::DispatchRecv;
-use dope_net::wire::Wire;
+use dope_net::wire::{RecvChunk, Wire};
 use o3::buffer::RetainBytes;
 
 use super::Core;
@@ -35,7 +34,7 @@ where
     fn recv_retained_chunk(
         self: Pin<&mut Self>,
         idx: SlotIndex,
-        chunk: ProvidedView<'d>,
+        chunk: <A::Wire as Wire>::RetainedRecv<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome;
 
@@ -62,15 +61,32 @@ where
         event: RecvEvent<'d>,
         driver: &mut DriverContext<'_, 'd>,
     );
+
+    fn resume_recv(self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>);
 }
 
-impl<'d, const ID: u8, A, S, E> RecvPhase<'d, ID, A, S, E> for Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> RecvPhase<'d, ID, A, S, E> for Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
     E: Env<Wire = A::Wire>,
     E::Transport: Transport,
 {
+    fn resume_recv(mut self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>) {
+        let resumed = self.as_mut().project().pool.resume_recv(target);
+        if !resumed {
+            return;
+        }
+        loop {
+            let deferred = self.as_mut().project().pool.pop_resumed_recv(target);
+            let Some((token, more, event)) = deferred else {
+                break;
+            };
+            self.as_mut().handle_recv(token, more, event, driver);
+        }
+        self.as_mut().project().pool.flush_rearm(driver);
+    }
+
     fn recv_chunk<R: RetainBytes>(
         mut self: Pin<&mut Self>,
         idx: SlotIndex,
@@ -82,7 +98,8 @@ where
             let Some(slot) = this.pool.get_mut(idx) else {
                 return Outcome::Ok;
             };
-            this.app.chunk(slot, chunk, driver)
+            let egress = this.egress_arena.queue_for(slot.state.lane);
+            this.app.chunk(slot, egress, chunk, driver)
         };
         self.finish_chunk(idx, outcome, driver)
     }
@@ -90,7 +107,7 @@ where
     fn recv_retained_chunk(
         mut self: Pin<&mut Self>,
         idx: SlotIndex,
-        chunk: ProvidedView<'d>,
+        chunk: <A::Wire as Wire>::RetainedRecv<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
         let outcome = {
@@ -98,7 +115,8 @@ where
             let Some(slot) = this.pool.get_mut(idx) else {
                 return Outcome::Ok;
             };
-            this.app.retained_chunk(slot, chunk, driver)
+            let egress = this.egress_arena.queue_for(slot.state.lane);
+            this.app.retained_chunk(slot, egress, chunk, driver)
         };
         self.finish_chunk(idx, outcome, driver)
     }
@@ -176,32 +194,37 @@ where
         mut self: Pin<&mut Self>,
         token: Token,
         more: bool,
-        event: RecvEvent<'d>,
+        mut event: RecvEvent<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let now = driver.turn_now();
-        if A::RETAIN_RAW_RECV && A::Wire::RAW_RECV {
+        if A::RETAIN_RAW_RECV {
             let dispatch = self
                 .as_mut()
                 .project()
                 .pool
                 .dispatch_retained_recv(token, more, event);
-            self.dispatch_chunk(
-                dispatch,
-                now,
-                driver,
-                |this, idx, chunk, driver| match chunk {
-                    Some(chunk) => this.recv_retained_chunk(idx, chunk, driver),
-                    None => Outcome::Overrun,
-                },
-            );
+            self.dispatch_chunk(dispatch, now, driver, |this, idx, chunk, driver| {
+                this.recv_retained_chunk(idx, chunk, driver)
+            });
             return;
         }
         let dispatch = self
             .as_mut()
             .project()
             .pool
-            .dispatch_recv(token, more, &event);
-        self.dispatch_chunk(dispatch, now, driver, Self::recv_chunk);
+            .dispatch_recv(token, more, &mut event);
+        self.dispatch_chunk(dispatch, now, driver, |mut this, idx, batch, driver| {
+            for chunk in batch {
+                let outcome = match chunk {
+                    RecvChunk::Borrowed(chunk) => this.as_mut().recv_chunk(idx, chunk, driver),
+                    RecvChunk::Owned(chunk) => this.as_mut().recv_chunk(idx, chunk, driver),
+                };
+                if !matches!(outcome, Outcome::Ok) {
+                    return outcome;
+                }
+            }
+            Outcome::Ok
+        });
     }
 }

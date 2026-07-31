@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use dope::driver;
-use dope::runtime::dispatcher::{Dispatcher, Idle};
+use dope::runtime::dispatcher::{Dispatcher, FinishContext, Idle};
 use dope::runtime::executor::Executor;
 use dope::runtime::profile::Throughput;
 use dope::runtime::trigger::ShutdownTrigger;
@@ -14,6 +14,7 @@ use dope_fiber::extensions::AppSessionExt;
 
 struct CountingDispatcher {
     shutdowns: Rc<Cell<usize>>,
+    finishes: Rc<Cell<usize>>,
 }
 
 impl<'d> Dispatcher<'d> for CountingDispatcher {
@@ -36,6 +37,11 @@ impl<'d> Dispatcher<'d> for CountingDispatcher {
         let shutdowns = &self.as_ref().get_ref().shutdowns;
         shutdowns.set(shutdowns.get() + 1);
     }
+
+    fn finish(self: Pin<&mut Self>, _context: &mut FinishContext<'_, 'd>) {
+        let finishes = &self.as_ref().get_ref().finishes;
+        finishes.set(finishes.get() + 1);
+    }
 }
 
 fn executor() -> Executor {
@@ -45,6 +51,7 @@ fn executor() -> Executor {
 #[test]
 fn app_run_dispatches_shutdown_exactly_once() {
     let shutdowns = Rc::new(Cell::new(0));
+    let finishes = Rc::new(Cell::new(0));
     executor()
         .enter(|mut session| -> io::Result<()> {
             let trigger = ShutdownTrigger::new()?;
@@ -53,17 +60,20 @@ fn app_run_dispatches_shutdown_exactly_once() {
             session.with_app(
                 CountingDispatcher {
                     shutdowns: Rc::clone(&shutdowns),
+                    finishes: Rc::clone(&finishes),
                 },
                 |mut app| app.run(),
             )
         })
         .expect("runtime shutdown");
     assert_eq!(shutdowns.get(), 1);
+    assert_eq!(finishes.get(), 1);
 }
 
 #[test]
 fn app_block_on_is_interrupted_and_dispatches_shutdown_exactly_once() {
     let shutdowns = Rc::new(Cell::new(0));
+    let finishes = Rc::new(Cell::new(0));
     executor()
         .enter(|mut session| -> io::Result<()> {
             let trigger = ShutdownTrigger::new()?;
@@ -72,6 +82,7 @@ fn app_block_on_is_interrupted_and_dispatches_shutdown_exactly_once() {
             let error = session.with_app(
                 CountingDispatcher {
                     shutdowns: Rc::clone(&shutdowns),
+                    finishes: Rc::clone(&finishes),
                 },
                 |mut app| app.block_on(Pending::<()>::default()).unwrap_err(),
             );
@@ -80,11 +91,29 @@ fn app_block_on_is_interrupted_and_dispatches_shutdown_exactly_once() {
         })
         .expect("runtime shutdown");
     assert_eq!(shutdowns.get(), 1);
+    assert_eq!(finishes.get(), 1);
+}
+
+#[test]
+fn dropping_app_scope_finishes_exactly_once() {
+    let shutdowns = Rc::new(Cell::new(0));
+    let finishes = Rc::new(Cell::new(0));
+    executor().enter(|mut session| {
+        session.with_app(
+            CountingDispatcher {
+                shutdowns: Rc::clone(&shutdowns),
+                finishes: Rc::clone(&finishes),
+            },
+            |_| {},
+        );
+    });
+    assert_eq!(shutdowns.get(), 1);
+    assert_eq!(finishes.get(), 1);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn signal_shutdown_restores_the_calling_threads_mask() {
+fn signal_shutdown_is_exclusive_and_restores_the_calling_threads_mask() {
     fn membership(signal: libc::c_int) -> libc::c_int {
         let mut current = unsafe { std::mem::zeroed::<libc::sigset_t>() };
         let result =
@@ -98,7 +127,19 @@ fn signal_shutdown_restores_the_calling_threads_mask() {
         let _signal = dope::runtime::trigger::SignalShutdown::new().expect("signal shutdown");
         assert_eq!(membership(libc::SIGINT), 1);
         assert_eq!(membership(libc::SIGTERM), 1);
+        assert_eq!(
+            dope::runtime::trigger::SignalShutdown::new()
+                .err()
+                .map(|error| error.kind()),
+            Some(io::ErrorKind::AlreadyExists),
+        );
     }
+    assert_eq!(
+        (membership(libc::SIGINT), membership(libc::SIGTERM)),
+        before
+    );
+
+    drop(dope::runtime::trigger::SignalShutdown::new().expect("replacement signal shutdown"));
     assert_eq!(
         (membership(libc::SIGINT), membership(libc::SIGTERM)),
         before

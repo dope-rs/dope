@@ -5,7 +5,7 @@ use o3::collections::CellQueue;
 use o3::marker::ThreadBound;
 
 use super::raw::core::{Core, RecvError, Submit};
-use crate::link::egress::arena::Arena;
+use super::raw::pool::rearm::RearmToken;
 use crate::link::egress::queue::Queue;
 use crate::link::raw::event::SendOutcome;
 use crate::wire::send::{Plain, Storage, Vectored};
@@ -16,6 +16,7 @@ use dope_core::driver::DriverRef;
 use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::kind::RECV;
 use dope_core::driver::token::{SlotIndex, Token};
+use dope_core::io::provided::ProvidedLease;
 
 const DEFERRED_IOV: usize = 32;
 
@@ -105,34 +106,38 @@ impl From<Pooled> for SendBuffer {
 }
 
 pub struct DeferredEgress {
-    queue: Queue<DEFERRED_IOV, SendBuffer>,
     close_after: Cell<bool>,
 }
 
 impl DeferredEgress {
     pub fn new() -> Self {
-        let arena = Arena::<SendBuffer>::default();
         Self {
-            queue: arena.queue_for(0),
             close_after: Cell::new(false),
         }
     }
 
-    pub fn new_for(arena: &Arena<SendBuffer>, lane: usize) -> Self {
-        Self {
-            queue: arena.queue_for(lane),
-            close_after: Cell::new(false),
-        }
+    pub fn new_for() -> Self {
+        Self::new()
     }
 
-    pub fn stage(&self, bytes: Shared, close: bool) -> bool {
-        self.stage_buffer(bytes.into(), close)
+    pub fn stage(
+        &self,
+        queue: &Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        bytes: Shared,
+        close: bool,
+    ) -> bool {
+        self.stage_buffer(queue, bytes.into(), close)
     }
 
-    pub fn stage_buffer(&self, bytes: SendBuffer, close: bool) -> bool {
+    pub fn stage_buffer(
+        &self,
+        queue: &Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        bytes: SendBuffer,
+        close: bool,
+    ) -> bool {
         let committed = match bytes {
-            SendBuffer::Static(bytes) => self.queue.try_enqueue_static(bytes),
-            bytes => self.queue.try_enqueue(bytes).is_ok(),
+            SendBuffer::Static(bytes) => queue.try_enqueue_static(bytes),
+            bytes => queue.try_enqueue(bytes).is_ok(),
         };
         if committed {
             self.close_after.set(self.close_after.get() | close);
@@ -140,19 +145,25 @@ impl DeferredEgress {
         committed
     }
 
-    pub fn stage_copy(&mut self, bytes: &[u8], close: bool) -> bool {
-        self.stage_copy_pair(bytes, None, close)
+    pub fn stage_copy(
+        &mut self,
+        queue: &mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        bytes: &[u8],
+        close: bool,
+    ) -> bool {
+        self.stage_copy_pair(queue, bytes, None, close)
     }
 
     pub fn stage_copy_pair(
         &mut self,
+        queue: &mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
         first: &[u8],
         second: Option<SendBuffer>,
         close: bool,
     ) -> bool {
         let committed = match second {
-            Some(SendBuffer::Static(bytes)) => self.queue.try_enqueue_copy_static(first, bytes),
-            second => self.queue.try_enqueue_copy_pair(first, second),
+            Some(SendBuffer::Static(bytes)) => queue.try_enqueue_copy_static(first, bytes),
+            second => queue.try_enqueue_copy_pair(first, second),
         };
         if committed {
             self.close_after.set(self.close_after.get() | close);
@@ -160,20 +171,28 @@ impl DeferredEgress {
         committed
     }
 
-    pub fn is_idle(&self) -> bool {
-        self.queue.total_bytes() == 0
+    pub fn is_idle(&self, queue: &Queue<'_, '_, DEFERRED_IOV, SendBuffer>) -> bool {
+        queue.total_bytes() == 0
     }
 
     pub fn close_after(&self) -> bool {
         self.close_after.get()
     }
 
-    pub fn prepare_send(&mut self, bytes_cap: usize) -> Vectored<'_> {
-        self.queue.prepare_send(bytes_cap)
+    pub fn prepare_send<'a>(
+        &mut self,
+        queue: &'a mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        bytes_cap: usize,
+    ) -> Vectored<'a> {
+        queue.prepare_send(bytes_cap)
     }
 
-    pub fn ack(&mut self, n: usize) {
-        self.queue.ack(n);
+    pub fn try_ack(
+        &mut self,
+        queue: &mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        n: usize,
+    ) -> bool {
+        queue.try_ack(n)
     }
 }
 
@@ -185,14 +204,20 @@ impl Default for DeferredEgress {
 
 pub struct Slot<'d, W: Wire, S> {
     pub core: Core<'d>,
-    pub wire: W,
+    pub wire: W::Connection<'d>,
     pub send: W::SendStorage,
     pub state: S,
-    token: Token,
+    token: RearmToken,
 }
 
 impl<'d, W: Wire, S> Slot<'d, W, S> {
-    pub fn new(core: Core<'d>, wire: W, send: W::SendStorage, token: Token, state: S) -> Self {
+    pub(in crate::link) fn new(
+        core: Core<'d>,
+        wire: W::Connection<'d>,
+        send: W::SendStorage,
+        token: RearmToken,
+        state: S,
+    ) -> Self {
         Self {
             core,
             wire,
@@ -203,6 +228,10 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
     }
 
     pub fn token(&self) -> Token {
+        self.token.token()
+    }
+
+    pub(in crate::link) fn rearm_token(&self) -> RearmToken {
         self.token
     }
 
@@ -237,11 +266,11 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         self.core.fd.driver()
     }
 
-    fn finish_submit(wire: &mut W, submit: Submit) -> usize {
+    fn finish_submit(wire: &mut W::Connection<'d>, submit: Submit) -> usize {
         match submit {
             Submit::Submitted(consumed) => consumed,
             Submit::Rejected(consumed) => {
-                wire.submit_failed();
+                W::submit_failed(wire);
                 if matches!(W::RECLAIM, Reclaim::OnSubmit) {
                     consumed
                 } else {
@@ -261,22 +290,21 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
     pub fn submit_plain(
         &mut self,
         driver: &mut DriverContext<'_, 'd>,
-        plain: &[u8],
+        plain: Plain<'_>,
         ud: Token,
     ) -> usize {
         if self.core.is_send_inflight() {
             return 0;
         }
-        let prepared = self
-            .wire
-            .prepare_send(Storage::new(&mut self.send, plain.len()), Plain::new(plain));
+        let limit = plain.len();
+        let prepared = W::prepare_send(&mut self.wire, Storage::new(&mut self.send, limit), plain);
         let submit = self.core.submit_prepared(driver, ud, prepared);
         Self::finish_submit(&mut self.wire, submit)
     }
 
     pub fn submit_wire_vectored(
         core: &mut Core<'d>,
-        wire: &mut W,
+        wire: &mut W::Connection<'d>,
         send: &mut W::SendStorage,
         plain: Vectored<'_>,
         ud: Token,
@@ -286,7 +314,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
             return 0;
         }
         let limit = plain.bytes();
-        let prepared = wire.prepare_send_vectored(Storage::new(send, limit), plain);
+        let prepared = W::prepare_send_vectored(wire, Storage::new(send, limit), plain);
         let submit = core.submit_prepared(driver, ud, prepared);
         Self::finish_submit(wire, submit)
     }
@@ -295,14 +323,14 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         if self.core.is_send_inflight() {
             return;
         }
-        let prepared = self.wire.flush_pending(Storage::new(&mut self.send, 0));
+        let prepared = W::flush_pending(&mut self.wire, Storage::new(&mut self.send, 0));
         let submit = self.core.submit_prepared(driver, ud, prepared);
         Self::finish_submit(&mut self.wire, submit);
     }
 
     pub fn seal_graceful(&mut self, driver: &mut DriverContext<'_, 'd>, ud: Token) -> bool {
         if self.core.request_graceful() && self.core.take_graceful() {
-            let prepared = self.wire.graceful_close(Storage::new(&mut self.send, 0));
+            let prepared = W::graceful_close(&mut self.wire, Storage::new(&mut self.send, 0));
             let submit = self.core.submit_prepared(driver, ud, prepared);
             Self::finish_submit(&mut self.wire, submit);
         }
@@ -315,10 +343,10 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
 
     pub fn recv_data<'a>(
         &mut self,
-        runtime: &mut W::RuntimeContext,
+        runtime: &mut W::RuntimeContext<'d>,
         more: bool,
-        slice: &'a [u8],
-    ) -> RecvDecision<W::Recv<'a>> {
+        slice: &'a mut [u8],
+    ) -> RecvDecision<W::RecvBatch<'a>> {
         if !self.core.is_armed() {
             return RecvDecision::Drop;
         }
@@ -327,7 +355,30 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         if swallowed == slice.len() {
             return RecvDecision::Discarded { needs_rearm };
         }
-        match self.wire.process_recv(runtime, &slice[swallowed..]) {
+        let chunk = W::process_recv(&mut self.wire, runtime, &mut slice[swallowed..]);
+        if chunk.len() == 0 {
+            RecvDecision::NoChunk { needs_rearm }
+        } else {
+            RecvDecision::Chunk { chunk, needs_rearm }
+        }
+    }
+
+    pub fn recv_retained_data<'a>(
+        &mut self,
+        runtime: &mut W::RuntimeContext<'d>,
+        more: bool,
+        mut bytes: ProvidedLease<'a>,
+    ) -> RecvDecision<W::RetainedRecv<'a>> {
+        if !self.core.is_armed() {
+            return RecvDecision::Drop;
+        }
+        let needs_rearm = self.core.recv_data(more);
+        let swallowed = self.core.consume_discard(bytes.as_slice().len());
+        if swallowed == bytes.as_slice().len() {
+            return RecvDecision::Discarded { needs_rearm };
+        }
+        bytes.advance(swallowed);
+        match W::process_retained_recv(&mut self.wire, runtime, bytes) {
             Some(chunk) => RecvDecision::Chunk { chunk, needs_rearm },
             None => RecvDecision::NoChunk { needs_rearm },
         }
@@ -356,7 +407,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         self.core.begin_discard(n);
         if self.core.is_armed() && !self.core.is_discard_armed() {
             let token = self.token;
-            Core::push_retry(driver, || Sqe::cancel(token, RECV));
+            Core::push_retry(driver, || Sqe::cancel(token.token(), RECV));
         }
         true
     }
@@ -366,7 +417,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
             return RecvDecision::Drop;
         }
         self.core.recv_eof(more);
-        self.wire.recv_eof();
+        W::recv_eof(&mut self.wire);
         RecvDecision::Close
     }
 
@@ -400,26 +451,28 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
     pub fn send_sent(
         &mut self,
         driver: &mut DriverContext<'_, 'd>,
-        n: usize,
+        n: u32,
         ud: Token,
         idx: SlotIndex,
     ) -> SendOutcome {
         if !self.core.is_send_inflight() {
             return SendOutcome::Drop;
         }
-        self.core.send_done();
-        let prepared = self.wire.after_send(Storage::new(&mut self.send, 0), n);
+        let Some(sent) = self.core.complete_send(n) else {
+            return SendOutcome::Close(idx);
+        };
+        let prepared = W::after_send(&mut self.wire, Storage::new(&mut self.send, 0), sent);
         let submit = self.core.submit_prepared(driver, ud, prepared);
         Self::finish_submit(&mut self.wire, submit);
         if !self.core.is_send_inflight() && self.core.take_graceful() {
-            let prepared = self.wire.graceful_close(Storage::new(&mut self.send, 0));
+            let prepared = W::graceful_close(&mut self.wire, Storage::new(&mut self.send, 0));
             let submit = self.core.submit_prepared(driver, ud, prepared);
             Self::finish_submit(&mut self.wire, submit);
         }
         if self.core.is_send_inflight() {
             return SendOutcome::Drop;
         }
-        SendOutcome::Sent { idx, n }
+        SendOutcome::Sent { idx, n: n as usize }
     }
 
     pub fn send_failed(&mut self, idx: SlotIndex) -> SendOutcome {

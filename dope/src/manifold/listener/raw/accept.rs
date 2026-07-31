@@ -9,13 +9,13 @@ use crate::hash;
 use crate::manifold;
 use crate::manifold::env::Env;
 use crate::manifold::listener::Listener;
-use crate::manifold::listener::application::Application;
+use crate::manifold::listener::application::{Application, ApplicationHooks};
 use crate::manifold::listener::idle::IdlePhase;
-use crate::manifold::listener::state::State;
+use crate::manifold::listener::state::{EgressCtx, State};
+use crate::runtime::dispatcher::FinishContext;
 use crate::runtime::profile::RuntimeProfile;
-use dope_core::backend::{RawSqe, Sqe};
+use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
 use dope_core::driver::submission::Submission;
-use dope_core::driver::submission::raw::Submission as _;
 use dope_core::driver::token::kind::ACCEPT;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::AcceptEvent;
@@ -24,6 +24,16 @@ use dope_core::io::socket::addr::Addr;
 use dope_net::Transport;
 use dope_net::link::raw::core::Core;
 use dope_net::multishot::Multishot;
+
+struct AcceptSubmission(RawSqe);
+
+// SAFETY: this source is built only from Accept's owned peer output and fixed
+// fd, both retained until the arm completes or is canceled and quiesced.
+unsafe impl StableSqeSource for AcceptSubmission {
+    fn into_raw(self) -> RawSqe {
+        self.0
+    }
+}
 
 struct PeerCount {
     ip: IpAddr,
@@ -95,15 +105,16 @@ pub(in crate::manifold::listener) struct Accept<'d, T: Transport> {
 impl<'d, T: Transport> Accept<'d, T> {
     pub(in crate::manifold::listener) fn new(
         fd: Fd<'d>,
-        max_connections: u32,
+        accept_slot: SlotIndex,
         stream: T::StreamConfig,
         per_ip_limit: u32,
         hash_builder: hash::State,
     ) -> Self {
+        let max_connections = accept_slot.raw();
         Self {
             fd,
             arm: Multishot::default(),
-            accept_slot: SlotIndex::new(max_connections),
+            accept_slot,
             stream,
             peer_addr: Addr::empty(),
             per_ip_limit,
@@ -134,15 +145,15 @@ impl<'d, T: Transport> Accept<'d, T> {
             return;
         };
         self.peer_addr = Addr::empty();
-        let sqe = RawSqe::accept_oneshot(
+        let source = AcceptSubmission(RawSqe::accept_oneshot(
             &self.fd,
             self.peer_addr.mut_ptr(),
             self.peer_addr.len_ptr(),
             ud,
-        );
-        // SAFETY: `Accept` owns the fixed fd and peer-address output until the
-        // arm completes or is canceled and quiesced.
-        let pushed = unsafe { driver.push_raw(sqe) }.is_ok();
+        ));
+        let pushed = driver
+            .push_retained(RetainedSqe::from_stable(source))
+            .is_ok();
         self.arm.settle(pushed);
     }
 
@@ -159,12 +170,14 @@ impl<'d, T: Transport> Accept<'d, T> {
         self.arm.quiesce();
     }
 
-    pub(in crate::manifold::listener) fn append_target(&self, route: u8, targets: &mut Vec<Token>) {
-        if self.arm.is_armed() || self.canceling {
-            targets.push(
-                Token::new(route, self.accept_slot, self.arm.current_epoch()).with_kind(ACCEPT),
-            );
-        }
+    pub(in crate::manifold::listener) fn quiesce_target(&self, route: u8) -> Option<Token> {
+        (self.arm.is_armed() || self.canceling).then(|| {
+            Token::new(route, self.accept_slot, self.arm.current_epoch()).with_kind(ACCEPT)
+        })
+    }
+
+    pub(in crate::manifold::listener) fn finish(&mut self, context: &mut FinishContext<'_, 'd>) {
+        context.retire_fixed_fd(&mut self.fd);
     }
 
     pub(in crate::manifold::listener) fn release_peer_ip(&mut self, ip: IpAddr) {
@@ -196,7 +209,7 @@ impl<'d, T: Transport> Accept<'d, T> {
         }
 
         match e {
-            AcceptEvent::Failed => Outcome::Rejected,
+            AcceptEvent::Failed(_) => Outcome::Rejected,
             AcceptEvent::Accepted(slot) => {
                 let fd = slot.bind(self.fd.driver());
                 if !matches || canceling || fd.index() >= self.accept_slot.raw() {
@@ -230,7 +243,7 @@ where
     );
 }
 
-impl<'d, const ID: u8, A, E> AcceptPhase<'d, ID, A, E> for Listener<'d, ID, A, E>
+impl<'pool, 'd, const ID: u8, A, E> AcceptPhase<'d, ID, A, E> for Listener<'pool, 'd, ID, A, E>
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
@@ -247,16 +260,16 @@ where
             let (fixed_fd, peer_ip) = match this.accept.complete(token, more, e, driver) {
                 Outcome::Accepted(fd, ip) => (fd, ip),
                 Outcome::Capped(ip) => {
-                    this.app.as_mut().capped(ip);
+                    A::Hooks::capped(this.app.as_mut(), ip);
                     return;
                 }
                 Outcome::Rejected => return,
             };
-            let fixed_idx_raw = fixed_fd.index();
-            let fixed_idx = SlotIndex::new(fixed_idx_raw);
+            let fixed_idx = fixed_fd.token_index();
+            let fixed_idx_raw = fixed_idx.raw();
             let conn = this.app.as_ref().connection();
-            let conn_slot =
-                State::<A::Conn>::new(conn, peer_ip, fixed_idx_raw as usize, this.egress_arena);
+            this.egress_arena.clear(fixed_idx_raw as usize);
+            let conn_slot = State::<A::Conn>::new(conn, peer_ip);
             let _ = <E::Transport as Transport>::submit_quickack(driver, &fixed_fd);
             if !<E::Transport as Transport>::submit_stream_tuning(
                 driver,
@@ -285,8 +298,9 @@ where
             this.pool.arm_recv(fixed_idx, driver);
             let overflow = match this.pool.get_mut(fixed_idx) {
                 Some(slot) => {
+                    let egress = EgressCtx::for_slot(this.aux, this.egress_arena, fixed_idx);
                     matches!(
-                        this.app.as_mut().accept(slot, this.aux, driver),
+                        A::Hooks::accept(this.app.as_mut(), slot, egress, driver),
                         manifold::Outcome::Overrun
                     )
                 }

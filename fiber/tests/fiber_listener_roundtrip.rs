@@ -67,31 +67,32 @@ fn fiber_listener_roundtrip() {
                 let mut stream = stream.take().expect("stream owner");
                 let mut prefix = Vec::with_capacity(5);
                 while prefix.len() < 5 {
-                    let (read, buf) = stream.read(vec![0; 5 - prefix.len()]).await;
-                    let read = read?;
-                    if read == 0 {
+                    let (read, buf) =
+                        stream.read(Vec::with_capacity(5 - prefix.len())).await;
+                    read?;
+                    if buf.is_empty() {
                         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
                     }
-                    prefix.extend_from_slice(&buf[..read]);
+                    prefix.extend_from_slice(&buf);
                 }
                 let mut tail = Vec::with_capacity(2);
                 while tail.len() < 2 {
-                    let (read, buf) = stream.read(vec![0; 2 - tail.len()]).await;
-                    let read = read?;
-                    if read == 0 {
+                    let (read, buf) = stream.read(Vec::with_capacity(2 - tail.len())).await;
+                    read?;
+                    if buf.is_empty() {
                         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
                     }
-                    tail.extend_from_slice(&buf[..read]);
+                    tail.extend_from_slice(&buf);
                 }
                 stream.write_all(b"!").await?;
                 let mut reused = Vec::with_capacity(3);
                 while reused.len() < 3 {
-                    let (read, buf) = stream.read(vec![0; 3 - reused.len()]).await;
-                    let read = read?;
-                    if read == 0 {
+                    let (read, buf) = stream.read(Vec::with_capacity(3 - reused.len())).await;
+                    read?;
+                    if buf.is_empty() {
                         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
                     }
-                    reused.extend_from_slice(&buf[..read]);
+                    reused.extend_from_slice(&buf);
                 }
                 stream.write_all(b"pong").await?;
                 Ok::<_, std::io::Error>((prefix, tail, reused))

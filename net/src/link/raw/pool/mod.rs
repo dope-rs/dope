@@ -1,36 +1,53 @@
 use std::io::{self, Error, ErrorKind};
 use std::marker::PhantomData;
+use std::mem::replace;
 
+use self::deferred::{DeferredRecv, DeferredRecvs};
 use self::rearm::Rearm;
-use super::core::{Core, Outbound};
-use super::event::{ConnectStep, DispatchRecv, SendOutcome, SocketStep};
+use super::core::Core;
+use super::event::{DispatchRecv, SendOutcome};
 use crate::Transport;
 use crate::link::slot::{RecvDecision, Slot};
-use crate::wire::{OpenReservation, RuntimeLimits, Wire};
-use dope_core::backend::{RawSqe, Sqe};
+use crate::wire::{OpenReservation, RecvCredit, RuntimeLimits, Wire};
+use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
 use dope_core::driver::buffers::ProvidedBuffers;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::submission::Submission;
-use dope_core::driver::submission::raw::Submission as _;
-use dope_core::driver::token::kind::{CONNECT, CREATE, SEND};
-use dope_core::driver::token::{
-    Epoch, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, SlotIndex, Token, TokenSlab,
-};
+use dope_core::driver::token::kind::SEND;
+use dope_core::driver::token::{KeyTag, SlotIndex, Token, TokenCapacity, TokenSlab};
 use dope_core::driver::{DriverContext, OutboundReservation};
 use dope_core::io::fd::Fd;
-use dope_core::io::provided::ProvidedView;
-use dope_core::io::socket::addr::Addr;
-use dope_core::io::{ConnectEvent, RecvEvent, SendEvent, SocketEvent};
-use o3::buffer::ByteSpan;
-use std::mem::replace;
+use dope_core::io::{RecvEvent, SendEvent};
+mod deferred;
+pub mod outbound;
+pub mod prepare;
+pub(in crate::link) mod rearm;
 
-mod rearm;
+struct RecvSubmission<'a, 'd> {
+    fd: &'a Fd<'d>,
+    remaining: Option<u64>,
+    buf_group: u16,
+    ud: Token,
+}
+
+// SAFETY: Pool retains every armed slot and its fixed fd through completion;
+// receive storage is static scratch or the driver's retained provided ring.
+unsafe impl StableSqeSource for RecvSubmission<'_, '_> {
+    fn into_raw(self) -> RawSqe {
+        match self.remaining {
+            Some(remaining) => RawSqe::recv_discard(self.fd, remaining, self.ud),
+            None => RawSqe::recv_multi(self.fd, self.buf_group, self.ud),
+        }
+    }
+}
 
 pub struct Pool<'d, const ID: u8, T: Transport, W: Wire, S> {
     slab: TokenSlab<Slot<'d, W, S>, KeyTag<ID>>,
-    runtime: W::RuntimeContext,
-    reservation: OutboundReservation,
+    runtime: W::RuntimeContext<'d>,
+    reservation: OutboundReservation<'d>,
     rearm: Rearm<ID>,
+    deferred_recv: DeferredRecvs<'d>,
+    recv_credit: bool,
     poison_route: bool,
     _t: PhantomData<T>,
 }
@@ -39,58 +56,115 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     pub fn new(
         max_connections: usize,
         max_retained_recv_chunks: usize,
-        reservation: OutboundReservation,
-        wire_config: W::InitConfig,
+        reservation: OutboundReservation<'d>,
+        wire_config: W::InitConfig<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
-        if max_connections > SLOT_MASK as usize + 1 {
-            return Err(Error::new(
+        let capacity = TokenCapacity::new(max_connections).ok_or_else(|| {
+            Error::new(
                 ErrorKind::InvalidInput,
                 "dope: connection limit exceeds token slots",
-            ));
-        }
-        let runtime = W::runtime_context(
-            RuntimeLimits::new(
-                max_connections,
-                max_retained_recv_chunks,
-                driver.buffer_len(),
-            ),
-            wire_config,
-        )?;
-        Ok(Self {
-            slab: TokenSlab::with_capacity(max_connections),
-            runtime,
-            reservation,
-            rearm: Rearm::with_capacity(max_connections),
-            poison_route: false,
-            _t: PhantomData,
-        })
+            )
+        })?;
+        Self::prepare(capacity, max_retained_recv_chunks, wire_config, driver)
+            .map(|prepared| prepared.bind(reservation))
     }
 
-    pub fn capacity(&self) -> usize {
+    #[doc(hidden)]
+    pub fn prepare(
+        capacity: TokenCapacity,
+        max_retained_recv_chunks: usize,
+        wire_config: W::InitConfig<'d>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<prepare::PreparedPool<'d, ID, T, W, S>> {
+        Self::prepare_with_recv_credit(
+            capacity,
+            max_retained_recv_chunks,
+            false,
+            wire_config,
+            driver,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_with_recv_credit(
+        capacity: TokenCapacity,
+        max_retained_recv_chunks: usize,
+        recv_credit: bool,
+        wire_config: W::InitConfig<'d>,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> io::Result<prepare::PreparedPool<'d, ID, T, W, S>> {
+        let max_connections = capacity.get();
+        let recv_credit = recv_credit && W::RECV_CREDIT;
+        let deferred_recv_slots = if recv_credit {
+            driver
+                .buffer_count()
+                .checked_add(max_connections)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        "dope: deferred receive capacity overflow",
+                    )
+                })?
+        } else {
+            0
+        };
+        let slab = TokenSlab::with_capacity(capacity);
+        let limits = RuntimeLimits::new(
+            max_connections,
+            max_retained_recv_chunks,
+            driver.buffer_len(),
+        );
+        let limits = if recv_credit {
+            limits.with_recv_credit()
+        } else {
+            limits
+        };
+        let runtime = W::runtime_context(limits, wire_config)?;
+        Ok(prepare::PreparedPool(Self {
+            slab,
+            runtime,
+            reservation: OutboundReservation::empty(),
+            rearm: Rearm::with_capacity(max_connections),
+            deferred_recv: DeferredRecvs::with_capacity(
+                if recv_credit { max_connections } else { 0 },
+                deferred_recv_slots,
+            ),
+            recv_credit,
+            poison_route: false,
+            _t: PhantomData,
+        }))
+    }
+
+    pub fn capacity(&self) -> TokenCapacity {
         self.slab.capacity()
     }
 
-    pub fn wire_runtime(&mut self) -> &mut W::RuntimeContext {
+    pub fn wire_runtime(&mut self) -> &mut W::RuntimeContext<'d> {
         &mut self.runtime
     }
 
     pub fn pending_recv_rearm(&self) -> bool {
-        !self.rearm.pending.is_empty()
+        !self.rearm.is_empty()
     }
 
     pub fn needs_route_poison(&self) -> bool {
         self.poison_route
     }
 
-    pub fn append_io_targets(&self, targets: &mut Vec<Token>) {
+    #[doc(hidden)]
+    pub fn take_outbound_reservation(&mut self) -> OutboundReservation<'d> {
+        replace(&mut self.reservation, OutboundReservation::empty())
+    }
+
+    pub fn for_each_io_target(&self, mut visit: impl FnMut(Token)) {
         for slot in self.slab.values() {
             let token = slot.token();
             if slot.core.is_send_inflight() {
-                targets.push(token.with_kind(SEND));
+                visit(token.with_kind(SEND));
             }
             if slot.core.is_armed() {
-                targets.push(token.with_kind(slot.core.recv_cancel_kind()));
+                visit(token.with_kind(slot.core.recv_cancel_kind()));
             }
         }
     }
@@ -111,12 +185,15 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             drop(driver.guard(core.into_fd()));
             return false;
         };
+        let Some(token) = self.rearm.bind(reservation.token()) else {
+            drop(driver.guard(core.into_fd()));
+            return false;
+        };
         let Some(open) = W::prepare_open(&mut self.runtime) else {
             drop(driver.guard(core.into_fd()));
             return false;
         };
         let (wire, send) = open.commit();
-        let token = Token::from_key(reservation.key());
         reservation.insert(Slot::new(core, wire, send, token, state));
         true
     }
@@ -131,16 +208,14 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
 
     pub fn by_target(&self, target: Token) -> Option<(SlotIndex, &Slot<'d, W, S>)> {
         let parts = target.parts::<KeyTag<ID>>()?;
-        self.slab
-            .get_parts(parts.slab())
-            .map(|slot| (SlotIndex::new(parts.index()), slot))
+        self.slab.get_parts(parts).map(|slot| (parts.slot(), slot))
     }
 
     pub fn by_target_mut(&mut self, target: Token) -> Option<(SlotIndex, &mut Slot<'d, W, S>)> {
         let parts = target.parts::<KeyTag<ID>>()?;
         self.slab
-            .get_parts_mut(parts.slab())
-            .map(|slot| (SlotIndex::new(parts.index()), slot))
+            .get_parts_mut(parts)
+            .map(|slot| (parts.slot(), slot))
     }
 
     pub fn refresh_wake(&self, idx: SlotIndex) {
@@ -151,15 +226,15 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
     }
 
     pub fn arm_recv(&mut self, idx: SlotIndex, driver: &mut DriverContext<'_, 'd>) -> bool {
-        let (key, armed) = {
-            let Some((slot, key)) = self.slab.get_index_mut(idx.raw()) else {
+        let (token, armed) = {
+            let Some((slot, _)) = self.slab.get_index_mut(idx.raw()) else {
                 return false;
             };
-            let ud = Token::from_key(key);
-            (key, Self::submit_recv(slot, ud, driver))
+            let token = slot.rearm_token();
+            (token, Self::submit_recv(slot, token.token(), driver))
         };
         if !armed {
-            self.rearm.queue(Token::from_key(key));
+            self.rearm.queue(token);
         }
         armed
     }
@@ -172,46 +247,54 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         if slot.core.is_armed() {
             return true;
         }
+        if slot.core.recv_paused() {
+            return false;
+        }
         let remaining = slot.core.discard_remaining();
-        let (sqe, discard) = if Sqe::SUPPORTS_RECV_DISCARD && remaining > 0 {
-            (RawSqe::recv_discard(&slot.core.fd, remaining, ud), true)
+        let (remaining, discard) = if Sqe::SUPPORTS_RECV_DISCARD && remaining > 0 {
+            (Some(remaining), true)
         } else {
-            let buf_group = driver.buffer_group();
-            (RawSqe::recv_multi(&slot.core.fd, buf_group, ud), false)
+            (None, false)
         };
-        // SAFETY: the slot owns the registered fd through completion; receive
-        // memory comes from the driver's provided-buffer ring.
-        let armed = unsafe { driver.push_raw(sqe) }.is_ok();
+        let source = RecvSubmission {
+            fd: &slot.core.fd,
+            remaining,
+            buf_group: driver.buffer_group(),
+            ud,
+        };
+        let armed = driver
+            .push_retained(RetainedSqe::from_stable(source))
+            .is_ok();
         slot.core.armed(armed, discard);
         armed
     }
 
     pub fn flush_rearm(&mut self, driver: &mut DriverContext<'_, 'd>) {
-        let count = self.rearm.pending.len();
+        let count = self.rearm.len();
         for _ in 0..count {
-            let Some(idx) = self.rearm.pending.pop_front() else {
-                break;
-            };
-            // SAFETY: every queued index was admitted by `Rearm::queue`.
-            let epoch = replace(
-                unsafe { self.rearm.epochs.get_unchecked_mut(idx.raw() as usize) },
-                Epoch::ZERO,
-            );
-            if epoch == Epoch::ZERO {
+            let Some(token) = self.rearm.pop_front() else {
                 continue;
-            }
-            let token = Token::new(ID, idx, epoch);
+            };
             let Some(parts) = token.parts::<KeyTag<ID>>() else {
                 continue;
             };
-            let Some(slot) = self.slab.get_parts_mut(parts.slab()) else {
+            let Some(slot) = self.slab.get_parts_mut(parts) else {
                 continue;
             };
+            if slot.core.needs_recv_cancel() {
+                let kind = slot.core.recv_cancel_kind();
+                if Core::push_retry(driver, || Sqe::cancel(token, kind)) {
+                    slot.core.recv_cancel_submitted();
+                } else {
+                    self.rearm.queue(slot.rearm_token());
+                }
+                continue;
+            }
             if !slot.core.needs_arm() {
                 continue;
             }
             if !Self::submit_recv(slot, token, driver) {
-                self.rearm.queue(token);
+                self.rearm.queue(slot.rearm_token());
             }
         }
     }
@@ -226,33 +309,17 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             return SendOutcome::Drop;
         };
         match e {
-            SendEvent::Sent(n) => slot.send_sent(driver, n as usize, ud, idx),
+            SendEvent::Sent(n) => slot.send_sent(driver, n, ud, idx),
             SendEvent::Failed(_) => slot.send_failed(idx),
         }
     }
 
-    pub fn dispatch_recv<'a>(
-        &mut self,
-        ud: Token,
-        more: bool,
-        e: &'a RecvEvent<'d>,
-    ) -> DispatchRecv<W::Recv<'a>> {
-        let Some(parts) = ud.parts::<KeyTag<ID>>() else {
-            return DispatchRecv::Drop;
-        };
-        let runtime = &mut self.runtime;
-        let Some(slot) = self.slab.get_parts_mut(parts.slab()) else {
-            return DispatchRecv::Drop;
-        };
-        let idx = SlotIndex::new(parts.index());
-        let decision = match e {
-            RecvEvent::Data(buffer) => slot.recv_data(runtime, more, buffer.as_slice()),
-            RecvEvent::Discarded { len } => slot.recv_discarded(*len),
-            RecvEvent::Eof => slot.recv_eof(more),
-            RecvEvent::Cancelled => slot.recv_cancelled(more),
-            RecvEvent::Starved => slot.recv_starved(more),
-            RecvEvent::Failed(_) => slot.recv_failed(more),
-        };
+    fn finish_recv<C>(
+        rearm: &mut Rearm<ID>,
+        idx: SlotIndex,
+        slot: &Slot<'d, W, S>,
+        decision: RecvDecision<C>,
+    ) -> DispatchRecv<C> {
         let needs_rearm = match &decision {
             RecvDecision::NoChunk { needs_rearm }
             | RecvDecision::Discarded { needs_rearm }
@@ -260,7 +327,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
             _ => false,
         };
         if needs_rearm {
-            self.rearm.queue(ud);
+            rearm.queue(slot.rearm_token());
         }
         match decision {
             RecvDecision::Drop => DispatchRecv::Drop,
@@ -271,14 +338,29 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         }
     }
 
-    fn map_dispatch<C, X>(dispatch: DispatchRecv<C>, map: impl FnOnce(C) -> X) -> DispatchRecv<X> {
-        match dispatch {
-            DispatchRecv::Drop => DispatchRecv::Drop,
-            DispatchRecv::Close(idx) => DispatchRecv::Close(idx),
-            DispatchRecv::Chunk(idx, chunk) => DispatchRecv::Chunk(idx, map(chunk)),
-            DispatchRecv::NoChunk(idx) => DispatchRecv::NoChunk(idx),
-            DispatchRecv::Discarded(idx) => DispatchRecv::Discarded(idx),
-        }
+    pub fn dispatch_recv<'a>(
+        &mut self,
+        ud: Token,
+        more: bool,
+        e: &'a mut RecvEvent<'d>,
+    ) -> DispatchRecv<W::RecvBatch<'a>> {
+        let Some(parts) = ud.parts::<KeyTag<ID>>() else {
+            return DispatchRecv::Drop;
+        };
+        let runtime = &mut self.runtime;
+        let Some(slot) = self.slab.get_parts_mut(parts) else {
+            return DispatchRecv::Drop;
+        };
+        let idx = parts.slot();
+        let decision = match e {
+            RecvEvent::Data(buffer) => slot.recv_data(runtime, more, buffer.as_mut_slice()),
+            RecvEvent::Discarded { len } => slot.recv_discarded(*len),
+            RecvEvent::Eof => slot.recv_eof(more),
+            RecvEvent::Cancelled => slot.recv_cancelled(more),
+            RecvEvent::Starved => slot.recv_starved(more),
+            RecvEvent::Failed(_) => slot.recv_failed(more),
+        };
+        Self::finish_recv(&mut self.rearm, idx, slot, decision)
     }
 
     pub fn dispatch_retained_recv(
@@ -286,16 +368,77 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         ud: Token,
         more: bool,
         event: RecvEvent<'d>,
-    ) -> DispatchRecv<Option<ProvidedView<'d>>> {
-        let dispatch =
-            Self::map_dispatch(self.dispatch_recv(ud, more, &event), |chunk| match &event {
-                RecvEvent::Data(lease) => lease.range_of(chunk.as_slice()),
-                _ => None,
-            });
-        Self::map_dispatch(dispatch, |range| match (event, range) {
-            (RecvEvent::Data(lease), Some(range)) => lease.into_view(range).ok(),
-            _ => None,
-        })
+    ) -> DispatchRecv<W::RetainedRecv<'d>> {
+        let Some(parts) = ud.parts::<KeyTag<ID>>() else {
+            return DispatchRecv::Drop;
+        };
+        let runtime = &mut self.runtime;
+        let Some(slot) = self.slab.get_parts_mut(parts) else {
+            return DispatchRecv::Drop;
+        };
+        let idx = parts.slot();
+        if W::RECV_CREDIT && self.recv_credit && slot.core.recv_paused() {
+            return match self.deferred_recv.push(idx, ud, more, event) {
+                Ok(()) => DispatchRecv::Drop,
+                Err(_) => DispatchRecv::Close(idx),
+            };
+        }
+        let mut decision = match event {
+            RecvEvent::Data(buffer) => slot.recv_retained_data(runtime, more, buffer),
+            RecvEvent::Discarded { len } => slot.recv_discarded(len),
+            RecvEvent::Eof => slot.recv_eof(more),
+            RecvEvent::Cancelled => slot.recv_cancelled(more),
+            RecvEvent::Starved => slot.recv_starved(more),
+            RecvEvent::Failed(_) => slot.recv_failed(more),
+        };
+        if W::RECV_CREDIT
+            && self.recv_credit
+            && let RecvDecision::Chunk { chunk, .. } = &mut decision
+        {
+            let credit = RecvCredit::new(slot.driver(), slot.ready_key(), slot.token());
+            if W::bind_recv_credit(chunk, credit).is_ok() {
+                slot.core.pause_recv();
+                if slot.core.needs_recv_cancel() {
+                    self.rearm.queue(slot.rearm_token());
+                }
+            }
+        }
+        Self::finish_recv(&mut self.rearm, idx, slot, decision)
+    }
+
+    /// Resumes a connection whose retained receive credit was released.
+    /// Returns `true` only for a paused, still-live connection.
+    #[doc(hidden)]
+    pub fn resume_recv(&mut self, target: Token) -> bool {
+        let rearm = {
+            let Some((_, slot)) = self.by_target_mut(target) else {
+                return false;
+            };
+            if !slot
+                .driver()
+                .take_recv_credit(slot.ready_key(), slot.token())
+                || slot.core.is_closing()
+                || !slot.core.recv_paused()
+            {
+                return false;
+            }
+            slot.core.resume_recv().then(|| slot.rearm_token())
+        };
+        if let Some(rearm) = rearm {
+            self.rearm.queue(rearm);
+        }
+        true
+    }
+
+    /// Pops the next completion deferred for a resumed connection.
+    #[doc(hidden)]
+    pub fn pop_resumed_recv(&mut self, target: Token) -> Option<(Token, bool, RecvEvent<'d>)> {
+        let (idx, slot) = self.by_target(target)?;
+        if slot.core.recv_paused() {
+            return None;
+        }
+        let DeferredRecv { token, more, event } = self.deferred_recv.pop(idx)?;
+        Some((token, more, event))
     }
 
     pub fn set_close_after(&mut self, idx: SlotIndex) {
@@ -318,171 +461,11 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         }) else {
             return;
         };
+        self.deferred_recv.clear(idx);
+        slot.core.fd.ready_handle().set_target(slot.token());
         if let Some(target) = target {
             self.poison_route |= driver.quiesce(&[target]);
         }
         slot.close(driver);
-    }
-
-    pub fn send_slot(&mut self, idx: SlotIndex) -> Option<(&mut Slot<'d, W, S>, Token)> {
-        let (slot, key) = self.slab.get_index_mut(idx.raw())?;
-        let ud = Token::from_key(key);
-        if slot.core.is_closing() || slot.core.is_send_inflight() {
-            return None;
-        }
-        Some((slot, ud))
-    }
-
-    pub fn append_outbound_targets(&mut self, targets: &mut Vec<Token>)
-    where
-        S: Outbound,
-    {
-        for slot in self.slab.values_mut() {
-            let token = slot.token();
-            let establish = slot.state.establish();
-            if establish.is_connecting() {
-                targets.push(token.with_kind(CONNECT));
-            } else if !establish.is_done() {
-                targets.push(
-                    Token::new(
-                        ROUTE_FRAMEWORK,
-                        SlotIndex::new(slot.core.fd.index()),
-                        Epoch::ZERO,
-                    )
-                    .with_kind(CREATE),
-                );
-            }
-        }
-    }
-
-    pub fn submit_socket_with_state(
-        &mut self,
-        socket_params: (i32, i32, i32),
-        make_state: impl FnOnce(SlotIndex) -> S,
-        driver: &mut DriverContext<'_, 'd>,
-    ) -> Option<SlotIndex> {
-        let reservation = self.slab.vacant_entry()?;
-        let key = reservation.key();
-        let idx = SlotIndex::new(key.index());
-        let outbound_slot = self.reservation.slot(idx)?;
-        let fd = unsafe { Fd::from_raw_slot(outbound_slot.fd(), driver.driver_ref()) };
-        let (domain, socket_type, protocol) = socket_params;
-        let ud = Token::from_key(key);
-        let sqe = match Sqe::socket(domain, socket_type, protocol, &fd, ud) {
-            Ok(sqe) => sqe,
-            Err(_) => {
-                drop(driver.guard(fd));
-                return None;
-            }
-        };
-        let Some(open) = W::prepare_open(&mut self.runtime) else {
-            drop(driver.guard(fd));
-            return None;
-        };
-        if driver.push(sqe).is_err() {
-            drop(driver.guard(fd));
-            return None;
-        }
-        let (wire, send) = open.commit();
-        let state = make_state(idx);
-        let slot = Slot::<W, S>::new(Core::new(fd, T::KERNEL_DISCARD), wire, send, ud, state);
-        reservation.insert(slot);
-        self.refresh_wake(idx);
-        Some(idx)
-    }
-
-    pub fn drive_socket_cqe<X>(
-        &mut self,
-        ud: Token,
-        e: &SocketEvent,
-        driver: &mut DriverContext<'_, 'd>,
-        prepare: impl FnOnce(&Slot<'d, W, S>) -> (X, Option<(Addr, T::StreamConfig)>),
-    ) -> SocketStep<X>
-    where
-        S: Outbound,
-    {
-        let Some(parts) = ud.parts::<KeyTag<ID>>() else {
-            return SocketStep::Failed { peeked: None };
-        };
-        let (peeked, submitted) = {
-            let Some(slot) = self.slab.get_parts_mut(parts.slab()) else {
-                return SocketStep::Failed { peeked: None };
-            };
-            let (peeked, prepared) = prepare(&*slot);
-            let submitted = if let (SocketEvent::Created, Some((sock_addr, config))) = (e, prepared)
-            {
-                if T::submit_stream_tuning(driver, config, &slot.core.fd) {
-                    let (ptr, len) = slot.state.establish().begin(sock_addr);
-                    // SAFETY: `Establish` owns the address through completion or rollback.
-                    let submitted =
-                        unsafe { driver.push_raw(RawSqe::connect(&slot.core.fd, ptr, len, ud)) }
-                            .is_ok();
-                    if !submitted {
-                        slot.state.establish().abort();
-                    }
-                    submitted
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            (peeked, submitted)
-        };
-        if submitted {
-            SocketStep::Connecting
-        } else {
-            if let Some(slot) = self.slab.remove_parts(parts.slab()) {
-                slot.close(driver);
-            }
-            SocketStep::Failed {
-                peeked: Some(peeked),
-            }
-        }
-    }
-
-    pub fn drive_connect_cqe<X>(
-        &mut self,
-        ud: Token,
-        e: &ConnectEvent,
-        driver: &mut DriverContext<'_, 'd>,
-        peek: impl FnOnce(&Slot<'d, W, S>) -> X,
-    ) -> ConnectStep<X>
-    where
-        S: Outbound,
-    {
-        let Some(parts) = ud.parts::<KeyTag<ID>>() else {
-            return ConnectStep::Drop { peeked: None };
-        };
-        let idx = SlotIndex::new(parts.index());
-        let failed = matches!(e, ConnectEvent::Failed(_));
-        let (peeked, armed) = {
-            let Some(slot) = self.slab.get_parts_mut(parts.slab()) else {
-                return ConnectStep::Drop { peeked: None };
-            };
-            if !slot.state.establish().is_connecting() {
-                let peeked = (!slot.state.establish().is_done()).then(|| peek(&*slot));
-                return ConnectStep::Drop { peeked };
-            }
-            let peeked = peek(&*slot);
-            if failed {
-                slot.state.establish().abort();
-                (peeked, false)
-            } else {
-                slot.state.establish().finish();
-                let armed = Self::submit_recv(slot, ud, driver);
-                (peeked, armed)
-            }
-        };
-        if failed {
-            if let Some(slot) = self.slab.remove_parts(parts.slab()) {
-                slot.close(driver);
-            }
-            return ConnectStep::Failed { peeked };
-        }
-        if !armed {
-            self.rearm.queue(ud);
-        }
-        ConnectStep::Connected { idx, peeked }
     }
 }

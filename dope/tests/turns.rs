@@ -89,7 +89,7 @@ fn ready_cascade_is_followed_but_bounded_per_driver_turn() {
             trigger.try_register(&mut session.driver_access())?;
             trigger.fire()?;
 
-            let target = Token::new(ROUTE_FRAMEWORK - 1, SlotIndex::new(0), Epoch::INITIAL);
+            let target = Token::new(ROUTE_FRAMEWORK - 1, SlotIndex::ZERO, Epoch::INITIAL);
             let ready = session.driver().make_ready_slot(target)?;
             ready.activate();
             session.with_app(
@@ -120,7 +120,7 @@ fn turn_clock_is_stable_during_callbacks_and_refreshed_before_park() {
             trigger.try_register(&mut session.driver_access())?;
             trigger.fire()?;
 
-            let target = Token::new(ROUTE_FRAMEWORK - 1, SlotIndex::new(0), Epoch::INITIAL);
+            let target = Token::new(ROUTE_FRAMEWORK - 1, SlotIndex::ZERO, Epoch::INITIAL);
             let ready = session.driver().make_ready_slot(target)?;
             ready.activate();
             session.with_app(

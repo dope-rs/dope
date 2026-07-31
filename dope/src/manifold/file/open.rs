@@ -2,11 +2,12 @@ use std::os::fd::OwnedFd;
 
 use super::FileOutcome;
 use super::raw::OpenRequest;
-use super::raw::table::OperationTable;
+use super::raw::table::{CancellationSignal, OperationTable};
 use dope::DriverContext;
+use dope_core::driver::control::Quiesce;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::token::kind::OPEN;
-use dope_core::driver::token::{KeyTag, Token};
+use dope_core::driver::token::{KeyTag, Token, TokenCapacity};
 use dope_core::io::OpenEvent;
 use dope_core::io::file::OpenPath;
 
@@ -20,7 +21,7 @@ pub(crate) struct OpenTable<'d, const ID: u8> {
 }
 
 impl<'d, const ID: u8> OpenTable<'d, ID> {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: TokenCapacity) -> Self {
         Self {
             operations: OperationTable::with_capacity(capacity),
         }
@@ -30,8 +31,8 @@ impl<'d, const ID: u8> OpenTable<'d, ID> {
         self.operations.is_empty()
     }
 
-    pub(crate) fn append_targets(&self, targets: &mut Vec<Token>) {
-        self.operations.append_targets(targets);
+    pub(crate) fn for_each_target(&self, visit: impl FnMut(Token)) {
+        self.operations.for_each_target(visit);
     }
 
     pub(crate) fn begin(
@@ -54,12 +55,12 @@ impl<'d, const ID: u8> OpenTable<'d, ID> {
         }
     }
 
-    pub(crate) fn cancel(&self, token: Token) {
-        let _ = self.operations.request_cancel(token);
+    pub(super) fn cancel(&self, token: Token, signal: &CancellationSignal) {
+        let _ = self.operations.request_cancel(token, signal);
     }
 
-    pub(crate) fn flush_cancellations(&self, driver: &mut DriverContext<'_, 'd>) -> bool {
-        self.operations.flush_cancellations(driver)
+    pub(super) fn flush_cancellations(&self, quiesce: &mut Quiesce<'_>) {
+        self.operations.flush_cancellations(quiesce);
     }
 
     pub(crate) fn complete(&self, token: Token, event: OpenEvent) {

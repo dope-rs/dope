@@ -9,7 +9,8 @@ use std::rc::Rc;
 
 use dope::manifold::Outcome;
 use dope::manifold::listener;
-use dope::manifold::listener::application::Application;
+use dope::manifold::listener::application::{Application, ApplicationHooks};
+use dope::manifold::listener::state::EgressCtx;
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
 use dope_test::Gate;
@@ -29,49 +30,36 @@ struct TraceApp {
 impl<'d> Application<'d> for TraceApp {
     type Conn = ();
     type Wire = Identity;
+    type Hooks = Self;
+}
 
+impl<'d> ApplicationHooks<'d, TraceApp> for TraceApp {
     fn chunk<R: RetainBytes>(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _app: Pin<&mut TraceApp>,
+        _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
+        _egress: EgressCtx<'_, '_>,
         _chunk: R,
-        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
     }
 
-    fn send(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _sent: usize,
-        _aux: &mut listener::state::Aux,
-        _driver: &mut dope::DriverContext<'_, 'd>,
-    ) {
-    }
-
     fn accept(
-        self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _aux: &mut listener::state::Aux,
+        app: Pin<&mut TraceApp>,
+        slot: &mut Slot<'d, Identity, listener::state::State<()>>,
+        _egress: EgressCtx<'_, '_>,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
-        let this = self.get_mut();
+        let this = app.get_mut();
         this.trace.accepted.borrow_mut().push(slot.state.peer_ip());
         this.gate.hit();
         Outcome::Ok
     }
 
-    fn capped(self: Pin<&mut Self>, peer_ip: IpAddr) {
-        let this = self.get_mut();
+    fn capped(app: Pin<&mut TraceApp>, peer_ip: IpAddr) {
+        let this = app.get_mut();
         this.trace.capped.borrow_mut().push(peer_ip);
         this.gate.hit();
-    }
-
-    fn close(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _aux: &mut listener::state::Aux,
-    ) {
     }
 }
 

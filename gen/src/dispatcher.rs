@@ -260,6 +260,7 @@ impl DispatcherSpec {
             Vec::new()
         };
         let shutdown_calls = self.shutdown_calls();
+        let finish_calls = self.finish_calls();
         let idle_expr = self.idle_expr();
         let uniqueness_use = if self.fields.len() >= 2 {
             quote! { let _: () = Self::__MANIFOLD_ID_UNIQUE; }
@@ -315,6 +316,12 @@ impl DispatcherSpec {
                 ) {
                     #(#shutdown_calls)*
                 }
+                fn finish(
+                    mut self: ::core::pin::Pin<&mut Self>,
+                    __context: &mut ::dope::runtime::dispatcher::FinishContext<'_, #brand>,
+                ) {
+                    #(#finish_calls)*
+                }
             }
         }
     }
@@ -362,6 +369,19 @@ impl DispatcherSpec {
                 f.wrap_body(|recv| {
                     quote! {
                         ::dope::manifold::Manifold::shutdown(#recv, __driver);
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn finish_calls(&self) -> Vec<proc_macro2::TokenStream> {
+        self.fields
+            .iter()
+            .map(|f| {
+                f.wrap_body(|recv| {
+                    quote! {
+                        ::dope::manifold::Manifold::finish(#recv, __context);
                     }
                 })
             })

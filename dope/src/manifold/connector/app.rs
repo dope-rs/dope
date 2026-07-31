@@ -4,12 +4,14 @@ use std::time::Duration;
 use super::source::DialKey;
 use super::state::State;
 use crate::DriverContext;
-use crate::io::provided::ProvidedView;
 use crate::runtime::dispatcher::Idle;
 use dope_core::driver::token::{SlotIndex, Token};
+use dope_net::link::egress::queue::Queue;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
-use o3::buffer::{Borrowed, Bytes, RetainBytes};
+use o3::buffer::RetainBytes;
+
+use super::state::IOV_CAP;
 
 pub enum ChunkOutcome {
     Ok,
@@ -53,27 +55,30 @@ pub trait ConnApp<'d>: Sized {
         Ok(0)
     }
 
-    fn chunk<R: RetainBytes>(
+    fn chunk<'pool, R: RetainBytes>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         chunk: R,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome;
 
-    fn retained_chunk(
+    fn retained_chunk<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        chunk: ProvidedView<'d>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        chunk: <Self::Wire as Wire>::RetainedRecv<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
-        let bytes = Bytes::<Borrowed<'_>>::from(chunk.as_slice());
-        self.chunk(slot, bytes, driver)
+        let _ = (slot, egress, chunk, driver);
+        ChunkOutcome::Overrun
     }
 
-    fn connected(
+    fn connected<'pool>(
         &mut self,
         key: DialKey,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     );
 
@@ -81,24 +86,27 @@ pub trait ConnApp<'d>: Sized {
         let _ = (key, driver);
     }
 
-    fn before_send(
+    fn before_send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
-        let _ = (slot, driver);
+        let _ = (slot, egress, driver);
     }
 
-    fn send(
+    fn send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         sent: usize,
         driver: &mut DriverContext<'_, 'd>,
     );
 
-    fn close(
+    fn close<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     );
 

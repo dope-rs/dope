@@ -133,15 +133,14 @@ impl Sqe {
         Self(inner, ThreadBound::NEW)
     }
 
+    pub(crate) fn from_retained(retained: crate::backend::RetainedSqe) -> Self {
+        retained.0.0
+    }
 }
 
 impl RawSqe {
     fn new(inner: SqeInner) -> Self {
         Self(Sqe::new(inner))
-    }
-
-    pub(crate) fn into_sqe(self) -> Sqe {
-        self.0
     }
 
     pub fn send(fd: &Fd, buf: &[u8], op: Token) -> Self {

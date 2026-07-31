@@ -1,12 +1,23 @@
 use std::net::UdpSocket;
 use std::time::Duration;
 
-use dope_core::backend::RawSqe;
+use dope_core::backend::{RawSqe, RetainedSqe, StableSqeSource};
 use dope_core::driver::bootstrap::Bootstrap;
 use dope_core::driver::completion::Completion;
-use dope_core::driver::submission::raw::Submission as _;
-use dope_core::driver::token::{Epoch, SlotIndex, Token, kind};
+use dope_core::driver::submission::Submission;
+use dope_core::driver::token::{Epoch, SlotIndex, Token};
+use dope_core::io::Event;
 use dope_test::with_driver;
+
+struct TestSubmission(RawSqe);
+
+// SAFETY: each test keeps the registered socket live until the matching
+// completion is observed or the driver quiesces it.
+unsafe impl StableSqeSource for TestSubmission {
+    fn into_raw(self) -> RawSqe {
+        self.0
+    }
+}
 
 fn open_fds() -> Vec<libc::c_int> {
     (0..4096)
@@ -21,6 +32,7 @@ fn close_retires_recv_before_raw_fd_reuse() {
         let (old, old_addr) = driver
             .bind_datagram_slot("127.0.0.1:0".parse().expect("old address"))
             .expect("old socket");
+        let old_slot = old.index();
         let after_old = open_fds();
         let opened = after_old
             .iter()
@@ -29,9 +41,12 @@ fn close_retires_recv_before_raw_fd_reuse() {
             .collect::<Vec<_>>();
         assert_eq!(opened.len(), 1);
         let reused = opened[0];
-        let old_token = Token::new(1, SlotIndex::new(0), Epoch::INITIAL);
-        // SAFETY: `old` stays registered until this receive is completed.
-        unsafe { driver.push_raw(RawSqe::recv_multi(&old, 0, old_token)) }.expect("arm old recv");
+        let old_token = Token::new(1, SlotIndex::ZERO, Epoch::INITIAL);
+        driver
+            .push_retained(RetainedSqe::from_stable(TestSubmission(
+                RawSqe::recv_multi(&old, 0, old_token),
+            )))
+            .expect("arm old recv");
 
         let peer = UdpSocket::bind("127.0.0.1:0").expect("peer");
         peer.send_to(&[0x41; 32], old_addr).expect("send old");
@@ -45,10 +60,14 @@ fn close_retires_recv_before_raw_fd_reuse() {
         let (new, new_addr) = driver
             .bind_datagram_slot("127.0.0.1:0".parse().expect("new address"))
             .expect("new socket");
+        assert_eq!(new.index(), old_slot);
         assert!(unsafe { libc::fcntl(reused, libc::F_GETFD) } >= 0);
-        let new_token = Token::new(2, SlotIndex::new(0), Epoch::INITIAL);
-        // SAFETY: `new` stays registered until this receive is completed.
-        unsafe { driver.push_raw(RawSqe::recv_multi(&new, 0, new_token)) }.expect("arm new recv");
+        let new_token = Token::new(2, SlotIndex::ZERO, Epoch::INITIAL);
+        driver
+            .push_retained(RetainedSqe::from_stable(TestSubmission(
+                RawSqe::recv_multi(&new, 0, new_token),
+            )))
+            .expect("arm new recv");
         peer.send_to(b"new", new_addr).expect("send new");
         driver
             .wait(Some(Duration::from_secs(1)))
@@ -59,7 +78,7 @@ fn close_retires_recv_before_raw_fd_reuse() {
         assert_eq!(n, 1);
         let completion = completions[0].as_ref().expect("completion");
         assert_eq!(completion.route(), new_token.route());
-        assert_eq!(completion.operation(), kind::RECV);
+        assert!(matches!(completion, Event::Recv(..)));
 
         drop(driver.guard(new));
     });

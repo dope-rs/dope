@@ -8,6 +8,7 @@ use dope_core::driver::token::Token;
 use dope_core::io::Event;
 use dope_net::Transport;
 use dope_net::link::egress::queue::Queue;
+use dope_net::link::egress::storage::Storage as EgressStorage;
 use dope_net::link::slot::Slot;
 use dope_net::tcp::Tcp;
 use dope_net::wire::Wire;
@@ -27,16 +28,16 @@ use crate::DriverContext;
 use crate::manifold::Manifold;
 use crate::manifold::env::{Bundle, Env};
 use crate::manifold::typed::TypedToken;
-use crate::runtime::dispatcher::Idle;
+use crate::runtime::dispatcher::{FinishContext, Idle};
 use crate::runtime::profile::Balanced;
 
 const INGRESS_BUF_CAP: usize = 16 * 1024 * 1024;
 const INGRESS_INITIAL_CAP: usize = 16 * 1024;
 
-pub struct Ctx<'a, 'd, N: Session<'d>> {
+pub struct Ctx<'a, 'pool, 'd, N: Session<'d>> {
     pub conn_id: Token,
     pub state: &'a mut N::ConnState,
-    pub sink: &'a mut Queue<IOV_CAP, N::Send>,
+    pub sink: Queue<'a, 'pool, IOV_CAP, N::Send>,
     pub region: &'a mut RegionToken<'d>,
 }
 
@@ -51,13 +52,13 @@ pub trait Session<'d>: Sized {
         let _ = (token, ready, region);
     }
 
-    fn connect(&mut self, context: &mut Ctx<'_, 'd, Self>);
+    fn connect(&mut self, context: &mut Ctx<'_, '_, 'd, Self>);
 
-    fn response(&mut self, head: <Self::Codec as Codec>::Head, context: &mut Ctx<'_, 'd, Self>);
+    fn response(&mut self, head: <Self::Codec as Codec>::Head, context: &mut Ctx<'_, '_, 'd, Self>);
 
-    fn disconnect(&mut self, context: &mut Ctx<'_, 'd, Self>);
+    fn disconnect(&mut self, context: &mut Ctx<'_, '_, 'd, Self>);
 
-    fn flush_trailer(&mut self, context: &mut Ctx<'_, 'd, Self>) {
+    fn flush_trailer(&mut self, context: &mut Ctx<'_, '_, 'd, Self>) {
         let _ = context;
     }
 
@@ -116,7 +117,7 @@ pub struct SessionConn<'d, N: Session<'d>> {
 impl<'d, N: Session<'d>> Default for SessionConn<'d, N> {
     fn default() -> Self {
         Self {
-            ingress: SnapshotBuf::with_capacity(INGRESS_INITIAL_CAP),
+            ingress: SnapshotBuf::with_capacity_up_to(INGRESS_INITIAL_CAP),
             parse_state: <N::Codec as Codec>::ParseState::default(),
             conn_state: N::ConnState::default(),
             driver: PhantomData,
@@ -131,14 +132,43 @@ pub struct SessionApp<'d, N: Session<'d>, W: Wire> {
     pub(super) wire: PhantomData<Marker<'d, W>>,
 }
 
+fn drain_ingress<'pool, 'd, N: Session<'d>>(
+    session: &mut N,
+    ingress: &mut SnapshotBuf<INGRESS_BUF_CAP>,
+    parse_state: &mut <N::Codec as Codec>::ParseState,
+    context: &mut Ctx<'_, 'pool, 'd, N>,
+) {
+    loop {
+        let Some(pending) = ingress.snapshot() else {
+            break;
+        };
+        let Some((head, consumed)) = session.codec().parse(parse_state, &pending) else {
+            break;
+        };
+        if consumed == 0 {
+            break;
+        }
+        let Ok(prefix) = ingress.try_consume_prefix(consumed) else {
+            break;
+        };
+        prefix.commit();
+        drop(pending);
+        session.response(head, context);
+        if !matches!(context.state.wants_close(), Close::Keep) {
+            break;
+        }
+    }
+}
+
 impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
     type Conn = SessionConn<'d, N>;
     type Wire = W;
     type Send = N::Send;
 
-    fn chunk<R: RetainBytes>(
+    fn chunk<'pool, R: RetainBytes>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         chunk: R,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -146,7 +176,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
             return ChunkOutcome::Ok;
         }
         let conn_id = slot.token();
-        let State { conn, egress, .. } = &mut slot.state;
+        let State { conn, .. } = &mut slot.state;
         let SessionConn {
             ingress,
             parse_state,
@@ -156,28 +186,13 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         if ingress.try_extend_from_slice(chunk.as_slice()).is_err() {
             return ChunkOutcome::Overrun;
         }
-        loop {
-            let Some(pending) = ingress.snapshot() else {
-                break;
-            };
-            let Some((head, consumed)) = self.session.codec().parse(parse_state, &pending) else {
-                break;
-            };
-            if consumed == 0 || consumed > pending.len() {
-                break;
-            }
-            ingress.advance(consumed);
-            drop(pending);
-            self.session.response(
-                head,
-                &mut Ctx {
-                    conn_id,
-                    state: conn_state,
-                    sink: egress,
-                    region: driver.region_token(),
-                },
-            );
-        }
+        let mut context = Ctx {
+            conn_id,
+            state: conn_state,
+            sink: egress,
+            region: driver.region_token(),
+        };
+        drain_ingress(&mut self.session, ingress, parse_state, &mut context);
         match conn_state.wants_close() {
             Close::Keep => ChunkOutcome::Ok,
             Close::Reconnect => ChunkOutcome::CloseReconnect,
@@ -185,16 +200,17 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         }
     }
 
-    fn connected(
+    fn connected<'pool>(
         &mut self,
         _key: DialKey,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let conn_id = slot.token();
         self.session
             .activate(conn_id, slot.ready_key(), driver.region_token());
-        let State { conn, egress, .. } = &mut slot.state;
+        let State { conn, .. } = &mut slot.state;
         self.session.connect(&mut Ctx {
             conn_id,
             state: &mut conn.conn_state,
@@ -203,13 +219,14 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         });
     }
 
-    fn before_send(
+    fn before_send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let conn_id = slot.token();
-        let State { conn, egress, .. } = &mut slot.state;
+        let State { conn, .. } = &mut slot.state;
         self.session.flush_trailer(&mut Ctx {
             conn_id,
             state: &mut conn.conn_state,
@@ -218,28 +235,47 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         });
     }
 
-    fn send(
+    fn send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         sent: usize,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.session.sent(slot.token(), sent);
     }
 
-    fn close(
+    fn close<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let conn_id = slot.token();
-        let State { conn, egress, .. } = &mut slot.state;
-        self.session.disconnect(&mut Ctx {
+        let State { conn, .. } = &mut slot.state;
+        let mut context = Ctx {
             conn_id,
             state: &mut conn.conn_state,
             sink: egress,
             region: driver.region_token(),
-        });
+        };
+        drain_ingress(
+            &mut self.session,
+            &mut conn.ingress,
+            &mut conn.parse_state,
+            &mut context,
+        );
+        if matches!(context.state.wants_close(), Close::Keep) {
+            let remaining = conn.ingress.snapshot().unwrap_or_default();
+            if let Some(head) = self
+                .session
+                .codec()
+                .finish(&mut conn.parse_state, remaining)
+            {
+                self.session.response(head, &mut context);
+            }
+        }
+        self.session.disconnect(&mut context);
     }
 
     fn defer_close(
@@ -290,7 +326,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
 }
 
 type SessionCore<'d, const ID: u8, N, S, E> =
-    Core<'d, ID, SessionApp<'d, N, <E as Env>::Wire>, S, E>;
+    Core<'d, 'd, ID, SessionApp<'d, N, <E as Env>::Wire>, S, E>;
 
 #[repr(transparent)]
 #[pin_project]
@@ -316,23 +352,33 @@ where
         session: N,
         upstreams: S,
         max_connections: usize,
+        egress_storage: &'d EgressStorage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
-        <E::Wire as Wire>::InitConfig: Default,
+        <E::Wire as Wire>::InitConfig<'d>: Default,
     {
-        Core::new(session, upstreams, max_connections, driver).map(|core| Self { core })
+        Core::new(session, upstreams, max_connections, egress_storage, driver)
+            .map(|core| Self { core })
     }
 
     pub fn new_with_wire_config(
         session: N,
         upstreams: S,
         max_connections: usize,
-        wire_config: <E::Wire as Wire>::InitConfig,
+        wire_config: <E::Wire as Wire>::InitConfig<'d>,
+        egress_storage: &'d EgressStorage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
-        Core::new_with_wire_config(session, upstreams, max_connections, wire_config, driver)
-            .map(|core| Self { core })
+        Core::new_with_wire_config(
+            session,
+            upstreams,
+            max_connections,
+            wire_config,
+            egress_storage,
+            driver,
+        )
+        .map(|core| Self { core })
     }
 
     pub fn session(&self) -> &N {
@@ -379,5 +425,9 @@ where
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         self.project().core.shutdown_all(driver);
+    }
+
+    fn finish(self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        self.project().core.finish(context);
     }
 }

@@ -15,8 +15,9 @@ use std::time::Duration;
 use dope::manifold::env::Bundle;
 use dope::manifold::listener;
 use dope::manifold::listener::Listener;
-use dope::manifold::listener::application::Application;
+use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::config::Config;
+use dope::manifold::listener::state::EgressCtx;
 use dope::manifold::typed::TypedToken;
 use dope::manifold::{Manifold, Outcome};
 use dope::runtime::dispatcher::Idle;
@@ -47,40 +48,27 @@ struct TeardownApp {
 impl<'d> Application<'d> for TeardownApp {
     type Conn = ();
     type Wire = Identity;
+    type Hooks = Self;
+}
 
+impl<'d> ApplicationHooks<'d, TeardownApp> for TeardownApp {
     fn chunk<R: RetainBytes>(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _app: Pin<&mut TeardownApp>,
+        _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
+        _egress: EgressCtx<'_, '_>,
         _chunk: R,
-        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
     }
 
-    fn send(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _sent: usize,
-        _aux: &mut listener::state::Aux,
-        _driver: &mut dope::DriverContext<'_, 'd>,
-    ) {
-    }
-
-    fn close(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _aux: &mut listener::state::Aux,
-    ) {
-    }
-
     fn accept(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _aux: &mut listener::state::Aux,
+        app: Pin<&mut TeardownApp>,
+        _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
+        _egress: EgressCtx<'_, '_>,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
-        let state = &self.get_mut().state;
+        let state = &app.get_mut().state;
         let accepted = state.accepted.get() + 1;
         state.accepted.set(accepted);
         fs::write(&state.accepted_marker, accepted.to_string()).expect("write accepted marker");
@@ -88,11 +76,11 @@ impl<'d> Application<'d> for TeardownApp {
     }
 
     fn teardown(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _aux: &mut listener::state::Aux,
+        app: Pin<&mut TeardownApp>,
+        _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
+        _egress: EgressCtx<'_, '_>,
     ) {
-        let state = &self.get_mut().state;
+        let state = &app.get_mut().state;
         let calls = state.calls.get();
         state.calls.set(calls + 1);
         if calls == 0 {
@@ -127,7 +115,7 @@ impl<'d, M: Manifold<'d>> Manifold<'d> for DropLive<M> {
         target: TypedToken<Self>,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) {
-        let target = unsafe { TypedToken::<M>::new_unchecked(target.into_inner()) };
+        let target = target.retag::<'d, M>();
         M::activate(
             unsafe { self.map_unchecked_mut(|s| &mut s.inner) },
             target,
@@ -149,7 +137,7 @@ impl<'d, M: Manifold<'d>> Manifold<'d> for DropLive<M> {
 }
 
 type Env = Bundle<Tcp, Identity, Throughput>;
-type TeardownListener<'d> = Listener<'d, 0, TeardownApp, Env>;
+type TeardownListener<'d> = Listener<'d, 'd, 0, TeardownApp, Env>;
 
 #[pin_project::pin_project]
 #[derive(dope_gen::Dispatcher)]
@@ -161,20 +149,24 @@ struct Dispatcher<'d> {
 
 fn serve(state: TeardownState, cfg: Config<Tcp>, context: WorkerContext) -> std::io::Result<()> {
     let driver = dope::driver::Config::for_tcp_profile::<Throughput>(cfg.max_connections);
-    Executor::with_seed(driver, context.seed())?.enter(|mut session| {
-        context.try_register_shutdown(&mut session.driver_access())?;
-        let hash_builder = session.seed().derive(dope::hash::domain::ACCEPT).state();
-        let listener = Listener::<0, TeardownApp, Env>::open_in(
-            TeardownApp { state },
-            cfg,
-            hash_builder,
-            &mut session.driver_access(),
-        )?;
-        let dispatcher = std::pin::pin!(BrandCell::new(Dispatcher {
-            listener: DropLive { inner: listener },
-        }));
-        session.run(dispatcher.as_ref())
-    })
+    Executor::with_seed(driver, context.seed())?
+        .with_storage(dope_net::link::egress::storage::Storage::default())
+        .enter(|mut session| {
+            let egress = session.storage();
+            context.try_register_shutdown(&mut session.driver_access())?;
+            let hash_builder = session.seed().derive(dope::hash::domain::ACCEPT).state();
+            let listener = Listener::<0, TeardownApp, Env>::open_in(
+                TeardownApp { state },
+                cfg,
+                hash_builder,
+                egress,
+                &mut session.driver_access(),
+            )?;
+            let dispatcher = std::pin::pin!(BrandCell::new(Dispatcher {
+                listener: DropLive { inner: listener },
+            }));
+            session.run(dispatcher.as_ref())
+        })
 }
 
 fn wait_for_count(marker: &Path, expected: usize) {

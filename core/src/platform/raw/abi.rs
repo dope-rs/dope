@@ -1,9 +1,6 @@
-use std::io::{self, Error, ErrorKind};
-use std::mem::size_of;
+use std::io::{self, Error};
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 
 use libc::{sockaddr_in, sockaddr_in6, sockaddr_un};
 
@@ -13,11 +10,8 @@ use crate::io::pipe::PipeEnds;
 use crate::io::socket::Pod;
 use libc::AF_INET;
 use libc::AF_INET6;
-use libc::AF_UNIX;
-use libc::c_char;
 use libc::in_addr;
 use libc::in6_addr;
-use libc::sa_family_t;
 use libc::socklen_t;
 
 pub(crate) trait PlatformAbi {
@@ -48,25 +42,6 @@ pub(crate) trait PlatformAbi {
             s6_addr: addr.ip().octets(),
         };
         encoded
-    }
-
-    fn encode_unix(path: &Path) -> io::Result<(sockaddr_un, socklen_t)> {
-        let bytes = path.as_os_str().as_bytes();
-        if bytes.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidInput, "empty path"));
-        }
-        let mut encoded = Self::sockaddr_un();
-        encoded.sun_family = AF_UNIX as _;
-        let max = encoded.sun_path.len().saturating_sub(1);
-        if bytes.len() > max {
-            return Err(Error::new(ErrorKind::InvalidInput, "path too long"));
-        }
-        for (index, byte) in bytes.iter().enumerate() {
-            encoded.sun_path[index] = *byte as c_char;
-        }
-        let len = (size_of::<sa_family_t>() + bytes.len() + 1) as socklen_t;
-        Self::finish_unix(&mut encoded, len);
-        Ok((encoded, len))
     }
 }
 
@@ -114,12 +89,14 @@ mod linux {
 
 #[cfg(not(target_os = "linux"))]
 mod kqueue {
+    use std::mem::size_of;
+
     use libc::{
         F_GETFL, F_SETFD, F_SETFL, FD_CLOEXEC, O_NONBLOCK, SO_NOSIGPIPE, SOL_SOCKET, fcntl, pipe,
     };
 
     use super::{
-        Driver, Error, FromRawFd, Handle, OwnedFd, PipeEnds, PlatformAbi, Pod, RawFd, io, size_of,
+        Driver, Error, FromRawFd, Handle, OwnedFd, PipeEnds, PlatformAbi, Pod, RawFd, io,
         sockaddr_in, sockaddr_in6, sockaddr_un, socklen_t,
     };
 
