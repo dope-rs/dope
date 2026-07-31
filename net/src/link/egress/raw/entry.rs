@@ -1,12 +1,12 @@
 use dope_core::io::socket::msg::IoVec;
 
 use super::super::EGRESS_QUANTUM;
-use super::super::metadata::raw::pool::MetadataPool;
+use super::super::metadata::raw::pool::{MetadataPool, ReservedIndex};
 use std::ptr::null;
 use std::slice::from_raw_parts;
 
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum Entry<B> {
+pub(in crate::link::egress) enum Entry<B> {
     Retained {
         value: B,
         data: *const u8,
@@ -26,17 +26,17 @@ pub(crate) enum Entry<B> {
     },
 }
 
-pub(crate) enum PreparedEntry {
+pub(in crate::link::egress) enum PreparedEntry {
     Empty,
     Node {
-        index: u32,
+        index: ReservedIndex,
         bytes: usize,
         resident: usize,
     },
 }
 
 impl<B> Entry<B> {
-    pub(crate) fn retained(value: B) -> Self {
+    pub(in crate::link::egress) fn retained(value: B) -> Self {
         Self::Retained {
             value,
             data: null(),
@@ -44,11 +44,11 @@ impl<B> Entry<B> {
         }
     }
 
-    pub(crate) fn wire(data: *const u8, len: usize) -> Self {
+    pub(in crate::link::egress) fn wire(data: *const u8, len: usize) -> Self {
         Self::Wire { data, len }
     }
 
-    pub(crate) fn inline(src: &[u8]) -> Self {
+    pub(in crate::link::egress) fn inline(src: &[u8]) -> Self {
         let mut data = [0; EGRESS_QUANTUM];
         data[..src.len()].copy_from_slice(src);
         Self::Inline {
@@ -57,35 +57,35 @@ impl<B> Entry<B> {
         }
     }
 
-    pub(crate) fn static_bytes(src: &'static [u8]) -> Self {
+    pub(in crate::link::egress) fn static_bytes(src: &'static [u8]) -> Self {
         Self::Static {
             data: src.as_ptr(),
             len: src.len(),
         }
     }
 
-    pub(crate) fn retained_ref(&self) -> Option<&B> {
+    pub(in crate::link::egress) fn retained_ref(&self) -> Option<&B> {
         match self {
             Self::Retained { value, .. } => Some(value),
             _ => None,
         }
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(in crate::link::egress) fn len(&self) -> usize {
         match self {
             Self::Retained { len, .. } | Self::Wire { len, .. } | Self::Static { len, .. } => *len,
             Self::Inline { len, .. } => *len as usize,
         }
     }
 
-    pub(crate) fn wire_len(&self) -> Option<usize> {
+    pub(in crate::link::egress) fn wire_len(&self) -> Option<usize> {
         match self {
             Self::Wire { len, .. } => Some(*len),
             _ => None,
         }
     }
 
-    pub(crate) fn iov(&self, offset: usize, cap: usize) -> Option<(IoVec, usize)> {
+    pub(in crate::link::egress) fn iov(&self, offset: usize, cap: usize) -> Option<(IoVec, usize)> {
         let (data, len) = match self {
             Self::Retained { data, len, .. }
             | Self::Wire { data, len }
@@ -103,11 +103,16 @@ impl<B> Entry<B> {
 }
 
 impl<B: AsRef<[u8]>> Entry<B> {
-    pub(crate) fn prepare_buffer(pool: &MetadataPool<Self>, value: B) -> Result<PreparedEntry, B> {
-        let (index, bytes) = pool.reserve_from(value, Self::retained, Self::prepare_retained)?;
-        pool.set_sizes(index, bytes, bytes);
+    pub(in crate::link::egress) fn prepare_buffer(
+        pool: &MetadataPool<Self>,
+        value: B,
+    ) -> Result<PreparedEntry, B> {
+        let (index, bytes) = pool.reserve_from(value, Self::retained, |entry| {
+            let bytes = entry.prepare_retained();
+            (bytes, bytes, bytes)
+        })?;
         if bytes == 0 {
-            drop(pool.take_node(index));
+            drop(pool.take_reserved(index));
             return Ok(PreparedEntry::Empty);
         }
         Ok(PreparedEntry::Node {
@@ -117,7 +122,7 @@ impl<B: AsRef<[u8]>> Entry<B> {
         })
     }
 
-    pub(crate) fn prepare_wire(
+    pub(in crate::link::egress) fn prepare_wire(
         pool: &MetadataPool<Self>,
         data: *const u8,
         len: usize,
@@ -126,9 +131,12 @@ impl<B: AsRef<[u8]>> Entry<B> {
             return Some(PreparedEntry::Empty);
         }
         let (index, bytes) = pool
-            .reserve_from((data, len), |(data, len)| Self::wire(data, len), |_| len)
+            .reserve_from(
+                (data, len),
+                |(data, len)| Self::wire(data, len),
+                |_| (len, len, len),
+            )
             .ok()?;
-        pool.set_sizes(index, bytes, bytes);
         Some(PreparedEntry::Node {
             index,
             bytes,
@@ -136,12 +144,17 @@ impl<B: AsRef<[u8]>> Entry<B> {
         })
     }
 
-    pub(crate) fn prepare_copy(pool: &MetadataPool<Self>, src: &[u8]) -> Option<PreparedEntry> {
+    pub(in crate::link::egress) fn prepare_copy(
+        pool: &MetadataPool<Self>,
+        src: &[u8],
+    ) -> Option<PreparedEntry> {
         debug_assert!(!src.is_empty() && src.len() <= EGRESS_QUANTUM);
         let (index, bytes) = pool
-            .reserve_from(src, Self::inline, |entry| entry.len())
+            .reserve_from(src, Self::inline, |entry| {
+                let bytes = entry.len();
+                (bytes, bytes, bytes)
+            })
             .ok()?;
-        pool.set_sizes(index, bytes, bytes);
         Some(PreparedEntry::Node {
             index,
             bytes,
@@ -149,7 +162,7 @@ impl<B: AsRef<[u8]>> Entry<B> {
         })
     }
 
-    pub(crate) fn prepare_static(
+    pub(in crate::link::egress) fn prepare_static(
         pool: &MetadataPool<Self>,
         src: &'static [u8],
     ) -> Option<PreparedEntry> {
@@ -157,9 +170,11 @@ impl<B: AsRef<[u8]>> Entry<B> {
             return Some(PreparedEntry::Empty);
         }
         let (index, bytes) = pool
-            .reserve_from(src, Self::static_bytes, |entry| entry.len())
+            .reserve_from(src, Self::static_bytes, |entry| {
+                let bytes = entry.len();
+                (bytes, bytes, 0)
+            })
             .ok()?;
-        pool.set_sizes(index, bytes, 0);
         Some(PreparedEntry::Node {
             index,
             bytes,
@@ -167,7 +182,7 @@ impl<B: AsRef<[u8]>> Entry<B> {
         })
     }
 
-    pub(crate) fn prepare_retained(&mut self) -> usize {
+    pub(in crate::link::egress) fn prepare_retained(&mut self) -> usize {
         let Self::Retained { value, data, len } = self else {
             return 0;
         };

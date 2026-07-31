@@ -13,6 +13,10 @@ const _: fn() = || {
     not_sync::<dope_core::io::fd::FdSlot, _>();
     not_send::<dope_core::driver::ready::ReadyKey, _>();
     not_sync::<dope_core::driver::ready::ReadyKey, _>();
+    not_send::<dope_core::driver::ready::CompletionWaker<'static>, _>();
+    not_sync::<dope_core::driver::ready::CompletionWaker<'static>, _>();
+    not_send::<dope_core::driver::ready::CompletionSlot<'static>, _>();
+    not_sync::<dope_core::driver::ready::CompletionSlot<'static>, _>();
     not_sync::<dope_core::io::pipe::Pipe, _>();
 };
 
@@ -29,11 +33,27 @@ fn local_capabilities_keep_their_layout() {
     );
     assert_eq!(size_of::<dope_core::io::fd::FdSlot>(), size_of::<u32>());
     assert_eq!(
+        size_of::<dope_core::io::fd::Fd<'static>>(),
+        2 * size_of::<usize>()
+    );
+    assert_eq!(
+        size_of::<dope_core::io::fd::FdGuard<'static, 'static>>(),
+        3 * size_of::<usize>()
+    );
+    assert_eq!(
         size_of::<dope_core::driver::ready::ReadyKey>(),
         size_of::<u64>()
     );
     assert_eq!(
         size_of::<dope_core::driver::ready::ReadySlot<'static>>(),
         2 * size_of::<u64>()
+    );
+    assert_eq!(
+        size_of::<dope_core::driver::ready::CompletionWaker<'static>>(),
+        3 * size_of::<usize>()
+    );
+    assert_eq!(
+        size_of::<dope_core::driver::ready::CompletionSlot<'static>>(),
+        size_of::<dope_core::driver::ready::CompletionWaker<'static>>()
     );
 }

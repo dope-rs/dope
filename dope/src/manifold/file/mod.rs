@@ -15,6 +15,7 @@ use read::ReadDone;
 use stat::StatDone;
 
 use open::OpenTable;
+use raw::table::CancellationSignal;
 use read::ReadTable;
 use source::Source;
 use stat::StatTable;
@@ -24,12 +25,10 @@ use dope::DriverContext;
 use dope::manifold::Manifold;
 use dope::manifold::typed::TypedToken;
 use dope::runtime::dispatcher::Idle;
-use dope_core::driver::control::ContextControl;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::route::Route;
-use dope_core::driver::token::Token;
+use dope_core::driver::token::{Token, TokenCapacity};
 use dope_core::io::Event;
-use dope_core::io::EventKind;
 use dope_core::io::file::OpenPath;
 use std::io::Error;
 use std::process::abort;
@@ -44,6 +43,7 @@ pub struct Files<'d, const ID: u8, const N: usize> {
     opens: OpenTable<'d, ID>,
     reads: ReadTable<'d, ID>,
     stats: StatTable<'d, ID>,
+    cancellations: CancellationSignal,
     poison_route: Cell<bool>,
     _id: PhantomData<fn() -> [(); N]>,
 }
@@ -52,11 +52,21 @@ pub struct FilesFactory<const ID: u8, const N: usize>;
 
 impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
     pub fn new(driver: &mut DriverContext<'_, 'd>) -> io::Result<Self> {
+        let capacity = TokenCapacity::new(N).ok_or_else(|| {
+            Error::new(
+                io::ErrorKind::InvalidInput,
+                "dope: file capacity exceeds token slots",
+            )
+        })?;
+        let opens = OpenTable::new(capacity);
+        let reads = ReadTable::new(capacity);
+        let stats = StatTable::new(capacity);
         Ok(Self {
             route: Route::reserve(driver)?,
-            opens: OpenTable::new(N),
-            reads: ReadTable::new(N),
-            stats: StatTable::new(N),
+            opens,
+            reads,
+            stats,
+            cancellations: CancellationSignal::new(),
             poison_route: Cell::new(false),
             _id: PhantomData,
         })
@@ -91,10 +101,11 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
         &self,
         source: Source<'d>,
         buf: Vec<u8>,
+        len: u32,
         offset: u64,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Result<Token, (Vec<u8>, Error)> {
-        self.reads.begin(source, buf, offset, driver)
+    ) -> Result<Token, (Source<'d>, Vec<u8>, Error)> {
+        self.reads.begin(source, buf, len, offset, driver)
     }
 
     #[doc(hidden)]
@@ -102,7 +113,7 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
         &self,
         path: OpenPath,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Option<Token> {
+    ) -> Result<Token, OpenPath> {
         self.stats.begin_path(path, driver)
     }
 
@@ -111,7 +122,7 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
         &self,
         source: Source<'d>,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Option<Token> {
+    ) -> Result<Token, Source<'d>> {
         self.stats.begin_fd(source, driver)
     }
 
@@ -125,49 +136,62 @@ impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
         &self,
         token: Token,
         wake: CompletionWaker<'d>,
-    ) -> FileOutcome<(Vec<u8>, ReadDone)> {
+    ) -> FileOutcome<(Source<'d>, Vec<u8>, ReadDone)> {
         self.reads.poll(token, wake)
     }
 
     #[doc(hidden)]
-    pub fn poll_stat(&self, token: Token, wake: CompletionWaker<'d>) -> FileOutcome<StatDone> {
-        self.stats.poll(token, wake)
+    pub fn poll_stat_path(&self, token: Token, wake: CompletionWaker<'d>) -> FileOutcome<StatDone> {
+        self.stats.poll_path(token, wake)
+    }
+
+    #[doc(hidden)]
+    pub fn poll_stat_fd(
+        &self,
+        token: Token,
+        wake: CompletionWaker<'d>,
+    ) -> FileOutcome<(Source<'d>, StatDone)> {
+        self.stats.poll_fd(token, wake)
     }
 
     #[doc(hidden)]
     pub fn cancel_open(&self, token: Token) {
-        self.opens.cancel(token);
+        self.opens.cancel(token, &self.cancellations);
     }
 
     #[doc(hidden)]
     pub fn cancel_read(&self, token: Token) {
-        self.reads.cancel(token);
+        self.reads.cancel(token, &self.cancellations);
     }
 
     #[doc(hidden)]
     pub fn cancel_stat(&self, token: Token) {
-        self.stats.cancel(token);
+        self.stats.cancel(token, &self.cancellations);
     }
 
     fn flush_cancellations(&self, driver: &mut DriverContext<'_, 'd>) {
-        let quiesced = self.opens.flush_cancellations(driver)
-            | self.reads.flush_cancellations(driver)
-            | self.stats.flush_cancellations(driver);
-        self.record_quiesce(quiesced);
+        if !self.cancellations.is_pending() {
+            return;
+        }
+        let mut quiesce = driver.quiesce_batch();
+        self.opens.flush_cancellations(&mut quiesce);
+        self.reads.flush_cancellations(&mut quiesce);
+        self.stats.flush_cancellations(&mut quiesce);
+        let outcome = quiesce.finish();
+        self.cancellations.clear();
+        self.record_quiesce(outcome.needs_poison());
     }
 }
 
 impl<'d, const ID: u8, const N: usize> Files<'d, ID, N> {
     fn shutdown(&self, driver: &mut DriverContext<'_, 'd>) {
-        let mut targets = Vec::new();
-        self.opens.append_targets(&mut targets);
-        self.reads.append_targets(&mut targets);
-        self.stats.append_targets(&mut targets);
-        if !targets.is_empty() {
-            driver.quiesce(&targets);
-        }
+        let mut quiesce = driver.quiesce_batch();
+        self.opens.for_each_target(|target| quiesce.cancel(target));
+        self.reads.for_each_target(|target| quiesce.cancel(target));
+        self.stats.for_each_target(|target| quiesce.cancel(target));
+        let outcome = quiesce.finish();
         self.route
-            .finish(driver, self.poison_route.get() || !targets.is_empty());
+            .finish(driver, self.poison_route.get() || outcome.has_targets());
     }
 }
 
@@ -191,10 +215,10 @@ impl<'scope, 'd, const ID: u8, const N: usize> Manifold<'d> for FileManifold<'sc
 
     fn dispatch(self: Pin<&mut Self>, ev: Event<'d>, _driver: &mut DriverContext<'_, 'd>) {
         let this = self.as_ref().get_ref().files;
-        match ev.into_kind() {
-            EventKind::Open(token, e) => this.opens.complete(token, e),
-            EventKind::Read(token, e) => this.reads.complete(token, e),
-            EventKind::Stat(token, e) => this.stats.complete(token, e),
+        match ev {
+            Event::Open(token, e) => this.opens.complete(token, e),
+            Event::Read(token, e) => this.reads.complete(token, e),
+            Event::Stat(token, e) => this.stats.complete(token, e),
             _ => {}
         }
     }

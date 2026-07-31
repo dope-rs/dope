@@ -26,12 +26,6 @@ impl<M> TypedToken<M> {
         }
     }
 
-    /// # Safety
-    /// The caller guarantees `t` was issued for manifold `M`.
-    pub const unsafe fn new_unchecked(token: Token) -> Self {
-        Self(token, PhantomData)
-    }
-
     /// Retags a token while statically proving that both manifolds own the
     /// same runtime route.
     ///

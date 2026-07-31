@@ -16,11 +16,11 @@ mod linux {
     impl SubmissionBackend for Backend {
         fn push(backend: &mut Backend, sqe: Sqe) -> Result<(), PushError> {
             let Some(create) = sqe.create_meta() else {
-                return Submission::push(&mut backend.uring, sqe.entry());
+                return Submission::push(backend.ring.io_mut(), &sqe);
             };
             match backend.files.admission(create.slot) {
                 Admission::Start => {
-                    Submission::push(&mut backend.uring, sqe.entry())?;
+                    Submission::push(backend.ring.io_mut(), &sqe)?;
                     backend.files.begin_create(create);
                     Ok(())
                 }
@@ -35,7 +35,7 @@ mod linux {
         fn flush_submissions(backend: &mut Backend) -> bool {
             backend.flush_deferred_close();
             backend.flush_ready_create();
-            backend.uring.submit().is_ok()
+            backend.ring.io_mut().submit().is_ok()
         }
     }
 }

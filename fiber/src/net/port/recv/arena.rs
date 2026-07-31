@@ -1,17 +1,28 @@
-use std::cell::Cell;
 use std::io::{self, Error, ErrorKind};
 
-use super::queue::{QueueState, RecvQueue};
-use super::slots::{Recycle, Slot};
-use super::{Buffer, NONE};
+use dope_net::wire::{RecvCursor, RecvTarget};
+use o3::cell::{RegionCell, RegionToken};
+use o3::collections::LinkedArena;
+use o3::mem::FairCredits;
+
+use super::NONE;
+use super::queue::RecvQueue;
 
 const RECV_SLOTS_PER_CONN: usize = 4;
 const MIN_RECV_SLOTS: usize = 256;
 
-pub(in crate::net) struct RecvArena<'d> {
-    slots: Box<[Slot<'d>]>,
-    reserved_free: Cell<u32>,
-    shared_free: Cell<u32>,
+struct RecvEntry<R> {
+    value: R,
+    len: u32,
+}
+
+struct Storage<R> {
+    entries: LinkedArena<RecvEntry<R>>,
+    credits: FairCredits,
+}
+
+pub(in crate::net) struct RecvArena<'d, R: 'd> {
+    storage: RegionCell<'d, Storage<R>>,
 }
 
 pub(in crate::net::port) enum PushError {
@@ -55,184 +66,114 @@ impl RecvLayout {
     }
 }
 
-impl<'d> RecvArena<'d> {
+impl<'d, R: RecvCursor + 'd> RecvArena<'d, R> {
     pub(in crate::net::port) fn with_layout(layout: RecvLayout) -> Self {
-        let slots: Box<[_]> = (0..layout.slots)
-            .map(|index| {
-                Slot::free(
-                    if index + 1 == layout.connections || index + 1 == layout.slots {
-                        NONE
-                    } else {
-                        (index + 1) as u32
-                    },
-                )
-            })
-            .collect();
         Self {
-            reserved_free: Cell::new(0),
-            shared_free: Cell::new(layout.connections as u32),
-            slots,
-        }
-    }
-
-    fn reserve(&self, queue: &RecvQueue) -> bool {
-        if queue.reserved() != NONE {
-            return true;
-        }
-        let index = self.reserved_free.get();
-        if index == NONE {
-            return false;
-        }
-        let slot = &self.slots[index as usize];
-        let Some(next) = slot.claim() else {
-            return false;
-        };
-        self.reserved_free.set(next);
-        queue.set_reserved(index);
-        true
-    }
-
-    fn claim_shared(&self) -> Option<u32> {
-        let index = self.shared_free.get();
-        if index == NONE {
-            return None;
-        }
-        let next = self.slots[index as usize].claim()?;
-        self.shared_free.set(next);
-        Some(index)
-    }
-
-    fn release_claim(&self, index: u32, reserved: u32) {
-        if index == reserved {
-            return;
-        }
-        let next = self.shared_free.get();
-        if self.slots[index as usize].release(next) {
-            self.shared_free.set(index);
+            storage: RegionCell::new(Storage {
+                entries: LinkedArena::with_capacity(layout.slots, layout.connections),
+                credits: FairCredits::with_reserve(layout.slots, layout.connections, 1),
+            }),
         }
     }
 
     pub(in crate::net::port) fn push(
         &self,
+        lane: usize,
         queue: &RecvQueue,
-        value: Buffer<'d>,
-        len: u32,
+        value: R,
+        region: &mut RegionToken<'d>,
     ) -> Result<(), PushError> {
-        let state = queue.state();
-        let reserved = queue.reserved();
-        if reserved == NONE {
-            return Err(PushError::Exhausted);
-        }
-        let reserved_slot = &self.slots[reserved as usize];
-        let index = match state {
-            QueueState::Empty if reserved_slot.is_reserved() => reserved,
-            QueueState::Empty => return Err(PushError::Exhausted),
-            QueueState::Linked { .. } if reserved_slot.is_reserved() => reserved,
-            QueueState::Linked { .. } => match self.claim_shared() {
-                Some(index) => index,
-                None => return Err(PushError::Exhausted),
-            },
-        };
-        let Some(next_state) = state.pushed(index, len as usize) else {
-            self.release_claim(index, reserved);
+        let len = u32::try_from(value.remaining()).map_err(|_| PushError::Limit)?;
+        let Some(next_state) = queue.state().pushed(len as usize) else {
             return Err(PushError::Limit);
         };
-        let slot = &self.slots[index as usize];
-        if slot.insert(value, len).is_err() {
-            self.release_claim(index, reserved);
+        let storage = self.storage.borrow_mut(region);
+        if !storage.credits.try_acquire(lane, 1) {
             return Err(PushError::Exhausted);
         }
-        if let Some(tail) = state.tail()
-            && !self.slots[tail as usize].set_queued_next(index)
-        {
-            let recycle = if index == reserved {
-                Recycle::Reserved
-            } else {
-                Recycle::Free {
-                    next: self.shared_free.get(),
-                }
-            };
-            let removed = slot.take(recycle);
-            if index != reserved && removed.is_some() {
-                self.shared_free.set(index);
+        match storage.entries.push_back(lane, RecvEntry { value, len }) {
+            Ok(()) => {
+                queue.commit(next_state);
+                Ok(())
             }
-            drop(removed);
-            return Err(PushError::Exhausted);
+            Err(_) => {
+                storage.credits.release(lane, 1);
+                Err(PushError::Exhausted)
+            }
         }
-        queue.commit(next_state);
-        Ok(())
     }
 
-    pub(in crate::net::port) fn pop(&self, queue: &RecvQueue) -> Option<Buffer<'d>> {
-        let state = queue.state();
-        let index = state.head()?;
-        let slot = &self.slots[index as usize];
-        let (len, next) = slot.queued_meta()?;
-        let next_state = state.popped(index, next, len)?;
-        let reserved = queue.reserved();
-        let recycle = if index == reserved {
-            Recycle::Reserved
-        } else {
-            Recycle::Free {
-                next: self.shared_free.get(),
-            }
-        };
-        let value = slot.take(recycle)?;
-        if index != reserved {
-            self.shared_free.set(index);
-        }
+    fn pop_from(storage: &mut Storage<R>, lane: usize, queue: &RecvQueue) -> Option<R> {
+        let entry = storage.entries.pop_front(lane)?;
+        let next_state = queue.state().popped(entry.len as usize)?;
+        storage.credits.release(lane, 1);
         queue.commit(next_state);
-        Some(value)
+        Some(entry.value)
     }
 
-    pub(in crate::net::port) fn drain_into(&self, queue: &RecvQueue, dst: &mut [u8]) -> usize {
-        if let Some(head) = queue.state().single()
-            && head == queue.reserved()
-        {
-            let slot = &self.slots[head as usize];
-            let Some((len, _)) = slot.queued_meta() else {
-                return 0;
-            };
-            if len <= dst.len() && slot.copy_prefix(&mut dst[..len]) {
-                if self.pop(queue).is_none() {
-                    return 0;
+    pub(in crate::net::port) fn drain_into(
+        &self,
+        lane: usize,
+        queue: &RecvQueue,
+        target: &mut RecvTarget<'_>,
+        region: &mut RegionToken<'d>,
+    ) {
+        let storage = self.storage.borrow_mut(region);
+        if queue.state().single() {
+            let front = storage.entries.front_mut(lane).map(|entry| {
+                let len = entry.len as usize;
+                let read = (len <= target.remaining())
+                    .then(|| target.with_limit(len, |target| entry.value.read_into(target)));
+                (len, read)
+            });
+            if let Some((len, Some(read))) = front {
+                if read == len && Self::pop_from(storage, lane, queue).is_some() {
+                    return;
                 }
-                return len;
+                if read == 0 {
+                    return;
+                }
+                let Some(next_state) = queue.state().consumed(read) else {
+                    return;
+                };
+                let Some(entry) = storage.entries.front_mut(lane) else {
+                    return;
+                };
+                entry.len = (len - read) as u32;
+                queue.commit(next_state);
+                return;
             }
         }
 
-        let mut written = 0usize;
-        while written < dst.len() {
-            let state = queue.state();
-            let Some(index) = state.head() else {
+        while target.remaining() != 0 {
+            let Some(entry) = storage.entries.front_mut(lane) else {
                 break;
             };
-            let slot = &self.slots[index as usize];
-            let Some((len, _)) = slot.queued_meta() else {
-                break;
-            };
-            let want = (dst.len() - written).min(len);
-            if !slot.copy_prefix(&mut dst[written..written + want]) {
+            let len = entry.len as usize;
+            let want = target.remaining().min(len);
+            let read = target.with_limit(want, |target| entry.value.read_into(target));
+            if read == 0 {
                 break;
             }
-            written += want;
-            if want < len {
-                let Some(next_state) = state.consumed(want) else {
+            if read < len {
+                let Some(next_state) = queue.state().consumed(read) else {
                     break;
                 };
-                if !slot.advance(want) {
-                    break;
-                }
+                entry.len = (len - read) as u32;
                 queue.commit(next_state);
             } else {
-                drop(self.pop(queue));
+                drop(Self::pop_from(storage, lane, queue));
             }
         }
-        written
     }
 
-    pub(in crate::net::port) fn reset(&self, queue: &RecvQueue) -> bool {
-        while self.pop(queue).is_some() {}
-        self.reserve(queue)
+    pub(in crate::net::port) fn reset(
+        &self,
+        lane: usize,
+        queue: &RecvQueue,
+        region: &mut RegionToken<'d>,
+    ) {
+        let storage = self.storage.borrow_mut(region);
+        while Self::pop_from(storage, lane, queue).is_some() {}
     }
 }

@@ -4,10 +4,11 @@ use std::time::{Duration, Instant};
 
 use pin_project::{pin_project, pinned_drop};
 
+use crate::raw::task::CompletionRegistrar;
 use crate::{Context, Fiber};
-use dope::manifold::timer::starved::Waiter;
-use dope::manifold::timer::{Ticket, Timer};
-use dope::runtime::__private::saturating_deadline;
+use dope::driver::ready::CompletionWaker;
+use dope::manifold::timer::{StarvedWaiter, Ticket, Timer};
+use dope::runtime::__private::Deadline;
 
 pub trait TimerExt<'d, const ID: u8 = 0> {
     fn sleep(&self, duration: Duration) -> Sleep<'_, 'd, ID>;
@@ -24,16 +25,48 @@ pub struct Sleep<'a, 'd, const ID: u8 = 0> {
     deadline: Instant,
     ticket: Option<Ticket>,
     #[pin]
-    waiter: Waiter<'d>,
+    waiter: StarvedWaiter<'d>,
     timer: &'a Timer<'d, ID>,
+}
+
+// SAFETY: pinned Sleep owns both possible registrations. Its pinned Drop
+// unlinks the waiter and cancels the timer ticket before the task can unbind.
+unsafe impl<'timer, 'd, const ID: u8> CompletionRegistrar<'d> for Pin<&mut Sleep<'timer, 'd, ID>> {
+    type Output = Poll<()>;
+
+    #[inline(always)]
+    fn register(self, wake: CompletionWaker<'d>) -> Self::Output {
+        let this = self.project();
+        match *this.ticket {
+            None => match this.timer.try_arm(*this.deadline, wake) {
+                Ok(ticket) => {
+                    *this.ticket = Some(ticket);
+                    this.timer.unregister_starved(this.waiter.as_ref());
+                }
+                Err(wake) => {
+                    this.timer
+                        .register_starved(this.waiter.as_ref(), *this.deadline, wake);
+                }
+            },
+            Some(ticket) => {
+                if this.timer.is_fired(ticket) {
+                    this.timer.cancel(ticket);
+                    *this.ticket = None;
+                    return Poll::Ready(());
+                }
+                this.timer.replace_waker(ticket, wake);
+            }
+        }
+        Poll::Pending
+    }
 }
 
 impl<'a, 'd, const ID: u8> Sleep<'a, 'd, ID> {
     pub fn new(timer: &'a Timer<'d, ID>, duration: Duration) -> Self {
         Self {
-            deadline: saturating_deadline(Instant::now(), duration),
+            deadline: Deadline::after(Instant::now(), duration),
             ticket: None,
-            waiter: Waiter::new(),
+            waiter: StarvedWaiter::new(),
             timer,
         }
     }
@@ -55,29 +88,7 @@ impl<'d, const ID: u8> Fiber<'d> for Sleep<'_, 'd, ID> {
             Self::cancel_ticket(this.ticket, this.timer);
             return Poll::Ready(());
         }
-        let this = self.project();
-        let wake = cx.completion_waker();
-        match *this.ticket {
-            None => match this.timer.try_arm(*this.deadline, wake) {
-                Some(t) => {
-                    *this.ticket = Some(t);
-                    this.timer.unregister_starved(this.waiter.as_ref());
-                }
-                None => {
-                    this.timer
-                        .register_starved(this.waiter.as_ref(), *this.deadline, wake);
-                }
-            },
-            Some(t) => {
-                if this.timer.is_fired(t) {
-                    this.timer.cancel(t);
-                    *this.ticket = None;
-                    return Poll::Ready(());
-                }
-                this.timer.replace_waker(t, wake);
-            }
-        }
-        Poll::Pending
+        cx.as_ref().register_completion(self)
     }
 }
 

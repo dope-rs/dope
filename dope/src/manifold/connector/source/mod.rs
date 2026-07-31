@@ -63,6 +63,8 @@ pub trait Dialer<T: Transport> {
     }
     fn disconnect(&mut self, key: DialKey, now: Instant);
     fn kill(&mut self, key: DialKey);
-    fn bind(&mut self, key: DialKey, local: SlotIndex);
+    fn bind(&mut self, key: DialKey, local: SlotIndex) {
+        let _ = (key, local);
+    }
     fn revive(&mut self) {}
 }

@@ -128,6 +128,13 @@ impl Forward {
                     let __field = self.project().#field;
                     ::dope::manifold::Manifold::shutdown(__field, driver)
                 }
+                fn finish(
+                    self: ::core::pin::Pin<&mut Self>,
+                    context: &mut ::dope::runtime::dispatcher::FinishContext<'_, #brand>,
+                ) {
+                    let __field = self.project().#field;
+                    ::dope::manifold::Manifold::finish(__field, context)
+                }
             }
         }
         .into()

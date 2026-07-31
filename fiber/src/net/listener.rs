@@ -1,26 +1,26 @@
 use std::io::{self, Error};
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Poll;
 
 use o3::buffer::RetainBytes;
+use o3::cell::RegionToken;
 use o3::collections::CellQueue;
 use pin_project::pin_project;
 
 use crate::io::Io;
 use crate::{Context, Fiber, WaitQueue, Waiter};
 use dope::DriverContext;
-use dope::EventRef;
 use dope::driver::token::Token;
 use dope::hash;
-use dope::io::provided::ProvidedView;
 use dope::manifold::env::Bundle;
-use dope::manifold::listener::application::Application;
+use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::config::Config;
 use dope::manifold::typed::TypedToken;
 use dope::manifold::{Manifold, Outcome, listener};
-use dope::runtime::dispatcher::Idle;
+use dope::runtime::dispatcher::{FinishContext, Idle};
 use dope::runtime::profile::Balanced;
+use dope_net::link::egress::config::Config as EgressConfig;
+use dope_net::link::egress::storage::Storage as EgressStorage;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 use dope_net::{ListenerTransport, Transport};
@@ -28,37 +28,58 @@ use dope_net::{ListenerTransport, Transport};
 use super::port::Port;
 use super::port::recv::arena::RecvLayout;
 use dope::Event;
-use dope::manifold::listener::state::{Aux, State};
+use dope::manifold::listener::state::{EgressCtx, State};
 use dope::runtime::executor::StorageFactory;
 
-pub struct ListenerPort<'d> {
-    connections: Port<'d>,
+pub struct ListenerPort<'d, W: Wire> {
+    connections: Port<'d, W::RetainedRecv<'d>>,
     accepts: CellQueue<Token>,
     waiters: Pin<Box<WaitQueue>>,
+    egress: EgressStorage,
+    wire_storage: W::ConnectionStorage,
 }
 
-pub struct ListenerPortFactory {
+pub struct ListenerPortFactory<W: Wire> {
     layout: RecvLayout,
+    egress: EgressConfig,
+    wire_storage: W::ConnectionStorage,
 }
 
-impl<'d> ListenerPort<'d> {
-    fn with_layout(layout: RecvLayout) -> Self {
+impl<'d, W: Wire> ListenerPort<'d, W> {
+    fn with_layout(
+        layout: RecvLayout,
+        egress: EgressConfig,
+        wire_storage: W::ConnectionStorage,
+    ) -> Self {
         let capacity = layout.connections();
         Self {
             connections: Port::with_layout(layout, true),
             accepts: CellQueue::with_capacity(capacity),
             waiters: Box::pin(WaitQueue::with_capacity(capacity)),
+            egress: EgressStorage::with_config(egress),
+            wire_storage,
         }
     }
 
-    pub fn factory(capacity: usize) -> io::Result<ListenerPortFactory> {
+    pub fn factory(capacity: usize) -> io::Result<ListenerPortFactory<W>> {
+        Self::factory_with_egress(capacity, EgressConfig::default())
+    }
+
+    pub fn factory_with_egress(
+        capacity: usize,
+        egress: EgressConfig,
+    ) -> io::Result<ListenerPortFactory<W>> {
+        let layout = RecvLayout::new(capacity)?;
+        let wire_storage = W::connection_storage(layout.connections())?;
         Ok(ListenerPortFactory {
-            layout: RecvLayout::new(capacity)?,
+            layout,
+            egress,
+            wire_storage,
         })
     }
 
-    fn activate(&self, token: Token) -> bool {
-        if !self.connections.activate_deferred(token) {
+    fn activate(&self, token: Token, region: &mut RegionToken<'d>) -> bool {
+        if !self.connections.activate_deferred(token, region) {
             return false;
         }
         if self.accepts.push_back(token).is_err() {
@@ -68,65 +89,65 @@ impl<'d> ListenerPort<'d> {
         true
     }
 
-    pub fn handle(&self) -> ListenerHandle<'_, 'd> {
+    pub fn handle(&self) -> ListenerHandle<'_, 'd, W> {
         ListenerHandle { port: self }
+    }
+
+    pub fn wire_storage(&self) -> &W::ConnectionStorage {
+        &self.wire_storage
     }
 }
 
-impl StorageFactory for ListenerPortFactory {
-    type Output<'d> = ListenerPort<'d>;
+impl<W: Wire> StorageFactory for ListenerPortFactory<W> {
+    type Output<'d> = ListenerPort<'d, W>;
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        ListenerPort::with_layout(self.layout)
+        ListenerPort::with_layout(self.layout, self.egress, self.wire_storage)
     }
 }
 
 struct AcceptQueue<'scope, 'd, W: Wire> {
-    port: &'scope ListenerPort<'d>,
-    _wire: PhantomData<fn() -> W>,
+    port: &'scope ListenerPort<'d, W>,
 }
 
 impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
     type Conn = ();
     type Wire = W;
+    type Hooks = Self;
 
     const RETAIN_RAW_RECV: bool = true;
 
     fn max_retained_recv_chunks(max_connections: usize) -> io::Result<usize> {
         RecvLayout::new(max_connections).map(RecvLayout::slots)
     }
+}
 
+impl<'scope, 'd, W: Wire> ApplicationHooks<'d, AcceptQueue<'scope, 'd, W>>
+    for AcceptQueue<'scope, 'd, W>
+{
     fn chunk<R: RetainBytes>(
-        self: Pin<&mut Self>,
+        _app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
         slot: &mut Slot<'d, W, State<()>>,
+        egress: EgressCtx<'_, '_>,
         chunk: R,
-        _aux: &mut Aux,
-        _driver: &mut DriverContext<'_, 'd>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
-        if self
-            .get_mut()
-            .port
-            .connections
-            .push_recv(slot.token(), chunk)
-        {
-            Outcome::Overrun
-        } else {
-            Outcome::Ok
-        }
+        let _ = (slot, egress, chunk, driver);
+        Outcome::Overrun
     }
 
     fn retained_chunk(
-        self: Pin<&mut Self>,
+        app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
         slot: &mut Slot<'d, W, State<()>>,
-        chunk: ProvidedView<'d>,
-        _aux: &mut Aux,
-        _driver: &mut DriverContext<'_, 'd>,
+        _egress: EgressCtx<'_, '_>,
+        chunk: W::RetainedRecv<'d>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
-        if self
+        if app
             .get_mut()
             .port
             .connections
-            .push_retained(slot.token(), chunk)
+            .push_retained(slot.token(), chunk, driver.region_token())
         {
             Outcome::Overrun
         } else {
@@ -134,27 +155,22 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
         }
     }
 
-    fn send(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, W, State<()>>,
-        _sent: usize,
-        _aux: &mut Aux,
-        _driver: &mut DriverContext<'_, 'd>,
+    fn close(
+        app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
+        slot: &mut Slot<'d, W, State<()>>,
+        _egress: EgressCtx<'_, '_>,
     ) {
-    }
-
-    fn close(self: Pin<&mut Self>, slot: &mut Slot<'d, W, State<()>>, _aux: &mut Aux) {
-        self.get_mut().port.connections.closed(slot.token());
+        app.get_mut().port.connections.closed(slot.token());
     }
 
     fn accept(
-        self: Pin<&mut Self>,
+        app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
         slot: &mut Slot<'d, W, State<()>>,
-        _aux: &mut Aux,
-        _driver: &mut DriverContext<'_, 'd>,
+        _egress: EgressCtx<'_, '_>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
-        let port = self.get_mut().port;
-        if port.activate(slot.token()) {
+        let port = app.get_mut().port;
+        if port.activate(slot.token(), driver.region_token()) {
             Outcome::Ok
         } else {
             Outcome::Overrun
@@ -163,7 +179,7 @@ impl<'scope, 'd, W: Wire> Application<'d> for AcceptQueue<'scope, 'd, W> {
 }
 
 type Inner<'scope, 'd, const ID: u8, T, W> =
-    listener::Listener<'d, ID, AcceptQueue<'scope, 'd, W>, Bundle<T, W, Balanced>>;
+    listener::Listener<'scope, 'd, ID, AcceptQueue<'scope, 'd, W>, Bundle<T, W, Balanced>>;
 
 #[pin_project(!Unpin)]
 pub struct Listener<'scope, 'd, const ID: u8, T: Transport, W: Wire>
@@ -172,7 +188,7 @@ where
 {
     #[pin]
     inner: Inner<'scope, 'd, ID, T, W>,
-    port: &'scope ListenerPort<'d>,
+    port: &'scope ListenerPort<'d, W>,
 }
 
 impl<'scope, 'd, const ID: u8, T: Transport, W: Wire> Listener<'scope, 'd, ID, T, W>
@@ -180,7 +196,7 @@ where
     T::Addr: Clone,
 {
     pub fn bind(
-        port: &'scope ListenerPort<'d>,
+        port: &'scope ListenerPort<'d, W>,
         driver: &mut DriverContext<'_, 'd>,
         addr: &T::Addr,
         backlog: i32,
@@ -190,28 +206,52 @@ where
     ) -> io::Result<Self>
     where
         T: ListenerTransport,
-        W::InitConfig: Default,
+        W::InitConfig<'d>: Default,
     {
-        let inner = listener::Listener::open_in(
-            AcceptQueue::<W> {
-                port,
-                _wire: PhantomData,
-            },
-            Config {
-                max_connections: port.connections.capacity(),
-                bind: addr.clone(),
-                backlog,
-                stream: stream_config,
-                transport: listener_config,
-                egress: Default::default(),
-            },
+        let config = Config {
+            max_connections: port.connections.capacity(),
+            bind: addr.clone(),
+            backlog,
+            stream: stream_config,
+            transport: listener_config,
+            egress: Default::default(),
+        };
+        Self::bind_with_wire(
+            port,
+            driver,
+            config,
+            W::InitConfig::<'d>::default(),
             hash_builder,
+        )
+    }
+
+    pub fn bind_with_wire(
+        port: &'scope ListenerPort<'d, W>,
+        driver: &mut DriverContext<'_, 'd>,
+        mut config: Config<T>,
+        wire_config: W::InitConfig<'d>,
+        hash_builder: hash::State,
+    ) -> io::Result<Self>
+    where
+        T: ListenerTransport,
+    {
+        config.max_connections = port.connections.capacity();
+        let inner = listener::Listener::open_in_with_wire(
+            AcceptQueue::<W> { port },
+            config,
+            wire_config,
+            hash_builder,
+            &port.egress,
             driver,
         )?;
         Ok(Self { inner, port })
     }
 
-    fn sync_send(inner: Pin<&Inner<'scope, 'd, ID, T, W>>, port: &ListenerPort<'d>, conn: Token) {
+    fn sync_send(
+        inner: Pin<&Inner<'scope, 'd, ID, T, W>>,
+        port: &ListenerPort<'d, W>,
+        conn: Token,
+    ) {
         let pending = inner.has_pending_egress(conn);
         port.connections.sync_send(conn, pending);
     }
@@ -235,13 +275,20 @@ where
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct ListenerHandle<'scope, 'd> {
-    port: &'scope ListenerPort<'d>,
+pub struct ListenerHandle<'scope, 'd, W: Wire> {
+    port: &'scope ListenerPort<'d, W>,
 }
 
-impl<'scope, 'd> ListenerHandle<'scope, 'd> {
-    pub fn accept(self) -> Accept<'scope, 'd> {
+impl<W: Wire> Copy for ListenerHandle<'_, '_, W> {}
+
+impl<W: Wire> Clone for ListenerHandle<'_, '_, W> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'scope, 'd, W: Wire> ListenerHandle<'scope, 'd, W> {
+    pub fn accept(self) -> Accept<'scope, 'd, W> {
         Accept {
             host: self,
             waiter: Waiter::new(),
@@ -257,8 +304,8 @@ where
     const ID: u8 = ID;
 
     fn dispatch(mut self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
-        let conn = match ev.as_ref() {
-            EventRef::Send(conn, _) => Some(conn),
+        let conn = match &ev {
+            Event::Send(conn, _) => Some(*conn),
             _ => None,
         };
         let port = self.as_ref().get_ref().port;
@@ -291,17 +338,21 @@ where
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         self.project().inner.shutdown(driver);
     }
+
+    fn finish(self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        self.project().inner.finish(context);
+    }
 }
 
 #[pin_project]
-pub struct Accept<'scope, 'd> {
-    host: ListenerHandle<'scope, 'd>,
+pub struct Accept<'scope, 'd, W: Wire> {
+    host: ListenerHandle<'scope, 'd, W>,
     #[pin]
     waiter: Waiter<'d>,
 }
 
-impl<'scope, 'd> Fiber<'d> for Accept<'scope, 'd> {
-    type Output = io::Result<Io<'scope, 'd>>;
+impl<'scope, 'd, W: Wire> Fiber<'d> for Accept<'scope, 'd, W> {
+    type Output = io::Result<Io<'scope, 'd, W>>;
 
     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
         let this = self.project();

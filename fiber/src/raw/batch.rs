@@ -1,140 +1,85 @@
 use core::array::from_fn;
-use core::marker::PhantomPinned;
-use core::mem::{ManuallyDrop, MaybeUninit, forget};
+use core::hint;
+use core::marker::PhantomData;
+use core::mem::{MaybeUninit, forget};
 use core::pin::{Pin, pin};
 use core::task::Poll;
 
+use pin_project::{pin_project, pinned_drop};
+
 use crate::abi::Fiber;
+use crate::raw::pinned_slice;
 use crate::raw::task::queue::IndexQueue;
-use crate::raw::task::{Context, TaskContext};
+use crate::raw::task::{Context, StableTaskSource, TaskContext};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotState {
+struct BatchTask<'a, 'd> {
+    context: Pin<&'a TaskContext>,
+    _brand: PhantomData<fn(&'d ()) -> &'d ()>,
+}
+
+// SAFETY: the pinned BatchCore owns both endpoints. Its pinned Drop unbinds
+// every live task before the task array, queue, or parent brand can disappear.
+unsafe impl<'a, 'd> StableTaskSource<'a, 'd, usize> for BatchTask<'a, 'd> {
+    fn context(self) -> Pin<&'a TaskContext> {
+        self.context
+    }
+}
+
+#[pin_project(project = SlotProj, project_replace = SlotProjOwn)]
+enum Slot<F, O> {
     Vacant,
-    Live,
-    Done,
-}
-
-union SlotValue<F, O> {
-    fiber: ManuallyDrop<F>,
-    output: ManuallyDrop<O>,
-}
-
-struct Slot<F, O> {
-    value: MaybeUninit<SlotValue<F, O>>,
-    state: SlotState,
+    Live(#[pin] F),
+    Done(O),
 }
 
 impl<F, O> Slot<F, O> {
     const fn new() -> Self {
-        Self {
-            value: MaybeUninit::uninit(),
-            state: SlotState::Vacant,
-        }
+        Self::Vacant
     }
 
     fn write(&mut self, fiber: F) {
-        debug_assert!(self.state == SlotState::Vacant);
-        self.value.write(SlotValue {
-            fiber: ManuallyDrop::new(fiber),
-        });
-        self.state = SlotState::Live;
+        debug_assert!(matches!(self, Self::Vacant));
+        *self = Self::Live(fiber);
     }
 
     fn poll<'d>(self: Pin<&mut Self>, context: Pin<&mut Context<'_, 'd>>) -> Poll<O>
     where
         F: Fiber<'d, Output = O>,
     {
-        debug_assert!(self.state == SlotState::Live);
-        // SAFETY: pinning the slot pins its active union field. `Live` proves
-        // that field is an initialized `F`, and this method never moves it.
-        let this = unsafe { self.get_unchecked_mut() };
-        let value = unsafe { this.value.assume_init_mut() };
-        let fiber = unsafe { &mut *value.fiber };
-        Fiber::poll(unsafe { Pin::new_unchecked(fiber) }, context)
+        match self.project() {
+            SlotProj::Live(fiber) => Fiber::poll(fiber, context),
+            // SAFETY: the scheduler only queues initialized, incomplete slots.
+            SlotProj::Vacant | SlotProj::Done(_) => unsafe {
+                debug_assert!(false, "dope: polled an inactive batch slot");
+                hint::unreachable_unchecked()
+            },
+        }
     }
 
     fn complete(self: Pin<&mut Self>, output: O) {
-        debug_assert!(self.state == SlotState::Live);
-        // SAFETY: `Live` proves the active union field is an initialized,
-        // pinned `F`. The transaction installs `output` even if dropping that
-        // fiber unwinds, so the old field is never dropped twice.
-        let this = unsafe { self.get_unchecked_mut() };
-        let slot = this as *mut Self;
-        let value = unsafe { this.value.assume_init_mut() };
-        let fiber = unsafe { &mut value.fiber } as *mut ManuallyDrop<F>;
-        this.state = SlotState::Vacant;
-        let transaction = CompletionTransaction {
-            slot,
-            output: Some(output),
-        };
-        unsafe { ManuallyDrop::drop(&mut *fiber) };
-        transaction.finish();
+        match self.project_replace(Self::Done(output)) {
+            SlotProjOwn::Live(_) => {}
+            // SAFETY: only a live slot can produce a ready fiber output.
+            SlotProjOwn::Vacant | SlotProjOwn::Done(_) => unsafe {
+                debug_assert!(false, "dope: completed an inactive batch slot");
+                hint::unreachable_unchecked()
+            },
+        }
     }
 
-    fn take_output(&mut self) -> O {
-        debug_assert!(self.state == SlotState::Done);
-        self.state = SlotState::Vacant;
-        // SAFETY: `Done` proves the active union field is an initialized `O`.
-        // Marking it vacant transfers the sole drop obligation to the caller.
-        let value = unsafe { self.value.assume_init_mut() };
-        unsafe { ManuallyDrop::take(&mut value.output) }
+    fn take_output(self: Pin<&mut Self>) -> O {
+        match self.project_replace(Self::Vacant) {
+            SlotProjOwn::Done(output) => output,
+            // SAFETY: output extraction starts only after every slot completed.
+            SlotProjOwn::Vacant | SlotProjOwn::Live(_) => unsafe {
+                debug_assert!(false, "dope: extracted an incomplete batch slot");
+                hint::unreachable_unchecked()
+            },
+        }
     }
 
     fn is_live(&self) -> bool {
-        self.state == SlotState::Live
-    }
-
-    fn install_output(&mut self, output: O) {
-        debug_assert!(self.state == SlotState::Vacant);
-        self.value.write(SlotValue {
-            output: ManuallyDrop::new(output),
-        });
-        self.state = SlotState::Done;
-    }
-}
-
-impl<F, O> Drop for Slot<F, O> {
-    fn drop(&mut self) {
-        match self.state {
-            SlotState::Vacant => {}
-            SlotState::Live => {
-                // SAFETY: `Live` selects the initialized fiber union field.
-                let value = unsafe { self.value.assume_init_mut() };
-                unsafe { ManuallyDrop::drop(&mut value.fiber) };
-            }
-            SlotState::Done => {
-                // SAFETY: `Done` selects the initialized output union field.
-                let value = unsafe { self.value.assume_init_mut() };
-                unsafe { ManuallyDrop::drop(&mut value.output) };
-            }
-        }
-    }
-}
-
-struct CompletionTransaction<F, O> {
-    slot: *mut Slot<F, O>,
-    output: Option<O>,
-}
-
-impl<F, O> CompletionTransaction<F, O> {
-    fn finish(mut self) {
-        self.install();
-    }
-
-    fn install(&mut self) {
-        let Some(output) = self.output.take() else {
-            return;
-        };
-        // SAFETY: the transaction cannot outlive the `complete` call that
-        // created it, so `slot` still names that exclusively borrowed slot.
-        unsafe { &mut *self.slot }.install_output(output);
-    }
-}
-
-impl<F, O> Drop for CompletionTransaction<F, O> {
-    fn drop(&mut self) {
-        self.install();
+        matches!(self, Self::Live(_))
     }
 }
 
@@ -144,13 +89,16 @@ pub(crate) enum PollStep {
     Ready,
 }
 
+#[pin_project(PinnedDrop, !Unpin)]
 pub(crate) struct BatchCore<F, O, const N: usize> {
+    #[pin]
     slots: [Slot<F, O>; N],
+    #[pin]
     tasks: [TaskContext; N],
+    #[pin]
     ready: IndexQueue,
     len: usize,
     next_bind: usize,
-    _pin: PhantomPinned,
 }
 
 impl<F, O, const N: usize> BatchCore<F, O, N> {
@@ -161,7 +109,6 @@ impl<F, O, const N: usize> BatchCore<F, O, N> {
             ready: IndexQueue::with_capacity(N),
             len: 0,
             next_bind: 0,
-            _pin: PhantomPinned,
         }
     }
 
@@ -190,33 +137,45 @@ impl<F, O, const N: usize> BatchCore<F, O, N> {
     where
         F: Fiber<'d, Output = O>,
     {
-        // SAFETY: the core is pinned for this poll. All projections below stay
-        // within it, and no slot, task context, or queue is moved.
-        let this = unsafe { self.get_unchecked_mut() };
-        let (index, wake) = if let Some(index) = unsafe { Pin::new_unchecked(&this.ready) }.pop() {
-            let task = unsafe { Pin::new_unchecked(&this.tasks[index]) };
-            (index, unsafe { task.context_unchecked() })
-        } else if this.next_bind < this.len {
-            let index = this.next_bind;
-            this.next_bind += 1;
-            // SAFETY: the child fiber is owned by this pinned core and Drop
-            // unbinds its task before either the fiber or queue disappears.
-            let parent = unsafe { context.waker_unchecked() };
-            let task = unsafe { Pin::new_unchecked(&this.tasks[index]) };
-            let queue = unsafe { Pin::new_unchecked(&this.ready) };
-            let wake = unsafe { task.bind_index(queue, index, parent) };
+        let mut this = self.project();
+        let (index, wake) = if let Some(index) = this.ready.as_ref().pop() {
+            let task =
+                pinned_slice::get(this.tasks.as_ref(), index).unwrap_or_else(|| unreachable!());
+            (
+                index,
+                TaskContext::waker(BatchTask {
+                    context: task,
+                    _brand: PhantomData,
+                }),
+            )
+        } else if *this.next_bind < *this.len {
+            let index = *this.next_bind;
+            *this.next_bind += 1;
+            let parent = context.as_ref().get_ref().parent_waker();
+            let task =
+                pinned_slice::get(this.tasks.as_ref(), index).unwrap_or_else(|| unreachable!());
+            let wake = TaskContext::bind(
+                BatchTask {
+                    context: task,
+                    _brand: PhantomData,
+                },
+                this.ready.as_ref(),
+                index,
+                parent,
+            );
             (index, wake)
         } else {
             return PollStep::Idle;
         };
 
         let mut child = pin!(Context::from_waker(wake, context.as_mut().driver_access()));
-        let mut slot = unsafe { Pin::new_unchecked(&mut this.slots[index]) };
+        let mut slot =
+            pinned_slice::get_mut(this.slots.as_mut(), index).unwrap_or_else(|| unreachable!());
         let Poll::Ready(output) = slot.as_mut().poll(child.as_mut()) else {
             return PollStep::Pending;
         };
-        let task = unsafe { Pin::new_unchecked(&this.tasks[index]) };
-        unsafe { task.unbind() };
+        let task = pinned_slice::get(this.tasks.as_ref(), index).unwrap_or_else(|| unreachable!());
+        task.unbind();
         slot.complete(output);
         PollStep::Ready
     }
@@ -227,29 +186,33 @@ impl<F, O, const N: usize> BatchCore<F, O, N> {
     }
 
     pub(crate) fn take_output(self: Pin<&mut Self>) -> BatchOutput<O, N> {
-        // SAFETY: completion has unbound every task and changed every occupied
-        // slot to `Done`; moving outputs cannot move a pinned live fiber.
-        let this = unsafe { self.get_unchecked_mut() };
+        let mut this = self.project();
+        let len = *this.len;
         let mut outputs = from_fn(|_| MaybeUninit::uninit());
-        for (output, slot) in outputs[..this.len].iter_mut().zip(&mut this.slots) {
+        for (index, output) in outputs[..len].iter_mut().enumerate() {
+            let slot =
+                pinned_slice::get_mut(this.slots.as_mut(), index).unwrap_or_else(|| unreachable!());
             output.write(slot.take_output());
         }
         BatchOutput {
             outputs,
             index: 0,
-            len: this.len,
+            len,
         }
     }
 }
 
-impl<F, O, const N: usize> Drop for BatchCore<F, O, N> {
-    fn drop(&mut self) {
-        for index in 0..self.next_bind {
-            if self.slots[index].is_live() && self.tasks[index].is_bound() {
-                // SAFETY: a core only binds after it is pinned, so its task
-                // array remains at the same address until this Drop completes.
-                let task = unsafe { Pin::new_unchecked(&self.tasks[index]) };
-                unsafe { task.unbind() };
+#[pinned_drop]
+impl<F, O, const N: usize> PinnedDrop for BatchCore<F, O, N> {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        for index in 0..*this.next_bind {
+            let slot =
+                pinned_slice::get(this.slots.as_ref(), index).unwrap_or_else(|| unreachable!());
+            let task =
+                pinned_slice::get(this.tasks.as_ref(), index).unwrap_or_else(|| unreachable!());
+            if slot.is_live() && task.is_bound() {
+                task.unbind();
             }
         }
     }
@@ -261,25 +224,20 @@ pub struct BatchOutput<O, const N: usize> {
     len: usize,
 }
 
-struct BatchOutputDrop<O> {
-    outputs: *mut MaybeUninit<O>,
-    index: usize,
-    len: usize,
+struct BatchOutputDrop<'a, O> {
+    outputs: &'a mut [MaybeUninit<O>],
 }
 
-impl<O> Drop for BatchOutputDrop<O> {
+impl<O> Drop for BatchOutputDrop<'_, O> {
     fn drop(&mut self) {
-        while self.index < self.len {
-            let index = self.index;
-            self.index += 1;
-            let remaining = Self {
-                outputs: self.outputs,
-                index: self.index,
-                len: self.len,
-            };
-            // SAFETY: `[index, len)` is exactly the initialized, unconsumed
-            // suffix. `remaining` owns the later suffix if this drop unwinds.
-            unsafe { (*self.outputs.add(index)).assume_init_drop() };
+        while !self.outputs.is_empty() {
+            let outputs = core::mem::take(&mut self.outputs);
+            let (head, tail) = outputs.split_first_mut().unwrap_or_else(|| unreachable!());
+            let mut remaining = Self { outputs: tail };
+            // SAFETY: this guard owns exactly the initialized, unconsumed
+            // suffix. `remaining` owns the tail if dropping `head` unwinds.
+            unsafe { head.assume_init_drop() };
+            self.outputs = core::mem::take(&mut remaining.outputs);
             forget(remaining);
         }
     }
@@ -310,9 +268,7 @@ impl<O, const N: usize> ExactSizeIterator for BatchOutput<O, N> {}
 impl<O, const N: usize> Drop for BatchOutput<O, N> {
     fn drop(&mut self) {
         drop(BatchOutputDrop {
-            outputs: self.outputs.as_mut_ptr(),
-            index: self.index,
-            len: self.len,
+            outputs: &mut self.outputs[self.index..self.len],
         });
     }
 }

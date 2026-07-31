@@ -3,12 +3,13 @@ use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
 
+use dope::driver::ready::CompletionWaker;
 use dope_fiber::abi::Fiber;
 use dope_fiber::abi::batch::Batch;
 use dope_fiber::abi::ready::Ready;
 use dope_fiber::raw::slab::TaskSlab;
 use dope_fiber::raw::task::queue::TaskQueue;
-use dope_fiber::raw::task::{Context, RootWaker, Waker};
+use dope_fiber::raw::task::{CompletionRegistrar, Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab, TaskId};
 use dope_test::{
@@ -45,10 +46,28 @@ impl<'d> Fiber<'d> for Probe {
     }
 }
 
+struct OwnedCompletion<'d>(Rc<Cell<Option<CompletionWaker<'d>>>>);
+
+// SAFETY: replacement removes the previous handle, and OwnedCompletion::drop
+// clears the slot before its owning test fiber is unbound.
+unsafe impl<'d> CompletionRegistrar<'d> for &OwnedCompletion<'d> {
+    type Output = ();
+
+    fn register(self, wake: CompletionWaker<'d>) {
+        self.0.set(Some(wake));
+    }
+}
+
+impl Drop for OwnedCompletion<'_> {
+    fn drop(&mut self) {
+        self.0.take();
+    }
+}
+
 struct Controlled<'d> {
     polls: Rc<Cell<usize>>,
     ready: Rc<Cell<bool>>,
-    waker: Rc<Cell<Option<Waker<'d>>>>,
+    completion: OwnedCompletion<'d>,
     output: usize,
 }
 
@@ -60,7 +79,7 @@ impl<'d> Fiber<'d> for Controlled<'d> {
         if self.ready.get() {
             Poll::Ready(self.output)
         } else {
-            self.waker.set(Some(unsafe { cx.waker_unchecked() }));
+            cx.as_ref().register_completion(&self.completion);
             Poll::Pending
         }
     }
@@ -217,13 +236,13 @@ fn pending_batch_polls_only_explicitly_woken_children() {
             Controlled {
                 polls: Rc::clone(&first_polls),
                 ready: Rc::clone(&first_ready),
-                waker: Rc::clone(&first_waker),
+                completion: OwnedCompletion(Rc::clone(&first_waker)),
                 output: 1,
             },
             Controlled {
                 polls: Rc::clone(&second_polls),
                 ready: Rc::clone(&second_ready),
-                waker: Rc::clone(&second_waker),
+                completion: OwnedCompletion(Rc::clone(&second_waker)),
                 output: 2,
             },
         ];
@@ -455,31 +474,24 @@ fn wait_queue_deduplicates_and_reports_overflow() {
         let first_waiter = pin!(Waiter::new());
         let second_waiter = pin!(Waiter::new());
         let overflow_waiter = pin!(Waiter::new());
-        let first_waker = Waker::from_ready(sess.driver(), first.key());
-        let second_waker = Waker::from_ready(sess.driver(), second.key());
-        let overflow_waker = Waker::from_ready(sess.driver(), overflow.key());
-        assert!(
-            queue
-                .as_ref()
-                .try_register_waker(first_waiter.as_ref(), first_waker)
-        );
-        assert!(
-            queue
-                .as_ref()
-                .try_register_waker(first_waiter.as_ref(), first_waker)
-        );
-        assert!(
-            queue
-                .as_ref()
-                .try_register_waker(second_waiter.as_ref(), second_waker)
-        );
+        assert!(queue.as_ref().try_register_completion(
+            first_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), first.key()),
+        ));
+        assert!(queue.as_ref().try_register_completion(
+            first_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), first.key()),
+        ));
+        assert!(queue.as_ref().try_register_completion(
+            second_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), second.key()),
+        ));
         assert!(queue.as_ref().can_register(first_waiter.as_ref()));
         assert!(!queue.as_ref().can_register(overflow_waiter.as_ref()));
-        assert!(
-            !queue
-                .as_ref()
-                .try_register_waker(overflow_waiter.as_ref(), overflow_waker)
-        );
+        assert!(!queue.as_ref().try_register_completion(
+            overflow_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), overflow.key()),
+        ));
 
         assert!(drain_tokens(sess.driver()).is_empty());
         queue.as_ref().wake();
@@ -501,32 +513,23 @@ fn dropping_waiter_unlinks_without_disturbing_order() {
         let second_waiter = Box::pin(Waiter::new());
         let removed_waiter = Box::pin(Waiter::new());
         let wrapped_waiter = Box::pin(Waiter::new());
-        let first_waker = Waker::from_ready(sess.driver(), first.key());
-        let second_waker = Waker::from_ready(sess.driver(), second.key());
-        let removed_waker = Waker::from_ready(sess.driver(), removed.key());
-        let wrapped_waker = Waker::from_ready(sess.driver(), wrapped.key());
-
-        assert!(
-            queue
-                .as_ref()
-                .try_register_waker(first_waiter.as_ref(), first_waker)
-        );
-        assert!(
-            queue
-                .as_ref()
-                .try_register_waker(second_waiter.as_ref(), second_waker)
-        );
-        assert!(
-            queue
-                .as_ref()
-                .try_register_waker(removed_waiter.as_ref(), removed_waker)
-        );
+        assert!(queue.as_ref().try_register_completion(
+            first_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), first.key()),
+        ));
+        assert!(queue.as_ref().try_register_completion(
+            second_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), second.key()),
+        ));
+        assert!(queue.as_ref().try_register_completion(
+            removed_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), removed.key()),
+        ));
         queue.as_ref().wake_one();
-        assert!(
-            queue
-                .as_ref()
-                .try_register_waker(wrapped_waiter.as_ref(), wrapped_waker)
-        );
+        assert!(queue.as_ref().try_register_completion(
+            wrapped_waiter.as_ref(),
+            CompletionWaker::from_ready(sess.driver(), wrapped.key()),
+        ));
         drop(removed_waiter);
         queue.as_ref().wake();
 
@@ -541,17 +544,21 @@ fn waiter_survives_queue_drop_without_a_dangling_registration() {
         let waiter = pin!(Waiter::new());
         {
             let queue = pin!(WaitQueue::with_capacity(1));
-            let waker = Waker::from_ready(sess.driver(), ready.key());
-            assert!(queue.as_ref().try_register_waker(waiter.as_ref(), waker));
+            let wake = CompletionWaker::from_ready(sess.driver(), ready.key());
+            assert!(
+                queue
+                    .as_ref()
+                    .try_register_completion(waiter.as_ref(), wake)
+            );
         }
         assert!(!waiter.is_registered());
         assert!(!waiter.as_ref().unregister());
         let replacement = pin!(WaitQueue::with_capacity(1));
-        let waker = Waker::from_ready(sess.driver(), ready.key());
+        let wake = CompletionWaker::from_ready(sess.driver(), ready.key());
         assert!(
             replacement
                 .as_ref()
-                .try_register_waker(waiter.as_ref(), waker)
+                .try_register_completion(waiter.as_ref(), wake)
         );
     });
 }

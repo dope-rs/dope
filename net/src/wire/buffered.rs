@@ -1,8 +1,12 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+use std::ops::Range;
 
-use o3::buffer::{Bytes, CapacityError, Leased, SharedLease, SharedPool, SpareFillError};
+use o3::buffer::{
+    Bytes, CapacityError, Leased, PrefixLength, Retained, SharedLease, SharedPool, SpareFillError,
+    Uninitialized, ValidatedPrefix,
+};
 
 use super::RuntimeLimits;
 use o3::buffer::PoolLayoutError;
@@ -105,19 +109,51 @@ impl Buffer<Recv> {
 }
 
 impl Buffer<Scratch> {
-    /// Removes `n` bytes from the front of this scratch buffer.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `n` exceeds the current length.
-    #[track_caller]
-    pub fn consume(&mut self, n: usize) {
-        assert!(n <= self.len(), "wire buffer consume overflow");
+    pub fn try_consume(&mut self, n: usize) -> bool {
+        if n > self.len() {
+            return false;
+        }
+        self.consume_valid(n);
+        true
+    }
+
+    pub fn try_consume_prefix(
+        &mut self,
+        amount: usize,
+    ) -> Result<ValidatedPrefix<'_, Self, impl FnOnce(&mut Self, usize)>, CapacityError> {
+        ValidatedPrefix::try_new(self, amount, Self::consume_valid)
+    }
+
+    pub fn consume_prefix_up_to(&mut self, requested: usize) -> usize {
+        let prefix = ValidatedPrefix::up_to(self, requested, Self::consume_valid);
+        let amount = prefix.len();
+        prefix.commit();
+        amount
+    }
+
+    fn consume_valid(&mut self, n: usize) {
+        debug_assert!(n <= self.len());
         self.head += n as u32;
         if self.head as usize == self.lease.len() {
             self.head = 0;
             self.lease.truncate(0);
         }
+    }
+
+    #[must_use]
+    pub fn freeze_range(self, range: Range<usize>) -> Option<Bytes<Retained>> {
+        if range.start > range.end || range.end > self.len() {
+            return None;
+        }
+        let start = self.head as usize + range.start;
+        let end = self.head as usize + range.end;
+        Bytes::<Retained>::from(self.lease.freeze()).get(start..end)
+    }
+}
+
+impl<R> PrefixLength for Buffer<R> {
+    fn prefix_len(&self) -> usize {
+        self.len()
     }
 }
 
@@ -147,21 +183,80 @@ impl RecvPool {
     }
 }
 
+#[derive(Clone)]
+pub struct ScratchPool {
+    pool: SharedPool,
+}
+
+impl ScratchPool {
+    pub fn try_new(slots: usize, capacity: usize) -> Result<Self, PoolLayoutError> {
+        Ok(Self {
+            pool: SharedPool::<Uninitialized>::try_new(slots, capacity)?,
+        })
+    }
+
+    #[must_use]
+    pub fn try_acquire(&self) -> Option<Buffer<Scratch>> {
+        self.pool.try_acquire().map(Buffer::new)
+    }
+
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.pool.capacity()
+    }
+
+    #[must_use]
+    pub fn available(&self) -> usize {
+        self.pool.available()
+    }
+}
+
 pub struct Buffered {
     scratch: SharedPool,
     recv: RecvPool,
 }
 
 impl Buffered {
+    pub fn try_scratch_for_runtime(
+        limits: RuntimeLimits,
+        scratch_per_connection: usize,
+        scratch_extra: usize,
+        scratch_capacity: usize,
+    ) -> Result<Self, PoolLayoutError> {
+        let scratch_slots = limits
+            .max_connections()
+            .checked_mul(scratch_per_connection)
+            .and_then(|slots| slots.checked_add(scratch_extra))
+            .ok_or(PoolLayoutError::SlotOverflow)?;
+        Self::try_fixed(scratch_slots, scratch_capacity, 0, 1)
+    }
+
     pub fn try_for_runtime(
         limits: RuntimeLimits,
         scratch_per_connection: usize,
         scratch_capacity: usize,
         recv_extra_capacity: usize,
     ) -> Result<Self, PoolLayoutError> {
+        Self::try_for_runtime_with_scratch_extra(
+            limits,
+            scratch_per_connection,
+            0,
+            scratch_capacity,
+            recv_extra_capacity,
+        )
+    }
+
+    pub fn try_for_runtime_with_scratch_extra(
+        limits: RuntimeLimits,
+        scratch_per_connection: usize,
+        scratch_extra: usize,
+        scratch_capacity: usize,
+        recv_extra_capacity: usize,
+    ) -> Result<Self, PoolLayoutError> {
         let scratch_slots = limits
             .max_connections()
             .checked_mul(scratch_per_connection)
+            .and_then(|slots| slots.checked_add(scratch_extra))
             .ok_or(PoolLayoutError::SlotOverflow)?;
         let recv_slots = limits
             .max_retained_recv_chunks()
@@ -181,9 +276,9 @@ impl Buffered {
         recv_capacity: usize,
     ) -> Result<Self, PoolLayoutError> {
         Ok(Self {
-            scratch: SharedPool::try_new(scratch_slots, scratch_capacity)?,
+            scratch: SharedPool::<Uninitialized>::try_new(scratch_slots, scratch_capacity)?,
             recv: RecvPool {
-                pool: SharedPool::try_new(recv_slots, recv_capacity)?,
+                pool: SharedPool::<Uninitialized>::try_new(recv_slots, recv_capacity)?,
             },
         })
     }
@@ -191,6 +286,13 @@ impl Buffered {
     #[must_use]
     pub fn try_acquire_scratch(&self) -> Option<Buffer<Scratch>> {
         self.scratch.try_acquire().map(Buffer::new)
+    }
+
+    #[must_use]
+    pub fn scratch_pool(&self) -> ScratchPool {
+        ScratchPool {
+            pool: self.scratch.clone(),
+        }
     }
 
     #[must_use]

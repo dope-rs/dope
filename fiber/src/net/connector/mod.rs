@@ -6,12 +6,13 @@ use std::marker::PhantomData;
 use std::task::Poll;
 
 use o3::buffer::{RetainBytes, Shared};
+use o3::cell::RegionToken;
 use o3::collections::CellQueue;
 
-use crate::Waker;
+use crate::raw::task::RootWaker;
 use dope::DriverContext;
+use dope::driver::ready::CompletionWaker;
 use dope::driver::token::{SlotIndex, Token};
-use dope::io::provided::ProvidedView;
 use dope::manifold::connector::app::{ChunkOutcome, ConnApp, Requests};
 use dope::manifold::connector::core::Core;
 use dope::manifold::connector::source::DialKey;
@@ -19,80 +20,92 @@ use dope::manifold::connector::source::explicit::{Explicit, ExplicitDialer};
 use dope::manifold::env::Bundle;
 use dope::runtime::profile::Balanced;
 use dope_net::Transport;
+use dope_net::link::egress::queue::Queue;
+use dope_net::link::egress::storage::Storage as EgressStorage;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 
 use super::port::Port;
 use super::port::recv::arena::RecvLayout;
-use dope::manifold::connector::state::State;
+use dope::manifold::connector::state::{IOV_CAP, State};
 use dope::runtime::executor::StorageFactory;
 use pending::{Outcome, Pending};
 use raw::Connect;
 
-pub struct ConnectorPort<'d, T: Transport>
+pub struct ConnectorPort<'d, T: Transport, W: Wire>
 where
     T::Addr: Clone,
 {
-    connections: Port<'d>,
+    connections: Port<'d, W::RetainedRecv<'d>>,
     pending: Pending<'d>,
     cancels: CellQueue<(DialKey, SlotIndex)>,
     source: Explicit<T>,
+    egress: EgressStorage,
+    wire_storage: W::ConnectionStorage,
 }
 
-pub struct ConnectorPortFactory<T> {
+pub struct ConnectorPortFactory<T, W: Wire> {
     layout: RecvLayout,
+    wire_storage: W::ConnectionStorage,
     transport: PhantomData<fn() -> T>,
 }
 
-impl<'d, T: Transport> ConnectorPort<'d, T>
+impl<'d, T: Transport, W: Wire> ConnectorPort<'d, T, W>
 where
     T::Addr: Clone,
 {
-    fn with_layout(layout: RecvLayout) -> Self {
+    fn with_layout(layout: RecvLayout, wire_storage: W::ConnectionStorage) -> Self {
         let capacity = layout.connections();
         Self {
             connections: Port::with_layout(layout, false),
             pending: Pending::with_capacity(capacity),
             cancels: CellQueue::with_capacity(capacity),
             source: Explicit::with_capacity(capacity),
+            egress: EgressStorage::default(),
+            wire_storage,
         }
     }
 
-    pub fn factory(capacity: usize) -> io::Result<ConnectorPortFactory<T>> {
+    pub fn factory(capacity: usize) -> io::Result<ConnectorPortFactory<T, W>> {
+        let layout = RecvLayout::new(capacity)?;
+        let wire_storage = W::connection_storage(layout.connections())?;
         Ok(ConnectorPortFactory {
-            layout: RecvLayout::new(capacity)?,
+            layout,
+            wire_storage,
             transport: PhantomData,
         })
     }
 
-    pub fn handle(&self) -> ConnectorHandle<'_, 'd, T> {
+    pub fn handle(&self) -> ConnectorHandle<'_, 'd, T, W> {
         ConnectorHandle { port: self }
     }
 
-    pub fn connector<const ID: u8, W: Wire>(
+    pub fn wire_storage(&self) -> &W::ConnectionStorage {
+        &self.wire_storage
+    }
+
+    pub fn connector<const ID: u8>(
         &self,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Connector<'_, 'd, ID, T, W>>
     where
-        W::InitConfig: Default,
+        W::InitConfig<'d>: Default,
     {
-        self.connector_with_wire(W::InitConfig::default(), driver)
+        self.connector_with_wire(W::InitConfig::<'d>::default(), driver)
     }
 
-    pub fn connector_with_wire<const ID: u8, W: Wire>(
+    pub fn connector_with_wire<const ID: u8>(
         &self,
-        wire_config: W::InitConfig,
+        wire_config: W::InitConfig<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Connector<'_, 'd, ID, T, W>> {
         let core = Core::with_app_configs(
-            AsyncApp {
-                port: self,
-                _wire: PhantomData,
-            },
+            AsyncApp { port: self },
             self.source.dialer(),
             self.connections.capacity(),
             Default::default(),
             wire_config,
+            &self.egress,
             driver,
         )?;
         Ok(Connector { core })
@@ -108,8 +121,8 @@ where
         Ok(key)
     }
 
-    fn resolve(&self, key: DialKey, waker: Waker<'d>) -> Poll<io::Result<Token>> {
-        match self.pending.poll(key, waker) {
+    fn resolve(&self, key: DialKey, wake: CompletionWaker<'d>) -> Poll<io::Result<Token>> {
+        match self.pending.poll(key, wake) {
             Poll::Ready(Outcome::Connected(token)) => Poll::Ready(Ok(token)),
             Poll::Ready(Outcome::Failed) => {
                 Poll::Ready(Err(Error::other("fiber::Connector: connect failed")))
@@ -126,8 +139,14 @@ where
         assert!(self.cancels.push_back((key, local)).is_ok());
     }
 
-    fn connected(&self, key: DialKey, token: Token, wake: Waker<'d>) {
-        if !self.connections.activate(token, wake) {
+    fn connected(
+        &self,
+        key: DialKey,
+        token: Token,
+        wake: RootWaker<'d>,
+        region: &mut RegionToken<'d>,
+    ) {
+        if !self.connections.activate(token, wake, region) {
             self.pending.settle(key, Outcome::Failed);
             return;
         }
@@ -135,15 +154,16 @@ where
     }
 }
 
-impl<T> StorageFactory for ConnectorPortFactory<T>
+impl<T, W> StorageFactory for ConnectorPortFactory<T, W>
 where
     T: Transport + 'static,
     T::Addr: Clone,
+    W: Wire,
 {
-    type Output<'d> = ConnectorPort<'d, T>;
+    type Output<'d> = ConnectorPort<'d, T, W>;
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        ConnectorPort::with_layout(self.layout)
+        ConnectorPort::with_layout(self.layout, self.wire_storage)
     }
 }
 
@@ -151,8 +171,7 @@ struct AsyncApp<'scope, 'd, T: Transport, W: Wire>
 where
     T::Addr: Clone,
 {
-    port: &'scope ConnectorPort<'d, T>,
-    _wire: PhantomData<fn() -> W>,
+    port: &'scope ConnectorPort<'d, T, W>,
 }
 
 impl<'scope, 'd, T: Transport, W: Wire> ConnApp<'d> for AsyncApp<'scope, 'd, T, W>
@@ -169,42 +188,47 @@ where
         RecvLayout::new(max_connections).map(RecvLayout::slots)
     }
 
-    fn chunk<R: RetainBytes>(
+    fn chunk<'pool, R: RetainBytes>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         chunk: R,
-        _driver: &mut DriverContext<'_, 'd>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
-        if self.port.connections.push_recv(slot.token(), chunk) {
-            ChunkOutcome::Overrun
-        } else {
-            ChunkOutcome::Ok
-        }
+        let _ = (slot, egress, chunk, driver);
+        ChunkOutcome::Overrun
     }
 
-    fn retained_chunk(
+    fn retained_chunk<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        chunk: ProvidedView<'d>,
-        _driver: &mut DriverContext<'_, 'd>,
+        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        chunk: W::RetainedRecv<'d>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
-        if self.port.connections.push_retained(slot.token(), chunk) {
+        if self
+            .port
+            .connections
+            .push_retained(slot.token(), chunk, driver.region_token())
+        {
             ChunkOutcome::Overrun
         } else {
             ChunkOutcome::Ok
         }
     }
 
-    fn connected(
+    fn connected<'pool>(
         &mut self,
         key: DialKey,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
-        _driver: &mut DriverContext<'_, 'd>,
+        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port.connected(
             key,
             slot.token(),
-            Waker::from_ready(slot.driver(), slot.ready_key()),
+            RootWaker::from_ready(slot.driver(), slot.ready_key()),
+            driver.region_token(),
         );
     }
 
@@ -212,20 +236,22 @@ where
         self.port.pending.settle(key, Outcome::Failed);
     }
 
-    fn send(
+    fn send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
+        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         _sent: usize,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port
             .connections
-            .sync_send(slot.token(), slot.state.egress_len() != 0);
+            .sync_send(slot.token(), egress.total_bytes() != 0);
     }
 
-    fn close(
+    fn close<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
+        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port.connections.closed(slot.token());
@@ -265,20 +291,26 @@ where
 {
     #[pin]
     #[forward('d)]
-    core:
-        Core<'d, ID, AsyncApp<'scope, 'd, T, W>, ExplicitDialer<'scope, T>, Bundle<T, W, Balanced>>,
+    core: Core<
+        'scope,
+        'd,
+        ID,
+        AsyncApp<'scope, 'd, T, W>,
+        ExplicitDialer<'scope, T>,
+        Bundle<T, W, Balanced>,
+    >,
 }
 
-pub struct ConnectorHandle<'scope, 'd, T: Transport>
+pub struct ConnectorHandle<'scope, 'd, T: Transport, W: Wire>
 where
     T::Addr: Clone,
 {
-    port: &'scope ConnectorPort<'d, T>,
+    port: &'scope ConnectorPort<'d, T, W>,
 }
 
-impl<T: Transport> Copy for ConnectorHandle<'_, '_, T> where T::Addr: Clone {}
+impl<T: Transport, W: Wire> Copy for ConnectorHandle<'_, '_, T, W> where T::Addr: Clone {}
 
-impl<T: Transport> Clone for ConnectorHandle<'_, '_, T>
+impl<T: Transport, W: Wire> Clone for ConnectorHandle<'_, '_, T, W>
 where
     T::Addr: Clone,
 {
@@ -287,11 +319,11 @@ where
     }
 }
 
-impl<'scope, 'd, T: Transport> ConnectorHandle<'scope, 'd, T>
+impl<'scope, 'd, T: Transport, W: Wire> ConnectorHandle<'scope, 'd, T, W>
 where
     T::Addr: Clone,
 {
-    pub fn connect(self, addr: T::Addr, config: T::StreamConfig) -> Connect<'scope, 'd, T> {
+    pub fn connect(self, addr: T::Addr, config: T::StreamConfig) -> Connect<'scope, 'd, T, W> {
         Connect::new(self, addr, config)
     }
 }

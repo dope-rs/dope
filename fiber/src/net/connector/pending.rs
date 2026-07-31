@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::task::Poll;
 
-use crate::raw::task::Waker;
+use dope::driver::ready::CompletionWaker;
 use dope::driver::token::Token;
 use dope::manifold::connector::source::DialKey;
 
@@ -10,7 +10,7 @@ enum Slot<'d> {
     #[default]
     Vacant,
     Pending(DialKey),
-    Waiting(DialKey, Waker<'d>),
+    Waiting(DialKey, CompletionWaker<'d>),
     Settled(DialKey, Outcome),
 }
 
@@ -48,14 +48,14 @@ impl<'d> Pending<'d> {
         }
     }
 
-    pub(crate) fn poll(&self, key: DialKey, waker: Waker<'d>) -> Poll<Outcome> {
+    pub(crate) fn poll(&self, key: DialKey, wake: CompletionWaker<'d>) -> Poll<Outcome> {
         let Some(slot) = self.slots.get(key.index() as usize) else {
             return Poll::Pending;
         };
         match slot.take() {
             Slot::Settled(current, value) if current == key => Poll::Ready(value),
             Slot::Pending(current) | Slot::Waiting(current, _) if current == key => {
-                slot.set(Slot::Waiting(key, waker));
+                slot.set(Slot::Waiting(key, wake));
                 Poll::Pending
             }
             state => {

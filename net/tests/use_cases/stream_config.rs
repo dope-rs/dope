@@ -75,6 +75,32 @@ fn tcp_listener_options_reject_values_the_kernel_abi_cannot_represent() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn failed_listener_binds_do_not_exhaust_fixed_slots() {
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::pin::pin;
+
+    use dope_core::driver::ext::DriverExt;
+    use dope_core::driver::{self, Driver};
+    use dope_net::tcp::listener::Config as TcpListenerConfig;
+
+    let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupied address");
+    let addr = occupied.local_addr().expect("occupied address");
+    let mut driver =
+        pin!(Driver::new(driver::Config::for_quic_udp(1, 8)).expect("small fixed-file table"));
+
+    driver.as_mut().scope(|mut scope| {
+        let mut access = scope.context();
+        for _ in 0..32 {
+            let error =
+                Tcp::bind_listener_slot(&mut access, &addr, 128, &TcpListenerConfig::default())
+                    .expect_err("occupied address must reject bind");
+            assert_ne!(error.kind(), ErrorKind::OutOfMemory);
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn linux_accepts_subunit_tcp_durations() {
     let config = TcpConfig {
         keep_alive_idle: Some(Duration::from_nanos(1)),

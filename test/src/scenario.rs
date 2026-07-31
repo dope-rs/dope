@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 use dope::driver::token::Token;
 use dope::manifold::Manifold;
 use dope::manifold::typed::TypedToken;
-use dope::runtime::dispatcher::{Dispatcher, Idle};
+use dope::runtime::dispatcher::{Dispatcher, FinishContext, Idle};
 use dope::runtime::executor::Session;
 use dope::{DriverContext, Event};
 use dope_fiber::abi::Fiber;
@@ -41,7 +41,9 @@ where
 
     fn activate(self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>) {
         if target.route() == M::ID {
-            let target = unsafe { TypedToken::new_unchecked(target) };
+            let Some(target) = TypedToken::try_new(target) else {
+                unreachable!()
+            };
             Manifold::activate(self.project().manifold, target, driver);
         }
     }
@@ -57,23 +59,27 @@ where
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         Manifold::shutdown(self.project().manifold, driver);
     }
+
+    fn finish(self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        Manifold::finish(self.project().manifold, context);
+    }
 }
 
-pub type ListenerHost<'d, const ID: u8, A, E> = ManifoldHost<Listener<'d, ID, A, E>>;
+pub type ListenerHost<'pool, 'd, const ID: u8, A, E> = ManifoldHost<Listener<'pool, 'd, ID, A, E>>;
 
 /// Runtime side of a TCP scenario. It owns no resources and cannot escape `Executor::enter`.
-pub struct TcpCase<'a, 'scope, 'd, D> {
-    session: &'a mut Session<'scope, 'd>,
+pub struct TcpCase<'a, 'scope, 'd, S, D> {
+    session: &'a mut Session<'scope, 'd, S>,
     app: Pin<&'a BrandCell<'d, D>>,
     addr: SocketAddr,
 }
 
-impl<'a, 'scope, 'd, D> TcpCase<'a, 'scope, 'd, D>
+impl<'a, 'scope, 'd, S, D> TcpCase<'a, 'scope, 'd, S, D>
 where
     D: Dispatcher<'d>,
 {
     pub fn new(
-        session: &'a mut Session<'scope, 'd>,
+        session: &'a mut Session<'scope, 'd, S>,
         app: Pin<&'a BrandCell<'d, D>>,
         addr: SocketAddr,
     ) -> Self {
@@ -84,7 +90,7 @@ where
         self.addr
     }
 
-    pub fn session(&mut self) -> &mut Session<'scope, 'd> {
+    pub fn session(&mut self) -> &mut Session<'scope, 'd, S> {
         self.session
     }
 

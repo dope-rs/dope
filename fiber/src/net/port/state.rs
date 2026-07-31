@@ -1,11 +1,10 @@
 use std::cell::Cell;
 use std::io::{Error, ErrorKind};
 
-use crate::Waker;
-use dope::io::provided::ProvidedView;
-use o3::buffer::RetainBytes;
+use dope::driver::ready::{CompletionSlot, CompletionWaker};
+use dope_net::wire::{RecvCursor, RecvTarget};
+use o3::cell::RegionToken;
 
-use super::recv::Buffer;
 use super::recv::arena::{PushError, RecvArena};
 use super::recv::queue::RecvQueue;
 use super::result::{RecvInto, SendIdle};
@@ -14,8 +13,8 @@ pub(crate) struct State<'d> {
     recv: RecvQueue,
     closed: Cell<bool>,
     error: Cell<Option<Error>>,
-    recv_waiter: Cell<Option<Waker<'d>>>,
-    send_waiter: Cell<Option<Waker<'d>>>,
+    recv_waiter: CompletionSlot<'d>,
+    send_waiter: CompletionSlot<'d>,
     detached: Cell<bool>,
 }
 
@@ -25,47 +24,43 @@ impl Default for State<'_> {
             recv: RecvQueue::default(),
             closed: Cell::new(false),
             error: Cell::new(None),
-            recv_waiter: Cell::new(None),
-            send_waiter: Cell::new(None),
+            recv_waiter: CompletionSlot::empty(),
+            send_waiter: CompletionSlot::empty(),
             detached: Cell::new(false),
         }
     }
 }
 
 impl<'d> State<'d> {
-    pub(crate) fn reset(&self, arena: &RecvArena<'d>) -> bool {
-        let reserved = arena.reset(&self.recv);
+    pub(crate) fn reset<R: RecvCursor + 'd>(
+        &self,
+        lane: usize,
+        arena: &RecvArena<'d, R>,
+        region: &mut RegionToken<'d>,
+    ) {
+        arena.reset(lane, &self.recv, region);
         self.closed.set(false);
         self.error.take();
-        self.recv_waiter.set(None);
-        self.send_waiter.set(None);
+        self.recv_waiter.clear();
+        self.send_waiter.clear();
         self.detached.set(false);
-        reserved
     }
 
-    pub(crate) fn push_recv<R: RetainBytes>(&self, arena: &RecvArena<'d>, chunk: R) -> bool {
-        let len = chunk.len();
-        self.push_recv_value(arena, len, || Buffer::Owned(chunk.into_retained()))
-    }
-
-    pub(crate) fn push_retained(&self, arena: &RecvArena<'d>, chunk: ProvidedView<'d>) -> bool {
-        let len = chunk.len();
-        self.push_recv_value(arena, len, || Buffer::Provided(chunk))
-    }
-
-    fn push_recv_value(
+    pub(crate) fn push_retained<R: RecvCursor + 'd>(
         &self,
-        arena: &RecvArena<'d>,
-        len: usize,
-        value: impl FnOnce() -> Buffer<'d>,
+        lane: usize,
+        arena: &RecvArena<'d, R>,
+        chunk: R,
+        region: &mut RegionToken<'d>,
     ) -> bool {
+        let len = chunk.remaining();
         if len == 0 {
             return false;
         }
         if self.is_closed() {
             return true;
         }
-        if let Err(error) = arena.push(&self.recv, value(), len as u32) {
+        if let Err(error) = arena.push(lane, &self.recv, chunk, region) {
             let message = match error {
                 PushError::Limit => "fiber: recv backpressure exceeded",
                 PushError::Exhausted => "fiber: receive arena exhausted",
@@ -102,26 +97,26 @@ impl<'d> State<'d> {
         self.error.take()
     }
 
-    fn wake(waiter: &Cell<Option<Waker<'d>>>) {
-        if let Some(waker) = waiter.take() {
-            waker.wake();
+    fn wake(waiter: &CompletionSlot<'d>) {
+        if let Some(wake) = waiter.take() {
+            wake.wake();
         }
     }
 
-    pub(crate) fn set_recv_waker(&self, waker: Waker<'d>) {
-        self.recv_waiter.set(Some(waker));
+    pub(crate) fn set_recv_waker(&self, wake: CompletionWaker<'d>) {
+        self.recv_waiter.set(wake);
     }
 
     pub(crate) fn clear_recv_waker(&self) {
-        self.recv_waiter.set(None);
+        self.recv_waiter.clear();
     }
 
-    pub(crate) fn set_send_waker(&self, waker: Waker<'d>) {
-        self.send_waiter.set(Some(waker));
+    pub(crate) fn set_send_waker(&self, wake: CompletionWaker<'d>) {
+        self.send_waiter.set(wake);
     }
 
     pub(crate) fn clear_send_waker(&self) {
-        self.send_waiter.set(None);
+        self.send_waiter.clear();
     }
 
     pub(crate) fn detach(&self) {
@@ -132,16 +127,23 @@ impl<'d> State<'d> {
         self.detached.get() || self.recv.is_empty()
     }
 
-    pub(crate) fn try_recv_into(&self, arena: &RecvArena<'d>, dst: &mut [u8]) -> RecvInto {
-        let filled = arena.drain_into(&self.recv, dst);
-        if filled > 0 {
-            return RecvInto::Bytes(filled);
+    pub(crate) fn try_recv_into<R: RecvCursor + 'd>(
+        &self,
+        lane: usize,
+        arena: &RecvArena<'d, R>,
+        target: &mut RecvTarget<'_>,
+        region: &mut RegionToken<'d>,
+    ) -> RecvInto {
+        let initial = target.len();
+        arena.drain_into(lane, &self.recv, target, region);
+        if target.len() != initial {
+            return RecvInto::Ready;
         }
         if let Some(e) = self.take_error() {
             return RecvInto::Failed(e);
         }
         if self.is_closed() {
-            return RecvInto::Bytes(0);
+            return RecvInto::Ready;
         }
         RecvInto::Pending
     }

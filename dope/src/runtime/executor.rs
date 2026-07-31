@@ -1,7 +1,9 @@
 use std::cell::Cell;
 use std::io;
 use std::pin::{Pin, pin};
+use std::ptr::from_ref;
 
+use dope_core::driver::Scope;
 use dope_core::driver::control::ContextControl;
 use dope_core::driver::ext::DriverExt;
 use o3::cell::{BrandCell, BrandToken};
@@ -11,9 +13,8 @@ use crate::driver::Config;
 use crate::driver::Driver;
 use crate::hash::Seed;
 use crate::runtime::__private::RootTask;
-use crate::runtime::dispatcher::Dispatcher;
+use crate::runtime::dispatcher::{Dispatcher, FinishContext};
 use crate::{DriverContext, DriverRef};
-use std::ptr::from_ref;
 
 pub trait StorageFactory: 'static {
     type Output<'d>: 'd;
@@ -99,16 +100,19 @@ impl<S: StorageFactory> Executor<S> {
             seed,
         } = self;
         let mut driver = pin!(driver);
-        driver.as_mut().scope(move |mut access, token| {
-            let storage = storage.build(&mut access.reborrow());
+        driver.as_mut().scope(move |mut scope| {
+            let storage = storage.build(&mut scope.context());
             let storage = pin!(storage);
-            let mut core = SessionCore {
-                driver: access,
-                seed,
-                token,
-            };
+            let mut core = SessionCore { scope, seed };
+            // SAFETY: `storage` is pinned before this reference is formed and is
+            // dropped only after `f` returns. Both lifetimes are universally
+            // quantified by `enter`, so neither the session nor a storage
+            // reference can escape through `R`. This binds the pinned storage
+            // to the same generative scope as the driver, enabling storage that
+            // contains zero-copy handles into its own pinned pools.
+            let storage = unsafe { Pin::new_unchecked(&*from_ref(storage.as_ref().get_ref())) };
             f(Session {
-                storage: unsafe { extend_storage(storage.as_ref()) },
+                storage,
                 core: &mut core,
             })
         })
@@ -120,14 +124,9 @@ pub struct Session<'scope, 'd: 'scope, S = ()> {
     core: &'scope mut SessionCore<'d>,
 }
 
-unsafe fn extend_storage<'d, S>(storage: Pin<&S>) -> Pin<&'d S> {
-    unsafe { Pin::new_unchecked(&*from_ref(storage.get_ref())) }
-}
-
 struct SessionCore<'d> {
-    driver: DriverContext<'d, 'd>,
+    scope: Scope<'d>,
     seed: Seed,
-    token: BrandToken<'d>,
 }
 
 pub struct AppSession<'a, 'scope, 'd: 'scope, S, D> {
@@ -154,16 +153,16 @@ where
             return;
         }
         let core = &mut *self.session.core;
-        Dispatcher::shutdown(
-            self.cell.borrow_pin_mut(&mut core.token),
-            &mut core.driver.reborrow(),
-        );
+        let (token, mut driver) = core.scope.token_and_context();
+        Dispatcher::shutdown(self.cell.borrow_pin_mut(token), &mut driver);
+        let mut context = FinishContext::new(driver.reborrow());
+        Dispatcher::finish(self.cell.borrow_pin_mut(token), &mut context);
     }
 }
 
 impl Drop for SessionCore<'_> {
     fn drop(&mut self) {
-        self.driver.prepare_drop();
+        self.scope.context().prepare_drop();
     }
 }
 
@@ -186,22 +185,21 @@ impl<'scope, 'd: 'scope, S> Session<'scope, 'd, S> {
     where
         S: 'd,
     {
-        (self.storage_pin(), self.core.driver.reborrow())
+        (self.storage_pin(), self.core.scope.context())
     }
 
     #[doc(hidden)]
     pub fn token_and_driver(&mut self) -> (&mut BrandToken<'d>, DriverContext<'_, 'd>) {
-        let core = &mut *self.core;
-        (&mut core.token, core.driver.reborrow())
+        self.core.scope.token_and_context()
     }
 
     pub fn driver(&self) -> DriverRef<'d> {
-        self.core.driver.driver_ref()
+        self.core.scope.driver_ref()
     }
 
     #[doc(hidden)]
     pub fn driver_access(&mut self) -> DriverContext<'_, 'd> {
-        self.core.driver.reborrow()
+        self.core.scope.context()
     }
 
     pub const fn seed(&self) -> Seed {
@@ -209,7 +207,7 @@ impl<'scope, 'd: 'scope, S> Session<'scope, 'd, S> {
     }
 
     pub fn token(&mut self) -> &mut BrandToken<'d> {
-        &mut self.core.token
+        self.core.scope.token()
     }
 
     pub fn with_app<D, R>(
@@ -243,23 +241,13 @@ impl<'scope, 'd: 'scope, S> Session<'scope, 'd, S> {
         D: Dispatcher<'d>,
         R: RootTask<'d, T>,
     {
-        Run::new(
-            &mut self.core.driver,
-            dispatcher,
-            &mut self.core.token,
-            None,
-        )
-        .block_on(root)
+        let (token, mut driver) = self.core.scope.token_and_context();
+        Run::new(&mut driver, dispatcher, token, None).block_on(root)
     }
 
     pub fn run<D: Dispatcher<'d>>(&mut self, dispatcher: Pin<&BrandCell<'d, D>>) -> io::Result<()> {
-        Run::new(
-            &mut self.core.driver,
-            dispatcher,
-            &mut self.core.token,
-            None,
-        )
-        .run()
+        let (token, mut driver) = self.core.scope.token_and_context();
+        Run::new(&mut driver, dispatcher, token, None).run()
     }
 }
 
@@ -278,23 +266,13 @@ where
         R: RootTask<'d, T>,
     {
         let core = &mut *self.session.core;
-        Run::new(
-            &mut core.driver,
-            self.cell,
-            &mut core.token,
-            Some(self.shutdown),
-        )
-        .block_on(root)
+        let (token, mut driver) = core.scope.token_and_context();
+        Run::new(&mut driver, self.cell, token, Some(self.shutdown)).block_on(root)
     }
 
     pub fn run(&mut self) -> io::Result<()> {
         let core = &mut *self.session.core;
-        Run::new(
-            &mut core.driver,
-            self.cell,
-            &mut core.token,
-            Some(self.shutdown),
-        )
-        .run()
+        let (token, mut driver) = core.scope.token_and_context();
+        Run::new(&mut driver, self.cell, token, Some(self.shutdown)).run()
     }
 }

@@ -3,26 +3,14 @@ use std::cell::Cell;
 use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::Token;
 use dope_net::link::egress::config::Config;
-use dope_net::link::egress::metadata::{MetadataArena, MetadataQueue};
+use dope_net::link::egress::metadata::MetadataArena;
 
 use super::app::{CloseKind, Requests};
 use crate::DriverRef;
 
-struct Queue<B> {
-    entries: MetadataQueue<B>,
-}
-
-impl<B> Queue<B> {
-    fn new(arena: &MetadataArena<B>, lane: usize) -> Self {
-        Self {
-            entries: MetadataQueue::new(arena, lane),
-        }
-    }
-}
-
-struct Entry<'d, B> {
+struct Entry<'d> {
     state: Cell<State<'d>>,
-    queue: Queue<B>,
+    lane: usize,
     close: Cell<bool>,
     generation: Cell<u64>,
 }
@@ -47,14 +35,14 @@ struct Transaction<'d> {
     generation: u64,
 }
 
-struct Suspension<'a, 'd, B: AsRef<[u8]>> {
-    entry: &'a Entry<'d, B>,
+struct Suspension<'a, 'd> {
+    entry: &'a Entry<'d>,
     transaction: Transaction<'d>,
     armed: bool,
 }
 
-impl<'a, 'd, B: AsRef<[u8]>> Suspension<'a, 'd, B> {
-    fn begin(entry: &'a Entry<'d, B>, transaction: Transaction<'d>) -> Option<Self> {
+impl<'a, 'd> Suspension<'a, 'd> {
+    fn begin(entry: &'a Entry<'d>, transaction: Transaction<'d>) -> Option<Self> {
         entry.suspend(transaction).then_some(Self {
             entry,
             transaction,
@@ -68,7 +56,7 @@ impl<'a, 'd, B: AsRef<[u8]>> Suspension<'a, 'd, B> {
     }
 }
 
-impl<B: AsRef<[u8]>> Drop for Suspension<'_, '_, B> {
+impl Drop for Suspension<'_, '_> {
     fn drop(&mut self) {
         if self.armed {
             self.entry.restore(self.transaction);
@@ -76,11 +64,11 @@ impl<B: AsRef<[u8]>> Drop for Suspension<'_, '_, B> {
     }
 }
 
-impl<'d, B: AsRef<[u8]>> Entry<'d, B> {
-    fn new(arena: &MetadataArena<B>, lane: usize) -> Self {
+impl<'d> Entry<'d> {
+    fn new(lane: usize) -> Self {
         Self {
             state: Cell::new(State::Vacant),
-            queue: Queue::new(arena, lane),
+            lane,
             close: Cell::new(false),
             generation: Cell::new(0),
         }
@@ -148,10 +136,10 @@ impl<'d, B: AsRef<[u8]>> Entry<'d, B> {
         Some(next)
     }
 
-    fn retire(&self) {
+    fn retire<B>(&self, arena: &MetadataArena<B>) {
         self.state.set(State::Retired);
         self.close.set(false);
-        drop(self.queue.entries.detach_all());
+        arena.clear(self.lane);
     }
 
     fn mark_ready(&self, transaction: Transaction<'d>, driver: DriverRef<'d>) {
@@ -160,7 +148,7 @@ impl<'d, B: AsRef<[u8]>> Entry<'d, B> {
         }
     }
 
-    fn deactivate(&self, token: Token) {
+    fn deactivate<B>(&self, token: Token, arena: &MetadataArena<B>) {
         match self.state.get() {
             State::Active(publication) | State::Suspended(publication)
                 if Self::matches_token(publication.token, token) => {}
@@ -172,10 +160,10 @@ impl<'d, B: AsRef<[u8]>> Entry<'d, B> {
             self.state.set(State::Retired);
         }
         self.close.set(false);
-        drop(self.queue.entries.detach_all());
+        arena.clear(self.lane);
     }
 
-    fn close(&self, token: Token, driver: DriverRef<'d>) {
+    fn close<B>(&self, token: Token, arena: &MetadataArena<B>, driver: DriverRef<'d>) {
         let (publication, suspended) = match self.state.get() {
             State::Active(publication) if Self::matches_token(publication.token, token) => {
                 (publication, false)
@@ -187,7 +175,7 @@ impl<'d, B: AsRef<[u8]>> Entry<'d, B> {
         };
         if suspended {
             if self.advance_generation().is_none() {
-                self.retire();
+                self.retire(arena);
                 driver.activate_ready(publication.ready);
                 return;
             }
@@ -207,18 +195,20 @@ impl<'d, B: AsRef<[u8]>> Entry<'d, B> {
 
 pub struct Port<'d, B> {
     driver: DriverRef<'d>,
-    entries: Box<[Entry<'d, B>]>,
-    _arena: MetadataArena<B>,
+    arena: MetadataArena<B>,
+    entries: Box<[Entry<'d>]>,
 }
 
 pub struct Sender<'a, 'd, B> {
     driver: DriverRef<'d>,
-    entry: &'a Entry<'d, B>,
+    arena: &'a MetadataArena<B>,
+    entry: &'a Entry<'d>,
     transaction: Transaction<'d>,
 }
 
 pub struct Receiver<'a, 'd, B> {
-    entry: &'a Entry<'d, B>,
+    arena: &'a MetadataArena<B>,
+    entry: &'a Entry<'d>,
     transaction: Transaction<'d>,
 }
 
@@ -235,7 +225,9 @@ impl<B: AsRef<[u8]>> Sender<'_, '_, B> {
             drop(value);
             return Ok(());
         }
-        self.entry.queue.entries.try_push_back(value, bytes)?;
+        self.arena
+            .queue(self.entry.lane)
+            .try_push_back(value, bytes)?;
         self.entry.mark_ready(self.transaction, self.driver);
         Ok(())
     }
@@ -254,8 +246,8 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
         let arena = MetadataArena::with_config(config, capacity.max(1));
         Self {
             driver,
-            entries: (0..capacity).map(|lane| Entry::new(&arena, lane)).collect(),
-            _arena: arena,
+            arena,
+            entries: (0..capacity).map(Entry::new).collect(),
         }
     }
 
@@ -275,6 +267,7 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
         let (entry, transaction) = self.entry_transaction(token)?;
         Some(f(Sender {
             driver: self.driver,
+            arena: &self.arena,
             entry,
             transaction,
         }))
@@ -286,10 +279,14 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
         f: impl for<'a> FnOnce(Receiver<'a, 'd, B>) -> R,
     ) -> Option<R> {
         let (entry, transaction) = self.entry_transaction(token)?;
-        Some(f(Receiver { entry, transaction }))
+        Some(f(Receiver {
+            arena: &self.arena,
+            entry,
+            transaction,
+        }))
     }
 
-    fn entry_transaction(&self, token: Token) -> Option<(&Entry<'d, B>, Transaction<'d>)> {
+    fn entry_transaction(&self, token: Token) -> Option<(&Entry<'d>, Transaction<'d>)> {
         let entry = self.entries.get(token.slot().raw() as usize)?;
         Some((entry, entry.transaction(token)?))
     }
@@ -299,12 +296,13 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
             return false;
         };
         let Some(generation) = entry.advance_generation() else {
-            entry.retire();
+            entry.retire(&self.arena);
             return false;
         };
         entry.state.set(State::Vacant);
         entry.close.set(false);
-        let detached = entry.queue.entries.detach_all();
+        let queue = self.arena.queue(entry.lane);
+        let detached = queue.detach_all();
         let transaction = Transaction {
             publication: Publication { token, ready },
             generation,
@@ -316,7 +314,7 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
 
     pub fn deactivate(&self, token: Token) {
         if let Some(entry) = self.entries.get(token.slot().raw() as usize) {
-            entry.deactivate(token);
+            entry.deactivate(token, &self.arena);
         }
     }
 
@@ -326,6 +324,7 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
         };
         Sender {
             driver: self.driver,
+            arena: &self.arena,
             entry,
             transaction,
         }
@@ -334,7 +333,7 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
 
     pub fn close(&self, token: Token) {
         if let Some(entry) = self.entries.get(token.slot().raw() as usize) {
-            entry.close(token, self.driver);
+            entry.close(token, &self.arena, self.driver);
         }
     }
 
@@ -358,7 +357,8 @@ impl<B: AsRef<[u8]>> Receiver<'_, '_, B> {
             return;
         };
         loop {
-            let Some((value, front)) = self.entry.queue.entries.take_front() else {
+            let queue = self.arena.queue(self.entry.lane);
+            let Some((value, front)) = queue.take_front() else {
                 suspension.restore();
                 return;
             };

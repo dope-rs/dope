@@ -1,10 +1,26 @@
 use crate::DriverContext;
 use crate::manifold::listener::state::State;
 use dope_core::driver::token::Token;
-use dope_core::io::socket::msg::IoVec;
+use dope_core::io::socket::msg::{IoVec, MsgHdr};
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
-use dope_net::wire::send::Vectored;
+use dope_net::wire::send::{StableVectoredSource, Vectored};
+
+struct SplitSource<'a> {
+    iovs: &'a [IoVec],
+    iov_storage: &'a mut [IoVec],
+    msghdr_storage: &'a mut MsgHdr,
+}
+
+// SAFETY: all descriptors refer to header/body storage retained by the
+// listener slot. Its send state does not mutate or release that storage until
+// the matching completion, and owns both descriptor scratch regions.
+unsafe impl<'a> StableVectoredSource<'a> for SplitSource<'a> {
+    #[inline(always)]
+    fn into_parts(self) -> (&'a [IoVec], &'a mut [IoVec], &'a mut MsgHdr) {
+        (self.iovs, self.iov_storage, self.msghdr_storage)
+    }
+}
 
 pub(in crate::manifold::listener) struct Submission<'a, 'c, 'd, W: Wire, C: Default + 'static> {
     slot: &'a mut Slot<'d, W, State<C>>,
@@ -29,16 +45,11 @@ impl<'a, 'c, 'd, W: Wire, C: Default + 'static> Submission<'a, 'c, 'd, W, C> {
     }
 
     pub(in crate::manifold::listener) fn submit(self) -> usize {
-        // SAFETY: both descriptors refer to the slot's header/body storage,
-        // which remains unchanged while the send is in flight. The pending
-        // iov and msghdr arrays are owned by the same slot.
-        let vectored = unsafe {
-            Vectored::from_raw(
-                self.iovs,
-                &mut self.slot.state.send.pending_iovs,
-                &mut self.slot.state.send.pending_msghdr,
-            )
-        };
+        let vectored = Vectored::from_stable(SplitSource {
+            iovs: self.iovs,
+            iov_storage: &mut self.slot.state.send.pending_iovs,
+            msghdr_storage: &mut self.slot.state.send.pending_msghdr,
+        });
         Slot::<W, State<C>>::submit_wire_vectored(
             &mut self.slot.core,
             &mut self.slot.wire,

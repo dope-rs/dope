@@ -107,8 +107,8 @@ impl<'d> Fiber<'d> for Until {
     }
 }
 
-pub fn run_until<'scope, 'd, D: Dispatcher<'d>>(
-    sess: &mut Session<'scope, 'd>,
+pub fn run_until<'scope, 'd, S, D: Dispatcher<'d>>(
+    sess: &mut Session<'scope, 'd, S>,
     app: Pin<&BrandCell<'d, D>>,
     gate: &Rc<Gate>,
     want: u32,

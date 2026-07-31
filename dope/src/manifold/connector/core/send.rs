@@ -3,7 +3,9 @@ use std::pin::Pin;
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::SendEvent;
 use dope_net::Transport;
+use dope_net::link::egress::arena;
 use dope_net::link::raw::event::SendOutcome;
+use dope_net::link::raw::pool::outbound::OutboundPool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, Slot};
 use dope_net::wire::{Reclaim, Wire};
 
@@ -24,6 +26,7 @@ where
 {
     fn drain_requests(
         app: &A,
+        egress_arena: &mut arena::Arena<'_, A::Send>,
         dirty: &PendingQueue,
         idx: SlotIndex,
         slot: &mut Slot<'d, A::Wire, State<A::Conn, A::Send>>,
@@ -44,7 +47,7 @@ where
     );
 }
 
-impl<'d, const ID: u8, A, S, E> SendPhase<'d, ID, A, S, E> for Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> SendPhase<'d, ID, A, S, E> for Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -53,6 +56,7 @@ where
 {
     fn drain_requests(
         app: &A,
+        egress_arena: &mut arena::Arena<'_, A::Send>,
         dirty: &PendingQueue,
         idx: SlotIndex,
         slot: &mut Slot<'d, A::Wire, State<A::Conn, A::Send>>,
@@ -60,9 +64,10 @@ where
     ) {
         let target = slot.token();
         let mut enqueued = false;
+        let egress = egress_arena.queue_for(slot.state.lane);
         let requests = app.drain_requests(
             target,
-            |bytes| slot.state.enqueue_send(bytes).inspect(|()| enqueued = true),
+            |bytes| egress.try_enqueue(bytes).inspect(|()| enqueued = true),
             driver,
         );
         if enqueued {
@@ -85,38 +90,48 @@ where
         let Some((idx, slot)) = this.pool.by_target_mut(target) else {
             return;
         };
-        Self::drain_requests(this.app, this.dirty, idx, slot, driver);
+        Self::drain_requests(this.app, this.egress_arena, this.dirty, idx, slot, driver);
     }
 
     fn submit_egress(self: Pin<&mut Self>, idx: SlotIndex, driver: &mut DriverContext<'_, 'd>) {
         let this = self.project();
-        let Some((slot, token)) = this.pool.send_slot(idx) else {
+        let Some(outbound) = this.pool.send_slot(idx) else {
             return;
         };
+        let slot = outbound.slot;
+        let token = outbound.token;
         if !slot.state.establish.is_done() {
             return;
         }
-        this.app.before_send(slot, driver);
-        let vectored = slot.state.prepare_send(u32::MAX as usize);
-        if vectored.is_empty() {
-            slot.flush_pending(driver, token);
-            return;
+        this.app
+            .before_send(slot, this.egress_arena.queue_for(slot.state.lane), driver);
+        let reclaim_on_submit = matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnSubmit);
+        let consumed = {
+            let mut egress = this.egress_arena.queue_for(slot.state.lane);
+            let vectored = egress.prepare_send(u32::MAX as usize);
+            if vectored.is_empty() {
+                slot.flush_pending(driver, token);
+                return;
+            }
+            let consumed = Slot::<A::Wire, State<A::Conn, A::Send>>::submit_wire_vectored(
+                &mut slot.core,
+                &mut slot.wire,
+                &mut slot.send,
+                vectored,
+                token,
+                driver,
+            );
+            if reclaim_on_submit && !egress.try_ack(consumed) {
+                slot.core.begin_close();
+                return;
+            }
+            consumed
+        };
+        if reclaim_on_submit {
+            Self::drain_requests(this.app, this.egress_arena, this.dirty, idx, slot, driver);
         }
-        let consumed = Slot::<A::Wire, State<A::Conn, A::Send>>::submit_wire_vectored(
-            &mut slot.core,
-            &mut slot.wire,
-            &mut slot.send,
-            vectored,
-            token,
-            driver,
-        );
-        if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnSubmit) {
-            slot.state.ack_send(consumed);
-            Self::drain_requests(this.app, this.dirty, idx, slot, driver);
-        }
-        let stalled = matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnSubmit)
-            && consumed == 0
-            && !slot.wire.holds_plain(&slot.send);
+        let stalled =
+            reclaim_on_submit && consumed == 0 && !A::Wire::holds_plain(&slot.wire, &slot.send);
         if !slot.core.is_send_inflight() && !stalled {
             this.dirty.mark(idx, &slot.state.pending, PEND_EGRESS);
         }
@@ -165,11 +180,19 @@ where
         {
             let this = self.as_mut().project();
             if let Some(slot) = this.pool.get_mut(idx) {
-                if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnComplete) {
-                    slot.state.ack_send(sent);
+                if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnComplete)
+                    && !this.egress_arena.queue_for(slot.state.lane).try_ack(sent)
+                {
+                    self.as_mut().close_slot(idx, driver);
+                    return;
                 }
-                this.app.send(slot, sent, driver);
-                Self::drain_requests(this.app, this.dirty, idx, slot, driver);
+                this.app.send(
+                    slot,
+                    this.egress_arena.queue_for(slot.state.lane),
+                    sent,
+                    driver,
+                );
+                Self::drain_requests(this.app, this.egress_arena, this.dirty, idx, slot, driver);
             }
         }
         self.as_mut().submit_egress(idx, driver);

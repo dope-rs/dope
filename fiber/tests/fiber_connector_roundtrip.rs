@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 extern crate dope;
+use dope::io::provided::{ProvidedLease, ProvidedView};
 use dope::runtime::dispatcher::Dispatcher;
 use dope::runtime::executor::{Executor, Session};
 use dope::runtime::profile::Balanced;
@@ -17,8 +18,11 @@ use dope_fiber::io::Io;
 use dope_fiber::net::connector::{Connector, ConnectorPort, ConnectorPortFactory};
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
-use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
-use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
+use dope_net::wire::send::{Plain, Prepared, SendBuf, Sent, Storage, Vectored};
+use dope_net::wire::{
+    ReadyOpen, Reclaim, RecvChunk, RecvCredit, RecvCreditGuard, RecvCursor, RecvTarget,
+    RuntimeLimits, Wire,
+};
 use o3::buffer::{Borrowed, Bytes};
 use o3::cell::BrandCell;
 
@@ -28,30 +32,66 @@ const ID: u8 = 0;
 const MAX_CONN: usize = 8;
 
 type Conn<'scope, 'd> = Connector<'scope, 'd, ID, Tcp, Identity>;
-type ConnIo<'scope, 'd> = Io<'scope, 'd>;
 
 struct RecvGatedWire {
     established: bool,
     attempts: Rc<Cell<usize>>,
 }
 
+struct CreditView<'d> {
+    view: ProvidedView<'d>,
+    credit: Option<RecvCreditGuard<'d>>,
+}
+
+impl RecvCursor for CreditView<'_> {
+    fn remaining(&self) -> usize {
+        self.view.len()
+    }
+
+    fn read_into(&mut self, target: &mut RecvTarget<'_>) {
+        let count = target.write_prefix(self.view.as_slice());
+        self.view.advance(count);
+        if self.view.is_empty() {
+            self.credit = None;
+        }
+    }
+}
+
 impl Wire for RecvGatedWire {
-    type InitConfig = Rc<Cell<usize>>;
-    type RuntimeContext = Rc<Cell<usize>>;
-    type Open<'a> = ReadyOpen<Self>;
+    type Connection<'d> = Self;
+    type ConnectionStorage = ();
+    type InitConfig<'d> = Rc<Cell<usize>>;
+    type RuntimeContext<'d> = Rc<Cell<usize>>;
+    type Open<'a, 'd>
+        = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
+    where
+        'd: 'a;
     type Recv<'a> = Bytes<Borrowed<'a>>;
+    type RecvBatch<'a> = std::option::IntoIter<RecvChunk<'a, Self::Recv<'a>>>;
+    type RetainedRecv<'d> = CreditView<'d>;
     type SendStorage = SendBuf<1024>;
 
     const RECLAIM: Reclaim = Reclaim::OnSubmit;
+    const RECV_CREDIT: bool = true;
 
-    fn runtime_context(
+    fn connection_storage(_: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn runtime_context<'d>(
         _: RuntimeLimits,
-        config: Self::InitConfig,
-    ) -> std::io::Result<Self::RuntimeContext> {
+        config: Self::InitConfig<'d>,
+    ) -> std::io::Result<Self::RuntimeContext<'d>>
+    where
+        Self: 'd,
+    {
         Ok(config)
     }
 
-    fn prepare_open(runtime: &mut Self::RuntimeContext) -> Option<Self::Open<'_>> {
+    fn prepare_open<'a, 'd>(runtime: &'a mut Self::RuntimeContext<'d>) -> Option<Self::Open<'a, 'd>>
+    where
+        'd: 'a,
+    {
         Some(ReadyOpen::new(
             Self {
                 established: false,
@@ -61,50 +101,79 @@ impl Wire for RecvGatedWire {
         ))
     }
 
-    fn holds_plain(&self, send: &Self::SendStorage) -> bool {
+    fn holds_plain<'d>(_: &Self::Connection<'d>, send: &Self::SendStorage) -> bool {
         !send.is_empty()
     }
 
-    fn process_recv<'a>(
-        &mut self,
-        _: &mut Self::RuntimeContext,
-        bytes: &'a [u8],
-    ) -> Option<Self::Recv<'a>> {
-        if !self.established {
-            self.established = true;
-            None
+    fn process_recv<'a, 'd>(
+        wire: &mut Self::Connection<'d>,
+        _: &mut Self::RuntimeContext<'d>,
+        bytes: &'a mut [u8],
+    ) -> Self::RecvBatch<'a> {
+        if !wire.established {
+            wire.established = true;
+            None.into_iter()
         } else {
-            Some(Bytes::<Borrowed<'a>>::from(bytes))
+            Some(RecvChunk::Borrowed(Bytes::<Borrowed<'a>>::from(&*bytes))).into_iter()
         }
     }
 
-    fn prepare_send<'a>(
-        &'a mut self,
+    fn process_retained_recv<'a, 'd>(
+        wire: &mut Self::Connection<'d>,
+        _: &mut Self::RuntimeContext<'d>,
+        bytes: ProvidedLease<'a>,
+    ) -> Option<Self::RetainedRecv<'a>> {
+        if !wire.established {
+            wire.established = true;
+            return None;
+        }
+        let span = bytes.span(0, bytes.as_slice().len())?;
+        bytes
+            .into_view(span)
+            .ok()
+            .map(|view| CreditView { view, credit: None })
+    }
+
+    fn bind_recv_credit<'d>(
+        recv: &mut Self::RetainedRecv<'d>,
+        credit: RecvCredit<'d>,
+    ) -> Result<(), RecvCredit<'d>> {
+        match credit.claim() {
+            Ok(credit) => {
+                recv.credit = Some(credit);
+                Ok(())
+            }
+            Err(credit) => Err(credit),
+        }
+    }
+
+    fn prepare_send<'a, 'd>(
+        wire: &'a mut Self::Connection<'d>,
         mut send: Storage<'a, Self::SendStorage>,
         plain: Plain<'a>,
     ) -> Prepared<'a> {
-        self.attempts.set(self.attempts.get() + 1);
-        if !self.established {
+        wire.attempts.set(wire.attempts.get() + 1);
+        if !wire.established {
             return send.empty(0);
         }
         let n = send.spare_capacity().min(plain.len());
-        send.extend_from_slice(&plain.as_slice()[..n]);
+        assert!(send.try_extend_from_slice(&plain.as_slice()[..n]));
         send.buffered(n)
     }
 
-    fn prepare_send_vectored<'a>(
-        &'a mut self,
+    fn prepare_send_vectored<'a, 'd>(
+        wire: &'a mut Self::Connection<'d>,
         mut send: Storage<'a, Self::SendStorage>,
         plain: Vectored<'a>,
     ) -> Prepared<'a> {
-        self.attempts.set(self.attempts.get() + 1);
-        if !self.established {
+        wire.attempts.set(wire.attempts.get() + 1);
+        if !wire.established {
             return send.empty(0);
         }
         let mut consumed = 0;
         for bytes in plain.iter() {
             let n = send.spare_capacity().min(bytes.len());
-            send.extend_from_slice(&bytes[..n]);
+            assert!(send.try_extend_from_slice(&bytes[..n]));
             consumed += n;
             if n != bytes.len() {
                 break;
@@ -113,16 +182,19 @@ impl Wire for RecvGatedWire {
         send.buffered(consumed)
     }
 
-    fn after_send<'a>(
-        &'a mut self,
+    fn after_send<'a, 'd>(
+        _: &'a mut Self::Connection<'d>,
         mut send: Storage<'a, Self::SendStorage>,
-        n: usize,
+        sent: Sent,
     ) -> Prepared<'a> {
-        send.consume(n);
+        assert!(send.try_consume(sent.get()));
         send.buffered(0)
     }
 
-    fn flush_pending<'a>(&'a mut self, send: Storage<'a, Self::SendStorage>) -> Prepared<'a> {
+    fn flush_pending<'a, 'd>(
+        _: &'a mut Self::Connection<'d>,
+        send: Storage<'a, Self::SendStorage>,
+    ) -> Prepared<'a> {
         send.buffered(0)
     }
 }
@@ -174,10 +246,10 @@ where
     }
 }
 
-fn connector_exec(max_connections: usize) -> Executor<ConnectorPortFactory<Tcp>> {
+fn connector_exec<W: Wire>(max_connections: usize) -> Executor<ConnectorPortFactory<Tcp, W>> {
     let cfg = dope::driver::Config::for_tcp_profile::<Balanced>(max_connections);
     Executor::new(cfg).expect("executor").with_storage_factory(
-        ConnectorPort::<Tcp>::factory(max_connections).expect("connector capacity"),
+        ConnectorPort::<Tcp, W>::factory(max_connections).expect("connector capacity"),
     )
 }
 
@@ -223,10 +295,10 @@ fn spawn_gated_reply_server(response: &'static [u8]) -> (SocketAddr, JoinHandle<
     (addr, server)
 }
 
-fn ping_roundtrip<'scope, 'd, D: Dispatcher<'d>>(
-    sess: &mut Session<'scope, 'd, ConnectorPort<'d, Tcp>>,
+fn ping_roundtrip<'scope, 'd, D: Dispatcher<'d>, W: Wire>(
+    sess: &mut Session<'scope, 'd, ConnectorPort<'d, Tcp, W>>,
     app: Pin<&BrandCell<'d, D>>,
-    io: ConnIo<'scope, 'd>,
+    io: Io<'scope, 'd, W>,
 ) -> Vec<u8> {
     let mut io = Some(io);
     let mut io = drive(
@@ -242,22 +314,22 @@ fn ping_roundtrip<'scope, 'd, D: Dispatcher<'d>>(
     let mut got = Vec::new();
     loop {
         let mut owner = Some(io);
-        let (next, buf, n) = drive(
+        let (next, buf) = drive(
             sess,
             app,
             dope_gen::fiber!('_ => async move {
                 let mut io = owner.take().expect("io owner");
-                let (result, buf) = io.read(vec![0; 16]).await;
-                let n = result?;
-                Ok::<_, std::io::Error>((io, buf, n))
+                let (result, buf) = io.read(Vec::with_capacity(16)).await;
+                result?;
+                Ok::<_, std::io::Error>((io, buf))
             }),
         )
         .expect("read response");
         io = next;
-        if n == 0 {
+        if buf.is_empty() {
             break;
         }
-        got.extend_from_slice(&buf[..n]);
+        got.extend_from_slice(&buf);
     }
     got
 }
@@ -314,6 +386,72 @@ fn connector_parks_plaintext_until_wire_receives() {
         server.join().expect("server thread");
         assert_eq!(got, response);
         assert!(attempts.get() <= 4, "wire send path spun before receive");
+    });
+}
+
+#[test]
+fn connector_receive_credit_resumes_deferred_multishot_buffers() {
+    static RESPONSE: [u8; 32 * 1024] = [b'R'; 32 * 1024];
+
+    let (addr, server) = spawn_gated_reply_server(&RESPONSE);
+    let attempts = Rc::new(Cell::new(0));
+    let cfg = dope::driver::Config::for_tcp_profile::<Balanced>(MAX_CONN).with_provided(1024, 64);
+    let exec = Executor::new(cfg).expect("executor").with_storage_factory(
+        ConnectorPort::<Tcp, RecvGatedWire>::factory(MAX_CONN).expect("connector capacity"),
+    );
+
+    exec.enter(|mut sess| {
+        let (storage, mut driver) = sess.storage_and_driver();
+        let connector: GatedConn<'_, '_> = storage
+            .connector_with_wire(attempts, &mut driver)
+            .expect("connector");
+        let app = pin!(BrandCell::new(GatedApp { connector }));
+        let conn = sess.storage().handle();
+
+        let io = drive(
+            &mut sess,
+            app.as_ref(),
+            dope_gen::fiber!('_ => async move { conn.connect(addr, Default::default()).await }),
+        )
+        .expect("connect");
+        let mut owner = Some(io);
+        let io = drive(
+            &mut sess,
+            app.as_ref(),
+            dope_gen::fiber!('_ => async move {
+                let mut io = owner.take().expect("io owner");
+                io.write_all(b"ping").await?;
+                Ok::<_, std::io::Error>(io)
+            }),
+        )
+        .expect("write request");
+
+        std::thread::sleep(Duration::from_millis(100));
+        let mut io = io;
+        let mut got = Vec::with_capacity(RESPONSE.len());
+        while got.len() < RESPONSE.len() {
+            let mut owner = Some(io);
+            let (next, bytes) = drive(
+                &mut sess,
+                app.as_ref(),
+                dope_gen::fiber!('_ => async move {
+                    let mut io = owner.take().expect("io owner");
+                    let (read, bytes) = io.read(Vec::with_capacity(4096)).await;
+                    read?;
+                    Ok::<_, std::io::Error>((io, bytes))
+                }),
+            )
+            .expect("read response");
+            assert!(
+                !bytes.is_empty(),
+                "connection closed before deferred data drained"
+            );
+            io = next;
+            got.extend_from_slice(&bytes);
+        }
+
+        assert_eq!(got, RESPONSE);
+        server.join().expect("server thread");
     });
 }
 

@@ -2,33 +2,43 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use dope_core::driver::completion::Completion;
-use dope_core::driver::submission::raw::Submission as _;
+use dope_core::driver::submission::Submission;
 
-use dope_core::backend::RawSqe;
+use dope_core::backend::{RawSqe, RetainedSqe, StableSqeSource};
 use dope_core::driver::DriverContext;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::file::{self, OpenPath, OsFile};
-use dope_core::io::{Event, EventKind, EventRef, OpenEvent, ReadEvent, WriteEvent};
+use dope_core::io::{Event, OpenEvent, ReadEvent, WriteEvent};
 use dope_test::{TempFile, with_driver};
 
-fn tok(n: u32) -> Token {
-    Token::new(7, SlotIndex::new(n), Epoch::INITIAL)
+struct TestSubmission(RawSqe);
+
+// SAFETY: every test waits for the matching completion before touching or
+// dropping the descriptor's backing resources.
+unsafe impl StableSqeSource for TestSubmission {
+    fn into_raw(self) -> RawSqe {
+        self.0
+    }
+}
+
+fn tok(n: u16) -> Token {
+    Token::new(7, SlotIndex::from(n), Epoch::INITIAL)
 }
 
 fn event_token(ev: &Event) -> Token {
-    match ev.as_ref() {
-        EventRef::Accept(t, ..)
-        | EventRef::Recv(t, ..)
-        | EventRef::Send(t, ..)
-        | EventRef::Timer(t)
-        | EventRef::Socket(t, ..)
-        | EventRef::Connect(t, ..)
-        | EventRef::Write(t, ..)
-        | EventRef::Sync(t, ..)
-        | EventRef::Open(t, ..)
-        | EventRef::Read(t, ..)
-        | EventRef::Stat(t, ..) => t,
-        EventRef::Shutdown => panic!("unexpected shutdown completion"),
+    match ev {
+        Event::Accept(t, ..)
+        | Event::Recv(t, ..)
+        | Event::Send(t, ..)
+        | Event::Timer(t, ..)
+        | Event::Socket(t, ..)
+        | Event::Connect(t, ..)
+        | Event::Write(t, ..)
+        | Event::Sync(t, ..)
+        | Event::Open(t, ..)
+        | Event::Read(t, ..)
+        | Event::Stat(t, ..) => *t,
+        Event::Shutdown => panic!("unexpected shutdown completion"),
     }
 }
 
@@ -64,19 +74,23 @@ fn async_read_returns_file_bytes() {
         ];
         for (i, (offset, buf_len, want)) in cases.into_iter().enumerate() {
             let mut dst = vec![0u8; buf_len];
-            let t = tok(i as u32 + 1);
-            // SAFETY: the file and destination remain live and untouched
-            // until `drive_until` returns this read's completion.
-            unsafe { driver.push_raw(RawSqe::read(f.fd(), &mut dst, offset, t)) }
+            let t = tok(i as u16 + 1);
+            driver
+                .push_retained(RetainedSqe::from_stable(TestSubmission(RawSqe::read(
+                    f.fd(),
+                    &mut dst,
+                    offset,
+                    t,
+                ))))
                 .expect("push read");
 
             let event = drive_until(&mut driver, t);
-            match (event.as_ref(), want) {
-                (EventRef::Read(_, ReadEvent::Read(n)), Some(len)) => {
+            match (&event, want) {
+                (Event::Read(_, ReadEvent::Read(n)), Some(len)) => {
                     assert_eq!(*n as usize, len);
                     assert_eq!(&dst[..*n as usize], payload);
                 }
-                (EventRef::Read(_, ReadEvent::Eof), None) => {}
+                (Event::Read(_, ReadEvent::Eof), None) => {}
                 _ => panic!("case {i}: unexpected event: {}", variant(&event)),
             }
         }
@@ -88,13 +102,15 @@ fn async_open_missing_path_reports_enoent() {
     with_driver(|mut driver| {
         let path = OpenPath::new("/nonexistent/dope/definitely/missing/file").expect("path");
         let t = tok(3);
-        // SAFETY: `path` remains live until the matching completion.
-        unsafe { driver.push_raw(path.open_at(file::O_RDONLY | file::O_CLOEXEC, t)) }
+        driver
+            .push_retained(RetainedSqe::from_stable(TestSubmission(
+                path.open_at(file::O_RDONLY | file::O_CLOEXEC, t),
+            )))
             .expect("push open");
 
         let event = drive_until(&mut driver, t);
-        match event.as_ref() {
-            EventRef::Open(_, OpenEvent::Failed(errno)) => {
+        match &event {
+            Event::Open(_, OpenEvent::Failed(errno)) => {
                 assert_eq!(*errno, libc::ENOENT);
             }
             _ => panic!("expected open failure, got {}", variant(&event)),
@@ -110,25 +126,32 @@ fn async_open_then_read_via_returned_fd() {
     with_driver(|mut driver| {
         let cpath = OpenPath::new(tmp.path_str()).expect("path");
         let to = tok(10);
-        // SAFETY: `cpath` remains live until the matching completion.
-        unsafe { driver.push_raw(cpath.open_at(file::O_RDONLY | file::O_CLOEXEC, to)) }
+        driver
+            .push_retained(RetainedSqe::from_stable(TestSubmission(
+                cpath.open_at(file::O_RDONLY | file::O_CLOEXEC, to),
+            )))
             .expect("push open");
 
         let event = drive_until(&mut driver, to);
-        let fd = match event.into_kind() {
-            EventKind::Open(_, OpenEvent::Opened(fd)) => fd,
+        let fd = match event {
+            Event::Open(_, OpenEvent::Opened(fd)) => fd,
             _ => panic!("expected open success"),
         };
 
         let mut dst = vec![0u8; payload.len()];
         let tr = tok(11);
-        // SAFETY: `fd` and `dst` remain live and untouched through completion.
-        unsafe { driver.push_raw(RawSqe::read(fd.as_raw_fd(), &mut dst, 0, tr)) }
+        driver
+            .push_retained(RetainedSqe::from_stable(TestSubmission(RawSqe::read(
+                fd.as_raw_fd(),
+                &mut dst,
+                0,
+                tr,
+            ))))
             .expect("push read");
 
         let event = drive_until(&mut driver, tr);
-        let n = match event.as_ref() {
-            EventRef::Read(_, ReadEvent::Read(n)) => *n as usize,
+        let n = match &event {
+            Event::Read(_, ReadEvent::Read(n)) => *n as usize,
             _ => panic!("expected read, got {}", variant(&event)),
         };
         assert_eq!(&dst[..n], payload);
@@ -143,12 +166,18 @@ fn write_path_still_works() {
 
     with_driver(|mut driver| {
         let t = tok(30);
-        // SAFETY: the file and static payload remain live through completion.
-        unsafe { driver.push_raw(RawSqe::write_fd(f.fd(), payload, 0, t)) }.expect("push write");
+        driver
+            .push_retained(RetainedSqe::from_stable(TestSubmission(RawSqe::write_fd(
+                f.fd(),
+                payload,
+                0,
+                t,
+            ))))
+            .expect("push write");
 
         let event = drive_until(&mut driver, t);
-        match event.as_ref() {
-            EventRef::Write(_, WriteEvent::Wrote(n)) => assert_eq!(*n as usize, payload.len()),
+        match &event {
+            Event::Write(_, WriteEvent::Wrote(n)) => assert_eq!(*n as usize, payload.len()),
             _ => panic!("write did not complete: {}", variant(&event)),
         }
 
@@ -159,18 +188,18 @@ fn write_path_still_works() {
 }
 
 fn variant(ev: &Event) -> &'static str {
-    match ev.as_ref() {
-        EventRef::Open(..) => "Open",
-        EventRef::Read(..) => "Read",
-        EventRef::Stat(..) => "Stat",
-        EventRef::Accept(..) => "Accept",
-        EventRef::Recv(..) => "Recv",
-        EventRef::Send(..) => "Send",
-        EventRef::Timer(..) => "Timer",
-        EventRef::Socket(..) => "Socket",
-        EventRef::Connect(..) => "Connect",
-        EventRef::Write(..) => "Write",
-        EventRef::Sync(..) => "Sync",
-        EventRef::Shutdown => "Shutdown",
+    match ev {
+        Event::Open(..) => "Open",
+        Event::Read(..) => "Read",
+        Event::Stat(..) => "Stat",
+        Event::Accept(..) => "Accept",
+        Event::Recv(..) => "Recv",
+        Event::Send(..) => "Send",
+        Event::Timer(..) => "Timer",
+        Event::Socket(..) => "Socket",
+        Event::Connect(..) => "Connect",
+        Event::Write(..) => "Write",
+        Event::Sync(..) => "Sync",
+        Event::Shutdown => "Shutdown",
     }
 }

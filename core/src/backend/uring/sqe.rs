@@ -5,7 +5,7 @@ use io_uring::types;
 use o3::marker::ThreadBound;
 
 use crate::driver::token::SHUTDOWN;
-use crate::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
+use crate::driver::token::Token;
 use crate::io::fd::{Fd, FdSlot};
 use io_uring::opcode::Accept;
 use io_uring::opcode::AsyncCancel;
@@ -65,6 +65,8 @@ use libc::sockaddr;
 use libc::socklen_t;
 use libc::statx;
 
+use crate::backend::RetainedSqe;
+
 #[derive(Clone, Copy)]
 pub(crate) struct Create {
     pub(crate) slot: FdSlot,
@@ -82,8 +84,12 @@ pub struct Sqe {
 pub struct RawSqe(Sqe);
 
 impl Sqe {
-    pub(crate) fn entry(&self) -> &Entry {
+    pub(in crate::backend::uring) fn entry(&self) -> &Entry {
         &self.entry
+    }
+
+    pub(crate) fn from_retained(retained: RetainedSqe) -> Self {
+        retained.0.0
     }
 
     pub(crate) fn create_meta(&self) -> Option<Create> {
@@ -99,8 +105,7 @@ impl Sqe {
     }
 
     fn create(entry: Entry, slot: FdSlot, token: Token) -> Self {
-        let framework_token = Token::new(ROUTE_FRAMEWORK, SlotIndex::new(slot.raw()), Epoch::ZERO)
-            .with_kind(CREATE);
+        let framework_token = Token::framework(slot.token_index()).with_kind(CREATE);
         Self {
             entry: entry.user_data(framework_token.raw()),
             create: Some(Create { slot, token }),
@@ -109,24 +114,38 @@ impl Sqe {
     }
 
     fn framework(slot: FdSlot, op_kind: u8) -> u64 {
-        Token::new(ROUTE_FRAMEWORK, SlotIndex::new(slot.raw()), Epoch::ZERO)
-            .with_kind(op_kind)
+        Token::framework(slot.token_index()).with_kind(op_kind)
             .raw()
     }
 
 }
-
 impl RawSqe {
     fn new(entry: Entry) -> Self {
         Self(Sqe::new(entry))
     }
 
-    pub(crate) fn into_sqe(self) -> Sqe {
-        self.0
-    }
-
     pub(crate) fn from_entry(entry: Entry) -> Self {
         Self::new(entry)
+    }
+
+    pub(crate) fn setsockopt_at(
+        slot: FdSlot,
+        level: c_int,
+        name: c_int,
+        value: &c_int,
+        op: Token,
+    ) -> Self {
+        Self::new(
+            SetSockOpt::new(
+                Fixed(slot.raw()),
+                level as u32,
+                name as u32,
+                (value as *const c_int).cast::<c_void>(),
+                size_of::<c_int>() as u32,
+            )
+            .build()
+            .user_data(op.raw()),
+        )
     }
 
     pub fn send(fd: &Fd, buf: &[u8], op: Token) -> Self {

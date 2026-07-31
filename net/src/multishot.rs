@@ -1,20 +1,28 @@
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use o3::marker::ThreadBound;
 
-#[derive(Default)]
 enum State {
-    #[default]
+    Fresh,
     Idle,
     NeedsRearm,
     Multishoted,
     Retired,
 }
 
-#[derive(Default)]
 pub struct Multishot {
     state: State,
     epoch: Epoch,
     _thread: ThreadBound,
+}
+
+impl Default for Multishot {
+    fn default() -> Self {
+        Self {
+            state: State::Fresh,
+            epoch: Epoch::INITIAL,
+            _thread: ThreadBound::NEW,
+        }
+    }
 }
 
 impl Multishot {
@@ -22,11 +30,13 @@ impl Multishot {
         if matches!(self.state, State::Multishoted | State::Retired) {
             return None;
         }
-        let Some(epoch) = self.epoch.next() else {
-            self.state = State::Retired;
-            return None;
-        };
-        self.epoch = epoch;
+        if !matches!(self.state, State::Fresh) {
+            let Some(epoch) = self.epoch.next() else {
+                self.state = State::Retired;
+                return None;
+            };
+            self.epoch = epoch;
+        }
         Some(Token::new(route, slot, self.epoch))
     }
 
@@ -45,7 +55,7 @@ impl Multishot {
     }
 
     pub fn epoch_match(&self, token: Token, slot: SlotIndex) -> bool {
-        token.slot() == slot && self.epoch == token.epoch()
+        token.slot() == slot && token.epoch() == Some(self.epoch)
     }
 
     pub fn request_rearm(&mut self) {
@@ -65,6 +75,8 @@ impl Multishot {
     }
 
     pub fn quiesce(&mut self) {
-        self.state = State::Idle;
+        if !matches!(self.state, State::Fresh) {
+            self.state = State::Idle;
+        }
     }
 }

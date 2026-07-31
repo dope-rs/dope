@@ -2,8 +2,8 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use dope_core::driver::ready::CompletionWaker;
-use dope_core::driver::token::SlotIndex;
 use dope_net::Transport;
+use dope_net::link::raw::pool::outbound::OutboundPool;
 
 use super::Core;
 use super::close::ClosePhase;
@@ -12,6 +12,7 @@ use crate::manifold::connector::app::ConnApp;
 use crate::manifold::connector::source::{Action, Dialer};
 use crate::manifold::connector::state::State;
 use crate::manifold::env::Env;
+use crate::runtime::__private::Deadline;
 
 pub(super) trait SourcePhase<'d, const ID: u8, A, S, E>
 where
@@ -31,7 +32,7 @@ where
     fn poll_liveness(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>);
 }
 
-impl<'d, const ID: u8, A, S, E> SourcePhase<'d, ID, A, S, E> for Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> SourcePhase<'d, ID, A, S, E> for Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -59,7 +60,7 @@ where
                 fields.timer.cancel(ticket);
             }
         }
-        let cap = this.as_ref().project_ref().pool.capacity();
+        let cap = this.as_ref().project_ref().pool.capacity().get();
         for _ in 0..cap {
             let action = this.as_mut().project().upstreams.poll_connect(now);
             match action {
@@ -72,11 +73,9 @@ where
                     let submitted = fields.pool.submit_socket_with_state(
                         socket_params,
                         |slot| {
-                            State::<A::Conn, A::Send>::new(
-                                key,
-                                slot.raw() as usize,
-                                fields.egress_arena,
-                            )
+                            let lane = slot.raw() as usize;
+                            fields.egress_arena.clear(lane);
+                            State::<A::Conn, A::Send>::new(key, lane)
                         },
                         driver,
                     );
@@ -106,7 +105,7 @@ where
         if let Some(ticket) = this.backoff_timer.take() {
             this.timer.cancel(ticket);
         }
-        *this.backoff_timer = this.timer.try_arm(deadline, wake);
+        *this.backoff_timer = this.timer.try_arm(deadline, wake).ok();
     }
 
     fn arm_liveness(self: Pin<&mut Self>, deadline: Instant) {
@@ -116,15 +115,14 @@ where
         if let Some(ticket) = this.liveness_timer.take() {
             this.timer.cancel(ticket);
         }
-        *this.liveness_timer = this.timer.try_arm(deadline, wake);
+        *this.liveness_timer = this.timer.try_arm(deadline, wake).ok();
     }
 
     fn earliest_liveness(self: Pin<&Self>, timeout: Duration) -> Option<Instant> {
         let this = self.project_ref();
-        let cap = this.pool.capacity() as u32;
+        let capacity = this.pool.capacity();
         let mut earliest = None;
-        for raw in 0..cap {
-            let idx = SlotIndex::new(raw);
+        for idx in capacity.slots() {
             let Some(slot) = this.pool.get(idx) else {
                 continue;
             };
@@ -132,7 +130,7 @@ where
                 continue;
             }
             if let Some(seen) = slot.state.last_recv {
-                let deadline = seen + timeout;
+                let deadline = Deadline::after(seen, timeout);
                 earliest =
                     Some(earliest.map_or(deadline, |current: Instant| current.min(deadline)));
             }
@@ -160,9 +158,8 @@ where
             return;
         };
         let now = driver.turn_now();
-        let cap = self.as_ref().project_ref().pool.capacity() as u32;
-        for raw in 0..cap {
-            let idx = SlotIndex::new(raw);
+        let capacity = self.as_ref().project_ref().pool.capacity();
+        for idx in capacity.slots() {
             let expired = {
                 let this = self.as_ref().project_ref();
                 this.pool.get(idx).is_some_and(|slot| {

@@ -31,13 +31,13 @@ mod linux {
             buf: &mut [Option<Event<'d>>],
         ) -> usize {
             let Backend {
-                uring,
+                ring,
                 setsockopt,
                 files,
-                provided,
                 routes,
                 ..
             } = backend;
+            let (uring, provided) = ring.split();
             let mut n = 0;
             {
                 let mut cq = uring.completion();
@@ -73,25 +73,25 @@ mod linux {
             }
             backend.flush_deferred_close();
             backend.flush_ready_create();
-            backend.provided.flush();
+            backend.ring.provided_mut().flush();
             n
         }
 
         fn wait(backend: &mut Backend, timeout: Option<Duration>) -> io::Result<()> {
             backend.flush_deferred_close();
             backend.flush_ready_create();
-            backend.provided.flush();
+            backend.ring.provided_mut().flush();
             match timeout {
                 Some(timeout) => {
                     let timespec = Timespec::from(timeout);
                     let args = SubmitArgs::new().timespec(&timespec);
-                    match backend.uring.submitter().submit_with_args(1, &args) {
+                    match backend.ring.io().submitter().submit_with_args(1, &args) {
                         Ok(_) => Ok(()),
                         Err(error) if error.raw_os_error() == Some(ETIME) => Ok(()),
                         Err(error) => Err(error),
                     }
                 }
-                None => backend.uring.submitter().submit_and_wait(1).map(|_| ()),
+                None => backend.ring.io().submitter().submit_and_wait(1).map(|_| ()),
             }
         }
     }

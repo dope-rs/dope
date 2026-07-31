@@ -2,19 +2,31 @@ use std::io;
 use std::os::fd::BorrowedFd;
 
 use crate::backend::Backend;
+use crate::driver::PushError;
 use crate::driver::token::Token;
-use crate::driver::{OutboundReservation, PushError};
 use crate::io::fd::FdSlot;
 use libc::c_int;
+
+#[cfg(target_os = "linux")]
+pub(crate) struct RawQuiesce {
+    started: bool,
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) struct RawQuiesce {
+    extracted: crate::backend::kqueue::driver::pending::Extracted,
+}
 
 pub(crate) trait ControlBackend {
     fn prepare_drop(backend: &mut Backend) {
         backend.shutdown();
     }
     fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()>;
-    fn reserve_outbound(backend: &mut Backend, count: u32) -> io::Result<OutboundReservation> {
-        let base = backend.alloc_fixed_range(count)?;
-        Ok(OutboundReservation::new(base, count))
+    fn reserve_outbound(backend: &mut Backend, count: u32) -> io::Result<u32> {
+        backend.alloc_fixed_range(count)
+    }
+    fn retire_fixed(backend: &mut Backend, base: u32, count: u32) {
+        backend.retire_fixed_range(base, count);
     }
     fn reserve_route(backend: &mut Backend, id: u8) -> bool {
         backend.routes.reserve(id)
@@ -25,7 +37,9 @@ pub(crate) trait ControlBackend {
     fn poison_route(backend: &mut Backend, id: u8) {
         backend.routes.poison(id);
     }
-    fn quiesce(backend: &mut Backend, targets: &[Token]) -> bool;
+    fn begin_quiesce() -> RawQuiesce;
+    fn quiesce_target(backend: &mut Backend, state: &mut RawQuiesce, target: Token);
+    fn finish_quiesce(backend: &mut Backend, state: RawQuiesce) -> bool;
     fn submit_option(
         backend: &mut Backend,
         slot: FdSlot,
@@ -41,42 +55,57 @@ mod linux {
     use std::os::fd::AsRawFd;
     use std::process::abort;
 
-    use io_uring::opcode::SetSockOpt;
-    use io_uring::types::{CancelBuilder, Fixed};
-    use libc::{c_int, c_void};
+    use io_uring::types::CancelBuilder;
+    use libc::c_int;
 
     use crate::backend::ops::raw::submission::SubmissionBackend;
     use crate::backend::uring::raw::submission::Submission;
-    use crate::backend::uring::sqe::Sqe;
+    use crate::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
 
-    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, Token, io};
+    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, RawQuiesce, Token, io};
+
+    struct SocketOptionSubmission(RawSqe);
+
+    // SAFETY: the backend's setsockopt slab owns the pointed-to value until
+    // terminal completion, failed submission, or ring quiescence.
+    unsafe impl StableSqeSource for SocketOptionSubmission {
+        fn into_raw(self) -> RawSqe {
+            self.0
+        }
+    }
 
     impl ControlBackend for Backend {
         fn register_shutdown_fd(backend: &mut Backend, fd: BorrowedFd<'_>) -> io::Result<()> {
             <Backend as SubmissionBackend>::push(backend, Sqe::poll_shutdown(fd.as_raw_fd()))
                 .map_err(Error::from)?;
-            backend.uring.submit().map(|_| ())
+            backend.ring.io_mut().submit().map(|_| ())
         }
 
-        fn quiesce(backend: &mut Backend, targets: &[Token]) -> bool {
-            if targets.is_empty() {
-                return false;
-            }
-            if backend.uring.submit().is_err() {
-                abort();
-            }
-            for target in targets {
-                match backend
-                    .uring
-                    .submitter()
-                    .register_sync_cancel(None, CancelBuilder::user_data(target.raw()).all())
-                {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(_) => abort(),
+        fn begin_quiesce() -> RawQuiesce {
+            RawQuiesce { started: false }
+        }
+
+        fn quiesce_target(backend: &mut Backend, state: &mut RawQuiesce, target: Token) {
+            if !state.started {
+                if backend.ring.io_mut().submit().is_err() {
+                    abort();
                 }
+                state.started = true;
             }
-            true
+            match backend
+                .ring
+                .io()
+                .submitter()
+                .register_sync_cancel(None, CancelBuilder::user_data(target.raw()).all())
+            {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(_) => abort(),
+            }
+        }
+
+        fn finish_quiesce(_backend: &mut Backend, state: RawQuiesce) -> bool {
+            state.started
         }
 
         fn submit_option(
@@ -89,18 +118,9 @@ mod linux {
             let Ok((key, stored)) = backend.setsockopt.insert_entry(value) else {
                 return Err(PushError);
             };
-            let optval_ptr = (&raw const *stored).cast::<c_void>();
-            let ud = Token::from_key(key);
-            let sqe = SetSockOpt::new(
-                Fixed(slot.raw()),
-                level as u32,
-                name as u32,
-                optval_ptr,
-                size_of::<c_int>() as u32,
-            )
-            .build()
-            .user_data(ud.raw());
-            if Submission::push_once(&mut backend.uring, &sqe).is_ok() {
+            let sqe = RawSqe::setsockopt_at(slot, level, name, stored, Token::from_key(key));
+            let sqe = Sqe::from_retained(RetainedSqe::from_stable(SocketOptionSubmission(sqe)));
+            if Submission::push_once(backend.ring.io_mut(), &sqe).is_ok() {
                 Ok(())
             } else {
                 backend.setsockopt.remove(key);
@@ -118,7 +138,7 @@ mod kqueue {
 
     use libc::{EV_ADD, EV_CLEAR, EVFILT_READ, c_int, kevent, setsockopt, socklen_t, uintptr_t};
 
-    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, Token, io};
+    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, RawQuiesce, Token, io};
     use crate::backend::kqueue::driver::retry::Retry;
     use crate::backend::kqueue::driver::udata::Udata;
 
@@ -140,17 +160,21 @@ mod kqueue {
             }
         }
 
-        fn quiesce(backend: &mut Backend, targets: &[Token]) -> bool {
-            if targets.is_empty() {
-                return false;
+        fn begin_quiesce() -> RawQuiesce {
+            RawQuiesce {
+                extracted: crate::backend::kqueue::driver::pending::Extracted::new(),
             }
-            for target in targets {
-                backend.quiesce_accept(*target);
-                backend.quiesce_recv(*target);
-                backend.retire_write_token(*target);
-            }
-            let mut extracted = backend.pending.extract_targets(targets);
-            while let Some(completion) = backend.pending.pop_extracted(&mut extracted) {
+        }
+
+        fn quiesce_target(backend: &mut Backend, state: &mut RawQuiesce, target: Token) {
+            backend.quiesce_accept(target);
+            backend.quiesce_recv(target);
+            backend.retire_write_token(target);
+            backend.pending.extract_target(target, &mut state.extracted);
+        }
+
+        fn finish_quiesce(backend: &mut Backend, mut state: RawQuiesce) -> bool {
+            while let Some(completion) = backend.pending.pop_extracted(&mut state.extracted) {
                 backend.reclaim(completion);
             }
             false

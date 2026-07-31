@@ -58,6 +58,16 @@ pub(crate) struct PendingQueue {
 
 pub(crate) struct Extracted {
     head: u32,
+    tail: u32,
+}
+
+impl Extracted {
+    pub(crate) const fn new() -> Self {
+        Self {
+            head: NONE,
+            tail: NONE,
+        }
+    }
 }
 
 impl PendingQueue {
@@ -201,36 +211,39 @@ impl PendingQueue {
     }
 
     pub(crate) fn extract_targets(&mut self, targets: &[Token]) -> Extracted {
-        let mut head = NONE;
-        let mut tail = NONE;
+        let mut extracted = Extracted::new();
         for target in targets {
-            let mut index = self
-                .target_heads
-                .remove(&(target.raw() as usize))
-                .unwrap_or(NONE);
-            while index != NONE {
-                let target_next = self.nodes[index as usize].target_next;
-                let value = unsafe { *self.nodes[index as usize].value.assume_init_ref() };
-                self.unlink(index);
-                if let PendingCompletion::Create {
-                    slot: Some(slot), ..
-                } = value
-                {
-                    self.unlink_create(index, slot.raw() as usize);
-                }
-                self.nodes[index as usize].target_prev = NONE;
-                self.nodes[index as usize].target_next = NONE;
-                self.nodes[index as usize].next = NONE;
-                if tail == NONE {
-                    head = index;
-                } else {
-                    self.nodes[tail as usize].next = index;
-                }
-                tail = index;
-                index = target_next;
-            }
+            self.extract_target(*target, &mut extracted);
         }
-        Extracted { head }
+        extracted
+    }
+
+    pub(crate) fn extract_target(&mut self, target: Token, extracted: &mut Extracted) {
+        let mut index = self
+            .target_heads
+            .remove(&(target.raw() as usize))
+            .unwrap_or(NONE);
+        while index != NONE {
+            let target_next = self.nodes[index as usize].target_next;
+            let value = unsafe { *self.nodes[index as usize].value.assume_init_ref() };
+            self.unlink(index);
+            if let PendingCompletion::Create {
+                slot: Some(slot), ..
+            } = value
+            {
+                self.unlink_create(index, slot.raw() as usize);
+            }
+            self.nodes[index as usize].target_prev = NONE;
+            self.nodes[index as usize].target_next = NONE;
+            self.nodes[index as usize].next = NONE;
+            if extracted.tail == NONE {
+                extracted.head = index;
+            } else {
+                self.nodes[extracted.tail as usize].next = index;
+            }
+            extracted.tail = index;
+            index = target_next;
+        }
     }
 
     pub(crate) fn pop_extracted(&mut self, extracted: &mut Extracted) -> Option<PendingCompletion> {
@@ -240,6 +253,9 @@ impl PendingQueue {
         }
         let node = &mut self.nodes[index as usize];
         extracted.head = node.next;
+        if extracted.head == NONE {
+            extracted.tail = NONE;
+        }
         let value = unsafe { node.value.assume_init_read() };
         self.release(index);
         Some(value)

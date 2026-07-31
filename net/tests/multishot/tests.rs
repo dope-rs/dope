@@ -3,7 +3,7 @@ use dope_net::multishot::Multishot;
 
 fn armed() -> (Multishot, Token) {
     let mut arm = Multishot::default();
-    let ud = arm.begin(7, SlotIndex::new(0)).expect("begin");
+    let ud = arm.begin(7, SlotIndex::ZERO).expect("begin");
     arm.settle(true);
     (arm, ud)
 }
@@ -12,7 +12,7 @@ fn armed() -> (Multishot, Token) {
 fn completion_in_armed_requests_rearm() {
     let (mut arm, ud) = armed();
     assert!(arm.is_armed());
-    assert!(arm.epoch_match(ud, SlotIndex::new(0)));
+    assert!(arm.epoch_match(ud, SlotIndex::ZERO));
     arm.complete(false);
     assert!(!arm.is_armed());
     assert!(arm.needs_rearm());
@@ -20,7 +20,7 @@ fn completion_in_armed_requests_rearm() {
     let (mut arm, ud) = armed();
     arm.quiesce();
     assert!(!arm.is_armed());
-    assert!(arm.epoch_match(ud, SlotIndex::new(0)));
+    assert!(arm.epoch_match(ud, SlotIndex::ZERO));
     arm.complete(false);
     assert!(!arm.needs_rearm());
     assert!(!arm.is_armed());

@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use dope::Event;
 use dope::driver::profile::DriverProfile;
+use dope::driver::ready::{CompletionSlot, CompletionWaker};
 use dope::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
-use dope::manifold::timer::starved::Waiter as TimerWaiter;
-use dope::manifold::timer::{Ticket, Timer};
+use dope::manifold::timer::{StarvedWaiter as TimerWaiter, Ticket, Timer};
 use dope::runtime::dispatcher::{Dispatcher, Idle};
 use dope::runtime::profile::RuntimeProfile;
 use dope_fiber::abi::Fiber;
@@ -33,6 +33,7 @@ use dope_fiber::slab::{FixedSlab, Slab};
 use dope_fiber::sleep::Sleep;
 use dope_fiber::wait::WaitFn;
 use dope_net::link::slot::PendingFlags;
+use dope_net::wire::identity::Identity;
 use dope_test::{
     drain_tokens, poll_ready, poll_with_slot, tok, with_context, with_session, with_session_for,
 };
@@ -43,14 +44,21 @@ use o3::collections::{FixedPinSlab, PinSlab};
 #[test]
 fn raw_hot_path_boundaries_add_no_storage() {
     assert_eq!(
-        size_of::<Io<'static, 'static>>(),
+        size_of::<Io<'static, 'static, Identity>>(),
         size_of::<(&'static (), Token)>(),
     );
     assert_eq!(size_of::<PendingFlags>(), size_of::<u8>());
+    assert_eq!(size_of::<RootWaker<'static>>(), size_of::<[usize; 2]>());
+    assert_eq!(size_of::<Waker<'static>>(), size_of::<[usize; 2]>());
+    assert_eq!(
+        size_of::<Option<RootWaker<'static>>>(),
+        size_of::<[usize; 2]>()
+    );
+    assert_eq!(size_of::<Option<Waker<'static>>>(), size_of::<[usize; 3]>());
     assert_eq!(size_of::<WaitQueue>(), size_of::<[usize; 4]>());
     assert_eq!(
         size_of::<Waiter<'static>>(),
-        size_of::<[usize; 3]>() + size_of::<Option<Waker<'static>>>(),
+        size_of::<[usize; 3]>() + size_of::<CompletionSlot<'static>>(),
     );
     assert_eq!(
         size_of::<Slab<'static, Ready<()>>>(),
@@ -137,8 +145,12 @@ fn nested_generated_bridge_preserves_the_exact_root_wake() {
     });
 }
 
-fn register<'d>(queue: Pin<&WaitQueue>, waiter: Pin<&Waiter<'d>>, waker: Waker<'d>) -> bool {
-    queue.try_register_waker(waiter, waker)
+fn register<'d>(
+    queue: Pin<&WaitQueue>,
+    waiter: Pin<&Waiter<'d>>,
+    wake: CompletionWaker<'d>,
+) -> bool {
+    queue.try_register_completion(waiter, wake)
 }
 
 #[test]
@@ -155,19 +167,19 @@ fn request_waiter_can_switch_queues_and_either_endpoint_may_drop_first() {
         assert!(register(
             origin.as_ref(),
             request.as_ref(),
-            Waker::from_ready(sess.driver(), request_ready.key()),
+            CompletionWaker::from_ready(sess.driver(), request_ready.key()),
         ));
         assert!(register(
             saturated.as_ref(),
             blocker.as_ref(),
-            Waker::from_ready(sess.driver(), blocker_ready.key()),
+            CompletionWaker::from_ready(sess.driver(), blocker_ready.key()),
         ));
 
         // A failed move must leave the request on its original queue.
         assert!(!register(
             saturated.as_ref(),
             request.as_ref(),
-            Waker::from_ready(sess.driver(), request_ready.key()),
+            CompletionWaker::from_ready(sess.driver(), request_ready.key()),
         ));
         origin.as_ref().wake_one();
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
@@ -181,7 +193,7 @@ fn request_waiter_can_switch_queues_and_either_endpoint_may_drop_first() {
             assert!(register(
                 ephemeral.as_ref(),
                 request.as_ref(),
-                Waker::from_ready(sess.driver(), request_ready.key()),
+                CompletionWaker::from_ready(sess.driver(), request_ready.key()),
             ));
         }
         assert!(!request.is_registered());
@@ -191,7 +203,7 @@ fn request_waiter_can_switch_queues_and_either_endpoint_may_drop_first() {
         assert!(register(
             origin.as_ref(),
             canceled.as_ref(),
-            Waker::from_ready(sess.driver(), canceled_ready.key()),
+            CompletionWaker::from_ready(sess.driver(), canceled_ready.key()),
         ));
         drop(canceled);
         assert!(origin.is_empty());
@@ -525,7 +537,7 @@ impl<'d> Dispatcher<'d> for ExactWakeDispatcher {
 #[test]
 fn block_on_consumes_only_its_exact_wake_token() {
     with_session_for::<ExactWakeProfile, _>(|mut session| {
-        let foreign = Token::new(ROUTE_FRAMEWORK, SlotIndex::new(0), Epoch::INITIAL);
+        let foreign = Token::new(ROUTE_FRAMEWORK, SlotIndex::ZERO, Epoch::INITIAL);
         let state = Rc::new(ExactWakeState {
             wait: Box::pin(WaitQueue::with_capacity(1)),
             allowed: Cell::new(false),

@@ -38,6 +38,7 @@ impl Backing {
 pub(crate) struct ProvidedPool {
     base: NonNull<u8>,
     buf_len: usize,
+    entries: usize,
     free: Vec<u16>,
 }
 
@@ -67,6 +68,7 @@ impl ProvidedPool {
         Self {
             base: backing.base(),
             buf_len: backing.buf_len,
+            entries: entries as usize,
             free,
         }
     }
@@ -83,6 +85,10 @@ impl ProvidedPool {
 
     pub(crate) fn buf_len(&self) -> usize {
         self.buf_len
+    }
+
+    pub(crate) fn entries(&self) -> usize {
+        self.entries
     }
 
     pub(crate) fn defer(&mut self, id: BufferId) {

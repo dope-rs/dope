@@ -5,6 +5,7 @@ use dope_core::driver::submission::Submission;
 use dope_core::driver::token::SlotIndex;
 use dope_core::driver::token::kind::{CONNECT, SOCKET};
 use dope_net::Transport;
+use dope_net::link::egress::arena::Arena;
 use dope_net::link::slot::{PEND_CLOSE, PendingQueue};
 
 use super::{ConnPool, Core};
@@ -26,6 +27,7 @@ where
 
     fn drain_close(
         pool: &mut ConnPool<'d, ID, E::Transport, A::Wire, A::Conn, A::Send>,
+        egress_arena: &mut Arena<'_, A::Send>,
         dirty: &PendingQueue,
         app: &A,
         idx: SlotIndex,
@@ -35,7 +37,7 @@ where
     fn maybe_close(self: Pin<&mut Self>, idx: SlotIndex, driver: &mut DriverContext<'_, 'd>);
 }
 
-impl<'d, const ID: u8, A, S, E> ClosePhase<'d, ID, A, S, E> for Core<'d, ID, A, S, E>
+impl<'pool, 'd, const ID: u8, A, S, E> ClosePhase<'d, ID, A, S, E> for Core<'pool, 'd, ID, A, S, E>
 where
     A: ConnApp<'d>,
     S: Dialer<E::Transport>,
@@ -70,7 +72,8 @@ where
             let key = slot.state.dial;
             let permanent = slot.state.close_permanent;
             if established {
-                this.app.close(slot, driver);
+                let egress = this.egress_arena.queue_for(slot.state.lane);
+                this.app.close(slot, egress, driver);
             }
             Some((key, permanent))
         });
@@ -81,11 +84,19 @@ where
                 this.upstreams.disconnect(key, now);
             }
         }
-        Self::drain_close(this.pool, this.dirty, this.app, idx, driver);
+        Self::drain_close(
+            this.pool,
+            this.egress_arena,
+            this.dirty,
+            this.app,
+            idx,
+            driver,
+        );
     }
 
     fn drain_close(
         pool: &mut ConnPool<'d, ID, E::Transport, A::Wire, A::Conn, A::Send>,
+        egress_arena: &mut Arena<'_, A::Send>,
         dirty: &PendingQueue,
         app: &A,
         idx: SlotIndex,
@@ -136,6 +147,7 @@ where
             .map(|slot| app.is_drained(slot, driver))
             .unwrap_or(true);
         if drained {
+            egress_arena.clear(idx.raw() as usize);
             pool.try_close(idx, driver);
         } else if let Some(slot) = pool.get_mut(idx) {
             dirty.mark(idx, &slot.state.pending, PEND_CLOSE);

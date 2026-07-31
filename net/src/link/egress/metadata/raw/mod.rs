@@ -1,1 +1,1 @@
-pub(crate) mod pool;
+pub(in crate::link::egress) mod pool;

@@ -1,21 +1,36 @@
-use super::super::queue::Queue;
-use crate::wire::send::Vectored;
+use crate::wire::send::{StableVectoredSource, Vectored};
+use dope_core::io::socket::msg::{IoVec, MsgHdr};
 
-pub(in crate::link::egress) struct Preparation<'a, const IOV: usize, B> {
-    queue: &'a mut Queue<IOV, B>,
-    len: usize,
+pub(in crate::link::egress) struct Preparation<'a> {
+    iovs: &'a [IoVec],
+    storage: &'a mut [IoVec],
+    msghdr: &'a mut MsgHdr,
 }
 
-impl<'a, const IOV: usize, B: AsRef<[u8]>> Preparation<'a, IOV, B> {
-    pub(in crate::link::egress) fn new(queue: &'a mut Queue<IOV, B>, len: usize) -> Self {
-        Self { queue, len }
+impl<'a> Preparation<'a> {
+    pub(in crate::link::egress) fn new(
+        iovs: &'a [IoVec],
+        storage: &'a mut [IoVec],
+        msghdr: &'a mut MsgHdr,
+    ) -> Self {
+        Self {
+            iovs,
+            storage,
+            msghdr,
+        }
     }
 
     pub(in crate::link::egress) fn prepare(self) -> Vectored<'a> {
-        let (iovs, iov_storage, msghdr_storage) = self.queue.iov_parts(self.len);
-        // SAFETY: every descriptor was derived from this queue's live entry
-        // storage. The exclusive queue borrow prevents removal for `'a`; the
-        // consuming send protocol retains entries until their completion.
-        unsafe { Vectored::from_raw(iovs, iov_storage, msghdr_storage) }
+        Vectored::from_stable(self)
+    }
+}
+
+// SAFETY: every descriptor is derived from this queue's live entry storage.
+// The consuming send protocol retains those entries and the queue-owned
+// descriptor storage unchanged until completion.
+unsafe impl<'a> StableVectoredSource<'a> for Preparation<'a> {
+    #[inline(always)]
+    fn into_parts(self) -> (&'a [IoVec], &'a mut [IoVec], &'a mut MsgHdr) {
+        (self.iovs, self.storage, self.msghdr)
     }
 }

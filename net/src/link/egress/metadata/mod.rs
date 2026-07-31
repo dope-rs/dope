@@ -1,102 +1,140 @@
-pub(crate) mod raw;
+pub(super) mod raw;
 
 use std::cell::Cell;
-use std::rc::Rc;
+use std::mem::size_of;
 
-use self::raw::pool::MetadataPool;
-use super::NONE;
+use self::raw::pool::{DetachedIndex, LinkedIndex, MetadataPool, ReservedIndex};
 use super::config::Config;
+use o3::mem::FairCreditState;
 
 pub struct MetadataArena<T> {
-    pub(super) pool: Rc<MetadataPool<T>>,
-}
-
-impl<T> Clone for MetadataArena<T> {
-    fn clone(&self) -> Self {
-        Self {
-            pool: self.pool.clone(),
-        }
-    }
+    pub(super) pool: MetadataPool<T>,
+    lanes: Box<[MetadataLane]>,
 }
 
 impl<T> MetadataArena<T> {
     pub fn with_config(config: Config, lanes: usize) -> Self {
+        assert!(lanes != 0, "egress metadata requires at least one lane");
         Self {
-            pool: Rc::new(MetadataPool::with_config(config, lanes)),
+            pool: MetadataPool::with_config(config),
+            lanes: (0..lanes)
+                .map(|lane| MetadataLane::with_config(config, lanes, lane))
+                .collect(),
         }
+    }
+
+    pub fn queue(&self, lane: usize) -> MetadataQueue<'_, T> {
+        MetadataQueue::with_lane(&self.pool, &self.lanes[lane])
+    }
+
+    pub fn clear(&self, lane: usize) {
+        drop(self.queue(lane).detach_all());
     }
 }
 
-pub struct MetadataQueue<T> {
-    pub(super) arena: MetadataArena<T>,
-    pub(super) head: Cell<u32>,
-    tail: Cell<u32>,
+pub(in crate::link::egress) struct MetadataLane {
+    head: Cell<LinkedIndex>,
+    tail: Cell<LinkedIndex>,
     len: Cell<usize>,
     bytes: Cell<usize>,
     resident: Cell<usize>,
-    lane: usize,
-    accepting: Cell<bool>,
+    credit: FairCreditState<2>,
 }
 
-impl<T> MetadataQueue<T> {
-    pub fn new(arena: &MetadataArena<T>, lane: usize) -> Self {
-        assert!(lane < arena.pool.lanes());
+const _: () = assert!(size_of::<MetadataLane>() == 64);
+
+impl MetadataLane {
+    pub(in crate::link::egress) fn with_config(config: Config, lanes: usize, lane: usize) -> Self {
         Self {
-            arena: arena.clone(),
-            head: Cell::new(NONE),
-            tail: Cell::new(NONE),
+            head: Cell::new(LinkedIndex::NONE),
+            tail: Cell::new(LinkedIndex::NONE),
             len: Cell::new(0),
             bytes: Cell::new(0),
             resident: Cell::new(0),
-            lane,
-            accepting: Cell::new(true),
+            credit: FairCreditState::split_at(
+                [
+                    config.reserved_entries as usize,
+                    config.reserved_bytes as usize,
+                ],
+                lanes,
+                lane,
+            ),
         }
+    }
+}
+
+pub struct MetadataQueue<'a, T> {
+    pub(super) pool: &'a MetadataPool<T>,
+    state: &'a MetadataLane,
+}
+
+impl<T> Clone for MetadataQueue<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for MetadataQueue<'_, T> {}
+
+impl<T> MetadataQueue<'_, T> {
+    pub(in crate::link::egress) fn with_lane<'a>(
+        pool: &'a MetadataPool<T>,
+        state: &'a MetadataLane,
+    ) -> MetadataQueue<'a, T> {
+        MetadataQueue { pool, state }
     }
 
     pub fn try_push_back(&self, value: T, bytes: usize) -> Result<(), T> {
-        if !self.accepting.get()
-            || !self.arena.pool.has_available()
-            || !self.arena.pool.acquire(self.lane, 1, bytes)
+        let index = match self
+            .pool
+            .reserve_from(value, |value| value, |_| ((), bytes, bytes))
         {
+            Ok((index, _)) => index,
+            Err(value) => return Err(value),
+        };
+        if !self
+            .pool
+            .credit(&self.state.credit)
+            .try_acquire_all([1, bytes])
+        {
+            let Some((_, value, _, _)) = self.pool.take_reserved(index) else {
+                unreachable!()
+            };
             return Err(value);
         }
-        let index = match self.arena.pool.reserve_from(value, |value| value, |_| ()) {
-            Ok((index, _)) => index,
-            Err(value) => {
-                self.arena.pool.release(self.lane, 1, bytes);
-                return Err(value);
-            }
-        };
-        self.arena.pool.set_sizes(index, bytes, bytes);
-        let tail = self.tail.replace(index);
-        if tail == NONE {
-            self.head.set(index);
+        let index = index.into_linked();
+        let tail = self.state.tail.replace(index);
+        if tail.is_none() {
+            self.state.head.set(index);
         } else {
-            self.arena.pool.set_next(tail, index);
+            self.pool.set_linked_next(tail, index);
         }
-        self.len.set(self.len.get() + 1);
-        self.bytes.set(self.bytes.get() + bytes);
-        self.resident.set(self.resident.get() + bytes);
+        self.state.len.set(self.state.len.get() + 1);
+        self.state.bytes.set(self.state.bytes.get() + bytes);
+        self.state.resident.set(self.state.resident.get() + bytes);
         Ok(())
     }
 
     pub fn take_front(&self) -> Option<(T, MetadataFront<'_, T>)> {
-        let index = self.head.get();
-        if index == NONE {
+        let index = self.state.head.get();
+        if index.is_none() {
             return None;
         }
-        let (next, value, bytes, resident) = self.arena.pool.detach_value(index)?;
-        self.head.set(next);
-        if next == NONE {
-            self.tail.set(NONE);
+        let (next, value, bytes, resident, index) = self.pool.detach_value(index)?;
+        self.state.head.set(next);
+        if next.is_none() {
+            self.state.tail.set(LinkedIndex::NONE);
         }
-        self.len.set(self.len.get() - 1);
-        self.bytes.set(self.bytes.get() - bytes);
-        self.resident.set(self.resident.get() - resident);
+        self.state.len.set(self.state.len.get() - 1);
+        self.state.bytes.set(self.state.bytes.get() - bytes);
+        self.state
+            .resident
+            .set(self.state.resident.get() - resident);
         Some((
             value,
             MetadataFront {
-                queue: self,
+                pool: self.pool,
+                state: self.state,
                 index,
                 bytes,
                 resident,
@@ -105,33 +143,37 @@ impl<T> MetadataQueue<T> {
         ))
     }
 
-    pub(super) fn index_at(&self, offset: usize) -> Option<u32> {
-        if offset >= self.len.get() {
+    pub(super) fn index_at(&self, offset: usize) -> Option<LinkedIndex> {
+        if offset >= self.state.len.get() {
             return None;
         }
-        let mut index = self.head.get();
+        let mut index = self.state.head.get();
         for _ in 0..offset {
-            index = self.arena.pool.next(index);
+            index = self.pool.next(index);
         }
         Some(index)
     }
 
     pub fn len(&self) -> usize {
-        self.len.get()
+        self.state.len.get()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len.get() == 0
+        self.state.len.get() == 0
     }
 
     pub fn bytes(&self) -> usize {
-        self.bytes.get()
+        self.state.bytes.get()
+    }
+
+    pub(super) fn head(&self) -> LinkedIndex {
+        self.state.head.get()
     }
 
     pub(super) fn commit_prepared(
         &self,
-        head: u32,
-        tail: u32,
+        head: ReservedIndex,
+        tail: ReservedIndex,
         entries: usize,
         bytes: usize,
         resident: usize,
@@ -139,53 +181,56 @@ impl<T> MetadataQueue<T> {
         if entries == 0 {
             return true;
         }
-        if !self.accepting.get() || !self.arena.pool.acquire(self.lane, entries, resident) {
+        if !self
+            .pool
+            .credit(&self.state.credit)
+            .try_acquire_all([entries, resident])
+        {
             return false;
         }
-        let old_tail = self.tail.replace(tail);
-        if old_tail == NONE {
-            self.head.set(head);
+        let head = head.into_linked();
+        let tail = tail.into_linked();
+        let old_tail = self.state.tail.replace(tail);
+        if old_tail.is_none() {
+            self.state.head.set(head);
         } else {
-            self.arena.pool.set_next(old_tail, head);
+            self.pool.set_linked_next(old_tail, head);
         }
-        self.len.set(self.len.get() + entries);
-        self.bytes.set(self.bytes.get() + bytes);
-        self.resident.set(self.resident.get() + resident);
+        self.state.len.set(self.state.len.get() + entries);
+        self.state.bytes.set(self.state.bytes.get() + bytes);
+        self.state
+            .resident
+            .set(self.state.resident.get() + resident);
         true
     }
 
     pub(super) fn consume_front_bytes(&self, bytes: usize) {
-        let head = self.head.get();
-        debug_assert!(head != NONE);
-        self.arena.pool.front_consume(head, bytes);
-        self.bytes.set(self.bytes.get() - bytes);
+        let head = self.state.head.get();
+        debug_assert!(!head.is_none());
+        self.pool.front_consume(head, bytes);
+        self.state.bytes.set(self.state.bytes.get() - bytes);
     }
 
     pub fn detach_all(&self) -> DetachedValues<'_, T> {
-        self.detach_values(true)
-    }
-
-    fn detach_values(&self, reopen: bool) -> DetachedValues<'_, T> {
-        self.accepting.set(false);
-        let index = self.head.replace(NONE);
-        self.tail.set(NONE);
-        let entries = self.len.take();
-        self.bytes.take();
-        let resident = self.resident.take();
-        self.arena.pool.release(self.lane, entries, resident);
-        if reopen {
-            self.accepting.set(true);
-        }
+        let index = self.state.head.replace(LinkedIndex::NONE);
+        self.state.tail.set(LinkedIndex::NONE);
+        let entries = self.state.len.take();
+        self.state.bytes.take();
+        let resident = self.state.resident.take();
+        self.pool
+            .credit(&self.state.credit)
+            .release_all([entries, resident]);
         DetachedValues {
-            pool: &self.arena.pool,
+            pool: self.pool,
             head: index,
         }
     }
 }
 
 pub struct MetadataFront<'a, T> {
-    queue: &'a MetadataQueue<T>,
-    index: u32,
+    pool: &'a MetadataPool<T>,
+    state: &'a MetadataLane,
+    index: DetachedIndex,
     bytes: usize,
     resident: usize,
     settled: bool,
@@ -197,25 +242,25 @@ impl<T> MetadataFront<'_, T> {
     }
 
     pub fn release(mut self) {
-        self.queue.arena.pool.release_empty_node(self.index);
-        self.queue
-            .arena
-            .pool
-            .release(self.queue.lane, 1, self.resident);
+        self.pool.release_detached(self.index);
+        self.pool
+            .credit(&self.state.credit)
+            .release_all([1, self.resident]);
         self.settled = true;
     }
 
     pub fn restore(mut self, value: T) {
-        let head = self.queue.head.replace(self.index);
-        self.queue.arena.pool.restore_value(self.index, value, head);
-        if head == NONE {
-            self.queue.tail.set(self.index);
+        let head = self.state.head.get();
+        let index = self.pool.restore_value(self.index, value, head);
+        self.state.head.set(index);
+        if head.is_none() {
+            self.state.tail.set(index);
         }
-        self.queue.len.set(self.queue.len.get() + 1);
-        self.queue.bytes.set(self.queue.bytes.get() + self.bytes);
-        self.queue
+        self.state.len.set(self.state.len.get() + 1);
+        self.state.bytes.set(self.state.bytes.get() + self.bytes);
+        self.state
             .resident
-            .set(self.queue.resident.get() + self.resident);
+            .set(self.state.resident.get() + self.resident);
         self.settled = true;
     }
 }
@@ -223,11 +268,10 @@ impl<T> MetadataFront<'_, T> {
 impl<T> Drop for MetadataFront<'_, T> {
     fn drop(&mut self) {
         if !self.settled {
-            self.queue.arena.pool.release_empty_node(self.index);
-            self.queue
-                .arena
-                .pool
-                .release(self.queue.lane, 1, self.resident);
+            self.pool.release_detached(self.index);
+            self.pool
+                .credit(&self.state.credit)
+                .release_all([1, self.resident]);
             self.settled = true;
         }
     }
@@ -235,17 +279,19 @@ impl<T> Drop for MetadataFront<'_, T> {
 
 pub struct DetachedValues<'a, T> {
     pool: &'a MetadataPool<T>,
-    head: u32,
+    head: LinkedIndex,
 }
 
 impl<T> Drop for DetachedValues<'_, T> {
     fn drop(&mut self) {
-        self.pool.drain_nodes(&mut self.head);
+        self.pool.drain_linked(&mut self.head);
     }
 }
 
-impl<T> Drop for MetadataQueue<T> {
+impl<T> Drop for MetadataArena<T> {
     fn drop(&mut self) {
-        drop(self.detach_values(false));
+        for lane in 0..self.lanes.len() {
+            self.clear(lane);
+        }
     }
 }

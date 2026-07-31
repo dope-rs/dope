@@ -1,23 +1,24 @@
 use std::io;
 
 use dope::driver::token::Token;
+use dope_net::wire::Wire;
 use o3::buffer::Shared;
 
 use crate::Fiber;
 use crate::net::port::Port;
 use crate::raw::streams::{Read, WriteAll, WriteAllShared};
 
-pub struct Io<'scope, 'd> {
-    port: &'scope Port<'d>,
+pub struct Io<'scope, 'd, W: Wire> {
+    port: &'scope Port<'d, W::RetainedRecv<'d>>,
     id: Token,
 }
 
-impl<'scope, 'd> Io<'scope, 'd> {
-    pub(crate) fn new(port: &'scope Port<'d>, id: Token) -> Self {
+impl<'scope, 'd, W: Wire> Io<'scope, 'd, W> {
+    pub(crate) fn new(port: &'scope Port<'d, W::RetainedRecv<'d>>, id: Token) -> Self {
         Self { port, id }
     }
 
-    pub(crate) fn handle(&self) -> (&Port<'d>, Token) {
+    pub(crate) fn handle(&self) -> (&Port<'d, W::RetainedRecv<'d>>, Token) {
         (self.port, self.id)
     }
 
@@ -38,12 +39,12 @@ impl<'scope, 'd> Io<'scope, 'd> {
     pub fn read(
         &mut self,
         buf: Vec<u8>,
-    ) -> impl Fiber<'d, Output = (io::Result<usize>, Vec<u8>)> + '_ {
+    ) -> impl Fiber<'d, Output = (io::Result<()>, Vec<u8>)> + '_ {
         Read::new(self, buf)
     }
 }
 
-impl Drop for Io<'_, '_> {
+impl<W: Wire> Drop for Io<'_, '_, W> {
     fn drop(&mut self) {
         self.port.close(self.id);
     }

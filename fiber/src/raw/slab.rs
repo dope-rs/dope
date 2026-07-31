@@ -1,13 +1,28 @@
+use std::marker::PhantomData;
 use std::pin::{Pin, pin};
 use std::process::abort;
 use std::task::Poll;
 
 use dope::DriverContext;
 
+use crate::raw::pinned_slice;
 use crate::raw::task::queue::TaskQueue;
-use crate::raw::task::{RootWaker, TaskContext};
+use crate::raw::task::{RootWaker, StableTaskSource, TaskContext};
 use crate::slab::{Slab, TaskId};
 use crate::{Context, Fiber};
+
+struct SlabTask<'a, 'd, T: Copy> {
+    context: Pin<&'a TaskContext<T>>,
+    _brand: PhantomData<fn(&'d ()) -> &'d ()>,
+}
+
+// SAFETY: TaskSlab owns every pinned context and unbinds it after its fiber is
+// removed; queue Drop detaches the reverse link before the queue disappears.
+unsafe impl<'a, 'd, T: Copy> StableTaskSource<'a, 'd, T> for SlabTask<'a, 'd, T> {
+    fn context(self) -> Pin<&'a TaskContext<T>> {
+        self.context
+    }
+}
 
 /// A fiber slab whose persistent wake nodes share each fiber's lifetime.
 ///
@@ -37,10 +52,7 @@ where
     }
 
     fn context(&self, index: usize) -> Option<Pin<&TaskContext<T>>> {
-        let context = self.contexts.as_ref().get_ref().get(index)?;
-        // SAFETY: pinning the boxed slice pins every context for the lifetime
-        // of this slab.
-        Some(unsafe { Pin::new_unchecked(context) })
+        pinned_slice::get(self.contexts.as_ref(), index)
     }
 
     pub fn insert(&mut self, fiber: F) -> Option<TaskId<Tag>> {
@@ -63,10 +75,15 @@ where
         if context.is_bound() {
             return false;
         }
-        // SAFETY: this slab owns the pinned context and corresponding fiber as
-        // one entry. Queue drop detaches the context, while removal drops the
-        // fiber before unbinding the context.
-        let _ = unsafe { context.bind_inner(queue, target, Some(parent.into())) };
+        let _ = TaskContext::bind(
+            SlabTask {
+                context,
+                _brand: PhantomData,
+            },
+            queue,
+            target,
+            parent.into(),
+        );
         true
     }
 
@@ -83,9 +100,10 @@ where
         if !context.is_bound() {
             return None;
         }
-        // SAFETY: the corresponding fiber and persistent binding are live for
-        // this slab's driver brand `'d`.
-        let wake = unsafe { context.context_unchecked() };
+        let wake = TaskContext::waker(SlabTask {
+            context,
+            _brand: PhantomData,
+        });
         let mut context = pin!(Context::from_waker(wake, driver.reborrow()));
         self.fibers.poll(id, context.as_mut())
     }
@@ -112,9 +130,7 @@ where
         let Some(context) = self.context(index) else {
             abort();
         };
-        // SAFETY: the fiber has just been dropped, so none of its asynchronous
-        // registrations can retain this wake node.
-        unsafe { context.unbind() };
+        context.unbind();
         true
     }
 }

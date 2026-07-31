@@ -10,12 +10,14 @@ use dope::manifold::file::{Files, FilesFactory};
 use dope::manifold::listener::Listener;
 use dope::manifold::listener::application::Application;
 use dope::manifold::listener::config::Config;
+use dope::runtime::executor::ValueStorage;
 use dope::runtime::executor::{Executor, Session};
 use dope::runtime::profile::Throughput;
 use dope::{DriverContext, DriverRef, driver};
 use dope_core::driver::ext::DriverExt;
 use dope_fiber::net::listener::{ListenerPort, ListenerPortFactory};
 use dope_net::ListenerTransport;
+use dope_net::link::egress::storage::Storage as EgressStorage;
 use dope_net::tcp::Tcp;
 use dope_net::tcp::listener;
 use dope_net::wire::Wire;
@@ -53,10 +55,10 @@ pub fn with_session_for<P: DriverProfile, R>(
     exec_for::<P>().enter(f)
 }
 
-pub fn with_driver<R>(f: impl for<'d> FnOnce(DriverContext<'d, 'd>) -> R) -> R {
+pub fn with_driver<R>(f: impl for<'a, 'd> FnOnce(DriverContext<'a, 'd>) -> R) -> R {
     let driver = Driver::new(driver::Config::for_quic_udp(1, 8)).expect("driver");
     let mut driver = pin!(driver);
-    driver.as_mut().scope(|access, _token| f(access))
+    driver.as_mut().scope(|mut scope| f(scope.context()))
 }
 
 pub fn file_exec<const ID: u8, const N: usize>() -> Executor<FilesFactory<ID, N>> {
@@ -68,16 +70,18 @@ pub fn file_exec<const ID: u8, const N: usize>() -> Executor<FilesFactory<ID, N>
 pub fn listener_exec<P: DriverProfile>(
     max_connections: usize,
     tweak: impl FnOnce(driver::Config) -> driver::Config,
-) -> Executor<ListenerPortFactory> {
+) -> Executor<ListenerPortFactory<Identity>> {
     Executor::new(tweak(driver::Config::for_tcp_profile::<P>(max_connections)))
         .expect("executor")
-        .with_storage_factory(ListenerPort::factory(max_connections).expect("listener capacity"))
+        .with_storage_factory(
+            ListenerPort::<Identity>::factory(max_connections).expect("listener capacity"),
+        )
 }
 
 pub fn tcp_host(
     max_connections: usize,
     listener_config: listener::Config,
-) -> (Executor<()>, TcpConfig) {
+) -> (Executor<ValueStorage<EgressStorage>>, TcpConfig) {
     let cfg = driver::Config::for_tcp_profile::<Throughput>(max_connections);
     let exec = Executor::new(cfg).expect("executor");
     let config = Config {
@@ -88,28 +92,30 @@ pub fn tcp_host(
         transport: listener_config,
         egress: Default::default(),
     };
-    (exec, config)
+    (exec.with_storage(EgressStorage::default()), config)
 }
 
 pub fn open_listener<'d, const ID: u8, A, E>(
     app: A,
     cfg: Config<E::Transport>,
     hash_builder: State,
+    egress_storage: &'d EgressStorage,
     driver: &mut DriverContext<'_, 'd>,
-) -> (Listener<'d, ID, A, E>, SocketAddr)
+) -> (Listener<'d, 'd, ID, A, E>, SocketAddr)
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
     E::Transport: ListenerTransport,
-    <A::Wire as Wire>::InitConfig: Default,
+    <A::Wire as Wire>::InitConfig<'d>: Default,
 {
-    let listener = Listener::open_in(app, cfg, hash_builder, driver).expect("listener");
+    let listener =
+        Listener::open_in(app, cfg, hash_builder, egress_storage, driver).expect("listener");
     let addr = listener.local_addr().expect("local addr");
     (listener, addr)
 }
 
-pub fn tok(idx: u32) -> Token {
-    Token::new(0, SlotIndex::new(idx), Epoch::INITIAL)
+pub fn tok(idx: u16) -> Token {
+    Token::new(0, SlotIndex::from(idx), Epoch::INITIAL)
 }
 
 pub fn drain_tokens(driver: DriverRef<'_>) -> Vec<Token> {

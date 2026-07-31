@@ -4,12 +4,14 @@ mod state;
 
 use std::cell::Cell;
 
-use o3::buffer::{RetainBytes, Shared};
+use dope_net::wire::{RecvCursor, RecvTarget};
+use o3::buffer::Shared;
+use o3::cell::RegionToken;
 use o3::collections::CellQueue;
 
-use crate::Waker;
+use crate::raw::task::RootWaker;
+use dope::driver::ready::CompletionWaker;
 use dope::driver::token::Token;
-use dope::io::provided::ProvidedView;
 use std::io::Error;
 use std::io::ErrorKind;
 
@@ -24,7 +26,7 @@ struct Entry<'d> {
     send: Cell<Option<Shared>>,
     send_pending: Cell<bool>,
     close: Cell<bool>,
-    wake: Cell<Option<Waker<'d>>>,
+    root_wake: Cell<Option<RootWaker<'d>>>,
     request_queued: Cell<bool>,
     inflight: Cell<bool>,
 }
@@ -37,7 +39,7 @@ impl Default for Entry<'_> {
             send: Cell::new(None),
             send_pending: Cell::new(false),
             close: Cell::new(false),
-            wake: Cell::new(None),
+            root_wake: Cell::new(None),
             request_queued: Cell::new(false),
             inflight: Cell::new(false),
         }
@@ -49,13 +51,13 @@ pub(crate) struct Requests {
     pub(crate) close: bool,
 }
 
-pub(crate) struct Port<'d> {
+pub(crate) struct Port<'d, R: 'd> {
     entries: Box<[Entry<'d>]>,
-    recv: RecvArena<'d>,
+    recv: RecvArena<'d, R>,
     deferred_requests: Option<CellQueue<Token>>,
 }
 
-impl<'d> Port<'d> {
+impl<'d, R: RecvCursor + 'd> Port<'d, R> {
     pub(in crate::net) fn with_layout(layout: RecvLayout, deferred_requests: bool) -> Self {
         Self::build(layout, deferred_requests)
     }
@@ -89,7 +91,7 @@ impl<'d> Port<'d> {
     }
 
     fn wake(entry: &Entry<'d>) {
-        if let Some(wake) = entry.wake.get() {
+        if let Some(wake) = entry.root_wake.get() {
             wake.wake();
         }
     }
@@ -108,25 +110,34 @@ impl<'d> Port<'d> {
         );
     }
 
-    pub(crate) fn activate(&self, token: Token, wake: Waker<'d>) -> bool {
-        self.activate_with(token, Some(wake))
+    pub(crate) fn activate(
+        &self,
+        token: Token,
+        wake: RootWaker<'d>,
+        region: &mut RegionToken<'d>,
+    ) -> bool {
+        self.activate_with(token, Some(wake), region)
     }
 
-    pub(crate) fn activate_deferred(&self, token: Token) -> bool {
-        self.activate_with(token, None)
+    pub(crate) fn activate_deferred(&self, token: Token, region: &mut RegionToken<'d>) -> bool {
+        self.activate_with(token, None, region)
     }
 
-    fn activate_with(&self, token: Token, wake: Option<Waker<'d>>) -> bool {
+    fn activate_with(
+        &self,
+        token: Token,
+        wake: Option<RootWaker<'d>>,
+        region: &mut RegionToken<'d>,
+    ) -> bool {
         let Some(entry) = self.entries.get(token.slot().raw() as usize) else {
             return false;
         };
-        if !entry.state.reset(&self.recv) {
-            return false;
-        }
+        let lane = token.slot().raw() as usize;
+        entry.state.reset(lane, &self.recv, region);
         entry.send.take();
         entry.send_pending.set(false);
         entry.close.set(false);
-        entry.wake.set(wake);
+        entry.root_wake.set(wake);
         entry.request_queued.set(false);
         entry.inflight.set(false);
         entry.token.set(Some(token));
@@ -137,14 +148,15 @@ impl<'d> Port<'d> {
         self.entry(token).is_some()
     }
 
-    pub(crate) fn push_recv<R: RetainBytes>(&self, token: Token, chunk: R) -> bool {
-        self.entry(token)
-            .is_none_or(|entry| Self::state(entry).push_recv(&self.recv, chunk))
-    }
-
-    pub(crate) fn push_retained(&self, token: Token, chunk: ProvidedView<'d>) -> bool {
-        self.entry(token)
-            .is_none_or(|entry| Self::state(entry).push_retained(&self.recv, chunk))
+    pub(crate) fn push_retained(
+        &self,
+        token: Token,
+        chunk: R,
+        region: &mut RegionToken<'d>,
+    ) -> bool {
+        self.entry(token).is_none_or(|entry| {
+            Self::state(entry).push_retained(token.slot().raw() as usize, &self.recv, chunk, region)
+        })
     }
 
     pub(crate) fn closed(&self, token: Token) {
@@ -209,15 +221,25 @@ impl<'d> Port<'d> {
             .is_none_or(|entry| Self::state(entry).readable_drained())
     }
 
-    pub(crate) fn recv_into(&self, token: Token, dst: &mut [u8]) -> RecvInto {
-        self.entry(token).map_or(RecvInto::Bytes(0), |entry| {
-            Self::state(entry).try_recv_into(&self.recv, dst)
+    pub(crate) fn recv_into(
+        &self,
+        token: Token,
+        target: &mut RecvTarget<'_>,
+        region: &mut RegionToken<'d>,
+    ) -> RecvInto {
+        self.entry(token).map_or(RecvInto::Ready, |entry| {
+            Self::state(entry).try_recv_into(
+                token.slot().raw() as usize,
+                &self.recv,
+                target,
+                region,
+            )
         })
     }
 
-    pub(crate) fn recv_waker(&self, token: Token, waker: Waker<'d>) {
+    pub(crate) fn recv_waker(&self, token: Token, wake: CompletionWaker<'d>) {
         if let Some(entry) = self.entry(token) {
-            Self::state(entry).set_recv_waker(waker);
+            Self::state(entry).set_recv_waker(wake);
         }
     }
 
@@ -227,9 +249,9 @@ impl<'d> Port<'d> {
         }
     }
 
-    pub(crate) fn send_waker(&self, token: Token, waker: Waker<'d>) {
+    pub(crate) fn send_waker(&self, token: Token, wake: CompletionWaker<'d>) {
         if let Some(entry) = self.entry(token) {
-            Self::state(entry).set_send_waker(waker);
+            Self::state(entry).set_send_waker(wake);
         }
     }
 

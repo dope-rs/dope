@@ -1,5 +1,4 @@
 use io_uring::IoUring;
-use io_uring::squeue::Entry;
 
 use crate::backend::uring::sqe::Sqe;
 use crate::driver::PushError;
@@ -9,19 +8,17 @@ use libc::SHUT_RDWR;
 pub(crate) enum Submission {}
 
 impl Submission {
-    pub(crate) fn push_once(ring: &mut IoUring, entry: &Entry) -> Result<(), PushError> {
-        // SAFETY: the live ring copies the entry; Sqe/RawSqe proves its resources live.
-        unsafe { ring.submission().push(entry) }.map_err(|_| PushError)
+    pub(crate) fn push_once(ring: &mut IoUring, sqe: &Sqe) -> Result<(), PushError> {
+        // SAFETY: Sqe proves that the entry's resources outlive kernel use.
+        unsafe { ring.submission().push(sqe.entry()) }.map_err(|_| PushError)
     }
 
-    pub(crate) fn push(ring: &mut IoUring, entry: &Entry) -> Result<(), PushError> {
-        // SAFETY: the live ring copies the entry; Sqe/RawSqe proves its resources live.
-        if unsafe { ring.submission().push(entry) }.is_ok() {
+    pub(crate) fn push(ring: &mut IoUring, sqe: &Sqe) -> Result<(), PushError> {
+        if Self::push_once(ring, sqe).is_ok() {
             return Ok(());
         }
         ring.submit().map_err(|_| PushError)?;
-        // SAFETY: as above; submit only frees queue capacity.
-        unsafe { ring.submission().push(entry) }.map_err(|_| PushError)
+        Self::push_once(ring, sqe)
     }
 
     pub(crate) fn try_close(ring: &mut IoUring, slot: FdSlot) -> bool {

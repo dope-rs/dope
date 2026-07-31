@@ -4,13 +4,14 @@ pub(crate) mod retry;
 pub(crate) mod submit;
 pub(crate) mod udata;
 
-use std::io::{self, Error, ErrorKind};
+use std::io::{self, Error};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::Duration;
 
 use o3::collections::FixedQueue;
 
+use crate::backend::fixed::FixedSlots;
 use crate::backend::kqueue::provided::ffi::pool::{Backing, ProvidedPool};
 use crate::driver::Config;
 use crate::driver::route::Routes;
@@ -67,7 +68,7 @@ pub struct Kqueue {
     pub(crate) backing: Backing,
     fd_table: Vec<Option<RawFd>>,
     accept_limit: u32,
-    next_slot: u32,
+    fixed_slots: FixedSlots,
     pub(crate) routes: Routes,
 }
 
@@ -96,6 +97,7 @@ impl Kqueue {
         }
         let fixed_file_slots = cfg.fixed_file_slots.max(cfg.accept_slots).max(1);
         let slots = fixed_file_slots as usize;
+        let accept_limit = cfg.accept_slots.min(fixed_file_slots);
         let backing = Backing::new(cfg.provided.entries, cfg.provided.len as u32);
         let provided = ProvidedPool::new(&backing, cfg.provided.entries);
         Ok((
@@ -112,8 +114,8 @@ impl Kqueue {
                 provided,
                 backing,
                 fd_table: vec![None; slots],
-                accept_limit: cfg.accept_slots.min(fixed_file_slots),
-                next_slot: fixed_file_slots,
+                accept_limit,
+                fixed_slots: FixedSlots::new(accept_limit, fixed_file_slots)?,
                 routes: Routes::new(),
             },
             slots,
@@ -194,7 +196,9 @@ impl Kqueue {
     pub(crate) fn reclaim(&mut self, completion: PendingCompletion) {
         match completion {
             PendingCompletion::Accept { result, .. } if result >= 0 => {
-                self.close_fd(FdSlot::new(result as u32));
+                if let Some(slot) = FdSlot::try_from_raw(result as u32) {
+                    self.close_fd(slot);
+                }
             }
             PendingCompletion::Recv { bid: Some(bid), .. } => self.provided.defer(bid),
             PendingCompletion::Write { ud, result }
@@ -233,15 +237,16 @@ impl Kqueue {
     }
 
     pub(crate) fn alloc_fixed_range(&mut self, len: u32) -> io::Result<u32> {
-        let base = self
-            .next_slot
-            .checked_sub(len)
-            .filter(|&b| b >= self.accept_limit)
-            .ok_or_else(|| {
-                Error::new(ErrorKind::OutOfMemory, "dope: fixed-file slots exhausted")
-            })?;
-        self.next_slot = base;
-        Ok(base)
+        self.fixed_slots.alloc(len)
+    }
+
+    pub(crate) fn alloc_fixed_slot(&mut self) -> io::Result<FdSlot> {
+        self.fixed_slots.alloc_slot().map(FdSlot::from_index)
+    }
+
+    pub(crate) fn retire_fixed_range(&mut self, base: u32, len: u32) {
+        let released = self.fixed_slots.release(base, len);
+        debug_assert!(released, "dope: invalid fixed-file range retirement");
     }
 
     pub(crate) fn register_raw_fd(&mut self, slot: u32, raw: RawFd) -> io::Result<()> {

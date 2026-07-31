@@ -1,11 +1,11 @@
+use std::io;
 use std::marker::PhantomData;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::rc::Rc;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[repr(transparent)]
 pub struct Source<'d> {
-    fd: Rc<OwnedFd>,
+    fd: OwnedFd,
     brand: PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
@@ -13,9 +13,13 @@ impl<'d> Source<'d> {
     #[doc(hidden)]
     pub fn owned(fd: OwnedFd) -> Self {
         Self {
-            fd: Rc::new(fd),
+            fd,
             brand: PhantomData,
         }
+    }
+
+    pub fn try_clone(&self) -> io::Result<Self> {
+        self.fd.try_clone().map(Self::owned)
     }
 }
 

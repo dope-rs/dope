@@ -7,23 +7,22 @@ pub mod recv;
 mod send;
 pub mod state;
 
-use std::io;
+use std::io::{self, Error, ErrorKind};
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use dope_core::driver::control::ContextControl;
 use std::pin::Pin;
 use std::process::abort;
 use std::time::Duration;
 
-use application::Application;
 use application::ApplicationPhase;
+use application::{Application, ApplicationHooks};
 use config::Config;
-use egress::{EgressPhase, SlotFlow};
+use egress::EgressPhase;
 use idle::{IdlePhase, IdleSet};
 use raw::accept::{Accept, AcceptPhase};
 use send::SendPhase;
-use state::{Aux, State};
+use state::{Aux, EgressCtx, State};
 
 use crate::DriverContext;
 use crate::hash;
@@ -31,15 +30,15 @@ use crate::manifold::Manifold;
 use crate::manifold::env::{Bundle, Env};
 use crate::manifold::typed::TypedToken;
 use crate::panic::abort_on_drop_panic;
-use crate::runtime::dispatcher::Idle;
+use crate::runtime::dispatcher::{FinishContext, Idle};
 use crate::runtime::profile::Balanced;
 use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::OutboundReservation;
 use dope_core::driver::route::Route;
-use dope_core::driver::token::{SLOT_MASK, SlotIndex, Token};
+use dope_core::driver::token::{Token, TokenCapacity};
 use dope_core::io::Event;
-use dope_core::io::EventKind;
 use dope_net::link::egress::arena::Arena;
+use dope_net::link::egress::storage::Storage as EgressStorage;
 use dope_net::link::raw::pool::Pool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, SendBuffer, Slot};
 use dope_net::tcp::Tcp;
@@ -50,14 +49,19 @@ use pin_project::pin_project;
 use pin_project::pinned_drop;
 
 #[pin_project(PinnedDrop, !Unpin)]
-pub struct Listener<'d, const ID: u8, A, E = Bundle<Tcp, <A as Application<'d>>::Wire, Balanced>>
-where
+pub struct Listener<
+    'pool,
+    'd,
+    const ID: u8,
+    A,
+    E = Bundle<Tcp, <A as Application<'d>>::Wire, Balanced>,
+> where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
 {
     route: Route<'d, ID>,
     pool: Pool<'d, ID, E::Transport, A::Wire, State<A::Conn>>,
-    egress_arena: Arena<SendBuffer>,
+    egress_arena: Arena<'pool, SendBuffer>,
     #[pin]
     app: A,
     aux: Aux,
@@ -73,12 +77,14 @@ where
 fn teardown_slot<'d, A>(
     mut app: Pin<&mut A>,
     slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-    aux: &mut Aux,
+    egress: EgressCtx<'_, '_>,
 ) -> bool
 where
     A: Application<'d>,
 {
-    match catch_unwind(AssertUnwindSafe(|| app.as_mut().teardown(slot, aux))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        A::Hooks::teardown(app.as_mut(), slot, egress)
+    })) {
         Ok(()) => true,
         Err(payload) => {
             abort_on_drop_panic(payload);
@@ -88,7 +94,7 @@ where
 }
 
 #[pinned_drop]
-impl<'d, const ID: u8, A, E> PinnedDrop for Listener<'d, ID, A, E>
+impl<'pool, 'd, const ID: u8, A, E> PinnedDrop for Listener<'pool, 'd, ID, A, E>
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
@@ -97,11 +103,12 @@ where
         let mut this = self.project();
         let capacity = this.pool.capacity();
         let mut failed = false;
-        for raw in 0..capacity as u32 {
-            let Some(slot) = this.pool.get_mut(SlotIndex::new(raw)) else {
+        for idx in capacity.slots() {
+            let Some(slot) = this.pool.get_mut(idx) else {
                 continue;
             };
-            failed |= !teardown_slot(this.app.as_mut(), slot, this.aux);
+            let egress = EgressCtx::for_slot(this.aux, this.egress_arena, idx);
+            failed |= !teardown_slot(this.app.as_mut(), slot, egress);
         }
         if failed {
             abort();
@@ -109,7 +116,7 @@ where
     }
 }
 
-impl<'d, const ID: u8, A, E> Listener<'d, ID, A, E>
+impl<'pool, 'd, const ID: u8, A, E> Listener<'pool, 'd, ID, A, E>
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
@@ -118,17 +125,19 @@ where
         app: A,
         config: Config<E::Transport>,
         hash_builder: hash::State,
+        egress_storage: &'pool EgressStorage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
         E::Transport: ListenerTransport,
-        <A::Wire as Wire>::InitConfig: Default,
+        <A::Wire as Wire>::InitConfig<'d>: Default,
     {
         Self::open_in_with_wire(
             app,
             config,
-            <A::Wire as Wire>::InitConfig::default(),
+            <A::Wire as Wire>::InitConfig::<'d>::default(),
             hash_builder,
+            egress_storage,
             driver,
         )
     }
@@ -136,14 +145,22 @@ where
     pub fn open_in_with_wire(
         app: A,
         config: Config<E::Transport>,
-        wire_config: <A::Wire as Wire>::InitConfig,
+        wire_config: <A::Wire as Wire>::InitConfig<'d>,
         hash_builder: hash::State,
+        egress_storage: &'pool EgressStorage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
         E::Transport: ListenerTransport,
     {
-        let mut listener = Self::assemble(app, config, wire_config, hash_builder, driver)?;
+        let mut listener = Self::assemble(
+            app,
+            config,
+            wire_config,
+            hash_builder,
+            egress_storage,
+            driver,
+        )?;
         listener.accept.request_rearm();
         Ok(listener)
     }
@@ -151,8 +168,9 @@ where
     fn assemble(
         app: A,
         config: Config<E::Transport>,
-        wire_config: <A::Wire as Wire>::InitConfig,
+        wire_config: <A::Wire as Wire>::InitConfig<'d>,
         hash_builder: hash::State,
+        egress_storage: &'pool EgressStorage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
@@ -168,54 +186,77 @@ where
         } = config;
         <E::Transport as Transport>::apply_profile_defaults(&mut stream, E::Profile::USER_TIMEOUT);
         <E::Transport as Transport>::validate_stream_config(stream)?;
-        assert!(
-            max_connections > 0 && max_connections <= SLOT_MASK as usize + 1,
-            "max_connections must be in 1..=1<<24"
-        );
-        let route = Route::reserve(driver)?;
-        let (listener_fd, bound_addr) = <E::Transport as ListenerTransport>::bind_listener_slot(
-            driver, &bind, backlog, &transport,
-        )?;
+        let Some(capacity) = TokenCapacity::new(max_connections).filter(|_| max_connections != 0)
+        else {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "dope: listener capacity must be in 1..=2^24-1",
+            ));
+        };
+        let Some(accept_slot) = capacity.sentinel() else {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "dope: listener capacity must be in 1..=2^24-1",
+            ));
+        };
+        let max_retained_recv_chunks = A::max_retained_recv_chunks(max_connections)?;
         let per_ip_limit = <E::Transport as ListenerTransport>::per_ip_limit(&transport)
             .unwrap_or(E::Profile::PER_IP_CAP);
+        let prepared_pool = Pool::prepare_with_recv_credit(
+            capacity,
+            max_retained_recv_chunks,
+            A::RETAIN_RAW_RECV,
+            wire_config,
+            driver,
+        )?;
+        if egress_storage.config() != egress {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "listener egress storage does not match its egress config",
+            ));
+        }
+        let egress_arena = Arena::with_config(egress_storage, egress, max_connections);
+        let aux = Aux::new(max_connections);
+        let idle = IdleSet::new(capacity, E::Profile::IDLE_WINDOW);
+        let idle_send = IdleSet::new(
+            if E::Profile::SEND_DEADLINE.is_some() {
+                capacity
+            } else {
+                TokenCapacity::EMPTY
+            },
+            E::Profile::SEND_DEADLINE.unwrap_or(Duration::ZERO),
+        );
+        let idle_abs_age = IdleSet::new(
+            if E::Profile::ABS_CONN_AGE.is_some() {
+                capacity
+            } else {
+                TokenCapacity::EMPTY
+            },
+            E::Profile::ABS_CONN_AGE.unwrap_or(Duration::ZERO),
+        );
+        let dirty = PendingQueue::with_capacity(max_connections);
+        let mut route = Route::reserve_transaction(driver)?;
+        let (listener_fd, bound_addr) = <E::Transport as ListenerTransport>::bind_listener_slot(
+            route.driver(),
+            &bind,
+            backlog,
+            &transport,
+        )?;
+        let accept = Accept::new(listener_fd, accept_slot, stream, per_ip_limit, hash_builder);
+        let pool = prepared_pool.bind(OutboundReservation::empty());
+        let route = route.commit();
         Ok(Self {
             route,
-            pool: Pool::new(
-                max_connections,
-                A::max_retained_recv_chunks(max_connections)?,
-                OutboundReservation::empty(),
-                wire_config,
-                driver,
-            )?,
-            egress_arena: Arena::with_config(egress, max_connections),
-            accept: Accept::new(
-                listener_fd,
-                max_connections as u32,
-                stream,
-                per_ip_limit,
-                hash_builder,
-            ),
+            pool,
+            egress_arena,
+            accept,
             bound_addr,
             app,
-            aux: Aux::new(max_connections),
-            idle: IdleSet::new(max_connections, E::Profile::IDLE_WINDOW),
-            idle_send: IdleSet::new(
-                if E::Profile::SEND_DEADLINE.is_some() {
-                    max_connections
-                } else {
-                    0
-                },
-                E::Profile::SEND_DEADLINE.unwrap_or(Duration::ZERO),
-            ),
-            idle_abs_age: IdleSet::new(
-                if E::Profile::ABS_CONN_AGE.is_some() {
-                    max_connections
-                } else {
-                    0
-                },
-                E::Profile::ABS_CONN_AGE.unwrap_or(Duration::ZERO),
-            ),
-            dirty: PendingQueue::with_capacity(max_connections),
+            aux,
+            idle,
+            idle_send,
+            idle_abs_age,
+            dirty,
         })
     }
 
@@ -234,7 +275,7 @@ where
         self.project().app
     }
 
-    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut <A::Wire as Wire>::RuntimeContext {
+    pub fn wire_runtime(self: Pin<&mut Self>) -> &mut <A::Wire as Wire>::RuntimeContext<'d> {
         self.project().pool.wire_runtime()
     }
 
@@ -246,16 +287,22 @@ where
     }
 
     pub fn has_pending_egress(&self, conn_id: Token) -> bool {
-        self.pool
-            .by_target(conn_id)
-            .is_some_and(|(_, slot)| slot.owes_egress())
+        self.pool.by_target(conn_id).is_some_and(|(idx, slot)| {
+            slot.core.is_send_inflight()
+                || slot.state.send.consumed_plain < slot.state.send.total_plain
+                || A::Wire::holds_plain(&slot.wire, &slot.send)
+                || self.egress_arena.bytes(idx.raw() as usize) != 0
+        })
     }
 
     pub fn mark_send(&self, conn_id: Token, bytes: Shared) -> bool {
         let Some((idx, slot)) = self.pool.by_target(conn_id) else {
             return false;
         };
-        let staged = slot.state.deferred.stage(bytes, false);
+        let staged = self
+            .egress_arena
+            .try_enqueue(idx.raw() as usize, bytes.into())
+            .is_ok();
         self.dirty.mark(idx, &slot.state.pending, PEND_EGRESS);
         staged
     }
@@ -268,12 +315,14 @@ where
     }
 
     pub fn activate(mut self: Pin<&mut Self>, target: Token, driver: &mut DriverContext<'_, 'd>) {
+        self.as_mut().resume_recv(target, driver);
         let idx = {
             let mut fields = self.as_mut().project();
             let Some((idx, slot)) = fields.pool.by_target_mut(target) else {
                 return;
             };
-            fields.app.as_mut().activate(slot, fields.aux, driver);
+            let egress = EgressCtx::for_slot(fields.aux, fields.egress_arena, idx);
+            A::Hooks::activate(fields.app.as_mut(), slot, egress, driver);
             idx
         };
         self.as_mut().maybe_close_inherent(idx, driver);
@@ -281,7 +330,7 @@ where
     }
 }
 
-impl<'d, const ID: u8, A, E> Manifold<'d> for Listener<'d, ID, A, E>
+impl<'pool, 'd, const ID: u8, A, E> Manifold<'d> for Listener<'pool, 'd, ID, A, E>
 where
     A: Application<'d>,
     E: Env<Wire = A::Wire>,
@@ -290,12 +339,10 @@ where
 
     fn dispatch(self: Pin<&mut Self>, ev: Event<'d>, driver: &mut DriverContext<'_, 'd>) {
         let mut this = self;
-        match ev.into_kind() {
-            EventKind::Recv(token, more, e) => this.as_mut().pump_recv(token, more, e, driver),
-            EventKind::Send(token, e) => this.as_mut().pump_send(token, e, driver),
-            EventKind::Accept(token, more, e) => {
-                this.as_mut().accept_inherent(token, more, e, driver)
-            }
+        match ev {
+            Event::Recv(token, more, e) => this.as_mut().pump_recv(token, more, e, driver),
+            Event::Send(token, e) => this.as_mut().pump_send(token, e, driver),
+            Event::Accept(token, more, e) => this.as_mut().accept_inherent(token, more, e, driver),
             _ => {}
         }
         let fields = this.as_mut().project();
@@ -316,23 +363,29 @@ where
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         let mut this = self;
-        let cap = {
+        let capacity = {
             let fields = this.as_mut().project();
             fields.accept.stop_accept(ID, driver);
-            fields.pool.capacity() as u32
+            fields.pool.capacity()
         };
-        for raw in 0..cap {
-            Self::close_inherent(this.as_mut(), SlotIndex::new(raw), driver);
+        for idx in capacity.slots() {
+            Self::close_inherent(this.as_mut(), idx, driver);
         }
         let fields = this.as_mut().project();
-        let mut targets = Vec::new();
-        fields.accept.append_target(ID, &mut targets);
-        fields.pool.append_io_targets(&mut targets);
-        let poison = fields.pool.needs_route_poison() || !targets.is_empty();
-        if !targets.is_empty() {
-            driver.quiesce(&targets);
+        let mut quiesce = driver.quiesce_batch();
+        if let Some(target) = fields.accept.quiesce_target(ID) {
+            quiesce.cancel(target);
         }
+        fields
+            .pool
+            .for_each_io_target(|target| quiesce.cancel(target));
+        let outcome = quiesce.finish();
+        let poison = fields.pool.needs_route_poison() || outcome.has_targets();
         fields.route.finish(driver, poison);
+    }
+
+    fn finish(self: Pin<&mut Self>, context: &mut FinishContext<'_, 'd>) {
+        self.project().accept.finish(context);
     }
 
     fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {

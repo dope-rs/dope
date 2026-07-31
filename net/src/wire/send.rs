@@ -4,6 +4,27 @@ use dope_core::io::socket::msg::{IoVec, MsgHdr};
 use o3::buffer::RollingBuffer;
 use std::slice::from_raw_parts;
 
+#[derive(Clone, Copy)]
+pub struct Sent(u32);
+
+impl Sent {
+    pub(crate) const fn new(bytes: u32) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn get(self) -> usize {
+        self.0 as usize
+    }
+
+    #[doc(hidden)]
+    pub fn try_from_submission(bytes: usize, submitted: usize) -> Option<Self> {
+        if bytes > submitted {
+            return None;
+        }
+        Some(Self(u32::try_from(bytes).ok()?))
+    }
+}
+
 pub struct SendBuf<const CAP: usize> {
     buf: Box<RollingBuffer<CAP>>,
 }
@@ -40,12 +61,12 @@ impl<const CAP: usize> SendBuf<CAP> {
         self.buf.as_mut_slice()
     }
 
-    pub fn extend_from_slice(&mut self, src: &[u8]) {
-        self.buf.extend_from_slice(src);
+    pub fn try_extend_from_slice(&mut self, src: &[u8]) -> bool {
+        self.buf.try_extend_from_slice(src).is_ok()
     }
 
-    pub fn consume(&mut self, n: usize) {
-        self.buf.consume(n);
+    pub fn try_consume(&mut self, n: usize) -> bool {
+        self.buf.try_consume(n).is_ok()
     }
 }
 
@@ -55,18 +76,22 @@ impl<const CAP: usize> Default for SendBuf<CAP> {
     }
 }
 
+/// Stable storage consulted by the send state machine.
 /// # Safety
-/// Returned bytes keep their address and contents until the next exclusive access.
+/// Slices stay live, fixed, and immutable past their borrow while storage stays fixed, live, and unmutated.
 pub unsafe trait SendStorage: 'static {
     fn as_slice(&self) -> &[u8];
 }
 
+// SAFETY: RollingBuffer owns a fixed boxed allocation and exposes mutation
+// only through exclusive access to SendBuf.
 unsafe impl<const CAP: usize> SendStorage for SendBuf<CAP> {
     fn as_slice(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
+// SAFETY: the returned slice is empty and static.
 unsafe impl SendStorage for () {
     fn as_slice(&self) -> &[u8] {
         &[]
@@ -79,7 +104,8 @@ pub struct Storage<'a, S: SendStorage> {
 }
 
 impl<'a, S: SendStorage> Storage<'a, S> {
-    pub(crate) fn new(storage: &'a mut S, limit: usize) -> Self {
+    #[doc(hidden)]
+    pub fn new(storage: &'a mut S, limit: usize) -> Self {
         Self { storage, limit }
     }
 
@@ -94,7 +120,7 @@ impl<'a, S: SendStorage> Storage<'a, S> {
             }
         } else {
             Prepared {
-                payload: Payload::Single(bytes),
+                payload: Payload::Single(Plain::proven(bytes)),
                 consumed,
                 close_after: false,
             }
@@ -128,9 +154,25 @@ pub struct Plain<'a> {
     bytes: &'a [u8],
 }
 
+/// An owner-backed source for one direct send.
+/// # Safety
+/// Returned bytes remain live, fixed, and immutable through send completion.
+#[doc(hidden)]
+pub unsafe trait StablePlainSource<'a> {
+    fn into_slice(self) -> &'a [u8];
+}
+
 impl<'a> Plain<'a> {
-    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+    fn proven(bytes: &'a [u8]) -> Self {
         Self { bytes }
+    }
+
+    /// Converts an owner-level stability proof into a direct-send view.
+    #[doc(hidden)]
+    pub fn from_stable(source: impl StablePlainSource<'a>) -> Self {
+        Self {
+            bytes: source.into_slice(),
+        }
     }
 
     #[must_use]
@@ -155,15 +197,21 @@ pub struct Vectored<'a> {
     msghdr_storage: &'a mut MsgHdr,
 }
 
+/// An owner-backed source for one vectored send.
+/// # Safety
+/// Bytes stay stable; descriptor and header storage stays live, exclusive, and sufficiently sized through completion.
+#[doc(hidden)]
+pub unsafe trait StableVectoredSource<'a> {
+    fn into_parts(self) -> (&'a [IoVec], &'a mut [IoVec], &'a mut MsgHdr);
+}
+
 impl<'a> Vectored<'a> {
-    /// # Safety
-    /// Described bytes stay fixed through the consuming send's completion,
-    /// even after `'a`; both storage borrows stay exclusive for `'a`.
-    pub unsafe fn from_raw(
-        iovs: &'a [IoVec],
-        iov_storage: &'a mut [IoVec],
-        msghdr_storage: &'a mut MsgHdr,
-    ) -> Self {
+    /// Converts an owner-level stability proof into the wire view consumed by
+    /// the send path.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn from_stable(source: impl StableVectoredSource<'a>) -> Self {
+        let (iovs, iov_storage, msghdr_storage) = source.into_parts();
         Self {
             iovs,
             iov_storage,
@@ -205,7 +253,7 @@ impl<'a> Vectored<'a> {
 
 pub(crate) enum Payload<'a> {
     Empty,
-    Single(&'a [u8]),
+    Single(Plain<'a>),
     Vectored(Vectored<'a>),
 }
 
@@ -226,9 +274,10 @@ impl<'a> Prepared<'a> {
     }
 
     pub fn input(plain: Plain<'a>, consumed: usize) -> Self {
+        let consumed = consumed.min(plain.len());
         Self {
-            payload: Payload::Single(plain.bytes),
-            consumed: consumed.min(plain.bytes.len()),
+            payload: Payload::Single(plain),
+            consumed,
             close_after: false,
         }
     }
@@ -244,7 +293,7 @@ impl<'a> Prepared<'a> {
 
     pub fn static_slice(buf: &'static [u8]) -> Self {
         Self {
-            payload: Payload::Single(buf),
+            payload: Payload::Single(Plain::proven(buf)),
             consumed: 0,
             close_after: false,
         }
@@ -257,5 +306,16 @@ impl<'a> Prepared<'a> {
 
     pub(crate) fn into_parts(self) -> (Payload<'a>, usize, bool) {
         (self.payload, self.consumed, self.close_after)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Vectored;
+    use std::mem::size_of;
+
+    #[test]
+    fn stable_source_adds_no_vectored_storage() {
+        assert_eq!(size_of::<Vectored<'static>>(), 5 * size_of::<usize>());
     }
 }

@@ -38,17 +38,29 @@ impl<'d> ProvidedLease<'d> {
         self.region.as_slice()
     }
 
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.region.as_mut_slice()
+    }
+
+    pub fn advance(&mut self, count: usize) {
+        assert!(
+            self.region.advance(count),
+            "dope: provided lease advance out of bounds"
+        );
+    }
+
     pub fn range_of(&self, bytes: &[u8]) -> Option<ProvidedSpan> {
         let base = self.region.ptr.as_ptr().addr();
         let start = bytes.as_ptr().addr();
         let offset = start.checked_sub(base)?;
-        if offset > self.region.len || bytes.len() > self.region.len - offset {
+        self.span(offset, bytes.len())
+    }
+
+    pub fn span(&self, offset: usize, len: usize) -> Option<ProvidedSpan> {
+        if offset > self.region.len || len > self.region.len - offset {
             return None;
         }
-        Some(ProvidedSpan {
-            offset,
-            len: bytes.len(),
-        })
+        Some(ProvidedSpan { offset, len })
     }
 
     pub fn into_view(self, span: ProvidedSpan) -> Result<ProvidedView<'d>, Self> {

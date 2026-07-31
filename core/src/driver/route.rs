@@ -51,6 +51,12 @@ pub struct Route<'d, const ID: u8> {
     live: Cell<bool>,
 }
 
+#[doc(hidden)]
+pub struct RouteReservation<'a, 'c, 'd, const ID: u8> {
+    route: Option<Route<'d, ID>>,
+    driver: &'a mut DriverContext<'c, 'd>,
+}
+
 impl<'d, const ID: u8> Route<'d, ID> {
     pub fn reserve(driver: &mut DriverContext<'_, 'd>) -> io::Result<Self> {
         if ID == ROUTE_FRAMEWORK {
@@ -65,6 +71,17 @@ impl<'d, const ID: u8> Route<'d, ID> {
         Ok(Self {
             driver: driver.driver_ref(),
             live: Cell::new(true),
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn reserve_transaction<'a, 'c>(
+        driver: &'a mut DriverContext<'c, 'd>,
+    ) -> io::Result<RouteReservation<'a, 'c, 'd, ID>> {
+        let route = Self::reserve(driver)?;
+        Ok(RouteReservation {
+            route: Some(route),
+            driver,
         })
     }
 
@@ -92,6 +109,27 @@ impl<'d, const ID: u8> Route<'d, ID> {
             driver.poison_route(ID);
         } else {
             driver.release_route(ID);
+        }
+    }
+}
+
+impl<'c, 'd, const ID: u8> RouteReservation<'_, 'c, 'd, ID> {
+    pub fn driver(&mut self) -> &mut DriverContext<'c, 'd> {
+        self.driver
+    }
+
+    pub fn commit(mut self) -> Route<'d, ID> {
+        let Some(route) = self.route.take() else {
+            unreachable!("dope: route reservation committed twice")
+        };
+        route
+    }
+}
+
+impl<const ID: u8> Drop for RouteReservation<'_, '_, '_, ID> {
+    fn drop(&mut self) {
+        if let Some(route) = self.route.take() {
+            route.release(self.driver);
         }
     }
 }

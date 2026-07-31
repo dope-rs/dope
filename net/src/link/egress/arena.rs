@@ -1,66 +1,85 @@
-use std::cell::Cell;
-
 use o3::buffer::Shared;
 
+use super::EGRESS_QUANTUM;
 use super::config::Config;
-use super::metadata::raw::pool::MetadataPool;
-use super::metadata::{MetadataArena, MetadataQueue};
-use super::queue::Queue;
+use super::metadata::MetadataQueue;
+use super::metadata::raw::pool::{MetadataPool, ReservedIndex};
+use super::queue::{Queue, QueueState};
 use super::raw::entry::{Entry, PreparedEntry};
+use super::storage::Storage;
 use super::wire::WireArena;
-use super::{EGRESS_CAP_BYTES, EGRESS_QUANTUM, NONE};
 
-pub struct Arena<B = Shared> {
-    entries: MetadataArena<Entry<B>>,
-    wire: WireArena,
-    next_lane: Cell<usize>,
-    lanes: usize,
+pub struct Arena<'pool, B = Shared, const IOV: usize = 32> {
+    lanes: Box<[QueueState<'pool, IOV>]>,
+    entries: MetadataPool<Entry<B>>,
+    wire: WireArena<'pool>,
+    next_lane: usize,
 }
 
-impl<B> Arena<B> {
-    pub fn with_capacity(capacity: u32) -> Self {
-        Self::with_limits(capacity, EGRESS_CAP_BYTES, 1)
-    }
-
-    pub fn with_limits(capacity: u32, bytes: u32, lanes: usize) -> Self {
-        Self::with_config(Config::shared(capacity, bytes), lanes)
-    }
-
-    pub fn with_config(config: Config, lanes: usize) -> Self {
+impl<'pool, B, const IOV: usize> Arena<'pool, B, IOV> {
+    pub fn with_config(storage: &'pool Storage, config: Config, lanes: usize) -> Self {
         assert!(lanes != 0, "egress arena requires at least one lane");
-        let bytes = config.wire_bytes();
+        assert_eq!(
+            storage.config.wire_bytes(),
+            config.wire_bytes(),
+            "egress storage and arena wire capacities must match"
+        );
         Self {
-            entries: MetadataArena::with_config(config, lanes),
-            wire: WireArena::with_capacity(bytes),
-            next_lane: Cell::new(0),
-            lanes,
+            lanes: (0..lanes)
+                .map(|lane| QueueState::with_config(config, lanes, lane))
+                .collect(),
+            entries: MetadataPool::with_config(config),
+            wire: WireArena::new(&storage.wire),
+            next_lane: 0,
         }
     }
+
+    pub fn clear(&mut self, lane: usize) {
+        self.lanes[lane].clear(&self.entries);
+    }
 }
 
-impl<B: AsRef<[u8]>> Arena<B> {
-    pub fn queue<const IOV: usize>(&self) -> Queue<IOV, B> {
-        let lane = self.next_lane.get() % self.lanes;
-        self.next_lane.set(self.next_lane.get().wrapping_add(1));
+impl<'pool, B: AsRef<[u8]>, const IOV: usize> Arena<'pool, B, IOV> {
+    pub fn try_enqueue(&self, lane: usize, bytes: B) -> Result<(), B> {
+        Queue::<IOV, B>::enqueue(
+            MetadataQueue::with_lane(&self.entries, &self.lanes[lane].metadata),
+            bytes,
+        )
+    }
+
+    pub fn bytes(&self, lane: usize) -> usize {
+        MetadataQueue::with_lane(&self.entries, &self.lanes[lane].metadata).bytes()
+    }
+
+    pub fn queue(&mut self) -> Queue<'_, 'pool, IOV, B> {
+        let lane = self.next_lane % self.lanes.len();
+        self.next_lane = self.next_lane.wrapping_add(1);
         self.queue_for(lane)
     }
 
-    pub fn queue_for<const IOV: usize>(&self, lane: usize) -> Queue<IOV, B> {
-        assert!(lane < self.lanes, "egress queue lane out of bounds");
-        Queue::with_arena(&self.entries, &self.wire, lane)
+    pub fn queue_for(&mut self, lane: usize) -> Queue<'_, 'pool, IOV, B> {
+        let Self {
+            lanes,
+            entries,
+            wire,
+            ..
+        } = self;
+        lanes[lane].queue(entries, wire)
     }
 }
 
-impl<B> Default for Arena<B> {
-    fn default() -> Self {
-        Self::with_config(Config::default(), 1)
+impl<B, const IOV: usize> Drop for Arena<'_, B, IOV> {
+    fn drop(&mut self) {
+        for lane in &mut self.lanes {
+            lane.clear(&self.entries);
+        }
     }
 }
 
 pub(super) struct PreparedChain<'a, B> {
     pool: &'a MetadataPool<Entry<B>>,
-    head: u32,
-    tail: u32,
+    head: ReservedIndex,
+    tail: ReservedIndex,
     entries: usize,
     bytes: usize,
     resident: usize,
@@ -70,8 +89,8 @@ impl<'a, B: AsRef<[u8]>> PreparedChain<'a, B> {
     pub(super) fn new(pool: &'a MetadataPool<Entry<B>>) -> Self {
         Self {
             pool,
-            head: NONE,
-            tail: NONE,
+            head: ReservedIndex::NONE,
+            tail: ReservedIndex::NONE,
             entries: 0,
             bytes: 0,
             resident: 0,
@@ -136,19 +155,19 @@ impl<'a, B: AsRef<[u8]>> PreparedChain<'a, B> {
         }
     }
 
-    fn link(&mut self, index: u32, bytes: usize, resident: usize) -> bool {
+    fn link(&mut self, index: ReservedIndex, bytes: usize, resident: usize) -> bool {
         let Some(total_bytes) = self.bytes.checked_add(bytes) else {
-            drop(self.pool.take_node(index));
+            drop(self.pool.take_reserved(index));
             return false;
         };
         let Some(total_resident) = self.resident.checked_add(resident) else {
-            drop(self.pool.take_node(index));
+            drop(self.pool.take_reserved(index));
             return false;
         };
-        if self.tail == NONE {
+        if self.tail.is_none() {
             self.head = index;
         } else {
-            self.pool.set_next(self.tail, index);
+            self.pool.set_reserved_next(self.tail, index);
         }
         self.tail = index;
         self.entries += 1;
@@ -157,7 +176,7 @@ impl<'a, B: AsRef<[u8]>> PreparedChain<'a, B> {
         true
     }
 
-    pub(super) fn commit(mut self, queue: &MetadataQueue<Entry<B>>) -> bool {
+    pub(super) fn commit(mut self, queue: &MetadataQueue<'_, Entry<B>>) -> bool {
         if !queue.commit_prepared(
             self.head,
             self.tail,
@@ -167,13 +186,13 @@ impl<'a, B: AsRef<[u8]>> PreparedChain<'a, B> {
         ) {
             return false;
         }
-        self.head = NONE;
+        self.head = ReservedIndex::NONE;
         true
     }
 }
 
 impl<B> Drop for PreparedChain<'_, B> {
     fn drop(&mut self) {
-        self.pool.drain_nodes(&mut self.head);
+        self.pool.drain_reserved(&mut self.head);
     }
 }

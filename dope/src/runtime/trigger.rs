@@ -39,7 +39,7 @@ impl ShutdownTrigger {
 ///
 /// Construction blocks both signals on the current thread. Dropping the value
 /// closes the signal fd and restores the exact signal mask that was present at
-/// construction time.
+/// construction time. Only one source may be live on a thread at once.
 pub struct SignalShutdown {
     state: SignalState,
     _thread: ThreadBound,

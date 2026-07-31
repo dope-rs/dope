@@ -9,10 +9,11 @@ use std::process::abort;
 use io_uring::IoUring;
 
 use self::files::FileTable;
-use crate::backend::uring::provided::ffi::ring::ProvidedRing;
+use crate::backend::fixed::FixedSlots;
+use crate::backend::uring::provided::ffi::ring::RegisteredRing;
 use crate::driver::route::Routes;
 use crate::driver::token::{
-    KIND_SHIFT, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, Token, TokenSlab,
+    KIND_SHIFT, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, Token, TokenCapacity, TokenSlab,
 };
 use crate::driver::Config;
 use crate::io::fd::FdSlot;
@@ -52,12 +53,10 @@ pub(crate) enum Disposition {
 }
 
 pub struct Uring {
-    pub(crate) uring: IoUring,
+    pub(crate) ring: RegisteredRing,
     pub(crate) setsockopt: TokenSlab<c_int, SetsockoptTag>,
     pub(crate) files: FileTable,
-    pub(crate) provided: ProvidedRing,
-    next_slot: u32,
-    accept_slots: u32,
+    fixed_slots: FixedSlots,
     pub(crate) routes: Routes,
 }
 
@@ -161,19 +160,26 @@ impl Uring {
             .submitter()
             .register_files_sparse(cfg.fixed_file_slots)?;
         RingSetup::register_alloc_range(&uring, cfg.accept_slots)?;
-        let provided =
-            ProvidedRing::new(&uring.submitter(), cfg.provided.entries, cfg.provided.len)?;
+        let Some(setsockopt_capacity) = TokenCapacity::new(SETSOCKOPT_CAP) else {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "dope: setsockopt capacity exceeds token slots",
+            ));
+        };
 
         let slots = cfg.fixed_file_slots as usize;
+        let fixed_slots = FixedSlots::new(cfg.accept_slots, cfg.fixed_file_slots)?;
+        let setsockopt = TokenSlab::with_capacity(setsockopt_capacity);
+        let files = FileTable::new(slots);
+        let routes = Routes::new();
+        let ring = RegisteredRing::new(uring, cfg.provided.entries, cfg.provided.len)?;
         Ok((
             Uring {
-                setsockopt: TokenSlab::with_capacity(SETSOCKOPT_CAP),
-                files: FileTable::new(slots),
-                uring,
-                provided,
-                next_slot: cfg.fixed_file_slots,
-                accept_slots: cfg.accept_slots,
-                routes: Routes::new(),
+                ring,
+                setsockopt,
+                files,
+                fixed_slots,
+                routes,
             },
             slots,
         ))
@@ -188,9 +194,10 @@ impl Drop for Uring {
 
 impl Uring {
     pub(crate) fn shutdown(&mut self) {
-        let _ = self.uring.submit();
+        let _ = self.ring.io_mut().submit();
         match self
-            .uring
+            .ring
+            .io()
             .submitter()
             .register_sync_cancel(None, CancelBuilder::any())
         {
@@ -202,13 +209,13 @@ impl Uring {
             let mut drained = false;
             {
                 let Self {
-                    uring,
+                    ring,
                     setsockopt,
                     files,
-                    provided,
                     routes,
                     ..
                 } = self;
+                let (uring, provided) = ring.split();
                 let mut cq = uring.completion();
                 for item in cq.by_ref() {
                     drained = true;
@@ -228,61 +235,74 @@ impl Uring {
             if !drained {
                 break;
             }
-            let _ = self.uring.submit();
+            let _ = self.ring.io_mut().submit();
         }
     }
 
     pub(crate) fn await_one(&mut self) -> io::Result<i32> {
         loop {
-            self.uring.submitter().submit_and_wait(1)?;
-            let mut found = None;
-            {
-                let Self {
-                    uring,
-                    setsockopt,
-                    files,
-                    provided,
-                    routes,
-                    ..
-                } = self;
-                let mut cq = uring.completion();
-                for item in cq.by_ref() {
-                    let result = item.result();
-                    match Self::complete_cqe(
-                        setsockopt,
-                        files,
-                        routes,
-                        item.user_data(),
-                        result,
-                        item.flags(),
-                    ) {
-                        Disposition::Drop => {}
-                        Disposition::DropBuffer(bid) => provided.defer_completion(bid),
-                        Disposition::Internal | Disposition::Public(_) => {
-                            found = Some(result);
-                        }
-                    }
-                }
-                cq.sync();
-            }
-            self.flush_deferred_close();
-            self.flush_ready_create();
-            if let Some(result) = found {
+            self.ring.io().submitter().submit_and_wait(1)?;
+            if let Some(result) = self.drain_bootstrap_completions() {
                 return Ok(result);
             }
         }
     }
 
     pub(crate) fn alloc_fixed_range(&mut self, len: u32) -> io::Result<u32> {
-        let base = self
-            .next_slot
-            .checked_sub(len)
-            .filter(|&b| b >= self.accept_slots)
-            .ok_or_else(|| {
-                Error::new(ErrorKind::OutOfMemory, "dope: fixed-file slots exhausted")
-            })?;
-        self.next_slot = base;
-        Ok(base)
+        self.fixed_slots.alloc(len)
+    }
+
+    pub(crate) fn alloc_fixed_slot(&mut self) -> io::Result<FdSlot> {
+        self.fixed_slots.alloc_slot().map(FdSlot::from_index)
+    }
+
+    pub(crate) fn retire_fixed_range(&mut self, base: u32, len: u32) {
+        let released = self.fixed_slots.release(base, len);
+        debug_assert!(released, "dope: invalid fixed-file range retirement");
+    }
+
+    pub(crate) fn await_fixed_range_empty(&mut self, base: u32, len: u32) -> io::Result<()> {
+        while !self.files.range_empty(base, len) {
+            self.ring.io().submitter().submit_and_wait(1)?;
+            self.drain_bootstrap_completions();
+        }
+        Ok(())
+    }
+
+    fn drain_bootstrap_completions(&mut self) -> Option<i32> {
+        let mut found = None;
+        {
+            let Self {
+                ring,
+                setsockopt,
+                files,
+                routes,
+                ..
+            } = self;
+            let (uring, provided) = ring.split();
+            let mut cq = uring.completion();
+            for item in cq.by_ref() {
+                let result = item.result();
+                match Self::complete_cqe(
+                    setsockopt,
+                    files,
+                    routes,
+                    item.user_data(),
+                    result,
+                    item.flags(),
+                ) {
+                    Disposition::Drop => {}
+                    Disposition::DropBuffer(bid) => provided.defer_completion(bid),
+                    Disposition::Internal | Disposition::Public(_) => {
+                        found = Some(result);
+                    }
+                }
+            }
+            cq.sync();
+        }
+        self.flush_deferred_close();
+        self.flush_ready_create();
+        found
     }
 
     fn release_setsockopt(
@@ -292,7 +312,7 @@ impl Uring {
         let Some(parts) = token.parts::<SetsockoptTag>() else {
             return false;
         };
-        setsockopt.remove_parts(parts.slab());
+        setsockopt.remove_parts(parts);
         true
     }
 
@@ -347,17 +367,20 @@ impl Uring {
     }
 
     pub(crate) fn flush_deferred_close(&mut self) {
-        let Self { uring, files, .. } = self;
+        let Self { ring, files, .. } = self;
+        let uring = ring.io_mut();
         files.flush_deferred_close(|slot| Submission::try_close(uring, slot));
     }
 
     pub(crate) fn flush_ready_create(&mut self) {
-        let Self { uring, files, .. } = self;
-        files.flush_ready(|sqe| Submission::push(uring, sqe.entry()).is_ok());
+        let Self { ring, files, .. } = self;
+        let uring = ring.io_mut();
+        files.flush_ready(|sqe| Submission::push(uring, sqe).is_ok());
     }
 
     pub(crate) fn close_fd(&mut self, slot: FdSlot) {
-        let Self { uring, files, .. } = self;
+        let Self { ring, files, .. } = self;
+        let uring = ring.io_mut();
         files.release(slot, |slot| {
             Submission::try_close(uring, slot)
                 || (uring.submit().is_ok() && Submission::try_close(uring, slot))

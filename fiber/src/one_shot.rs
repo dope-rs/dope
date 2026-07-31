@@ -30,7 +30,7 @@ where
     F: Fiber<'d>,
 {
     pub fn new(fiber: F, route: u8, driver: DriverRef<'d>) -> io::Result<Self> {
-        let target = Token::new(route, SlotIndex::new(0), Epoch::INITIAL).with_kind(ONE_SHOT);
+        let target = Token::new(route, SlotIndex::ZERO, Epoch::INITIAL).with_kind(ONE_SHOT);
         Ok(Self {
             fiber: Some(fiber),
             output: None,
@@ -52,21 +52,18 @@ where
     }
 
     pub fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        let this = unsafe { self.get_unchecked_mut() };
-        let slot = unsafe { Pin::new_unchecked(&this.slot) };
+        let mut this = self.project();
         let mut context = pin!(Context::from_ready(
             driver.driver_ref(),
-            slot.key(),
+            this.slot.as_ref().key(),
             driver.reborrow(),
         ));
-        let Some(fiber) = this.fiber.as_mut() else {
+        let Some(fiber) = this.fiber.as_mut().as_pin_mut() else {
             return;
         };
-        if let Poll::Ready(output) =
-            Fiber::poll(unsafe { Pin::new_unchecked(fiber) }, context.as_mut())
-        {
-            this.output = Some(output);
-            this.fiber = None;
+        if let Poll::Ready(output) = Fiber::poll(fiber, context.as_mut()) {
+            *this.output = Some(output);
+            this.fiber.set(None);
         }
     }
 }

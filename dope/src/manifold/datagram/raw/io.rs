@@ -3,10 +3,30 @@ use std::pin::Pin;
 use crate::DriverContext;
 use crate::manifold::datagram::send::SendOp;
 use crate::manifold::datagram::{RECV_ARM_TAG, Socket};
-use dope_core::backend::RawSqe;
+use dope_core::backend::{RawSqe, RetainedSqe, StableSqeSource};
 use dope_core::driver::buffers::ProvidedBuffers;
-use dope_core::driver::submission::raw::Submission as _;
+use dope_core::driver::submission::Submission;
 use dope_core::driver::token::Token;
+
+struct RecvSubmission(RawSqe);
+
+// SAFETY: the pinned Socket retains its fixed fd and receive header until the
+// multishot arm is canceled and quiesced.
+unsafe impl StableSqeSource for RecvSubmission {
+    fn into_raw(self) -> RawSqe {
+        self.0
+    }
+}
+
+struct SendSubmission(RawSqe);
+
+// SAFETY: the fixed slab retains SendOp, including its message and payload,
+// together with the fixed fd until the keyed completion removes it.
+unsafe impl StableSqeSource for SendSubmission {
+    fn into_raw(self) -> RawSqe {
+        self.0
+    }
+}
 
 pub(in crate::manifold::datagram) struct Io<'a, 'c, 'd, const ID: u8> {
     socket: Pin<&'a mut Socket<'d, ID>>,
@@ -27,16 +47,22 @@ impl<'a, 'c, 'd, const ID: u8> Io<'a, 'c, 'd, ID> {
             return;
         };
         let buf_group = self.driver.buffer_group();
-        let sqe = RawSqe::recv_msg_multi(this.fixed_fd, this.recv_msghdr.raw(), buf_group, ud);
-        // SAFETY: the pinned socket owns both the fixed fd and recv msghdr
-        // template until the multishot arm is canceled and quiesced.
-        let pushed = unsafe { self.driver.push_raw(sqe) }.is_ok();
+        let source = RecvSubmission(RawSqe::recv_msg_multi(
+            this.fixed_fd,
+            this.recv_msghdr.raw(),
+            buf_group,
+            ud,
+        ));
+        let pushed = self
+            .driver
+            .push_retained(RetainedSqe::from_stable(source))
+            .is_ok();
         this.recv_arm.settle(pushed);
     }
 
     pub(in crate::manifold::datagram) fn flush_outgoing(&mut self) {
         let this = self.socket.as_mut().project();
-        while this.in_flight.len() < this.in_flight.capacity() {
+        while this.in_flight.len() < this.in_flight.capacity().get() {
             let Some(out) = this.pending_outgoing.pop_front() else {
                 break;
             };
@@ -53,13 +79,11 @@ impl<'a, 'c, 'd, const ID: u8> Io<'a, 'c, 'd, ID> {
                 }
             };
             let ud = Token::from_key(key);
-            // SAFETY: the fixed slab retains `SendOp` (payload, address, iov,
-            // msghdr, and control data) under `ud` until its completion.
-            let pushed = unsafe {
-                self.driver
-                    .push_raw(RawSqe::send_msg(this.fixed_fd, msghdr.raw(), ud))
-            }
-            .is_ok();
+            let source = SendSubmission(RawSqe::send_msg(this.fixed_fd, msghdr.raw(), ud));
+            let pushed = self
+                .driver
+                .push_retained(RetainedSqe::from_stable(source))
+                .is_ok();
             if !pushed {
                 if let Some(op) = this.in_flight.remove(key) {
                     let out = op.into_outgoing();

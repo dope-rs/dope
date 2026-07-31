@@ -1,25 +1,21 @@
-pub(crate) mod raw;
+mod state;
 
-use std::pin::Pin;
-use std::rc::Rc;
+pub(super) use self::state::WireState;
+use super::{WireLease, WirePool};
 
-use o3::buffer::BlockPool;
-
-use self::raw::state::WireState;
-
-#[derive(Clone)]
-pub(super) struct WireArena {
-    pool: Pin<Rc<BlockPool>>,
+pub(super) struct WireArena<'pool> {
+    pool: &'pool WirePool,
 }
 
-impl WireArena {
-    pub(super) fn with_capacity(bytes: u32) -> Self {
-        Self {
-            pool: Rc::pin(BlockPool::new(bytes / BlockPool::CAPACITY as u32)),
-        }
+impl<'pool> WireArena<'pool> {
+    pub(super) fn new(pool: &'pool WirePool) -> Self {
+        Self { pool }
     }
 
-    pub(super) fn state(&self) -> WireState {
-        WireState::new(self.pool.clone())
+    pub(super) fn state<'a>(
+        &'a self,
+        lease: &'a mut Option<WireLease<'pool>>,
+    ) -> WireState<'a, 'pool> {
+        WireState::new(self.pool, lease)
     }
 }

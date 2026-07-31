@@ -1,30 +1,31 @@
 use o3::buffer::Shared;
 
+use super::WireLease;
 use super::arena::PreparedChain;
 use super::metadata::MetadataQueue;
 use super::raw::entry::Entry;
-use super::wire::raw::lease::WireLease;
+use super::raw::wire::WirePointer;
 
-pub struct Stage<'a, B = Shared> {
-    wire: &'a mut Option<WireLease>,
-    entries: &'a MetadataQueue<Entry<B>>,
+pub struct Stage<'a, 'pool, B = Shared> {
+    lease: &'a mut Option<WireLease<'pool>>,
+    entries: MetadataQueue<'a, Entry<B>>,
     start: usize,
     len: usize,
     overflowed: bool,
     committed: bool,
 }
 
-impl<'a, B> Stage<'a, B> {
+impl<'a, 'pool, B> Stage<'a, 'pool, B> {
     pub(super) fn open(
-        wire: &'a mut Option<WireLease>,
-        entries: &'a MetadataQueue<Entry<B>>,
+        lease: &'a mut Option<WireLease<'pool>>,
+        entries: MetadataQueue<'a, Entry<B>>,
     ) -> Self {
-        let (start, overflowed) = match wire.as_mut() {
+        let (start, overflowed) = match lease.as_mut() {
             Some(buffer) => (buffer.len(), false),
             None => (0, true),
         };
         Self {
-            wire,
+            lease,
             entries,
             start,
             len: 0,
@@ -34,7 +35,7 @@ impl<'a, B> Stage<'a, B> {
     }
 }
 
-impl<B> Stage<'_, B> {
+impl<B> Stage<'_, '_, B> {
     pub fn len(&self) -> usize {
         self.len
     }
@@ -51,11 +52,11 @@ impl<B> Stage<'_, B> {
         if self.overflowed {
             return;
         }
-        let Some(buffer) = self.wire.as_mut() else {
+        let Some(buffer) = self.lease.as_mut() else {
             self.overflowed = true;
             return;
         };
-        if !buffer.push(byte) {
+        if buffer.try_push(byte).is_err() {
             self.overflowed = true;
             return;
         }
@@ -66,11 +67,11 @@ impl<B> Stage<'_, B> {
         if self.overflowed {
             return;
         }
-        let Some(buffer) = self.wire.as_mut() else {
+        let Some(buffer) = self.lease.as_mut() else {
             self.overflowed = true;
             return;
         };
-        if !buffer.extend_from_slice(src) {
+        if buffer.try_extend_from_slice(src).is_err() {
             self.overflowed = true;
             return;
         }
@@ -78,14 +79,14 @@ impl<B> Stage<'_, B> {
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        let Some(buffer) = self.wire.as_mut() else {
+        let Some(buffer) = self.lease.as_mut() else {
             return &mut [];
         };
         &mut buffer.as_mut_slice()[self.start..self.start + self.len]
     }
 }
 
-impl<B: AsRef<[u8]>> Stage<'_, B> {
+impl<B: AsRef<[u8]>> Stage<'_, '_, B> {
     pub fn commit(self) -> usize {
         self.commit_with(None::<B>)
     }
@@ -94,12 +95,12 @@ impl<B: AsRef<[u8]>> Stage<'_, B> {
         if self.overflowed || self.len == 0 {
             return 0;
         }
-        let Some(buffer) = self.wire.as_ref() else {
+        let Some(buffer) = self.lease.as_ref() else {
             return 0;
         };
-        let data = buffer.pointer_at(self.start);
-        let mut prepared = PreparedChain::new(&self.entries.arena.pool);
-        if !prepared.push_wire(data, self.len) {
+        let data = WirePointer::at(buffer, self.start);
+        let mut prepared = PreparedChain::new(self.entries.pool);
+        if !prepared.push_wire(data.get(), self.len) {
             return 0;
         }
         if let Some(body) = body
@@ -107,7 +108,7 @@ impl<B: AsRef<[u8]>> Stage<'_, B> {
         {
             return 0;
         }
-        if !prepared.commit(self.entries) {
+        if !prepared.commit(&self.entries) {
             return 0;
         }
         self.committed = true;
@@ -115,15 +116,15 @@ impl<B: AsRef<[u8]>> Stage<'_, B> {
     }
 }
 
-impl<B> Drop for Stage<'_, B> {
+impl<B> Drop for Stage<'_, '_, B> {
     fn drop(&mut self) {
         if !self.committed
-            && let Some(buffer) = self.wire.as_mut()
+            && let Some(buffer) = self.lease.as_mut()
         {
             buffer.truncate(self.start);
         }
-        if self.wire.as_ref().is_some_and(WireLease::is_empty) {
-            self.wire.take();
+        if self.lease.as_ref().is_some_and(WireLease::is_empty) {
+            self.lease.take();
         }
     }
 }

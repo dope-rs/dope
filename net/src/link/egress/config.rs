@@ -48,10 +48,6 @@ impl Config {
         self.entries as usize
     }
 
-    pub(super) fn bytes(self) -> usize {
-        self.bytes as usize
-    }
-
     pub(super) fn wire_bytes(self) -> u32 {
         self.bytes
     }

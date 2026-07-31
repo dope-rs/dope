@@ -6,8 +6,9 @@ use std::rc::Rc;
 
 use dope::manifold::Outcome;
 use dope::manifold::listener;
-use dope::manifold::listener::application::Application;
+use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::egress::SlotEgress;
+use dope::manifold::listener::state::EgressCtx;
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
 use dope_test::Gate;
@@ -28,38 +29,32 @@ struct PipelineApp {
 impl<'d> Application<'d> for PipelineApp {
     type Conn = ();
     type Wire = Identity;
+    type Hooks = Self;
+}
 
+impl<'d> ApplicationHooks<'d, PipelineApp> for PipelineApp {
     fn chunk<R: RetainBytes>(
-        self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _app: Pin<&mut PipelineApp>,
+        slot: &mut Slot<'d, Identity, listener::state::State<()>>,
+        mut egress: EgressCtx<'_, '_>,
         _chunk: R,
-        aux: &mut listener::state::Aux,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         let ud = slot.token();
         for reply in [resp_a(), resp_b()] {
-            let mut buf = aux.write_buf_for(slot);
+            let mut buf = egress.write_buf_for(slot);
             buf[..reply.len()].copy_from_slice(&reply);
             slot.submit_buffered(buf, reply.len(), ud, driver);
         }
         Outcome::CloseAfter
     }
 
-    fn send(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _sent: usize,
-        _aux: &mut listener::state::Aux,
-        _driver: &mut dope::DriverContext<'_, 'd>,
-    ) {
-    }
-
     fn close(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _aux: &mut listener::state::Aux,
+        app: Pin<&mut PipelineApp>,
+        _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
+        _egress: EgressCtx<'_, '_>,
     ) {
-        self.get_mut().gate.hit();
+        app.get_mut().gate.hit();
     }
 }
 

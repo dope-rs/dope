@@ -7,13 +7,14 @@ use std::io::Write;
 use std::pin::Pin;
 use std::rc::Rc;
 
+use dope::io::provided::{ProvidedLease, ProvidedView};
 use dope::manifold::Outcome;
 use dope::manifold::listener;
-use dope::manifold::listener::application::Application;
+use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::egress::SlotEgress;
 use dope_net::link::slot::Slot;
-use dope_net::wire::send::{Plain, Prepared, SendBuf, Storage, Vectored};
-use dope_net::wire::{ReadyOpen, Reclaim, RuntimeLimits, Wire};
+use dope_net::wire::send::{Plain, Prepared, SendBuf, Sent, Storage, Vectored};
+use dope_net::wire::{ReadyOpen, Reclaim, RecvChunk, RuntimeLimits, Wire};
 use dope_test::{Gate, Wired};
 use o3::buffer::{Borrowed, Bytes, RetainBytes};
 
@@ -39,7 +40,7 @@ impl DeferredWire {
         consumed: usize,
     ) -> Prepared<'a> {
         if self.established() && send.is_empty() && !self.pending.is_empty() {
-            send.extend_from_slice(&self.pending);
+            assert!(send.try_extend_from_slice(&self.pending));
             self.pending.clear();
         }
         if send.is_empty() {
@@ -51,21 +52,38 @@ impl DeferredWire {
 }
 
 impl Wire for DeferredWire {
-    type InitConfig = ();
-    type RuntimeContext = ();
-    type Open<'a> = ReadyOpen<Self>;
+    type Connection<'d> = Self;
+    type ConnectionStorage = ();
+    type InitConfig<'d> = ();
+    type RuntimeContext<'d> = ();
+    type Open<'a, 'd>
+        = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
+    where
+        'd: 'a;
     type Recv<'a> = Bytes<Borrowed<'a>>;
+    type RecvBatch<'a> = std::option::IntoIter<RecvChunk<'a, Self::Recv<'a>>>;
+    type RetainedRecv<'d> = ProvidedView<'d>;
     type SendStorage = SendBuf<1024>;
 
     const RECLAIM: Reclaim = Reclaim::OnSubmit;
 
     const RAW_RECV: bool = true;
 
-    fn runtime_context(_: RuntimeLimits, _: ()) -> std::io::Result<()> {
+    fn connection_storage(_: usize) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn prepare_open(_: &mut ()) -> Option<Self::Open<'_>> {
+    fn runtime_context<'d>(_: RuntimeLimits, _: Self::InitConfig<'d>) -> std::io::Result<()>
+    where
+        Self: 'd,
+    {
+        Ok(())
+    }
+
+    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Option<Self::Open<'a, 'd>>
+    where
+        'd: 'a,
+    {
         Some(ReadyOpen::new(
             Self {
                 rounds: 0,
@@ -75,29 +93,46 @@ impl Wire for DeferredWire {
         ))
     }
 
-    fn holds_plain(&self, send: &Self::SendStorage) -> bool {
-        !self.pending.is_empty() || !send.is_empty()
+    fn holds_plain<'d>(wire: &Self::Connection<'d>, send: &Self::SendStorage) -> bool {
+        !wire.pending.is_empty() || !send.is_empty()
     }
 
-    fn process_recv<'a>(&mut self, _: &mut (), bytes: &'a [u8]) -> Option<Self::Recv<'a>> {
-        if !self.established() {
-            self.rounds += 1;
+    fn process_recv<'a, 'd>(
+        wire: &mut Self::Connection<'d>,
+        _: &mut (),
+        bytes: &'a mut [u8],
+    ) -> Self::RecvBatch<'a> {
+        if !wire.established() {
+            wire.rounds += 1;
+            return None.into_iter();
+        }
+        Some(RecvChunk::Borrowed(Bytes::<Borrowed<'a>>::from(&*bytes))).into_iter()
+    }
+
+    fn process_retained_recv<'a, 'd>(
+        wire: &mut Self::Connection<'d>,
+        _: &mut (),
+        bytes: ProvidedLease<'a>,
+    ) -> Option<Self::RetainedRecv<'a>> {
+        if !wire.established() {
+            wire.rounds += 1;
             return None;
         }
-        Some(Bytes::<Borrowed<'a>>::from(bytes))
+        let span = bytes.span(0, bytes.as_slice().len())?;
+        bytes.into_view(span).ok()
     }
 
-    fn prepare_send<'a>(
-        &'a mut self,
+    fn prepare_send<'a, 'd>(
+        wire: &'a mut Self::Connection<'d>,
         send: Storage<'a, Self::SendStorage>,
         plain: Plain<'a>,
     ) -> Prepared<'a> {
-        self.pending.extend_from_slice(plain.as_slice());
-        self.prepare(send, plain.len())
+        wire.pending.extend_from_slice(plain.as_slice());
+        wire.prepare(send, plain.len())
     }
 
-    fn prepare_send_vectored<'a>(
-        &'a mut self,
+    fn prepare_send_vectored<'a, 'd>(
+        wire: &'a mut Self::Connection<'d>,
         send: Storage<'a, Self::SendStorage>,
         vectored: Vectored<'a>,
     ) -> Prepared<'a> {
@@ -106,23 +141,26 @@ impl Wire for DeferredWire {
             if plain.is_empty() {
                 continue;
             }
-            self.pending.extend_from_slice(plain);
+            wire.pending.extend_from_slice(plain);
             consumed += plain.len();
         }
-        self.prepare(send, consumed)
+        wire.prepare(send, consumed)
     }
 
-    fn after_send<'a>(
-        &'a mut self,
+    fn after_send<'a, 'd>(
+        wire: &'a mut Self::Connection<'d>,
         mut send: Storage<'a, Self::SendStorage>,
-        n: usize,
+        sent: Sent,
     ) -> Prepared<'a> {
-        send.consume(n);
-        self.prepare(send, 0)
+        assert!(send.try_consume(sent.get()));
+        wire.prepare(send, 0)
     }
 
-    fn flush_pending<'a>(&'a mut self, send: Storage<'a, Self::SendStorage>) -> Prepared<'a> {
-        self.prepare(send, 0)
+    fn flush_pending<'a, 'd>(
+        wire: &'a mut Self::Connection<'d>,
+        send: Storage<'a, Self::SendStorage>,
+    ) -> Prepared<'a> {
+        wire.prepare(send, 0)
     }
 }
 
@@ -141,15 +179,18 @@ impl PreambleApp {
 impl<'d> Application<'d> for PreambleApp {
     type Conn = ();
     type Wire = DeferredWire;
+    type Hooks = Self;
+}
 
+impl<'d> ApplicationHooks<'d, PreambleApp> for PreambleApp {
     fn accept(
-        self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        aux: &mut listener::state::Aux,
+        app: Pin<&mut PreambleApp>,
+        slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
+        mut egress: listener::state::EgressCtx<'_, '_>,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
-        for frame in self.get_mut().frames {
-            let mut buf = aux.write_buf_for(slot);
+        for frame in app.get_mut().frames {
+            let mut buf = egress.write_buf_for(slot);
             buf[..frame.len()].copy_from_slice(frame);
             let ud = slot.token();
             slot.submit_buffered(buf, frame.len(), ud, driver);
@@ -158,23 +199,23 @@ impl<'d> Application<'d> for PreambleApp {
     }
 
     fn chunk<R: RetainBytes>(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        _app: Pin<&mut PreambleApp>,
+        _slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
+        _egress: listener::state::EgressCtx<'_, '_>,
         _chunk: R,
-        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         Outcome::Ok
     }
 
     fn send(
-        self: Pin<&mut Self>,
-        slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
+        app: Pin<&mut PreambleApp>,
+        slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
+        _egress: listener::state::EgressCtx<'_, '_>,
         sent: usize,
-        _aux: &mut listener::state::Aux,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
-        let this = self.get_mut();
+        let this = app.get_mut();
         this.sends.borrow_mut().push(sent);
         if this.sends.borrow().iter().sum::<usize>() >= this.want_bytes() {
             slot.set_close_after();
@@ -182,11 +223,11 @@ impl<'d> Application<'d> for PreambleApp {
     }
 
     fn close(
-        self: Pin<&mut Self>,
-        _slot: &mut Slot<'d, Self::Wire, listener::state::State<Self::Conn>>,
-        _aux: &mut listener::state::Aux,
+        app: Pin<&mut PreambleApp>,
+        _slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
+        _egress: listener::state::EgressCtx<'_, '_>,
     ) {
-        self.get_mut().gate.hit();
+        app.get_mut().gate.hit();
     }
 }
 

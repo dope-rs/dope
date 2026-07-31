@@ -1,9 +1,7 @@
-use crate::wire::send::Vectored;
-use crate::wire::send::{Payload, Prepared};
-use dope_core::backend::{RawSqe, Sqe};
+use crate::wire::send::{Payload, Plain, Prepared, Sent, Vectored};
+use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
 use dope_core::driver::DriverContext;
 use dope_core::driver::submission::Submission;
-use dope_core::driver::submission::raw::Submission as _;
 use dope_core::driver::token::Token;
 use dope_core::driver::token::kind::{RECV, RECV_DISCARD};
 use dope_core::io::fd::Fd;
@@ -18,8 +16,56 @@ enum Phase {
 
 enum RecvArm {
     Disarmed,
-    Armed { discard: bool },
-    Exhausted,
+    Armed { discard: bool, flow: RecvFlow },
+    Exhausted { paused: bool },
+}
+
+#[derive(Clone, Copy)]
+enum RecvFlow {
+    Active,
+    PausedPending,
+    PausedInflight,
+    ResumedInflight,
+}
+
+trait StableSend {
+    fn retained_sqe(&self, fd: &Fd<'_>, ud: Token) -> RetainedSqe;
+}
+
+struct PlainSubmission(RawSqe);
+
+// SAFETY: Plain carries the byte-retention proof and Core retains the fixed fd
+// until its send state observes terminal completion.
+unsafe impl StableSqeSource for PlainSubmission {
+    fn into_raw(self) -> RawSqe {
+        self.0
+    }
+}
+
+struct VectoredSubmission(RawSqe);
+
+// SAFETY: Vectored carries the installed message-retention proof and Core
+// retains the fixed fd until its send state observes terminal completion.
+unsafe impl StableSqeSource for VectoredSubmission {
+    fn into_raw(self) -> RawSqe {
+        self.0
+    }
+}
+
+impl StableSend for Plain<'_> {
+    fn retained_sqe(&self, fd: &Fd<'_>, ud: Token) -> RetainedSqe {
+        RetainedSqe::from_stable(PlainSubmission(RawSqe::send(fd, self.as_slice(), ud)))
+    }
+}
+
+impl StableSend for Vectored<'_> {
+    fn retained_sqe(&self, fd: &Fd<'_>, ud: Token) -> RetainedSqe {
+        RetainedSqe::from_stable(VectoredSubmission(RawSqe::send_msg(
+            fd,
+            self.msghdr().raw(),
+            ud,
+        )))
+    }
 }
 
 #[derive(Default)]
@@ -71,15 +117,17 @@ pub(in crate::link) enum Submit {
     Idle(usize),
 }
 
+const ABORTED: u8 = 1 << 0;
+const GRACEFUL_REQUESTED: u8 = 1 << 1;
+const GRACEFUL_SEALED: u8 = 1 << 2;
+const KERNEL_DISCARD: u8 = 1 << 3;
+
 pub struct Core<'d> {
     pub(in crate::link) fd: Fd<'d>,
     recv: RecvArm,
     phase: Phase,
-    send_in_flight: bool,
-    aborted: bool,
-    graceful_requested: bool,
-    graceful_sealed: bool,
-    kernel_discard: bool,
+    send_limit: u32,
+    flags: u8,
     discard_remaining: u64,
 }
 
@@ -89,17 +137,14 @@ impl<'d> Core<'d> {
             fd,
             recv: RecvArm::Disarmed,
             phase: Phase::Open,
-            send_in_flight: false,
-            aborted: false,
-            graceful_requested: false,
-            graceful_sealed: false,
-            kernel_discard,
+            send_limit: 0,
+            flags: if kernel_discard { KERNEL_DISCARD } else { 0 },
             discard_remaining: 0,
         }
     }
 
     pub fn mark_aborted(&mut self) {
-        self.aborted = true;
+        self.set_flag(ABORTED);
     }
 
     pub(in crate::link) fn into_fd(self) -> Fd<'d> {
@@ -107,26 +152,40 @@ impl<'d> Core<'d> {
     }
 
     pub(in crate::link) fn request_graceful(&mut self) -> bool {
-        if self.aborted || self.graceful_requested {
+        if self.has_flag(ABORTED | GRACEFUL_REQUESTED) {
             return false;
         }
-        self.graceful_requested = true;
+        self.set_flag(GRACEFUL_REQUESTED);
         true
     }
 
     pub(in crate::link) fn take_graceful(&mut self) -> bool {
-        if self.send_in_flight || !self.graceful_requested || self.graceful_sealed {
+        if self.is_send_inflight()
+            || !self.has_flag(GRACEFUL_REQUESTED)
+            || self.has_flag(GRACEFUL_SEALED)
+        {
             return false;
         }
-        self.graceful_sealed = true;
+        self.set_flag(GRACEFUL_SEALED);
         true
+    }
+
+    fn has_flag(&self, flag: u8) -> bool {
+        self.flags & flag != 0
+    }
+
+    fn set_flag(&mut self, flag: u8) {
+        self.flags |= flag;
     }
 
     pub(in crate::link) fn armed(&mut self, pushed: bool, discard: bool) {
         self.recv = if pushed {
-            RecvArm::Armed { discard }
+            RecvArm::Armed {
+                discard,
+                flow: RecvFlow::Active,
+            }
         } else {
-            RecvArm::Exhausted
+            RecvArm::Exhausted { paused: false }
         };
     }
 
@@ -135,14 +194,69 @@ impl<'d> Core<'d> {
     }
 
     pub(in crate::link) fn needs_arm(&self) -> bool {
-        matches!(self.recv, RecvArm::Exhausted) && !self.is_closing()
+        matches!(self.recv, RecvArm::Exhausted { paused: false }) && !self.is_closing()
+    }
+
+    pub(in crate::link) fn recv_paused(&self) -> bool {
+        matches!(
+            self.recv,
+            RecvArm::Armed {
+                flow: RecvFlow::PausedPending | RecvFlow::PausedInflight,
+                ..
+            } | RecvArm::Exhausted { paused: true }
+        )
+    }
+
+    pub(in crate::link) fn pause_recv(&mut self) {
+        match &mut self.recv {
+            RecvArm::Armed { flow, .. } => match flow {
+                RecvFlow::Active => *flow = RecvFlow::PausedPending,
+                RecvFlow::ResumedInflight => *flow = RecvFlow::PausedInflight,
+                RecvFlow::PausedPending | RecvFlow::PausedInflight => {}
+            },
+            RecvArm::Exhausted { paused } => *paused = true,
+            RecvArm::Disarmed => {}
+        }
+    }
+
+    pub(in crate::link) fn needs_recv_cancel(&self) -> bool {
+        matches!(
+            self.recv,
+            RecvArm::Armed {
+                flow: RecvFlow::PausedPending,
+                ..
+            }
+        )
+    }
+
+    pub(in crate::link) fn recv_cancel_submitted(&mut self) {
+        let RecvArm::Armed { flow, .. } = &mut self.recv else {
+            return;
+        };
+        if matches!(flow, RecvFlow::PausedPending) {
+            *flow = RecvFlow::PausedInflight;
+        }
+    }
+
+    pub(in crate::link) fn resume_recv(&mut self) -> bool {
+        match &mut self.recv {
+            RecvArm::Armed { flow, .. } => match flow {
+                RecvFlow::PausedPending => *flow = RecvFlow::Active,
+                RecvFlow::PausedInflight => *flow = RecvFlow::ResumedInflight,
+                RecvFlow::Active | RecvFlow::ResumedInflight => return false,
+            },
+            RecvArm::Exhausted { paused } if *paused => *paused = false,
+            RecvArm::Disarmed | RecvArm::Exhausted { .. } => return false,
+        }
+        self.needs_arm()
     }
 
     fn settle_recv(&mut self, more: bool) -> bool {
         if more {
             return false;
         }
-        self.recv = RecvArm::Exhausted;
+        let paused = self.recv_paused();
+        self.recv = RecvArm::Exhausted { paused };
         self.needs_arm()
     }
 
@@ -151,7 +265,7 @@ impl<'d> Core<'d> {
     }
 
     pub fn kernel_discard(&self) -> bool {
-        self.kernel_discard
+        self.has_flag(KERNEL_DISCARD)
     }
 
     pub fn begin_discard(&mut self, n: u64) {
@@ -163,7 +277,7 @@ impl<'d> Core<'d> {
     }
 
     pub(in crate::link) fn is_discard_armed(&self) -> bool {
-        matches!(self.recv, RecvArm::Armed { discard: true })
+        matches!(self.recv, RecvArm::Armed { discard: true, .. })
     }
 
     pub fn recv_cancel_kind(&self) -> u8 {
@@ -207,7 +321,7 @@ impl<'d> Core<'d> {
     }
 
     pub fn recv_failed(&mut self, more: bool) {
-        self.aborted = true;
+        self.set_flag(ABORTED);
         self.begin_close();
         self.settle_recv(more);
     }
@@ -231,7 +345,7 @@ impl<'d> Core<'d> {
     }
 
     pub fn should_close(&self, defer: bool) -> bool {
-        if self.send_in_flight {
+        if self.is_send_inflight() {
             return false;
         }
         match self.phase {
@@ -242,11 +356,22 @@ impl<'d> Core<'d> {
     }
 
     pub fn is_send_inflight(&self) -> bool {
-        self.send_in_flight
+        self.send_limit != 0
+    }
+
+    pub(in crate::link) fn complete_send(&mut self, bytes: u32) -> Option<Sent> {
+        if bytes > self.send_limit {
+            self.set_flag(ABORTED);
+            self.begin_close();
+            self.send_done();
+            return None;
+        }
+        self.send_done();
+        Some(Sent::new(bytes))
     }
 
     pub(in crate::link) fn send_done(&mut self) {
-        self.send_in_flight = false;
+        self.send_limit = 0;
     }
 
     pub(in crate::link) fn push_retry(
@@ -262,47 +387,19 @@ impl<'d> Core<'d> {
         false
     }
 
-    unsafe fn push_raw_retry(
+    fn push_send_retry(
         driver: &mut DriverContext<'_, 'd>,
-        mut build: impl FnMut() -> RawSqe,
+        fd: &Fd<'d>,
+        ud: Token,
+        send: &impl StableSend,
     ) -> bool {
-        if unsafe { driver.push_raw(build()) }.is_ok() {
+        if driver.push_retained(send.retained_sqe(fd, ud)).is_ok() {
             return true;
         }
         if driver.flush_submissions() {
-            return unsafe { driver.push_raw(build()) }.is_ok();
+            return driver.push_retained(send.retained_sqe(fd, ud)).is_ok();
         }
         false
-    }
-
-    unsafe fn submit_single(
-        &mut self,
-        driver: &mut DriverContext<'_, 'd>,
-        ud: Token,
-        buf: &[u8],
-    ) -> bool {
-        let fd = &self.fd;
-        let submitted = unsafe { Self::push_raw_retry(driver, || RawSqe::send(fd, buf, ud)) };
-        if submitted {
-            self.send_in_flight = true;
-        }
-        submitted
-    }
-
-    unsafe fn submit_vectored(
-        &mut self,
-        driver: &mut DriverContext<'_, 'd>,
-        ud: Token,
-        mut vectored: Vectored<'_>,
-    ) -> bool {
-        vectored.install();
-        let fd = &self.fd;
-        let msg = vectored.msghdr().raw();
-        let submitted = unsafe { Self::push_raw_retry(driver, || RawSqe::send_msg(fd, msg, ud)) };
-        if submitted {
-            self.send_in_flight = true;
-        }
-        submitted
     }
 
     pub(in crate::link) fn submit_prepared(
@@ -315,23 +412,35 @@ impl<'d> Core<'d> {
         if close_after {
             self.set_close_after();
         }
-        if self.send_in_flight {
+        if self.is_send_inflight() {
             return Submit::Idle(consumed);
         }
-        let submitted = match payload {
+        let (submitted, send_limit) = match payload {
             Payload::Empty => return Submit::Idle(consumed),
-            Payload::Single([]) => return Submit::Idle(consumed),
-            // SAFETY: `Prepared` is produced from storage whose unsafe
-            // `SendStorage` contract keeps bytes stable until send completion.
-            Payload::Single(buf) => unsafe { self.submit_single(driver, ud, buf) },
+            Payload::Single(buf) if buf.is_empty() => return Submit::Idle(consumed),
+            Payload::Single(buf) => {
+                let Ok(send_limit) = u32::try_from(buf.len()) else {
+                    return Submit::Rejected(consumed);
+                };
+                (
+                    Self::push_send_retry(driver, &self.fd, ud, &buf),
+                    send_limit,
+                )
+            }
             Payload::Vectored(vectored) if vectored.is_empty() => {
                 return Submit::Idle(consumed);
             }
-            // SAFETY: `Vectored` can only be constructed by a caller that
-            // guarantees every described region remains stable through send.
-            Payload::Vectored(vectored) => unsafe { self.submit_vectored(driver, ud, vectored) },
+            Payload::Vectored(mut vectored) => {
+                let send_limit = vectored.bytes().min(u32::MAX as usize) as u32;
+                vectored.install();
+                (
+                    Self::push_send_retry(driver, &self.fd, ud, &vectored),
+                    send_limit,
+                )
+            }
         };
         if submitted {
+            self.send_limit = send_limit;
             Submit::Submitted(consumed)
         } else {
             Submit::Rejected(consumed)
