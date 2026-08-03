@@ -1,4 +1,3 @@
-use crate::wire::send::{Payload, Plain, Prepared, Sent, Vectored};
 use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
 use dope_core::driver::DriverContext;
 use dope_core::driver::submission::Submission;
@@ -7,6 +6,8 @@ use dope_core::driver::token::kind::{RECV, RECV_DISCARD};
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::addr::Addr;
 use libc::sockaddr;
+
+use crate::wire::send::{Payload, Plain, Prepared, Sent, Vectored};
 
 enum Phase {
     Open,

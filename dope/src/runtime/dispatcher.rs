@@ -1,11 +1,13 @@
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use crate::DriverContext;
 use dope_core::driver::OutboundReservation;
 use dope_core::driver::token::Token;
 use dope_core::io::Event;
 use dope_core::io::fd::Fd;
+use o3::cell::RegionToken;
+
+use crate::DriverContext;
 
 /// Post-dispatch access to driver-owned resource retirement.
 ///
@@ -61,7 +63,7 @@ pub trait Dispatcher<'d>: Sized {
 
     fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>);
 
-    fn idle(self: Pin<&Self>) -> Idle;
+    fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle;
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         let _ = driver;

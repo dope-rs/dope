@@ -5,16 +5,14 @@ pub mod tcp;
 pub mod unix;
 pub mod wire;
 
-pub use dope_core::io::provided::{ProvidedLease, ProvidedView};
-pub use o3::buffer::{Borrowed, Bytes, Leased, RetainBytes, Retained};
-
 use std::io;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use dope_core::driver::DriverContext;
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::addr::Addr;
-use std::time::Duration;
+pub use o3::buffer::{Borrowed, Bytes, Leased, RetainBytes, Retained};
 
 pub trait Transport: 'static + Sized {
     type Addr;

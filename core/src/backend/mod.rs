@@ -5,6 +5,7 @@ cfg_select! {
     target_os = "linux" => {
         pub mod uring;
         pub type Backend = uring::driver::Uring;
+        pub(crate) type RecvBuffer = uring::provided::ffi::ring::Buffer;
         pub use uring::sqe::{RawSqe, Sqe};
         pub use uring::platform::gso::{Gso, MAX_GSO_BYTES, MAX_GSO_SEGMENTS};
         pub type StatBuf = libc::statx;
@@ -13,6 +14,7 @@ cfg_select! {
     _ => {
         pub mod kqueue;
         pub type Backend = kqueue::driver::Kqueue;
+        pub(crate) type RecvBuffer = kqueue::recv_pool::ffi::pool::Buffer;
         pub use kqueue::sqe::{RawSqe, Sqe};
         pub use kqueue::platform::gso::{Gso, MAX_GSO_BYTES, MAX_GSO_SEGMENTS};
         pub type StatBuf = libc::stat;

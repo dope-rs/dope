@@ -1,22 +1,24 @@
 use std::cell::Cell;
 
+use dope_core::backend::Sqe;
+use dope_core::driver::ready::ReadyKey;
+use dope_core::driver::token::kind::RECV;
+use dope_core::driver::token::{SlotIndex, Token};
+use dope_core::driver::{DriverContext, DriverRef};
+use dope_core::io::recv::Lease;
 use o3::buffer::{Pooled, Shared};
+use o3::cell::RegionToken;
 use o3::collections::CellQueue;
 use o3::marker::ThreadBound;
 
 use super::raw::core::{Core, RecvError, Submit};
 use super::raw::pool::rearm::RearmToken;
+use crate::link::egress::StableBytes;
 use crate::link::egress::queue::Queue;
-use crate::link::raw::event::SendOutcome;
+use crate::link::egress::stable::private;
+use crate::link::raw::event::{SendCompletion, SendOutcome};
 use crate::wire::send::{Plain, Storage, Vectored};
 use crate::wire::{Reclaim, Wire};
-use dope_core::backend::Sqe;
-use dope_core::driver::DriverContext;
-use dope_core::driver::DriverRef;
-use dope_core::driver::ready::ReadyKey;
-use dope_core::driver::token::kind::RECV;
-use dope_core::driver::token::{SlotIndex, Token};
-use dope_core::io::provided::ProvidedLease;
 
 const DEFERRED_IOV: usize = 32;
 
@@ -93,6 +95,9 @@ impl AsRef<[u8]> for SendBuffer {
     }
 }
 
+// SAFETY: Every variant owns immutable retained storage.
+unsafe impl private::Sealed for SendBuffer {}
+
 impl From<Shared> for SendBuffer {
     fn from(bytes: Shared) -> Self {
         Self::Shared(bytes)
@@ -120,24 +125,26 @@ impl DeferredEgress {
         Self::new()
     }
 
-    pub fn stage(
+    pub fn stage<'d>(
         &self,
-        queue: &Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        token: &mut RegionToken<'d>,
+        queue: &Queue<'_, 'd, '_, DEFERRED_IOV, SendBuffer>,
         bytes: Shared,
         close: bool,
     ) -> bool {
-        self.stage_buffer(queue, bytes.into(), close)
+        self.stage_buffer(token, queue, bytes.into(), close)
     }
 
-    pub fn stage_buffer(
+    pub fn stage_buffer<'d>(
         &self,
-        queue: &Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        token: &mut RegionToken<'d>,
+        queue: &Queue<'_, 'd, '_, DEFERRED_IOV, SendBuffer>,
         bytes: SendBuffer,
         close: bool,
     ) -> bool {
         let committed = match bytes {
-            SendBuffer::Static(bytes) => queue.try_enqueue_static(bytes),
-            bytes => queue.try_enqueue(bytes).is_ok(),
+            SendBuffer::Static(bytes) => queue.try_enqueue_static(token, bytes),
+            bytes => queue.try_enqueue(token, bytes).is_ok(),
         };
         if committed {
             self.close_after.set(self.close_after.get() | close);
@@ -145,25 +152,27 @@ impl DeferredEgress {
         committed
     }
 
-    pub fn stage_copy(
+    pub fn stage_copy<'d>(
         &mut self,
-        queue: &mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        token: &mut RegionToken<'d>,
+        queue: &mut Queue<'_, 'd, '_, DEFERRED_IOV, SendBuffer>,
         bytes: &[u8],
         close: bool,
     ) -> bool {
-        self.stage_copy_pair(queue, bytes, None, close)
+        self.stage_copy_pair(token, queue, bytes, None, close)
     }
 
-    pub fn stage_copy_pair(
+    pub fn stage_copy_pair<'d>(
         &mut self,
-        queue: &mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        token: &mut RegionToken<'d>,
+        queue: &mut Queue<'_, 'd, '_, DEFERRED_IOV, SendBuffer>,
         first: &[u8],
         second: Option<SendBuffer>,
         close: bool,
     ) -> bool {
         let committed = match second {
-            Some(SendBuffer::Static(bytes)) => queue.try_enqueue_copy_static(first, bytes),
-            second => queue.try_enqueue_copy_pair(first, second),
+            Some(SendBuffer::Static(bytes)) => queue.try_enqueue_copy_static(token, first, bytes),
+            second => queue.try_enqueue_copy_pair(token, first, second),
         };
         if committed {
             self.close_after.set(self.close_after.get() | close);
@@ -171,7 +180,7 @@ impl DeferredEgress {
         committed
     }
 
-    pub fn is_idle(&self, queue: &Queue<'_, '_, DEFERRED_IOV, SendBuffer>) -> bool {
+    pub fn is_idle(&self, queue: &Queue<'_, '_, '_, DEFERRED_IOV, SendBuffer>) -> bool {
         queue.total_bytes() == 0
     }
 
@@ -179,20 +188,13 @@ impl DeferredEgress {
         self.close_after.get()
     }
 
-    pub fn prepare_send<'a>(
+    pub fn try_ack<'d>(
         &mut self,
-        queue: &'a mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
-        bytes_cap: usize,
-    ) -> Vectored<'a> {
-        queue.prepare_send(bytes_cap)
-    }
-
-    pub fn try_ack(
-        &mut self,
-        queue: &mut Queue<'_, '_, DEFERRED_IOV, SendBuffer>,
+        token: &mut RegionToken<'d>,
+        queue: &mut Queue<'_, 'd, '_, DEFERRED_IOV, SendBuffer>,
         n: usize,
     ) -> bool {
-        queue.try_ack(n)
+        queue.try_ack(token, n)
     }
 }
 
@@ -203,9 +205,9 @@ impl Default for DeferredEgress {
 }
 
 pub struct Slot<'d, W: Wire, S> {
-    pub core: Core<'d>,
-    pub wire: W::Connection<'d>,
-    pub send: W::SendStorage,
+    pub(in crate::link) core: Core<'d>,
+    pub(in crate::link) wire: W::Connection<'d>,
+    pub(in crate::link) send: W::SendStorage,
     pub state: S,
     token: RearmToken,
 }
@@ -242,6 +244,36 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
 
     pub fn is_send_inflight(&self) -> bool {
         self.core.is_send_inflight()
+    }
+
+    pub fn is_closing(&self) -> bool {
+        self.core.is_closing()
+    }
+
+    pub fn begin_close(&mut self) {
+        self.core.begin_close();
+    }
+
+    pub fn should_close(&self, defer: bool) -> bool {
+        self.core.should_close(defer)
+    }
+
+    pub fn mark_aborted(&mut self) {
+        self.core.mark_aborted();
+    }
+
+    pub fn holds_plain(&self) -> bool {
+        W::holds_plain(&self.wire, &self.send)
+    }
+
+    #[doc(hidden)]
+    pub fn close_io_state(&self) -> (bool, bool, bool, u8) {
+        (
+            self.core.is_send_inflight(),
+            self.core.is_armed(),
+            self.core.is_closing(),
+            self.core.recv_cancel_kind(),
+        )
     }
 
     pub fn set_close_after(&mut self) {
@@ -302,21 +334,126 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         Self::finish_submit(&mut self.wire, submit)
     }
 
-    pub fn submit_wire_vectored(
-        core: &mut Core<'d>,
-        wire: &mut W::Connection<'d>,
-        send: &mut W::SendStorage,
+    #[doc(hidden)]
+    pub fn submit_vectored(
+        &mut self,
         plain: Vectored<'_>,
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> usize {
-        if core.is_send_inflight() {
+        if self.core.is_send_inflight() {
             return 0;
         }
         let limit = plain.bytes();
-        let prepared = W::prepare_send_vectored(wire, Storage::new(send, limit), plain);
-        let submit = core.submit_prepared(driver, ud, prepared);
-        Self::finish_submit(wire, submit)
+        let prepared =
+            W::prepare_send_vectored(&mut self.wire, Storage::new(&mut self.send, limit), plain);
+        let submit = self.core.submit_prepared(driver, ud, prepared);
+        Self::finish_submit(&mut self.wire, submit)
+    }
+
+    /// Prepares and submits one queue-backed send.
+    pub fn submit_egress<const IOV: usize, B: StableBytes>(
+        &mut self,
+        queue: &mut Queue<'_, 'd, '_, IOV, B>,
+        ud: Token,
+        driver: &mut DriverContext<'_, 'd>,
+    ) -> usize {
+        if self.core.is_send_inflight() || queue.is_send_inflight() {
+            return 0;
+        }
+        let submit = {
+            let Some(plain) = queue.prepare_flight(driver.region_token(), u32::MAX as usize) else {
+                self.flush_pending(driver, ud);
+                return 0;
+            };
+            let limit = plain.bytes();
+            let prepared = W::prepare_send_vectored(
+                &mut self.wire,
+                Storage::new(&mut self.send, limit),
+                plain,
+            );
+            self.core.submit_prepared(driver, ud, prepared)
+        };
+        match submit {
+            Submit::Submitted(consumed) => {
+                if matches!(W::RECLAIM, Reclaim::OnComplete) {
+                    queue.mark_flight(ud);
+                } else if !queue.settle_flight(driver.region_token(), consumed)
+                    || !queue.record_submitted_plain(consumed)
+                {
+                    self.core.mark_aborted();
+                    self.core.begin_close();
+                    return 0;
+                }
+                consumed
+            }
+            Submit::Rejected(consumed) => {
+                W::submit_failed(&mut self.wire);
+                if matches!(W::RECLAIM, Reclaim::OnSubmit) {
+                    if !queue.settle_flight(driver.region_token(), consumed)
+                        || !queue.record_submitted_plain(consumed)
+                    {
+                        self.core.mark_aborted();
+                        self.core.begin_close();
+                        return 0;
+                    }
+                    consumed
+                } else {
+                    if !queue.settle_flight(driver.region_token(), 0) {
+                        self.core.mark_aborted();
+                        self.core.begin_close();
+                    }
+                    0
+                }
+            }
+            Submit::Idle(consumed) => {
+                if matches!(W::RECLAIM, Reclaim::OnSubmit) {
+                    if !queue.settle_flight(driver.region_token(), consumed)
+                        || !queue.record_submitted_plain(consumed)
+                    {
+                        self.core.mark_aborted();
+                        self.core.begin_close();
+                        return 0;
+                    }
+                    consumed
+                } else {
+                    if !queue.settle_flight(driver.region_token(), 0) {
+                        self.core.mark_aborted();
+                        self.core.begin_close();
+                    }
+                    0
+                }
+            }
+        }
+    }
+
+    pub fn complete_egress<const IOV: usize, B: StableBytes>(
+        &mut self,
+        queue: &mut Queue<'_, 'd, '_, IOV, B>,
+        token: &mut RegionToken<'d>,
+        completion: SendCompletion,
+    ) -> Result<usize, SendCompletion> {
+        if matches!(W::RECLAIM, Reclaim::OnSubmit) {
+            return Ok(queue.take_submitted_plain());
+        }
+        let bytes = completion.bytes();
+        if !queue.complete_flight(token, completion.target(), bytes) {
+            return Err(completion);
+        }
+        Ok(bytes)
+    }
+
+    pub fn abort_egress<const IOV: usize, B: StableBytes>(
+        &mut self,
+        queue: &mut Queue<'_, 'd, '_, IOV, B>,
+        completion: SendCompletion,
+    ) -> bool {
+        if matches!(W::RECLAIM, Reclaim::OnSubmit) {
+            queue.take_submitted_plain();
+            true
+        } else {
+            queue.abort_flight(completion.target())
+        }
     }
 
     pub fn flush_pending(&mut self, driver: &mut DriverContext<'_, 'd>, ud: Token) {
@@ -367,7 +504,7 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         &mut self,
         runtime: &mut W::RuntimeContext<'d>,
         more: bool,
-        mut bytes: ProvidedLease<'a>,
+        mut bytes: Lease<'a>,
     ) -> RecvDecision<W::RetainedRecv<'a>> {
         if !self.core.is_armed() {
             return RecvDecision::Drop;
@@ -459,7 +596,10 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
             return SendOutcome::Drop;
         }
         let Some(sent) = self.core.complete_send(n) else {
-            return SendOutcome::Close(idx);
+            return SendOutcome::Close {
+                idx,
+                completion: SendCompletion::new(ud, n as usize),
+            };
         };
         let prepared = W::after_send(&mut self.wire, Storage::new(&mut self.send, 0), sent);
         let submit = self.core.submit_prepared(driver, ud, prepared);
@@ -472,17 +612,23 @@ impl<'d, W: Wire, S> Slot<'d, W, S> {
         if self.core.is_send_inflight() {
             return SendOutcome::Drop;
         }
-        SendOutcome::Sent { idx, n: n as usize }
+        SendOutcome::Sent {
+            idx,
+            completion: SendCompletion::new(ud, n as usize),
+        }
     }
 
-    pub fn send_failed(&mut self, idx: SlotIndex) -> SendOutcome {
+    pub fn send_failed(&mut self, idx: SlotIndex, ud: Token) -> SendOutcome {
         if !self.core.is_send_inflight() {
             return SendOutcome::Drop;
         }
         self.core.send_done();
         self.core.mark_aborted();
         self.core.begin_close();
-        SendOutcome::Close(idx)
+        SendOutcome::Close {
+            idx,
+            completion: SendCompletion::new(ud, 0),
+        }
     }
 }
 

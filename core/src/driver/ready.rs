@@ -8,10 +8,9 @@ use o3::cell::RegionToken;
 use o3::collections::BatchSet;
 use o3::marker::ThreadBound;
 
-use crate::io::fd::FdSlot;
-
 use super::DriverRef;
 use super::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
+use crate::io::fd::FdSlot;
 
 const NIL: u32 = u32::MAX;
 
@@ -530,11 +529,10 @@ impl Arena {
 
 #[cfg(test)]
 mod tests {
+    use super::Arena;
     use crate::driver::token::kind::{RECV_CREDIT_HELD, RECV_CREDIT_RELEASED};
     use crate::driver::token::{Epoch, SlotIndex, Token};
     use crate::io::fd::FdSlot;
-
-    use super::Arena;
 
     fn target(epoch: Epoch) -> Token {
         Token::new(7, SlotIndex::ZERO, epoch)

@@ -4,20 +4,18 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use dope_net::ListenerTransport;
 use dope_net::Transport;
-use dope_net::tcp::Tcp;
-use dope_net::tcp::stream::Config as TcpConfig;
-use dope_net::unix::Unix;
-use dope_net::unix::stream::Config as UnixConfig;
+use dope_net::tcp::{self, Tcp};
+use dope_net::unix::{self, Unix};
 
 #[test]
 fn stream_buffers_reject_values_the_kernel_abi_cannot_represent() {
-    let tcp = TcpConfig {
+    let tcp = tcp::stream::Config {
         recv_buffer_size: Some(usize::MAX),
-        ..TcpConfig::default()
+        ..tcp::stream::Config::default()
     };
-    let unix = UnixConfig {
+    let unix = unix::stream::Config {
         send_buffer_size: Some(usize::MAX),
-        ..UnixConfig::default()
+        ..unix::stream::Config::default()
     };
 
     assert_eq!(
@@ -32,17 +30,17 @@ fn stream_buffers_reject_values_the_kernel_abi_cannot_represent() {
 
 #[test]
 fn tcp_keep_alive_rejects_zero_and_overflow() {
-    let zero_idle = TcpConfig {
+    let zero_idle = tcp::stream::Config {
         keep_alive_idle: Some(Duration::ZERO),
-        ..TcpConfig::default()
+        ..tcp::stream::Config::default()
     };
-    let zero_retries = TcpConfig {
+    let zero_retries = tcp::stream::Config {
         keep_alive_retries: Some(0),
-        ..TcpConfig::default()
+        ..tcp::stream::Config::default()
     };
-    let overflowing_idle = TcpConfig {
+    let overflowing_idle = tcp::stream::Config {
         keep_alive_idle: Some(Duration::MAX),
-        ..TcpConfig::default()
+        ..tcp::stream::Config::default()
     };
 
     for config in [zero_idle, zero_retries, overflowing_idle] {
@@ -58,14 +56,13 @@ fn tcp_keep_alive_rejects_zero_and_overflow() {
 fn tcp_listener_options_reject_values_the_kernel_abi_cannot_represent() {
     use std::net::{Ipv4Addr, SocketAddr};
 
-    use dope_net::tcp::listener::Config as TcpListenerConfig;
     use dope_test::with_driver;
 
     with_driver(|mut driver| {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-        let config = TcpListenerConfig {
+        let config = tcp::listener::Config {
             fast_open_backlog: Some(u32::MAX),
-            ..TcpListenerConfig::default()
+            ..tcp::listener::Config::default()
         };
         let error = Tcp::bind_listener_slot(&mut driver, &addr, 128, &config).unwrap_err();
 
@@ -81,7 +78,6 @@ fn failed_listener_binds_do_not_exhaust_fixed_slots() {
 
     use dope_core::driver::ext::DriverExt;
     use dope_core::driver::{self, Driver};
-    use dope_net::tcp::listener::Config as TcpListenerConfig;
 
     let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupied address");
     let addr = occupied.local_addr().expect("occupied address");
@@ -92,7 +88,7 @@ fn failed_listener_binds_do_not_exhaust_fixed_slots() {
         let mut access = scope.context();
         for _ in 0..32 {
             let error =
-                Tcp::bind_listener_slot(&mut access, &addr, 128, &TcpListenerConfig::default())
+                Tcp::bind_listener_slot(&mut access, &addr, 128, &tcp::listener::Config::default())
                     .expect_err("occupied address must reject bind");
             assert_ne!(error.kind(), ErrorKind::OutOfMemory);
         }
@@ -102,11 +98,11 @@ fn failed_listener_binds_do_not_exhaust_fixed_slots() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_accepts_subunit_tcp_durations() {
-    let config = TcpConfig {
+    let config = tcp::stream::Config {
         keep_alive_idle: Some(Duration::from_nanos(1)),
         keep_alive_interval: Some(Duration::from_nanos(1)),
         user_timeout: Some(Duration::from_nanos(1)),
-        ..TcpConfig::default()
+        ..tcp::stream::Config::default()
     };
 
     Tcp::validate_stream_config(config).unwrap();
@@ -116,13 +112,13 @@ fn linux_accepts_subunit_tcp_durations() {
 #[test]
 fn macos_rejects_linux_only_tcp_options() {
     for config in [
-        TcpConfig {
+        tcp::stream::Config {
             quick_ack: Some(true),
-            ..TcpConfig::default()
+            ..tcp::stream::Config::default()
         },
-        TcpConfig {
+        tcp::stream::Config {
             user_timeout: Some(Duration::from_secs(1)),
-            ..TcpConfig::default()
+            ..tcp::stream::Config::default()
         },
     ] {
         assert_eq!(

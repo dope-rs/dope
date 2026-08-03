@@ -1,11 +1,10 @@
 use std::os::fd::AsRawFd;
 use std::time::Duration;
 
-use dope_core::driver::completion::Completion;
-use dope_core::driver::submission::Submission;
-
 use dope_core::backend::{RawSqe, RetainedSqe, StableSqeSource};
 use dope_core::driver::DriverContext;
+use dope_core::driver::completion::Completion;
+use dope_core::driver::submission::Submission;
 use dope_core::driver::token::{Epoch, SlotIndex, Token};
 use dope_core::io::file::{self, OpenPath, OsFile};
 use dope_core::io::{Event, OpenEvent, ReadEvent, WriteEvent};

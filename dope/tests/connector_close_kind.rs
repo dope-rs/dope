@@ -48,7 +48,7 @@ impl<'d> ConnApp<'d> for CloseKindApp {
     fn chunk<R: RetainBytes>(
         &mut self,
         _slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         _chunk: R,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -59,7 +59,7 @@ impl<'d> ConnApp<'d> for CloseKindApp {
         &mut self,
         _key: DialKey,
         slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         self.gate.hit();
@@ -74,7 +74,7 @@ impl<'d> ConnApp<'d> for CloseKindApp {
     fn drain_requests(
         &self,
         token: Token,
-        _push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        _push: impl FnMut(&mut o3::cell::RegionToken<'d>, Self::Send) -> Result<(), Self::Send>,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
         if self.pending.get() == Some(token) {
@@ -90,7 +90,7 @@ impl<'d> ConnApp<'d> for CloseKindApp {
     fn send(
         &mut self,
         _slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         _sent: usize,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -99,7 +99,7 @@ impl<'d> ConnApp<'d> for CloseKindApp {
     fn close(
         &mut self,
         _slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
     }

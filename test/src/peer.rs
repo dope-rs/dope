@@ -1,10 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::thread::{JoinHandle, spawn};
 use std::time::Duration;
 
 use crate::GUARD;
-use std::thread::JoinHandle;
-use std::thread::spawn;
 
 pub fn reserve_addr() -> SocketAddr {
     let socket = TcpListener::bind("127.0.0.1:0").expect("reserve address");

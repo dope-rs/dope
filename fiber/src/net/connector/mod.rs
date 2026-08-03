@@ -5,11 +5,6 @@ use std::io::{self, Error};
 use std::marker::PhantomData;
 use std::task::Poll;
 
-use o3::buffer::{RetainBytes, Shared};
-use o3::cell::RegionToken;
-use o3::collections::CellQueue;
-
-use crate::raw::task::RootWaker;
 use dope::DriverContext;
 use dope::driver::ready::CompletionWaker;
 use dope::driver::token::{SlotIndex, Token};
@@ -17,20 +12,24 @@ use dope::manifold::connector::app::{ChunkOutcome, ConnApp, Requests};
 use dope::manifold::connector::core::Core;
 use dope::manifold::connector::source::DialKey;
 use dope::manifold::connector::source::explicit::{Explicit, ExplicitDialer};
+use dope::manifold::connector::state::{IOV_CAP, State};
 use dope::manifold::env::Bundle;
+use dope::runtime::executor::StorageFactory;
 use dope::runtime::profile::Balanced;
 use dope_net::Transport;
+use dope_net::link::egress;
 use dope_net::link::egress::queue::Queue;
-use dope_net::link::egress::storage::Storage as EgressStorage;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
+use o3::buffer::{RetainBytes, Shared};
+use o3::cell::RegionToken;
+use o3::collections::CellQueue;
+use pending::{Outcome, Pending};
+use raw::Connect;
 
 use super::port::Port;
 use super::port::recv::arena::RecvLayout;
-use dope::manifold::connector::state::{IOV_CAP, State};
-use dope::runtime::executor::StorageFactory;
-use pending::{Outcome, Pending};
-use raw::Connect;
+use crate::raw::task::RootWaker;
 
 pub struct ConnectorPort<'d, T: Transport, W: Wire>
 where
@@ -40,7 +39,7 @@ where
     pending: Pending<'d>,
     cancels: CellQueue<(DialKey, SlotIndex)>,
     source: Explicit<T>,
-    egress: EgressStorage,
+    egress: egress::storage::Storage,
     wire_storage: W::ConnectionStorage,
 }
 
@@ -61,7 +60,7 @@ where
             pending: Pending::with_capacity(capacity),
             cancels: CellQueue::with_capacity(capacity),
             source: Explicit::with_capacity(capacity),
-            egress: EgressStorage::default(),
+            egress: egress::storage::Storage::default(),
             wire_storage,
         }
     }
@@ -124,9 +123,7 @@ where
     fn resolve(&self, key: DialKey, wake: CompletionWaker<'d>) -> Poll<io::Result<Token>> {
         match self.pending.poll(key, wake) {
             Poll::Ready(Outcome::Connected(token)) => Poll::Ready(Ok(token)),
-            Poll::Ready(Outcome::Failed) => {
-                Poll::Ready(Err(Error::other("fiber::Connector: connect failed")))
-            }
+            Poll::Ready(Outcome::Failed(error)) => Poll::Ready(Err(error)),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -147,7 +144,10 @@ where
         region: &mut RegionToken<'d>,
     ) {
         if !self.connections.activate(token, wake, region) {
-            self.pending.settle(key, Outcome::Failed);
+            self.pending.settle(
+                key,
+                Outcome::Failed(Error::other("fiber::Connector: activation failed")),
+            );
             return;
         }
         self.pending.settle(key, Outcome::Connected(token));
@@ -191,7 +191,7 @@ where
     fn chunk<'pool, R: RetainBytes>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         chunk: R,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -202,7 +202,7 @@ where
     fn retained_chunk<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        _egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         chunk: W::RetainedRecv<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -221,7 +221,7 @@ where
         &mut self,
         key: DialKey,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
-        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        _egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port.connected(
@@ -233,13 +233,27 @@ where
     }
 
     fn connect_failed(&mut self, key: DialKey, _driver: &mut DriverContext<'_, '_>) {
-        self.port.pending.settle(key, Outcome::Failed);
+        self.port.pending.settle(
+            key,
+            Outcome::Failed(Error::other("fiber::Connector: connect failed")),
+        );
+    }
+
+    fn open_failed(
+        &mut self,
+        key: DialKey,
+        error: dope_net::link::raw::pool::outbound::OpenFailure<W::OpenError>,
+        _driver: &mut DriverContext<'_, '_>,
+    ) {
+        self.port
+            .pending
+            .settle(key, Outcome::Failed(Error::other(error)));
     }
 
     fn send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         _sent: usize,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -251,7 +265,7 @@ where
     fn close<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn>>,
-        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        _egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.port.connections.closed(slot.token());
@@ -268,12 +282,12 @@ where
     fn drain_requests(
         &self,
         token: Token,
-        push: impl FnMut(Shared) -> Result<(), Shared>,
-        _driver: &mut DriverContext<'_, 'd>,
+        push: impl FnMut(&mut RegionToken<'d>, Shared) -> Result<(), Shared>,
+        driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
         self.port
             .connections
-            .drain_requests(token, push)
+            .drain_requests(token, driver.region_token(), push)
             .unwrap_or_default()
     }
 

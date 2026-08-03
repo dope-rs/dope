@@ -1,6 +1,11 @@
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+use dope_core::backend::Sqe;
+use dope_core::driver::submission::Submission;
+use dope_core::driver::token::{SlotIndex, TokenCapacity};
+use o3::collections::SlotQueue;
+
 use super::Listener;
 use super::application::{Application, ApplicationHooks};
 use super::state::EgressCtx;
@@ -8,10 +13,6 @@ use crate::DriverContext;
 use crate::manifold::env::Env;
 use crate::runtime::__private::Deadline;
 use crate::runtime::profile::RuntimeProfile;
-use dope_core::backend::Sqe;
-use dope_core::driver::submission::Submission;
-use dope_core::driver::token::{SlotIndex, TokenCapacity};
-use o3::collections::SlotQueue;
 
 pub(super) struct IdleSet {
     queue: SlotQueue<Instant>,
@@ -118,19 +119,22 @@ where
             this.idle_abs_age.cancel(idx);
         }
         let (send_inflight, is_armed, is_closing, cancel_kind, ud) = match this.pool.get(idx) {
-            Some(s) => (
-                s.core.is_send_inflight(),
-                s.core.is_armed(),
-                s.core.is_closing(),
-                s.core.recv_cancel_kind(),
-                s.token(),
-            ),
+            Some(slot) => {
+                let (send_inflight, is_armed, is_closing, cancel_kind) = slot.close_io_state();
+                (
+                    send_inflight,
+                    is_armed,
+                    is_closing,
+                    cancel_kind,
+                    slot.token(),
+                )
+            }
             None => return,
         };
         if send_inflight || is_armed {
             if !is_closing {
                 if let Some(slot) = this.pool.get_mut(idx) {
-                    slot.core.begin_close();
+                    slot.begin_close();
                 }
                 if is_armed && !send_inflight {
                     let _ = driver.push(Sqe::cancel(ud, cancel_kind));
@@ -152,7 +156,13 @@ where
                 this.accept.release_peer_ip(ip);
             }
         }
-        this.egress_arena.clear(idx.raw() as usize);
+        if !this
+            .egress_arena
+            .clear(driver.region_token(), idx.raw() as usize)
+        {
+            return;
+        }
+        this.aux.clear_direct(idx);
         this.pool.try_close(idx, driver);
     }
 }

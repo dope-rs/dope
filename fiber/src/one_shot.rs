@@ -1,16 +1,15 @@
-use core::pin::Pin;
+use core::pin::{Pin, pin};
+use core::task::Poll;
 use std::io;
 
 use dope::driver::ready::ReadySlot;
+use dope::driver::token::kind::ONE_SHOT;
 use dope::driver::token::{Epoch, SlotIndex, Token};
 use dope::runtime::__private::RootTask;
 use dope::{DriverContext, DriverRef};
 use pin_project::pin_project;
 
 use crate::{Context, Fiber};
-use core::pin::pin;
-use core::task::Poll;
-use dope::driver::token::kind::ONE_SHOT;
 
 #[pin_project]
 pub struct OneShot<'d, F>

@@ -10,7 +10,7 @@ use io_uring::IoUring;
 
 use self::files::FileTable;
 use crate::backend::fixed::FixedSlots;
-use crate::backend::uring::provided::ffi::ring::RegisteredRing;
+use crate::backend::uring::provided::ffi::ring::{Buffer, ProvidedRing, RegisteredRing};
 use crate::driver::route::Routes;
 use crate::driver::token::{
     KIND_SHIFT, KeyTag, ROUTE_FRAMEWORK, SLOT_MASK, Token, TokenCapacity, TokenSlab,
@@ -47,7 +47,7 @@ const _: () = assert!(SETSOCKOPT_CAP <= SLOT_MASK as usize + 1);
 type SetsockoptTag = KeyTag<ROUTE_FRAMEWORK, { SETSOCKOPT }>;
 pub(crate) enum Disposition {
     Drop,
-    DropBuffer(u16),
+    DropBuffer(Buffer),
     Internal,
     Public(Token),
 }
@@ -172,7 +172,7 @@ impl Uring {
         let setsockopt = TokenSlab::with_capacity(setsockopt_capacity);
         let files = FileTable::new(slots);
         let routes = Routes::new();
-        let ring = RegisteredRing::new(uring, cfg.provided.entries, cfg.provided.len)?;
+        let ring = RegisteredRing::new(uring, cfg.recv.entries, cfg.recv.len)?;
         Ok((
             Uring {
                 ring,
@@ -220,6 +220,7 @@ impl Uring {
                 for item in cq.by_ref() {
                     drained = true;
                     if let Disposition::DropBuffer(bid) = Self::complete_cqe(
+                        provided,
                         setsockopt,
                         files,
                         routes,
@@ -227,7 +228,7 @@ impl Uring {
                         item.result(),
                         item.flags(),
                     ) {
-                        provided.defer_completion(bid);
+                        provided.defer(bid);
                     }
                 }
                 cq.sync();
@@ -284,6 +285,7 @@ impl Uring {
             for item in cq.by_ref() {
                 let result = item.result();
                 match Self::complete_cqe(
+                    provided,
                     setsockopt,
                     files,
                     routes,
@@ -292,7 +294,7 @@ impl Uring {
                     item.flags(),
                 ) {
                     Disposition::Drop => {}
-                    Disposition::DropBuffer(bid) => provided.defer_completion(bid),
+                    Disposition::DropBuffer(buffer) => provided.defer(buffer),
                     Disposition::Internal | Disposition::Public(_) => {
                         found = Some(result);
                     }
@@ -317,6 +319,7 @@ impl Uring {
     }
 
     pub(crate) fn complete_cqe(
+        provided: &ProvidedRing,
         setsockopt: &mut TokenSlab<c_int, SetsockoptTag>,
         files: &mut FileTable,
         routes: &Routes,
@@ -326,7 +329,9 @@ impl Uring {
     ) -> Disposition {
         let Some(token) = Token::try_from_raw(user_data) else {
             return if flags & BUFFER != 0 {
-                Disposition::DropBuffer((flags >> BUFFER_SHIFT) as u16)
+                Disposition::DropBuffer(provided.buffer_from_cqe(
+                    (flags >> BUFFER_SHIFT) as u16,
+                ))
             } else {
                 Disposition::Drop
             };
@@ -361,7 +366,9 @@ impl Uring {
             return Disposition::Drop;
         } else if op_kind == RECV && flags & BUFFER != 0 && routes.is_poisoned(token.route())
         {
-            return Disposition::DropBuffer((flags >> BUFFER_SHIFT) as u16);
+            return Disposition::DropBuffer(provided.buffer_from_cqe(
+                (flags >> BUFFER_SHIFT) as u16,
+            ));
         }
         Disposition::Public(token)
     }

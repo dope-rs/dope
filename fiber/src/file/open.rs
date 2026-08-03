@@ -1,18 +1,18 @@
 use std::io;
 use std::io::Error;
+use std::mem::replace;
 use std::pin::Pin;
 use std::task::Poll;
 
-use super::Source;
-use super::already_done;
-use crate::raw::task::{CompletionOwner, CompletionRegistrar};
-use crate::{Context, Fiber};
 use dope::driver::ready::CompletionWaker;
 use dope::driver::token::Token;
 use dope::io::file::OpenPath;
 use dope::manifold::file::open::OpenDone;
 use dope::manifold::file::{FileOutcome, Files};
-use std::mem::replace;
+
+use super::{Source, already_done};
+use crate::raw::task::{CompletionOwner, CompletionRegistrar};
+use crate::{Context, Fiber};
 
 enum OpenStage {
     Init(OpenPath),

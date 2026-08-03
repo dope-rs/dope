@@ -1,19 +1,18 @@
 #![deny(unsafe_code)]
 
 use std::cell::Cell;
-use std::convert::Infallible;
 use std::marker::PhantomPinned;
 use std::mem::size_of;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::task::Poll;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dope::Event;
 use dope::driver::profile::DriverProfile;
 use dope::driver::ready::{CompletionSlot, CompletionWaker};
+use dope::driver::timer::Registration;
 use dope::driver::token::{Epoch, ROUTE_FRAMEWORK, SlotIndex, Token};
-use dope::manifold::timer::{StarvedWaiter as TimerWaiter, Ticket, Timer};
 use dope::runtime::dispatcher::{Dispatcher, Idle};
 use dope::runtime::profile::RuntimeProfile;
 use dope_fiber::abi::Fiber;
@@ -24,9 +23,7 @@ use dope_fiber::abi::race::{Either, Race};
 use dope_fiber::abi::ready::Ready;
 use dope_fiber::extensions::SessionExt;
 use dope_fiber::io::Io;
-use dope_fiber::owner::{SplitBytes, SplitTask};
 use dope_fiber::raw::slab::TaskSlab;
-use dope_fiber::raw::task::queue::TaskQueue;
 use dope_fiber::raw::task::{Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab};
@@ -37,7 +34,6 @@ use dope_net::wire::identity::Identity;
 use dope_test::{
     drain_tokens, poll_ready, poll_with_slot, tok, with_context, with_session, with_session_for,
 };
-use o3::buffer::Shared;
 use o3::cell::BrandCell;
 use o3::collections::{FixedPinSlab, PinSlab};
 
@@ -70,16 +66,13 @@ fn raw_hot_path_boundaries_add_no_storage() {
     );
     assert_eq!(
         size_of::<TaskSlab<'static, Ready<()>>>(),
-        size_of::<Slab<'static, Ready<()>>>() + size_of::<Pin<Box<[()]>>>(),
+        size_of::<Slab<'static, Ready<()>>>()
+            + size_of::<Pin<Box<[()]>>>()
+            + size_of::<Pin<Box<()>>>(),
     );
     assert_eq!(
         size_of::<Sleep<'static, 'static>>(),
-        size_of::<(
-            Instant,
-            Option<Ticket>,
-            TimerWaiter<'static>,
-            &'static Timer<'static>,
-        )>(),
+        size_of::<Registration<'static, 'static>>(),
     );
 }
 
@@ -318,37 +311,28 @@ impl<'d> Fiber<'d> for PendingTask {
 }
 
 #[test]
-fn persistent_task_binding_owns_both_drop_orders_without_unsafe_callers() {
+fn task_slab_owns_task_bindings_without_unsafe_callers() {
     with_session(|sess| {
         let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let parent = RootWaker::from_ready(sess.driver(), ready.key());
         let mut slab: TaskSlab<'_, PendingTask, usize> = TaskSlab::with_capacity(1);
 
         let task = slab.insert(PendingTask).expect("task slot");
-        let queue = Box::pin(TaskQueue::with_capacity(1));
-        assert!(slab.bind(&task, queue.as_ref(), 17, parent));
+        assert!(slab.bind(&task, 17, parent));
         assert!(slab.wake(&task));
         assert_eq!(
-            queue
-                .as_ref()
-                .snapshot_root(parent)
-                .expect("ready snapshot")
-                .next(),
+            slab.snapshot_root(parent).expect("ready snapshot").next(),
             Some(17),
         );
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
 
-        // A connection queue may disappear before its scheduler entry.
-        drop(queue);
-        assert!(!slab.wake(&task));
         assert!(slab.remove(task));
+        assert!(slab.is_empty());
 
-        // Cancellation may remove the scheduler entry while its queue lives.
         let task = slab.insert(PendingTask).expect("reused task slot");
-        let queue = Box::pin(TaskQueue::with_capacity(1));
-        assert!(slab.bind(&task, queue.as_ref(), 23, parent));
+        assert!(slab.bind(&task, 23, parent));
         assert!(slab.remove(task));
-        assert!(queue.as_ref().is_empty());
+        assert!(slab.is_empty());
         assert!(drain_tokens(sess.driver()).is_empty());
     });
 }
@@ -357,33 +341,6 @@ struct BorrowedTask<'a> {
     head: &'a [u8],
     body: &'a [u8],
     pending: bool,
-}
-
-struct BorrowSplitTask;
-
-impl<'d> SplitTask<'d> for BorrowSplitTask {
-    type Input = bool;
-    type State = ();
-    type Context = ();
-    type Output = usize;
-    type Error = Infallible;
-
-    fn build<'req>(
-        view: dope_fiber::owner::SplitView<'req>,
-        pending: Self::Input,
-        _state: &'req Self::State,
-        _context: &'req Self::Context,
-    ) -> Result<impl Fiber<'d, Output = Self::Output> + 'req, Self::Error>
-    where
-        'd: 'req,
-    {
-        let (head, body) = view.into_parts();
-        Ok(BorrowedTask {
-            head,
-            body,
-            pending,
-        })
-    }
 }
 
 impl<'d> Fiber<'d> for BorrowedTask<'_> {
@@ -405,36 +362,6 @@ impl Drop for BorrowedTask<'_> {
         assert_eq!(self.head, b"head");
         assert_eq!(self.body, b"body");
     }
-}
-
-#[test]
-fn split_task_borrows_owned_bytes_across_polls_without_extra_state() {
-    with_session(|mut session| {
-        let ready = session
-            .driver()
-            .make_ready_slot(tok(0))
-            .expect("ready slot");
-        let owner = SplitBytes::new(Shared::copy_from_slice(b"headbody"), None, 4);
-        let state = ();
-        let context = ();
-        let task = owner
-            .try_into_task::<BorrowSplitTask>(true, &state, &context)
-            .expect("infallible split task");
-        assert_eq!(
-            size_of_val(&task),
-            size_of::<(BorrowedTask<'static>, SplitBytes)>(),
-        );
-        let mut task = pin!(task);
-
-        assert_eq!(
-            poll_with_slot(&mut session, &ready, task.as_mut()),
-            Poll::Pending
-        );
-        assert_eq!(
-            poll_with_slot(&mut session, &ready, task.as_mut()),
-            Poll::Ready(8)
-        );
-    });
 }
 
 #[test]
@@ -529,7 +456,7 @@ impl<'d> Dispatcher<'d> for ExactWakeDispatcher {
         }
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         Idle::Busy
     }
 }

@@ -27,7 +27,7 @@ where
 
     fn drain_close(
         pool: &mut ConnPool<'d, ID, E::Transport, A::Wire, A::Conn, A::Send>,
-        egress_arena: &mut Arena<'_, A::Send>,
+        egress_arena: &mut Arena<'d, '_, A::Send>,
         dirty: &PendingQueue,
         app: &A,
         idx: SlotIndex,
@@ -96,7 +96,7 @@ where
 
     fn drain_close(
         pool: &mut ConnPool<'d, ID, E::Transport, A::Wire, A::Conn, A::Send>,
-        egress_arena: &mut Arena<'_, A::Send>,
+        egress_arena: &mut Arena<'d, '_, A::Send>,
         dirty: &PendingQueue,
         app: &A,
         idx: SlotIndex,
@@ -104,7 +104,7 @@ where
     ) {
         let (send_inflight, establishing, connecting, token) = match pool.get(idx) {
             Some(slot) => (
-                slot.core.is_send_inflight(),
+                slot.is_send_inflight(),
                 !slot.state.establish.is_done(),
                 slot.state.establish.is_connecting(),
                 slot.token(),
@@ -123,7 +123,7 @@ where
             };
             let cancelled = driver.push(cancel).is_ok();
             if let Some(slot) = pool.get_mut(idx) {
-                slot.core.begin_close();
+                slot.begin_close();
                 if !cancelled {
                     dirty.mark(idx, &slot.state.pending, PEND_CLOSE);
                 }
@@ -132,7 +132,7 @@ where
         }
         if send_inflight {
             if let Some(slot) = pool.get_mut(idx) {
-                slot.core.begin_close();
+                slot.begin_close();
             }
             return;
         }
@@ -147,7 +147,12 @@ where
             .map(|slot| app.is_drained(slot, driver))
             .unwrap_or(true);
         if drained {
-            egress_arena.clear(idx.raw() as usize);
+            if !egress_arena.clear(driver.region_token(), idx.raw() as usize) {
+                if let Some(slot) = pool.get_mut(idx) {
+                    slot.begin_close();
+                }
+                return;
+            }
             pool.try_close(idx, driver);
         } else if let Some(slot) = pool.get_mut(idx) {
             dirty.mark(idx, &slot.state.pending, PEND_CLOSE);
@@ -160,7 +165,7 @@ where
             let Some(slot) = this.pool.get(idx) else {
                 return;
             };
-            slot.core.should_close(this.app.defer_close(slot, driver))
+            slot.should_close(this.app.defer_close(slot, driver))
         };
         if close {
             self.as_mut().close_slot(idx, driver);

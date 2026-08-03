@@ -1,7 +1,6 @@
+use super::{DriverContext, PushError};
 use crate::backend::ops::raw::submission::SubmissionBackend;
 use crate::backend::{Backend, RetainedSqe, Sqe};
-
-use super::{DriverContext, PushError};
 
 pub trait Submission {
     fn push(&mut self, sqe: Sqe) -> Result<(), PushError>;

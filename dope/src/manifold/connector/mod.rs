@@ -1,3 +1,5 @@
+pub use dope_net::link::egress::StableBytes;
+
 pub mod app;
 pub mod codec;
 pub mod core;

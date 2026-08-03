@@ -2,13 +2,13 @@ use std::hash::BuildHasher;
 use std::process::abort;
 use std::time::{Duration, Instant};
 
+use dope_core::io::socket::addr::Addr;
+use dope_net::Transport;
+use o3::collections::{IndexedMinHeap, SlotQueue};
+
 use super::{Action, DialEpoch, DialKey, Dialer};
 use crate::hash::State;
 use crate::runtime::__private::Deadline;
-use dope_core::io::socket::addr::Addr;
-use dope_net::Transport;
-use o3::collections::IndexedMinHeap;
-use o3::collections::SlotQueue;
 
 #[derive(Clone, Copy)]
 enum SlotState {

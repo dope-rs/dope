@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::io;
 use std::task::Poll;
 
 use dope::driver::ready::CompletionWaker;
@@ -16,8 +17,10 @@ enum Slot<'d> {
 
 pub(crate) enum Outcome {
     Connected(Token),
-    Failed,
+    Failed(io::Error),
 }
+
+const _: () = assert!(std::mem::size_of::<Outcome>() <= std::mem::size_of::<[usize; 2]>());
 
 pub(crate) struct Pending<'d> {
     slots: Box<[Cell<Slot<'d>>]>,

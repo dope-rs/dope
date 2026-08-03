@@ -1,10 +1,8 @@
 #![cfg(target_os = "linux")]
 
-use dope_test as common;
+use dope_test::Gate;
 
 extern crate dope;
-use o3::cell::BrandCell;
-
 use std::cell::Cell;
 use std::net::{SocketAddr, UdpSocket};
 use std::num::NonZeroU16;
@@ -16,8 +14,7 @@ use dope::Event;
 use dope::manifold::Manifold;
 use dope::manifold::datagram::{Handler, Socket};
 use dope::runtime::dispatcher::{FinishContext, Idle};
-
-use common::Gate;
+use o3::cell::BrandCell;
 
 struct SendHandler {
     errno: Rc<Cell<Option<i32>>>,
@@ -72,7 +69,7 @@ impl<'d> Manifold<'d> for Sender<'d> {
         self.as_mut().project().sock.tick(driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         if self.project_ref().sock.needs_flush() {
             Idle::Busy
         } else {
@@ -107,7 +104,7 @@ fn gso_runs_as_one_owned_send() {
 
 #[test]
 fn dropping_armed_socket_poison_route() {
-    common::quic_exec(64, 2048).enter(|mut sess| {
+    dope_test::quic_exec(64, 2048).enter(|mut sess| {
         {
             let mut driver = sess.driver_access();
             let socket = Socket::<0>::bind("127.0.0.1:0".parse().expect("parse"), &mut driver)
@@ -128,7 +125,7 @@ fn dropping_armed_socket_poison_route() {
 
 fn udp_collector(want_datagrams: usize) -> (SocketAddr, JoinHandle<(usize, Vec<u8>)>) {
     let recv = UdpSocket::bind("127.0.0.1:0").expect("bind recv");
-    recv.set_read_timeout(Some(common::GUARD / 2)).ok();
+    recv.set_read_timeout(Some(dope_test::GUARD / 2)).ok();
     let dst = recv.local_addr().expect("recv addr");
     let handle = std::thread::spawn(move || {
         let mut got = Vec::new();
@@ -155,7 +152,7 @@ fn run_case(lens: &[usize]) {
 
     let gate = Gate::new();
     let errno = Rc::new(Cell::new(None));
-    common::quic_exec(4096, 2048).enter(|mut sess| {
+    dope_test::quic_exec(4096, 2048).enter(|mut sess| {
         let sock = Socket::<0>::bind(
             "127.0.0.1:0".parse().expect("parse"),
             &mut sess.driver_access(),
@@ -171,7 +168,7 @@ fn run_case(lens: &[usize]) {
             },
         }));
 
-        let want = common::pattern(total);
+        let want = dope_test::pattern(total);
         let segment_size = NonZeroU16::new(lens[0] as u16).expect("non-zero segment size");
         let queued = app
             .as_ref()
@@ -190,7 +187,7 @@ fn run_case(lens: &[usize]) {
             sender.sock.as_mut().tick(&mut driver);
         }
 
-        common::run_until(&mut sess, app.as_ref(), &gate, 1);
+        dope_test::run_until(&mut sess, app.as_ref(), &gate, 1);
         let (seen, got) = collector.join().expect("collector join");
 
         if errno.get() == Some(libc::EINVAL) {

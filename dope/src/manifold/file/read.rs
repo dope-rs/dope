@@ -1,10 +1,9 @@
 use std::io;
+use std::io::{Error, ErrorKind};
+use std::mem::replace;
 use std::os::fd::AsRawFd;
+use std::process::abort;
 
-use super::FileOutcome;
-use super::raw::ReadRegion;
-use super::raw::table::{CancellationSignal, OperationTable};
-use super::source::Source;
 use dope::DriverContext;
 use dope_core::backend::RawSqe;
 use dope_core::driver::control::Quiesce;
@@ -12,10 +11,11 @@ use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::token::kind::READ;
 use dope_core::driver::token::{KeyTag, Token, TokenCapacity};
 use dope_core::io::ReadEvent;
-use std::io::Error;
-use std::io::ErrorKind;
-use std::mem::replace;
-use std::process::abort;
+
+use super::FileOutcome;
+use super::raw::ReadRegion;
+use super::raw::table::{CancellationSignal, OperationTable};
+use super::source::Source;
 
 pub enum ReadDone {
     Progress(u32),

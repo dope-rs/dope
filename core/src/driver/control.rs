@@ -1,13 +1,12 @@
 use std::io;
 use std::os::fd::BorrowedFd;
 
+use super::token::Token;
+use super::{DriverContext, OutboundReservation, PushError};
 use crate::backend::Backend;
 use crate::backend::ops::raw::control::{ControlBackend, RawQuiesce};
 use crate::io::fd::Fd;
 use crate::io::socket::option::SocketOption;
-
-use super::token::Token;
-use super::{DriverContext, OutboundReservation, PushError};
 
 #[doc(hidden)]
 #[must_use]

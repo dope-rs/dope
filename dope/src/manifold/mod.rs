@@ -3,16 +3,16 @@ pub mod datagram;
 pub mod env;
 pub mod file;
 pub mod listener;
-pub mod timer;
 pub mod typed;
-
-use typed::TypedToken;
 
 use std::pin::Pin;
 
+use dope_core::io::Event;
+use o3::cell::RegionToken;
+use typed::TypedToken;
+
 use crate::DriverContext;
 use crate::runtime::dispatcher::{FinishContext, Idle};
-use dope_core::io::Event;
 
 pub enum Outcome {
     Ok,
@@ -29,7 +29,8 @@ pub trait Manifold<'d>: Sized {
 
     fn pre_park(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>);
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle {
+        let _ = region;
         Idle::Park(None)
     }
 

@@ -4,14 +4,13 @@ use std::net::SocketAddr;
 use std::num::NonZeroU16;
 use std::pin::Pin;
 
-use pin_project::pin_project;
-
 use dope_core::backend;
 use dope_core::driver::bootstrap::Bootstrap;
 use dope_core::driver::datagram::Datagram;
 use dope_core::driver::route::Route;
-use dope_core::io::provided::ProvidedLease;
+use dope_core::io::recv;
 use o3::collections::FixedQueue;
+use pin_project::pin_project;
 
 use crate::DriverContext;
 use crate::runtime::dispatcher::FinishContext;
@@ -23,12 +22,10 @@ pub const MAX_GSO_BYTES: usize = backend::MAX_GSO_BYTES;
 pub const MAX_GSO_SEGMENTS: usize = backend::MAX_GSO_SEGMENTS;
 
 use raw::io::Io;
-use send::Outgoing;
-use send::Payload;
-use send::SendOp;
+use send::{Outgoing, Payload, SendOp};
 
 pub struct Packet<'d> {
-    guard: ProvidedLease<'d>,
+    guard: recv::Lease<'d>,
     offset: usize,
     len: usize,
 }
@@ -36,6 +33,12 @@ pub struct Packet<'d> {
 impl AsRef<[u8]> for Packet<'_> {
     fn as_ref(&self) -> &[u8] {
         &self.guard.as_slice()[self.offset..self.offset + self.len]
+    }
+}
+
+impl AsMut<[u8]> for Packet<'_> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.guard.as_mut_slice()[self.offset..self.offset + self.len]
     }
 }
 
@@ -69,18 +72,17 @@ pub trait Handler<'d, const ID: u8> {
 
 const RECV_ARM_TAG: SlotIndex = SlotIndex::ZERO;
 
-use dope_core::driver::token::kind::RECV;
-use dope_core::driver::token::kind::SEND;
+use std::iter::once;
+
+use dope_core::driver::token::kind::{RECV, SEND};
 use dope_core::driver::token::{KeyTag, SlotIndex, Token, TokenCapacity, TokenSlab};
-use dope_core::io::RecvEvent;
-use dope_core::io::SendEvent;
 use dope_core::io::datagram::RecvOutcome;
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::msg::MsgHdr;
+use dope_core::io::{RecvEvent, SendEvent};
 use dope_net::multishot::Multishot;
 use libc::sockaddr_storage;
 use o3::buffer::Lease;
-use std::iter::once;
 
 type SendTag<const ID: u8> = KeyTag<ID, { SEND }>;
 #[pin_project(!Unpin)]

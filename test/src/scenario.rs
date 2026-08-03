@@ -1,20 +1,20 @@
 use std::net::{SocketAddr, TcpStream};
 use std::pin::Pin;
+use std::rc::Rc;
 use std::thread::JoinHandle;
 
 use dope::driver::token::Token;
 use dope::manifold::Manifold;
+use dope::manifold::listener::Listener;
 use dope::manifold::typed::TypedToken;
 use dope::runtime::dispatcher::{Dispatcher, FinishContext, Idle};
 use dope::runtime::executor::Session;
 use dope::{DriverContext, Event};
 use dope_fiber::abi::Fiber;
-use o3::cell::BrandCell;
+use o3::cell::{BrandCell, RegionToken};
+use pin_project::pin_project;
 
 use crate::{Gate, drive, request_reply, run_until, spawn_peer};
-use dope::manifold::listener::Listener;
-use pin_project::pin_project;
-use std::rc::Rc;
 
 /// Generic single-manifold dispatcher used by integration scenarios.
 #[pin_project]
@@ -52,8 +52,8 @@ where
         Manifold::pre_park(self.project().manifold, driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
-        Manifold::idle(self.project_ref().manifold)
+    fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle {
+        Manifold::idle(self.project_ref().manifold, region)
     }
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {

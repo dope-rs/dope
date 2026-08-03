@@ -3,15 +3,15 @@ use std::os::fd::{AsRawFd, RawFd};
 
 pub(in crate::manifold::file) mod table;
 
-use super::source::Source;
-use dope_core::backend::Backend;
-use dope_core::backend::RawSqe;
+use std::io::{Error, ErrorKind};
+use std::process::abort;
+
+use dope_core::backend::{Backend, RawSqe};
 use dope_core::driver::token::Token;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
-use std::io::Error;
-use std::io::ErrorKind;
-use std::process::abort;
+
+use super::source::Source;
 
 type StatBuf = <Backend as Platform>::StatBuf;
 

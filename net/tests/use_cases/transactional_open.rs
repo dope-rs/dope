@@ -2,9 +2,10 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::rc::Rc;
 
-use dope_core::io::provided::{ProvidedLease, ProvidedView};
+use dope_core::io::recv::{Lease, View};
 use dope_net::wire::reservation::ReservedOpen;
 use dope_net::wire::send::{Plain, Prepared, Sent, Storage, Vectored};
 use dope_net::wire::{OpenReservation, OpenRollback, Reclaim, RecvChunk, RuntimeLimits, Wire};
@@ -59,9 +60,10 @@ impl Wire for TransactionalWire {
         = ReservedOpen<'a, Self::Connection<'d>, Self::SendStorage, Self::RuntimeContext<'d>>
     where
         'd: 'a;
+    type OpenError = Infallible;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type RecvBatch<'a> = std::iter::Once<RecvChunk<'a, Self::Recv<'a>>>;
-    type RetainedRecv<'d> = ProvidedView<'d>;
+    type RetainedRecv<'d> = View<'d>;
     type SendStorage = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
@@ -83,15 +85,20 @@ impl Wire for TransactionalWire {
         })
     }
 
-    fn prepare_open<'a, 'd>(runtime: &'a mut Self::RuntimeContext<'d>) -> Option<Self::Open<'a, 'd>>
+    fn prepare_open<'a, 'd>(
+        runtime: &'a mut Self::RuntimeContext<'d>,
+    ) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
     where
         'd: 'a,
     {
-        let wire = runtime
+        let Some(wire) = runtime
             .retry
             .take()
-            .or_else(|| runtime.source.pop_front().map(TransactionalWire::new))?;
-        Some(ReservedOpen::new(runtime, wire, ()))
+            .or_else(|| runtime.source.pop_front().map(TransactionalWire::new))
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ReservedOpen::new(runtime, wire, ())))
     }
 
     fn process_recv<'a, 'd>(
@@ -105,7 +112,7 @@ impl Wire for TransactionalWire {
     fn process_retained_recv<'a, 'd>(
         _: &mut Self::Connection<'d>,
         _: &mut Self::RuntimeContext<'d>,
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>> {
         let span = bytes.span(0, bytes.as_slice().len())?;
         bytes.into_view(span).ok()
@@ -169,10 +176,15 @@ fn transactional_open_moves_drop_state_exactly_once() {
     let mut runtime = runtime([]);
     runtime.retry = Some(TransactionalWire::tracked(73, drops.clone()));
 
-    drop(TransactionalWire::prepare_open(&mut runtime).unwrap());
+    drop(
+        TransactionalWire::prepare_open(&mut runtime)
+            .unwrap()
+            .unwrap(),
+    );
     assert_eq!(drops.get(), 0);
 
     let (wire, ()) = TransactionalWire::prepare_open(&mut runtime)
+        .unwrap()
         .unwrap()
         .commit();
     assert_eq!(drops.get(), 0);
@@ -186,14 +198,23 @@ fn siege_cancellation_never_consumes_the_one_shot_open() {
     let mut runtime = runtime([73]);
 
     for _ in 0..65_536 {
-        drop(TransactionalWire::prepare_open(&mut runtime).unwrap());
+        drop(
+            TransactionalWire::prepare_open(&mut runtime)
+                .unwrap()
+                .unwrap(),
+        );
     }
 
     let (wire, ()) = TransactionalWire::prepare_open(&mut runtime)
         .unwrap()
+        .unwrap()
         .commit();
     assert_eq!(wire.value, 73);
-    assert!(TransactionalWire::prepare_open(&mut runtime).is_none());
+    assert!(
+        TransactionalWire::prepare_open(&mut runtime)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -203,7 +224,9 @@ fn siege_commit_sequence_has_no_gaps_after_transient_failures() {
     let mut attempt = 0usize;
 
     while committed.len() != 4096 {
-        let open = TransactionalWire::prepare_open(&mut runtime).unwrap();
+        let open = TransactionalWire::prepare_open(&mut runtime)
+            .unwrap()
+            .unwrap();
         attempt += 1;
         if !attempt.is_multiple_of(7) {
             drop(open);
@@ -214,5 +237,9 @@ fn siege_commit_sequence_has_no_gaps_after_transient_failures() {
     }
 
     assert_eq!(committed, (0..4096).collect::<Vec<_>>());
-    assert!(TransactionalWire::prepare_open(&mut runtime).is_none());
+    assert!(
+        TransactionalWire::prepare_open(&mut runtime)
+            .unwrap()
+            .is_none()
+    );
 }

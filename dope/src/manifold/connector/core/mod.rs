@@ -8,22 +8,6 @@ use std::io::{self, Error, ErrorKind};
 use std::marker::PhantomData;
 use std::pin::Pin;
 
-use self::close::ClosePhase;
-use self::connect::ConnectPhase;
-use self::recv::RecvPhase;
-use self::send::SendPhase;
-use self::source::SourcePhase;
-use super::app::ConnApp;
-use super::session::{Session, SessionApp};
-use super::source::{DialKey, Dialer};
-use super::state::State;
-use crate::DriverContext;
-use crate::manifold::Manifold;
-use crate::manifold::env::Env;
-use crate::manifold::timer::{Ticket, Timer};
-use crate::manifold::typed::TypedToken;
-use crate::runtime::dispatcher::{FinishContext, Idle};
-use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::ready::{ReadyKey, ReadySlot};
 use dope_core::driver::route::Route;
 use dope_core::driver::token::{Epoch, Token, TokenCapacity};
@@ -36,7 +20,25 @@ use dope_net::link::raw::pool::Pool;
 use dope_net::link::raw::pool::outbound::OutboundPool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue};
 use dope_net::wire::Wire;
+use o3::cell::RegionToken;
 use pin_project::pin_project;
+
+use self::close::ClosePhase;
+use self::connect::ConnectPhase;
+use self::recv::RecvPhase;
+use self::send::SendPhase;
+use self::source::SourcePhase;
+use super::app::ConnApp;
+use super::session::{Session, SessionApp};
+use super::source::{DialKey, Dialer};
+use super::state::State;
+use crate::DriverContext;
+use crate::driver::timer::Registration;
+use crate::manifold::Manifold;
+use crate::manifold::env::Env;
+use crate::manifold::typed::TypedToken;
+use crate::runtime::dispatcher::{FinishContext, Idle};
+use crate::runtime::profile::RuntimeProfile;
 
 type ConnPool<'d, const ID: u8, T, W, C, S> = Pool<'d, ID, T, W, State<C, S>>;
 
@@ -50,13 +52,14 @@ where
 {
     route: Route<'d, ID>,
     pub(super) pool: ConnPool<'d, ID, E::Transport, A::Wire, A::Conn, A::Send>,
-    egress_arena: Arena<'pool, A::Send>,
+    egress_arena: Arena<'d, 'pool, A::Send>,
     pub(super) app: A,
     pub(super) upstreams: S,
     dirty: PendingQueue,
-    backoff_timer: Option<Ticket>,
-    liveness_timer: Option<Ticket>,
-    timer: Timer<'d, 0>,
+    #[pin]
+    backoff_timer: Registration<'d, 'd>,
+    #[pin]
+    liveness_timer: Registration<'d, 'd>,
     #[pin]
     backoff_slot: ReadySlot<'d>,
     draining: bool,
@@ -169,9 +172,14 @@ where
                 "connector egress storage does not match its egress config",
             ));
         }
-        let egress_arena = Arena::with_config(egress_storage, egress_config, max_connections);
+        let egress_arena = Arena::with_config(
+            egress_storage,
+            driver.region_token_ref(),
+            egress_config,
+            max_connections,
+        );
         let dirty = PendingQueue::with_capacity(max_connections);
-        let timer = Timer::with_capacity(2, driver.driver_ref());
+        let timer = driver.timer();
         let backoff_sentinel = Token::new(ID, backoff_index, Epoch::INITIAL);
         let backoff_slot = driver.driver_ref().make_ready_slot(backoff_sentinel)?;
         let mut route = Route::reserve_transaction(driver)?;
@@ -185,9 +193,8 @@ where
             app,
             upstreams,
             dirty,
-            backoff_timer: None,
-            liveness_timer: None,
-            timer,
+            backoff_timer: Registration::new(timer),
+            liveness_timer: Registration::new(timer),
             backoff_slot,
             draining: false,
             _e: PhantomData,
@@ -378,8 +385,7 @@ where
     pub fn pre_park(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         {
             let this = self.as_mut().project();
-            this.timer.expire(driver.turn_now());
-            this.app.pre_park();
+            this.app.pre_park(driver.region_token());
         }
         self.rouse(driver);
     }
@@ -390,21 +396,20 @@ where
         self.rouse(driver);
     }
 
-    pub fn idle(self: Pin<&Self>) -> Idle {
+    pub fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle {
         let this = self.project_ref();
         if !this.dirty.is_empty() || (E::Profile::HYBRID_PARK && this.pool.pending_recv_rearm()) {
             return Idle::Busy;
         }
-        Idle::Park(this.timer.earliest()).reduce(this.app.idle())
+        this.app.idle(region)
     }
 
     pub fn shutdown_all(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
         {
             let this = self.as_mut().project();
             *this.draining = true;
-            if let Some(t) = this.backoff_timer.take() {
-                this.timer.cancel(t);
-            }
+            this.backoff_timer.as_ref().cancel();
+            this.liveness_timer.as_ref().cancel();
         }
         let capacity = self.as_ref().project_ref().pool.capacity();
         for idx in capacity.slots() {
@@ -455,8 +460,8 @@ where
         self.activate(target.into_inner(), driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
-        self.idle()
+    fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle {
+        self.idle(region)
     }
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {

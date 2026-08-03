@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::pin::{Pin, pin};
 use std::process::abort;
 use std::task::Poll;
@@ -6,33 +5,31 @@ use std::task::Poll;
 use dope::DriverContext;
 
 use crate::raw::pinned_slice;
-use crate::raw::task::queue::TaskQueue;
+use crate::raw::task::queue::Queue;
 use crate::raw::task::{RootWaker, StableTaskSource, TaskContext};
 use crate::slab::{Slab, TaskId};
 use crate::{Context, Fiber};
 
 struct SlabTask<'a, 'd, T: Copy> {
-    context: Pin<&'a TaskContext<T>>,
-    _brand: PhantomData<fn(&'d ()) -> &'d ()>,
+    context: Pin<&'a TaskContext<'d, T>>,
 }
 
-// SAFETY: TaskSlab owns every pinned context and unbinds it after its fiber is
-// removed; queue Drop detaches the reverse link before the queue disappears.
+// SAFETY: TaskSlab owns its pinned contexts and queue; context teardown runs
+// before the queue is dropped.
 unsafe impl<'a, 'd, T: Copy> StableTaskSource<'a, 'd, T> for SlabTask<'a, 'd, T> {
-    fn context(self) -> Pin<&'a TaskContext<T>> {
+    fn context(self) -> Pin<&'a TaskContext<'d, T>> {
         self.context
     }
 }
 
-/// A fiber slab whose persistent wake nodes share each fiber's lifetime.
-///
-/// Removal drops the fiber before its wake node; queue drop detaches every node.
+/// A fiber slab whose persistent wake nodes and ready queue share one owner.
 pub struct TaskSlab<'d, F, T: Copy = usize, Tag = ()>
 where
     F: Fiber<'d>,
 {
     fibers: Slab<'d, F, Tag>,
-    contexts: Pin<Box<[TaskContext<T>]>>,
+    contexts: Pin<Box<[TaskContext<'d, T>]>>,
+    queue: Pin<Box<Queue<T>>>,
 }
 
 impl<'d, F, T, Tag> TaskSlab<'d, F, T, Tag>
@@ -48,10 +45,11 @@ where
                     .map(|_| TaskContext::new())
                     .collect::<Box<[_]>>(),
             ),
+            queue: Box::pin(Queue::with_capacity(capacity)),
         }
     }
 
-    fn context(&self, index: usize) -> Option<Pin<&TaskContext<T>>> {
+    fn context(&self, index: usize) -> Option<Pin<&TaskContext<'d, T>>> {
         pinned_slice::get(self.contexts.as_ref(), index)
     }
 
@@ -59,13 +57,7 @@ where
         self.fibers.insert(fiber)
     }
 
-    pub fn bind(
-        &self,
-        id: &TaskId<Tag>,
-        queue: Pin<&TaskQueue<T>>,
-        target: T,
-        parent: RootWaker<'d>,
-    ) -> bool {
+    pub fn bind(&self, id: &TaskId<Tag>, target: T, parent: RootWaker<'d>) -> bool {
         if !self.fibers.contains(id) {
             return false;
         }
@@ -76,11 +68,9 @@ where
             return false;
         }
         let _ = TaskContext::bind(
-            SlabTask {
-                context,
-                _brand: PhantomData,
-            },
-            queue,
+            SlabTask { context },
+            self.queue.as_ref(),
+            id.index(),
             target,
             parent.into(),
         );
@@ -100,10 +90,7 @@ where
         if !context.is_bound() {
             return None;
         }
-        let wake = TaskContext::waker(SlabTask {
-            context,
-            _brand: PhantomData,
-        });
+        let wake = TaskContext::waker(SlabTask { context });
         let mut context = pin!(Context::from_waker(wake, driver.reborrow()));
         self.fibers.poll(id, context.as_mut())
     }
@@ -120,6 +107,17 @@ where
         }
         context.wake();
         true
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.as_ref().is_empty()
+    }
+
+    pub fn snapshot_root<'slab, 'root>(
+        &'slab self,
+        parent: RootWaker<'root>,
+    ) -> Option<impl Iterator<Item = T> + use<'slab, 'root, 'd, F, T, Tag>> {
+        self.queue.as_ref().snapshot_root(parent)
     }
 
     pub fn remove(&mut self, id: TaskId<Tag>) -> bool {

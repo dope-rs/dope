@@ -140,18 +140,29 @@ where
     }
 
     fn prepare_park(&mut self) {
-        self.driver.refresh_turn_clock();
+        let now = self.driver.refresh_turn_clock();
+        let timer = self.driver.timer();
+        timer.expire(self.driver.region_token(), now);
         Dispatcher::pre_park(
             self.cell.borrow_pin_mut(self.token),
             &mut self.driver.reborrow(),
         );
     }
 
+    fn idle(&self) -> Idle {
+        Idle::Park(self.driver.timer().earliest(self.driver.region_token_ref())).reduce(
+            Dispatcher::idle(
+                self.cell.borrow_pin(self.token),
+                self.driver.region_token_ref(),
+            ),
+        )
+    }
+
     fn park_timeout(&self, cq_saturated: bool) -> Option<Duration> {
         if cq_saturated || self.driver.driver_ref().has_ready() {
             return Some(Duration::ZERO);
         }
-        match Dispatcher::idle(self.cell.borrow_pin(self.token)) {
+        match self.idle() {
             Idle::Busy => Some(Duration::ZERO),
             Idle::Park(None) => None,
             Idle::Park(Some(deadline)) => {
@@ -170,10 +181,7 @@ where
             self.prepare_park();
             if !state.cq_saturated
                 && !self.driver.driver_ref().has_ready()
-                && matches!(
-                    Dispatcher::idle(self.cell.borrow_pin(self.token)),
-                    Idle::Park(None)
-                )
+                && matches!(self.idle(), Idle::Park(None))
             {
                 return Ok(());
             }

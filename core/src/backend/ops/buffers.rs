@@ -1,18 +1,16 @@
-use crate::backend::Backend;
-use crate::io::provided::raw::buffer::BufferId;
+use crate::backend::{Backend, RecvBuffer};
 
 pub(crate) trait BufferBackend {
     fn buffer_group(backend: &Backend) -> u16;
     fn buffer_len(backend: &Backend) -> usize;
     fn buffer_count(backend: &Backend) -> usize;
-    fn release_buffer(backend: &mut Backend, id: BufferId);
+    fn release_buffer(backend: &mut Backend, buffer: RecvBuffer);
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::{Backend, BufferBackend, RecvBuffer};
     use crate::backend::uring::provided::ffi::ring::RegisteredRing;
-
-    use super::{Backend, BufferBackend, BufferId};
 
     impl BufferBackend for Backend {
         fn buffer_group(_backend: &Backend) -> u16 {
@@ -27,17 +25,16 @@ mod linux {
             backend.ring.provided().entries()
         }
 
-        fn release_buffer(backend: &mut Backend, id: BufferId) {
-            backend.ring.provided_mut().defer(id);
+        fn release_buffer(backend: &mut Backend, buffer: RecvBuffer) {
+            backend.ring.provided_mut().defer(buffer);
         }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 mod kqueue {
+    use super::{Backend, BufferBackend, RecvBuffer};
     use crate::backend::kqueue::driver::read::dispatch::Dispatch;
-
-    use super::{Backend, BufferBackend, BufferId};
 
     impl BufferBackend for Backend {
         fn buffer_group(_backend: &Backend) -> u16 {
@@ -45,15 +42,15 @@ mod kqueue {
         }
 
         fn buffer_len(backend: &Backend) -> usize {
-            backend.provided.buf_len()
+            backend.recv.buf_len()
         }
 
         fn buffer_count(backend: &Backend) -> usize {
-            backend.provided.entries()
+            backend.recv.entries()
         }
 
-        fn release_buffer(backend: &mut Backend, id: BufferId) {
-            backend.provided.defer(id);
+        fn release_buffer(backend: &mut Backend, buffer: RecvBuffer) {
+            backend.recv.defer(buffer);
             if !backend.resume.is_empty() {
                 backend.resume_pending();
             }

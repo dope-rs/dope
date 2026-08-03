@@ -3,38 +3,25 @@ pub mod fd;
 pub(crate) mod ffi;
 pub mod file;
 pub mod pipe;
-pub mod provided;
+pub mod recv;
 pub mod socket;
 
-use std::error::Error as StdError;
+use std::error;
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::io::Error;
-use std::os::fd::OwnedFd;
+use std::os::fd::{FromRawFd, OwnedFd};
+
+use fd::AcceptedSlot;
+use libc::{EAGAIN, ECANCELED, EINTR, ENOBUFS};
+use recv::Lease;
+use recv::completion::Completion;
 
 use crate::driver::DriverRef;
-use crate::driver::token::kind::ACCEPT;
-use crate::driver::token::kind::CONNECT;
-use crate::driver::token::kind::OPEN;
-use crate::driver::token::kind::READ;
-use crate::driver::token::kind::RECV;
-use crate::driver::token::kind::RECV_DISCARD;
-use crate::driver::token::kind::SEND;
-use crate::driver::token::kind::SOCKET;
-use crate::driver::token::kind::STAT;
-use crate::driver::token::kind::SYNC;
-use crate::driver::token::kind::TIMER;
-use crate::driver::token::kind::WRITE;
+use crate::driver::token::kind::{
+    ACCEPT, CONNECT, OPEN, READ, RECV, RECV_DISCARD, SEND, SOCKET, STAT, SYNC, TIMER, WRITE,
+};
 use crate::driver::token::{SHUTDOWN, Token};
-use fd::AcceptedSlot;
-use ffi::Handle;
-use libc::EAGAIN;
-use libc::ECANCELED;
-use libc::EINTR;
-use libc::ENOBUFS;
-use provided::ProvidedLease;
-use provided::raw::completion::CompletedBuffer;
-use std::fmt::Display;
-use std::fmt::Formatter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError;
@@ -45,7 +32,7 @@ impl Display for DecodeError {
     }
 }
 
-impl StdError for DecodeError {}
+impl error::Error for DecodeError {}
 
 pub(crate) const BUFFER: u32 = 1 << 0;
 pub(crate) const MORE: u32 = 1 << 1;
@@ -85,7 +72,7 @@ impl Cqe {
 }
 
 pub enum RecvEvent<'d> {
-    Data(ProvidedLease<'d>),
+    Data(Lease<'d>),
     Discarded { len: u32 },
     Eof,
     Cancelled,
@@ -200,15 +187,15 @@ impl<'d> Event<'d> {
     pub(crate) fn from_cqe(
         cqe: Cqe,
         reference: DriverRef<'d>,
-        provided: impl FnOnce(u32, u16) -> Option<CompletedBuffer>,
+        received: impl FnOnce(u32, u16) -> Option<Completion>,
     ) -> Result<Self, DecodeError> {
         let result = cqe.result;
         let operation = cqe.kind();
-        let mut provided = cqe
+        let mut received = cqe
             .has_buffer()
-            .then(|| provided(result.max(0) as u32, cqe.bid_raw()))
+            .then(|| received(result.max(0) as u32, cqe.bid_raw()))
             .flatten()
-            .map(|completed| ProvidedLease::from_completion(reference, completed));
+            .map(|completion| Lease::from_completion(reference, completion));
         let token = cqe.token;
         let event = if token == SHUTDOWN {
             Event::Shutdown
@@ -229,7 +216,7 @@ impl<'d> Event<'d> {
                             debug_assert!(false, "RECV data cqe without buffer flag");
                             return Err(DecodeError);
                         }
-                        let lease = provided.take().ok_or(DecodeError)?;
+                        let lease = received.take().ok_or(DecodeError)?;
                         debug_assert_eq!(lease.as_slice().len(), result as usize);
                         RecvEvent::Data(lease)
                     } else if result == 0 {
@@ -276,7 +263,8 @@ impl<'d> Event<'d> {
                 OPEN => Event::Open(
                     token,
                     if result >= 0 {
-                        OpenEvent::Opened(Handle::take(result).into_owned())
+                        // SAFETY: successful OPEN returns a fresh owned descriptor.
+                        OpenEvent::Opened(unsafe { OwnedFd::from_raw_fd(result) })
                     } else {
                         OpenEvent::Failed(-result)
                     },

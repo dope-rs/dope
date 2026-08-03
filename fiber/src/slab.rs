@@ -3,12 +3,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::task::Poll;
 
-use o3::collections::{FixedPinSlab, PinSlab, SlabKey, SlabKeyParts};
+use dope::panic::abort_on_drop_panic;
+use o3::collections::{FixedPinSlab, FixedPinSlabVacantEntry, PinSlab, SlabKey, SlabKeyParts};
 use pin_project::{pin_project, pinned_drop};
 
 use crate::{Context, Fiber};
-use dope::panic::abort_on_drop_panic;
-use o3::collections::FixedPinSlabVacantEntry;
 
 pub struct TaskId<Tag = ()> {
     parts: SlabKeyParts,
@@ -32,7 +31,10 @@ impl<Tag> TaskId<Tag> {
     }
 
     pub fn erase(self) -> ErasedTaskId {
-        ErasedTaskId { parts: self.parts }
+        ErasedTaskId {
+            parts: self.parts,
+            marker: PhantomData,
+        }
     }
 
     pub fn from_erased(id: ErasedTaskId) -> Self {
@@ -46,6 +48,7 @@ impl<Tag> TaskId<Tag> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ErasedTaskId {
     parts: SlabKeyParts,
+    marker: PhantomData<*mut ()>,
 }
 
 impl ErasedTaskId {

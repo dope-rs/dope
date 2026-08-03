@@ -2,17 +2,14 @@ use std::io::{self, Error};
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
-use libc::{sockaddr_in, sockaddr_in6, sockaddr_un};
+use libc::{
+    AF_INET, AF_INET6, in_addr, in6_addr, sockaddr_in, sockaddr_in6, sockaddr_un, socklen_t,
+};
 
 use crate::driver::Driver;
 use crate::io::ffi::Handle;
 use crate::io::pipe::PipeEnds;
 use crate::io::socket::Pod;
-use libc::AF_INET;
-use libc::AF_INET6;
-use libc::in_addr;
-use libc::in6_addr;
-use libc::socklen_t;
 
 pub(crate) trait PlatformAbi {
     fn sockaddr_v4() -> sockaddr_in;

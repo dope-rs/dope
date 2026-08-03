@@ -1,10 +1,9 @@
 use core::array::from_fn;
-use core::hint;
-use core::marker::PhantomData;
-use core::mem::{MaybeUninit, forget};
 use core::pin::{Pin, pin};
 use core::task::Poll;
+use std::process::abort;
 
+use o3::collections::{ArrayVec, ArrayVecIntoIter};
 use pin_project::{pin_project, pinned_drop};
 
 use crate::abi::Fiber;
@@ -13,14 +12,13 @@ use crate::raw::task::queue::IndexQueue;
 use crate::raw::task::{Context, StableTaskSource, TaskContext};
 
 struct BatchTask<'a, 'd> {
-    context: Pin<&'a TaskContext>,
-    _brand: PhantomData<fn(&'d ()) -> &'d ()>,
+    context: Pin<&'a TaskContext<'d>>,
 }
 
 // SAFETY: the pinned BatchCore owns both endpoints. Its pinned Drop unbinds
 // every live task before the task array, queue, or parent brand can disappear.
 unsafe impl<'a, 'd> StableTaskSource<'a, 'd, usize> for BatchTask<'a, 'd> {
-    fn context(self) -> Pin<&'a TaskContext> {
+    fn context(self) -> Pin<&'a TaskContext<'d>> {
         self.context
     }
 }
@@ -48,33 +46,21 @@ impl<F, O> Slot<F, O> {
     {
         match self.project() {
             SlotProj::Live(fiber) => Fiber::poll(fiber, context),
-            // SAFETY: the scheduler only queues initialized, incomplete slots.
-            SlotProj::Vacant | SlotProj::Done(_) => unsafe {
-                debug_assert!(false, "dope: polled an inactive batch slot");
-                hint::unreachable_unchecked()
-            },
+            SlotProj::Vacant | SlotProj::Done(_) => abort(),
         }
     }
 
     fn complete(self: Pin<&mut Self>, output: O) {
         match self.project_replace(Self::Done(output)) {
             SlotProjOwn::Live(_) => {}
-            // SAFETY: only a live slot can produce a ready fiber output.
-            SlotProjOwn::Vacant | SlotProjOwn::Done(_) => unsafe {
-                debug_assert!(false, "dope: completed an inactive batch slot");
-                hint::unreachable_unchecked()
-            },
+            SlotProjOwn::Vacant | SlotProjOwn::Done(_) => abort(),
         }
     }
 
     fn take_output(self: Pin<&mut Self>) -> O {
         match self.project_replace(Self::Vacant) {
             SlotProjOwn::Done(output) => output,
-            // SAFETY: output extraction starts only after every slot completed.
-            SlotProjOwn::Vacant | SlotProjOwn::Live(_) => unsafe {
-                debug_assert!(false, "dope: extracted an incomplete batch slot");
-                hint::unreachable_unchecked()
-            },
+            SlotProjOwn::Vacant | SlotProjOwn::Live(_) => abort(),
         }
     }
 
@@ -90,18 +76,18 @@ pub(crate) enum PollStep {
 }
 
 #[pin_project(PinnedDrop, !Unpin)]
-pub(crate) struct BatchCore<F, O, const N: usize> {
+pub(crate) struct BatchCore<'d, F, O, const N: usize> {
     #[pin]
     slots: [Slot<F, O>; N],
     #[pin]
-    tasks: [TaskContext; N],
+    tasks: [TaskContext<'d>; N],
     #[pin]
     ready: IndexQueue,
     len: usize,
     next_bind: usize,
 }
 
-impl<F, O, const N: usize> BatchCore<F, O, N> {
+impl<'d, F, O, const N: usize> BatchCore<'d, F, O, N> {
     pub(crate) fn new() -> Self {
         Self {
             slots: from_fn(|_| Slot::new()),
@@ -130,10 +116,7 @@ impl<F, O, const N: usize> BatchCore<F, O, N> {
         Ok(())
     }
 
-    pub(crate) fn poll_one<'d>(
-        self: Pin<&mut Self>,
-        mut context: Pin<&mut Context<'_, 'd>>,
-    ) -> PollStep
+    pub(crate) fn poll_one(self: Pin<&mut Self>, mut context: Pin<&mut Context<'_, 'd>>) -> PollStep
     where
         F: Fiber<'d, Output = O>,
     {
@@ -141,13 +124,7 @@ impl<F, O, const N: usize> BatchCore<F, O, N> {
         let (index, wake) = if let Some(index) = this.ready.as_ref().pop() {
             let task =
                 pinned_slice::get(this.tasks.as_ref(), index).unwrap_or_else(|| unreachable!());
-            (
-                index,
-                TaskContext::waker(BatchTask {
-                    context: task,
-                    _brand: PhantomData,
-                }),
-            )
+            (index, TaskContext::waker(BatchTask { context: task }))
         } else if *this.next_bind < *this.len {
             let index = *this.next_bind;
             *this.next_bind += 1;
@@ -155,11 +132,9 @@ impl<F, O, const N: usize> BatchCore<F, O, N> {
             let task =
                 pinned_slice::get(this.tasks.as_ref(), index).unwrap_or_else(|| unreachable!());
             let wake = TaskContext::bind(
-                BatchTask {
-                    context: task,
-                    _brand: PhantomData,
-                },
+                BatchTask { context: task },
                 this.ready.as_ref(),
+                index,
                 index,
                 parent,
             );
@@ -188,22 +163,17 @@ impl<F, O, const N: usize> BatchCore<F, O, N> {
     pub(crate) fn take_output(self: Pin<&mut Self>) -> BatchOutput<O, N> {
         let mut this = self.project();
         let len = *this.len;
-        let mut outputs = from_fn(|_| MaybeUninit::uninit());
-        for (index, output) in outputs[..len].iter_mut().enumerate() {
+        ArrayVec::from_fn(len, |index| {
             let slot =
                 pinned_slice::get_mut(this.slots.as_mut(), index).unwrap_or_else(|| unreachable!());
-            output.write(slot.take_output());
-        }
-        BatchOutput {
-            outputs,
-            index: 0,
-            len,
-        }
+            slot.take_output()
+        })
+        .into_iter()
     }
 }
 
 #[pinned_drop]
-impl<F, O, const N: usize> PinnedDrop for BatchCore<F, O, N> {
+impl<'d, F, O, const N: usize> PinnedDrop for BatchCore<'d, F, O, N> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
         for index in 0..*this.next_bind {
@@ -218,57 +188,4 @@ impl<F, O, const N: usize> PinnedDrop for BatchCore<F, O, N> {
     }
 }
 
-pub struct BatchOutput<O, const N: usize> {
-    outputs: [MaybeUninit<O>; N],
-    index: usize,
-    len: usize,
-}
-
-struct BatchOutputDrop<'a, O> {
-    outputs: &'a mut [MaybeUninit<O>],
-}
-
-impl<O> Drop for BatchOutputDrop<'_, O> {
-    fn drop(&mut self) {
-        while !self.outputs.is_empty() {
-            let outputs = core::mem::take(&mut self.outputs);
-            let (head, tail) = outputs.split_first_mut().unwrap_or_else(|| unreachable!());
-            let mut remaining = Self { outputs: tail };
-            // SAFETY: this guard owns exactly the initialized, unconsumed
-            // suffix. `remaining` owns the tail if dropping `head` unwinds.
-            unsafe { head.assume_init_drop() };
-            self.outputs = core::mem::take(&mut remaining.outputs);
-            forget(remaining);
-        }
-    }
-}
-
-impl<O, const N: usize> Iterator for BatchOutput<O, N> {
-    type Item = O;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index == self.len {
-            return None;
-        }
-        let index = self.index;
-        self.index += 1;
-        // SAFETY: `index < len` identifies one initialized, unread element;
-        // advancing first transfers its sole drop obligation to the caller.
-        Some(unsafe { self.outputs[index].assume_init_read() })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.len - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl<O, const N: usize> ExactSizeIterator for BatchOutput<O, N> {}
-
-impl<O, const N: usize> Drop for BatchOutput<O, N> {
-    fn drop(&mut self) {
-        drop(BatchOutputDrop {
-            outputs: &mut self.outputs[self.index..self.len],
-        });
-    }
-}
+pub type BatchOutput<O, const N: usize> = ArrayVecIntoIter<O, N>;

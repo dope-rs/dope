@@ -1,12 +1,13 @@
 use std::pin::Pin;
 
+use dope_core::backend::{RawSqe, RetainedSqe, StableSqeSource};
+use dope_core::driver::recv::Buffers;
+use dope_core::driver::submission::Submission;
+use dope_core::driver::token::Token;
+
 use crate::DriverContext;
 use crate::manifold::datagram::send::SendOp;
 use crate::manifold::datagram::{RECV_ARM_TAG, Socket};
-use dope_core::backend::{RawSqe, RetainedSqe, StableSqeSource};
-use dope_core::driver::buffers::ProvidedBuffers;
-use dope_core::driver::submission::Submission;
-use dope_core::driver::token::Token;
 
 struct RecvSubmission(RawSqe);
 

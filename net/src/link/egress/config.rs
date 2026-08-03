@@ -51,6 +51,10 @@ impl Config {
     pub(super) fn wire_bytes(self) -> u32 {
         self.bytes
     }
+
+    pub(super) fn wire_blocks(self) -> u32 {
+        self.wire_bytes().div_ceil(o3::buffer::BLOCK_CAPACITY)
+    }
 }
 
 impl Default for Config {

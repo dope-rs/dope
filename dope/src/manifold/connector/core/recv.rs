@@ -177,7 +177,7 @@ where
                     Outcome::Ok => self.as_mut().maybe_close(idx, driver),
                     Outcome::Overrun => {
                         if let Some(slot) = self.as_mut().project().pool.get_mut(idx) {
-                            slot.core.mark_aborted();
+                            slot.mark_aborted();
                         }
                         self.as_mut().close_slot(idx, driver)
                     }

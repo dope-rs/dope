@@ -1,28 +1,17 @@
 use std::io;
 use std::io::Error;
 use std::net::SocketAddr;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+
+use libc::{
+    F_GETFL, F_SETFD, F_SETFL, FD_CLOEXEC, O_NONBLOCK, SO_REUSEADDR, SO_REUSEPORT, SOL_SOCKET,
+    bind, c_int, c_void, fcntl, listen, setsockopt, socket, socklen_t,
+};
 
 use crate::driver::Driver;
 use crate::io::socket::addr::Addr;
 use crate::io::socket::{Domain, Kind, ListenerConfig};
 use crate::platform::raw::abi::PlatformAbi;
-use libc::F_GETFL;
-use libc::F_SETFD;
-use libc::F_SETFL;
-use libc::FD_CLOEXEC;
-use libc::O_NONBLOCK;
-use libc::SO_REUSEADDR;
-use libc::SO_REUSEPORT;
-use libc::SOL_SOCKET;
-use libc::bind;
-use libc::c_int;
-use libc::c_void;
-use libc::fcntl;
-use libc::listen;
-use libc::setsockopt;
-use libc::socket;
-use libc::socklen_t;
 
 #[derive(Debug)]
 pub(crate) struct Handle {
@@ -31,18 +20,11 @@ pub(crate) struct Handle {
 
 impl Handle {
     #[must_use]
-    pub(crate) fn take(fd: RawFd) -> Self {
-        assert!(
-            fd >= 0,
-            "dope invariant violated: io result cannot be negative"
-        );
-        Self {
-            // SAFETY: fd is a fresh descriptor the kernel just handed over,
-            // asserted non-negative; ownership transfers to this Handle.
-            fd: unsafe { OwnedFd::from_raw_fd(fd) },
-        }
+    pub(crate) fn from_owned(fd: OwnedFd) -> Self {
+        Self { fd }
     }
 
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn into_owned(self) -> OwnedFd {
         self.fd
     }
@@ -78,7 +60,8 @@ impl Handle {
         if raw < 0 {
             return Err(Error::last_os_error());
         }
-        let sock = Self::take(raw);
+        // SAFETY: socket returned a fresh owned descriptor.
+        let sock = Self::from_owned(unsafe { OwnedFd::from_raw_fd(raw) });
         sock.set_cloexec()?;
         Driver::set_no_sigpipe(&sock)?;
         Ok(sock)
@@ -129,11 +112,5 @@ impl Handle {
 impl AsRawFd for Handle {
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
-    }
-}
-
-impl IntoRawFd for Handle {
-    fn into_raw_fd(self) -> RawFd {
-        self.fd.into_raw_fd()
     }
 }

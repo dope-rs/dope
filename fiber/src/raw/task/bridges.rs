@@ -25,7 +25,7 @@ unsafe fn ignore_drop(_: *const ()) {}
 
 #[pin_project]
 #[repr(transparent)]
-pub struct FiberFuture<'d, F> {
+pub(crate) struct FiberFuture<'d, F> {
     #[pin]
     fiber: F,
     marker: PhantomData<fn(&'d ()) -> &'d ()>,
@@ -63,7 +63,7 @@ where
 
 #[pin_project]
 #[repr(transparent)]
-pub struct FutureFiber<'d, F> {
+pub(crate) struct FutureFiber<'d, F> {
     #[pin]
     future: F,
     marker: PhantomData<fn(&'d ()) -> &'d ()>,

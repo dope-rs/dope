@@ -10,17 +10,9 @@ pub mod read;
 pub mod source;
 pub mod stat;
 
-use open::OpenDone;
-use read::ReadDone;
-use stat::StatDone;
+use std::io::Error;
+use std::process::abort;
 
-use open::OpenTable;
-use raw::table::CancellationSignal;
-use read::ReadTable;
-use source::Source;
-use stat::StatTable;
-
-use crate::runtime::executor::StorageFactory;
 use dope::DriverContext;
 use dope::manifold::Manifold;
 use dope::manifold::typed::TypedToken;
@@ -30,8 +22,13 @@ use dope_core::driver::route::Route;
 use dope_core::driver::token::{Token, TokenCapacity};
 use dope_core::io::Event;
 use dope_core::io::file::OpenPath;
-use std::io::Error;
-use std::process::abort;
+use open::{OpenDone, OpenTable};
+use raw::table::CancellationSignal;
+use read::{ReadDone, ReadTable};
+use source::Source;
+use stat::{StatDone, StatTable};
+
+use crate::runtime::executor::StorageFactory;
 
 pub enum FileOutcome<R> {
     Done(R),
@@ -227,7 +224,7 @@ impl<'scope, 'd, const ID: u8, const N: usize> Manifold<'d> for FileManifold<'sc
         self.as_ref().get_ref().files.flush_cancellations(driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         let this = self.get_ref().files;
         if !this.opens.is_empty() || !this.reads.is_empty() || !this.stats.is_empty() {
             Idle::Busy

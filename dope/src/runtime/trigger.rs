@@ -1,11 +1,11 @@
 use std::io;
 
-use crate::DriverContext;
 use dope_core::driver::control::ContextControl;
 use dope_core::io::pipe::Pipe;
 use o3::marker::ThreadBound;
 
 use super::signal::SignalState;
+use crate::DriverContext;
 
 /// A cloneable, process-local shutdown notification.
 ///

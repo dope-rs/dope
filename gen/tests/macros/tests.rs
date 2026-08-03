@@ -41,7 +41,7 @@ impl<'d, const ID: u8> Manifold<'d> for Counter<ID> {
         let this = self.as_ref().get_ref();
         this.tick_calls.set(this.tick_calls.get() + 1);
     }
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         let this = self.as_ref().get_ref();
         this.idle_calls.set(this.idle_calls.get() + 1);
         if this.pending {

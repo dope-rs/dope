@@ -17,5 +17,5 @@ o3.workspace = true
 pin-project.workspace = true
 
 [dev-dependencies]
-dope-test.workspace = true
+dope-test = { path = "../test" }
 trybuild = "1"

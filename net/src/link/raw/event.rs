@@ -1,4 +1,23 @@
-use dope_core::driver::token::SlotIndex;
+use dope_core::driver::token::{SlotIndex, Token};
+
+pub struct SendCompletion {
+    target: Token,
+    bytes: usize,
+}
+
+impl SendCompletion {
+    pub(in crate::link) fn new(target: Token, bytes: usize) -> Self {
+        Self { target, bytes }
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub(in crate::link) fn target(&self) -> Token {
+        self.target
+    }
+}
 
 pub enum SocketStep<X> {
     Connecting,
@@ -20,7 +39,13 @@ pub enum DispatchRecv<C> {
 }
 
 pub enum SendOutcome {
-    Sent { idx: SlotIndex, n: usize },
-    Close(SlotIndex),
+    Sent {
+        idx: SlotIndex,
+        completion: SendCompletion,
+    },
+    Close {
+        idx: SlotIndex,
+        completion: SendCompletion,
+    },
     Drop,
 }

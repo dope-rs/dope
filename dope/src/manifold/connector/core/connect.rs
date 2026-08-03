@@ -1,5 +1,6 @@
 use std::pin::Pin;
 
+use dope_core::driver::token::Token;
 use dope_core::io::{ConnectEvent, SocketEvent};
 use dope_net::Transport;
 use dope_net::link::raw::event::{ConnectStep, SocketStep};
@@ -13,7 +14,6 @@ use crate::manifold::connector::app::ConnApp;
 use crate::manifold::connector::source::Dialer;
 use crate::manifold::env::Env;
 use crate::runtime::__private::Deadline;
-use dope_core::driver::token::Token;
 
 pub(super) trait ConnectPhase<'d, const ID: u8, A, S, E>
 where
@@ -104,7 +104,7 @@ where
             }
         }
         self.as_mut().submit_egress(idx, driver);
-        if self.as_ref().project_ref().liveness_timer.is_none()
+        if !self.as_ref().project_ref().liveness_timer.is_armed()
             && let Some(timeout) = self.as_ref().project_ref().app.inbound_idle_timeout()
         {
             self.as_mut().arm_liveness(Deadline::after(now, timeout));

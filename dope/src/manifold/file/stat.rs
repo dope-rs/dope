@@ -1,19 +1,20 @@
-use super::FileOutcome;
-use super::metadata::Metadata;
-use super::raw::StatRequest;
-use super::source::Source;
+use std::io::Error;
+
 use dope::DriverContext;
 use dope_core::backend::Backend;
+use dope_core::driver::control::Quiesce;
+use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::token::kind::STAT;
 use dope_core::driver::token::{KeyTag, Token, TokenCapacity};
 use dope_core::io::StatEvent;
 use dope_core::io::file::OpenPath;
 use dope_core::platform::Platform;
 
+use super::FileOutcome;
+use super::metadata::Metadata;
+use super::raw::StatRequest;
 use super::raw::table::{CancellationSignal, OperationTable};
-use dope_core::driver::control::Quiesce;
-use dope_core::driver::ready::CompletionWaker;
-use std::io::Error;
+use super::source::Source;
 
 pub enum StatDone {
     Metadata(Metadata),
@@ -57,6 +58,9 @@ impl<'d, const ID: u8> StatTable<'d, ID> {
             .map_err(StatRequest::into_source)
     }
 
+    // Returning the owned request makes capacity failure allocation-free and
+    // lets the caller recover its path or descriptor without boxing.
+    #[allow(clippy::result_large_err)]
     fn begin(
         &self,
         request: StatRequest<'d>,

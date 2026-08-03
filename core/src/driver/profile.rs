@@ -6,8 +6,8 @@ pub trait DriverProfile: 'static {
 
     const FIXED_FILE_SLOTS: u32 = 65535;
     const OUTBOUND_RESERVE: u32 = 256;
-    const PROVIDED_BUF_ENTRIES: u16 = 4096;
-    const PROVIDED_BUF_LEN: usize = 4096;
+    const RECV_BUF_ENTRIES: u16 = 4096;
+    const RECV_BUF_LEN: usize = 4096;
 
     const READY_SLOTS: usize = 1024;
 }

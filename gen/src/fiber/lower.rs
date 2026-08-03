@@ -1,14 +1,8 @@
-use proc_macro2::TokenStream;
-use proc_macro2::TokenTree;
-use quote::quote;
 use std::mem::replace;
-use syn::Block;
-use syn::parse::Parse;
-use syn::parse::ParseStream;
-use syn::parse::Parser;
-use syn::parse_quote;
-use syn::parse_quote_spanned;
-use syn::parse2;
+
+use proc_macro2::{TokenStream, TokenTree};
+use quote::quote;
+use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::visit_mut::{
@@ -16,8 +10,8 @@ use syn::visit_mut::{
     visit_trait_item_fn_mut,
 };
 use syn::{
-    Error, Expr, ExprAsync, ExprAwait, ExprClosure, Ident, ImplItemFn, ItemFn, Macro, Pat, Token,
-    TraitItemFn,
+    Block, Error, Expr, ExprAsync, ExprAwait, ExprClosure, Ident, ImplItemFn, ItemFn, Macro, Pat,
+    Token, TraitItemFn, parse_quote, parse_quote_spanned, parse2,
 };
 
 struct Matches {

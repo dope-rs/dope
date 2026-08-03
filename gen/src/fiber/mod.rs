@@ -1,13 +1,13 @@
 mod lower;
 
+use std::mem::replace;
+
 use lower::Lowerer;
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::quote;
-use std::mem::replace;
 use syn::parse::{Parse, ParseStream};
-use syn::parse_quote;
-use syn::{Error, Expr, ExprAsync, ItemFn, Lifetime, ReturnType, Token};
+use syn::{Error, Expr, ExprAsync, ItemFn, Lifetime, ReturnType, Token, parse_quote};
 
 pub(crate) struct Input {
     driver: Lifetime,

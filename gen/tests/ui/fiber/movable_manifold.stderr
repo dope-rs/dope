@@ -66,7 +66,7 @@ error[E0308]: mismatched types
 note: method defined here
   --> $WORKSPACE/dope/src/manifold/mod.rs
    |
-   |     fn idle(self: Pin<&Self>) -> Idle {
+   |     fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle {
    |        ^^^^
    = note: this error originates in the derive macro `dope_gen::Dispatcher` (in Nightly builds, run with -Z macro-backtrace for more info)
 

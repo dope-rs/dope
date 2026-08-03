@@ -22,6 +22,7 @@ pub use peer::{
 pub use rt::{
     Plain, TcpConfig, Wired, drain_tokens, exec, exec_for, file_exec, listener_exec, open_listener,
     quic_exec, tcp_host, throughput_cfg, tok, with_driver, with_session, with_session_for,
+    with_session_timer_slots,
 };
 pub use scenario::{ListenerHost, ManifoldHost, TcpCase};
 
@@ -133,6 +134,7 @@ macro_rules! connector_case {
         max_connections: $max_connections:expr,
         address: $address:expr,
         backoff: $backoff:expr,
+        $(timer_slots: $timer_slots:expr,)?
         env: $env:ty,
         app: $app:expr,
         |$case:ident| $body:block $(,)?
@@ -141,6 +143,11 @@ macro_rules! connector_case {
         let __dope_config = $crate::__private::dope::driver::Config::for_tcp_profile::<
             $crate::__private::dope::runtime::profile::Throughput,
         >($max_connections);
+        $(let __dope_config = {
+            let mut __dope_config = __dope_config;
+            __dope_config.timer_slots = $timer_slots;
+            __dope_config
+        };)?
         $crate::__private::dope::runtime::executor::Executor::new(__dope_config)
             .expect("executor")
             .with_storage($crate::__private::dope_net::link::egress::storage::Storage::default())
@@ -175,6 +182,7 @@ macro_rules! connector_case {
         max_connections: $max_connections:expr,
         address: $address:expr,
         backoff: $backoff:expr,
+        $(timer_slots: $timer_slots:expr,)?
         app: $app:expr,
         |$case:ident| $body:block $(,)?
     ) => {
@@ -183,6 +191,7 @@ macro_rules! connector_case {
             max_connections: $max_connections,
             address: $address,
             backoff: $backoff,
+            $(timer_slots: $timer_slots,)?
             env: $crate::Plain,
             app: $app,
             |$case| $body

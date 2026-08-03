@@ -1,6 +1,5 @@
 use std::env::temp_dir;
-use std::fs::remove_file;
-use std::fs::write;
+use std::fs::{remove_file, write};
 use std::path::Path;
 pub struct TempFile(String);
 

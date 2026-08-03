@@ -20,8 +20,8 @@ impl DriverProfile for Balanced {
     const RING_ENTRIES: u32 = 8192;
     const FIXED_FILE_SLOTS: u32 = 65535;
     const OUTBOUND_RESERVE: u32 = 1024;
-    const PROVIDED_BUF_ENTRIES: u16 = 1024;
-    const PROVIDED_BUF_LEN: usize = 8192;
+    const RECV_BUF_ENTRIES: u16 = 1024;
+    const RECV_BUF_LEN: usize = 8192;
 }
 
 impl RuntimeProfile for Balanced {
@@ -55,7 +55,7 @@ pub struct Throughput;
 
 impl DriverProfile for Throughput {
     const RING_ENTRIES: u32 = 4096;
-    const PROVIDED_BUF_LEN: usize = 64 * 1024;
+    const RECV_BUF_LEN: usize = 64 * 1024;
 }
 
 impl RuntimeProfile for Throughput {

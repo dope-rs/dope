@@ -56,11 +56,6 @@ note: required because it appears within the type `PhantomData<*mut ()>`
    |
    | pub struct PhantomData<T: PointeeSized>;
    |            ^^^^^^^^^^^
-note: required because it appears within the type `o3::collections::slab::key::SlabKeyParts<u32::MAX>`
-  --> $CARGO/o3-$VERSION/src/collections/slab/key.rs
-   |
-   | pub struct SlabKeyParts<const MAX: u32 = { u32::MAX }> {
-   |            ^^^^^^^^^^^^
 note: required because it appears within the type `ErasedTaskId`
   --> src/slab.rs
    |
@@ -84,11 +79,6 @@ note: required because it appears within the type `PhantomData<*mut ()>`
    |
    | pub struct PhantomData<T: PointeeSized>;
    |            ^^^^^^^^^^^
-note: required because it appears within the type `o3::collections::slab::key::SlabKeyParts<u32::MAX>`
-  --> $CARGO/o3-$VERSION/src/collections/slab/key.rs
-   |
-   | pub struct SlabKeyParts<const MAX: u32 = { u32::MAX }> {
-   |            ^^^^^^^^^^^^
 note: required because it appears within the type `ErasedTaskId`
   --> src/slab.rs
    |

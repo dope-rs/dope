@@ -99,7 +99,7 @@ impl<'d> Dispatcher<'d> for Parked {
 
     fn pre_park(self: Pin<&mut Self>, _driver: &mut DriverContext<'_, 'd>) {}
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         Idle::Park(None)
     }
 }

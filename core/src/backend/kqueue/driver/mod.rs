@@ -5,19 +5,18 @@ pub(crate) mod submit;
 pub(crate) mod udata;
 
 use std::io::{self, Error};
-use std::mem::MaybeUninit;
+use std::mem::{MaybeUninit, size_of};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::Duration;
 
 use o3::collections::FixedQueue;
 
 use crate::backend::fixed::FixedSlots;
-use crate::backend::kqueue::provided::ffi::pool::{Backing, ProvidedPool};
+use crate::backend::kqueue::recv_pool::ffi::pool::{Backing, Pool};
 use crate::driver::Config;
 use crate::driver::route::Routes;
 use crate::driver::token::{SHUTDOWN, Token};
 use crate::io::fd::FdSlot;
-use crate::io::ffi::Handle;
 use crate::io::file::RawMetadata;
 use crate::platform::Platform;
 use crate::platform::snapshot::Snapshot;
@@ -53,6 +52,7 @@ const WAKE_IDENT: uintptr_t = uintptr_t::MAX;
 pub(crate) const MAX_DRAIN_PER_FD: usize = 256;
 const PENDING_CAP: usize = 1 << 16;
 const CHANGES_FLUSH_AT: usize = 4096;
+const _: () = assert!(size_of::<Option<OwnedFd>>() <= size_of::<Option<RawFd>>());
 
 pub struct Kqueue {
     pub(crate) kq: OwnedFd,
@@ -64,9 +64,9 @@ pub struct Kqueue {
     write_retry_fd: FixedMap<u32>,
     pub(crate) resume: FixedQueue<Resume>,
     pub(crate) pending: PendingQueue,
-    pub(crate) provided: ProvidedPool,
-    pub(crate) backing: Backing,
-    fd_table: Vec<Option<RawFd>>,
+    pub(crate) recv: Pool,
+    _backing: Backing,
+    fd_table: Vec<Option<OwnedFd>>,
     accept_limit: u32,
     fixed_slots: FixedSlots,
     pub(crate) routes: Routes,
@@ -78,6 +78,7 @@ impl Kqueue {
         if raw < 0 {
             return Err(Error::last_os_error());
         }
+        // SAFETY: kqueue returned a fresh owned descriptor.
         let kq = unsafe { OwnedFd::from_raw_fd(raw) };
         let rc = unsafe { fcntl(kq.as_raw_fd(), F_SETFD, FD_CLOEXEC) };
         if rc < 0 {
@@ -98,8 +99,7 @@ impl Kqueue {
         let fixed_file_slots = cfg.fixed_file_slots.max(cfg.accept_slots).max(1);
         let slots = fixed_file_slots as usize;
         let accept_limit = cfg.accept_slots.min(fixed_file_slots);
-        let backing = Backing::new(cfg.provided.entries, cfg.provided.len as u32);
-        let provided = ProvidedPool::new(&backing, cfg.provided.entries);
+        let (backing, recv) = Backing::allocate(cfg.recv.entries, cfg.recv.len)?;
         Ok((
             Kqueue {
                 kq,
@@ -111,9 +111,9 @@ impl Kqueue {
                 write_retry_fd: FixedMap::with_capacity(slots),
                 resume: FixedQueue::with_capacity(slots),
                 pending: PendingQueue::with_capacity(PENDING_CAP, slots),
-                provided,
-                backing,
-                fd_table: vec![None; slots],
+                recv,
+                _backing: backing,
+                fd_table: std::iter::repeat_with(|| None).take(slots).collect(),
                 accept_limit,
                 fixed_slots: FixedSlots::new(accept_limit, fixed_file_slots)?,
                 routes: Routes::new(),
@@ -130,8 +130,8 @@ impl Kqueue {
             self.reclaim(completion);
         }
         for index in 0..self.fd_table.len() {
-            if let Some(raw) = self.fd_table[index].take() {
-                self.close_raw(raw);
+            if let Some(fd) = self.fd_table[index].take() {
+                self.close_owned(fd);
             }
         }
         self.changes.clear();
@@ -200,11 +200,15 @@ impl Kqueue {
                     self.close_fd(slot);
                 }
             }
-            PendingCompletion::Recv { bid: Some(bid), .. } => self.provided.defer(bid),
+            PendingCompletion::Recv {
+                buffer: Some(buffer),
+                ..
+            } => self.recv.defer(buffer),
             PendingCompletion::Write { ud, result }
                 if ud.with_kind(OPEN) == ud && result >= 0 =>
             {
-                self.close_raw(result);
+                // SAFETY: successful OPEN returns a fresh owned descriptor.
+                self.close_owned(unsafe { OwnedFd::from_raw_fd(result) });
             }
             PendingCompletion::Create {
                 slot: Some(slot), ..
@@ -249,23 +253,26 @@ impl Kqueue {
         debug_assert!(released, "dope: invalid fixed-file range retirement");
     }
 
-    pub(crate) fn register_raw_fd(&mut self, slot: u32, raw: RawFd) -> io::Result<()> {
+    pub(crate) fn register_fd(&mut self, slot: u32, fd: OwnedFd) {
         let idx = slot as usize;
         if idx >= self.fd_table.len() {
-            self.fd_table.resize(idx + 1, None);
+            self.fd_table.resize_with(idx + 1, || None);
         }
         let cell = &mut self.fd_table[idx];
-        if let Some(old) = cell.replace(raw) {
-            self.close_raw(old);
+        if let Some(old) = cell.replace(fd) {
+            self.close_owned(old);
         }
-        Ok(())
     }
 
     pub(crate) fn raw_fd(&self, slot: FdSlot) -> Option<RawFd> {
-        self.fd_table.get(slot.raw() as usize).and_then(|v| *v)
+        self.fd_table
+            .get(slot.raw() as usize)
+            .and_then(Option::as_ref)
+            .map(AsRawFd::as_raw_fd)
     }
 
-    fn close_raw(&mut self, raw: RawFd) {
+    fn close_owned(&mut self, fd: OwnedFd) {
+        let raw = fd.as_raw_fd();
         let mut targets = [SHUTDOWN; 2];
         let mut target_count = 0;
         if let Some(key) = self.read_fd.get(&(raw as usize)).copied()
@@ -284,13 +291,12 @@ impl Kqueue {
         while let Some(completion) = self.pending.pop_extracted(&mut extracted) {
             self.reclaim(completion);
         }
-        drop(Handle::take(raw));
     }
 
     pub(crate) fn close_fd(&mut self, slot: FdSlot) {
         let idx = slot.raw() as usize;
-        if let Some(raw) = self.fd_table.get_mut(idx).and_then(Option::take) {
-            self.close_raw(raw);
+        if let Some(fd) = self.fd_table.get_mut(idx).and_then(Option::take) {
+            self.close_owned(fd);
         }
     }
 

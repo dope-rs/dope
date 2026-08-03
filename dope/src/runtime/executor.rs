@@ -1,7 +1,6 @@
 use std::cell::Cell;
 use std::io;
 use std::pin::{Pin, pin};
-use std::ptr::from_ref;
 
 use dope_core::driver::Scope;
 use dope_core::driver::control::ContextControl;
@@ -9,44 +8,23 @@ use dope_core::driver::ext::DriverExt;
 use o3::cell::{BrandCell, BrandToken};
 
 use super::run::Run;
-use crate::driver::Config;
-use crate::driver::Driver;
+use crate::driver::{Config, Driver};
 use crate::hash::Seed;
 use crate::runtime::__private::RootTask;
 use crate::runtime::dispatcher::{Dispatcher, FinishContext};
 use crate::{DriverContext, DriverRef};
 
-pub trait StorageFactory: 'static {
-    type Output<'d>: 'd;
-
-    fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d>;
-}
+pub use dope_core::driver::StorageFactory;
 
 #[doc(hidden)]
 #[repr(transparent)]
 pub struct ValueStorage<T>(T);
-
-impl StorageFactory for () {
-    type Output<'d> = ();
-
-    fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {}
-}
 
 impl<T: 'static> StorageFactory for ValueStorage<T> {
     type Output<'d> = T;
 
     fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
         self.0
-    }
-}
-
-impl<A: StorageFactory, B: StorageFactory> StorageFactory for (A, B) {
-    type Output<'d> = (A::Output<'d>, B::Output<'d>);
-
-    fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        let first = self.0.build(&mut driver.reborrow());
-        let second = self.1.build(driver);
-        (first, second)
     }
 }
 
@@ -100,22 +78,15 @@ impl<S: StorageFactory> Executor<S> {
             seed,
         } = self;
         let mut driver = pin!(driver);
-        driver.as_mut().scope(move |mut scope| {
-            let storage = storage.build(&mut scope.context());
-            let storage = pin!(storage);
-            let mut core = SessionCore { scope, seed };
-            // SAFETY: `storage` is pinned before this reference is formed and is
-            // dropped only after `f` returns. Both lifetimes are universally
-            // quantified by `enter`, so neither the session nor a storage
-            // reference can escape through `R`. This binds the pinned storage
-            // to the same generative scope as the driver, enabling storage that
-            // contains zero-copy handles into its own pinned pools.
-            let storage = unsafe { Pin::new_unchecked(&*from_ref(storage.as_ref().get_ref())) };
-            f(Session {
-                storage,
-                core: &mut core,
+        driver
+            .as_mut()
+            .scope_with_storage(storage, move |scope, storage| {
+                let mut core = SessionCore { scope, seed };
+                f(Session {
+                    storage,
+                    core: &mut core,
+                })
             })
-        })
     }
 }
 

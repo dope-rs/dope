@@ -1,12 +1,13 @@
 pub mod explicit;
 pub mod health;
 
-use o3::collections::{SlabGeneration, SlabKey, SlabKeyParts};
 use std::time::Instant;
 
-use crate::io::socket::addr::Addr;
 use dope_core::driver::token::SlotIndex;
 use dope_net::Transport;
+use o3::collections::{SlabGeneration, SlabKey, SlabKeyParts};
+
+use crate::io::socket::addr::Addr;
 
 type DialEpoch = SlabGeneration;
 

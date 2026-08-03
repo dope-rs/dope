@@ -10,16 +10,14 @@ use dope::manifold::file::{Files, FilesFactory};
 use dope::manifold::listener::Listener;
 use dope::manifold::listener::application::Application;
 use dope::manifold::listener::config::Config;
-use dope::runtime::executor::ValueStorage;
-use dope::runtime::executor::{Executor, Session};
+use dope::runtime::executor::{Executor, Session, ValueStorage};
 use dope::runtime::profile::Throughput;
 use dope::{DriverContext, DriverRef, driver};
 use dope_core::driver::ext::DriverExt;
 use dope_fiber::net::listener::{ListenerPort, ListenerPortFactory};
 use dope_net::ListenerTransport;
-use dope_net::link::egress::storage::Storage as EgressStorage;
-use dope_net::tcp::Tcp;
-use dope_net::tcp::listener;
+use dope_net::link::egress;
+use dope_net::tcp::{Tcp, listener};
 use dope_net::wire::Wire;
 use dope_net::wire::identity::Identity;
 
@@ -47,6 +45,15 @@ pub fn quic_exec(buf_entries: u32, buf_len: u32) -> Executor<()> {
 
 pub fn with_session<R>(f: impl for<'scope, 'd> FnOnce(Session<'scope, 'd>) -> R) -> R {
     exec().enter(f)
+}
+
+pub fn with_session_timer_slots<R>(
+    timer_slots: usize,
+    f: impl for<'scope, 'd> FnOnce(Session<'scope, 'd>) -> R,
+) -> R {
+    let mut config = throughput_cfg();
+    config.timer_slots = timer_slots;
+    Executor::new(config).expect("executor").enter(f)
 }
 
 pub fn with_session_for<P: DriverProfile, R>(
@@ -81,7 +88,7 @@ pub fn listener_exec<P: DriverProfile>(
 pub fn tcp_host(
     max_connections: usize,
     listener_config: listener::Config,
-) -> (Executor<ValueStorage<EgressStorage>>, TcpConfig) {
+) -> (Executor<ValueStorage<egress::storage::Storage>>, TcpConfig) {
     let cfg = driver::Config::for_tcp_profile::<Throughput>(max_connections);
     let exec = Executor::new(cfg).expect("executor");
     let config = Config {
@@ -92,14 +99,17 @@ pub fn tcp_host(
         transport: listener_config,
         egress: Default::default(),
     };
-    (exec.with_storage(EgressStorage::default()), config)
+    (
+        exec.with_storage(egress::storage::Storage::default()),
+        config,
+    )
 }
 
 pub fn open_listener<'d, const ID: u8, A, E>(
     app: A,
     cfg: Config<E::Transport>,
     hash_builder: State,
-    egress_storage: &'d EgressStorage,
+    egress_storage: &'d egress::storage::Storage,
     driver: &mut DriverContext<'_, 'd>,
 ) -> (Listener<'d, 'd, ID, A, E>, SocketAddr)
 where

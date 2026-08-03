@@ -1,10 +1,9 @@
 use std::cell::Cell;
 use std::io::{self, Error, ErrorKind};
 
-use crate::driver::control::ContextControl;
-
 use super::token::ROUTE_FRAMEWORK;
 use super::{DriverContext, DriverRef};
+use crate::driver::control::ContextControl;
 
 pub(crate) struct Routes {
     live: [u64; 4],

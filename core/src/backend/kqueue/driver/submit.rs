@@ -1,4 +1,4 @@
-use std::os::fd::{IntoRawFd, RawFd};
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
 use super::Kqueue;
 use super::pending::PendingCompletion;
@@ -14,7 +14,6 @@ use crate::driver::token::kind::ACCEPT;
 use crate::driver::token::kind::CONNECT;
 use libc::EBADF;
 use libc::EINPROGRESS;
-use libc::EMFILE;
 use libc::EVFILT_TIMER;
 use libc::EV_DELETE;
 use crate::driver::token::kind::RECV;
@@ -221,21 +220,16 @@ impl Submit for Kqueue {
         if raw < 0 {
             return self.complete_create(ud, -Errno::last().raw(), slot);
         }
-        let sock = Handle::take(raw);
+        // SAFETY: socket returned a fresh owned descriptor.
+        let sock = Handle::from_owned(unsafe { OwnedFd::from_raw_fd(raw) });
         let result = if sock.set_cloexec().is_err()
             || sock.set_nonblocking().is_err()
             || Driver::set_no_sigpipe(&sock).is_err()
         {
             -Errno::last().raw()
         } else {
-            let raw = sock.into_raw_fd();
-            match self.register_raw_fd(slot.raw(), raw) {
-                Ok(()) => 0,
-                Err(_) => {
-                    self.close_raw(raw);
-                    -EMFILE
-                }
-            }
+            self.register_fd(slot.raw(), sock.into_owned());
+            0
         };
         self.complete_create(ud, result, slot)
     }

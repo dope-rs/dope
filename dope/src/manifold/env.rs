@@ -1,8 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::runtime::profile::RuntimeProfile;
 use dope_net::Transport;
 use dope_net::wire::Wire;
+
+use crate::runtime::profile::RuntimeProfile;
 
 pub trait Env {
     type Transport: Transport;

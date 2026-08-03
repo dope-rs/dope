@@ -1,8 +1,8 @@
 use std::ops::{Deref, DerefMut};
+use std::slice::from_raw_parts;
 
 use dope_core::io::socket::msg::{IoVec, MsgHdr};
 use o3::buffer::RollingBuffer;
-use std::slice::from_raw_parts;
 
 #[derive(Clone, Copy)]
 pub struct Sent(u32);
@@ -77,22 +77,21 @@ impl<const CAP: usize> Default for SendBuf<CAP> {
 }
 
 /// Stable storage consulted by the send state machine.
-/// # Safety
-/// Slices stay live, fixed, and immutable past their borrow while storage stays fixed, live, and unmutated.
-pub unsafe trait SendStorage: 'static {
+///
+/// The returned slice is borrowed from `self`, so Rust already prevents the
+/// storage from being mutably accessed while a prepared send borrows it. No
+/// unsafe implementation contract is required.
+pub trait SendStorage: 'static {
     fn as_slice(&self) -> &[u8];
 }
 
-// SAFETY: RollingBuffer owns a fixed boxed allocation and exposes mutation
-// only through exclusive access to SendBuf.
-unsafe impl<const CAP: usize> SendStorage for SendBuf<CAP> {
+impl<const CAP: usize> SendStorage for SendBuf<CAP> {
     fn as_slice(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
-// SAFETY: the returned slice is empty and static.
-unsafe impl SendStorage for () {
+impl SendStorage for () {
     fn as_slice(&self) -> &[u8] {
         &[]
     }
@@ -311,8 +310,9 @@ impl<'a> Prepared<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Vectored;
     use std::mem::size_of;
+
+    use super::Vectored;
 
     #[test]
     fn stable_source_adds_no_vectored_storage() {

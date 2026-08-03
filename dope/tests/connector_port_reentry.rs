@@ -1,78 +1,74 @@
 use std::cell::Cell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use dope::driver::token::{Epoch, SlotIndex, Token};
 use dope::manifold::connector::port::Port;
+use dope_net::link::egress::StaticBytes;
 
-struct DropReentry<'d> {
-    port: Weak<Port<'d, DropReentry<'d>>>,
-    token: Token,
-    entered: Rc<Cell<bool>>,
-    accepted: Rc<Cell<bool>>,
+struct DropNotice {
+    dropped: Rc<Cell<bool>>,
 }
 
-impl AsRef<[u8]> for DropReentry<'_> {
-    fn as_ref(&self) -> &[u8] {
-        b"x"
-    }
-}
-
-impl Drop for DropReentry<'_> {
+impl Drop for DropNotice {
     fn drop(&mut self) {
-        if self.entered.replace(true) {
-            return;
-        }
-        let Some(port) = self.port.upgrade() else {
-            return;
-        };
-        let value = Self {
-            port: self.port.clone(),
-            token: self.token,
-            entered: self.entered.clone(),
-            accepted: self.accepted.clone(),
-        };
-        self.accepted
-            .set(port.try_enqueue(self.token, value).is_ok());
+        self.dropped.set(true);
     }
 }
 
 #[test]
-fn detached_payload_drop_can_enqueue_into_the_new_activation() {
-    dope_test::with_session(|session| {
+fn activation_releases_detached_payload_before_reuse() {
+    dope_test::with_session(|mut session| {
         let current = dope_test::tok(0);
         let replacement = Token::new(
             0,
             SlotIndex::ZERO,
             Epoch::INITIAL.next().expect("replacement epoch"),
         );
-        let ready = session
-            .driver()
+        let mut driver = session.driver_access();
+        let ready = driver
+            .driver_ref()
             .make_ready_slot(current)
             .expect("ready slot");
-        let port = Rc::new(Port::with_capacity(1, session.driver()));
-        assert!(port.activate(current, ready.key()));
+        let port = Rc::new(Port::with_capacity(
+            1,
+            driver.region_token_ref(),
+            driver.driver_ref(),
+        ));
+        assert!(port.activate(driver.region_token(), current, ready.key()));
 
-        let entered = Rc::new(Cell::new(false));
-        let accepted = Rc::new(Cell::new(false));
+        let dropped = Rc::new(Cell::new(false));
         assert!(
             port.try_enqueue(
+                driver.region_token(),
                 current,
-                DropReentry {
-                    port: Rc::downgrade(&port),
-                    token: replacement,
-                    entered: entered.clone(),
-                    accepted: accepted.clone(),
-                },
+                StaticBytes::new(
+                    b"x",
+                    DropNotice {
+                        dropped: dropped.clone(),
+                    },
+                ),
             )
             .is_ok()
         );
 
-        assert!(port.activate(replacement, ready.key()));
-        assert!(entered.get());
-        assert!(accepted.get());
+        assert!(port.activate(driver.region_token(), replacement, ready.key()));
+        assert!(dropped.get());
 
         let mut drained = 0;
-        port.drain_requests(replacement, |value| {
+        assert!(
+            port.try_enqueue(
+                driver.region_token(),
+                replacement,
+                StaticBytes::new(
+                    b"x",
+                    DropNotice {
+                        dropped: dropped.clone(),
+                    },
+                ),
+            )
+            .is_ok()
+        );
+        port.drain_requests(driver.region_token(), replacement, |_, value| {
             drained += 1;
             drop(value);
             Ok(())

@@ -5,15 +5,15 @@ use std::pin::Pin;
 use std::process::abort;
 use std::task::Poll;
 
-use super::already_done;
-use super::{Metadata, Source};
-use crate::raw::task::{CompletionOwner, CompletionRegistrar};
-use crate::{Context, Fiber};
 use dope::driver::ready::CompletionWaker;
 use dope::driver::token::Token;
 use dope::io::file::OpenPath;
 use dope::manifold::file::stat::StatDone;
 use dope::manifold::file::{FileOutcome, Files};
+
+use super::{Metadata, Source, already_done};
+use crate::raw::task::{CompletionOwner, CompletionRegistrar};
+use crate::{Context, Fiber};
 
 enum StatStage<T> {
     Init(T),

@@ -8,10 +8,9 @@ pub(crate) trait SubmissionBackend {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::{Backend, PushError, Sqe, SubmissionBackend};
     use crate::backend::uring::driver::files::Admission;
     use crate::backend::uring::raw::submission::Submission;
-
-    use super::{Backend, PushError, Sqe, SubmissionBackend};
 
     impl SubmissionBackend for Backend {
         fn push(backend: &mut Backend, sqe: Sqe) -> Result<(), PushError> {
@@ -47,12 +46,11 @@ mod kqueue {
         uintptr_t,
     };
 
+    use super::{Backend, PushError, Sqe, SubmissionBackend};
     use crate::backend::kqueue::driver::pending::PendingCompletion;
     use crate::backend::kqueue::driver::read::arm::Arm;
     use crate::backend::kqueue::driver::submit::Submit;
     use crate::backend::kqueue::sqe::SqeInner;
-
-    use super::{Backend, PushError, Sqe, SubmissionBackend};
 
     impl SubmissionBackend for Backend {
         fn push(backend: &mut Backend, sqe: Sqe) -> Result<(), PushError> {

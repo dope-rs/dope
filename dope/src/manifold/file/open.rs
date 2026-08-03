@@ -1,8 +1,5 @@
 use std::os::fd::OwnedFd;
 
-use super::FileOutcome;
-use super::raw::OpenRequest;
-use super::raw::table::{CancellationSignal, OperationTable};
 use dope::DriverContext;
 use dope_core::driver::control::Quiesce;
 use dope_core::driver::ready::CompletionWaker;
@@ -10,6 +7,10 @@ use dope_core::driver::token::kind::OPEN;
 use dope_core::driver::token::{KeyTag, Token, TokenCapacity};
 use dope_core::io::OpenEvent;
 use dope_core::io::file::OpenPath;
+
+use super::FileOutcome;
+use super::raw::OpenRequest;
+use super::raw::table::{CancellationSignal, OperationTable};
 
 pub enum OpenDone {
     Opened(OwnedFd),

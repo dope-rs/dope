@@ -5,11 +5,10 @@ extern crate dope;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use dope::manifold::Outcome;
-use dope::manifold::listener;
 use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::egress::SlotEgress;
 use dope::manifold::listener::state::EgressCtx;
+use dope::manifold::{Outcome, listener};
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
 use dope_test::Gate;
@@ -30,7 +29,7 @@ impl<'d> ApplicationHooks<'d, ReplyApp> for ReplyApp {
     fn chunk<R: RetainBytes>(
         app: Pin<&mut ReplyApp>,
         slot: &mut Slot<'d, Identity, listener::state::State<()>>,
-        mut egress: EgressCtx<'_, '_>,
+        mut egress: EgressCtx<'_, 'd, '_>,
         _chunk: R,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -46,7 +45,7 @@ impl<'d> ApplicationHooks<'d, ReplyApp> for ReplyApp {
     fn close(
         app: Pin<&mut ReplyApp>,
         _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
     ) {
         app.get_mut().gate.hit();
     }

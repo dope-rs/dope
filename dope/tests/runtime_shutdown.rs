@@ -3,12 +3,11 @@ use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use dope::driver;
 use dope::runtime::dispatcher::{Dispatcher, FinishContext, Idle};
 use dope::runtime::executor::Executor;
 use dope::runtime::profile::Throughput;
 use dope::runtime::trigger::ShutdownTrigger;
-use dope::{DriverContext, Event};
+use dope::{DriverContext, Event, driver};
 use dope_fiber::abi::pending::Pending;
 use dope_fiber::extensions::AppSessionExt;
 
@@ -29,7 +28,7 @@ impl<'d> Dispatcher<'d> for CountingDispatcher {
 
     fn pre_park(self: Pin<&mut Self>, _driver: &mut DriverContext<'_, 'd>) {}
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         Idle::Park(None)
     }
 

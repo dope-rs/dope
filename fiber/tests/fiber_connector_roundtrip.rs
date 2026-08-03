@@ -1,6 +1,7 @@
-use dope_test as common;
-
 use std::cell::Cell;
+use std::convert::Infallible;
+use std::error;
+use std::fmt;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::pin::{Pin, pin};
@@ -9,13 +10,14 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 extern crate dope;
-use dope::io::provided::{ProvidedLease, ProvidedView};
+use dope::io::recv::{Lease, View};
 use dope::runtime::dispatcher::Dispatcher;
 use dope::runtime::executor::{Executor, Session};
 use dope::runtime::profile::Balanced;
 use dope_fiber::abi::Fiber;
 use dope_fiber::io::Io;
 use dope_fiber::net::connector::{Connector, ConnectorPort, ConnectorPortFactory};
+use dope_net::link::raw::pool::outbound::OpenFailure;
 use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Sent, Storage, Vectored};
@@ -23,15 +25,113 @@ use dope_net::wire::{
     ReadyOpen, Reclaim, RecvChunk, RecvCredit, RecvCreditGuard, RecvCursor, RecvTarget,
     RuntimeLimits, Wire,
 };
+use dope_test::drive;
 use o3::buffer::{Borrowed, Bytes};
 use o3::cell::BrandCell;
-
-use common::drive;
+use pin_project::pin_project;
 
 const ID: u8 = 0;
 const MAX_CONN: usize = 8;
 
 type Conn<'scope, 'd> = Connector<'scope, 'd, ID, Tcp, Identity>;
+
+#[derive(Debug)]
+struct FailingOpenError;
+
+impl fmt::Display for FailingOpenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("permanent fiber wire open failure")
+    }
+}
+
+impl error::Error for FailingOpenError {}
+
+struct FailingWire;
+
+impl Wire for FailingWire {
+    type Connection<'d> = ();
+    type ConnectionStorage = ();
+    type InitConfig<'d> = ();
+    type RuntimeContext<'d> = ();
+    type Open<'a, 'd>
+        = ReadyOpen<(), ()>
+    where
+        'd: 'a;
+    type OpenError = FailingOpenError;
+    type Recv<'a> = Bytes<Borrowed<'a>>;
+    type RecvBatch<'a> = std::iter::Empty<RecvChunk<'a, Self::Recv<'a>>>;
+    type RetainedRecv<'d> = View<'d>;
+    type SendStorage = ();
+
+    const RECLAIM: Reclaim = Reclaim::OnComplete;
+
+    fn connection_storage(_: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn runtime_context<'d>(_: RuntimeLimits, _: ()) -> std::io::Result<()>
+    where
+        Self: 'd,
+    {
+        Ok(())
+    }
+
+    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Result<Option<Self::Open<'a, 'd>>, Self::OpenError>
+    where
+        'd: 'a,
+    {
+        Err(FailingOpenError)
+    }
+
+    fn process_recv<'a, 'd>(
+        _: &mut Self::Connection<'d>,
+        _: &mut Self::RuntimeContext<'d>,
+        _: &'a mut [u8],
+    ) -> Self::RecvBatch<'a> {
+        std::iter::empty()
+    }
+
+    fn process_retained_recv<'a, 'd>(
+        _: &mut Self::Connection<'d>,
+        _: &mut Self::RuntimeContext<'d>,
+        _: Lease<'a>,
+    ) -> Option<Self::RetainedRecv<'a>> {
+        None
+    }
+
+    fn prepare_send<'a, 'd>(
+        _: &'a mut Self::Connection<'d>,
+        _: Storage<'a, Self::SendStorage>,
+        plain: Plain<'a>,
+    ) -> Prepared<'a> {
+        let len = plain.len();
+        Prepared::input(plain, len)
+    }
+
+    fn prepare_send_vectored<'a, 'd>(
+        _: &'a mut Self::Connection<'d>,
+        _: Storage<'a, Self::SendStorage>,
+        plain: Vectored<'a>,
+    ) -> Prepared<'a> {
+        let len = plain.bytes();
+        Prepared::vectored(plain, len)
+    }
+
+    fn after_send<'a, 'd>(
+        _: &'a mut Self::Connection<'d>,
+        send: Storage<'a, Self::SendStorage>,
+        _: Sent,
+    ) -> Prepared<'a> {
+        send.empty(0)
+    }
+
+    fn flush_pending<'a, 'd>(
+        _: &'a mut Self::Connection<'d>,
+        send: Storage<'a, Self::SendStorage>,
+    ) -> Prepared<'a> {
+        send.empty(0)
+    }
+}
 
 struct RecvGatedWire {
     established: bool,
@@ -39,7 +139,7 @@ struct RecvGatedWire {
 }
 
 struct CreditView<'d> {
-    view: ProvidedView<'d>,
+    view: View<'d>,
     credit: Option<RecvCreditGuard<'d>>,
 }
 
@@ -66,6 +166,7 @@ impl Wire for RecvGatedWire {
         = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
     where
         'd: 'a;
+    type OpenError = Infallible;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type RecvBatch<'a> = std::option::IntoIter<RecvChunk<'a, Self::Recv<'a>>>;
     type RetainedRecv<'d> = CreditView<'d>;
@@ -88,17 +189,19 @@ impl Wire for RecvGatedWire {
         Ok(config)
     }
 
-    fn prepare_open<'a, 'd>(runtime: &'a mut Self::RuntimeContext<'d>) -> Option<Self::Open<'a, 'd>>
+    fn prepare_open<'a, 'd>(
+        runtime: &'a mut Self::RuntimeContext<'d>,
+    ) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
     where
         'd: 'a,
     {
-        Some(ReadyOpen::new(
+        Ok(Some(ReadyOpen::new(
             Self {
                 established: false,
                 attempts: runtime.clone(),
             },
             SendBuf::new(),
-        ))
+        )))
     }
 
     fn holds_plain<'d>(_: &Self::Connection<'d>, send: &Self::SendStorage) -> bool {
@@ -121,7 +224,7 @@ impl Wire for RecvGatedWire {
     fn process_retained_recv<'a, 'd>(
         wire: &mut Self::Connection<'d>,
         _: &mut Self::RuntimeContext<'d>,
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>> {
         if !wire.established {
             wire.established = true;
@@ -207,6 +310,16 @@ struct App<'d, 'scope> {
     connector: Conn<'scope, 'd>,
 }
 
+type FailingConn<'scope, 'd> = Connector<'scope, 'd, ID, Tcp, FailingWire>;
+
+#[pin_project::pin_project]
+#[derive(dope_gen::Dispatcher)]
+struct FailingApp<'d, 'scope> {
+    #[pin]
+    #[manifold]
+    connector: FailingConn<'scope, 'd>,
+}
+
 type GatedConn<'scope, 'd> = Connector<'scope, 'd, ID, Tcp, RecvGatedWire>;
 
 #[pin_project::pin_project]
@@ -217,7 +330,9 @@ struct GatedApp<'d, 'scope> {
     connector: GatedConn<'scope, 'd>,
 }
 
+#[pin_project]
 struct PollOnce<F> {
+    #[pin]
     fiber: Option<F>,
 }
 
@@ -237,11 +352,11 @@ where
         self: std::pin::Pin<&mut Self>,
         cx: std::pin::Pin<&mut dope_fiber::raw::task::Context<'_, 'd>>,
     ) -> std::task::Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-        if let Some(fiber) = &mut this.fiber {
-            let _ = Fiber::poll(unsafe { std::pin::Pin::new_unchecked(fiber) }, cx);
+        let mut this = self.project();
+        if let Some(fiber) = this.fiber.as_mut().as_pin_mut() {
+            let _ = Fiber::poll(fiber, cx);
         }
-        this.fiber = None;
+        this.fiber.set(None);
         std::task::Poll::Ready(())
     }
 }
@@ -362,6 +477,44 @@ fn fiber_connector_roundtrip() {
 }
 
 #[test]
+fn fatal_wire_open_wakes_the_exact_connect_waiter_with_its_owned_error() {
+    let address: SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+    connector_exec::<FailingWire>(1).enter(|mut sess| {
+        let (storage, mut driver) = sess.storage_and_driver();
+        let connector: FailingConn<'_, '_> = storage
+            .connector_with_wire((), &mut driver)
+            .expect("connector");
+        let app = pin!(BrandCell::new(FailingApp { connector }));
+        let handle = sess.storage().handle();
+
+        let result = drive(
+            &mut sess,
+            app.as_ref(),
+            dope_gen::fiber!('_ => async move {
+                handle.connect(address, Default::default()).await
+            }),
+        );
+        let error = match result {
+            Ok(_) => panic!("wire open failure unexpectedly connected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "wire open failed: permanent fiber wire open failure"
+        );
+        assert!(
+            error
+                .get_ref()
+                .and_then(|source| { source.downcast_ref::<OpenFailure<FailingOpenError>>() })
+                .is_some(),
+            "fiber must retain the owned typed open failure as the io::Error source"
+        );
+    });
+}
+
+#[test]
 fn connector_parks_plaintext_until_wire_receives() {
     let response: &'static [u8] = b"PONG-gated";
     let (addr, server) = spawn_gated_reply_server(response);
@@ -395,7 +548,7 @@ fn connector_receive_credit_resumes_deferred_multishot_buffers() {
 
     let (addr, server) = spawn_gated_reply_server(&RESPONSE);
     let attempts = Rc::new(Cell::new(0));
-    let cfg = dope::driver::Config::for_tcp_profile::<Balanced>(MAX_CONN).with_provided(1024, 64);
+    let cfg = dope::driver::Config::for_tcp_profile::<Balanced>(MAX_CONN).with_recv(1024, 64);
     let exec = Executor::new(cfg).expect("executor").with_storage_factory(
         ConnectorPort::<Tcp, RecvGatedWire>::factory(MAX_CONN).expect("connector capacity"),
     );

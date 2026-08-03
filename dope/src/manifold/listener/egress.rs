@@ -1,33 +1,19 @@
 use std::pin::Pin;
 
+use dope_core::driver::token::{SlotIndex, Token};
+use dope_net::link::egress::queue::Queue;
+use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, SendBuffer, Slot};
+use dope_net::wire::{Reclaim, Wire};
 use o3::buffer::{Pooled, Shared};
 
 use super::Listener;
 use super::application::{Application, ApplicationHooks};
 use super::idle::IdlePhase;
-use super::raw::submission::Submission;
-use super::send::SendSource;
-use super::state::State;
-use super::state::WriteBuf;
+use super::send::DirectFlight;
+use super::state::{State, WriteBuf, WriteStorage};
 use crate::DriverContext;
 use crate::manifold::env::Env;
 use crate::runtime::profile::RuntimeProfile;
-use dope_core::driver::token::{SlotIndex, Token};
-use dope_core::io::socket::msg::IoVec;
-use dope_net::link::egress::queue::Queue;
-use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, Slot};
-use dope_net::wire::send::{Plain, StablePlainSource};
-use dope_net::wire::{Reclaim, Wire};
-
-struct PlainSource<'a>(&'a [u8]);
-
-// SAFETY: PlainSource is private and constructed only from the listener's
-// per-slot boxed arena. Send state prevents reuse until completion.
-unsafe impl<'a> StablePlainSource<'a> for PlainSource<'a> {
-    fn into_slice(self) -> &'a [u8] {
-        self.0
-    }
-}
 
 pub(super) enum Egress {
     Clear,
@@ -39,40 +25,55 @@ pub(super) enum Egress {
 }
 
 pub(super) trait SlotFlow<'d> {
-    fn egress(&self, queue: &Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>) -> Egress;
+    fn egress(&self, queue: &Queue<'_, 'd, '_, 32, dope_net::link::slot::SendBuffer>) -> Egress;
     fn egress_with_deferred(&self, deferred: bool) -> Egress;
-    fn owes_egress(&self, queue: &Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>) -> bool;
+    fn owes_egress(&self, queue: &Queue<'_, 'd, '_, 32, dope_net::link::slot::SendBuffer>) -> bool;
     fn after_handoff(
         &mut self,
-        queue: &Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>,
+        queue: &Queue<'_, 'd, '_, 32, dope_net::link::slot::SendBuffer>,
     ) -> (bool, bool);
     fn adopt_deferred_close(&mut self);
     fn accept_write(&mut self, write_buf_cap: usize, written: usize) -> bool;
-    fn hand_plain(&mut self, plain: &[u8], ud: Token, driver: &mut DriverContext<'_, 'd>);
-    fn hand_split(&mut self, iovs: [IoVec; 2], ud: Token, driver: &mut DriverContext<'_, 'd>);
+    fn hand_plain(
+        &mut self,
+        flight: Pin<&mut DirectFlight>,
+        len: usize,
+        ud: Token,
+        driver: &mut DriverContext<'_, 'd>,
+    );
+    fn hand_split(
+        &mut self,
+        flight: Pin<&mut DirectFlight>,
+        ud: Token,
+        driver: &mut DriverContext<'_, 'd>,
+    );
     fn submit_split(
         &mut self,
-        queue: &mut Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>,
-        write_buf: &mut [u8],
         hdr_written: usize,
-        source: SendSource,
+        write_buf: WriteBuf<'_, 'd, '_>,
+        source: SendBuffer,
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> bool;
-    fn resume_send(&mut self, write_buf: &[u8], ud: Token, driver: &mut DriverContext<'_, 'd>);
+    fn resume_send(
+        &mut self,
+        flight: Pin<&mut DirectFlight>,
+        ud: Token,
+        driver: &mut DriverContext<'_, 'd>,
+    );
 }
 
 pub trait SlotEgress<'d> {
     fn submit_buffered(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         written: usize,
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> bool;
     fn submit_split_static(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         hdr_written: usize,
         body: &'static [u8],
         ud: Token,
@@ -80,7 +81,7 @@ pub trait SlotEgress<'d> {
     ) -> bool;
     fn submit_split_shared(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         hdr_written: usize,
         body: Shared,
         ud: Token,
@@ -88,7 +89,7 @@ pub trait SlotEgress<'d> {
     ) -> bool;
     fn submit_split_pooled(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         hdr_written: usize,
         body: Pooled,
         ud: Token,
@@ -97,23 +98,23 @@ pub trait SlotEgress<'d> {
 }
 
 impl<'d, W: Wire, C: Default + 'static> SlotFlow<'d> for Slot<'d, W, State<C>> {
-    fn egress(&self, queue: &Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>) -> Egress {
+    fn egress(&self, queue: &Queue<'_, 'd, '_, 32, dope_net::link::slot::SendBuffer>) -> Egress {
         self.egress_with_deferred(!self.state.deferred.is_idle(queue))
     }
 
     fn egress_with_deferred(&self, deferred: bool) -> Egress {
-        if self.core.is_send_inflight() {
+        if self.is_send_inflight() {
             Egress::Inflight
         } else if self.state.send.consumed_plain < self.state.send.total_plain {
             if matches!(W::RECLAIM, Reclaim::OnSubmit)
                 && self.state.send.inflight_plain == 0
-                && !W::holds_plain(&self.wire, &self.send)
+                && !self.holds_plain()
             {
                 Egress::Stalled
             } else {
                 Egress::Plain
             }
-        } else if W::holds_plain(&self.wire, &self.send) {
+        } else if self.holds_plain() {
             Egress::Held
         } else if deferred {
             Egress::Deferred
@@ -122,182 +123,180 @@ impl<'d, W: Wire, C: Default + 'static> SlotFlow<'d> for Slot<'d, W, State<C>> {
         }
     }
 
-    fn owes_egress(&self, queue: &Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>) -> bool {
+    fn owes_egress(&self, queue: &Queue<'_, 'd, '_, 32, dope_net::link::slot::SendBuffer>) -> bool {
         !matches!(self.egress(queue), Egress::Clear)
     }
 
     fn after_handoff(
         &mut self,
-        queue: &Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>,
+        queue: &Queue<'_, 'd, '_, 32, dope_net::link::slot::SendBuffer>,
     ) -> (bool, bool) {
-        let armed = self.core.is_send_inflight();
+        let armed = self.is_send_inflight();
         let restage = matches!(self.egress(queue), Egress::Plain | Egress::Deferred);
         (armed, restage)
     }
 
     fn adopt_deferred_close(&mut self) {
         if self.state.deferred.close_after() {
-            self.core.set_close_after();
+            self.set_close_after();
         }
     }
 
     fn accept_write(&mut self, write_buf_cap: usize, written: usize) -> bool {
         if written > write_buf_cap {
-            self.core.set_close_after();
+            self.set_close_after();
             return false;
         }
         self.state.send.write_buf_len = written;
         true
     }
 
-    fn hand_plain(&mut self, plain: &[u8], ud: Token, driver: &mut DriverContext<'_, 'd>) {
-        let was_inflight = self.core.is_send_inflight();
-        let consumed = self.submit_plain(driver, Plain::from_stable(PlainSource(plain)), ud);
-        let armed = self.core.is_send_inflight() && !was_inflight;
+    fn hand_plain(
+        &mut self,
+        mut flight: Pin<&mut DirectFlight>,
+        len: usize,
+        ud: Token,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
+        let was_inflight = self.is_send_inflight();
+        let consumed = self.submit_plain(driver, flight.as_mut().plain(len), ud);
+        let armed = self.is_send_inflight() && !was_inflight;
         self.state.send.record_handoff(consumed, armed);
     }
 
-    fn hand_split(&mut self, iovs: [IoVec; 2], ud: Token, driver: &mut DriverContext<'_, 'd>) {
-        let was_inflight = self.core.is_send_inflight();
-        let consumed = Submission::new(self, &iovs, ud, driver).submit();
-        let armed = self.core.is_send_inflight() && !was_inflight;
+    fn hand_split(
+        &mut self,
+        mut flight: Pin<&mut DirectFlight>,
+        ud: Token,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
+        let was_inflight = self.is_send_inflight();
+        let consumed = self.submit_vectored(
+            flight.as_mut().vectored(
+                self.state.send.consumed_plain,
+                self.state.send.write_buf_len,
+            ),
+            ud,
+            driver,
+        );
+        let armed = self.is_send_inflight() && !was_inflight;
         self.state.send.record_handoff(consumed, armed);
     }
 
     fn submit_split(
         &mut self,
-        queue: &mut Queue<'_, '_, 32, dope_net::link::slot::SendBuffer>,
-        write_buf: &mut [u8],
         hdr_written: usize,
-        source: SendSource,
+        write_buf: WriteBuf<'_, 'd, '_>,
+        source: SendBuffer,
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> bool {
-        if self.owes_egress(queue) {
-            let n = hdr_written.min(write_buf.len());
-            let body = source.into_buffer();
-            let staged = self
-                .state
-                .deferred
-                .stage_copy_pair(queue, &write_buf[..n], body, false);
+        let (storage, mut queue) = write_buf.into_parts();
+        if self.owes_egress(&queue) {
+            let bytes = storage.as_slice();
+            let n = hdr_written.min(bytes.len());
+            let body = (!source.as_ref().is_empty()).then_some(source);
+            let staged = self.state.deferred.stage_copy_pair(
+                driver.region_token(),
+                &mut queue,
+                &bytes[..n],
+                body,
+                false,
+            );
             if !staged {
-                self.core.set_close_after();
+                self.set_close_after();
             }
             return staged;
         }
-        if !self.accept_write(write_buf.len(), hdr_written) {
+        let WriteStorage::Direct(mut flight) = storage else {
+            unreachable!("direct listener send must retain its write buffer")
+        };
+        if !self.accept_write(flight.as_ref().header().len(), hdr_written) {
             return false;
         }
-        self.state
-            .send
-            .begin(hdr_written + source.body().len(), source);
-        self.resume_send(write_buf, ud, driver);
+        let total = hdr_written + source.as_ref().len();
+        self.state.send.begin(total);
+        flight.as_mut().begin(Some(source));
+        self.resume_send(flight, ud, driver);
         true
     }
 
-    fn resume_send(&mut self, write_buf: &[u8], ud: Token, driver: &mut DriverContext<'_, 'd>) {
-        let sent = self.state.send.consumed_plain;
-        let hdr_len = self.state.send.write_buf_len;
-        let hdr_rem: &[u8] = if sent < hdr_len {
-            &write_buf[sent..hdr_len]
-        } else {
-            &[]
-        };
-        let body = self.state.send.source.body();
-        let body_off = sent.saturating_sub(hdr_len);
-        let body_rem: &[u8] = if body_off < body.len() {
-            &body[body_off..]
-        } else {
-            &[]
-        };
-        let iovs = [IoVec::from_slice(hdr_rem), IoVec::from_slice(body_rem)];
-        self.hand_split(iovs, ud, driver);
+    fn resume_send(
+        &mut self,
+        flight: Pin<&mut DirectFlight>,
+        ud: Token,
+        driver: &mut DriverContext<'_, 'd>,
+    ) {
+        self.hand_split(flight, ud, driver);
     }
 }
 
 impl<'d, W: Wire, C: Default + 'static> SlotEgress<'d> for Slot<'d, W, State<C>> {
     fn submit_buffered(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         written: usize,
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> bool {
-        let WriteBuf { bytes, mut egress } = write_buf;
+        let (storage, mut egress) = write_buf.into_parts();
         if self.owes_egress(&egress) {
+            let bytes = storage.as_slice();
             let n = written.min(bytes.len());
-            let staged = self
-                .state
-                .deferred
-                .stage_copy(&mut egress, &bytes[..n], false);
+            let staged = self.state.deferred.stage_copy(
+                driver.region_token(),
+                &mut egress,
+                &bytes[..n],
+                false,
+            );
             if !staged {
-                self.core.set_close_after();
+                self.set_close_after();
             }
             return staged;
         }
-        if !self.accept_write(bytes.len(), written) {
+        let WriteStorage::Direct(mut flight) = storage else {
+            unreachable!("direct listener send must retain its write buffer")
+        };
+        if !self.accept_write(flight.as_ref().header().len(), written) {
             return false;
         }
-        self.state.send.begin(written, SendSource::None);
-        self.hand_plain(&bytes[..written], ud, driver);
+        self.state.send.begin(written);
+        flight.as_mut().begin(None);
+        self.hand_plain(flight, written, ud, driver);
         true
     }
 
     fn submit_split_static(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         hdr_written: usize,
         body: &'static [u8],
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> bool {
-        let WriteBuf { bytes, mut egress } = write_buf;
-        self.submit_split(
-            &mut egress,
-            bytes,
-            hdr_written,
-            SendSource::Static(body),
-            ud,
-            driver,
-        )
+        self.submit_split(hdr_written, write_buf, SendBuffer::Static(body), ud, driver)
     }
 
     fn submit_split_shared(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         hdr_written: usize,
         body: Shared,
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> bool {
-        let WriteBuf { bytes, mut egress } = write_buf;
-        self.submit_split(
-            &mut egress,
-            bytes,
-            hdr_written,
-            SendSource::Shared(body),
-            ud,
-            driver,
-        )
+        self.submit_split(hdr_written, write_buf, body.into(), ud, driver)
     }
 
     fn submit_split_pooled(
         &mut self,
-        write_buf: WriteBuf<'_, '_>,
+        write_buf: WriteBuf<'_, 'd, '_>,
         hdr_written: usize,
         body: Pooled,
         ud: Token,
         driver: &mut DriverContext<'_, 'd>,
     ) -> bool {
-        let WriteBuf { bytes, mut egress } = write_buf;
-        self.submit_split(
-            &mut egress,
-            bytes,
-            hdr_written,
-            SendSource::Pooled(body),
-            ud,
-            driver,
-        )
+        self.submit_split(hdr_written, write_buf, body.into(), ud, driver)
     }
 }
 
@@ -352,15 +351,15 @@ where
                 return;
             };
             let send_ud = slot.token();
-            if slot.core.is_closing() {
+            if slot.is_closing() {
                 (false, false)
             } else {
                 let mut egress = this.egress_arena.queue_for(idx.raw() as usize);
                 match slot.egress(&egress) {
                     Egress::Inflight => (false, false),
                     Egress::Plain => {
-                        let write_buf = this.aux.write_buf_raw(slot);
-                        slot.resume_send(write_buf, send_ud, driver);
+                        let flight = this.aux.direct_flight(idx);
+                        slot.resume_send(flight, send_ud, driver);
                         slot.after_handoff(&egress)
                     }
                     Egress::Stalled | Egress::Held | Egress::Clear => {
@@ -370,24 +369,7 @@ where
                     }
                     Egress::Deferred => {
                         slot.adopt_deferred_close();
-                        let vectored = slot
-                            .state
-                            .deferred
-                            .prepare_send(&mut egress, u32::MAX as usize);
-                        let consumed = Slot::<A::Wire, State<A::Conn>>::submit_wire_vectored(
-                            &mut slot.core,
-                            &mut slot.wire,
-                            &mut slot.send,
-                            vectored,
-                            send_ud,
-                            driver,
-                        );
-                        if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnSubmit)
-                            && !slot.state.deferred.try_ack(&mut egress, consumed)
-                        {
-                            slot.core.begin_close();
-                            return;
-                        }
+                        slot.submit_egress(&mut egress, send_ud, driver);
                         slot.after_handoff(&egress)
                     }
                 }
@@ -424,8 +406,8 @@ where
                 return;
             };
             let defer = A::Hooks::defer_close(this.app, slot);
-            if slot.core.is_closing() {
-                if slot.core.should_close(defer) {
+            if slot.is_closing() {
+                if slot.should_close(defer) {
                     Step::Close
                 } else {
                     Step::Idle
@@ -435,7 +417,7 @@ where
                 match slot.egress_with_deferred(deferred) {
                     Egress::Plain | Egress::Deferred => Step::Retry,
                     Egress::Inflight | Egress::Stalled | Egress::Held => Step::Idle,
-                    Egress::Clear if slot.core.should_close(defer) => Step::Close,
+                    Egress::Clear if slot.should_close(defer) => Step::Close,
                     Egress::Clear => Step::Idle,
                 }
             }

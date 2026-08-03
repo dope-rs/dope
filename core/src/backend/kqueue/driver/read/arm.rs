@@ -176,7 +176,7 @@ impl Arm for Kqueue {
                 ud,
                 result: -EBADF,
                 more: false,
-                bid: None,
+                buffer: None,
             });
             return true;
         };
@@ -253,7 +253,7 @@ impl Arm for Kqueue {
                 ud,
                 result: -ECANCELED,
                 more: false,
-                bid: None,
+                buffer: None,
             });
         }
         if let Some(slot) = self
@@ -270,7 +270,7 @@ impl Arm for Kqueue {
                 ud,
                 result: -ECANCELED,
                 more: false,
-                bid: None,
+                buffer: None,
             });
         }
         true

@@ -1,15 +1,14 @@
 use std::net::SocketAddr;
 use std::num::NonZeroU16;
+use std::slice::from_ref;
 
-use o3::buffer::Lease;
-
-use crate::manifold::datagram::Packet;
 use dope_core::backend::Gso;
 use dope_core::io::socket::addr::InetAddr;
 use dope_core::io::socket::msg::{IoVec, MsgHdr};
+use o3::buffer::Lease;
 
 use crate::DriverContext;
-use std::slice::from_ref;
+use crate::manifold::datagram::Packet;
 
 pub(super) enum Payload<'d> {
     Owned(Vec<u8>),

@@ -3,8 +3,6 @@ use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::option::StreamOption;
-use crate::{ListenerTransport, Transport};
 use dope_core::backend::Sqe;
 use dope_core::driver::DriverContext;
 use dope_core::driver::bootstrap::Bootstrap;
@@ -12,6 +10,9 @@ use dope_core::driver::submission::Submission;
 use dope_core::io::fd::Fd;
 use dope_core::io::socket::addr::Addr;
 use dope_core::io::socket::{Domain, Kind, ListenerConfig};
+
+use crate::option::StreamOption;
+use crate::{ListenerTransport, Transport};
 
 pub mod listener {
     use std::time::Duration;

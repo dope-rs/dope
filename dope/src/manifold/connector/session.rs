@@ -7,8 +7,10 @@ use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::Token;
 use dope_core::io::Event;
 use dope_net::Transport;
+use dope_net::link::egress;
+use dope_net::link::egress::StableBytes;
 use dope_net::link::egress::queue::Queue;
-use dope_net::link::egress::storage::Storage as EgressStorage;
+use dope_net::link::raw::pool::outbound::OpenFailure;
 use dope_net::link::slot::Slot;
 use dope_net::tcp::Tcp;
 use dope_net::wire::Wire;
@@ -37,14 +39,14 @@ const INGRESS_INITIAL_CAP: usize = 16 * 1024;
 pub struct Ctx<'a, 'pool, 'd, N: Session<'d>> {
     pub conn_id: Token,
     pub state: &'a mut N::ConnState,
-    pub sink: Queue<'a, 'pool, IOV_CAP, N::Send>,
+    pub sink: Queue<'a, 'd, 'pool, IOV_CAP, N::Send>,
     pub region: &'a mut RegionToken<'d>,
 }
 
 pub trait Session<'d>: Sized {
     type Codec: Codec;
     type ConnState: Lifecycle;
-    type Send: AsRef<[u8]>;
+    type Send: StableBytes;
 
     fn codec(&self) -> &Self::Codec;
 
@@ -58,6 +60,10 @@ pub trait Session<'d>: Sized {
 
     fn disconnect(&mut self, context: &mut Ctx<'_, '_, 'd, Self>);
 
+    fn open_failed(&mut self, key: DialKey, error: &(dyn std::error::Error + 'static)) {
+        eprintln!("dope: connector wire open failed for {key:?}: {error}");
+    }
+
     fn flush_trailer(&mut self, context: &mut Ctx<'_, '_, 'd, Self>) {
         let _ = context;
     }
@@ -69,7 +75,7 @@ pub trait Session<'d>: Sized {
     fn drain_requests(
         &self,
         token: Token,
-        push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        push: impl FnMut(&mut RegionToken<'d>, Self::Send) -> Result<(), Self::Send>,
         region: &mut RegionToken<'d>,
     ) -> Requests {
         let _ = (token, push, region);
@@ -96,9 +102,12 @@ pub trait Session<'d>: Sized {
         state.is_drained()
     }
 
-    fn pre_park(&mut self) {}
+    fn pre_park(&mut self, region: &mut RegionToken<'d>) {
+        let _ = region;
+    }
 
-    fn idle(&self) -> Idle {
+    fn idle(&self, region: &RegionToken<'d>) -> Idle {
+        let _ = region;
         Idle::Park(None)
     }
 
@@ -168,7 +177,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
     fn chunk<'pool, R: RetainBytes>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         chunk: R,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -204,7 +213,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         &mut self,
         _key: DialKey,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let conn_id = slot.token();
@@ -219,10 +228,19 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
         });
     }
 
+    fn open_failed(
+        &mut self,
+        key: DialKey,
+        error: OpenFailure<W::OpenError>,
+        _driver: &mut DriverContext<'_, '_>,
+    ) {
+        self.session.open_failed(key, &error);
+    }
+
     fn before_send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let conn_id = slot.token();
@@ -238,7 +256,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
     fn send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        _egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        _egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         sent: usize,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -248,7 +266,7 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
     fn close<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let conn_id = slot.token();
@@ -305,19 +323,19 @@ impl<'d, N: Session<'d>, W: Wire> ConnApp<'d> for SessionApp<'d, N, W> {
     fn drain_requests(
         &self,
         token: Token,
-        push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        push: impl FnMut(&mut RegionToken<'d>, Self::Send) -> Result<(), Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
         self.session
             .drain_requests(token, push, driver.region_token())
     }
 
-    fn pre_park(&mut self) {
-        self.session.pre_park();
+    fn pre_park(&mut self, region: &mut RegionToken<'d>) {
+        self.session.pre_park(region);
     }
 
-    fn idle(&self) -> Idle {
-        self.session.idle()
+    fn idle(&self, region: &RegionToken<'d>) -> Idle {
+        self.session.idle(region)
     }
 
     fn inbound_idle_timeout(&self) -> Option<Duration> {
@@ -352,7 +370,7 @@ where
         session: N,
         upstreams: S,
         max_connections: usize,
-        egress_storage: &'d EgressStorage,
+        egress_storage: &'d egress::storage::Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
@@ -367,7 +385,7 @@ where
         upstreams: S,
         max_connections: usize,
         wire_config: <E::Wire as Wire>::InitConfig<'d>,
-        egress_storage: &'d EgressStorage,
+        egress_storage: &'d egress::storage::Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self> {
         Core::new_with_wire_config(
@@ -419,8 +437,8 @@ where
         self.project().core.activate(target.into_inner(), driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
-        self.project_ref().core.idle()
+    fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle {
+        self.project_ref().core.idle(region)
     }
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {

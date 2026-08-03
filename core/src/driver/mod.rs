@@ -1,13 +1,14 @@
 pub mod bootstrap;
-pub mod buffers;
 pub mod completion;
 pub mod control;
 pub mod datagram;
 pub mod ext;
 pub mod profile;
 pub mod ready;
+pub mod recv;
 pub mod route;
 pub mod submission;
+pub mod timer;
 pub mod token;
 
 use std::cell::Cell;
@@ -15,34 +16,35 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, ErrorKind, Result};
 use std::marker::{PhantomData, PhantomPinned};
-use std::pin::Pin;
+use std::pin::{Pin, pin};
+use std::ptr::from_ref;
 use std::time::Instant;
 
 use o3::cell::{BrandToken, RegionToken};
 use o3::collections::CellQueue;
 use o3::marker::ThreadBound;
-
-use crate::backend::Backend;
-use crate::backend::ops::buffers::BufferBackend;
-use crate::io::fd::{Fd, FdGuard, FdSlot};
-use crate::io::provided::raw::buffer::BufferId;
-use crate::platform::Platform;
-use crate::platform::raw::file::{FileLimit, lock_memory_best_effort};
 use profile::DriverProfile;
 use ready::{Arena, ReadyHandle, ReadyKey, ReadySlot};
 use token::{SlotIndex, Token, TokenCapacity};
+
+use crate::backend::ops::buffers::BufferBackend;
+use crate::backend::{Backend, RecvBuffer};
+use crate::io::fd::{Fd, FdGuard, FdSlot};
+use crate::platform::Platform;
+use crate::platform::raw::file::{FileLimit, lock_memory_best_effort};
 
 type Invariant<'d> = PhantomData<fn(&'d ()) -> &'d ()>;
 
 struct Shared {
     arena: Box<Arena>,
-    returned_buffers: CellQueue<BufferId>,
+    returned_buffers: CellQueue<RecvBuffer>,
     turn_clock: Cell<Instant>,
 }
 
 pub struct Driver {
     shared: Shared,
     backend: Backend,
+    timer_slots: usize,
     _pin: PhantomPinned,
 }
 
@@ -56,12 +58,37 @@ pub struct Scope<'d> {
     backend: &'d mut Backend,
     region: RegionToken<'d>,
     token: BrandToken<'d>,
+    timer: &'d timer::Timer<'d>,
+    _timer_owner: Box<timer::Timer<'d>>,
 }
 
 pub struct DriverContext<'a, 'd> {
     driver: DriverRef<'d>,
     backend: &'a mut Backend,
     region: &'a mut RegionToken<'d>,
+    timer: &'d timer::Timer<'d>,
+}
+
+pub trait StorageFactory: 'static {
+    type Output<'d>: 'd;
+
+    fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d>;
+}
+
+impl StorageFactory for () {
+    type Output<'d> = ();
+
+    fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {}
+}
+
+impl<A: StorageFactory, B: StorageFactory> StorageFactory for (A, B) {
+    type Output<'d> = (A::Output<'d>, B::Output<'d>);
+
+    fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
+        let first = self.0.build(&mut driver.reborrow());
+        let second = self.1.build(driver);
+        (first, second)
+    }
 }
 
 impl Driver {
@@ -74,15 +101,17 @@ impl Driver {
         state: Backend,
         fixed_slots: usize,
         dynamic_slots: usize,
-        provided_buffers: usize,
+        timer_slots: usize,
+        recv_buffers: usize,
     ) -> Result<Self> {
         Ok(Self {
             shared: Shared {
                 arena: Arena::new(fixed_slots, dynamic_slots)?,
-                returned_buffers: CellQueue::with_capacity(provided_buffers),
+                returned_buffers: CellQueue::with_capacity(recv_buffers),
                 turn_clock: Cell::new(Instant::now()),
             },
             backend: state,
+            timer_slots,
             _pin: PhantomPinned,
         })
     }
@@ -95,12 +124,43 @@ impl Driver {
             // SAFETY: the higher-ranked closure prevents the generated lifetime
             // and every reference derived from this pointer from escaping.
             let this = unsafe { &mut *this };
+            let timer_owner = Box::new(timer::Timer::with_capacity(
+                this.timer_slots,
+                &region,
+                DriverRef::new(&this.shared),
+            ));
+            let timer = &raw const *timer_owner;
+            // SAFETY: `timer_owner` stays in Scope for the whole generative
+            // driver scope, and the higher-ranked closure prevents escape.
+            let timer = unsafe { &*timer };
             f(Scope {
                 driver: DriverRef::new(&this.shared),
                 backend: &mut this.backend,
                 region,
                 token,
+                timer,
+                _timer_owner: timer_owner,
             })
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn scope_with_storage<S, R>(
+        self: Pin<&mut Self>,
+        factory: S,
+        f: impl for<'scope, 'd> FnOnce(Scope<'d>, Pin<&'d S::Output<'d>>) -> R,
+    ) -> R
+    where
+        S: StorageFactory,
+    {
+        self.scope(move |mut scope| {
+            let value = factory.build(&mut scope.context());
+            let storage = pin!(value);
+            let storage = from_ref(storage.as_ref().get_ref());
+            // SAFETY: `storage` stays pinned until `f` returns. `f` is
+            // higher-ranked, so the generated lifetime cannot escape.
+            let storage = unsafe { Pin::new_unchecked(&*storage) };
+            f(scope, storage)
         })
     }
 }
@@ -178,9 +238,9 @@ impl<'d> DriverRef<'d> {
         self.shared.turn_clock.get()
     }
 
-    pub(crate) fn return_buffer(self, id: BufferId) {
+    pub(crate) fn return_buffer(self, buffer: RecvBuffer) {
         assert!(
-            self.shared.returned_buffers.push_back(id).is_ok(),
+            self.shared.returned_buffers.push_back(buffer).is_ok(),
             "dope: provided-buffer return queue overflow"
         );
     }
@@ -208,6 +268,7 @@ impl<'d> Scope<'d> {
             driver: self.driver,
             backend: &mut *self.backend,
             region: &mut self.region,
+            timer: self.timer,
         }
     }
 
@@ -222,6 +283,7 @@ impl<'d> Scope<'d> {
                 driver: self.driver,
                 backend: &mut *self.backend,
                 region: &mut self.region,
+                timer: self.timer,
             },
         )
     }
@@ -237,6 +299,7 @@ impl<'a, 'd> DriverContext<'a, 'd> {
             driver: self.driver,
             backend: &mut *self.backend,
             region: &mut *self.region,
+            timer: self.timer,
         }
     }
 
@@ -251,6 +314,10 @@ impl<'a, 'd> DriverContext<'a, 'd> {
 
     pub fn driver_ref(&self) -> DriverRef<'d> {
         self.driver
+    }
+
+    pub fn timer(&self) -> &'d timer::Timer<'d> {
+        self.timer
     }
 
     /// Returns the monotonic-clock snapshot for the current driver turn.
@@ -278,13 +345,13 @@ impl<'a, 'd> DriverContext<'a, 'd> {
         self.backend
     }
 
-    pub(crate) fn release_buffer(&mut self, id: BufferId) {
-        <Backend as BufferBackend>::release_buffer(self.backend(), id);
+    pub(crate) fn release_buffer(&mut self, buffer: RecvBuffer) {
+        <Backend as BufferBackend>::release_buffer(self.backend(), buffer);
     }
 
     pub(crate) fn flush_returned_buffers(&mut self) {
-        while let Some(id) = self.driver.shared.returned_buffers.pop_front() {
-            self.release_buffer(id);
+        while let Some(buffer) = self.driver.shared.returned_buffers.pop_front() {
+            self.release_buffer(buffer);
         }
     }
     pub fn guard(&mut self, fd: Fd<'d>) -> FdGuard<'_, 'd> {
@@ -294,20 +361,15 @@ impl<'a, 'd> DriverContext<'a, 'd> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProvidedBufferConfig {
-    pub len: usize,
-    pub entries: u16,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     pub ring_entries: u32,
     pub cq_entries: u32,
     pub fixed_file_slots: u32,
     pub accept_slots: u32,
-    pub provided: ProvidedBufferConfig,
+    pub recv: recv::Config,
     pub defer_taskrun: bool,
     pub ready_slots: usize,
+    pub timer_slots: usize,
 }
 
 impl Default for Config {
@@ -317,12 +379,13 @@ impl Default for Config {
             cq_entries: 2048,
             fixed_file_slots: 65536,
             accept_slots: 65536,
-            provided: ProvidedBufferConfig {
+            recv: recv::Config {
                 len: 4096,
                 entries: 128,
             },
             defer_taskrun: false,
             ready_slots: 65536,
+            timer_slots: 65536,
         }
     }
 }
@@ -347,12 +410,13 @@ impl Config {
             cq_entries: P::CQ_ENTRIES,
             fixed_file_slots: P::FIXED_FILE_SLOTS,
             accept_slots: P::FIXED_FILE_SLOTS.saturating_sub(P::OUTBOUND_RESERVE),
-            provided: ProvidedBufferConfig {
-                len: P::PROVIDED_BUF_LEN,
-                entries: P::PROVIDED_BUF_ENTRIES,
+            recv: recv::Config {
+                len: P::RECV_BUF_LEN,
+                entries: P::RECV_BUF_ENTRIES,
             },
             defer_taskrun: P::DEFER_TASKRUN,
             ready_slots: P::READY_SLOTS,
+            timer_slots: P::READY_SLOTS,
         }
     }
 
@@ -365,37 +429,41 @@ impl Config {
             cq_entries: P::CQ_ENTRIES,
             fixed_file_slots: accept_slots.saturating_add(P::OUTBOUND_RESERVE),
             accept_slots,
-            provided: ProvidedBufferConfig::for_accept(
-                accept_slots,
-                P::PROVIDED_BUF_LEN,
-                Self::MAX_ENTRIES,
-            ),
+            recv: recv::Config::for_accept(accept_slots, P::RECV_BUF_LEN, Self::MAX_ENTRIES),
             defer_taskrun: P::DEFER_TASKRUN,
             ready_slots: P::READY_SLOTS,
+            timer_slots: P::READY_SLOTS,
         }
     }
 
-    pub fn for_quic_udp(provided_buf_entries: u32, provided_buf_len: u32) -> Self {
+    pub fn for_quic_udp(recv_buf_entries: u32, recv_buf_len: u32) -> Self {
         Self {
             ring_entries: 256,
             cq_entries: 1024,
             fixed_file_slots: 16,
             accept_slots: 0,
-            provided: ProvidedBufferConfig {
-                len: provided_buf_len as usize,
-                entries: provided_buf_entries.min(u16::MAX as u32) as u16,
+            recv: recv::Config {
+                len: recv_buf_len as usize,
+                entries: recv_buf_entries.min(u16::MAX as u32) as u16,
             },
             defer_taskrun: false,
             ready_slots: 1024,
+            timer_slots: 1024,
         }
     }
 
-    pub fn with_provided(mut self, len: usize, entries: u16) -> Self {
-        self.provided.apply_overrides(len, entries);
+    pub fn with_recv(mut self, len: usize, entries: u16) -> Self {
+        self.recv.apply_overrides(len, entries);
         self
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        if self.timer_slots > u32::MAX as usize {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "dope: timer capacity exceeds u32 slots",
+            ));
+        }
         if self.accept_slots > self.fixed_file_slots {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
@@ -411,33 +479,6 @@ impl Config {
         Backend::snapshot()?
             .check_slots(self.fixed_file_slots)
             .map_err(io::Error::from)
-    }
-}
-
-impl ProvidedBufferConfig {
-    pub fn for_accept(accept_slots: u32, buf_len: usize, max_entries: u32) -> Self {
-        const PROVIDED_FLOOR: u32 = 1024;
-        const K_BATCH: u32 = 4;
-        const DRAIN_BATCH: u32 = 256;
-
-        let buf_len_ratio = (buf_len / 4096).max(1) as u32;
-        let hwm_entries = K_BATCH
-            .saturating_mul(DRAIN_BATCH)
-            .min(accept_slots.max(PROVIDED_FLOOR));
-        let target = hwm_entries.min(max_entries) / buf_len_ratio;
-        Self {
-            len: buf_len,
-            entries: target.max(PROVIDED_FLOOR).min(u16::MAX as u32) as u16,
-        }
-    }
-
-    pub fn apply_overrides(&mut self, len: usize, entries: u16) {
-        if len != 0 {
-            self.len = len;
-        }
-        if entries != 0 {
-            self.entries = entries;
-        }
     }
 }
 

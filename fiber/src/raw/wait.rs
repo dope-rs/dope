@@ -4,13 +4,13 @@ use std::pin::Pin;
 use std::process::abort;
 use std::ptr::NonNull;
 
+use dope::driver::ready::{CompletionSlot, CompletionWaker};
 use o3::marker::ThreadBound;
 use pin_project::{pin_project, pinned_drop};
 
 use crate::raw::link::{PinnedLink, StableLinkSource};
 use crate::raw::pinned_slice;
 use crate::raw::task::{CompletionOwner, CompletionRegistrar, Context};
-use dope::driver::ready::{CompletionSlot, CompletionWaker};
 
 type WaiterLink = PinnedLink<Waiter<'static>>;
 
