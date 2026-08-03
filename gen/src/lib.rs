@@ -184,19 +184,22 @@ pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
             &self,
             token: ::dope::driver::token::Token,
             ready: ::dope::driver::ready::ReadyKey<#driver>,
-            _region: &mut ::o3::cell::RegionToken<#driver>,
+            region: &mut ::dope::runtime::__private::RegionToken<#driver>,
         ) {
-            assert!(self.#io.activate(token, ready));
+            assert!(self.#io.activate(region, token, ready));
         }
     });
     item.items.push(syn::parse_quote! {
         fn drain_requests(
             &self,
             token: ::dope::driver::token::Token,
-            push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
-            _region: &mut ::o3::cell::RegionToken<#driver>,
+            push: impl FnMut(
+                &mut ::dope::runtime::__private::RegionToken<#driver>,
+                Self::Send,
+            ) -> Result<(), Self::Send>,
+            region: &mut ::dope::runtime::__private::RegionToken<#driver>,
         ) -> ::dope::manifold::connector::app::Requests {
-            match self.#io.drain_requests(token, push) {
+            match self.#io.drain_requests(region, token, push) {
                 Some(requests) => requests,
                 None => ::dope::manifold::connector::app::Requests::default(),
             }

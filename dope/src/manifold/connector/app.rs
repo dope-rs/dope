@@ -1,17 +1,19 @@
 use std::io;
 use std::time::Duration;
 
-use super::source::DialKey;
-use super::state::State;
-use crate::DriverContext;
-use crate::runtime::dispatcher::Idle;
 use dope_core::driver::token::{SlotIndex, Token};
+use dope_net::link::egress::StableBytes;
 use dope_net::link::egress::queue::Queue;
+use dope_net::link::raw::pool::outbound::OpenFailure;
 use dope_net::link::slot::Slot;
 use dope_net::wire::Wire;
 use o3::buffer::RetainBytes;
+use o3::cell::RegionToken;
 
-use super::state::IOV_CAP;
+use super::source::DialKey;
+use super::state::{IOV_CAP, State};
+use crate::DriverContext;
+use crate::runtime::dispatcher::Idle;
 
 pub enum ChunkOutcome {
     Ok,
@@ -40,7 +42,7 @@ pub struct Requests {
 pub trait ConnApp<'d>: Sized {
     type Conn: Default;
     type Wire: Wire;
-    type Send: AsRef<[u8]>;
+    type Send: StableBytes;
 
     const RETAIN_RAW_RECV: bool = false;
 
@@ -58,7 +60,7 @@ pub trait ConnApp<'d>: Sized {
     fn chunk<'pool, R: RetainBytes>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         chunk: R,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome;
@@ -66,7 +68,7 @@ pub trait ConnApp<'d>: Sized {
     fn retained_chunk<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         chunk: <Self::Wire as Wire>::RetainedRecv<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -78,7 +80,7 @@ pub trait ConnApp<'d>: Sized {
         &mut self,
         key: DialKey,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     );
 
@@ -86,10 +88,20 @@ pub trait ConnApp<'d>: Sized {
         let _ = (key, driver);
     }
 
+    fn open_failed(
+        &mut self,
+        key: DialKey,
+        error: OpenFailure<<Self::Wire as Wire>::OpenError>,
+        driver: &mut DriverContext<'_, '_>,
+    ) {
+        let _ = driver;
+        eprintln!("dope: connector wire open failed for {key:?}: {error}");
+    }
+
     fn before_send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let _ = (slot, egress, driver);
@@ -98,7 +110,7 @@ pub trait ConnApp<'d>: Sized {
     fn send<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         sent: usize,
         driver: &mut DriverContext<'_, 'd>,
     );
@@ -106,7 +118,7 @@ pub trait ConnApp<'d>: Sized {
     fn close<'pool>(
         &mut self,
         slot: &mut Slot<'d, Self::Wire, State<Self::Conn, Self::Send>>,
-        egress: Queue<'_, 'pool, IOV_CAP, Self::Send>,
+        egress: Queue<'_, 'd, 'pool, IOV_CAP, Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     );
 
@@ -131,7 +143,7 @@ pub trait ConnApp<'d>: Sized {
     fn drain_requests(
         &self,
         token: Token,
-        push: impl FnMut(Self::Send) -> Result<(), Self::Send>,
+        push: impl FnMut(&mut RegionToken<'d>, Self::Send) -> Result<(), Self::Send>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Requests {
         let _ = (token, push, driver);
@@ -142,9 +154,12 @@ pub trait ConnApp<'d>: Sized {
         None
     }
 
-    fn pre_park(&mut self) {}
+    fn pre_park(&mut self, region: &mut RegionToken<'d>) {
+        let _ = region;
+    }
 
-    fn idle(&self) -> Idle {
+    fn idle(&self, region: &RegionToken<'d>) -> Idle {
+        let _ = region;
         Idle::Park(None)
     }
 }

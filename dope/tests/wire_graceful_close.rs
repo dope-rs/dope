@@ -3,17 +3,17 @@
 extern crate dope;
 
 use std::cell::RefCell;
+use std::convert::Infallible;
 use std::io::Write;
 use std::net::Shutdown;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use dope::io::provided::{ProvidedLease, ProvidedView};
-use dope::manifold::Outcome;
-use dope::manifold::listener;
+use dope::io::recv::{Lease, View};
 use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::egress::SlotEgress;
 use dope::manifold::listener::state::EgressCtx;
+use dope::manifold::{Outcome, listener};
 use dope_net::link::slot::Slot;
 use dope_net::wire::send::{Plain, Prepared, Sent, Storage, Vectored};
 use dope_net::wire::{ReadyOpen, Reclaim, RecvChunk, RuntimeLimits, Wire};
@@ -34,9 +34,10 @@ impl Wire for GracefulWire {
         = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
     where
         'd: 'a;
+    type OpenError = Infallible;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type RecvBatch<'a> = std::iter::Once<RecvChunk<'a, Self::Recv<'a>>>;
-    type RetainedRecv<'d> = ProvidedView<'d>;
+    type RetainedRecv<'d> = View<'d>;
     type SendStorage = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
@@ -52,11 +53,11 @@ impl Wire for GracefulWire {
         Ok(())
     }
 
-    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Option<Self::Open<'a, 'd>>
+    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
     where
         'd: 'a,
     {
-        Some(ReadyOpen::new(GracefulWire, ()))
+        Ok(Some(ReadyOpen::new(GracefulWire, ())))
     }
 
     fn process_recv<'a, 'd>(
@@ -70,7 +71,7 @@ impl Wire for GracefulWire {
     fn process_retained_recv<'a, 'd>(
         _: &mut Self::Connection<'d>,
         _: &mut (),
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>> {
         let span = bytes.span(0, bytes.as_slice().len())?;
         bytes.into_view(span).ok()
@@ -132,7 +133,7 @@ impl<'d> ApplicationHooks<'d, ProbeApp> for ProbeApp {
     fn chunk<R: RetainBytes>(
         app: Pin<&mut ProbeApp>,
         slot: &mut Slot<'d, GracefulWire, listener::state::State<()>>,
-        mut egress: EgressCtx<'_, '_>,
+        mut egress: EgressCtx<'_, 'd, '_>,
         _chunk: R,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -150,7 +151,7 @@ impl<'d> ApplicationHooks<'d, ProbeApp> for ProbeApp {
     fn close(
         app: Pin<&mut ProbeApp>,
         _slot: &mut Slot<'d, GracefulWire, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
     ) {
         app.get_mut().gate.hit();
     }
@@ -169,9 +170,10 @@ impl Wire for ControlWire {
         = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
     where
         'd: 'a;
+    type OpenError = Infallible;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type RecvBatch<'a> = std::array::IntoIter<RecvChunk<'a, Self::Recv<'a>>, 2>;
-    type RetainedRecv<'d> = ProvidedView<'d>;
+    type RetainedRecv<'d> = View<'d>;
     type SendStorage = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
@@ -187,11 +189,11 @@ impl Wire for ControlWire {
         Ok(())
     }
 
-    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Option<Self::Open<'a, 'd>>
+    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
     where
         'd: 'a,
     {
-        Some(ReadyOpen::new(Self { pending: false }, ()))
+        Ok(Some(ReadyOpen::new(Self { pending: false }, ())))
     }
 
     fn process_recv<'a, 'd>(
@@ -212,7 +214,7 @@ impl Wire for ControlWire {
     fn process_retained_recv<'a, 'd>(
         wire: &mut Self::Connection<'d>,
         _: &mut (),
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>> {
         wire.pending = true;
         let span = bytes.span(0, bytes.as_slice().len())?;
@@ -272,7 +274,7 @@ impl<'d> ApplicationHooks<'d, ControlApp> for ControlApp {
     fn chunk<R: RetainBytes>(
         app: Pin<&mut ControlApp>,
         _slot: &mut Slot<'d, ControlWire, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         chunk: R,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -286,7 +288,7 @@ impl<'d> ApplicationHooks<'d, ControlApp> for ControlApp {
     fn send(
         _app: Pin<&mut ControlApp>,
         slot: &mut Slot<'d, ControlWire, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         _sent: usize,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
@@ -296,7 +298,7 @@ impl<'d> ApplicationHooks<'d, ControlApp> for ControlApp {
     fn close(
         app: Pin<&mut ControlApp>,
         _slot: &mut Slot<'d, ControlWire, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
     ) {
         app.get_mut().gate.hit();
     }

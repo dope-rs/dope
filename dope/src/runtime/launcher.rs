@@ -1,24 +1,20 @@
 use std::any::Any;
 use std::collections::HashSet;
 use std::error::Error;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::io;
-use std::panic::AssertUnwindSafe;
+use std::io::ErrorKind;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::mpsc::channel;
+use std::thread::{Builder, scope};
 
+use dope_core::driver::ext::DriverExt;
 use o3::marker::ThreadBound;
 
 use super::trigger::ShutdownTrigger;
 use crate::DriverContext;
 use crate::driver::Driver;
 use crate::hash::Seed;
-use dope_core::driver::ext::DriverExt;
-use std::fmt::Debug;
-use std::io::ErrorKind;
-use std::panic::catch_unwind;
-use std::panic::resume_unwind;
-use std::sync::mpsc::channel;
-use std::thread::Builder;
-use std::thread::scope;
 
 #[derive(Clone, Copy)]
 enum Placement {

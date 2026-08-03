@@ -3,16 +3,12 @@ pub mod msg;
 pub mod option;
 
 use core::mem::MaybeUninit;
-use libc::AF_INET;
-use libc::AF_INET6;
-use libc::SOCK_DGRAM;
-use libc::SOCK_STREAM;
-use libc::c_int;
-use libc::sockaddr_in;
-use libc::sockaddr_in6;
-use libc::sockaddr_storage;
-use libc::sockaddr_un;
 use std::net::SocketAddr;
+
+use libc::{
+    AF_INET, AF_INET6, SOCK_DGRAM, SOCK_STREAM, c_int, sockaddr_in, sockaddr_in6, sockaddr_storage,
+    sockaddr_un,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ListenerConfig {

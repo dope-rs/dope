@@ -3,22 +3,20 @@ pub(crate) mod result;
 mod state;
 
 use std::cell::Cell;
+use std::io::{Error, ErrorKind};
 
+use dope::driver::ready::CompletionWaker;
+use dope::driver::token::Token;
+use dope::manifold::connector::app::{self, CloseKind};
 use dope_net::wire::{RecvCursor, RecvTarget};
 use o3::buffer::Shared;
 use o3::cell::RegionToken;
 use o3::collections::CellQueue;
-
-use crate::raw::task::RootWaker;
-use dope::driver::ready::CompletionWaker;
-use dope::driver::token::Token;
-use std::io::Error;
-use std::io::ErrorKind;
-
-use dope::manifold::connector::app::{self, CloseKind};
 use recv::arena::{RecvArena, RecvLayout};
 use result::{RecvInto, SendIdle};
 use state::State;
+
+use crate::raw::task::RootWaker;
 
 struct Entry<'d> {
     token: Cell<Option<Token>>,
@@ -177,12 +175,13 @@ impl<'d, R: RecvCursor + 'd> Port<'d, R> {
     pub(crate) fn drain_requests(
         &self,
         token: Token,
-        mut push: impl FnMut(Shared) -> Result<(), Shared>,
+        region: &mut RegionToken<'d>,
+        mut push: impl FnMut(&mut RegionToken<'d>, Shared) -> Result<(), Shared>,
     ) -> Option<app::Requests> {
         let entry = self.entry(token)?;
         if let Some(send) = entry.send.take() {
             entry.send_pending.set(false);
-            if let Err(send) = push(send) {
+            if let Err(send) = push(region, send) {
                 entry.send.set(Some(send));
                 entry.send_pending.set(true);
             }

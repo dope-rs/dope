@@ -1,38 +1,40 @@
-pub(super) mod raw;
-
 use std::cell::Cell;
 use std::mem::size_of;
 
-use self::raw::pool::{DetachedIndex, LinkedIndex, MetadataPool, ReservedIndex};
-use super::config::Config;
+use o3::cell::RegionToken;
 use o3::mem::FairCreditState;
 
-pub struct MetadataArena<T> {
-    pub(super) pool: MetadataPool<T>,
-    lanes: Box<[MetadataLane]>,
+pub(in crate::link::egress) mod pool;
+
+use self::pool::{DetachedIndex, LinkedIndex, Pool, ReservedIndex};
+use super::config::Config;
+
+pub struct Arena<'d, T> {
+    pub(super) pool: Pool<'d, T>,
+    lanes: Box<[Lane]>,
 }
 
-impl<T> MetadataArena<T> {
-    pub fn with_config(config: Config, lanes: usize) -> Self {
+impl<'d, T> Arena<'d, T> {
+    pub fn with_config(token: &RegionToken<'d>, config: Config, lanes: usize) -> Self {
         assert!(lanes != 0, "egress metadata requires at least one lane");
         Self {
-            pool: MetadataPool::with_config(config),
+            pool: Pool::with_config(token, config),
             lanes: (0..lanes)
-                .map(|lane| MetadataLane::with_config(config, lanes, lane))
+                .map(|lane| Lane::with_config(config, lanes, lane))
                 .collect(),
         }
     }
 
-    pub fn queue(&self, lane: usize) -> MetadataQueue<'_, T> {
-        MetadataQueue::with_lane(&self.pool, &self.lanes[lane])
+    pub fn queue(&self, lane: usize) -> Queue<'_, 'd, T> {
+        Queue::with_lane(&self.pool, &self.lanes[lane])
     }
 
-    pub fn clear(&self, lane: usize) {
-        drop(self.queue(lane).detach_all());
+    pub fn clear(&self, lane: usize, token: &mut RegionToken<'d>) {
+        drop(self.queue(lane).detach_all(token));
     }
 }
 
-pub(in crate::link::egress) struct MetadataLane {
+pub(in crate::link::egress) struct Lane {
     head: Cell<LinkedIndex>,
     tail: Cell<LinkedIndex>,
     len: Cell<usize>,
@@ -41,9 +43,9 @@ pub(in crate::link::egress) struct MetadataLane {
     credit: FairCreditState<2>,
 }
 
-const _: () = assert!(size_of::<MetadataLane>() == 64);
+const _: () = assert!(size_of::<Lane>() == 64);
 
-impl MetadataLane {
+impl Lane {
     pub(in crate::link::egress) fn with_config(config: Config, lanes: usize, lane: usize) -> Self {
         Self {
             head: Cell::new(LinkedIndex::NONE),
@@ -63,41 +65,40 @@ impl MetadataLane {
     }
 }
 
-pub struct MetadataQueue<'a, T> {
-    pub(super) pool: &'a MetadataPool<T>,
-    state: &'a MetadataLane,
+pub struct Queue<'a, 'd, T> {
+    pub(super) pool: &'a Pool<'d, T>,
+    state: &'a Lane,
 }
 
-impl<T> Clone for MetadataQueue<'_, T> {
+impl<T> Clone for Queue<'_, '_, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for MetadataQueue<'_, T> {}
+impl<T> Copy for Queue<'_, '_, T> {}
 
-impl<T> MetadataQueue<'_, T> {
+impl<'d, T> Queue<'_, 'd, T> {
     pub(in crate::link::egress) fn with_lane<'a>(
-        pool: &'a MetadataPool<T>,
-        state: &'a MetadataLane,
-    ) -> MetadataQueue<'a, T> {
-        MetadataQueue { pool, state }
+        pool: &'a Pool<'d, T>,
+        state: &'a Lane,
+    ) -> Queue<'a, 'd, T> {
+        Queue { pool, state }
     }
 
-    pub fn try_push_back(&self, value: T, bytes: usize) -> Result<(), T> {
-        let index = match self
-            .pool
-            .reserve_from(value, |value| value, |_| ((), bytes, bytes))
-        {
-            Ok((index, _)) => index,
-            Err(value) => return Err(value),
-        };
+    pub fn try_push_back(
+        &self,
+        token: &mut RegionToken<'d>,
+        value: T,
+        bytes: usize,
+    ) -> Result<(), T> {
+        let index = self.pool.reserve(token, value, bytes, bytes)?;
         if !self
             .pool
             .credit(&self.state.credit)
             .try_acquire_all([1, bytes])
         {
-            let Some((_, value, _, _)) = self.pool.take_reserved(index) else {
+            let Some((_, value, _, _)) = self.pool.take_reserved(token, index) else {
                 unreachable!()
             };
             return Err(value);
@@ -107,7 +108,7 @@ impl<T> MetadataQueue<'_, T> {
         if tail.is_none() {
             self.state.head.set(index);
         } else {
-            self.pool.set_linked_next(tail, index);
+            self.pool.set_linked_next(token, tail, index);
         }
         self.state.len.set(self.state.len.get() + 1);
         self.state.bytes.set(self.state.bytes.get() + bytes);
@@ -115,12 +116,15 @@ impl<T> MetadataQueue<'_, T> {
         Ok(())
     }
 
-    pub fn take_front(&self) -> Option<(T, MetadataFront<'_, T>)> {
+    pub fn take_front<'token>(
+        &self,
+        token: &'token mut RegionToken<'d>,
+    ) -> Option<(T, Front<'_, 'token, 'd, T>)> {
         let index = self.state.head.get();
         if index.is_none() {
             return None;
         }
-        let (next, value, bytes, resident, index) = self.pool.detach_value(index)?;
+        let (next, value, bytes, resident, index) = self.pool.detach_value(token, index)?;
         self.state.head.set(next);
         if next.is_none() {
             self.state.tail.set(LinkedIndex::NONE);
@@ -132,9 +136,10 @@ impl<T> MetadataQueue<'_, T> {
             .set(self.state.resident.get() - resident);
         Some((
             value,
-            MetadataFront {
+            Front {
                 pool: self.pool,
                 state: self.state,
+                token,
                 index,
                 bytes,
                 resident,
@@ -143,13 +148,13 @@ impl<T> MetadataQueue<'_, T> {
         ))
     }
 
-    pub(super) fn index_at(&self, offset: usize) -> Option<LinkedIndex> {
+    pub(super) fn index_at(&self, token: &RegionToken<'d>, offset: usize) -> Option<LinkedIndex> {
         if offset >= self.state.len.get() {
             return None;
         }
         let mut index = self.state.head.get();
         for _ in 0..offset {
-            index = self.pool.next(index);
+            index = self.pool.next(token, index);
         }
         Some(index)
     }
@@ -172,6 +177,7 @@ impl<T> MetadataQueue<'_, T> {
 
     pub(super) fn commit_prepared(
         &self,
+        token: &mut RegionToken<'d>,
         head: ReservedIndex,
         tail: ReservedIndex,
         entries: usize,
@@ -194,7 +200,7 @@ impl<T> MetadataQueue<'_, T> {
         if old_tail.is_none() {
             self.state.head.set(head);
         } else {
-            self.pool.set_linked_next(old_tail, head);
+            self.pool.set_linked_next(token, old_tail, head);
         }
         self.state.len.set(self.state.len.get() + entries);
         self.state.bytes.set(self.state.bytes.get() + bytes);
@@ -204,14 +210,17 @@ impl<T> MetadataQueue<'_, T> {
         true
     }
 
-    pub(super) fn consume_front_bytes(&self, bytes: usize) {
+    pub(super) fn consume_front_bytes(&self, token: &mut RegionToken<'d>, bytes: usize) {
         let head = self.state.head.get();
         debug_assert!(!head.is_none());
-        self.pool.front_consume(head, bytes);
+        self.pool.front_consume(token, head, bytes);
         self.state.bytes.set(self.state.bytes.get() - bytes);
     }
 
-    pub fn detach_all(&self) -> DetachedValues<'_, T> {
+    pub fn detach_all<'token>(
+        &self,
+        token: &'token mut RegionToken<'d>,
+    ) -> Detached<'_, 'token, 'd, T> {
         let index = self.state.head.replace(LinkedIndex::NONE);
         self.state.tail.set(LinkedIndex::NONE);
         let entries = self.state.len.take();
@@ -220,29 +229,38 @@ impl<T> MetadataQueue<'_, T> {
         self.pool
             .credit(&self.state.credit)
             .release_all([entries, resident]);
-        DetachedValues {
+        Detached {
             pool: self.pool,
+            token,
             head: index,
         }
     }
 }
 
-pub struct MetadataFront<'a, T> {
-    pool: &'a MetadataPool<T>,
-    state: &'a MetadataLane,
+pub struct Front<'a, 'token, 'd, T> {
+    pool: &'a Pool<'d, T>,
+    state: &'a Lane,
+    token: &'token mut RegionToken<'d>,
     index: DetachedIndex,
     bytes: usize,
     resident: usize,
     settled: bool,
 }
 
-impl<T> MetadataFront<'_, T> {
+impl<'a, 'token, 'd, T> Front<'a, 'token, 'd, T> {
     pub(super) fn bytes(&self) -> usize {
         self.bytes
     }
 
+    /// Reborrows the region capability while this detached front remains the
+    /// rollback owner. The callback may move the value into another branded
+    /// collection; the caller must then release or restore this front.
+    pub fn with_region<R>(&mut self, f: impl FnOnce(&mut RegionToken<'d>) -> R) -> R {
+        f(self.token)
+    }
+
     pub fn release(mut self) {
-        self.pool.release_detached(self.index);
+        self.pool.release_detached(self.token, self.index);
         self.pool
             .credit(&self.state.credit)
             .release_all([1, self.resident]);
@@ -251,7 +269,7 @@ impl<T> MetadataFront<'_, T> {
 
     pub fn restore(mut self, value: T) {
         let head = self.state.head.get();
-        let index = self.pool.restore_value(self.index, value, head);
+        let index = self.pool.restore_value(self.token, self.index, value, head);
         self.state.head.set(index);
         if head.is_none() {
             self.state.tail.set(index);
@@ -265,10 +283,10 @@ impl<T> MetadataFront<'_, T> {
     }
 }
 
-impl<T> Drop for MetadataFront<'_, T> {
+impl<T> Drop for Front<'_, '_, '_, T> {
     fn drop(&mut self) {
         if !self.settled {
-            self.pool.release_detached(self.index);
+            self.pool.release_detached(self.token, self.index);
             self.pool
                 .credit(&self.state.credit)
                 .release_all([1, self.resident]);
@@ -277,21 +295,14 @@ impl<T> Drop for MetadataFront<'_, T> {
     }
 }
 
-pub struct DetachedValues<'a, T> {
-    pool: &'a MetadataPool<T>,
+pub struct Detached<'a, 'token, 'd, T> {
+    pool: &'a Pool<'d, T>,
+    token: &'token mut RegionToken<'d>,
     head: LinkedIndex,
 }
 
-impl<T> Drop for DetachedValues<'_, T> {
+impl<T> Drop for Detached<'_, '_, '_, T> {
     fn drop(&mut self) {
-        self.pool.drain_linked(&mut self.head);
-    }
-}
-
-impl<T> Drop for MetadataArena<T> {
-    fn drop(&mut self) {
-        for lane in 0..self.lanes.len() {
-            self.clear(lane);
-        }
+        self.pool.drain_linked(self.token, &mut self.head);
     }
 }

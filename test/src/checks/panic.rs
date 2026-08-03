@@ -2,8 +2,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::env::current_exe;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::process::Command;
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus};
 use std::rc::Rc;
 
 pub fn assert_unwinds<R>(f: impl FnOnce() -> R) {

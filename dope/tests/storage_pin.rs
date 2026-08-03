@@ -3,8 +3,6 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::ptr::NonNull;
 
-use dope_test as common;
-
 extern crate dope;
 use dope::runtime::executor::StorageFactory;
 
@@ -40,20 +38,20 @@ impl StorageFactory for Factory {
 
 #[test]
 fn storage_is_dropped_in_place_after_pinning() {
-    let exec = common::exec().with_storage_factory(Factory);
+    let exec = dope_test::exec().with_storage_factory(Factory);
     exec.enter(|session| session.storage_pin().record());
 }
 
 #[test]
 fn owned_storage_keeps_its_exact_type_in_the_session() {
-    common::exec()
+    dope_test::exec()
         .with_storage(String::from("handler"))
         .enter(|session| assert_eq!(session.storage(), "handler"));
 }
 
 #[test]
 fn storage_and_driver_can_be_borrowed_together() {
-    common::exec()
+    dope_test::exec()
         .with_storage(String::from("handler"))
         .enter(|mut session| {
             let (storage, _driver) = session.storage_and_driver();

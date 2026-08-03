@@ -10,9 +10,10 @@ authors.workspace = true
 [dependencies]
 libc.workspace = true
 o3.workspace = true
+pin-project.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring.workspace = true
 
 [dev-dependencies]
-dope-test.workspace = true
+dope-test = { path = "../test" }

@@ -19,10 +19,9 @@ mod linux {
     use io_uring::types::{SubmitArgs, Timespec};
     use libc::ETIME;
 
+    use super::{Backend, CompletionBackend, DriverRef, Duration, Event, io};
     use crate::backend::uring::driver::Disposition;
     use crate::io::Cqe;
-
-    use super::{Backend, CompletionBackend, DriverRef, Duration, Event, io};
 
     impl CompletionBackend for Backend {
         fn drain<'d>(
@@ -46,6 +45,7 @@ mod linux {
                     let result = item.result();
                     let flags = item.flags();
                     let token = match Backend::complete_cqe(
+                        provided,
                         setsockopt,
                         files,
                         routes,
@@ -54,8 +54,8 @@ mod linux {
                         flags,
                     ) {
                         Disposition::Drop | Disposition::Internal => continue,
-                        Disposition::DropBuffer(bid) => {
-                            provided.defer_completion(bid);
+                        Disposition::DropBuffer(buffer) => {
+                            provided.defer(buffer);
                             continue;
                         }
                         Disposition::Public(token) => token,
@@ -104,18 +104,17 @@ mod kqueue {
 
     use libc::kevent;
 
+    use super::{Backend, CompletionBackend, DriverRef, Duration, Event, io};
+    use crate::backend::RecvBuffer;
     use crate::backend::kqueue::driver::MAX_DRAIN_PER_FD;
     use crate::backend::kqueue::driver::pending::PendingCompletion;
     use crate::backend::kqueue::driver::read::dispatch::Dispatch;
     use crate::driver::token::SHUTDOWN;
-    use crate::io::provided::raw::buffer::BufferId;
     use crate::io::{BUFFER, BUFFER_SHIFT, Cqe, MORE};
-
-    use super::{Backend, CompletionBackend, DriverRef, Duration, Event, io};
 
     struct PendingCqe {
         cqe: Cqe,
-        id: Option<BufferId>,
+        buffer: Option<RecvBuffer>,
     }
 
     impl CompletionBackend for Backend {
@@ -132,47 +131,47 @@ mod kqueue {
                 let Some(pending) = backend.pending.pop_front() else {
                     break;
                 };
-                let PendingCqe { cqe, id } = match pending {
+                let PendingCqe { cqe, buffer } = match pending {
                     PendingCompletion::Accept { ud, result, more } => PendingCqe {
                         cqe: Cqe::new(ud, result, if more { MORE } else { 0 }),
-                        id: None,
+                        buffer: None,
                     },
                     PendingCompletion::Recv {
                         ud,
                         result,
                         more,
-                        bid,
+                        buffer,
                     } => {
                         let mut flags = if more { MORE } else { 0 };
-                        if let Some(id) = bid.as_ref() {
-                            flags |= BUFFER | (((*id).into_raw() as u32) << BUFFER_SHIFT);
+                        if let Some(buffer) = buffer.as_ref() {
+                            flags |= BUFFER | ((buffer.raw() as u32) << BUFFER_SHIFT);
                         }
                         PendingCqe {
                             cqe: Cqe::new(ud, result, flags),
-                            id: bid,
+                            buffer,
                         }
                     }
                     PendingCompletion::Write { ud, result } => PendingCqe {
                         cqe: Cqe::new(ud, result, 0),
-                        id: None,
+                        buffer: None,
                     },
                     PendingCompletion::Create { ud, result, .. } => PendingCqe {
                         cqe: Cqe::new(ud, result, 0),
-                        id: None,
+                        buffer: None,
                     },
                     PendingCompletion::Timer { ud } => PendingCqe {
                         cqe: Cqe::new(ud, 0, 0),
-                        id: None,
+                        buffer: None,
                     },
                     PendingCompletion::Shutdown => PendingCqe {
                         cqe: Cqe::new(SHUTDOWN, 0, 0),
-                        id: None,
+                        buffer: None,
                     },
                 };
                 let event = Event::from_cqe(cqe, reference, |len, bid| {
-                    id.map(|id| {
-                        debug_assert_eq!(id.into_raw(), bid);
-                        backend.backing.complete(id, len as usize)
+                    buffer.map(|buffer| {
+                        debug_assert_eq!(buffer.raw(), bid);
+                        backend.recv.complete(buffer, len as usize)
                     })
                 });
                 if let Ok(event) = event {

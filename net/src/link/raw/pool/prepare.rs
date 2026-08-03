@@ -1,8 +1,8 @@
-use crate::Transport;
-use crate::wire::Wire;
 use dope_core::driver::OutboundReservation;
 
 use super::Pool;
+use crate::Transport;
+use crate::wire::Wire;
 
 #[doc(hidden)]
 pub struct PreparedPool<'d, const ID: u8, T: Transport, W: Wire, S>(

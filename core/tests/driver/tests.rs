@@ -1,3 +1,4 @@
+use std::mem::size_of;
 use std::pin::pin;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -15,11 +16,17 @@ use dope_core::driver::token::{
 };
 use dope_core::driver::{Driver, DriverRef, OutboundReservation};
 use dope_core::io::Event;
+use dope_core::io::recv::{Lease, View};
 use dope_core::platform::Platform;
 use dope_core::platform::snapshot::{Mismatch, Snapshot};
 use dope_test::{throughput_cfg, with_driver};
 
 const ROUTE: u8 = 7;
+
+#[test]
+fn retained_receive_buffers_do_not_expand_the_hot_metadata() {
+    assert_eq!(size_of::<Lease<'static>>(), size_of::<View<'static>>(),);
+}
 
 fn target() -> Token {
     Token::new(ROUTE, SlotIndex::ZERO, Epoch::INITIAL)

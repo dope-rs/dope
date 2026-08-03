@@ -8,7 +8,6 @@ use dope_fiber::abi::Fiber;
 use dope_fiber::abi::batch::Batch;
 use dope_fiber::abi::ready::Ready;
 use dope_fiber::raw::slab::TaskSlab;
-use dope_fiber::raw::task::queue::TaskQueue;
 use dope_fiber::raw::task::{CompletionRegistrar, Context, RootWaker, Waker};
 use dope_fiber::raw::wait::{WaitQueue, Waiter};
 use dope_fiber::slab::{FixedSlab, Slab, TaskId};
@@ -564,29 +563,47 @@ fn waiter_survives_queue_drop_without_a_dangling_registration() {
 }
 
 #[test]
-fn child_queue_wakes_parent_once() {
+fn task_slab_wakes_parent_once() {
     with_session(|sess| {
         let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let parent = RootWaker::from_ready(sess.driver(), parent.key());
-        let queue = pin!(TaskQueue::with_capacity(0));
         let mut tasks: TaskSlab<'_, PendingCount, usize> = TaskSlab::with_capacity(1);
         let task = tasks
             .insert(PendingCount(Rc::new(Cell::new(0))))
             .expect("task");
-        assert!(tasks.bind(&task, queue.as_ref(), 17, parent));
+        assert!(tasks.bind(&task, 17, parent));
         assert!(tasks.wake(&task));
         assert!(tasks.wake(&task));
         assert_eq!(
-            queue
-                .as_ref()
-                .snapshot_root(parent)
-                .expect("ready snapshot")
-                .next(),
+            tasks.snapshot_root(parent).expect("ready snapshot").next(),
             Some(17),
         );
-        assert!(queue.as_ref().is_empty());
+        assert!(tasks.is_empty());
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
         assert!(tasks.remove(task));
+    });
+}
+
+#[test]
+fn task_slab_binding_reuses_fixed_queue_storage() {
+    with_session(|sess| {
+        let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
+        let parent = RootWaker::from_ready(sess.driver(), parent.key());
+        let mut tasks: TaskSlab<'_, Ready<()>, usize> = TaskSlab::with_capacity(1);
+        let task = tasks.insert(Ready::new(())).expect("task");
+
+        let (allocations, bytes) = allocations_during(|| {
+            assert!(tasks.bind(&task, 17, parent));
+            assert!(tasks.wake(&task));
+            assert_eq!(
+                tasks.snapshot_root(parent).expect("ready snapshot").next(),
+                Some(17),
+            );
+            assert!(tasks.remove(task));
+        });
+
+        assert_eq!(allocations, 0);
+        assert_eq!(bytes, 0);
     });
 }
 
@@ -595,7 +612,6 @@ fn wake_of_an_unpolled_batch_member_is_coalesced() {
     with_session(|sess| {
         let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let parent = RootWaker::from_ready(sess.driver(), parent.key());
-        let queue = pin!(TaskQueue::with_capacity(0));
         let mut tasks: TaskSlab<'_, PendingCount, usize> = TaskSlab::with_capacity(2);
         let first = tasks
             .insert(PendingCount(Rc::new(Cell::new(0))))
@@ -603,16 +619,13 @@ fn wake_of_an_unpolled_batch_member_is_coalesced() {
         let second = tasks
             .insert(PendingCount(Rc::new(Cell::new(0))))
             .expect("second task");
-        assert!(tasks.bind(&first, queue.as_ref(), 10, parent));
-        assert!(tasks.bind(&second, queue.as_ref(), 11, parent));
+        assert!(tasks.bind(&first, 10, parent));
+        assert!(tasks.bind(&second, 11, parent));
         assert!(tasks.wake(&first));
         assert!(tasks.wake(&second));
         assert_eq!(drain_tokens(sess.driver()), [tok(0)]);
 
-        let mut batch = queue
-            .as_ref()
-            .snapshot_root(parent)
-            .expect("single live snapshot");
+        let mut batch = tasks.snapshot_root(parent).expect("single live snapshot");
         assert_eq!(batch.next(), Some(10));
         assert!(tasks.wake(&second));
         assert_eq!(batch.next(), Some(11));
@@ -620,8 +633,7 @@ fn wake_of_an_unpolled_batch_member_is_coalesced() {
         drop(batch);
 
         assert!(
-            queue
-                .as_ref()
+            tasks
                 .snapshot_root(parent)
                 .expect("previous snapshot dropped")
                 .next()
@@ -634,24 +646,19 @@ fn wake_of_an_unpolled_batch_member_is_coalesced() {
 }
 
 #[test]
-fn task_queue_preserves_target_type() {
+fn task_slab_preserves_target_type() {
     with_session(|sess| {
         let ready = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let parent = RootWaker::from_ready(sess.driver(), ready.key());
         let target = WideTarget(u128::MAX - 17);
-        let queue = pin!(TaskQueue::<WideTarget>::with_capacity(0));
         let mut tasks: TaskSlab<'_, PendingCount, WideTarget> = TaskSlab::with_capacity(1);
         let task = tasks
             .insert(PendingCount(Rc::new(Cell::new(0))))
             .expect("task");
-        assert!(tasks.bind(&task, queue.as_ref(), target, parent));
+        assert!(tasks.bind(&task, target, parent));
         assert!(tasks.wake(&task));
         assert_eq!(
-            queue
-                .as_ref()
-                .snapshot_root(parent)
-                .expect("ready snapshot")
-                .next(),
+            tasks.snapshot_root(parent).expect("ready snapshot").next(),
             Some(target),
         );
         assert!(tasks.remove(task));
@@ -663,15 +670,14 @@ fn unbind_unlinks_queued_child() {
     with_session(|sess| {
         let parent = sess.driver().make_ready_slot(tok(0)).expect("ready slot");
         let parent = RootWaker::from_ready(sess.driver(), parent.key());
-        let queue = pin!(TaskQueue::with_capacity(0));
         let mut tasks: TaskSlab<'_, PendingCount, usize> = TaskSlab::with_capacity(1);
         let task = tasks
             .insert(PendingCount(Rc::new(Cell::new(0))))
             .expect("task");
-        assert!(tasks.bind(&task, queue.as_ref(), 19, parent));
+        assert!(tasks.bind(&task, 19, parent));
         assert!(tasks.wake(&task));
         assert!(tasks.remove(task));
-        assert!(queue.as_ref().is_empty());
+        assert!(tasks.is_empty());
     });
 }
 

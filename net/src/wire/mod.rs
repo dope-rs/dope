@@ -5,13 +5,15 @@ pub mod send;
 
 use std::io;
 
-use crate::{Bytes, ProvidedLease, ProvidedView, RetainBytes};
 use dope_core::driver::DriverRef;
 use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::Token;
 use o3::buffer::{Borrowed, Retained};
 
 use self::send::{Plain, Prepared, SendStorage, Sent, Storage, Vectored};
+pub use dope_core::io::recv::{Lease, View};
+
+use crate::{Bytes, RetainBytes};
 
 pub enum Reclaim {
     OnSubmit,
@@ -43,6 +45,10 @@ impl<'a> RecvTarget<'a> {
 
     pub fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
     }
 
     pub fn remaining(&self) -> usize {
@@ -90,7 +96,7 @@ impl RecvCursor for Bytes<Retained> {
     }
 }
 
-impl RecvCursor for ProvidedView<'_> {
+impl RecvCursor for View<'_> {
     fn remaining(&self) -> usize {
         self.len()
     }
@@ -204,6 +210,11 @@ pub trait Wire: 'static + Sized {
     type Open<'a, 'd>: OpenReservation<Self::Connection<'d>, Self::SendStorage>
     where
         'd: 'a;
+    /// A permanent failure while constructing connection-local wire state.
+    ///
+    /// Use [`std::convert::Infallible`] for wires whose open path cannot fail;
+    /// it adds no storage to the `Result<Option<_>, _>` representation.
+    type OpenError: std::error::Error + Send + Sync + 'static;
     type Recv<'a>: RetainBytes + 'a;
     type RecvBatch<'a>: ExactSizeIterator<Item = RecvChunk<'a, Self::Recv<'a>>>
     where
@@ -229,9 +240,14 @@ pub trait Wire: 'static + Sized {
     where
         Self: 'd;
 
+    /// Reserves wire state for one connection.
+    ///
+    /// `Ok(Some(_))` is ready to commit, `Ok(None)` is temporary backpressure,
+    /// and `Err(_)` is a permanent open failure that must be surfaced instead
+    /// of retried as capacity exhaustion.
     fn prepare_open<'a, 'd>(
         runtime: &'a mut Self::RuntimeContext<'d>,
-    ) -> Option<Self::Open<'a, 'd>>
+    ) -> Result<Option<Self::Open<'a, 'd>>, Self::OpenError>
     where
         'd: 'a;
 
@@ -253,7 +269,7 @@ pub trait Wire: 'static + Sized {
     fn process_retained_recv<'a, 'd>(
         wire: &mut Self::Connection<'d>,
         runtime: &mut Self::RuntimeContext<'d>,
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>>;
 
     /// Claims a connection-local receive credit for a retained cursor.

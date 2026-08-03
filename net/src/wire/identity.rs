@@ -1,11 +1,22 @@
-use super::send::{Plain, Prepared, Sent, Storage, Vectored};
-use super::{ReadyOpen, Reclaim, RecvChunk, RuntimeLimits, Wire};
-use crate::{Bytes, ProvidedLease, ProvidedView};
-use o3::buffer::Borrowed;
+use std::convert::Infallible;
 use std::io;
 use std::iter::{Once, once};
+use std::mem::size_of;
+
+use o3::buffer::Borrowed;
+
+use super::send::{Plain, Prepared, Sent, Storage, Vectored};
+use super::{ReadyOpen, Reclaim, RecvChunk, RuntimeLimits, Wire};
+use dope_core::io::recv::{Lease, View};
+
+use crate::Bytes;
 
 pub struct Identity;
+
+const _: () = assert!(
+    size_of::<Result<Option<ReadyOpen<Identity, ()>>, Infallible>>()
+        == size_of::<Option<ReadyOpen<Identity, ()>>>()
+);
 
 impl Wire for Identity {
     type Connection<'d> = Self;
@@ -16,9 +27,10 @@ impl Wire for Identity {
         = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
     where
         'd: 'a;
+    type OpenError = Infallible;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type RecvBatch<'a> = Once<RecvChunk<'a, Self::Recv<'a>>>;
-    type RetainedRecv<'d> = ProvidedView<'d>;
+    type RetainedRecv<'d> = View<'d>;
     type SendStorage = ();
 
     const RECLAIM: Reclaim = Reclaim::OnComplete;
@@ -39,11 +51,11 @@ impl Wire for Identity {
         Ok(())
     }
 
-    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Option<Self::Open<'a, 'd>>
+    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
     where
         'd: 'a,
     {
-        Some(ReadyOpen::new(Self, ()))
+        Ok(Some(ReadyOpen::new(Self, ())))
     }
 
     fn process_recv<'a, 'd>(
@@ -57,7 +69,7 @@ impl Wire for Identity {
     fn process_retained_recv<'a, 'd>(
         _: &mut Self::Connection<'d>,
         _: &mut (),
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>> {
         let len = bytes.as_slice().len();
         let span = bytes.span(0, len)?;

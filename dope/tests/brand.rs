@@ -1,7 +1,8 @@
 extern crate dope;
-use o3::cell::{BrandCell, BrandToken};
 use std::cell::Cell;
 use std::marker::PhantomPinned;
+
+use o3::cell::{BrandCell, BrandToken};
 
 struct Slot {
     inflight: Vec<u8>,

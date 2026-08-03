@@ -1,5 +1,5 @@
 use std::mem::size_of;
-use std::os::fd::{IntoRawFd, RawFd};
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
 use super::super::pending::PendingCompletion;
 use super::super::retry::Retry;
@@ -148,7 +148,8 @@ impl Dispatch for Kqueue {
             let more_flag = !oneshot;
             if raw >= 0 {
                 let Some(slot) = self.next_accept_slot() else {
-                    self.close_raw(raw);
+                    // SAFETY: accept returned a fresh owned descriptor.
+                    drop(unsafe { OwnedFd::from_raw_fd(raw) });
                     self.push_pending(PendingCompletion::Accept {
                         ud,
                         result: -EMFILE,
@@ -156,23 +157,15 @@ impl Dispatch for Kqueue {
                     });
                     return DrainOutcome::Done;
                 };
-                let accepted = Handle::take(raw);
+                // SAFETY: accept returned a fresh owned descriptor.
+                let accepted = Handle::from_owned(unsafe { OwnedFd::from_raw_fd(raw) });
                 if accepted.set_nonblocking().is_err()
                     || accepted.set_cloexec().is_err()
                     || Driver::set_no_sigpipe(&accepted).is_err()
                 {
                     continue;
                 }
-                let raw = accepted.into_raw_fd();
-                if self.register_raw_fd(slot, raw).is_err() {
-                    self.close_raw(raw);
-                    self.push_pending(PendingCompletion::Accept {
-                        ud,
-                        result: -EMFILE,
-                        more: more_flag,
-                    });
-                    return DrainOutcome::Done;
-                }
+                self.register_fd(slot, accepted.into_owned());
                 self.push_pending(PendingCompletion::Accept {
                     ud,
                     result: slot as i32,
@@ -214,7 +207,7 @@ impl Dispatch for Kqueue {
                     ud,
                     result: -data,
                     more: false,
-                    bid: None,
+                    buffer: None,
                 });
                 return;
             }
@@ -235,7 +228,7 @@ impl Dispatch for Kqueue {
             if self.pending.len() >= PENDING_CAP {
                 return DrainOutcome::Yield;
             }
-            let Some(mut buffer) = self.provided.take() else {
+            let Some(mut buffer) = self.recv.take() else {
                 return DrainOutcome::Yield;
             };
             let cap = buffer.capacity();
@@ -246,22 +239,22 @@ impl Dispatch for Kqueue {
                     ud,
                     result: n as i32,
                     more: true,
-                    bid: Some(buffer.into_id()),
+                    buffer: Some(buffer.into_buffer()),
                 });
                 continue;
             }
             if n == 0 {
-                self.provided.defer(buffer.into_id());
+                self.recv.defer(buffer.into_buffer());
                 self.push_pending(PendingCompletion::Recv {
                     ud,
                     result: 0,
                     more: false,
-                    bid: None,
+                    buffer: None,
                 });
                 return DrainOutcome::Closed;
             }
             let errno = Errno::last();
-            self.provided.defer(buffer.into_id());
+            self.recv.defer(buffer.into_buffer());
             if errno.is_block() {
                 return DrainOutcome::Done;
             }
@@ -269,7 +262,7 @@ impl Dispatch for Kqueue {
                 ud,
                 result: -errno.raw(),
                 more: true,
-                bid: None,
+                buffer: None,
             });
             return DrainOutcome::Done;
         }
@@ -298,7 +291,7 @@ impl Dispatch for Kqueue {
                     ud,
                     result: -data,
                     more: false,
-                    bid: None,
+                    buffer: None,
                 });
                 return;
             }
@@ -326,18 +319,18 @@ impl Dispatch for Kqueue {
             if self.pending.len() >= PENDING_CAP {
                 return DrainOutcome::Yield;
             }
-            let Some(mut buffer) = self.provided.take() else {
+            let Some(mut buffer) = self.recv.take() else {
                 return DrainOutcome::Yield;
             };
             let cap = buffer.capacity();
             let ptr = buffer.as_mut_ptr();
             if cap <= namelen {
-                self.provided.defer(buffer.into_id());
+                self.recv.defer(buffer.into_buffer());
                 self.push_pending(PendingCompletion::Recv {
                     ud,
                     result: -ENOBUFS,
                     more: true,
-                    bid: None,
+                    buffer: None,
                 });
                 return DrainOutcome::Done;
             }
@@ -350,7 +343,7 @@ impl Dispatch for Kqueue {
             let n = unsafe { recvmsg(fd, local_msg.as_mut_ptr(), 0) };
             if n > 0 {
                 if local_msg.flags() & MSG_TRUNC != 0 {
-                    self.provided.defer(buffer.into_id());
+                    self.recv.defer(buffer.into_buffer());
                     continue;
                 }
                 let total = namelen + n as usize;
@@ -358,7 +351,7 @@ impl Dispatch for Kqueue {
                     ud,
                     result: total as i32,
                     more: true,
-                    bid: Some(buffer.into_id()),
+                    buffer: Some(buffer.into_buffer()),
                 });
                 continue;
             }
@@ -367,12 +360,12 @@ impl Dispatch for Kqueue {
                     ud,
                     result: namelen as i32,
                     more: true,
-                    bid: Some(buffer.into_id()),
+                    buffer: Some(buffer.into_buffer()),
                 });
                 return DrainOutcome::Done;
             }
             let errno = Errno::last();
-            self.provided.defer(buffer.into_id());
+            self.recv.defer(buffer.into_buffer());
             if errno.is_block() {
                 return DrainOutcome::Done;
             }
@@ -380,7 +373,7 @@ impl Dispatch for Kqueue {
                 ud,
                 result: -errno.raw(),
                 more: true,
-                bid: None,
+                buffer: None,
             });
             return DrainOutcome::Done;
         }

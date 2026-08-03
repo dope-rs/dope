@@ -1,28 +1,19 @@
 use std::io;
-use std::net::SocketAddr;
+use std::io::{Error, ErrorKind};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
+
+use libc::{
+    AF_INET, AF_INET6, AF_UNIX, c_char, getsockname, sa_family_t, sockaddr, sockaddr_in,
+    sockaddr_in6, sockaddr_storage, socklen_t,
+};
 
 use crate::driver::Driver;
 use crate::io::socket::Pod;
 use crate::platform::raw::abi::PlatformAbi;
-use libc::AF_INET;
-use libc::AF_INET6;
-use libc::AF_UNIX;
-use libc::c_char;
-use libc::getsockname;
-use libc::sa_family_t;
-use libc::sockaddr;
-use libc::sockaddr_in;
-use libc::sockaddr_in6;
-use libc::sockaddr_storage;
-use libc::socklen_t;
-use std::io::{Error, ErrorKind};
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
-use std::slice::from_raw_parts;
-use std::slice::from_raw_parts_mut;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Addr {

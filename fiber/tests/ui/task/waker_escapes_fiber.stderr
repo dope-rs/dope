@@ -1,46 +1,20 @@
-error: lifetime may not live long enough
-  --> tests/ui/task/waker_escapes_fiber.rs:15:9
-   |
-11 | impl<'d> Fiber<'d> for Escape<'d> {
-   |      -- lifetime `'d` defined here
-...
-14 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
-   |                                           - let's call the lifetime of this reference `'1`
-15 |         self.0.set(Some(cx.waker()));
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'1` must outlive `'d`
-   |
-   = note: requirement occurs because of the type `Cell<Option<dope_fiber::raw::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::raw::task::Waker<'_>>` invariant
-   = note: the struct `Cell<T>` is invariant over the parameter `T`
-   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
-
-error: lifetime may not live long enough
-  --> tests/ui/task/waker_escapes_fiber.rs:15:9
-   |
-11 | impl<'d> Fiber<'d> for Escape<'d> {
-   |      -- lifetime `'d` defined here
-...
-14 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
-   |                                   -- has type `Pin<&mut dope_fiber::raw::task::Context<'2, '_>>`
-15 |         self.0.set(Some(cx.waker()));
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument requires that `'2` must outlive `'d`
-   |
-   = note: requirement occurs because of the type `Cell<Option<dope_fiber::raw::task::Waker<'_>>>`, which makes the generic argument `Option<dope_fiber::raw::task::Waker<'_>>` invariant
-   = note: the struct `Cell<T>` is invariant over the parameter `T`
-   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
-
-error[E0597]: `cx` does not live long enough
+error[E0308]: mismatched types
   --> tests/ui/task/waker_escapes_fiber.rs:15:25
    |
-11 | impl<'d> Fiber<'d> for Escape<'d> {
-   |      -- lifetime `'d` defined here
-...
-14 |     fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<()> {
-   |                                   -- binding `cx` declared here
 15 |         self.0.set(Some(cx.waker()));
-   |         ----------------^^----------
-   |         |               |
-   |         |               borrowed value does not live long enough
-   |         argument requires that `cx` is borrowed for `'d`
-16 |         Poll::Pending
-17 |     }
-   |      - `cx` dropped here while still borrowed
+   |                    ---- ^^^^^^^^^^ expected `Waker<'_>`, found `WakerRef<'_, '_>`
+   |                    |
+   |                    arguments to this enum variant are incorrect
+   |
+help: the type constructed contains `WakerRef<'_, '_>` due to the type of the argument passed
+  --> tests/ui/task/waker_escapes_fiber.rs:15:20
+   |
+15 |         self.0.set(Some(cx.waker()));
+   |                    ^^^^^----------^
+   |                         |
+   |                         this argument influences the type of `Some`
+note: tuple variant defined here
+  --> $RUST/core/src/option.rs
+   |
+   |     Some(#[stable(feature = "rust1", since = "1.0.0")] T),
+   |     ^^^^

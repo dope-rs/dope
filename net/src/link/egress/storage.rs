@@ -1,4 +1,5 @@
 use o3::buffer::Shared;
+use o3::cell::RegionToken;
 
 use super::WirePool;
 use super::arena::Arena;
@@ -21,7 +22,7 @@ impl Storage {
 
     pub fn with_config(config: Config) -> Self {
         Self {
-            wire: WirePool::new(config.wire_bytes() / WirePool::CAPACITY as u32),
+            wire: WirePool::new(config.wire_blocks()),
             config,
         }
     }
@@ -30,12 +31,16 @@ impl Storage {
         self.config
     }
 
-    pub fn arena<B, const IOV: usize>(&self, lanes: usize) -> Arena<'_, B, IOV> {
-        Arena::with_config(self, self.config, lanes)
+    pub fn arena<'d, B, const IOV: usize>(
+        &self,
+        token: &RegionToken<'d>,
+        lanes: usize,
+    ) -> Arena<'d, '_, B, IOV> {
+        Arena::with_config(self, token, self.config, lanes)
     }
 
-    pub fn shared_arena(&self, lanes: usize) -> Arena<'_, Shared> {
-        self.arena(lanes)
+    pub fn shared_arena<'d>(&self, token: &RegionToken<'d>, lanes: usize) -> Arena<'d, '_, Shared> {
+        self.arena(token, lanes)
     }
 }
 

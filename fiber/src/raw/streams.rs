@@ -3,14 +3,14 @@ use std::mem::take;
 use std::pin::Pin;
 use std::task::Poll;
 
+use dope::driver::ready::CompletionWaker;
+use dope_net::wire::{RecvTarget, Wire};
 use o3::buffer::Shared;
 
 use crate::io::Io;
 use crate::net::port::result::{RecvInto, SendIdle};
 use crate::raw::task::CompletionRegistrar;
 use crate::{Context, Fiber};
-use dope::driver::ready::CompletionWaker;
-use dope_net::wire::{RecvTarget, Wire};
 
 #[derive(Clone, Copy)]
 enum Interest {

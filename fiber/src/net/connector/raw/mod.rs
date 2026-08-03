@@ -2,14 +2,15 @@ use std::io;
 use std::pin::Pin;
 use std::task::Poll;
 
-use super::ConnectorHandle;
-use crate::io::Io;
-use crate::raw::task::{CompletionOwner, CompletionRegistrar};
-use crate::{Context, Fiber};
 use dope::driver::ready::CompletionWaker;
 use dope::manifold::connector::source::DialKey;
 use dope_net::Transport;
 use dope_net::wire::Wire;
+
+use super::ConnectorHandle;
+use crate::io::Io;
+use crate::raw::task::{CompletionOwner, CompletionRegistrar};
+use crate::{Context, Fiber};
 
 enum Stage<T: Transport> {
     Init {

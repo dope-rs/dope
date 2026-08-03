@@ -26,7 +26,7 @@ where
 {
     fn drain_requests(
         app: &A,
-        egress_arena: &mut arena::Arena<'_, A::Send>,
+        egress_arena: &mut arena::Arena<'d, '_, A::Send>,
         dirty: &PendingQueue,
         idx: SlotIndex,
         slot: &mut Slot<'d, A::Wire, State<A::Conn, A::Send>>,
@@ -56,7 +56,7 @@ where
 {
     fn drain_requests(
         app: &A,
-        egress_arena: &mut arena::Arena<'_, A::Send>,
+        egress_arena: &mut arena::Arena<'d, '_, A::Send>,
         dirty: &PendingQueue,
         idx: SlotIndex,
         slot: &mut Slot<'d, A::Wire, State<A::Conn, A::Send>>,
@@ -67,7 +67,11 @@ where
         let egress = egress_arena.queue_for(slot.state.lane);
         let requests = app.drain_requests(
             target,
-            |bytes| egress.try_enqueue(bytes).inspect(|()| enqueued = true),
+            |region, bytes| {
+                egress
+                    .try_enqueue(region, bytes)
+                    .inspect(|()| enqueued = true)
+            },
             driver,
         );
         if enqueued {
@@ -105,34 +109,16 @@ where
         }
         this.app
             .before_send(slot, this.egress_arena.queue_for(slot.state.lane), driver);
-        let reclaim_on_submit = matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnSubmit);
         let consumed = {
             let mut egress = this.egress_arena.queue_for(slot.state.lane);
-            let vectored = egress.prepare_send(u32::MAX as usize);
-            if vectored.is_empty() {
-                slot.flush_pending(driver, token);
-                return;
-            }
-            let consumed = Slot::<A::Wire, State<A::Conn, A::Send>>::submit_wire_vectored(
-                &mut slot.core,
-                &mut slot.wire,
-                &mut slot.send,
-                vectored,
-                token,
-                driver,
-            );
-            if reclaim_on_submit && !egress.try_ack(consumed) {
-                slot.core.begin_close();
-                return;
-            }
-            consumed
+            slot.submit_egress(&mut egress, token, driver)
         };
+        let reclaim_on_submit = matches!(A::Wire::RECLAIM, Reclaim::OnSubmit);
         if reclaim_on_submit {
             Self::drain_requests(this.app, this.egress_arena, this.dirty, idx, slot, driver);
         }
-        let stalled =
-            reclaim_on_submit && consumed == 0 && !A::Wire::holds_plain(&slot.wire, &slot.send);
-        if !slot.core.is_send_inflight() && !stalled {
+        let stalled = reclaim_on_submit && consumed == 0 && !slot.holds_plain();
+        if !slot.is_send_inflight() && !stalled {
             this.dirty.mark(idx, &slot.state.pending, PEND_EGRESS);
         }
     }
@@ -165,14 +151,19 @@ where
         event: SendEvent,
         driver: &mut DriverContext<'_, 'd>,
     ) {
-        let (idx, sent) = match self
+        let (idx, completion) = match self
             .as_mut()
             .project()
             .pool
             .classify_send(driver, token, event)
         {
-            SendOutcome::Sent { idx, n } => (idx, n),
-            SendOutcome::Close(idx) => {
+            SendOutcome::Sent { idx, completion } => (idx, completion),
+            SendOutcome::Close { idx, completion } => {
+                let this = self.as_mut().project();
+                if let Some(slot) = this.pool.get_mut(idx) {
+                    let mut queue = this.egress_arena.queue_for(slot.state.lane);
+                    slot.abort_egress(&mut queue, completion);
+                }
                 return self.as_mut().close_slot(idx, driver);
             }
             SendOutcome::Drop => return,
@@ -180,18 +171,13 @@ where
         {
             let this = self.as_mut().project();
             if let Some(slot) = this.pool.get_mut(idx) {
-                if matches!(<A::Wire as Wire>::RECLAIM, Reclaim::OnComplete)
-                    && !this.egress_arena.queue_for(slot.state.lane).try_ack(sent)
-                {
+                let mut queue = this.egress_arena.queue_for(slot.state.lane);
+                let Ok(sent) = slot.complete_egress(&mut queue, driver.region_token(), completion)
+                else {
                     self.as_mut().close_slot(idx, driver);
                     return;
-                }
-                this.app.send(
-                    slot,
-                    this.egress_arena.queue_for(slot.state.lane),
-                    sent,
-                    driver,
-                );
+                };
+                this.app.send(slot, queue, sent, driver);
                 Self::drain_requests(this.app, this.egress_arena, this.dirty, idx, slot, driver);
             }
         }

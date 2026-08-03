@@ -1,21 +1,22 @@
-use crate::DriverContext;
-use crate::manifold::Outcome;
-use crate::manifold::env::Env;
-use crate::manifold::listener::Listener;
+use std::io;
+use std::net::IpAddr;
+use std::pin::Pin;
+
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::RecvEvent;
 use dope_net::link::raw::event::DispatchRecv;
 use dope_net::link::slot::Slot;
 use dope_net::wire::{RecvChunk, Wire};
 use o3::buffer::RetainBytes;
-use std::io;
-use std::net::IpAddr;
-use std::pin::Pin;
 
 use super::egress::{Egress, EgressPhase, SlotFlow};
 use super::idle::IdlePhase;
 use super::send::SendPhase;
 use super::state::{EgressCtx, State};
+use crate::DriverContext;
+use crate::manifold::Outcome;
+use crate::manifold::env::Env;
+use crate::manifold::listener::Listener;
 
 pub trait Application<'d>: Sized {
     type Conn: Default + 'static;
@@ -38,10 +39,15 @@ pub trait Application<'d>: Sized {
 /// The policy is an associated type only: no value is stored and every call is
 /// monomorphized for the application and policy pair.
 pub trait ApplicationHooks<'d, A: Application<'d>> {
+    fn open_failed(app: Pin<&mut A>, error: &<A::Wire as Wire>::OpenError) {
+        let _ = app;
+        eprintln!("dope: listener wire open failed: {error}");
+    }
+
     fn chunk<R: RetainBytes>(
         app: Pin<&mut A>,
         slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
         chunk: R,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome;
@@ -49,7 +55,7 @@ pub trait ApplicationHooks<'d, A: Application<'d>> {
     fn retained_chunk(
         app: Pin<&mut A>,
         slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
         chunk: <A::Wire as Wire>::RetainedRecv<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -60,7 +66,7 @@ pub trait ApplicationHooks<'d, A: Application<'d>> {
     fn send(
         app: Pin<&mut A>,
         slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
         sent: usize,
         driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -70,7 +76,7 @@ pub trait ApplicationHooks<'d, A: Application<'d>> {
     fn close(
         app: Pin<&mut A>,
         slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
     ) {
         let _ = (app, slot, egress);
     }
@@ -78,7 +84,7 @@ pub trait ApplicationHooks<'d, A: Application<'d>> {
     fn teardown(
         app: Pin<&mut A>,
         slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
     ) {
         Self::close(app, slot, egress);
     }
@@ -95,7 +101,7 @@ pub trait ApplicationHooks<'d, A: Application<'d>> {
     fn activate(
         app: Pin<&mut A>,
         slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
         driver: &mut DriverContext<'_, 'd>,
     ) {
         let _ = (app, slot, egress, driver);
@@ -104,7 +110,7 @@ pub trait ApplicationHooks<'d, A: Application<'d>> {
     fn accept(
         app: Pin<&mut A>,
         slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
         let _ = (app, slot, egress, driver);
@@ -246,7 +252,7 @@ where
                 }
                 Outcome::Overrun => {
                     if let Some(slot) = self.as_mut().project().pool.get_mut(idx) {
-                        slot.core.mark_aborted();
+                        slot.mark_aborted();
                     }
                     Self::close_inherent(self.as_mut(), idx, driver)
                 }
@@ -274,10 +280,9 @@ where
             if let Some(slot) = this.pool.get_mut(idx) {
                 slot.flush_pending(driver, ud);
                 let egress = this.egress_arena.queue_for(idx.raw() as usize);
-                if !slot.core.is_send_inflight() && matches!(slot.egress(&egress), Egress::Stalled)
-                {
-                    let write_buf = this.aux.write_buf_raw(slot);
-                    slot.resume_send(write_buf, ud, driver);
+                if !slot.is_send_inflight() && matches!(slot.egress(&egress), Egress::Stalled) {
+                    let flight = this.aux.direct_flight(idx);
+                    slot.resume_send(flight, ud, driver);
                 }
             }
         }

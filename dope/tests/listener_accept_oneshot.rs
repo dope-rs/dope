@@ -7,10 +7,9 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::pin::Pin;
 use std::rc::Rc;
 
-use dope::manifold::Outcome;
-use dope::manifold::listener;
 use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::state::EgressCtx;
+use dope::manifold::{Outcome, listener};
 use dope_net::link::slot::Slot;
 use dope_net::wire::identity::Identity;
 use dope_test::Gate;
@@ -37,7 +36,7 @@ impl<'d> ApplicationHooks<'d, TraceApp> for TraceApp {
     fn chunk<R: RetainBytes>(
         _app: Pin<&mut TraceApp>,
         _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         _chunk: R,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -47,7 +46,7 @@ impl<'d> ApplicationHooks<'d, TraceApp> for TraceApp {
     fn accept(
         app: Pin<&mut TraceApp>,
         slot: &mut Slot<'d, Identity, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         let this = app.get_mut();

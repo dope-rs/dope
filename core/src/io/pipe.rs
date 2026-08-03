@@ -1,13 +1,13 @@
 use std::cell::Cell;
 use std::io;
+use std::io::{Error, ErrorKind};
 use std::marker::PhantomData;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
+use libc::write;
+
 use crate::driver::Driver;
 use crate::platform::raw::abi::PlatformAbi;
-use libc::write;
-use std::io::Error;
-use std::io::ErrorKind;
 
 pub(crate) struct PipeEnds {
     read: OwnedFd,

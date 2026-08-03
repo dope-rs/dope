@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `*token` as mutable more than once at a time
+ --> tests/ui/egress/detached_front_reentry.rs:6:25
+  |
+5 |     let (_, front) = queue.take_front(token).unwrap();
+  |                                       ----- first mutable borrow occurs here
+6 |     queue.try_push_back(token, b"next", 4).unwrap();
+  |                         ^^^^^ second mutable borrow occurs here
+7 |     front.release();
+  |     ----- first borrow later used here

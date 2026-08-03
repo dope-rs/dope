@@ -1,9 +1,8 @@
 use std::cell::Cell;
-use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{io, thread};
 
 use dope::driver::Config;
 use dope::driver::ready::ReadySlot;
@@ -49,7 +48,7 @@ impl<'d> Dispatcher<'d> for CascadingReady<'d> {
         }
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         Idle::Park(None)
     }
 }
@@ -72,7 +71,7 @@ impl<'d> Dispatcher<'d> for TurnClockProbe<'d> {
         }
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         Idle::Park(None)
     }
 }

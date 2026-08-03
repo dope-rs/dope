@@ -1,7 +1,5 @@
 extern crate dope;
 
-use dope_test as common;
-
 use std::net::SocketAddr;
 use std::pin::Pin;
 
@@ -42,13 +40,13 @@ fn datagram_fixed_port_allows_concurrent_reuseport_binds() {
         let addr = reserve_udp_addr();
         assert_ne!(addr.port(), 0);
 
-        let exec_a = common::quic_exec(4096, 2048);
+        let exec_a = dope_test::quic_exec(4096, 2048);
         let bound = exec_a.enter(|mut sess_a| {
             let Ok(_sock_a) = Socket::<0>::bind(addr, &mut sess_a.driver_access()) else {
                 return false;
             };
 
-            let exec_b = common::quic_exec(4096, 2048);
+            let exec_b = dope_test::quic_exec(4096, 2048);
             exec_b.enter(|mut sess_b| {
                 let sock_b = Socket::<0>::bind(addr, &mut sess_b.driver_access())
                     .expect("second bind on same fixed port must succeed with SO_REUSEPORT");
@@ -77,7 +75,7 @@ fn finished_datagram_reuses_its_only_fixed_slot() {
                     &mut session.driver_access(),
                 )
                 .expect("fixed slot must be reclaimed");
-                session.with_app(common::ManifoldHost::new(SocketHost { socket }), |_| {});
+                session.with_app(dope_test::ManifoldHost::new(SocketHost { socket }), |_| {});
             }
         });
 }

@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use dope_core::driver::ready::CompletionWaker;
@@ -44,21 +45,21 @@ where
         if *this.as_ref().project_ref().draining {
             return;
         }
+        let now = driver.turn_now();
         let backoff_fired = {
-            let fields = this.as_ref().project_ref();
-            fields
-                .backoff_timer
-                .is_some_and(|ticket| fields.timer.is_fired(ticket))
+            let ready = this.as_ref().backoff_key();
+            let wake = CompletionWaker::from_ready(this.as_ref().get_ref().route.driver(), ready);
+            matches!(
+                this.as_mut()
+                    .project()
+                    .backoff_timer
+                    .as_ref()
+                    .poll(now, wake),
+                Poll::Ready(())
+            )
         };
         if !this.as_ref().project_ref().upstreams.has_pending() && !backoff_fired {
             return;
-        }
-        let now = driver.turn_now();
-        if backoff_fired {
-            let fields = this.as_mut().project();
-            if let Some(ticket) = fields.backoff_timer.take() {
-                fields.timer.cancel(ticket);
-            }
         }
         let cap = this.as_ref().project_ref().pool.capacity().get();
         for _ in 0..cap {
@@ -72,23 +73,28 @@ where
                     };
                     let submitted = fields.pool.submit_socket_with_state(
                         socket_params,
-                        |slot| {
+                        |slot, region| {
                             let lane = slot.raw() as usize;
-                            fields.egress_arena.clear(lane);
+                            let cleared = fields.egress_arena.clear(region, lane);
+                            assert!(cleared, "reused connector lane must be quiescent");
                             State::<A::Conn, A::Send>::new(key, lane)
                         },
                         driver,
                     );
                     match submitted {
-                        Some(slot) => fields.upstreams.bind(key, slot),
-                        None => {
+                        Ok(Some(slot)) => fields.upstreams.bind(key, slot),
+                        Ok(None) => {
                             fields.upstreams.connect_deferred(key, now);
                             break;
+                        }
+                        Err(error) => {
+                            fields.upstreams.kill(key);
+                            fields.app.open_failed(key, error, driver);
                         }
                     }
                 }
                 Action::Backoff { min_retry_at } => {
-                    if this.as_ref().project_ref().backoff_timer.is_none() {
+                    if !this.as_ref().project_ref().backoff_timer.is_armed() {
                         this.as_mut().arm_backoff(min_retry_at);
                     }
                     break;
@@ -101,21 +107,13 @@ where
     fn arm_backoff(self: Pin<&mut Self>, deadline: Instant) {
         let ready = self.as_ref().backoff_key();
         let wake = CompletionWaker::from_ready(self.as_ref().get_ref().route.driver(), ready);
-        let this = self.project();
-        if let Some(ticket) = this.backoff_timer.take() {
-            this.timer.cancel(ticket);
-        }
-        *this.backoff_timer = this.timer.try_arm(deadline, wake).ok();
+        self.project().backoff_timer.as_ref().arm(deadline, wake);
     }
 
     fn arm_liveness(self: Pin<&mut Self>, deadline: Instant) {
         let ready = self.as_ref().backoff_key();
         let wake = CompletionWaker::from_ready(self.as_ref().get_ref().route.driver(), ready);
-        let this = self.project();
-        if let Some(ticket) = this.liveness_timer.take() {
-            this.timer.cancel(ticket);
-        }
-        *this.liveness_timer = this.timer.try_arm(deadline, wake).ok();
+        self.project().liveness_timer.as_ref().arm(deadline, wake);
     }
 
     fn earliest_liveness(self: Pin<&Self>, timeout: Duration) -> Option<Instant> {
@@ -139,25 +137,25 @@ where
     }
 
     fn poll_liveness(mut self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {
-        let fired = {
-            let fields = self.as_ref().project_ref();
-            fields
-                .liveness_timer
-                .is_some_and(|ticket| fields.timer.is_fired(ticket))
-        };
-        if !fired {
+        if !self.as_ref().project_ref().liveness_timer.is_armed() {
             return;
         }
+        let now = driver.turn_now();
+        let ready = self.as_ref().backoff_key();
+        let wake = CompletionWaker::from_ready(self.as_ref().get_ref().route.driver(), ready);
+        if self
+            .as_mut()
+            .project()
+            .liveness_timer
+            .as_ref()
+            .poll(now, wake)
+            .is_pending()
         {
-            let this = self.as_mut().project();
-            if let Some(ticket) = this.liveness_timer.take() {
-                this.timer.cancel(ticket);
-            }
+            return;
         }
         let Some(timeout) = self.as_ref().project_ref().app.inbound_idle_timeout() else {
             return;
         };
-        let now = driver.turn_now();
         let capacity = self.as_ref().project_ref().pool.capacity();
         for idx in capacity.slots() {
             let expired = {

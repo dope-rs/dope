@@ -1,9 +1,6 @@
-use core::ptr::addr_of_mut;
-use core::ptr::null_mut;
-use libc::c_int;
-use libc::c_void;
-use libc::iovec;
-use libc::msghdr;
+use core::ptr::{addr_of_mut, null_mut};
+
+use libc::{c_int, c_void, iovec, msghdr};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]

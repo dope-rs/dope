@@ -3,6 +3,7 @@ pub mod __private;
 
 pub mod batch;
 pub mod future;
+pub mod join;
 pub mod pending;
 pub mod pollfn;
 pub mod race;

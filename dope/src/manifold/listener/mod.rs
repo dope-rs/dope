@@ -10,43 +10,38 @@ pub mod state;
 use std::io::{self, Error, ErrorKind};
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-
 use std::pin::Pin;
 use std::process::abort;
 use std::time::Duration;
 
-use application::ApplicationPhase;
-use application::{Application, ApplicationHooks};
+use application::{Application, ApplicationHooks, ApplicationPhase};
 use config::Config;
-use egress::EgressPhase;
-use idle::{IdlePhase, IdleSet};
-use raw::accept::{Accept, AcceptPhase};
-use send::SendPhase;
-use state::{Aux, EgressCtx, State};
-
-use crate::DriverContext;
-use crate::hash;
-use crate::manifold::Manifold;
-use crate::manifold::env::{Bundle, Env};
-use crate::manifold::typed::TypedToken;
-use crate::panic::abort_on_drop_panic;
-use crate::runtime::dispatcher::{FinishContext, Idle};
-use crate::runtime::profile::Balanced;
-use crate::runtime::profile::RuntimeProfile;
 use dope_core::driver::OutboundReservation;
 use dope_core::driver::route::Route;
 use dope_core::driver::token::{Token, TokenCapacity};
 use dope_core::io::Event;
+use dope_net::link;
 use dope_net::link::egress::arena::Arena;
-use dope_net::link::egress::storage::Storage as EgressStorage;
 use dope_net::link::raw::pool::Pool;
 use dope_net::link::slot::{PEND_CLOSE, PEND_EGRESS, PendingQueue, SendBuffer, Slot};
 use dope_net::tcp::Tcp;
 use dope_net::wire::Wire;
 use dope_net::{ListenerTransport, Transport};
+use egress::EgressPhase;
+use idle::{IdlePhase, IdleSet};
 use o3::buffer::Shared;
-use pin_project::pin_project;
-use pin_project::pinned_drop;
+use pin_project::{pin_project, pinned_drop};
+use raw::accept::{Accept, AcceptPhase};
+use send::SendPhase;
+use state::{Aux, EgressCtx, State};
+
+use crate::manifold::Manifold;
+use crate::manifold::env::{Bundle, Env};
+use crate::manifold::typed::TypedToken;
+use crate::panic::abort_on_drop_panic;
+use crate::runtime::dispatcher::{FinishContext, Idle};
+use crate::runtime::profile::{Balanced, RuntimeProfile};
+use crate::{DriverContext, hash};
 
 #[pin_project(PinnedDrop, !Unpin)]
 pub struct Listener<
@@ -61,7 +56,7 @@ pub struct Listener<
 {
     route: Route<'d, ID>,
     pool: Pool<'d, ID, E::Transport, A::Wire, State<A::Conn>>,
-    egress_arena: Arena<'pool, SendBuffer>,
+    egress_arena: Arena<'d, 'pool, SendBuffer>,
     #[pin]
     app: A,
     aux: Aux,
@@ -77,7 +72,7 @@ pub struct Listener<
 fn teardown_slot<'d, A>(
     mut app: Pin<&mut A>,
     slot: &mut Slot<'d, A::Wire, State<A::Conn>>,
-    egress: EgressCtx<'_, '_>,
+    egress: EgressCtx<'_, 'd, '_>,
 ) -> bool
 where
     A: Application<'d>,
@@ -125,7 +120,7 @@ where
         app: A,
         config: Config<E::Transport>,
         hash_builder: hash::State,
-        egress_storage: &'pool EgressStorage,
+        egress_storage: &'pool link::egress::storage::Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
@@ -147,7 +142,7 @@ where
         config: Config<E::Transport>,
         wire_config: <A::Wire as Wire>::InitConfig<'d>,
         hash_builder: hash::State,
-        egress_storage: &'pool EgressStorage,
+        egress_storage: &'pool link::egress::storage::Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
@@ -170,7 +165,7 @@ where
         config: Config<E::Transport>,
         wire_config: <A::Wire as Wire>::InitConfig<'d>,
         hash_builder: hash::State,
-        egress_storage: &'pool EgressStorage,
+        egress_storage: &'pool link::egress::storage::Storage,
         driver: &mut DriverContext<'_, 'd>,
     ) -> io::Result<Self>
     where
@@ -215,7 +210,12 @@ where
                 "listener egress storage does not match its egress config",
             ));
         }
-        let egress_arena = Arena::with_config(egress_storage, egress, max_connections);
+        let egress_arena = Arena::with_config(
+            egress_storage,
+            driver.region_token_ref(),
+            egress,
+            max_connections,
+        );
         let aux = Aux::new(max_connections);
         let idle = IdleSet::new(capacity, E::Profile::IDLE_WINDOW);
         let idle_send = IdleSet::new(
@@ -271,6 +271,10 @@ where
         &self.app
     }
 
+    pub fn capacity(&self) -> usize {
+        self.pool.capacity().get()
+    }
+
     pub fn handler_mut(self: Pin<&mut Self>) -> Pin<&mut A> {
         self.project().app
     }
@@ -282,26 +286,31 @@ where
     pub fn set_close_after(self: Pin<&mut Self>, conn_id: Token) {
         let this = self.project();
         if let Some((_, slot)) = this.pool.by_target_mut(conn_id) {
-            slot.core.set_close_after();
+            slot.set_close_after();
         }
     }
 
     pub fn has_pending_egress(&self, conn_id: Token) -> bool {
         self.pool.by_target(conn_id).is_some_and(|(idx, slot)| {
-            slot.core.is_send_inflight()
+            slot.is_send_inflight()
                 || slot.state.send.consumed_plain < slot.state.send.total_plain
-                || A::Wire::holds_plain(&slot.wire, &slot.send)
+                || slot.holds_plain()
                 || self.egress_arena.bytes(idx.raw() as usize) != 0
         })
     }
 
-    pub fn mark_send(&self, conn_id: Token, bytes: Shared) -> bool {
+    pub fn mark_send(
+        &self,
+        region: &mut o3::cell::RegionToken<'d>,
+        conn_id: Token,
+        bytes: Shared,
+    ) -> bool {
         let Some((idx, slot)) = self.pool.by_target(conn_id) else {
             return false;
         };
         let staged = self
             .egress_arena
-            .try_enqueue(idx.raw() as usize, bytes.into())
+            .try_enqueue(region, idx.raw() as usize, bytes.into())
             .is_ok();
         self.dirty.mark(idx, &slot.state.pending, PEND_EGRESS);
         staged
@@ -411,7 +420,7 @@ where
         this.flush_dirty(driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
+    fn idle(self: Pin<&Self>, _region: &o3::cell::RegionToken<'d>) -> Idle {
         let listener = self;
         let this = listener.project_ref();
         if !this.dirty.is_empty()

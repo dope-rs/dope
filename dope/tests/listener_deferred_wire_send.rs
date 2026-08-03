@@ -3,15 +3,15 @@
 extern crate dope;
 
 use std::cell::RefCell;
+use std::convert::Infallible;
 use std::io::Write;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use dope::io::provided::{ProvidedLease, ProvidedView};
-use dope::manifold::Outcome;
-use dope::manifold::listener;
+use dope::io::recv::{Lease, View};
 use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::egress::SlotEgress;
+use dope::manifold::{Outcome, listener};
 use dope_net::link::slot::Slot;
 use dope_net::wire::send::{Plain, Prepared, SendBuf, Sent, Storage, Vectored};
 use dope_net::wire::{ReadyOpen, Reclaim, RecvChunk, RuntimeLimits, Wire};
@@ -19,6 +19,7 @@ use dope_test::{Gate, Wired};
 use o3::buffer::{Borrowed, Bytes, RetainBytes};
 
 const HANDSHAKE: &[u8] = b"hello";
+const WIRE_PREFIX: u8 = 0xa5;
 
 const ROUNDS: u8 = 2;
 
@@ -40,6 +41,7 @@ impl DeferredWire {
         consumed: usize,
     ) -> Prepared<'a> {
         if self.established() && send.is_empty() && !self.pending.is_empty() {
+            assert!(send.try_extend_from_slice(&[WIRE_PREFIX]));
             assert!(send.try_extend_from_slice(&self.pending));
             self.pending.clear();
         }
@@ -60,9 +62,10 @@ impl Wire for DeferredWire {
         = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
     where
         'd: 'a;
+    type OpenError = Infallible;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type RecvBatch<'a> = std::option::IntoIter<RecvChunk<'a, Self::Recv<'a>>>;
-    type RetainedRecv<'d> = ProvidedView<'d>;
+    type RetainedRecv<'d> = View<'d>;
     type SendStorage = SendBuf<1024>;
 
     const RECLAIM: Reclaim = Reclaim::OnSubmit;
@@ -80,17 +83,17 @@ impl Wire for DeferredWire {
         Ok(())
     }
 
-    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Option<Self::Open<'a, 'd>>
+    fn prepare_open<'a, 'd>(_: &'a mut ()) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
     where
         'd: 'a,
     {
-        Some(ReadyOpen::new(
+        Ok(Some(ReadyOpen::new(
             Self {
                 rounds: 0,
                 pending: Vec::new(),
             },
             SendBuf::new(),
-        ))
+        )))
     }
 
     fn holds_plain<'d>(wire: &Self::Connection<'d>, send: &Self::SendStorage) -> bool {
@@ -112,7 +115,7 @@ impl Wire for DeferredWire {
     fn process_retained_recv<'a, 'd>(
         wire: &mut Self::Connection<'d>,
         _: &mut (),
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>> {
         if !wire.established() {
             wire.rounds += 1;
@@ -186,7 +189,7 @@ impl<'d> ApplicationHooks<'d, PreambleApp> for PreambleApp {
     fn accept(
         app: Pin<&mut PreambleApp>,
         slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
-        mut egress: listener::state::EgressCtx<'_, '_>,
+        mut egress: listener::state::EgressCtx<'_, 'd, '_>,
         driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         for frame in app.get_mut().frames {
@@ -201,7 +204,7 @@ impl<'d> ApplicationHooks<'d, PreambleApp> for PreambleApp {
     fn chunk<R: RetainBytes>(
         _app: Pin<&mut PreambleApp>,
         _slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
-        _egress: listener::state::EgressCtx<'_, '_>,
+        _egress: listener::state::EgressCtx<'_, 'd, '_>,
         _chunk: R,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -211,7 +214,7 @@ impl<'d> ApplicationHooks<'d, PreambleApp> for PreambleApp {
     fn send(
         app: Pin<&mut PreambleApp>,
         slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
-        _egress: listener::state::EgressCtx<'_, '_>,
+        _egress: listener::state::EgressCtx<'_, 'd, '_>,
         sent: usize,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) {
@@ -225,7 +228,7 @@ impl<'d> ApplicationHooks<'d, PreambleApp> for PreambleApp {
     fn close(
         app: Pin<&mut PreambleApp>,
         _slot: &mut Slot<'d, DeferredWire, listener::state::State<()>>,
-        _egress: listener::state::EgressCtx<'_, '_>,
+        _egress: listener::state::EgressCtx<'_, 'd, '_>,
     ) {
         app.get_mut().gate.hit();
     }
@@ -256,17 +259,20 @@ fn frames_written_before_wire_established_are_each_reported() {
             case.until(&gate, 1);
             let got = peer.join().expect("peer join");
 
-            let want: Vec<u8> = FRAMES.concat();
+            let want: Vec<u8> = FRAMES
+                .iter()
+                .flat_map(|frame| std::iter::once(WIRE_PREFIX).chain(frame.iter().copied()))
+                .collect();
             assert_eq!(
                 got, want,
-                "frames must reach the peer once and in order; a repeat means the slot \
-         re-handed plaintext the wire had already consumed"
+                "wire-expanded frames must reach the peer once and in order; a repeat means the \
+                 slot re-handed plaintext the wire had already consumed"
             );
             let lens: Vec<usize> = FRAMES.iter().map(|f| f.len()).collect();
             assert_eq!(
                 *sends.borrow(),
                 lens,
-                "every frame must be reported to send exactly once"
+                "callbacks must report consumed plaintext, never expanded wire bytes"
             );
         }
     }

@@ -29,6 +29,7 @@ mod linux {
         EMFILE, IPPROTO_TCP, SO_REUSEADDR, SO_REUSEPORT, SOL_SOCKET, TCP_DEFER_ACCEPT, TCP_FASTOPEN,
     };
 
+    use super::{Backend, BootstrapBackend, DriverContext, Fd, ListenerConfig, SocketAddr, io};
     use crate::backend::ops::raw::control::ControlBackend;
     use crate::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
     use crate::driver::submission::Submission;
@@ -37,8 +38,6 @@ mod linux {
     use crate::io::ffi::Handle;
     use crate::io::socket::addr::Addr;
     use crate::io::socket::{Domain, Kind};
-
-    use super::{Backend, BootstrapBackend, DriverContext, Fd, ListenerConfig, SocketAddr, io};
 
     const BOOTSTRAP_UD: Token = Token::framework(SlotIndex::ZERO);
 
@@ -267,14 +266,11 @@ mod linux {
 
 #[cfg(not(target_os = "linux"))]
 mod kqueue {
-    use std::os::fd::IntoRawFd;
-
+    use super::{Backend, BootstrapBackend, DriverContext, Fd, ListenerConfig, SocketAddr, io};
     use crate::io::fd::FdSlot;
     use crate::io::ffi::Handle;
     use crate::io::socket::addr::Addr;
     use crate::io::socket::{Domain, Kind};
-
-    use super::{Backend, BootstrapBackend, DriverContext, Fd, ListenerConfig, SocketAddr, io};
 
     impl BootstrapBackend for Backend {
         fn bind_listener_slot<'d>(
@@ -310,7 +306,7 @@ mod kqueue {
 
     fn register(backend: &mut Backend, handle: Handle) -> io::Result<FdSlot> {
         let slot = backend.alloc_fixed_slot()?;
-        backend.register_raw_fd(slot.raw(), handle.into_raw_fd())?;
+        backend.register_fd(slot.raw(), handle.into_owned());
         Ok(slot)
     }
 }

@@ -1,9 +1,10 @@
+use std::convert::Infallible;
 use std::io::{Read, Write};
 use std::pin::pin;
 use std::time::Duration;
 
 extern crate dope;
-use dope::io::provided::ProvidedLease;
+use dope::io::recv::Lease;
 use dope::runtime::profile::Balanced;
 use dope_fiber::net::connector::ConnectorPort;
 use dope_fiber::net::listener::{Listener, ListenerPort};
@@ -12,8 +13,6 @@ use dope_net::wire::send::{Plain, Prepared, Sent, Storage, Vectored};
 use dope_net::wire::{ReadyOpen, Reclaim, RecvChunk, RuntimeLimits, Wire};
 use o3::buffer::{Bytes, Leased, Retained, SharedPool, Uninitialized};
 use o3::cell::BrandCell;
-
-use dope_test as common;
 
 const MAX_CONN: usize = 2;
 const QUEUE_CAP: usize = 256;
@@ -43,6 +42,7 @@ impl Wire for PooledWire {
         = ReadyOpen<Self::Connection<'d>, Self::SendStorage>
     where
         'd: 'a;
+    type OpenError = Infallible;
     type Recv<'a> = Bytes<Leased>;
     type RecvBatch<'a> = std::option::IntoIter<RecvChunk<'a, Self::Recv<'a>>>;
     type RetainedRecv<'d> = Bytes<Retained>;
@@ -69,11 +69,13 @@ impl Wire for PooledWire {
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
     }
 
-    fn prepare_open<'a, 'd>(_: &'a mut Self::RuntimeContext<'d>) -> Option<Self::Open<'a, 'd>>
+    fn prepare_open<'a, 'd>(
+        _: &'a mut Self::RuntimeContext<'d>,
+    ) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
     where
         'd: 'a,
     {
-        Some(ReadyOpen::new(Self, ()))
+        Ok(Some(ReadyOpen::new(Self, ())))
     }
 
     fn process_recv<'a, 'd>(
@@ -92,7 +94,7 @@ impl Wire for PooledWire {
     fn process_retained_recv<'a, 'd>(
         _: &mut Self::Connection<'d>,
         runtime: &mut Self::RuntimeContext<'d>,
-        bytes: ProvidedLease<'a>,
+        bytes: Lease<'a>,
     ) -> Option<Self::RetainedRecv<'a>> {
         let mut lease = runtime.try_acquire()?;
         lease
@@ -146,9 +148,9 @@ struct App<'d, 'scope> {
 
 #[test]
 fn receive_hoarder_cannot_starve_another_connection() {
-    let addr = common::reserve_addr();
+    let addr = dope_test::reserve_addr();
     let exec = dope::runtime::executor::Executor::new(
-        dope::driver::Config::for_tcp_profile::<Balanced>(MAX_CONN).with_provided(1, 1024),
+        dope::driver::Config::for_tcp_profile::<Balanced>(MAX_CONN).with_recv(1, 1024),
     )
     .expect("executor")
     .with_storage_factory(
@@ -170,8 +172,8 @@ fn receive_hoarder_cannot_starve_another_connection() {
         let app = pin!(BrandCell::new(App { pool }));
         let pool = sess.storage().handle();
         let clients = std::thread::spawn(move || {
-            let mut hoarder = common::connect_with_read_timeout(addr, Duration::from_secs(3));
-            let mut probe = common::connect_with_read_timeout(addr, Duration::from_secs(3));
+            let mut hoarder = dope_test::connect_with_read_timeout(addr, Duration::from_secs(3));
+            let mut probe = dope_test::connect_with_read_timeout(addr, Duration::from_secs(3));
             std::thread::sleep(Duration::from_millis(250));
             hoarder
                 .write_all(&vec![b'H'; QUEUE_CAP])
@@ -185,20 +187,20 @@ fn receive_hoarder_cannot_starve_another_connection() {
             drop(hoarder);
             reply
         });
-        let hoarder = common::drive(
+        let hoarder = dope_test::drive(
             &mut sess,
             app.as_ref(),
             dope_gen::fiber!('_ => async move { pool.accept().await }),
         )
         .expect("accept hoarder");
-        let probe = common::drive(
+        let probe = dope_test::drive(
             &mut sess,
             app.as_ref(),
             dope_gen::fiber!('_ => async move { pool.accept().await }),
         )
         .expect("accept probe");
         let mut probe = Some(probe);
-        let (probe, result) = common::drive(
+        let (probe, result) = dope_test::drive(
             &mut sess,
             app.as_ref(),
             dope_gen::fiber!('_ => async move {
@@ -213,7 +215,7 @@ fn receive_hoarder_cannot_starve_another_connection() {
         )
         .expect("read probe");
         let mut probe = Some(probe);
-        common::drive(
+        dope_test::drive(
             &mut sess,
             app.as_ref(),
             dope_gen::fiber!('_ => async move {

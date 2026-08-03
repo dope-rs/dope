@@ -1,17 +1,17 @@
 use std::cell::Cell;
 use std::io;
+use std::io::{Error, ErrorKind};
+use std::mem::replace;
+use std::process::abort;
 
-use crate::DriverContext;
 use dope_core::backend::{RawSqe, RetainedSqe, StableSqeSource};
 use dope_core::driver::control::Quiesce;
 use dope_core::driver::ready::CompletionWaker;
 use dope_core::driver::submission::Submission;
 use dope_core::driver::token::{Key, KeyParts, KeyTag, Token, TokenCapacity, TokenCellSlab};
 use o3::collections::CellQueue;
-use std::io::Error;
-use std::io::ErrorKind;
-use std::mem::replace;
-use std::process::abort;
+
+use crate::DriverContext;
 
 struct TableSubmission(RawSqe);
 

@@ -1,13 +1,13 @@
-use o3::marker::ThreadBound;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Error, ErrorKind};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
+use libc::{AT_FDCWD, c_char};
+use o3::marker::ThreadBound;
+
 use crate::backend::RawSqe;
 use crate::driver::token::Token;
-use libc::AT_FDCWD;
-use libc::c_char;
 
 pub struct RawMetadata {
     pub len: u64,

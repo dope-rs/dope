@@ -1,5 +1,3 @@
-use dope_test as common;
-
 use std::cell::Cell;
 use std::io;
 use std::net::SocketAddr;
@@ -12,8 +10,7 @@ use dope::manifold::connector::source::health::Static;
 use dope::manifold::connector::source::{Action, DialKey, Dialer};
 use dope_net::Transport;
 use dope_net::tcp::Tcp;
-
-use common::assert_unwinds;
+use dope_test::assert_unwinds;
 
 fn expect_connect<T: Transport>(dialer: &mut impl Dialer<T>, now: Instant) -> DialKey {
     match dialer.poll_connect(now) {

@@ -7,9 +7,8 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use io_uring::{IoUring, Submitter};
 use io_uring::types::BufRingEntry;
 
-use crate::io::provided::raw::buffer::BufferId;
-use crate::io::provided::raw::completion::CompletedBuffer;
-use crate::io::provided::raw::region::InitializedRegion;
+use crate::io::recv::completion::Completion;
+use crate::io::recv::raw::Region;
 
 use super::mapping::Mapping;
 
@@ -122,9 +121,9 @@ impl Storage {
         })
     }
 
-    fn write(&mut self, position: u16, bid: u16) {
+    fn write(&mut self, position: u16, buffer: Buffer) {
         let position = self.layout.slot(position);
-        let bid = self.layout.slot(bid);
+        let bid = buffer.raw();
         // SAFETY: Layout masks every slot below the Mapping length created
         // from that same layout. Only these payload fields are written before
         // the release-store publishes them to the kernel; tail is not borrowed.
@@ -136,19 +135,25 @@ impl Storage {
         }
     }
 
-    fn complete(&self, raw: u16, len: usize) -> CompletedBuffer {
-        let slot = self.layout.slot(raw);
+    fn complete(&self, raw: u16, len: usize) -> Completion {
+        let buffer = self.buffer_from_cqe(raw);
+        let slot = buffer.raw();
         // SAFETY: slot is below layout.entries(), and buffers contains that many
         // strides. The buffer-selected CQE initialized the reported prefix.
         let region = unsafe {
-            InitializedRegion::new(
+            Region::new(
                 self.buffers.as_non_null().add(self.layout.offset(slot)),
                 len.min(self.layout.buffer_len() as usize),
             )
         };
-        // SAFETY: a buffer-selected CQE transfers this live slot from the kernel.
-        let id = unsafe { BufferId::new(slot) };
-        CompletedBuffer::new(id, region)
+        Completion::new(buffer, region)
+    }
+
+    fn buffer_from_cqe(&self, raw: u16) -> Buffer {
+        let slot = self.layout.slot(raw);
+        // SAFETY: a buffer-selected CQE transfers this live slot from the
+        // kernel to this ring. Layout masks the ABI value to a live slot.
+        unsafe { Buffer::from_cqe(slot) }
     }
 
     fn publish(&self, value: u16) {
@@ -178,6 +183,21 @@ impl Storage {
 pub(crate) struct RegisteredRing {
     io: IoUring,
     provided: ProvidedRing,
+}
+
+pub(crate) struct Buffer(u16);
+
+impl Buffer {
+    /// # Safety
+    /// `slot` is a live buffer selected by a CQE, whose ownership has just
+    /// transferred from the kernel to this driver.
+    unsafe fn from_cqe(slot: u16) -> Self {
+        Self(slot)
+    }
+
+    fn raw(&self) -> u16 {
+        self.0
+    }
 }
 
 pub(crate) struct ProvidedRing {
@@ -259,20 +279,16 @@ impl ProvidedRing {
         self.storage.entries() as usize
     }
 
-    pub(crate) fn complete(&self, bid: u16, len: usize) -> CompletedBuffer {
+    pub(crate) fn complete(&self, bid: u16, len: usize) -> Completion {
         self.storage.complete(bid, len)
     }
 
-    pub(crate) fn defer(&mut self, id: BufferId) {
-        self.defer_raw(id.into_raw());
+    pub(crate) fn buffer_from_cqe(&self, bid: u16) -> Buffer {
+        self.storage.buffer_from_cqe(bid)
     }
 
-    pub(crate) fn defer_completion(&mut self, bid: u16) {
-        self.defer_raw(bid);
-    }
-
-    fn defer_raw(&mut self, bid: u16) {
-        self.storage.write(self.tail_pos, bid);
+    pub(crate) fn defer(&mut self, buffer: Buffer) {
+        self.storage.write(self.tail_pos, buffer);
         self.tail_pos = self.tail_pos.wrapping_add(1);
     }
 

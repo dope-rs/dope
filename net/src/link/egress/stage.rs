@@ -1,41 +1,65 @@
 use o3::buffer::Shared;
+use o3::cell::RegionToken;
 
+use super::StableBytes;
 use super::WireLease;
 use super::arena::PreparedChain;
-use super::metadata::MetadataQueue;
-use super::raw::entry::Entry;
-use super::raw::wire::WirePointer;
+use super::entry::Entry;
+use super::metadata;
+use super::wire::Span;
 
-pub struct Stage<'a, 'pool, B = Shared> {
-    lease: &'a mut Option<WireLease<'pool>>,
-    entries: MetadataQueue<'a, Entry<B>>,
+pub struct Stage<'a, 'd, 'pool, B = Shared> {
+    lease: Option<&'a mut Option<WireLease<'pool>>>,
+    base: Option<&'a mut u32>,
+    entries: metadata::Queue<'a, 'd, Entry<B>>,
+    token: &'a mut RegionToken<'d>,
     start: usize,
     len: usize,
     overflowed: bool,
     committed: bool,
 }
 
-impl<'a, 'pool, B> Stage<'a, 'pool, B> {
+impl<'a, 'd, 'pool, B> Stage<'a, 'd, 'pool, B> {
     pub(super) fn open(
         lease: &'a mut Option<WireLease<'pool>>,
-        entries: MetadataQueue<'a, Entry<B>>,
+        base: &'a mut u32,
+        entries: metadata::Queue<'a, 'd, Entry<B>>,
+        token: &'a mut RegionToken<'d>,
     ) -> Self {
         let (start, overflowed) = match lease.as_mut() {
             Some(buffer) => (buffer.len(), false),
             None => (0, true),
         };
         Self {
-            lease,
+            lease: Some(lease),
+            base: Some(base),
             entries,
+            token,
             start,
             len: 0,
             overflowed,
             committed: false,
         }
     }
+
+    pub(super) fn blocked(
+        entries: metadata::Queue<'a, 'd, Entry<B>>,
+        token: &'a mut RegionToken<'d>,
+    ) -> Self {
+        Self {
+            lease: None,
+            base: None,
+            entries,
+            token,
+            start: 0,
+            len: 0,
+            overflowed: true,
+            committed: false,
+        }
+    }
 }
 
-impl<B> Stage<'_, '_, B> {
+impl<B> Stage<'_, '_, '_, B> {
     pub fn len(&self) -> usize {
         self.len
     }
@@ -52,7 +76,7 @@ impl<B> Stage<'_, '_, B> {
         if self.overflowed {
             return;
         }
-        let Some(buffer) = self.lease.as_mut() else {
+        let Some(buffer) = self.lease.as_deref_mut().and_then(Option::as_mut) else {
             self.overflowed = true;
             return;
         };
@@ -67,7 +91,7 @@ impl<B> Stage<'_, '_, B> {
         if self.overflowed {
             return;
         }
-        let Some(buffer) = self.lease.as_mut() else {
+        let Some(buffer) = self.lease.as_deref_mut().and_then(Option::as_mut) else {
             self.overflowed = true;
             return;
         };
@@ -79,14 +103,14 @@ impl<B> Stage<'_, '_, B> {
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        let Some(buffer) = self.lease.as_mut() else {
+        let Some(buffer) = self.lease.as_deref_mut().and_then(Option::as_mut) else {
             return &mut [];
         };
         &mut buffer.as_mut_slice()[self.start..self.start + self.len]
     }
 }
 
-impl<B: AsRef<[u8]>> Stage<'_, '_, B> {
+impl<B: StableBytes> Stage<'_, '_, '_, B> {
     pub fn commit(self) -> usize {
         self.commit_with(None::<B>)
     }
@@ -95,12 +119,16 @@ impl<B: AsRef<[u8]>> Stage<'_, '_, B> {
         if self.overflowed || self.len == 0 {
             return 0;
         }
-        let Some(buffer) = self.lease.as_ref() else {
+        let Some(buffer) = self.lease.as_deref().and_then(Option::as_ref) else {
             return 0;
         };
-        let data = WirePointer::at(buffer, self.start);
-        let mut prepared = PreparedChain::new(self.entries.pool);
-        if !prepared.push_wire(data.get(), self.len) {
+        let Some(base) = self.base.as_deref() else {
+            return 0;
+        };
+        debug_assert!(self.start + self.len <= buffer.len());
+        let span = Span::at(*base, self.start, self.len);
+        let mut prepared = PreparedChain::new(self.entries.pool, self.token);
+        if !prepared.push_wire(span) {
             return 0;
         }
         if let Some(body) = body
@@ -116,15 +144,22 @@ impl<B: AsRef<[u8]>> Stage<'_, '_, B> {
     }
 }
 
-impl<B> Drop for Stage<'_, '_, B> {
+impl<B> Drop for Stage<'_, '_, '_, B> {
     fn drop(&mut self) {
         if !self.committed
-            && let Some(buffer) = self.lease.as_mut()
+            && let Some(buffer) = self.lease.as_deref_mut().and_then(Option::as_mut)
         {
             buffer.truncate(self.start);
         }
-        if self.lease.as_ref().is_some_and(WireLease::is_empty) {
-            self.lease.take();
+        if self
+            .lease
+            .as_deref()
+            .and_then(Option::as_ref)
+            .is_some_and(WireLease::is_empty)
+        {
+            if let Some(lease) = self.lease.as_deref_mut() {
+                lease.take();
+            }
         }
     }
 }

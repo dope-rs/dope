@@ -3,12 +3,12 @@ use std::mem::{MaybeUninit, replace};
 use super::FixedMap;
 use crate::driver::token::Token;
 use crate::io::fd::FdSlot;
-use crate::io::provided::raw::buffer::BufferId;
+use crate::backend::RecvBuffer;
 use libc::ECANCELED;
 
 const NONE: u32 = u32::MAX;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub(crate) enum PendingCompletion {
     Accept {
         ud: Token,
@@ -19,7 +19,7 @@ pub(crate) enum PendingCompletion {
         ud: Token,
         result: i32,
         more: bool,
-        bid: Option<BufferId>,
+        buffer: Option<RecvBuffer>,
     },
     Write {
         ud: Token,
@@ -117,8 +117,8 @@ impl PendingQueue {
     }
 
     pub(super) fn push_back(&mut self, value: PendingCompletion) -> bool {
-        let create_slot = match value {
-            PendingCompletion::Create { slot, .. } => slot.map(|slot| slot.raw() as usize),
+        let create_slot = match &value {
+            PendingCompletion::Create { slot, .. } => slot.as_ref().map(|slot| slot.raw() as usize),
             _ => None,
         };
         let target = value.token().map(|token| token.raw() as usize);
@@ -175,7 +175,7 @@ impl PendingQueue {
         self.unlink(index);
         if let PendingCompletion::Create {
             slot: Some(slot), ..
-        } = value
+        } = &value
         {
             self.unlink_create(index, slot.raw() as usize);
         }
@@ -225,13 +225,15 @@ impl PendingQueue {
             .unwrap_or(NONE);
         while index != NONE {
             let target_next = self.nodes[index as usize].target_next;
-            let value = unsafe { *self.nodes[index as usize].value.assume_init_ref() };
+            let create_slot = match unsafe { self.nodes[index as usize].value.assume_init_ref() } {
+                PendingCompletion::Create {
+                    slot: Some(slot), ..
+                } => Some(slot.raw() as usize),
+                _ => None,
+            };
             self.unlink(index);
-            if let PendingCompletion::Create {
-                slot: Some(slot), ..
-            } = value
-            {
-                self.unlink_create(index, slot.raw() as usize);
+            if let Some(slot) = create_slot {
+                self.unlink_create(index, slot);
             }
             self.nodes[index as usize].target_prev = NONE;
             self.nodes[index as usize].target_next = NONE;

@@ -1,17 +1,15 @@
 use std::fmt;
+use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 
 use o3::buffer::{
-    Bytes, CapacityError, Leased, PrefixLength, Retained, SharedLease, SharedPool, SpareFillError,
-    Uninitialized, ValidatedPrefix,
+    Bytes, CapacityError, Leased, PoolLayoutError, PrefixLength, Retained, SharedLease, SharedPool,
+    SpareFillError, Uninitialized, ValidatedPrefix,
 };
 
 use super::RuntimeLimits;
-use o3::buffer::PoolLayoutError;
-use std::fmt::Debug;
-use std::fmt::Formatter;
 
 pub enum Scratch {}
 

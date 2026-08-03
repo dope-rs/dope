@@ -1,5 +1,3 @@
-use dope_test as common;
-
 use std::io::{Read, Write};
 use std::pin::pin;
 use std::time::Duration;
@@ -25,8 +23,8 @@ struct App<'d, 'scope> {
 
 #[test]
 fn fiber_listener_roundtrip() {
-    let addr = common::reserve_addr();
-    common::listener_exec::<Balanced>(MAX_CONN, |c| c).enter(|mut sess| {
+    let addr = dope_test::reserve_addr();
+    dope_test::listener_exec::<Balanced>(MAX_CONN, |c| c).enter(|mut sess| {
         let hash_builder = sess.seed().derive(dope::hash::domain::ACCEPT).state();
         let (storage, mut driver) = sess.storage_and_driver();
         let pool = Pool::bind(
@@ -41,7 +39,7 @@ fn fiber_listener_roundtrip() {
         .expect("bind");
         let app = pin!(BrandCell::new(App { pool }));
         let pool = sess.storage().handle();
-        let client = common::spawn_peer(addr, |stream| {
+        let client = dope_test::spawn_peer(addr, |stream| {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .expect("timeout");
@@ -53,14 +51,14 @@ fn fiber_listener_roundtrip() {
             stream.read_exact(&mut reply).expect("read");
             (ack, reply)
         });
-        let stream = common::drive(
+        let stream = dope_test::drive(
             &mut sess,
             app.as_ref(),
             dope_gen::fiber!('_ => async move { pool.accept().await }),
         )
         .expect("accept");
         let mut stream = Some(stream);
-        let (prefix, tail, reused) = common::drive(
+        let (prefix, tail, reused) = dope_test::drive(
             &mut sess,
             app.as_ref(),
             dope_gen::fiber!('_ => async move {

@@ -2,53 +2,49 @@ use std::io::{self, Error};
 use std::pin::Pin;
 use std::task::Poll;
 
+use dope::driver::token::Token;
+use dope::manifold::env::Bundle;
+use dope::manifold::listener::application::{Application, ApplicationHooks};
+use dope::manifold::listener::config::Config;
+use dope::manifold::listener::state::{EgressCtx, State};
+use dope::manifold::typed::TypedToken;
+use dope::manifold::{Manifold, Outcome, listener};
+use dope::runtime::dispatcher::{FinishContext, Idle};
+use dope::runtime::executor::StorageFactory;
+use dope::runtime::profile::Balanced;
+use dope::{DriverContext, Event, hash};
+use dope_net::link::egress;
+use dope_net::link::slot::Slot;
+use dope_net::wire::Wire;
+use dope_net::{ListenerTransport, Transport};
 use o3::buffer::RetainBytes;
 use o3::cell::RegionToken;
 use o3::collections::CellQueue;
 use pin_project::pin_project;
 
-use crate::io::Io;
-use crate::{Context, Fiber, WaitQueue, Waiter};
-use dope::DriverContext;
-use dope::driver::token::Token;
-use dope::hash;
-use dope::manifold::env::Bundle;
-use dope::manifold::listener::application::{Application, ApplicationHooks};
-use dope::manifold::listener::config::Config;
-use dope::manifold::typed::TypedToken;
-use dope::manifold::{Manifold, Outcome, listener};
-use dope::runtime::dispatcher::{FinishContext, Idle};
-use dope::runtime::profile::Balanced;
-use dope_net::link::egress::config::Config as EgressConfig;
-use dope_net::link::egress::storage::Storage as EgressStorage;
-use dope_net::link::slot::Slot;
-use dope_net::wire::Wire;
-use dope_net::{ListenerTransport, Transport};
-
 use super::port::Port;
 use super::port::recv::arena::RecvLayout;
-use dope::Event;
-use dope::manifold::listener::state::{EgressCtx, State};
-use dope::runtime::executor::StorageFactory;
+use crate::io::Io;
+use crate::{Context, Fiber, WaitQueue, Waiter};
 
 pub struct ListenerPort<'d, W: Wire> {
     connections: Port<'d, W::RetainedRecv<'d>>,
     accepts: CellQueue<Token>,
     waiters: Pin<Box<WaitQueue>>,
-    egress: EgressStorage,
+    egress: egress::storage::Storage,
     wire_storage: W::ConnectionStorage,
 }
 
 pub struct ListenerPortFactory<W: Wire> {
     layout: RecvLayout,
-    egress: EgressConfig,
+    egress: egress::config::Config,
     wire_storage: W::ConnectionStorage,
 }
 
 impl<'d, W: Wire> ListenerPort<'d, W> {
     fn with_layout(
         layout: RecvLayout,
-        egress: EgressConfig,
+        egress: egress::config::Config,
         wire_storage: W::ConnectionStorage,
     ) -> Self {
         let capacity = layout.connections();
@@ -56,18 +52,18 @@ impl<'d, W: Wire> ListenerPort<'d, W> {
             connections: Port::with_layout(layout, true),
             accepts: CellQueue::with_capacity(capacity),
             waiters: Box::pin(WaitQueue::with_capacity(capacity)),
-            egress: EgressStorage::with_config(egress),
+            egress: egress::storage::Storage::with_config(egress),
             wire_storage,
         }
     }
 
     pub fn factory(capacity: usize) -> io::Result<ListenerPortFactory<W>> {
-        Self::factory_with_egress(capacity, EgressConfig::default())
+        Self::factory_with_egress(capacity, egress::config::Config::default())
     }
 
     pub fn factory_with_egress(
         capacity: usize,
-        egress: EgressConfig,
+        egress: egress::config::Config,
     ) -> io::Result<ListenerPortFactory<W>> {
         let layout = RecvLayout::new(capacity)?;
         let wire_storage = W::connection_storage(layout.connections())?;
@@ -128,7 +124,7 @@ impl<'scope, 'd, W: Wire> ApplicationHooks<'d, AcceptQueue<'scope, 'd, W>>
     fn chunk<R: RetainBytes>(
         _app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
         slot: &mut Slot<'d, W, State<()>>,
-        egress: EgressCtx<'_, '_>,
+        egress: EgressCtx<'_, 'd, '_>,
         chunk: R,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -139,7 +135,7 @@ impl<'scope, 'd, W: Wire> ApplicationHooks<'d, AcceptQueue<'scope, 'd, W>>
     fn retained_chunk(
         app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
         slot: &mut Slot<'d, W, State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         chunk: W::RetainedRecv<'d>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -158,7 +154,7 @@ impl<'scope, 'd, W: Wire> ApplicationHooks<'d, AcceptQueue<'scope, 'd, W>>
     fn close(
         app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
         slot: &mut Slot<'d, W, State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
     ) {
         app.get_mut().port.connections.closed(slot.token());
     }
@@ -166,7 +162,7 @@ impl<'scope, 'd, W: Wire> ApplicationHooks<'d, AcceptQueue<'scope, 'd, W>>
     fn accept(
         app: Pin<&mut AcceptQueue<'scope, 'd, W>>,
         slot: &mut Slot<'d, W, State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         driver: &mut DriverContext<'_, 'd>,
     ) -> Outcome {
         let port = app.get_mut().port;
@@ -262,7 +258,7 @@ where
         if let Some(requests) = requests {
             let inner = self.as_ref().project_ref().inner.get_ref();
             if let Some(bytes) = requests.send
-                && !inner.mark_send(conn, bytes)
+                && !inner.mark_send(driver.region_token(), conn, bytes)
             {
                 port.connections.failed(conn);
             }
@@ -331,8 +327,8 @@ where
         self.apply_requests(target.into_inner(), driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
-        self.project_ref().inner.idle()
+    fn idle(self: Pin<&Self>, region: &RegionToken<'d>) -> Idle {
+        self.project_ref().inner.idle(region)
     }
 
     fn shutdown(self: Pin<&mut Self>, driver: &mut DriverContext<'_, 'd>) {

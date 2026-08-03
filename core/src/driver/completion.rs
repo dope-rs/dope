@@ -1,11 +1,10 @@
 use std::io;
 use std::time::Duration;
 
+use super::DriverContext;
 use crate::backend::Backend;
 use crate::backend::ops::completion::CompletionBackend;
 use crate::io::Event;
-
-use super::DriverContext;
 
 pub trait Completion<'d> {
     fn drain(&mut self, buf: &mut [Option<Event<'d>>]) -> usize;

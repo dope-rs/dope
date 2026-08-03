@@ -14,6 +14,8 @@ pub mod __private {
     use crate::DriverContext;
     use crate::driver::token::Token;
 
+    pub use o3::cell::RegionToken;
+
     const FAR_FUTURE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 
     pub trait RootTask<'d, T> {

@@ -2,12 +2,12 @@ use std::cell::Cell;
 use std::mem::take;
 use std::time::Instant;
 
-use o3::collections::{CellSlab, CellSlotQueue};
-
-use super::{Action, DialKey, Dialer};
 use dope_core::driver::token::SlotIndex;
 use dope_core::io::socket::addr::Addr;
 use dope_net::Transport;
+use o3::collections::{CellSlab, CellSlotQueue};
+
+use super::{Action, DialKey, Dialer};
 
 enum ExplicitTag {}
 

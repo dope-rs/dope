@@ -1,18 +1,19 @@
 use std::io;
+use std::io::Error;
+use std::mem::replace;
 use std::pin::Pin;
+use std::process::abort;
 use std::task::Poll;
 
-use super::Source;
-use crate::raw::task::{CompletionOwner, CompletionRegistrar};
-use crate::{Context, Fiber};
 use dope::DriverContext;
 use dope::driver::ready::CompletionWaker;
 use dope::driver::token::Token;
 use dope::manifold::file::read::ReadDone;
 use dope::manifold::file::{FileOutcome, Files};
-use std::io::Error;
-use std::mem::replace;
-use std::process::abort;
+
+use super::Source;
+use crate::raw::task::{CompletionOwner, CompletionRegistrar};
+use crate::{Context, Fiber};
 
 enum Phase<'d> {
     Ready { source: Source<'d>, buffer: Vec<u8> },

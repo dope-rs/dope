@@ -1,8 +1,8 @@
 use core::future::Future;
 use core::marker::PhantomData;
 
-use crate::IntoFiber;
 use crate::raw::task::bridges::{FiberFuture, FutureFiber};
+use crate::{Fiber, IntoFiber};
 
 pub struct Brand<'d>(PhantomData<fn(&'d ()) -> &'d ()>);
 
@@ -15,7 +15,7 @@ impl<'d> Brand<'d> {
         (Self(PhantomData), Seal(PhantomData))
     }
 
-    pub fn awaitable<F>(&self, fiber: F) -> FiberFuture<'d, F::IntoFiber>
+    pub fn awaitable<F>(&self, fiber: F) -> impl Future<Output = F::Output>
     where
         F: IntoFiber<'d>,
     {
@@ -24,7 +24,7 @@ impl<'d> Brand<'d> {
 }
 
 impl<'d> Seal<'d> {
-    pub fn future<F>(self, future: F) -> FutureFiber<'d, F>
+    pub fn future<F>(self, future: F) -> impl Fiber<'d, Output = F::Output>
     where
         F: Future,
     {

@@ -22,7 +22,7 @@ io-uring.workspace = true
 [dev-dependencies]
 dope-fiber = { path = "../fiber" }
 dope-gen = { path = "../gen" }
-dope-test.workspace = true
+dope-test = { path = "../test" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 io-uring.workspace = true

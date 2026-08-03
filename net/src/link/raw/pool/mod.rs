@@ -2,6 +2,16 @@ use std::io::{self, Error, ErrorKind};
 use std::marker::PhantomData;
 use std::mem::replace;
 
+use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
+use dope_core::driver::control::ContextControl;
+use dope_core::driver::recv::Buffers;
+use dope_core::driver::submission::Submission;
+use dope_core::driver::token::kind::SEND;
+use dope_core::driver::token::{KeyTag, SlotIndex, Token, TokenCapacity, TokenSlab};
+use dope_core::driver::{DriverContext, OutboundReservation};
+use dope_core::io::fd::Fd;
+use dope_core::io::{RecvEvent, SendEvent};
+
 use self::deferred::{DeferredRecv, DeferredRecvs};
 use self::rearm::Rearm;
 use super::core::Core;
@@ -9,15 +19,6 @@ use super::event::{DispatchRecv, SendOutcome};
 use crate::Transport;
 use crate::link::slot::{RecvDecision, Slot};
 use crate::wire::{OpenReservation, RecvCredit, RuntimeLimits, Wire};
-use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
-use dope_core::driver::buffers::ProvidedBuffers;
-use dope_core::driver::control::ContextControl;
-use dope_core::driver::submission::Submission;
-use dope_core::driver::token::kind::SEND;
-use dope_core::driver::token::{KeyTag, SlotIndex, Token, TokenCapacity, TokenSlab};
-use dope_core::driver::{DriverContext, OutboundReservation};
-use dope_core::io::fd::Fd;
-use dope_core::io::{RecvEvent, SendEvent};
 mod deferred;
 pub mod outbound;
 pub mod prepare;
@@ -173,29 +174,35 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         self.get(idx).map(|slot| &slot.core.fd)
     }
 
-    #[must_use]
     pub fn insert(
         &mut self,
         idx: SlotIndex,
         core: Core<'d>,
         state: S,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> bool {
+    ) -> Result<bool, W::OpenError> {
         let Some(reservation) = self.slab.vacant_entry_at(idx.raw()) else {
             drop(driver.guard(core.into_fd()));
-            return false;
+            return Ok(false);
         };
         let Some(token) = self.rearm.bind(reservation.token()) else {
             drop(driver.guard(core.into_fd()));
-            return false;
+            return Ok(false);
         };
-        let Some(open) = W::prepare_open(&mut self.runtime) else {
-            drop(driver.guard(core.into_fd()));
-            return false;
+        let open = match W::prepare_open(&mut self.runtime) {
+            Ok(Some(open)) => open,
+            Ok(None) => {
+                drop(driver.guard(core.into_fd()));
+                return Ok(false);
+            }
+            Err(error) => {
+                drop(driver.guard(core.into_fd()));
+                return Err(error);
+            }
         };
         let (wire, send) = open.commit();
         reservation.insert(Slot::new(core, wire, send, token, state));
-        true
+        Ok(true)
     }
 
     pub fn get(&self, idx: SlotIndex) -> Option<&Slot<'d, W, S>> {
@@ -310,7 +317,7 @@ impl<'d, const ID: u8, T: Transport, W: Wire, S> Pool<'d, ID, T, W, S> {
         };
         match e {
             SendEvent::Sent(n) => slot.send_sent(driver, n, ud, idx),
-            SendEvent::Failed(_) => slot.send_failed(idx),
+            SendEvent::Failed(_) => slot.send_failed(idx, ud),
         }
     }
 

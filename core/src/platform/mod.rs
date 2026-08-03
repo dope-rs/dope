@@ -3,8 +3,9 @@ pub mod snapshot;
 
 use std::io;
 
-use crate::io::file::RawMetadata;
 use snapshot::Snapshot;
+
+use crate::io::file::RawMetadata;
 
 pub trait Platform {
     type Sqe;

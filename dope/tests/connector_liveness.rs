@@ -59,7 +59,7 @@ impl<'d> ConnApp<'d> for LivenessApp {
     fn chunk<R: RetainBytes>(
         &mut self,
         _slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         _chunk: R,
         _driver: &mut DriverContext<'_, 'd>,
     ) -> ChunkOutcome {
@@ -70,7 +70,7 @@ impl<'d> ConnApp<'d> for LivenessApp {
         &mut self,
         _key: DialKey,
         _slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
         self.gate.hit();
@@ -82,7 +82,7 @@ impl<'d> ConnApp<'d> for LivenessApp {
     fn send(
         &mut self,
         _slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         _sent: usize,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
@@ -91,7 +91,7 @@ impl<'d> ConnApp<'d> for LivenessApp {
     fn close(
         &mut self,
         _slot: &mut Slot<'d>,
-        _egress: dope_net::link::egress::queue::Queue<'_, '_, 32>,
+        _egress: dope_net::link::egress::queue::Queue<'_, 'd, '_, 32>,
         _driver: &mut DriverContext<'_, 'd>,
     ) {
     }
@@ -106,6 +106,7 @@ fn run(timeout: Option<Duration>, want: u32) -> (Rc<Gate>, Rc<Cell<Option<Durati
         max_connections: MAX,
         address: addr,
         backoff: REDIAL_BACKOFF,
+        timer_slots: 0,
         app: LivenessApp {
             timeout,
             gate: gate.clone(),

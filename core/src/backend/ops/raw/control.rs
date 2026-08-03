@@ -1,11 +1,12 @@
 use std::io;
 use std::os::fd::BorrowedFd;
 
+use libc::c_int;
+
 use crate::backend::Backend;
 use crate::driver::PushError;
 use crate::driver::token::Token;
 use crate::io::fd::FdSlot;
-use libc::c_int;
 
 #[cfg(target_os = "linux")]
 pub(crate) struct RawQuiesce {
@@ -58,11 +59,10 @@ mod linux {
     use io_uring::types::CancelBuilder;
     use libc::c_int;
 
+    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, RawQuiesce, Token, io};
     use crate::backend::ops::raw::submission::SubmissionBackend;
     use crate::backend::uring::raw::submission::Submission;
     use crate::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
-
-    use super::{Backend, BorrowedFd, ControlBackend, FdSlot, PushError, RawQuiesce, Token, io};
 
     struct SocketOptionSubmission(RawSqe);
 

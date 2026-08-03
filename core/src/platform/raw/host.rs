@@ -10,11 +10,10 @@ mod linux {
 
     use libc::{S_IFMT, S_IFREG, getrandom, statx};
 
+    use super::Host;
     use crate::io::file::RawMetadata;
     use crate::platform::raw::file::FileLimit;
     use crate::platform::snapshot::Snapshot;
-
-    use super::Host;
 
     impl Host {
         pub(crate) fn entropy(&self) -> io::Result<[u64; 2]> {
@@ -85,11 +84,10 @@ mod kqueue {
 
     use libc::{S_IFMT, S_IFREG, c_int, getentropy, mode_t, stat, sysctlbyname};
 
+    use super::Host;
     use crate::io::file::RawMetadata;
     use crate::platform::raw::file::FileLimit;
     use crate::platform::snapshot::Snapshot;
-
-    use super::Host;
 
     impl Host {
         pub(crate) fn entropy(&self) -> io::Result<[u64; 2]> {

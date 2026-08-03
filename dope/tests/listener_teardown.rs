@@ -2,9 +2,6 @@
 
 extern crate dope;
 
-use dope_test as common;
-
-use o3::cell::BrandCell;
 use std::cell::Cell;
 use std::fs;
 use std::net::TcpStream;
@@ -13,13 +10,12 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use dope::manifold::env::Bundle;
-use dope::manifold::listener;
 use dope::manifold::listener::Listener;
 use dope::manifold::listener::application::{Application, ApplicationHooks};
 use dope::manifold::listener::config::Config;
 use dope::manifold::listener::state::EgressCtx;
 use dope::manifold::typed::TypedToken;
-use dope::manifold::{Manifold, Outcome};
+use dope::manifold::{Manifold, Outcome, listener};
 use dope::runtime::dispatcher::Idle;
 use dope::runtime::executor::Executor;
 use dope::runtime::launcher::WorkerContext;
@@ -29,6 +25,7 @@ use dope_net::tcp::Tcp;
 use dope_net::wire::identity::Identity;
 use dope_test::Harness;
 use o3::buffer::RetainBytes;
+use o3::cell::BrandCell;
 
 const CHILD: &str = "DOPE_LISTENER_TEARDOWN_CHILD";
 const MARKER: &str = "DOPE_LISTENER_TEARDOWN_MARKER";
@@ -55,7 +52,7 @@ impl<'d> ApplicationHooks<'d, TeardownApp> for TeardownApp {
     fn chunk<R: RetainBytes>(
         _app: Pin<&mut TeardownApp>,
         _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         _chunk: R,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
@@ -65,7 +62,7 @@ impl<'d> ApplicationHooks<'d, TeardownApp> for TeardownApp {
     fn accept(
         app: Pin<&mut TeardownApp>,
         _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
         _driver: &mut dope::DriverContext<'_, 'd>,
     ) -> Outcome {
         let state = &app.get_mut().state;
@@ -78,7 +75,7 @@ impl<'d> ApplicationHooks<'d, TeardownApp> for TeardownApp {
     fn teardown(
         app: Pin<&mut TeardownApp>,
         _slot: &mut Slot<'d, Identity, listener::state::State<()>>,
-        _egress: EgressCtx<'_, '_>,
+        _egress: EgressCtx<'_, 'd, '_>,
     ) {
         let state = &app.get_mut().state;
         let calls = state.calls.get();
@@ -127,8 +124,8 @@ impl<'d, M: Manifold<'d>> Manifold<'d> for DropLive<M> {
         M::pre_park(unsafe { self.map_unchecked_mut(|s| &mut s.inner) }, driver);
     }
 
-    fn idle(self: Pin<&Self>) -> Idle {
-        M::idle(unsafe { self.map_unchecked(|s| &s.inner) })
+    fn idle(self: Pin<&Self>, region: &o3::cell::RegionToken<'d>) -> Idle {
+        M::idle(unsafe { self.map_unchecked(|s| &s.inner) }, region)
     }
 
     fn shutdown(self: Pin<&mut Self>, _driver: &mut dope::DriverContext<'_, 'd>) {
@@ -239,7 +236,7 @@ fn teardown_panic_aborts_after_cleaning_other_live_slots() {
     ));
     let _ = fs::remove_file(&marker);
     let _ = fs::remove_file(&accepted_marker);
-    let status = common::respawn_self(
+    let status = dope_test::respawn_self(
         "teardown_panic_aborts_after_cleaning_other_live_slots",
         &[
             (CHILD, "1"),
@@ -251,7 +248,7 @@ fn teardown_panic_aborts_after_cleaning_other_live_slots() {
         ],
     );
 
-    common::expect_abort(status);
+    dope_test::expect_abort(status);
     assert_eq!(fs::read(&marker).expect("read marker"), b"cleaned");
     fs::remove_file(marker).expect("remove marker");
     fs::remove_file(accepted_marker).expect("remove accepted marker");

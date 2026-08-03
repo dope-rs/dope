@@ -1,11 +1,15 @@
 pub mod arena;
 pub mod config;
+mod entry;
+mod flight;
 pub mod metadata;
 pub mod queue;
-mod raw;
+pub(crate) mod stable;
 pub mod stage;
 pub mod storage;
 mod wire;
+
+pub use stable::{LeaseBuffer, StableBytes, StaticBytes};
 
 type WirePool = o3::buffer::Pool<o3::buffer::FixedPoolCapacity<{ o3::buffer::BLOCK_CAPACITY }>>;
 type WireLease<'pool> =

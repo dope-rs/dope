@@ -108,9 +108,12 @@ impl Forward {
                     let __field = self.project().#field;
                     ::dope::manifold::Manifold::pre_park(__field, driver)
                 }
-                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::runtime::dispatcher::Idle {
+                fn idle(
+                    self: ::core::pin::Pin<&Self>,
+                    region: &::dope::runtime::__private::RegionToken<#brand>,
+                ) -> ::dope::runtime::dispatcher::Idle {
                     let __field = self.project_ref().#field;
-                    ::dope::manifold::Manifold::idle(__field)
+                    ::dope::manifold::Manifold::idle(__field, region)
                 }
                 fn activate(
                     self: ::core::pin::Pin<&mut Self>,

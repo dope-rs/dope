@@ -2,8 +2,10 @@ use std::cell::Cell;
 
 use dope_core::driver::ready::ReadyKey;
 use dope_core::driver::token::Token;
+use dope_net::link::egress::StableBytes;
 use dope_net::link::egress::config::Config;
-use dope_net::link::egress::metadata::MetadataArena;
+use dope_net::link::egress::metadata;
+use o3::cell::RegionToken;
 
 use super::app::{CloseKind, Requests};
 use crate::DriverRef;
@@ -136,10 +138,10 @@ impl<'d> Entry<'d> {
         Some(next)
     }
 
-    fn retire<B>(&self, arena: &MetadataArena<B>) {
+    fn retire<B>(&self, arena: &metadata::Arena<'d, B>, token: &mut RegionToken<'d>) {
         self.state.set(State::Retired);
         self.close.set(false);
-        arena.clear(self.lane);
+        arena.clear(self.lane, token);
     }
 
     fn mark_ready(&self, transaction: Transaction<'d>, driver: DriverRef<'d>) {
@@ -148,7 +150,12 @@ impl<'d> Entry<'d> {
         }
     }
 
-    fn deactivate<B>(&self, token: Token, arena: &MetadataArena<B>) {
+    fn deactivate<B>(
+        &self,
+        token: Token,
+        arena: &metadata::Arena<'d, B>,
+        region: &mut RegionToken<'d>,
+    ) {
         match self.state.get() {
             State::Active(publication) | State::Suspended(publication)
                 if Self::matches_token(publication.token, token) => {}
@@ -160,10 +167,16 @@ impl<'d> Entry<'d> {
             self.state.set(State::Retired);
         }
         self.close.set(false);
-        arena.clear(self.lane);
+        arena.clear(self.lane, region);
     }
 
-    fn close<B>(&self, token: Token, arena: &MetadataArena<B>, driver: DriverRef<'d>) {
+    fn close<B>(
+        &self,
+        token: Token,
+        arena: &metadata::Arena<'d, B>,
+        region: &mut RegionToken<'d>,
+        driver: DriverRef<'d>,
+    ) {
         let (publication, suspended) = match self.state.get() {
             State::Active(publication) if Self::matches_token(publication.token, token) => {
                 (publication, false)
@@ -175,7 +188,7 @@ impl<'d> Entry<'d> {
         };
         if suspended {
             if self.advance_generation().is_none() {
-                self.retire(arena);
+                self.retire(arena, region);
                 driver.activate_ready(publication.ready);
                 return;
             }
@@ -195,25 +208,25 @@ impl<'d> Entry<'d> {
 
 pub struct Port<'d, B> {
     driver: DriverRef<'d>,
-    arena: MetadataArena<B>,
+    arena: metadata::Arena<'d, B>,
     entries: Box<[Entry<'d>]>,
 }
 
 pub struct Sender<'a, 'd, B> {
     driver: DriverRef<'d>,
-    arena: &'a MetadataArena<B>,
+    arena: &'a metadata::Arena<'d, B>,
     entry: &'a Entry<'d>,
     transaction: Transaction<'d>,
 }
 
 pub struct Receiver<'a, 'd, B> {
-    arena: &'a MetadataArena<B>,
+    arena: &'a metadata::Arena<'d, B>,
     entry: &'a Entry<'d>,
     transaction: Transaction<'d>,
 }
 
-impl<B: AsRef<[u8]>> Sender<'_, '_, B> {
-    pub fn try_enqueue(&self, value: B) -> Result<(), B> {
+impl<'a, 'd, B: StableBytes> Sender<'a, 'd, B> {
+    pub fn try_enqueue(&self, token: &mut RegionToken<'d>, value: B) -> Result<(), B> {
         let Some(suspension) = Suspension::begin(self.entry, self.transaction) else {
             return Err(value);
         };
@@ -227,7 +240,7 @@ impl<B: AsRef<[u8]>> Sender<'_, '_, B> {
         }
         self.arena
             .queue(self.entry.lane)
-            .try_push_back(value, bytes)?;
+            .try_push_back(token, value, bytes)?;
         self.entry.mark_ready(self.transaction, self.driver);
         Ok(())
     }
@@ -237,13 +250,18 @@ impl<B: AsRef<[u8]>> Sender<'_, '_, B> {
     }
 }
 
-impl<'d, B: AsRef<[u8]>> Port<'d, B> {
-    pub fn with_capacity(capacity: usize, driver: DriverRef<'d>) -> Self {
-        Self::with_egress(capacity, Config::default(), driver)
+impl<'d, B: StableBytes> Port<'d, B> {
+    pub fn with_capacity(capacity: usize, token: &RegionToken<'d>, driver: DriverRef<'d>) -> Self {
+        Self::with_egress(capacity, token, Config::default(), driver)
     }
 
-    pub fn with_egress(capacity: usize, config: Config, driver: DriverRef<'d>) -> Self {
-        let arena = MetadataArena::with_config(config, capacity.max(1));
+    pub fn with_egress(
+        capacity: usize,
+        token: &RegionToken<'d>,
+        config: Config,
+        driver: DriverRef<'d>,
+    ) -> Self {
+        let arena = metadata::Arena::with_config(token, config, capacity.max(1));
         Self {
             driver,
             arena,
@@ -291,18 +309,23 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
         Some((entry, entry.transaction(token)?))
     }
 
-    pub fn activate(&self, token: Token, ready: ReadyKey<'d>) -> bool {
+    pub fn activate(
+        &self,
+        region: &mut RegionToken<'d>,
+        token: Token,
+        ready: ReadyKey<'d>,
+    ) -> bool {
         let Some(entry) = self.entries.get(token.slot().raw() as usize) else {
             return false;
         };
         let Some(generation) = entry.advance_generation() else {
-            entry.retire(&self.arena);
+            entry.retire(&self.arena, region);
             return false;
         };
         entry.state.set(State::Vacant);
         entry.close.set(false);
         let queue = self.arena.queue(entry.lane);
-        let detached = queue.detach_all();
+        let detached = queue.detach_all(region);
         let transaction = Transaction {
             publication: Publication { token, ready },
             generation,
@@ -312,13 +335,18 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
         entry.is_active(transaction)
     }
 
-    pub fn deactivate(&self, token: Token) {
+    pub fn deactivate(&self, region: &mut RegionToken<'d>, token: Token) {
         if let Some(entry) = self.entries.get(token.slot().raw() as usize) {
-            entry.deactivate(token, &self.arena);
+            entry.deactivate(token, &self.arena, region);
         }
     }
 
-    pub fn try_enqueue(&self, token: Token, value: B) -> Result<(), B> {
+    pub fn try_enqueue(
+        &self,
+        region: &mut RegionToken<'d>,
+        token: Token,
+        value: B,
+    ) -> Result<(), B> {
         let Some((entry, transaction)) = self.entry_transaction(token) else {
             return Err(value);
         };
@@ -328,22 +356,23 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
             entry,
             transaction,
         }
-        .try_enqueue(value)
+        .try_enqueue(region, value)
     }
 
-    pub fn close(&self, token: Token) {
+    pub fn close(&self, region: &mut RegionToken<'d>, token: Token) {
         if let Some(entry) = self.entries.get(token.slot().raw() as usize) {
-            entry.close(token, &self.arena, self.driver);
+            entry.close(token, &self.arena, region, self.driver);
         }
     }
 
     pub fn drain_requests(
         &self,
+        region: &mut RegionToken<'d>,
         token: Token,
-        push: impl FnMut(B) -> Result<(), B>,
+        push: impl FnMut(&mut RegionToken<'d>, B) -> Result<(), B>,
     ) -> Option<Requests> {
         self.with_receiver(token, |receiver| {
-            receiver.drain(push);
+            receiver.drain(region, push);
             Requests {
                 close: receiver.take_close().then_some(CloseKind::Reconnect),
             }
@@ -351,18 +380,22 @@ impl<'d, B: AsRef<[u8]>> Port<'d, B> {
     }
 }
 
-impl<B: AsRef<[u8]>> Receiver<'_, '_, B> {
-    pub fn drain(&self, mut push: impl FnMut(B) -> Result<(), B>) {
+impl<'a, 'd, B: StableBytes> Receiver<'a, 'd, B> {
+    pub fn drain(
+        &self,
+        token: &mut RegionToken<'d>,
+        mut push: impl FnMut(&mut RegionToken<'d>, B) -> Result<(), B>,
+    ) {
         let Some(suspension) = Suspension::begin(self.entry, self.transaction) else {
             return;
         };
         loop {
             let queue = self.arena.queue(self.entry.lane);
-            let Some((value, front)) = queue.take_front() else {
+            let Some((value, mut front)) = queue.take_front(token) else {
                 suspension.restore();
                 return;
             };
-            match push(value) {
+            match front.with_region(|region| push(region, value)) {
                 Ok(()) => {
                     front.release();
                     if !self.entry.is_suspended(self.transaction) {

@@ -1,12 +1,11 @@
 use std::io;
 use std::net::SocketAddr;
 
+use super::DriverContext;
 use crate::backend::Backend;
 use crate::backend::ops::raw::bootstrap::BootstrapBackend;
 use crate::io::fd::Fd;
 use crate::io::socket::ListenerConfig;
-
-use super::DriverContext;
 
 pub trait Bootstrap<'d> {
     fn bind_listener_slot(

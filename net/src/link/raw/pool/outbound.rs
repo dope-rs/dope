@@ -1,9 +1,7 @@
-use super::super::core::{Core, Outbound};
-use super::super::event::{ConnectStep, SocketStep};
-use super::Pool;
-use crate::Transport;
-use crate::link::slot::Slot;
-use crate::wire::{OpenReservation, Wire};
+use std::error::Error;
+use std::fmt;
+use std::io;
+
 use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
 use dope_core::driver::DriverContext;
 use dope_core::driver::submission::Submission;
@@ -11,6 +9,38 @@ use dope_core::driver::token::kind::{CONNECT, CREATE};
 use dope_core::driver::token::{SlotIndex, Token};
 use dope_core::io::socket::addr::Addr;
 use dope_core::io::{ConnectEvent, SocketEvent};
+
+use super::super::core::{Core, Outbound};
+use super::super::event::{ConnectStep, SocketStep};
+use super::Pool;
+use crate::Transport;
+use crate::link::slot::Slot;
+use crate::wire::{OpenReservation, Wire};
+
+#[derive(Debug)]
+/// A permanent failure before a socket becomes an outbound pool slot.
+pub enum OpenFailure<E> {
+    Socket(io::Error),
+    Wire(E),
+}
+
+impl<E: fmt::Display> fmt::Display for OpenFailure<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Socket(error) => write!(formatter, "socket preparation failed: {error}"),
+            Self::Wire(error) => write!(formatter, "wire open failed: {error}"),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for OpenFailure<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Socket(error) => Some(error),
+            Self::Wire(error) => Some(error),
+        }
+    }
+}
 
 struct ConnectSubmission(RawSqe);
 
@@ -42,9 +72,9 @@ pub trait OutboundPool<'d> {
     fn submit_socket_with_state(
         &mut self,
         socket_params: (i32, i32, i32),
-        make_state: impl FnOnce(SlotIndex) -> Self::State,
+        make_state: impl FnOnce(SlotIndex, &mut o3::cell::RegionToken<'d>) -> Self::State,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Option<SlotIndex>;
+    ) -> Result<Option<SlotIndex>, OpenFailure<<Self::Wire as Wire>::OpenError>>;
 
     fn drive_socket_cqe<X>(
         &mut self,
@@ -105,37 +135,50 @@ where
     fn submit_socket_with_state(
         &mut self,
         socket_params: (i32, i32, i32),
-        make_state: impl FnOnce(SlotIndex) -> S,
+        make_state: impl FnOnce(SlotIndex, &mut o3::cell::RegionToken<'d>) -> S,
         driver: &mut DriverContext<'_, 'd>,
-    ) -> Option<SlotIndex> {
-        let reservation = self.slab.vacant_entry()?;
-        let token = self.rearm.bind(reservation.token())?;
+    ) -> Result<Option<SlotIndex>, OpenFailure<W::OpenError>> {
+        let Some(reservation) = self.slab.vacant_entry() else {
+            return Ok(None);
+        };
+        let Some(token) = self.rearm.bind(reservation.token()) else {
+            return Ok(None);
+        };
         let idx = token.token().slot();
-        let outbound_slot = self.reservation.slot(idx)?;
+        let Some(outbound_slot) = self.reservation.slot(idx) else {
+            return Ok(None);
+        };
         let fd = outbound_slot.bind(driver.driver_ref());
         let (domain, socket_type, protocol) = socket_params;
         let ud = token.token();
         let sqe = match Sqe::socket(domain, socket_type, protocol, &fd, ud) {
             Ok(sqe) => sqe,
-            Err(_) => {
+            Err(error) => {
                 drop(driver.guard(fd));
-                return None;
+                return Err(OpenFailure::Socket(error));
             }
         };
-        let Some(open) = W::prepare_open(&mut self.runtime) else {
-            drop(driver.guard(fd));
-            return None;
+        let open = match W::prepare_open(&mut self.runtime) {
+            Ok(Some(open)) => open,
+            Ok(None) => {
+                drop(driver.guard(fd));
+                return Ok(None);
+            }
+            Err(error) => {
+                drop(driver.guard(fd));
+                return Err(OpenFailure::Wire(error));
+            }
         };
         if driver.push(sqe).is_err() {
             drop(driver.guard(fd));
-            return None;
+            return Ok(None);
         }
         let (wire, send) = open.commit();
-        let state = make_state(idx);
+        let state = make_state(idx, driver.region_token());
         let slot = Slot::<W, S>::new(Core::new(fd, T::KERNEL_DISCARD), wire, send, token, state);
         reservation.insert(slot);
         self.refresh_wake(idx);
-        Some(idx)
+        Ok(Some(idx))
     }
 
     fn drive_socket_cqe<X>(

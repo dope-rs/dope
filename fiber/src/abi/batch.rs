@@ -39,14 +39,14 @@ impl Drop for BatchTransaction<'_> {
 }
 
 #[pin_project]
-pub struct Batch<F, O, const N: usize> {
+pub struct Batch<'d, F, O, const N: usize> {
     #[pin]
-    core: BatchCore<F, O, N>,
+    core: BatchCore<'d, F, O, N>,
     remaining: usize,
     status: BatchStatus,
 }
 
-impl<F, O, const N: usize> Batch<F, O, N> {
+impl<'d, F, O, const N: usize> Batch<'d, F, O, N> {
     pub fn empty() -> Self {
         Self {
             core: BatchCore::new(),
@@ -73,7 +73,7 @@ impl<F, O, const N: usize> Batch<F, O, N> {
     }
 }
 
-impl<'d, F, O, const N: usize> Fiber<'d> for Batch<F, O, N>
+impl<'d, F, O, const N: usize> Fiber<'d> for Batch<'d, F, O, N>
 where
     F: Fiber<'d, Output = O>,
 {

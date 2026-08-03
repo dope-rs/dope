@@ -1,9 +1,8 @@
 use std::io;
 
+use super::{Config, Driver};
 use crate::backend::Backend;
 use crate::backend::ops::ext::ExtBackend;
-
-use super::{Config, Driver};
 
 pub trait DriverExt: Sized {
     fn new(cfg: Config) -> io::Result<Self>;
@@ -15,7 +14,13 @@ impl DriverExt for Driver {
     fn new(cfg: Config) -> io::Result<Self> {
         cfg.validate()?;
         let (state, slots) = <Backend as ExtBackend>::create(&cfg)?;
-        Driver::from_state(state, slots, cfg.ready_slots, cfg.provided.entries as usize)
+        Driver::from_state(
+            state,
+            slots,
+            cfg.ready_slots,
+            cfg.timer_slots,
+            cfg.recv.entries as usize,
+        )
     }
 
     fn init_thread(cpu_id: u16) -> io::Result<()> {

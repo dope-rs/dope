@@ -307,7 +307,10 @@ impl DispatcherSpec {
                     #coordinate_tail
                     #(#post_coordinate_tick_calls)*
                 }
-                fn idle(self: ::core::pin::Pin<&Self>) -> ::dope::runtime::dispatcher::Idle {
+                fn idle(
+                    self: ::core::pin::Pin<&Self>,
+                    __region: &::dope::runtime::__private::RegionToken<#brand>,
+                ) -> ::dope::runtime::dispatcher::Idle {
                     #idle_expr
                 }
                 fn shutdown(
@@ -408,7 +411,7 @@ impl DispatcherSpec {
         let arms = self.fields.iter().map(|f| {
             f.wrap_body_ref(|recv| {
                 quote! {
-                    match ::dope::manifold::Manifold::idle(#recv) {
+                    match ::dope::manifold::Manifold::idle(#recv, __region) {
                         ::dope::runtime::dispatcher::Idle::Busy => return ::dope::runtime::dispatcher::Idle::Busy,
                         __park => __acc = __acc.reduce(__park),
                     }

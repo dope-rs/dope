@@ -2,18 +2,6 @@ use std::hash::BuildHasher;
 use std::net::IpAddr;
 use std::pin::Pin;
 
-use o3::collections::FixedHashTable;
-
-use crate::DriverContext;
-use crate::hash;
-use crate::manifold;
-use crate::manifold::env::Env;
-use crate::manifold::listener::Listener;
-use crate::manifold::listener::application::{Application, ApplicationHooks};
-use crate::manifold::listener::idle::IdlePhase;
-use crate::manifold::listener::state::{EgressCtx, State};
-use crate::runtime::dispatcher::FinishContext;
-use crate::runtime::profile::RuntimeProfile;
 use dope_core::backend::{RawSqe, RetainedSqe, Sqe, StableSqeSource};
 use dope_core::driver::submission::Submission;
 use dope_core::driver::token::kind::ACCEPT;
@@ -24,6 +12,16 @@ use dope_core::io::socket::addr::Addr;
 use dope_net::Transport;
 use dope_net::link::raw::core::Core;
 use dope_net::multishot::Multishot;
+use o3::collections::FixedHashTable;
+
+use crate::manifold::env::Env;
+use crate::manifold::listener::Listener;
+use crate::manifold::listener::application::{Application, ApplicationHooks};
+use crate::manifold::listener::idle::IdlePhase;
+use crate::manifold::listener::state::{EgressCtx, State};
+use crate::runtime::dispatcher::FinishContext;
+use crate::runtime::profile::RuntimeProfile;
+use crate::{DriverContext, hash, manifold};
 
 struct AcceptSubmission(RawSqe);
 
@@ -268,7 +266,11 @@ where
             let fixed_idx = fixed_fd.token_index();
             let fixed_idx_raw = fixed_idx.raw();
             let conn = this.app.as_ref().connection();
-            this.egress_arena.clear(fixed_idx_raw as usize);
+            assert!(
+                this.egress_arena
+                    .clear(driver.region_token(), fixed_idx_raw as usize),
+                "accepted listener lane must be quiescent"
+            );
             let conn_slot = State::<A::Conn>::new(conn, peer_ip);
             let _ = <E::Transport as Transport>::submit_quickack(driver, &fixed_fd);
             if !<E::Transport as Transport>::submit_stream_tuning(
@@ -285,6 +287,13 @@ where
                 conn_slot,
                 driver,
             );
+            let placed = match placed {
+                Ok(placed) => placed,
+                Err(error) => {
+                    A::Hooks::open_failed(this.app.as_mut(), &error);
+                    return;
+                }
+            };
             debug_assert!(placed, "accept-direct handed an occupied fixed slot");
             if !placed {
                 return;
