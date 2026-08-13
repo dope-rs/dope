@@ -1,6 +1,7 @@
 #![warn(unreachable_pub)]
 
-pub mod backend;
+mod backend;
 pub mod driver;
 pub mod io;
+#[doc(hidden)]
 pub mod platform;

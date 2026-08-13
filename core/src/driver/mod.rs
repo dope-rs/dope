@@ -1,554 +1,395 @@
-pub mod bootstrap;
-pub mod completion;
-pub mod control;
-pub mod datagram;
-pub mod ext;
-pub mod profile;
-pub mod ready;
-pub mod recv;
+pub mod flight;
+pub mod lifecycle;
+pub mod ops;
+pub mod retained;
 pub mod route;
-pub mod submission;
-pub mod timer;
-pub mod token;
+pub mod schedule;
+pub mod settings;
+pub mod storage;
 
-use std::cell::Cell;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
-use std::io::{self, ErrorKind, Result};
-use std::marker::{PhantomData, PhantomPinned};
-use std::pin::{Pin, pin};
-use std::ptr::from_ref;
-use std::time::Instant;
+use std::{error, fmt, io, marker, mem, pin, time};
 
-use o3::cell::{BrandToken, RegionToken};
-use o3::collections::CellQueue;
-use o3::marker::ThreadBound;
-use profile::DriverProfile;
-use ready::{Arena, ReadyHandle, ReadyKey, ReadySlot};
-use token::{SlotIndex, Token, TokenCapacity};
+pub(crate) use lifecycle::Source;
+use o3::{self, cell::region, collections::batch::set};
+pub(crate) use ownership::{AccountedRecvOwner, RecvOwner};
 
-use crate::backend::ops::buffers::BufferBackend;
-use crate::backend::{Backend, RecvBuffer};
-use crate::io::fd::{Fd, FdGuard, FdSlot};
-use crate::platform::Platform;
-use crate::platform::raw::file::{FileLimit, lock_memory_best_effort};
+use self::{lifecycle::quiesce, ops::access, route::kind, schedule::timer, storage::ownership};
+use crate::{backend, io::fd::handles, platform};
 
-type Invariant<'d> = PhantomData<fn(&'d ()) -> &'d ()>;
+#[derive(Debug, Clone, Copy)]
+pub struct SubmitError;
 
-struct Shared {
-    arena: Box<Arena>,
-    returned_buffers: CellQueue<RecvBuffer>,
-    turn_clock: Cell<Instant>,
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RecvCreditWake {
+    ResourceReturned = kind::RECV_CREDIT_RETURNED,
+    WaiterRetry = kind::RECV_CREDIT_RETRY,
 }
 
-pub struct Driver {
-    shared: Shared,
-    backend: Backend,
-    timer_slots: usize,
-    _pin: PhantomPinned,
+/// One provided receive buffer made available to an exact waiting target.
+/// Dropping an unused credit transfers it to the next waiter.
+#[must_use = "a receive buffer credit must be consumed or returned"]
+#[repr(transparent)]
+pub struct RecvBufferCredit<'d>(Reference<'d>);
+
+impl<'d> RecvBufferCredit<'d> {
+    fn new(driver: Reference<'d>) -> Self {
+        Self(driver)
+    }
+
+    pub fn consume(self) {
+        let _consumed = mem::ManuallyDrop::new(self);
+    }
 }
 
-pub struct DriverRef<'d> {
-    shared: &'d Shared,
+impl Drop for RecvBufferCredit<'_> {
+    fn drop(&mut self) {
+        self.0.credits().release_recv_buffer();
+    }
+}
+
+impl fmt::Display for SubmitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("dope: submission was not accepted")
+    }
+}
+
+impl error::Error for SubmitError {}
+
+impl From<SubmitError> for io::Error {
+    fn from(_: SubmitError) -> Self {
+        io::Error::from(io::ErrorKind::WouldBlock)
+    }
+}
+
+type Buffer = <backend::Backend as platform::Buffer>::Token;
+
+type Invariant<'d> = marker::PhantomData<fn(&'d ()) -> &'d ()>;
+
+#[derive(Clone, Copy)]
+pub(crate) enum FixedOwner {
+    Accepted,
+    Reserved,
+    Outbound(OutboundKey),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct OutboundKey(u8);
+
+// SAFETY: OutboundKey's private byte is stable across copies. Retirement
+// storage reconstructs only raw indices previously produced by this type.
+impl set::DenseIndex for OutboundKey {
+    fn into_usize(self) -> usize {
+        self.raw() as usize
+    }
+
+    fn from_usize(raw: usize) -> Self {
+        Self::from_bounded(raw as u8)
+    }
+}
+
+#[must_use = "a fixed-file close must be submitted to the backend"]
+#[repr(transparent)]
+pub(crate) struct Close<'d> {
+    slot: handles::FixedSlot,
     _brand: Invariant<'d>,
 }
 
-pub struct Scope<'d> {
-    driver: DriverRef<'d>,
-    backend: &'d mut Backend,
-    region: RegionToken<'d>,
-    token: BrandToken<'d>,
-    timer: &'d timer::Timer<'d>,
-    _timer_owner: Box<timer::Timer<'d>>,
+const _: () =
+    assert!(std::mem::size_of::<Close<'static>>() == std::mem::size_of::<handles::FixedSlot>());
+#[must_use = "an outbound authority release must be completed"]
+pub(crate) enum CloseDisposition<'d> {
+    Submit(Close<'d>),
+    NoSubmit(Option<RetiredSlots<'d>>),
 }
 
-pub struct DriverContext<'a, 'd> {
-    driver: DriverRef<'d>,
-    backend: &'a mut Backend,
-    region: &'a mut RegionToken<'d>,
-    timer: &'d timer::Timer<'d>,
+#[must_use = "a successful socket creation must be delivered or reclaimed"]
+pub(crate) enum CreateSuccess<'d> {
+    Deliver(OutboundKey),
+    Close(Close<'d>),
 }
 
-pub trait StorageFactory: 'static {
-    type Output<'d>: 'd;
-
-    fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d>;
+#[must_use = "retired fixed slots must be returned to the backend allocator"]
+#[repr(transparent)]
+pub(crate) struct RetiredSlots<'d> {
+    key: OutboundKey,
+    _brand: Invariant<'d>,
 }
 
-impl StorageFactory for () {
-    type Output<'d> = ();
+const _: () =
+    assert!(std::mem::size_of::<RetiredSlots<'static>>() == std::mem::size_of::<OutboundKey>());
 
-    fn build<'d>(self, _driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {}
-}
+impl OutboundKey {
+    pub(crate) fn raw(self) -> u32 {
+        self.0 as u32
+    }
 
-impl<A: StorageFactory, B: StorageFactory> StorageFactory for (A, B) {
-    type Output<'d> = (A::Output<'d>, B::Output<'d>);
+    pub(crate) const fn from_raw(raw: u32) -> Option<Self> {
+        if raw < route::FRAMEWORK as u32 {
+            Some(Self(raw as u8))
+        } else {
+            None
+        }
+    }
 
-    fn build<'d>(self, driver: &mut DriverContext<'_, 'd>) -> Self::Output<'d> {
-        let first = self.0.build(&mut driver.reborrow());
-        let second = self.1.build(driver);
-        (first, second)
+    const fn from_bounded(raw: u8) -> Self {
+        debug_assert!(raw < route::FRAMEWORK);
+        Self(raw)
+    }
+
+    const fn for_route<const ID: u8>() -> Option<Self> {
+        if ID == route::FRAMEWORK {
+            None
+        } else {
+            Some(Self(ID))
+        }
     }
 }
 
-impl Driver {
-    pub fn init_process() -> Result<()> {
-        lock_memory_best_effort();
-        FileLimit::get()?.raise()
+impl<'d> Close<'d> {
+    pub(crate) fn untracked(slot: handles::FixedSlot) -> Self {
+        Self {
+            slot,
+            _brand: marker::PhantomData,
+        }
     }
 
-    pub(crate) fn from_state(
-        state: Backend,
-        fixed_slots: usize,
-        dynamic_slots: usize,
-        timer_slots: usize,
-        recv_buffers: usize,
-    ) -> Result<Self> {
-        Ok(Self {
-            shared: Shared {
-                arena: Arena::new(fixed_slots, dynamic_slots)?,
-                returned_buffers: CellQueue::with_capacity(recv_buffers),
-                turn_clock: Cell::new(Instant::now()),
-            },
-            backend: state,
-            timer_slots,
-            _pin: PhantomPinned,
-        })
+    fn tracked(slot: handles::FixedSlot) -> Self {
+        Self {
+            slot,
+            _brand: marker::PhantomData,
+        }
     }
 
-    pub fn scope<R>(self: Pin<&mut Self>, f: impl for<'d> FnOnce(Scope<'d>) -> R) -> R {
-        // SAFETY: the pointer is used only within the synchronous branded scope,
-        // while the pinned exclusive borrow remains active.
-        let this = unsafe { self.get_unchecked_mut() as *mut Self };
-        BrandToken::scope_with_region(move |token, region| {
-            // SAFETY: the higher-ranked closure prevents the generated lifetime
-            // and every reference derived from this pointer from escaping.
-            let this = unsafe { &mut *this };
-            let timer_owner = Box::new(timer::Timer::with_capacity(
-                this.timer_slots,
-                &region,
-                DriverRef::new(&this.shared),
-            ));
-            let timer = &raw const *timer_owner;
-            // SAFETY: `timer_owner` stays in Scope for the whole generative
-            // driver scope, and the higher-ranked closure prevents escape.
-            let timer = unsafe { &*timer };
-            f(Scope {
-                driver: DriverRef::new(&this.shared),
-                backend: &mut this.backend,
-                region,
-                token,
-                timer,
-                _timer_owner: timer_owner,
-            })
-        })
-    }
-
-    #[doc(hidden)]
-    pub fn scope_with_storage<S, R>(
-        self: Pin<&mut Self>,
-        factory: S,
-        f: impl for<'scope, 'd> FnOnce(Scope<'d>, Pin<&'d S::Output<'d>>) -> R,
-    ) -> R
-    where
-        S: StorageFactory,
-    {
-        self.scope(move |mut scope| {
-            let value = factory.build(&mut scope.context());
-            let storage = pin!(value);
-            let storage = from_ref(storage.as_ref().get_ref());
-            // SAFETY: `storage` stays pinned until `f` returns. `f` is
-            // higher-ranked, so the generated lifetime cannot escape.
-            let storage = unsafe { Pin::new_unchecked(&*storage) };
-            f(scope, storage)
-        })
+    pub(crate) fn into_slot(self) -> handles::FixedSlot {
+        self.slot
     }
 }
 
-impl<'d> DriverRef<'d> {
-    fn new(shared: &'d Shared) -> Self {
+impl<'d> RetiredSlots<'d> {
+    fn new(key: OutboundKey) -> Self {
+        Self {
+            key,
+            _brand: marker::PhantomData,
+        }
+    }
+
+    fn into_key(self) -> OutboundKey {
+        self.key
+    }
+
+    fn key(&self) -> OutboundKey {
+        self.key
+    }
+}
+
+pub struct Driver {
+    backend: backend::Backend,
+    flights: flight::Arena,
+    shared: access::Shared,
+    timer_cache_limit: settings::ScheduleCapacity,
+    _pin: marker::PhantomPinned,
+}
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Reference<'d> {
+    pub(in crate::driver) shared: &'d access::Shared,
+    _brand: Invariant<'d>,
+}
+
+impl<'d> Reference<'d> {
+    pub(in crate::driver) fn new(shared: &'d access::Shared) -> Self {
         Self {
             shared,
-            _brand: PhantomData,
+            _brand: marker::PhantomData,
         }
     }
 
-    fn arena(self) -> &'d Arena {
-        &self.shared.arena
+    pub const fn ready(self) -> access::Ready<'d> {
+        access::Ready::new(self)
     }
 
-    pub(crate) fn fixed_ready(self, slot: FdSlot) -> ReadyHandle<'d> {
-        self.arena().fixed_slot(slot)
-    }
-
-    pub(crate) fn fixed_fd_slot(self, raw: u32) -> Option<FdSlot> {
-        self.arena().fd_slot(raw)
-    }
-
-    pub fn make_ready_slot(self, target: Token) -> Result<ReadySlot<'d>> {
-        self.arena().make_slot(target)
-    }
-
-    pub fn make_ready_slot_reserving(self, target: Token, reserve: usize) -> Result<ReadySlot<'d>> {
-        self.arena().make_slot_reserving(target, reserve)
-    }
-
-    pub fn make_ready_slots<I>(self, targets: I) -> Result<Box<[ReadySlot<'d>]>>
-    where
-        I: IntoIterator<Item = Token>,
-        I::IntoIter: ExactSizeIterator,
-    {
-        self.arena().make_slots(targets)
-    }
-
-    pub fn activate_ready(self, key: ReadyKey<'d>) {
-        self.arena().activate(key);
-    }
-
-    #[doc(hidden)]
-    pub fn arm_recv_credit(self, key: ReadyKey<'d>, target: Token) -> bool {
-        self.arena().arm_recv_credit(key, target)
-    }
-
-    #[doc(hidden)]
-    pub fn release_recv_credit(self, key: ReadyKey<'d>, target: Token) {
-        self.arena().release_recv_credit(key, target);
-    }
-
-    #[doc(hidden)]
-    pub fn take_recv_credit(self, key: ReadyKey<'d>, target: Token) -> bool {
-        self.arena().take_recv_credit(key, target)
-    }
-
-    pub fn drain_ready(self, activate: impl FnMut(Token)) {
-        self.arena().drain(activate);
-    }
-
-    pub fn has_ready(self) -> bool {
-        self.arena().has_ready()
-    }
-
-    /// Returns the monotonic-clock snapshot for the current driver turn.
-    ///
-    /// Unlike [`Instant::now`], this is a cached read. The runtime refreshes it
-    /// at completion-batch entry and immediately before preparing to park, so
-    /// callbacks in one turn share a coherent time base without performing a
-    /// clock read for every event.
-    pub fn turn_now(self) -> Instant {
-        self.shared.turn_clock.get()
-    }
-
-    pub(crate) fn return_buffer(self, buffer: RecvBuffer) {
-        assert!(
-            self.shared.returned_buffers.push_back(buffer).is_ok(),
-            "dope: provided-buffer return queue overflow"
-        );
-    }
-}
-
-impl Copy for DriverRef<'_> {}
-
-impl Clone for DriverRef<'_> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl PartialEq for DriverRef<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        core::ptr::eq(self.shared, other.shared)
-    }
-}
-
-impl Eq for DriverRef<'_> {}
-
-impl<'d> Scope<'d> {
-    pub fn context(&mut self) -> DriverContext<'_, 'd> {
-        DriverContext {
-            driver: self.driver,
-            backend: &mut *self.backend,
-            region: &mut self.region,
-            timer: self.timer,
+    pub const fn targets<Tag: route::Tag>(self) -> route::Space<'d, Tag> {
+        route::Space {
+            driver: marker::PhantomData,
         }
     }
 
-    pub fn token(&mut self) -> &mut BrandToken<'d> {
-        &mut self.token
+    pub(in crate::driver) const fn credits(self) -> access::Credits<'d> {
+        access::Credits::new(self)
     }
 
-    pub fn token_and_context(&mut self) -> (&mut BrandToken<'d>, DriverContext<'_, 'd>) {
-        (
-            &mut self.token,
-            DriverContext {
-                driver: self.driver,
-                backend: &mut *self.backend,
-                region: &mut self.region,
-                timer: self.timer,
-            },
-        )
+    pub const fn scheduler(self) -> access::Scheduler<'d> {
+        access::Scheduler::new(self)
     }
 
-    pub fn driver_ref(&self) -> DriverRef<'d> {
-        self.driver
+    pub fn maintenance_progress(self) -> schedule::Progress<'d> {
+        if self.maintenance().has_deferred_maintenance() {
+            schedule::Progress::Runnable
+        } else {
+            schedule::Progress::Quiescent
+        }
+    }
+
+    pub(crate) const fn receive(self) -> access::Receive<'d> {
+        access::Receive::new(self)
+    }
+
+    pub(crate) const fn maintenance(self) -> access::Maintenance<'d> {
+        access::Maintenance::new(self)
+    }
+
+    pub(crate) const fn files(self) -> access::Files<'d> {
+        access::Files::new(self)
+    }
+
+    pub(crate) const fn outbound(self) -> access::Outbound<'d> {
+        access::Outbound::new(self)
+    }
+
+    pub(crate) fn same_driver(self, other: Self) -> bool {
+        (self.shared as *const access::Shared).addr()
+            == (other.shared as *const access::Shared).addr()
     }
 }
 
-impl<'a, 'd> DriverContext<'a, 'd> {
-    pub fn reborrow(&mut self) -> DriverContext<'_, 'd> {
-        DriverContext {
+const _: () = assert!(mem::size_of::<Reference<'static>>() == mem::size_of::<usize>());
+
+pub struct Context<'a, 'd> {
+    driver: Reference<'d>,
+    backend: &'a mut backend::Backend,
+    flights: &'a mut flight::Arena,
+    region: &'a mut region::Token<'d>,
+    timer: &'d timer::Timer<'d>,
+}
+
+impl<'a, 'd> Context<'a, 'd> {
+    fn new(
+        driver: Reference<'d>,
+        backend: &'a mut backend::Backend,
+        flights: &'a mut flight::Arena,
+        region: &'a mut region::Token<'d>,
+        timer: &'d timer::Timer<'d>,
+    ) -> Self {
+        Self {
+            driver,
+            backend,
+            flights,
+            region,
+            timer,
+        }
+    }
+
+    pub fn reborrow(&mut self) -> Context<'_, 'd> {
+        Context {
             driver: self.driver,
             backend: &mut *self.backend,
+            flights: &mut *self.flights,
             region: &mut *self.region,
             timer: self.timer,
         }
     }
 
-    pub fn region_token(&mut self) -> &mut RegionToken<'d> {
+    pub fn region_token(&mut self) -> &mut region::Token<'d> {
         self.region
     }
 
     #[doc(hidden)]
-    pub fn region_token_ref(&self) -> &RegionToken<'d> {
+    pub fn region_token_ref(&self) -> &region::Token<'d> {
         self.region
     }
 
-    pub fn driver_ref(&self) -> DriverRef<'d> {
+    pub fn driver_ref(&self) -> Reference<'d> {
         self.driver
+    }
+
+    #[doc(hidden)]
+    pub fn flight_slots<Tag: route::Tag>(
+        &mut self,
+        capacity: usize,
+    ) -> io::Result<flight::Slots<'d, Tag>> {
+        self.flights.try_slots(capacity, self.driver)
+    }
+
+    pub(crate) fn backend_drain(&mut self) -> (&mut backend::Backend, flight::Drain<'_, 'd>) {
+        let Self {
+            driver,
+            backend,
+            flights,
+            ..
+        } = self;
+        (backend, flight::Drain::new(flights, *driver))
     }
 
     pub fn timer(&self) -> &'d timer::Timer<'d> {
         self.timer
     }
 
-    /// Returns the monotonic-clock snapshot for the current driver turn.
-    pub fn turn_now(&self) -> Instant {
-        self.driver.turn_now()
+    pub fn deadline_now(&self) -> timer::Deadline<'d> {
+        self.driver.scheduler().deadline(self.turn_now())
     }
 
-    /// Starts a new driver-clock epoch and returns its snapshot.
-    ///
-    /// Runtimes should refresh once before dispatching a completion/ready batch
-    /// and once after application callbacks, immediately before timeout
-    /// expiration and park-duration calculations.
-    #[doc(hidden)]
-    pub fn refresh_turn_clock(&mut self) -> Instant {
-        let now = Instant::now();
-        self.driver.shared.turn_clock.set(now);
-        now
+    pub fn turn_now(&self) -> time::Instant {
+        self.driver.scheduler().turn_now()
     }
 
-    pub(crate) fn backend(&mut self) -> &mut Backend {
+    pub(crate) fn backend(&mut self) -> &mut backend::Backend {
         self.backend
     }
 
-    pub(crate) fn backend_ref(&self) -> &Backend {
-        self.backend
+    pub(crate) fn accept_slot_capacity(&self) -> usize {
+        self.driver.files().accept_capacity()
     }
 
-    pub(crate) fn release_buffer(&mut self, buffer: RecvBuffer) {
-        <Backend as BufferBackend>::release_buffer(self.backend(), buffer);
+    pub(crate) fn outbound_slot_capacity(&self) -> usize {
+        self.driver.files().outbound_capacity()
     }
 
-    pub(crate) fn flush_returned_buffers(&mut self) {
-        while let Some(buffer) = self.driver.shared.returned_buffers.pop_front() {
-            self.release_buffer(buffer);
-        }
-    }
-    pub fn guard(&mut self, fd: Fd<'d>) -> FdGuard<'_, 'd> {
-        let (slot, driver, retire_slot) = fd.into_parts();
-        FdGuard::new(self.backend(), slot, driver, retire_slot)
+    pub(crate) fn pop_returned_buffer(&self) -> Option<Buffer> {
+        self.driver.maintenance().pop_returned_buffer()
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Config {
-    pub ring_entries: u32,
-    pub cq_entries: u32,
-    pub fixed_file_slots: u32,
-    pub accept_slots: u32,
-    pub recv: recv::Config,
-    pub defer_taskrun: bool,
-    pub ready_slots: usize,
-    pub timer_slots: usize,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            ring_entries: 1024,
-            cq_entries: 2048,
-            fixed_file_slots: 65536,
-            accept_slots: 65536,
-            recv: recv::Config {
-                len: 4096,
-                entries: 128,
-            },
-            defer_taskrun: false,
-            ready_slots: 65536,
-            timer_slots: 65536,
-        }
-    }
-}
-
-impl Config {
-    const MAX_ENTRIES: u32 = 32768;
-
-    pub fn fixed_file_slots(&self) -> u32 {
-        self.fixed_file_slots
-    }
-
-    fn sized_sq(max_connections: u32, outbound_reserve: u32) -> u32 {
-        max_connections
-            .saturating_add(outbound_reserve)
-            .next_power_of_two()
-            .clamp(64, Self::MAX_ENTRIES)
-    }
-
-    pub fn for_profile<P: DriverProfile>() -> Self {
-        Self {
-            ring_entries: P::RING_ENTRIES,
-            cq_entries: P::CQ_ENTRIES,
-            fixed_file_slots: P::FIXED_FILE_SLOTS,
-            accept_slots: P::FIXED_FILE_SLOTS.saturating_sub(P::OUTBOUND_RESERVE),
-            recv: recv::Config {
-                len: P::RECV_BUF_LEN,
-                entries: P::RECV_BUF_ENTRIES,
-            },
-            defer_taskrun: P::DEFER_TASKRUN,
-            ready_slots: P::READY_SLOTS,
-            timer_slots: P::READY_SLOTS,
-        }
-    }
-
-    pub fn for_tcp_profile<P: DriverProfile>(max_connections: usize) -> Self {
-        let max_connections = u32::try_from(max_connections).unwrap_or(u32::MAX);
-        let accept_slots =
-            max_connections.min(P::FIXED_FILE_SLOTS.saturating_sub(P::OUTBOUND_RESERVE));
-        Self {
-            ring_entries: Self::sized_sq(accept_slots, P::OUTBOUND_RESERVE).min(P::RING_ENTRIES),
-            cq_entries: P::CQ_ENTRIES,
-            fixed_file_slots: accept_slots.saturating_add(P::OUTBOUND_RESERVE),
-            accept_slots,
-            recv: recv::Config::for_accept(accept_slots, P::RECV_BUF_LEN, Self::MAX_ENTRIES),
-            defer_taskrun: P::DEFER_TASKRUN,
-            ready_slots: P::READY_SLOTS,
-            timer_slots: P::READY_SLOTS,
-        }
-    }
-
-    pub fn for_quic_udp(recv_buf_entries: u32, recv_buf_len: u32) -> Self {
-        Self {
-            ring_entries: 256,
-            cq_entries: 1024,
-            fixed_file_slots: 16,
-            accept_slots: 0,
-            recv: recv::Config {
-                len: recv_buf_len as usize,
-                entries: recv_buf_entries.min(u16::MAX as u32) as u16,
-            },
-            defer_taskrun: false,
-            ready_slots: 1024,
-            timer_slots: 1024,
-        }
-    }
-
-    pub fn with_recv(mut self, len: usize, entries: u16) -> Self {
-        self.recv.apply_overrides(len, entries);
-        self
-    }
-
-    pub(crate) fn validate(&self) -> Result<()> {
-        if self.timer_slots > u32::MAX as usize {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "dope: timer capacity exceeds u32 slots",
-            ));
-        }
-        if self.accept_slots > self.fixed_file_slots {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "dope: accept slots exceed fixed-file capacity",
-            ));
-        }
-        if TokenCapacity::new(self.fixed_file_slots as usize).is_none() {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "dope: fixed-file capacity exceeds token slots",
-            ));
-        }
-        Backend::snapshot()?
-            .check_slots(self.fixed_file_slots)
-            .map_err(io::Error::from)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PushError;
-
-impl Display for PushError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str("dope: SQE push failed")
-    }
-}
-
-impl Error for PushError {}
-
-impl From<PushError> for io::Error {
-    fn from(_: PushError) -> Self {
-        io::Error::from(ErrorKind::WouldBlock)
-    }
-}
-
-pub struct OutboundReservation<'d> {
-    base: u32,
-    capacity: u32,
-    _brand: Invariant<'d>,
-    _thread: ThreadBound,
-}
-
-#[derive(Clone, Copy)]
-pub struct OutboundSlot<'d> {
-    fd: FdSlot,
-    _brand: Invariant<'d>,
-}
-
-impl<'d> OutboundSlot<'d> {
-    pub fn bind(self, driver: DriverRef<'d>) -> Fd<'d> {
-        Fd::from_range_slot(self.fd, driver)
-    }
-}
-
-impl<'d> OutboundReservation<'d> {
-    pub(crate) fn new(base: u32, capacity: u32) -> Self {
-        Self {
-            base,
-            capacity,
-            _brand: PhantomData,
-            _thread: ThreadBound::NEW,
-        }
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            base: 0,
-            capacity: 0,
-            _brand: PhantomData,
-            _thread: ThreadBound::NEW,
-        }
-    }
-
-    pub fn slot(&self, local: SlotIndex) -> Option<OutboundSlot<'d>> {
-        if local.raw() >= self.capacity {
-            return None;
-        }
-        let index = SlotIndex::try_new(self.base.checked_add(local.raw())?)?;
-        Some(OutboundSlot {
-            fd: FdSlot::from_index(index),
-            _brand: PhantomData,
+impl Driver {
+    pub fn new(config: settings::Config) -> io::Result<Self> {
+        config.validate_structure()?;
+        let file_slots = config.file_slots();
+        let receive = config.receive();
+        let state = <backend::Backend as platform::Runtime>::build(&config)?;
+        let scheduler = config.scheduler();
+        let shared = access::Shared::try_new(file_slots, scheduler.ready(), receive)?;
+        Ok(Self {
+            backend: state,
+            flights: flight::Arena::new(),
+            shared,
+            timer_cache_limit: scheduler.timer_cache_limit(),
+            _pin: marker::PhantomPinned,
         })
     }
 
-    pub(crate) fn into_range(self) -> (u32, u32) {
-        (self.base, self.capacity)
+    pub fn scope<R>(
+        self: pin::Pin<&mut Self>,
+        owner: quiesce::Lease,
+        f: impl for<'d> FnOnce(lifecycle::Scope<'d>) -> R,
+    ) -> R {
+        let timer_cache_limit = self.as_ref().get_ref().timer_cache_limit;
+        lifecycle::Lease::take(self).run(timer_cache_limit, owner, f)
+    }
+
+    #[doc(hidden)]
+    pub fn scope_with_storage<S, R>(
+        self: pin::Pin<&mut Self>,
+        owner: quiesce::Lease,
+        factory: S,
+        f: impl for<'d> FnOnce(lifecycle::Scope<'d>, pin::Pin<&'d S::Output<'d>>) -> R,
+    ) -> Result<R, S::Error>
+    where
+        S: storage::Factory,
+    {
+        let timer_cache_limit = self.as_ref().get_ref().timer_cache_limit;
+        lifecycle::Lease::take(self).run_with_storage(timer_cache_limit, owner, factory, f)
     }
 }

@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["core", "net", "dope", "fiber", "gen", "test"]
+members = ["core", "net", "runtime", "manifold", "dns", "dope", "fiber", "gen", "test"]
 
 [workspace.package]
 edition = "2024"
-version = "0.14.0"
+rust-version = "1.95"
+version = "0.15.0"
 description = "The manifold runtime"
 repository = "https://github.com/dope-rs/dope"
 readme = "README.md"
@@ -12,14 +13,23 @@ license = "MIT"
 authors = ["inq <gofiri@gmail.com>"]
 
 [workspace.dependencies]
-dope = { path = "dope", version = "0.14.0" }
-dope-core = { path = "core", version = "0.14.0" }
-dope-net = { path = "net", version = "0.14.0" }
-dope-fiber = { path = "fiber", version = "0.14.0" }
-dope-gen = { path = "gen", version = "0.14.0" }
-dope-test = { path = "test", version = "0.14.0" }
-o3 = "0.9.2"
+dope = { path = "dope", version = "0.15.0" }
+dope-core = { path = "core", version = "0.15.0" }
+dope-net = { path = "net", version = "0.15.0" }
+dope-runtime = { path = "runtime", version = "0.15.0" }
+dope-manifold = { path = "manifold", version = "0.15.0" }
+dope-dns = { path = "dns", version = "0.15.0" }
+dope-fiber = { path = "fiber", version = "0.15.0" }
+dope-gen = { path = "gen", version = "0.15.0" }
+dope-test = { path = "test", version = "0.15.0" }
+o3 = "=0.16.3"
 libc = "0.2"
 io-uring = "0.7"
 pin-project = "1"
 siphasher = "1"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

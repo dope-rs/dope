@@ -1,82 +1,109 @@
-use std::cell::Cell;
-use std::io;
-use std::task::Poll;
+use std::{cell, io, mem, task};
 
-use dope::driver::ready::CompletionWaker;
-use dope::driver::token::Token;
-use dope::manifold::connector::source::DialKey;
+use dope::{
+    core::driver::schedule::ready::completion,
+    manifold::connector::{attempt, connection},
+};
+use o3::collections;
 
 #[derive(Default)]
-enum Slot<'d> {
+enum Slot<'d, const ID: u8> {
     #[default]
     Vacant,
-    Pending(DialKey),
-    Waiting(DialKey, CompletionWaker<'d>),
-    Settled(DialKey, Outcome),
+    Pending(attempt::Id<'d, ID>, Option<completion::Waker<'d>>),
+    Settled(attempt::Id<'d, ID>, Outcome<'d, ID>),
 }
 
-pub(crate) enum Outcome {
-    Connected(Token),
+pub(crate) struct Stale;
+
+pub(crate) enum Outcome<'d, const ID: u8> {
+    Connected(connection::Id<'d, ID>),
     Failed(io::Error),
 }
 
-const _: () = assert!(std::mem::size_of::<Outcome>() <= std::mem::size_of::<[usize; 2]>());
+const _: () = assert!(mem::size_of::<Outcome<'static, 0>>() <= mem::size_of::<[usize; 2]>());
 
-pub(crate) struct Pending<'d> {
-    slots: Box<[Cell<Slot<'d>>]>,
+pub(super) struct Pending<'d, const ID: u8> {
+    slots: Box<[cell::Cell<Slot<'d, ID>>]>,
 }
 
-impl<'d> Pending<'d> {
-    pub(crate) fn with_capacity(cap: usize) -> Self {
-        Self {
-            slots: (0..cap).map(|_| Cell::new(Slot::Vacant)).collect(),
+impl<'d, const ID: u8> Pending<'d, ID> {
+    pub(crate) fn try_with_capacity(cap: usize) -> Result<Self, collections::AllocationError> {
+        Ok(Self {
+            slots: collections::BoxSliceExt::try_box_with(cap, |_| cell::Cell::new(Slot::Vacant))?,
+        })
+    }
+
+    pub(crate) fn reserve(&self, key: attempt::Id<'d, ID>) -> bool {
+        let Some(slot) = self.slots.get(key.index() as usize) else {
+            return false;
+        };
+        match slot.take() {
+            Slot::Vacant => {
+                slot.set(Slot::Pending(key, None));
+                true
+            }
+            state => {
+                slot.set(state);
+                false
+            }
         }
     }
 
-    pub(crate) fn reserve(&self, key: DialKey) {
-        self.slots[key.index() as usize].set(Slot::Pending(key));
-    }
-
-    pub(crate) fn settle(&self, key: DialKey, value: Outcome) {
+    pub(crate) fn settle(
+        &self,
+        key: attempt::Id<'d, ID>,
+        value: Outcome<'d, ID>,
+    ) -> Result<(), Outcome<'d, ID>> {
         let Some(slot) = self.slots.get(key.index() as usize) else {
-            return;
+            return Err(value);
         };
         match slot.take() {
-            Slot::Pending(current) if current == key => slot.set(Slot::Settled(key, value)),
-            Slot::Waiting(current, waiter) if current == key => {
+            Slot::Pending(current, waiter) if current == key => {
                 slot.set(Slot::Settled(key, value));
-                waiter.wake();
-            }
-            state => slot.set(state),
-        }
-    }
-
-    pub(crate) fn poll(&self, key: DialKey, wake: CompletionWaker<'d>) -> Poll<Outcome> {
-        let Some(slot) = self.slots.get(key.index() as usize) else {
-            return Poll::Pending;
-        };
-        match slot.take() {
-            Slot::Settled(current, value) if current == key => Poll::Ready(value),
-            Slot::Pending(current) | Slot::Waiting(current, _) if current == key => {
-                slot.set(Slot::Waiting(key, wake));
-                Poll::Pending
+                if let Some(waiter) = waiter {
+                    waiter.wake();
+                }
+                Ok(())
             }
             state => {
                 slot.set(state);
-                Poll::Pending
+                Err(value)
             }
         }
     }
 
-    pub(crate) fn cancel(&self, key: DialKey) {
+    pub(crate) fn poll(
+        &self,
+        key: attempt::Id<'d, ID>,
+        wake: completion::Waker<'d>,
+    ) -> Result<task::Poll<Outcome<'d, ID>>, Stale> {
+        use std::task::Poll;
         let Some(slot) = self.slots.get(key.index() as usize) else {
-            return;
+            return Err(Stale);
         };
         match slot.take() {
-            Slot::Pending(current) | Slot::Waiting(current, _) | Slot::Settled(current, _)
-                if current == key => {}
+            Slot::Settled(current, value) if current == key => Ok(Poll::Ready(value)),
+            Slot::Pending(current, _) if current == key => {
+                slot.set(Slot::Pending(key, Some(wake)));
+                Ok(Poll::Pending)
+            }
             state => {
                 slot.set(state);
+                Err(Stale)
+            }
+        }
+    }
+
+    pub(crate) fn cancel(&self, key: attempt::Id<'d, ID>) -> bool {
+        let Some(slot) = self.slots.get(key.index() as usize) else {
+            return false;
+        };
+        match slot.take() {
+            Slot::Pending(current, _) | Slot::Settled(current, _) if current == key => true,
+            state => {
+                slot.set(state);
+                false
             }
         }
     }

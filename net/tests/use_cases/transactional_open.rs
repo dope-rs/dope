@@ -1,15 +1,14 @@
 #![forbid(unsafe_code)]
 
-use std::cell::Cell;
-use std::collections::VecDeque;
-use std::convert::Infallible;
-use std::rc::Rc;
+use std::{cell::Cell, collections::VecDeque, convert::Infallible, rc::Rc};
 
 use dope_core::io::recv::{Lease, View};
-use dope_net::wire::reservation::ReservedOpen;
-use dope_net::wire::send::{Plain, Prepared, Sent, Storage, Vectored};
-use dope_net::wire::{OpenReservation, OpenRollback, Reclaim, RecvChunk, RuntimeLimits, Wire};
-use o3::buffer::{Borrowed, Bytes};
+use dope_net::wire::{
+    self, OpenReservation, OpenRollback, RecvChunk, RuntimeLimits, Wire, reclaim,
+    reservation::ReservedOpen,
+    send::{Plain, Prepared, Sent, Storage, Transition, Vectored},
+};
+use o3::buffer::bytes::{Borrowed, Bytes};
 
 struct Config(VecDeque<u32>);
 
@@ -52,30 +51,38 @@ impl OpenRollback<TransactionalWire, ()> for Runtime {
 }
 
 impl Wire for TransactionalWire {
-    type Connection<'d> = Self;
-    type ConnectionStorage = ();
-    type InitConfig<'d> = Config;
-    type RuntimeContext<'d> = Runtime;
-    type Open<'a, 'd>
-        = ReservedOpen<'a, Self::Connection<'d>, Self::SendStorage, Self::RuntimeContext<'d>>
+    type Connection<'d, const ID: u8> = Self;
+    type ConnectionStorage<const ID: u8> = ();
+    type InitConfig<'d, const ID: u8> = Config;
+    type RuntimeContext<'d, const ID: u8> = Runtime;
+    type Open<'a, 'd, const ID: u8>
+        = ReservedOpen<
+        'a,
+        Self::Connection<'d, ID>,
+        Self::StorageBackend<'d>,
+        Self::RuntimeContext<'d, ID>,
+    >
     where
         'd: 'a;
     type OpenError = Infallible;
     type Recv<'a> = Bytes<Borrowed<'a>>;
     type RecvBatch<'a> = std::iter::Once<RecvChunk<'a, Self::Recv<'a>>>;
     type RetainedRecv<'d> = View<'d>;
-    type SendStorage = ();
+    type StorageBackend<'d>
+        = ()
+    where
+        Self: 'd;
+    type Reclaim = reclaim::OnComplete;
+    type Receive = wire::receive::Direct;
 
-    const RECLAIM: Reclaim = Reclaim::OnComplete;
-
-    fn connection_storage(_: usize) -> std::io::Result<()> {
+    fn connection_storage<const ID: u8>(_: usize) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn runtime_context<'d>(
+    fn runtime_context<'d, const ID: u8>(
         _: RuntimeLimits,
-        config: Self::InitConfig<'d>,
-    ) -> std::io::Result<Self::RuntimeContext<'d>>
+        config: Self::InitConfig<'d, ID>,
+    ) -> std::io::Result<Self::RuntimeContext<'d, ID>>
     where
         Self: 'd,
     {
@@ -85,9 +92,9 @@ impl Wire for TransactionalWire {
         })
     }
 
-    fn prepare_open<'a, 'd>(
-        runtime: &'a mut Self::RuntimeContext<'d>,
-    ) -> Result<Option<Self::Open<'a, 'd>>, Infallible>
+    fn prepare_open<'a, 'd, const ID: u8>(
+        runtime: &'a mut Self::RuntimeContext<'d, ID>,
+    ) -> Result<Option<Self::Open<'a, 'd, ID>>, Infallible>
     where
         'd: 'a,
     {
@@ -101,59 +108,63 @@ impl Wire for TransactionalWire {
         Ok(Some(ReservedOpen::new(runtime, wire, ())))
     }
 
-    fn process_recv<'a, 'd>(
-        _: &mut Self::Connection<'d>,
-        _: &mut Self::RuntimeContext<'d>,
+    fn process_recv<'a, 'd, const ID: u8>(
+        _: &mut Self::Connection<'d, ID>,
+        _: &mut Self::RuntimeContext<'d, ID>,
         bytes: &'a mut [u8],
-    ) -> Self::RecvBatch<'a> {
+        _: &wire::batch::Capacity<Self>,
+    ) -> Self::RecvBatch<'a>
+    where
+        'd: 'a,
+    {
         std::iter::once(RecvChunk::Borrowed(Bytes::<Borrowed<'a>>::from(&*bytes)))
     }
 
-    fn process_retained_recv<'a, 'd>(
-        _: &mut Self::Connection<'d>,
-        _: &mut Self::RuntimeContext<'d>,
+    fn process_retained_recv<'a, 'd, const ID: u8>(
+        _: &mut Self::Connection<'d, ID>,
+        _: &mut Self::RuntimeContext<'d, ID>,
         bytes: Lease<'a>,
-    ) -> Option<Self::RetainedRecv<'a>> {
-        let span = bytes.span(0, bytes.as_slice().len())?;
-        bytes.into_view(span).ok()
+    ) -> Option<Self::RetainedRecv<'a>>
+    where
+        'd: 'a,
+    {
+        Some(bytes.into_view())
     }
 
-    fn prepare_send<'a, 'd>(
-        _: &'a mut Self::Connection<'d>,
-        _: Storage<'a, Self::SendStorage>,
+    fn prepare_send<'a, 'd, const ID: u8>(
+        _: &'a mut Self::Connection<'d, ID>,
+        _: Storage<'a, Self::StorageBackend<'d>>,
         plain: Plain<'a>,
-    ) -> Prepared<'a> {
-        let len = plain.len();
-        Prepared::input(plain, len)
+    ) -> Prepared<'a, Self::Reclaim> {
+        Prepared::input(plain)
     }
 
-    fn prepare_send_vectored<'a, 'd>(
-        _: &'a mut Self::Connection<'d>,
-        _: Storage<'a, Self::SendStorage>,
+    fn prepare_send_vectored<'a, 'd, const ID: u8>(
+        _: &'a mut Self::Connection<'d, ID>,
+        _: Storage<'a, Self::StorageBackend<'d>>,
         plain: Vectored<'a>,
-    ) -> Prepared<'a> {
-        let len = plain.bytes();
-        Prepared::vectored(plain, len)
+    ) -> Prepared<'a, Self::Reclaim> {
+        Prepared::vectored(plain)
     }
 
-    fn after_send<'a, 'd>(
-        _: &'a mut Self::Connection<'d>,
-        send: Storage<'a, Self::SendStorage>,
+    fn after_send<'a, 'd, const ID: u8>(
+        _: &'a mut Self::Connection<'d, ID>,
+        send: Storage<'a, Self::StorageBackend<'d>>,
         _: Sent,
-    ) -> Prepared<'a> {
-        send.empty(0)
+    ) -> Transition<'a, Self::Reclaim> {
+        Transition::completed(send)
     }
 
-    fn flush_pending<'a, 'd>(
-        _: &'a mut Self::Connection<'d>,
-        send: Storage<'a, Self::SendStorage>,
-    ) -> Prepared<'a> {
-        send.empty(0)
+    fn flush_pending<'a, 'd, const ID: u8>(
+        _: &'a mut Self::Connection<'d, ID>,
+        send: Storage<'a, Self::StorageBackend<'d>>,
+    ) -> Prepared<'a, Self::Reclaim> {
+        send.empty()
     }
 }
 
 fn runtime(values: impl IntoIterator<Item = u32>) -> Runtime {
-    TransactionalWire::runtime_context(
+    TransactionalWire::runtime_context::<0>(
         RuntimeLimits::new(4096, 0, 4096),
         Config(values.into_iter().collect()),
     )
@@ -177,13 +188,13 @@ fn transactional_open_moves_drop_state_exactly_once() {
     runtime.retry = Some(TransactionalWire::tracked(73, drops.clone()));
 
     drop(
-        TransactionalWire::prepare_open(&mut runtime)
+        TransactionalWire::prepare_open::<0>(&mut runtime)
             .unwrap()
             .unwrap(),
     );
     assert_eq!(drops.get(), 0);
 
-    let (wire, ()) = TransactionalWire::prepare_open(&mut runtime)
+    let (wire, ()) = TransactionalWire::prepare_open::<0>(&mut runtime)
         .unwrap()
         .unwrap()
         .commit();
@@ -199,19 +210,19 @@ fn siege_cancellation_never_consumes_the_one_shot_open() {
 
     for _ in 0..65_536 {
         drop(
-            TransactionalWire::prepare_open(&mut runtime)
+            TransactionalWire::prepare_open::<0>(&mut runtime)
                 .unwrap()
                 .unwrap(),
         );
     }
 
-    let (wire, ()) = TransactionalWire::prepare_open(&mut runtime)
+    let (wire, ()) = TransactionalWire::prepare_open::<0>(&mut runtime)
         .unwrap()
         .unwrap()
         .commit();
     assert_eq!(wire.value, 73);
     assert!(
-        TransactionalWire::prepare_open(&mut runtime)
+        TransactionalWire::prepare_open::<0>(&mut runtime)
             .unwrap()
             .is_none()
     );
@@ -224,7 +235,7 @@ fn siege_commit_sequence_has_no_gaps_after_transient_failures() {
     let mut attempt = 0usize;
 
     while committed.len() != 4096 {
-        let open = TransactionalWire::prepare_open(&mut runtime)
+        let open = TransactionalWire::prepare_open::<0>(&mut runtime)
             .unwrap()
             .unwrap();
         attempt += 1;
@@ -238,7 +249,7 @@ fn siege_commit_sequence_has_no_gaps_after_transient_failures() {
 
     assert_eq!(committed, (0..4096).collect::<Vec<_>>());
     assert!(
-        TransactionalWire::prepare_open(&mut runtime)
+        TransactionalWire::prepare_open::<0>(&mut runtime)
             .unwrap()
             .is_none()
     );

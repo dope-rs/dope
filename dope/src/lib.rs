@@ -1,15 +1,5 @@
-#![warn(unreachable_pub)]
+pub use core;
 
-extern crate self as dope;
-
-pub mod hash;
-pub mod manifold;
-pub mod panic;
-pub mod runtime;
-
-pub use dope_core::backend::{Sqe, TimerSpec};
-pub use dope_core::driver::completion::Completion;
-pub use dope_core::driver::submission::Submission;
-pub use dope_core::driver::{DriverContext, DriverRef};
-pub use dope_core::io::Event;
-pub use dope_core::{driver, io};
+pub use manifold::{self, dispatch::raw::Manifold};
+pub use net;
+pub use runtime;

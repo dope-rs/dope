@@ -1,8 +1,0 @@
-error: lifetime may not live long enough
- --> tests/ui/local/borrow_cannot_escape.rs:4:35
-  |
-4 |     cell.read_with(local, |value| value.as_str())
-  |                            ------ ^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
-  |                            |    |
-  |                            |    return type of closure is &'2 str
-  |                            has type `&'1 String`

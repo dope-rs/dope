@@ -1,18 +1,16 @@
-use core::marker::PhantomData;
-use core::pin::Pin;
-use core::task::Poll;
+use core::{marker, task};
 
-use super::Fiber;
-use crate::Context;
+use crate::{abi, context};
 
+#[must_use = "a fiber does nothing unless it is driven"]
 pub struct Pending<T> {
-    output: PhantomData<fn() -> T>,
+    output: marker::PhantomData<fn() -> T>,
 }
 
 impl<T> Pending<T> {
     pub const fn new() -> Self {
         Self {
-            output: PhantomData,
+            output: marker::PhantomData,
         }
     }
 }
@@ -23,10 +21,11 @@ impl<T> Default for Pending<T> {
     }
 }
 
-impl<'d, T> Fiber<'d> for Pending<T> {
+impl<'d, T> abi::Fiber<'d> for Pending<T> {
     type Output = T;
 
-    fn poll(self: Pin<&mut Self>, _cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
+    fn poll(_call: context::PollCall<'_, '_, 'd, Self>) -> task::Poll<Self::Output> {
+        use core::task::Poll;
         Poll::Pending
     }
 }

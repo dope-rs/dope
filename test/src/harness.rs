@@ -1,115 +1,59 @@
-use std::io::{self, Error, ErrorKind};
-use std::marker::PhantomData;
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::thread::{scope, sleep};
-use std::time::Duration;
+use std::{io, net, panic, thread};
 
-use dope::runtime::launcher::{Launcher, WorkerContext, WorkerEntry};
-use dope::runtime::trigger::ShutdownTrigger;
+use dope::runtime::shutdown;
 
 pub struct Harness {
-    bind: SocketAddr,
-}
-
-struct HarnessEntry<S>(PhantomData<fn(S)>);
-
-struct TriggerHarnessEntry<S>(PhantomData<fn(S)>);
-
-impl<S> WorkerEntry for HarnessEntry<S>
-where
-    S: FnOnce(WorkerContext) -> io::Result<()> + Send,
-{
-    type Input = S;
-
-    fn run(server: Self::Input, context: WorkerContext) -> io::Result<()> {
-        server(context)
-    }
-}
-
-impl<S> WorkerEntry for TriggerHarnessEntry<S>
-where
-    S: FnOnce(WorkerContext, &ShutdownTrigger) -> io::Result<()> + Send,
-{
-    type Input = S;
-
-    fn run(server: Self::Input, context: WorkerContext) -> io::Result<()> {
-        let trigger = context.shutdown_trigger()?;
-        server(context, &trigger)
-    }
+    bind: net::SocketAddr,
 }
 
 impl Harness {
-    pub const fn new(bind: SocketAddr) -> Self {
+    pub const fn new(bind: net::SocketAddr) -> Self {
         Self { bind }
     }
 
     pub fn bind() -> io::Result<Self> {
+        use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let bind = listener.local_addr()?;
         drop(listener);
         Ok(Self::new(bind))
     }
 
-    pub const fn addr(&self) -> SocketAddr {
+    pub const fn addr(&self) -> net::SocketAddr {
         self.bind
     }
 
     pub fn run<S, C, R>(&self, server: S, client: C) -> io::Result<R>
     where
-        S: FnOnce(WorkerContext) -> io::Result<()> + Send,
-        C: FnOnce(SocketAddr) -> R,
+        S: FnOnce(shutdown::Source) -> io::Result<shutdown::Requested> + Send,
+        C: FnOnce(net::SocketAddr) -> R,
     {
         let bind = self.bind;
-        let launcher = Launcher::unbound(1)?;
-        let trigger = launcher.shutdown_trigger()?;
-        scope(|scope| {
-            let server = scope.spawn(move || launcher.run::<HarnessEntry<S>>(vec![server]));
+        let (source, trigger) = shutdown::Pair::new()?.split();
+        thread::scope(|scope| {
+            let server = scope.spawn(move || server(source).map(drop));
             let ready = Self::wait_for_ready(bind);
-            let outcome = ready.map(|()| catch_unwind(AssertUnwindSafe(|| client(bind))));
+            let outcome =
+                ready.map(|()| panic::catch_unwind(panic::AssertUnwindSafe(|| client(bind))));
             trigger.fire()?;
-            let _ = TcpStream::connect(bind);
+            let _ = net::TcpStream::connect(bind);
             let served = server.join();
             let value = match outcome? {
                 Ok(value) => value,
-                Err(payload) => resume_unwind(payload),
+                Err(payload) => panic::resume_unwind(payload),
             };
             match served {
-                Ok(run) => run.map(|()| value),
-                Err(payload) => resume_unwind(payload),
+                Ok(run) => run.map(|_| value),
+                Err(payload) => panic::resume_unwind(payload),
             }
         })
     }
 
-    pub fn run_with_trigger<S, C, R>(&self, server: S, client: C) -> io::Result<R>
-    where
-        S: FnOnce(WorkerContext, &ShutdownTrigger) -> io::Result<()> + Send,
-        C: FnOnce(SocketAddr) -> R,
-    {
-        let bind = self.bind;
-        let launcher = Launcher::unbound(1)?;
-        let trigger = launcher.shutdown_trigger()?;
-        scope(|scope| {
-            let server = scope.spawn(move || launcher.run::<TriggerHarnessEntry<S>>(vec![server]));
-            let ready = Self::wait_for_ready(bind);
-            let outcome = ready.map(|()| catch_unwind(AssertUnwindSafe(|| client(bind))));
-            trigger.fire()?;
-            let _ = TcpStream::connect(bind);
-            let served = server.join();
-            let value = match outcome? {
-                Ok(value) => value,
-                Err(payload) => resume_unwind(payload),
-            };
-            match served {
-                Ok(run) => run.map(|()| value),
-                Err(payload) => resume_unwind(payload),
-            }
-        })
-    }
-
-    fn wait_for_ready(addr: SocketAddr) -> io::Result<()> {
+    fn wait_for_ready(addr: net::SocketAddr) -> io::Result<()> {
+        use std::io::{Error, ErrorKind};
         for _ in 0..200 {
-            if TcpStream::connect(addr).is_ok() {
+            use std::{thread::sleep, time::Duration};
+            if net::TcpStream::connect(addr).is_ok() {
                 return Ok(());
             }
             sleep(Duration::from_millis(10));
