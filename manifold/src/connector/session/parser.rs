@@ -1,8 +1,8 @@
-use std::{ops, process};
+use std::ops;
 
 use dope_core::driver::schedule;
 use dope_net::wire;
-use o3::buffer::{PrefixConsumer as _, resident, storage};
+use o3::buffer::resident;
 
 use crate::connector::{codec, lifecycle, session};
 
@@ -54,11 +54,6 @@ struct Direct<'a, 'd, R: wire::Cursor<'d>> {
     ingress: &'a mut resident::Snapshot<'d, { session::INGRESS_BUF_CAP }>,
 }
 
-struct Buffered<'a, 'd> {
-    cursor: storage::Shared,
-    ingress: &'a mut resident::Snapshot<'d, { session::INGRESS_BUF_CAP }>,
-}
-
 trait Ingress<'d>: wire::Cursor<'d> {
     fn preserve(&mut self) -> Result<(), PreserveError>;
 }
@@ -93,7 +88,7 @@ impl<'a, 'work, 'connection, 'd, const ID: u8, N: session::Session<'d, ID>>
             context,
             work,
         } = self;
-        let cursor = ingress.snapshot().unwrap_or_default();
+        let mut cursor = wire::ResidentCursor::new(ingress);
         Core {
             owner,
             budget,
@@ -101,7 +96,7 @@ impl<'a, 'work, 'connection, 'd, const ID: u8, N: session::Session<'d, ID>>
             context,
             work,
         }
-        .run(&mut Buffered { cursor, ingress })
+        .run(&mut cursor)
     }
 
     pub(super) fn run_admitted(self, permit: schedule::ApplicationPermit<'work, 'd>) -> Outcome {
@@ -113,7 +108,7 @@ impl<'a, 'work, 'connection, 'd, const ID: u8, N: session::Session<'d, ID>>
             context,
             work,
         } = self;
-        let cursor = ingress.snapshot().unwrap_or_default();
+        let mut cursor = wire::ResidentCursor::new(ingress);
         Core {
             owner,
             budget,
@@ -121,7 +116,7 @@ impl<'a, 'work, 'connection, 'd, const ID: u8, N: session::Session<'d, ID>>
             context,
             work,
         }
-        .run_admitted(&mut Buffered { cursor, ingress }, permit)
+        .run_admitted(&mut cursor, permit)
     }
 
     pub(super) fn run_retained<R: wire::Cursor<'d>>(self, cursor: &mut R) -> Outcome {
@@ -156,10 +151,10 @@ impl<'a, 'work, 'connection, 'd, const ID: u8, N: session::Session<'d, ID>>
                 PreserveError::Contract => Outcome::Overrun,
             };
         }
-        let Some(cursor) = ingress.snapshot() else {
+        if ingress.is_empty() {
             return Outcome::Complete;
-        };
-        core.run(&mut Buffered { cursor, ingress })
+        }
+        core.run(&mut wire::ResidentCursor::new(ingress))
     }
 }
 
@@ -350,41 +345,7 @@ impl<'d, R: wire::Cursor<'d>> Ingress<'d> for Direct<'_, 'd, R> {
     }
 }
 
-impl<'d> wire::Cursor<'d> for Buffered<'_, 'd> {
-    fn chunk(&self) -> &[u8] {
-        self.cursor.as_slice()
-    }
-
-    fn consume(&mut self, requested: usize) -> usize {
-        let consumed = wire::Cursor::consume(&mut self.cursor, requested);
-        let prefix = match self.ingress.try_consume_prefix(consumed) {
-            Ok(prefix) => prefix,
-            Err(_) => process::abort(),
-        };
-        prefix.commit();
-        if self.ingress.is_empty() {
-            self.ingress.release_empty();
-        }
-        consumed
-    }
-
-    fn remaining(&self) -> usize {
-        self.cursor.len()
-    }
-
-    fn retain(
-        &self,
-        range: ops::Range<usize>,
-        _: &resident::Budget<'d>,
-    ) -> Result<wire::RetainedBytes<'d>, wire::RetainError> {
-        self.cursor
-            .get(range)
-            .map(wire::RetainedBytes::from)
-            .ok_or(wire::RetainError::Range)
-    }
-}
-
-impl<'d> Ingress<'d> for Buffered<'_, 'd> {
+impl<'d, const MAX_CAPACITY: usize> Ingress<'d> for wire::ResidentCursor<'_, 'd, MAX_CAPACITY> {
     fn preserve(&mut self) -> Result<(), PreserveError> {
         Ok(())
     }

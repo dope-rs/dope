@@ -14,7 +14,7 @@ use dope_core::{
     io::recv,
 };
 use o3::buffer::{bytes, resident};
-pub use types::{identity::Identity, retained::RetainedBytes};
+pub use types::{cursor::ResidentCursor, identity::Identity, retained::RetainedBytes};
 
 pub(crate) const MAX_RECV_BATCH_LIMIT: usize = 32;
 
