@@ -1,92 +1,80 @@
-use std::cell::Cell;
-use std::mem::size_of;
+use std::{cell, mem};
 
-const RECV_QUEUE_CAP: usize = 256;
-const RECV_CAP_BYTES: usize = 1 << 20;
+const RECV_BYTE_CAP: u32 = 1 << 20;
 
-#[derive(Clone, Copy)]
-pub(super) enum QueueState {
-    Empty,
-    Queued { chunks: usize, bytes: usize },
-}
+#[derive(Clone, Copy, Default)]
+#[repr(transparent)]
+struct BufferedBytes(u32);
 
 pub(in crate::net::port) struct RecvQueue {
-    state: Cell<QueueState>,
+    bytes: cell::Cell<BufferedBytes>,
 }
 
-const _: () = assert!(size_of::<RecvQueue>() == 24);
+#[must_use = "a prepared receive queue update has no effect until committed"]
+pub(super) struct Update<'queue> {
+    queue: &'queue RecvQueue,
+    next: BufferedBytes,
+}
+
+const _: () = {
+    assert!(mem::size_of::<BufferedBytes>() == mem::size_of::<u32>());
+    assert!(mem::align_of::<BufferedBytes>() == mem::align_of::<u32>());
+    assert!(mem::size_of::<RecvQueue>() == mem::size_of::<u32>());
+};
 
 impl Default for RecvQueue {
     fn default() -> Self {
         Self {
-            state: Cell::new(QueueState::Empty),
+            bytes: cell::Cell::new(BufferedBytes::default()),
         }
     }
 }
 
 impl RecvQueue {
     pub(in crate::net::port) fn is_empty(&self) -> bool {
-        matches!(self.state.get(), QueueState::Empty)
+        self.bytes.get().is_empty()
     }
 
-    pub(super) fn state(&self) -> QueueState {
-        self.state.get()
+    pub(super) fn prepare_push(&self, len: u32) -> Option<Update<'_>> {
+        Some(self.prepare(self.bytes.get().pushed(len)?))
     }
 
-    pub(super) fn commit(&self, state: QueueState) {
-        self.state.set(state);
+    pub(super) fn prepare_pop(&self, len: u32) -> Option<Update<'_>> {
+        Some(self.prepare(self.bytes.get().popped(len)?))
+    }
+
+    fn prepare(&self, next: BufferedBytes) -> Update<'_> {
+        Update { queue: self, next }
     }
 }
 
-impl QueueState {
-    fn chunks(self) -> usize {
-        match self {
-            Self::Empty => 0,
-            Self::Queued { chunks, .. } => chunks,
-        }
+impl BufferedBytes {
+    fn is_empty(self) -> bool {
+        self.0 == 0
     }
 
-    fn bytes(self) -> usize {
-        match self {
-            Self::Empty => 0,
-            Self::Queued { bytes, .. } => bytes,
-        }
-    }
-
-    pub(super) fn single(self) -> bool {
-        self.chunks() == 1
-    }
-
-    pub(super) fn pushed(self, len: usize) -> Option<Self> {
-        let chunks = self.chunks().checked_add(1)?;
-        let bytes = self.bytes().checked_add(len)?;
-        (chunks <= RECV_QUEUE_CAP && bytes <= RECV_CAP_BYTES)
-            .then_some(Self::Queued { chunks, bytes })
-    }
-
-    pub(super) fn popped(self, len: usize) -> Option<Self> {
-        let Self::Queued { chunks, bytes } = self else {
-            return None;
-        };
-        if chunks == 0 || len > bytes {
+    fn pushed(self, len: u32) -> Option<Self> {
+        if len == 0 {
             return None;
         }
-        if chunks == 1 {
-            return (bytes == len).then_some(Self::Empty);
-        }
-        Some(Self::Queued {
-            chunks: chunks - 1,
-            bytes: bytes - len,
-        })
+        let next = self.0.checked_add(len)?;
+        (next <= RECV_BYTE_CAP).then_some(Self(next))
     }
 
-    pub(super) fn consumed(self, amount: usize) -> Option<Self> {
-        let Self::Queued { chunks, bytes } = self else {
+    fn popped(self, len: u32) -> Option<Self> {
+        if len == 0 {
             return None;
-        };
-        (amount < bytes).then_some(Self::Queued {
-            chunks,
-            bytes: bytes - amount,
-        })
+        }
+        self.0.checked_sub(len).map(Self)
+    }
+}
+
+impl Update<'_> {
+    pub(super) fn commit(self) {
+        self.queue.bytes.set(self.next);
+    }
+
+    pub(super) fn leaves_empty(&self) -> bool {
+        self.next.is_empty()
     }
 }

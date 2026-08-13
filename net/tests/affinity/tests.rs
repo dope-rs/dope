@@ -1,8 +1,13 @@
-use dope_test::{not_send, not_sync};
+use dope_net::link::pool::pending;
+use dope_test::checks::affinities::Affinity;
 
 const _: fn() = || {
-    not_send::<dope_net::multishot::Multishot, _>();
-    not_sync::<dope_net::multishot::Multishot, _>();
-    not_send::<dope_net::link::slot::PendingFlags, _>();
-    not_sync::<dope_net::link::slot::PendingFlags, _>();
+    Affinity::<dope_net::link::pool::Key<'static, 0>>::not_send::<_>();
+    Affinity::<dope_net::link::pool::Key<'static, 0>>::not_sync::<_>();
+    Affinity::<dope_net::wire::RecvCredit<'static, 0>>::not_send::<_>();
+    Affinity::<dope_net::wire::RecvCredit<'static, 0>>::not_sync::<_>();
+    Affinity::<dope_net::wire::RecvCreditGuard<'static, 0>>::not_send::<_>();
+    Affinity::<dope_net::wire::RecvCreditGuard<'static, 0>>::not_sync::<_>();
+    Affinity::<pending::Handle<'static>>::not_send::<_>();
+    Affinity::<pending::Handle<'static>>::not_sync::<_>();
 };

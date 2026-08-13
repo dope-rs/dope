@@ -1,11 +1,14 @@
 [package]
 name = "dope-gen"
 edition.workspace = true
+rust-version.workspace = true
 version.workspace = true
 description = "Procedural macros for dope"
 repository.workspace = true
+readme.workspace = true
 license.workspace = true
 authors.workspace = true
+exclude = ["tests"]
 
 [lib]
 proc-macro = true
@@ -17,8 +20,7 @@ quote = "1"
 
 [dev-dependencies]
 dope = { path = "../dope" }
-dope-fiber = { path = "../fiber" }
+fiber_rt = { package = "dope-fiber", path = "../fiber" }
 dope-test = { path = "../test" }
 o3.workspace = true
 pin-project.workspace = true
-trybuild = "1"

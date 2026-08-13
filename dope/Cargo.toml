@@ -2,28 +2,16 @@
 name = "dope"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description.workspace = true
 repository.workspace = true
 readme.workspace = true
 license.workspace = true
 authors.workspace = true
+exclude = ["tests"]
 
 [dependencies]
-dope-core.workspace = true
-dope-net.workspace = true
-libc.workspace = true
-o3.workspace = true
-pin-project.workspace = true
-siphasher.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-io-uring.workspace = true
-
-[dev-dependencies]
-dope-fiber = { path = "../fiber" }
-dope-gen = { path = "../gen" }
-dope-test = { path = "../test" }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-io-uring.workspace = true
-libc.workspace = true
+core = { package = "dope-core", version = "0.15.0", path = "../core" }
+manifold = { package = "dope-manifold", version = "0.15.0", path = "../manifold" }
+net = { package = "dope-net", version = "0.15.0", path = "../net" }
+runtime = { package = "dope-runtime", version = "0.15.0", path = "../runtime" }

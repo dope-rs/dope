@@ -1,10 +1,35 @@
-mod affinity;
-mod alloc;
-mod panic;
+pub mod affinities;
+pub mod panics;
+mod sealed;
 
-pub use alloc::{TrackingAlloc, allocations_during};
+use std::{fmt, process};
 
-pub use affinity::{not_send, not_sync, not_unpin, require_send};
-pub use panic::{
-    CountDrop, OrderedDrop, assert_panics_with, assert_unwinds, counter, expect_abort, respawn_self,
-};
+pub use sealed::TrackingAlloc;
+
+pub(crate) trait Outcome<T> {
+    fn or_abort(self, context: &str) -> T;
+}
+
+impl<T, E: fmt::Display> Outcome<T> for Result<T, E> {
+    fn or_abort(self, context: &str) -> T {
+        match self {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("dope-test {context}: {error}");
+                process::abort()
+            }
+        }
+    }
+}
+
+impl<T> Outcome<T> for Option<T> {
+    fn or_abort(self, context: &str) -> T {
+        match self {
+            Some(value) => value,
+            None => {
+                eprintln!("dope-test {context}: required value was absent");
+                process::abort()
+            }
+        }
+    }
+}

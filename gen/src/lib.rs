@@ -1,73 +1,89 @@
+#![doc = include_str!("compile_fail.md")]
 #![warn(unreachable_pub)]
 
 extern crate proc_macro;
 
-mod derive;
-mod dispatcher;
-mod fiber;
-mod forward;
+pub(crate) mod attributes;
+pub(crate) mod brand;
+pub(crate) mod dispatcher;
+pub(crate) mod fiber;
+pub(crate) mod field;
+pub(crate) mod forward;
+pub(crate) mod lower;
 
-use dispatcher::DispatcherSpec;
-use fiber::FiberFn;
-use forward::Forward;
-use proc_macro::TokenStream;
-use proc_macro2::Span;
-use quote::quote;
-use syn::parse::Parser;
-use syn::punctuated::Punctuated;
-use syn::{
-    DeriveInput, Error, Expr, GenericArgument, ImplItem, ItemFn, ItemImpl, Lifetime, Member,
-    MetaNameValue, PathArguments, Token, parse_macro_input,
-};
+use syn::parse::Parser as _;
 
-fn is_field_path(expression: &Expr) -> bool {
+use crate::fiber::macros;
+
+fn is_field_path(expression: &syn::Expr) -> bool {
+    use syn::Expr;
     match expression {
         Expr::Path(path) => {
             path.qself.is_none()
                 && path.path.leading_colon.is_none()
                 && path.path.segments.len() == 1
-                && matches!(path.path.segments[0].arguments, PathArguments::None)
+                && matches!(path.path.segments[0].arguments, syn::PathArguments::None)
         }
         Expr::Field(field) => {
-            matches!(field.member, Member::Named(_)) && is_field_path(&field.base)
+            matches!(field.member, syn::Member::Named(_)) && is_field_path(&field.base)
         }
         _ => false,
     }
 }
 
 #[proc_macro_attribute]
-pub fn fiber_fn(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let driver = parse_macro_input!(attr as Lifetime);
-    let item = parse_macro_input!(input as ItemFn);
-    FiberFn::new(driver, item).expand()
+pub fn fiber_fn(
+    attr: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    use syn::ItemFn;
+
+    let arguments = syn::parse_macro_input!(attr as macros::AttributeArguments);
+    let item = syn::parse_macro_input!(input as ItemFn);
+    macros::Attribute::new(arguments, item).expand()
 }
 
 #[proc_macro]
-pub fn fiber(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as fiber::Input);
+pub fn fiber(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as macros::Macro);
     input.expand()
 }
 
 #[proc_macro_derive(Forward, attributes(forward))]
-pub fn forward(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+pub fn forward(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    use forward::Forward;
+
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
     Forward::new(input).expand()
 }
 
-#[proc_macro_derive(Dispatcher, attributes(manifold, coordinate))]
-pub fn dispatcher(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    DispatcherSpec::derive(input)
+#[proc_macro_derive(Application, attributes(coordinate, dispatcher, manifold))]
+pub fn application(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    use dispatcher::Application;
+
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    Application::expand(input)
 }
 
 #[proc_macro_attribute]
-pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let arguments = match Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse(attr) {
-        Ok(arguments) => arguments,
-        Err(error) => return error.to_compile_error().into(),
+pub fn connector_session(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    use proc_macro2::Span;
+    use quote::quote;
+    use syn::Error;
+
+    let arguments = {
+        use syn::{MetaNameValue, Token, punctuated::Punctuated};
+
+        match Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse(attr) {
+            Ok(arguments) => arguments,
+            Err(error) => return error.to_compile_error().into(),
+        }
     };
-    let mut codec: Option<Expr> = None;
-    let mut io: Option<Expr> = None;
+    let mut codec: Option<syn::Expr> = None;
+    let mut io: Option<syn::Expr> = None;
     for argument in arguments {
         let Some(key) = argument.path.get_ident() else {
             return Error::new_spanned(
@@ -108,7 +124,7 @@ pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    let mut item = match syn::parse::<ItemImpl>(item) {
+    let mut item = match syn::parse::<syn::ItemImpl>(item) {
         Ok(item) => item,
         Err(error) => return error.to_compile_error().into(),
     };
@@ -135,19 +151,30 @@ pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
         .to_compile_error()
         .into();
     }
-    let driver = match &session.arguments {
-        PathArguments::AngleBracketed(arguments) => arguments.args.iter().find_map(|argument| {
-            if let GenericArgument::Lifetime(lifetime) = argument {
-                Some(lifetime.clone())
-            } else {
-                None
+    let (driver, route) = {
+        use syn::{Lifetime, PathArguments};
+
+        let mut driver = None;
+        let mut route = None;
+        if let PathArguments::AngleBracketed(arguments) = &session.arguments {
+            for argument in &arguments.args {
+                match argument {
+                    syn::GenericArgument::Lifetime(lifetime) if driver.is_none() => {
+                        driver = Some(lifetime.clone());
+                    }
+                    value if route.is_none() => route = Some(value.clone()),
+                    _ => {}
+                }
             }
-        }),
-        PathArguments::None => None,
-        PathArguments::Parenthesized(_) => None,
-    }
-    .unwrap_or_else(|| Lifetime::new("'_", Span::call_site()));
-    for method in ["codec", "activate", "drain_requests"] {
+        }
+        (
+            driver.unwrap_or_else(|| Lifetime::new("'_", Span::call_site())),
+            route.unwrap_or_else(|| syn::parse_quote!(0)),
+        )
+    };
+    for method in ["codec", "activate", "retire_requests", "drain_requests"] {
+        use syn::ImplItem;
+
         if item
             .items
             .iter()
@@ -182,28 +209,89 @@ pub fn connector_session(attr: TokenStream, item: TokenStream) -> TokenStream {
     item.items.push(syn::parse_quote! {
         fn activate(
             &self,
-            token: ::dope::driver::token::Token,
-            ready: ::dope::driver::ready::ReadyKey<#driver>,
-            region: &mut ::dope::runtime::__private::RegionToken<#driver>,
+            token: ::dope::manifold::connector::connection::Id<#driver, #route>,
+            ready: ::dope::core::driver::schedule::ready::Target<#driver>,
         ) {
-            assert!(self.#io.activate(region, token, ready));
+            assert!(self.#io.activate(token, ready));
         }
     });
+    let generated_retirement: syn::ImplItem = syn::parse_quote! {
+        fn retire_requests<'turn>(
+            &self,
+            token: ::dope::manifold::connector::connection::Id<#driver, #route>,
+            work: ::dope::core::driver::schedule::Application<'turn, #driver>,
+            region: &mut ::o3::cell::region::Token<#driver>,
+        ) -> ::dope::net::link::egress::ClearProgress {
+            self.#io.retire(token, work, region)
+        }
+    };
     item.items.push(syn::parse_quote! {
         fn drain_requests(
             &self,
-            token: ::dope::driver::token::Token,
-            push: impl FnMut(
-                &mut ::dope::runtime::__private::RegionToken<#driver>,
+            token: ::dope::manifold::connector::connection::Id<#driver, #route>,
+            parser: &mut <Self::Codec as ::dope::manifold::connector::codec::Codec>::ParseState,
+            drain: &mut ::dope::manifold::connector::app::RequestDrain<
+                '_,
+                #driver,
                 Self::Send,
-            ) -> Result<(), Self::Send>,
-            region: &mut ::dope::runtime::__private::RegionToken<#driver>,
+            >,
+            region: &mut ::o3::cell::region::Token<#driver>,
         ) -> ::dope::manifold::connector::app::Requests {
-            match self.#io.drain_requests(region, token, push) {
+            match self.#io.drain_requests(
+                region,
+                token,
+                drain,
+                || self.begin(token, parser),
+            ) {
                 Some(requests) => requests,
                 None => ::dope::manifold::connector::app::Requests::default(),
             }
         }
     });
-    quote!(#item).into()
+    let mut retirement = Vec::new();
+    let mut scheduling = Vec::new();
+    item.items.retain(|member| {
+        let syn::ImplItem::Fn(function) = member else {
+            return true;
+        };
+        let name = function.sig.ident.to_string();
+        if matches!(
+            name.as_str(),
+            "begin_retirement"
+                | "retire_requests"
+                | "retire_responses"
+                | "defer_close"
+                | "is_drained"
+                | "disconnect"
+        ) {
+            retirement.push(member.clone());
+            false
+        } else if matches!(name.as_str(), "pre_park" | "progress" | "inbound") {
+            scheduling.push(member.clone());
+            false
+        } else {
+            true
+        }
+    });
+    retirement.push(generated_retirement);
+
+    let generics = &item.generics;
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
+    let self_ty = &item.self_ty;
+    quote! {
+        #item
+
+        impl #impl_generics ::dope::manifold::connector::session::Retirement<#driver, #route>
+            for #self_ty #where_clause
+        {
+            #(#retirement)*
+        }
+
+        impl #impl_generics ::dope::manifold::connector::session::Scheduling<#driver, #route>
+            for #self_ty #where_clause
+        {
+            #(#scheduling)*
+        }
+    }
+    .into()
 }
