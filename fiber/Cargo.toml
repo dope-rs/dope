@@ -16,7 +16,7 @@ dope-gen.workspace = true
 libc.workspace = true
 o3.workspace = true
 pin-project.workspace = true
-transport = { package = "dope-net", version = "0.15.0", path = "../net" }
+transport = { package = "dope-net", version = "0.15.1", path = "../net" }
 
 [dev-dependencies]
 dope-test = { path = "../test" }
