@@ -1,163 +1,315 @@
-use std::fs::File;
-use std::mem::size_of;
-use std::os::fd::OwnedFd;
-use std::pin::Pin;
+use std::path::Path;
 
-use dope::io::file::OpenPath;
-use dope::manifold::file::source::Source;
-use dope::manifold::file::{FileManifold, Files};
-use dope_fiber::abi::batch::Batch;
-use dope_fiber::file::open::Open;
-use dope_fiber::file::read_exact::ReadExact;
-use dope_fiber::file::stat::Stat;
-use dope_test::{TempFile, allocations_during, drive, file_exec};
-use o3::cell::BrandCell;
+use dope::{
+    core::io::fs::{Directory, Native, OpenPath},
+    manifold::file::{Access, Manifold, Regular},
+};
+use dope_fiber::{
+    abi::batch::{Batch, Domain},
+    file::{OpenRegular, ReadAll},
+};
+use dope_test::{fibers, file, scenario::rt::Runtime};
 
 const ID: u8 = 7;
-const RDONLY: i32 = dope::io::file::O_RDONLY | dope::io::file::O_CLOEXEC;
 
-#[test]
-fn source_is_one_fd_and_heap_free() {
-    assert_eq!(size_of::<Source<'static>>(), size_of::<OwnedFd>());
-
-    let file = TempFile::with("source_layout", b"x");
-    let fd: OwnedFd = File::open(file.path()).expect("open").into();
-    let mut source = None;
-    let allocations = allocations_during(|| source = Some(Source::owned(fd)));
-    assert_eq!(allocations, (0, 0));
-
-    let source = source.expect("source");
-    let mut duplicate = None;
-    let allocations =
-        allocations_during(|| duplicate = Some(source.try_clone().expect("duplicate")));
-    assert_eq!(allocations, (0, 0));
-    drop(duplicate);
-    drop(source);
+fn confined(path: &Path) -> OpenPath {
+    let parent = path.parent().expect("file parent");
+    let name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("utf-8 file name");
+    Directory::open(parent)
+        .expect("directory capability")
+        .relative(name)
+        .expect("relative file path")
 }
 
 #[pin_project::pin_project]
-#[derive(dope_gen::Dispatcher)]
-struct Host<'d, 'scope> {
+#[derive(dope_gen::Application)]
+struct Host<'d> {
     #[pin]
     #[manifold]
-    files: FileManifold<'scope, 'd, ID, 64>,
+    files: Manifold<'d, ID, 64, Native>,
+    #[dispatcher(marker)]
+    driver: ::core::marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
-type Sess<'scope, 'd> = dope::runtime::executor::Session<'scope, 'd, Files<'d, ID, 64>>;
+type AppSession<'app, 'd> = dope::runtime::executor::session::Application<'app, 'd, Host<'d>>;
 
-fn host<'scope, 'd>(sess: &Sess<'scope, 'd>) -> Pin<Box<BrandCell<'d, Host<'d, 'scope>>>> {
-    Box::pin(BrandCell::new(Host {
-        files: sess.storage().manifold(),
-    }))
+#[test]
+fn storage_route_can_be_installed_by_sequential_apps() {
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut session| {
+            let files = session.storage();
+            for _ in 0..2 {
+                session
+                    .with_app(
+                        Host {
+                            files: files.manifold(),
+                            driver: ::core::marker::PhantomData,
+                        },
+                        |_app| {},
+                    )
+                    .expect("sequential file owner teardown");
+            }
+        })
+        .expect("file storage");
 }
 
-fn open_ro<'scope, 'd>(
-    sess: &mut Sess<'scope, 'd>,
-    host: Pin<&BrandCell<'d, Host<'d, 'scope>>>,
-    path: &str,
-) -> Source<'d> {
-    let path = OpenPath::new(path).expect("path");
-    drive(sess, host, Open::direct(sess.storage(), path, RDONLY)).expect("open")
+fn open_regular<'app, 'd: 'app>(
+    app: &mut AppSession<'app, 'd>,
+    access: Access<'app, 'd, ID, 64, Native>,
+    path: OpenPath,
+) -> Regular {
+    fibers::TEST
+        .drive(app, OpenRegular::new(access, path))
+        .expect("open regular")
 }
 
-fn read_expect<'scope, 'd>(
-    sess: &mut Sess<'scope, 'd>,
-    host: Pin<&BrandCell<'d, Host<'d, 'scope>>>,
-    source: Source<'d>,
-    payload: &[u8],
-) -> Source<'d> {
-    let read = ReadExact::new(
-        sess.storage(),
-        source,
-        payload.len().try_into().expect("payload length"),
-        0,
-    );
-    let (source, buffer, result) = drive(sess, host, read);
-    result.expect("read");
-    assert_eq!(buffer, payload);
-    source
+fn read_all<'app, 'd: 'app>(
+    app: &mut AppSession<'app, 'd>,
+    access: Access<'app, 'd, ID, 64, Native>,
+    file: Regular,
+) -> Vec<u8> {
+    let read = ReadAll::try_new(access, file)
+        .map_err(|(_, error)| error)
+        .expect("read buffer");
+    fibers::TEST.drive(app, read).expect("read all")
 }
 
 #[test]
-fn route_awaits_open_read_and_metadata() {
+fn regular_file_carries_same_descriptor_metadata_and_reads_all() {
     let payload = b"awaited-through-the-runtime";
-    let file = TempFile::with("open_read", payload);
-    file_exec::<ID, 64>().enter(|mut sess| {
-        let files = host(&sess);
-        let host = files.as_ref();
-        let source = open_ro(&mut sess, host, file.path_str());
-
-        let source = read_expect(&mut sess, host, source, payload);
-
-        let stat = Stat::source(sess.storage(), source);
-        let (_source, metadata) = drive(&mut sess, host, stat);
-        let metadata = metadata.expect("source stat");
-        assert!(metadata.is_file());
-        assert_eq!(metadata.len(), payload.len() as u64);
-
-        let path = OpenPath::new(file.path_str()).expect("path");
-        let stat = Stat::path(sess.storage(), path);
-        let metadata = drive(&mut sess, host, stat).expect("path stat");
-        assert_eq!(metadata.len(), payload.len() as u64);
-    });
+    let source = file::File::with("open_read", payload);
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut sess| {
+            let files = sess.storage();
+            sess.with_app(
+                Host {
+                    files: files.manifold(),
+                    driver: ::core::marker::PhantomData,
+                },
+                |mut app| {
+                    let access = app.client(|host| host.project_ref().files);
+                    let file = open_regular(&mut app, access, confined(source.path()));
+                    assert_eq!(file.metadata().len(), payload.len() as u64);
+                    assert_eq!(read_all(&mut app, access, file), payload);
+                },
+            )
+            .expect("application teardown");
+        })
+        .expect("file storage");
 }
 
 #[test]
-fn short_exact_read_preserves_only_initialized_prefix() {
-    let payload = b"short";
-    let file = TempFile::with("short_read", payload);
-    file_exec::<ID, 64>().enter(|mut sess| {
-        let files = host(&sess);
-        let host = files.as_ref();
-        let source = open_ro(&mut sess, host, file.path_str());
-        let mut read = None;
-        let allocations =
-            allocations_during(|| read = Some(ReadExact::new(sess.storage(), source, 64, 0)));
-        assert_eq!(allocations, (1, 64));
+fn read_uses_the_verified_descriptor_after_path_replacement() {
+    let original = b"verified-descriptor";
+    let source = file::File::with("same_fd", original);
+    let moved = source.path().with_extension("opened");
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut sess| {
+            let files = sess.storage();
+            sess.with_app(
+                Host {
+                    files: files.manifold(),
+                    driver: ::core::marker::PhantomData,
+                },
+                |mut app| {
+                    let access = app.client(|host| host.project_ref().files);
+                    let file = open_regular(&mut app, access, confined(source.path()));
+                    std::fs::rename(source.path(), &moved).expect("move opened path");
+                    std::fs::write(source.path(), b"replacement").expect("replace path");
+                    assert_eq!(read_all(&mut app, access, file), original);
+                },
+            )
+            .expect("application teardown");
+        })
+        .expect("file storage");
+    let _ = std::fs::remove_file(moved);
+}
 
-        let (_source, buffer, result) = drive(&mut sess, host, read.expect("read"));
-        assert_eq!(
-            result.expect_err("short read").kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
-        assert_eq!(buffer, payload);
-    });
+#[test]
+fn empty_regular_file_reads_without_a_kernel_read() {
+    let source = file::File::with("empty_read", b"");
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut sess| {
+            let files = sess.storage();
+            sess.with_app(
+                Host {
+                    files: files.manifold(),
+                    driver: ::core::marker::PhantomData,
+                },
+                |mut app| {
+                    let access = app.client(|host| host.project_ref().files);
+                    let file = open_regular(&mut app, access, confined(source.path()));
+                    assert!(read_all(&mut app, access, file).is_empty());
+                },
+            )
+            .expect("application teardown");
+        })
+        .expect("file storage");
 }
 
 #[test]
 fn batch_open_wakes_each_operation() {
-    let first = TempFile::with("batch_first", b"first");
-    let second = TempFile::with("batch_second", b"second");
-    file_exec::<ID, 64>().enter(|mut sess| {
-        let files = host(&sess);
-        let host = files.as_ref();
-        let opens = Batch::from_array([
-            Open::direct(
-                sess.storage(),
-                OpenPath::new(first.path_str()).expect("first path"),
-                RDONLY,
-            ),
-            Open::direct(
-                sess.storage(),
-                OpenPath::new(second.path_str()).expect("second path"),
-                RDONLY,
-            ),
-        ]);
-
-        let sources = drive(&mut sess, host, opens).collect::<Vec<_>>();
-        assert_eq!(sources.len(), 2);
-        assert!(sources.into_iter().all(|source| source.is_ok()));
-    });
+    let first = file::File::with("batch_first", b"first");
+    let second = file::File::with("batch_second", b"second");
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut sess| {
+            let files = sess.storage();
+            sess.with_app(
+                Host {
+                    files: files.manifold(),
+                    driver: ::core::marker::PhantomData,
+                },
+                |mut app| {
+                    let access = app.client(|host| host.project_ref().files);
+                    let opens = dope_gen::fiber!('_, crate = ::dope_fiber => async move {
+                        let mut domain = Domain::<2>::acquire()
+                            .await
+                            .expect("batch ready domain");
+                        Batch::try_from_array(
+                            &mut domain,
+                            [
+                                OpenRegular::new(access, confined(first.path())),
+                                OpenRegular::new(access, confined(second.path())),
+                            ],
+                        )
+                        .expect("batch queue allocation")
+                        .await
+                    });
+                    let files = fibers::TEST.drive(&mut app, opens).collect::<Vec<_>>();
+                    assert_eq!(files.len(), 2);
+                    assert!(files.into_iter().all(|file| file.is_ok()));
+                },
+            )
+            .expect("application teardown");
+        })
+        .expect("file storage");
 }
 
 #[test]
-fn open_missing_path_reports_enoent() {
-    file_exec::<ID, 64>().enter(|mut sess| {
-        let files = host(&sess);
-        let host = files.as_ref();
-        let path = OpenPath::new("/nonexistent/dope/async/missing/file").expect("path");
-        let open = Open::direct(sess.storage(), path, RDONLY);
-        let error = drive(&mut sess, host, open).expect_err("open should fail");
-        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
-    });
+fn missing_and_non_regular_paths_are_rejected() {
+    let root = file::Directory::with("regular_only_root");
+    std::fs::create_dir(root.path().join("directory")).expect("nested directory");
+    let directory = Directory::open(root.path()).expect("directory capability");
+
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut sess| {
+            let files = sess.storage();
+            sess.with_app(
+                Host {
+                    files: files.manifold(),
+                    driver: ::core::marker::PhantomData,
+                },
+                |mut app| {
+                    let access = app.client(|host| host.project_ref().files);
+                    let missing = directory.relative("missing").expect("missing path");
+                    let error = fibers::TEST
+                        .drive(&mut app, OpenRegular::new(access, missing))
+                        .expect_err("missing path");
+                    assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+
+                    let nested = directory.relative("directory").expect("directory path");
+                    let error = fibers::TEST
+                        .drive(&mut app, OpenRegular::new(access, nested))
+                        .expect_err("directory is not a regular file");
+                    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+                },
+            )
+            .expect("application teardown");
+        })
+        .expect("file storage");
+}
+
+#[test]
+fn fifo_does_not_block_file_lane_or_following_regular_open() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let root = file::Directory::with("fifo_regular_only_root");
+    let fifo = root.path().join("pipe");
+    let fifo_path = CString::new(fifo.as_os_str().as_bytes()).expect("fifo path");
+    assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+    std::fs::write(root.path().join("file"), b"after-fifo").expect("regular file");
+    let directory = Directory::open(root.path()).expect("directory capability");
+
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut sess| {
+            let files = sess.storage();
+            sess.with_app(
+                Host {
+                    files: files.manifold(),
+                    driver: ::core::marker::PhantomData,
+                },
+                |mut app| {
+                    let access = app.client(|host| host.project_ref().files);
+                    let pipe = directory.relative("pipe").expect("fifo path");
+                    let error = fibers::TEST
+                        .drive(&mut app, OpenRegular::new(access, pipe))
+                        .expect_err("fifo is not regular");
+                    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+
+                    let regular = directory.relative("file").expect("regular path");
+                    let file = fibers::TEST
+                        .drive(&mut app, OpenRegular::new(access, regular))
+                        .expect("file lane remains live");
+                    assert_eq!(read_all(&mut app, access, file), b"after-fifo");
+                },
+            )
+            .expect("application teardown");
+        })
+        .expect("file storage");
+}
+
+#[test]
+fn directory_open_confines_symlinks_to_its_root() {
+    use std::{fs, os::unix::fs::symlink};
+
+    let root = file::Directory::with("confined_root");
+    let outside = file::Directory::with("confined_outside");
+    fs::create_dir(root.path().join("static")).expect("static directory");
+    fs::write(root.path().join("static/inside.txt"), b"inside").expect("inside file");
+    fs::write(outside.path().join("secret.txt"), b"outside file").expect("outside file");
+    symlink(
+        outside.path().join("secret.txt"),
+        root.path().join("static/outside-file.txt"),
+    )
+    .expect("file symlink");
+    let directory = Directory::open(root.path()).expect("directory capability");
+
+    Runtime::throughput()
+        .files::<ID, 64, Native>()
+        .try_enter(|mut sess| {
+            let files = sess.storage();
+            sess.with_app(
+                Host {
+                    files: files.manifold(),
+                    driver: ::core::marker::PhantomData,
+                },
+                |mut app| {
+                    let access = app.client(|host| host.project_ref().files);
+                    let inside = directory
+                        .relative("static/inside.txt")
+                        .expect("inside path");
+                    let file = open_regular(&mut app, access, inside);
+                    assert_eq!(read_all(&mut app, access, file), b"inside");
+
+                    let outside = directory
+                        .relative("static/outside-file.txt")
+                        .expect("outside path");
+                    fibers::TEST
+                        .drive(&mut app, OpenRegular::new(access, outside))
+                        .expect_err("escaping symlink must fail");
+                },
+            )
+            .expect("application teardown");
+        })
+        .expect("file storage");
 }

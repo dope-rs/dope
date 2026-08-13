@@ -1,0 +1,22 @@
+[package]
+name = "dope-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+exclude = ["tests"]
+
+[dependencies]
+dope-core.workspace = true
+libc.workspace = true
+o3.workspace = true
+siphasher.workspace = true
+
+[dev-dependencies]
+dope-gen = { path = "../gen" }
+dope-test = { path = "../test" }
+pin-project.workspace = true

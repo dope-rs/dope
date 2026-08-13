@@ -1,6 +1,7 @@
 [package]
 name = "dope-test"
 edition.workspace = true
+rust-version.workspace = true
 version.workspace = true
 description = "Shared integration-test support for dope consumers"
 repository.workspace = true
@@ -10,8 +11,8 @@ authors.workspace = true
 [dependencies]
 dope.workspace = true
 dope-core.workspace = true
-dope-net.workspace = true
 dope-fiber.workspace = true
+dope-gen.workspace = true
 o3.workspace = true
 libc.workspace = true
 pin-project.workspace = true

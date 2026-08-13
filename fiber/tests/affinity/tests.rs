@@ -1,28 +1,31 @@
-use dope_fiber::abi::batch::Batch;
-use dope_fiber::abi::ready::Ready;
-use dope_fiber::raw::slab::TaskSlab;
-use dope_fiber::raw::task::Waker;
-use dope_fiber::slab::{ErasedTaskId, FixedSlab, FixedSlabVacantEntry, Slab, TaskId};
-use dope_test::{not_send, not_sync, not_unpin};
+use dope_fiber::{
+    abi::{Ready, batch::Batch},
+    context::Waker,
+    task::{
+        Scheduler,
+        storage::{Id, RoutedId, Slab, fixed},
+    },
+};
+use dope_test::checks::affinities::Affinity;
 
 const _: fn() = || {
-    not_send::<Waker<'static>, _>();
-    not_sync::<Waker<'static>, _>();
-    not_send::<TaskId, _>();
-    not_sync::<TaskId, _>();
-    not_send::<ErasedTaskId, _>();
-    not_sync::<ErasedTaskId, _>();
-    not_send::<Slab<'static, Ready<()>>, _>();
-    not_sync::<Slab<'static, Ready<()>>, _>();
-    not_send::<TaskSlab<'static, Ready<()>>, _>();
-    not_sync::<TaskSlab<'static, Ready<()>>, _>();
-    not_send::<FixedSlab<'static, Ready<()>, 1>, _>();
-    not_sync::<FixedSlab<'static, Ready<()>, 1>, _>();
-    not_send::<FixedSlabVacantEntry<'static, Ready<()>, 1>, _>();
-    not_sync::<FixedSlabVacantEntry<'static, Ready<()>, 1>, _>();
+    Affinity::<Waker<'static>>::not_send::<_>();
+    Affinity::<Waker<'static>>::not_sync::<_>();
+    Affinity::<Id<'static>>::not_send::<_>();
+    Affinity::<Id<'static>>::not_sync::<_>();
+    Affinity::<RoutedId<'static, (), 0, ()>>::not_send::<_>();
+    Affinity::<RoutedId<'static, (), 0, ()>>::not_sync::<_>();
+    Affinity::<Slab<'static, Ready<()>>>::not_send::<_>();
+    Affinity::<Slab<'static, Ready<()>>>::not_sync::<_>();
+    Affinity::<Scheduler<'static, Ready<()>>>::not_send::<_>();
+    Affinity::<Scheduler<'static, Ready<()>>>::not_sync::<_>();
+    Affinity::<fixed::Slab<'static, Ready<()>, 1>>::not_send::<_>();
+    Affinity::<fixed::Slab<'static, Ready<()>, 1>>::not_sync::<_>();
+    Affinity::<fixed::VacantEntry<'static, 'static, Ready<()>, 1>>::not_send::<_>();
+    Affinity::<fixed::VacantEntry<'static, 'static, Ready<()>, 1>>::not_sync::<_>();
 };
 
 const _: fn() = || {
-    not_unpin::<FixedSlab<'static, Ready<()>, 1>, _>();
-    not_unpin::<Batch<Ready<()>, (), 1>, _>();
+    Affinity::<fixed::Slab<'static, Ready<()>, 1>>::not_unpin::<_>();
+    Affinity::<Batch<'_, '_, Ready<()>, (), 1>>::not_unpin::<_>();
 };

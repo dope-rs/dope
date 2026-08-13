@@ -1,29 +1,51 @@
-#[doc(hidden)]
-pub mod __private;
-
 pub mod batch;
 pub mod future;
-pub mod join;
-pub mod pending;
-pub mod pollfn;
+mod join;
+mod pending;
+mod pollfn;
 pub mod race;
-pub mod ready;
+mod ready;
+mod slot;
 
-use core::pin::Pin;
-use core::task::Poll;
+use core::task;
 
-use super::Context;
+pub use join::Join;
+pub use pending::Pending;
+pub use pollfn::PollFn;
+pub use ready::Ready;
+pub(crate) use slot::Slot;
 
-pub trait Fiber<'d> {
+use crate::context;
+
+#[derive(Clone, Copy)]
+enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    const fn other(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
+#[must_use = "a fiber does nothing unless it is driven"]
+/// A pinned, driver-scoped unit of cooperative application work.
+/// Nested polls share the exact admitted context and its fixed turn budget.
+pub trait Fiber<'d>: Sized {
     type Output;
 
-    fn poll(self: Pin<&mut Self>, cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output>;
+    fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> task::Poll<Self::Output>;
 }
 
 pub trait IntoFiber<'d> {
     type Output;
     type IntoFiber: Fiber<'d, Output = Self::Output>;
 
+    #[must_use = "a fiber does nothing unless it is driven"]
     fn into_fiber(self) -> Self::IntoFiber;
 }
 

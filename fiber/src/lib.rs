@@ -1,23 +1,15 @@
+#![doc = include_str!("compile_fail.md")]
 #![warn(unreachable_pub)]
 
-extern crate self as dope_fiber;
-
 pub mod abi;
+pub mod context;
 pub mod extensions;
 pub mod file;
-pub mod io;
-pub mod local;
 pub mod net;
-pub mod notify;
-pub mod one_shot;
-pub mod raw;
-pub mod set;
-pub mod slab;
-pub mod sleep;
+mod raw;
+pub mod task;
 pub mod wait;
 
-use abi::{Fiber, IntoFiber};
-pub use dope_gen::{fiber, fiber_fn};
-use one_shot::OneShot;
-use raw::task::Context;
-use raw::wait::{WaitQueue, Waiter};
+use task::storage;
+
+type TaskKey<'d, Tag> = storage::Id<'d, Tag>;

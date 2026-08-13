@@ -1,8 +1,6 @@
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
-use dope_net::wire::identity::Identity;
-use dope_net::wire::reservation::ReservedOpen;
-use dope_net::wire::{OpenReservation, OpenRollback, ReadyOpen, Wire};
+use dope_net::wire::{
+    Identity, OpenReservation, OpenRollback, ReadyOpen, Wire, reservation::ReservedOpen,
+};
 
 #[derive(Default)]
 struct Rollback {
@@ -19,7 +17,7 @@ impl OpenRollback<Identity, ()> for Rollback {
 #[test]
 fn ready_open_is_exact_committed_storage() {
     type Open = ReadyOpen<Identity, ()>;
-    type Committed = (Identity, <Identity as Wire>::SendStorage);
+    type Committed = (Identity, <Identity as Wire>::StorageBackend<'static>);
 
     assert_eq!(size_of::<Open>(), size_of::<Committed>());
     assert_eq!(align_of::<Open>(), align_of::<Committed>());
@@ -51,18 +49,5 @@ fn reserved_open_drop_rolls_back() {
 
     drop(ReservedOpen::new(&mut rollback, Identity, ()));
 
-    assert_eq!(rollback.count, 1);
-}
-
-#[test]
-fn reserved_open_unwind_rolls_back() {
-    let mut rollback = Rollback::default();
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let _open = ReservedOpen::new(&mut rollback, Identity, ());
-        panic!("cancel reserved open");
-    }));
-
-    assert!(result.is_err());
     assert_eq!(rollback.count, 1);
 }

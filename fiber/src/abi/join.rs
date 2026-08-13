@@ -1,69 +1,96 @@
-use core::marker::PhantomData;
-use core::pin::Pin;
-use core::task::Poll;
+use core::{marker, pin, task};
+use std::process;
 
-use pin_project::pin_project;
+use crate::{
+    abi::{self, slot},
+    context,
+};
 
-use super::Fiber;
-use crate::Context;
-
-#[pin_project]
+#[pin_project::pin_project]
+#[must_use = "a fiber does nothing unless it is driven"]
 pub struct Join<'d, L, R>
 where
-    L: Fiber<'d>,
-    R: Fiber<'d>,
+    L: abi::Fiber<'d>,
+    R: abi::Fiber<'d>,
 {
     #[pin]
-    left: L,
+    left: slot::Slot<L, L::Output>,
     #[pin]
-    right: R,
-    left_output: Option<L::Output>,
-    right_output: Option<R::Output>,
-    driver: PhantomData<fn(&'d ()) -> &'d ()>,
+    right: slot::Slot<R, R::Output>,
+    next: abi::Side,
+    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
 impl<'d, L, R> Join<'d, L, R>
 where
-    L: Fiber<'d>,
-    R: Fiber<'d>,
+    L: abi::Fiber<'d>,
+    R: abi::Fiber<'d>,
 {
     pub fn new(left: L, right: R) -> Self {
         Self {
-            left,
-            right,
-            left_output: None,
-            right_output: None,
-            driver: PhantomData,
+            left: slot::Slot::live(left),
+            right: slot::Slot::live(right),
+            next: abi::Side::Left,
+            driver: marker::PhantomData,
         }
     }
 }
 
-impl<'d, L, R> Fiber<'d> for Join<'d, L, R>
+fn poll_child<'d, F>(
+    mut child: pin::Pin<&mut slot::Slot<F, F::Output>>,
+    mut context: pin::Pin<&mut context::Context<'_, 'd>>,
+) -> bool
 where
-    L: Fiber<'d>,
-    R: Fiber<'d>,
+    F: abi::Fiber<'d>,
+{
+    if !child.is_live() {
+        return true;
+    }
+    let Some(fiber) = child.as_mut().as_live() else {
+        return true;
+    };
+    let Some(poll) = context.as_mut().try_poll(fiber) else {
+        return false;
+    };
+    if let task::Poll::Ready(output) = poll {
+        child.complete(output);
+    }
+    true
+}
+
+impl<'d, L, R> abi::Fiber<'d> for Join<'d, L, R>
+where
+    L: abi::Fiber<'d>,
+    R: abi::Fiber<'d>,
 {
     type Output = (L::Output, R::Output);
 
-    fn poll(self: Pin<&mut Self>, mut cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
-        let mut this = self.project();
-        if this.left_output.is_none()
-            && let Poll::Ready(output) = this.left.as_mut().poll(cx.as_mut())
-        {
-            *this.left_output = Some(output);
+    fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> task::Poll<Self::Output> {
+        let (this, mut cx) = call.into_parts();
+        let mut this = this.project();
+        if this.left.is_vacant() || this.right.is_vacant() {
+            process::abort();
         }
-        if this.right_output.is_none()
-            && let Poll::Ready(output) = this.right.as_mut().poll(cx.as_mut())
-        {
-            *this.right_output = Some(output);
-        }
-        match (this.left_output.take(), this.right_output.take()) {
-            (Some(left), Some(right)) => Poll::Ready((left, right)),
-            (left, right) => {
-                *this.left_output = left;
-                *this.right_output = right;
-                Poll::Pending
+        let first = *this.next;
+        *this.next = first.other();
+        let admitted = match first {
+            abi::Side::Left => {
+                poll_child(this.left.as_mut(), cx.as_mut())
+                    && poll_child(this.right.as_mut(), cx.as_mut())
             }
+            abi::Side::Right => {
+                poll_child(this.right.as_mut(), cx.as_mut())
+                    && poll_child(this.left.as_mut(), cx.as_mut())
+            }
+        };
+        if !admitted {
+            return task::Poll::Pending;
         }
+        if !this.left.is_done() || !this.right.is_done() {
+            return task::Poll::Pending;
+        }
+        let left = this.left.as_mut().take_output();
+        let right = this.right.as_mut().take_output();
+        task::Poll::Ready((left, right))
     }
 }

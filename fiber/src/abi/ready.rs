@@ -1,11 +1,9 @@
-use core::pin::Pin;
-use core::task::Poll;
-use std::process::abort;
+use core::task;
 
-use super::Fiber;
-use crate::Context;
+use crate::{abi, context};
 
 #[repr(transparent)]
+#[must_use = "a fiber does nothing unless it is driven"]
 pub struct Ready<T> {
     output: Option<T>,
 }
@@ -20,11 +18,14 @@ impl<T> Ready<T> {
     }
 }
 
-impl<'d, T> Fiber<'d> for Ready<T> {
+impl<'d, T> abi::Fiber<'d> for Ready<T> {
     type Output = T;
 
-    fn poll(self: Pin<&mut Self>, _cx: Pin<&mut Context<'_, 'd>>) -> Poll<Self::Output> {
-        let Some(output) = self.get_mut().output.take() else {
+    fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> task::Poll<Self::Output> {
+        use core::task::Poll;
+        let (this, _) = call.into_parts();
+        let Some(output) = this.get_mut().output.take() else {
+            use std::process::abort;
             abort();
         };
         Poll::Ready(output)
