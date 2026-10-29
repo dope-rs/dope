@@ -1,0 +1,18 @@
+[package]
+name = "dope-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Owned network transports for dope"
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope-core.workspace = true
+o3.workspace = true
+
+[dev-dependencies]
+dope-test.workspace = true
+libc.workspace = true

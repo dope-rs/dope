@@ -1,0 +1,20 @@
+[package]
+name = "dope-fiber"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description = "Worker-local stackful execution for dope"
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope.workspace = true
+dope-gen.workspace = true
+o3.workspace = true
+pin-project.workspace = true
+
+[dev-dependencies]
+dope-test.workspace = true
+dope-core.workspace = true

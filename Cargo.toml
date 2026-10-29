@@ -1,11 +1,23 @@
 [workspace]
 resolver = "2"
-members = ["core", "net", "runtime", "manifold", "dns", "dope", "fiber", "gen", "test"]
+members = [
+    "layer0/core",
+    "layer0/sys",
+    "layer1/dope",
+    "layer1/manifold",
+    "layer1/net",
+    "layer1/runtime",
+    "layer1/gen",
+    "layer2/fiber",
+    "layer2/dns",
+    "layer2/test",
+]
+exclude = ["layer0/uring", "layer0/kqueue"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.95"
-version = "0.15.1"
+rust-version = "1.98"
+version = "0.20.0"
 description = "The manifold runtime"
 repository = "https://github.com/dope-rs/dope"
 readme = "README.md"
@@ -13,23 +25,25 @@ license = "MIT"
 authors = ["inq <gofiri@gmail.com>"]
 
 [workspace.dependencies]
-dope = { path = "dope", version = "0.15.1" }
-dope-core = { path = "core", version = "0.15.1" }
-dope-net = { path = "net", version = "0.15.1" }
-dope-runtime = { path = "runtime", version = "0.15.1" }
-dope-manifold = { path = "manifold", version = "0.15.1" }
-dope-dns = { path = "dns", version = "0.15.1" }
-dope-fiber = { path = "fiber", version = "0.15.1" }
-dope-gen = { path = "gen", version = "0.15.1" }
-dope-test = { path = "test", version = "0.15.1" }
-o3 = "=0.16.3"
+dope-test = "0.20.0"
+dope = { path = "layer1/dope", version = "0.20.0" }
+dope-core = { path = "layer0/core", version = "0.20.0" }
+dope-net = { path = "layer1/net", version = "0.20.0" }
+dope-runtime = { path = "layer1/runtime", version = "0.20.0" }
+dope-manifold = { path = "layer1/manifold", version = "0.20.0" }
+dope-fiber = { path = "layer2/fiber", version = "0.20.0" }
+dope-uring = { path = "layer0/uring", version = "0.20.0" }
+dope-sys = { path = "layer0/sys", version = "0.20.0" }
+dope-kqueue = { path = "layer0/kqueue", version = "0.20.0" }
+dope-gen = { path = "layer1/gen", version = "0.20.0" }
+o3 = "=0.20.0"
 libc = "0.2"
-io-uring = "0.7"
 pin-project = "1"
-siphasher = "1"
 
-[profile.dev]
-panic = "abort"
+[patch.crates-io]
+dope-core = { path = "layer0/core" }
+dope-fiber = { path = "layer2/fiber" }
+dope-runtime = { path = "layer1/runtime" }
 
 [profile.release]
 panic = "abort"

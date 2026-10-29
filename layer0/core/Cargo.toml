@@ -1,0 +1,25 @@
+[package]
+name = "dope-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Owned native I/O and completion driver for dope"
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope-sys.workspace = true
+o3.workspace = true
+pin-project.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dope-uring.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dope-kqueue.workspace = true
+
+[dev-dependencies]
+dope-test.workspace = true
+libc.workspace = true

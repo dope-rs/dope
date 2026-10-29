@@ -1,0 +1,23 @@
+[package]
+name = "dope-manifold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Owned application and service composition for dope"
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope-core.workspace = true
+dope-gen.workspace = true
+dope-net.workspace = true
+dope-runtime.workspace = true
+o3.workspace = true
+pin-project.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+dope-fiber.workspace = true
+dope-test.workspace = true

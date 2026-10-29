@@ -1,0 +1,17 @@
+[package]
+name = "dope-test"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Integration support for the dope runtime"
+
+[dependencies]
+libc.workspace = true
+dope-core = "0.20.0"
+dope-fiber = "0.20.0"
+dope-runtime = "0.20.0"
+o3.workspace = true

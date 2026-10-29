@@ -3,22 +3,11 @@
 version = 4
 
 [[package]]
-name = "bitflags"
-version = "2.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
-
-[[package]]
-name = "cfg-if"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
-
-[[package]]
 name = "dope"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
  "dope-core",
+ "dope-gen",
  "dope-manifold",
  "dope-net",
  "dope-runtime",
@@ -26,10 +15,12 @@ dependencies = [
 
 [[package]]
 name = "dope-core"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
- "dope-test",
- "io-uring",
+ "dope-kqueue",
+ "dope-sys",
+ "dope-test 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dope-uring",
  "libc",
  "o3",
  "pin-project",
@@ -37,52 +28,60 @@ dependencies = [
 
 [[package]]
 name = "dope-dns"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
  "dope",
  "dope-fiber",
- "dope-gen",
- "o3",
- "pin-project",
-]
-
-[[package]]
-name = "dope-fiber"
-version = "0.15.1"
-dependencies = [
- "dope",
- "dope-gen",
- "dope-net",
- "dope-test",
+ "dope-test 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc",
  "o3",
  "pin-project",
 ]
 
 [[package]]
+name = "dope-fiber"
+version = "0.20.0"
+dependencies = [
+ "dope",
+ "dope-core",
+ "dope-gen",
+ "dope-test 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "o3",
+ "pin-project",
+]
+
+[[package]]
 name = "dope-gen"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
  "dope",
  "dope-fiber",
- "dope-test",
- "o3",
+ "dope-test 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "pin-project",
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.5",
+]
+
+[[package]]
+name = "dope-kqueue"
+version = "0.20.0"
+dependencies = [
+ "dope-sys",
+ "libc",
+ "o3",
 ]
 
 [[package]]
 name = "dope-manifold"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
  "dope-core",
  "dope-fiber",
  "dope-gen",
  "dope-net",
  "dope-runtime",
- "dope-test",
+ "dope-test 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc",
  "o3",
  "pin-project",
@@ -90,49 +89,67 @@ dependencies = [
 
 [[package]]
 name = "dope-net"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
  "dope-core",
- "dope-test",
+ "dope-test 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc",
  "o3",
 ]
 
 [[package]]
 name = "dope-runtime"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
  "dope-core",
  "dope-gen",
- "dope-test",
+ "dope-manifold",
+ "dope-net",
+ "dope-test 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc",
  "o3",
  "pin-project",
- "siphasher",
+]
+
+[[package]]
+name = "dope-sys"
+version = "0.20.0"
+dependencies = [
+ "libc",
+ "o3",
 ]
 
 [[package]]
 name = "dope-test"
-version = "0.15.1"
+version = "0.20.0"
 dependencies = [
- "dope",
  "dope-core",
  "dope-fiber",
- "dope-gen",
+ "dope-runtime",
  "libc",
  "o3",
- "pin-project",
 ]
 
 [[package]]
-name = "io-uring"
-version = "0.7.14"
+name = "dope-test"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d64d8ca234d152948ceaede1f419b6a83983a5ecccaac05fb337a809c96d3aa6"
+checksum = "d9681d99b3625d58b209f2d4c469c59239a70a450fd48f0a0eb97049430c7ea5"
 dependencies = [
- "bitflags",
- "cfg-if",
+ "dope-core",
+ "dope-fiber",
+ "dope-runtime",
  "libc",
+ "o3",
+]
+
+[[package]]
+name = "dope-uring"
+version = "0.20.0"
+dependencies = [
+ "dope-sys",
+ "libc",
+ "o3",
 ]
 
 [[package]]
@@ -143,9 +160,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "o3"
-version = "0.16.3"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b10b045cb3ff9d97d03f75373f1b4d7cc303ccd35ac24b85d4c7c18784b661e"
+checksum = "095d23266ff1efc7d15fbcfea09076b92918aed63304ba668ad010b200915f16"
 
 [[package]]
 name = "pin-project"
@@ -186,12 +203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "siphasher"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
-
-[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -204,9 +215,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.3"
+version = "3.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
 dependencies = [
  "proc-macro2",
  "quote",

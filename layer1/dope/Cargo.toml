@@ -1,0 +1,17 @@
+[package]
+name = "dope"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Public facade for the dope manifold runtime"
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+dope-core.workspace = true
+dope-gen.workspace = true
+dope-manifold.workspace = true
+dope-net.workspace = true
+dope-runtime.workspace = true
