@@ -1,0 +1,38 @@
+[package]
+name = "dope-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Thread-per-core execution and process lifecycle for dope"
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
+exclude = ["tests"]
+
+[lints]
+workspace = true
+
+[dependencies]
+dope-core.workspace = true
+dope-gen.workspace = true
+o3.workspace = true
+pin-project.workspace = true
+
+[dev-dependencies]
+dope-net.workspace = true
+dope-manifold = { path = "../manifold" }
+dope-test.workspace = true
+libc.workspace = true
+
+[[test]]
+name = "process_terminal_failure"
+harness = false
+
+[[test]]
+name = "process_repeated_install"
+harness = false
+
+[[test]]
+name = "process_shutdown_order"
+harness = false
