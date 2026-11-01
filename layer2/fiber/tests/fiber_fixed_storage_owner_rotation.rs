@@ -1,7 +1,8 @@
 use dope::core::driver::life::recovery;
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, num::NonZero, pin};
+use std::{num::NonZero, pin};
 
 use common::{
     runtime::{self, Setup, profile},
@@ -88,15 +89,7 @@ fn exact_moves_to_back() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty());
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
 }

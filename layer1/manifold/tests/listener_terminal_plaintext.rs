@@ -34,6 +34,7 @@ use crate::common::{
         Ingress, OWNED_REPLY, Probe, accepted,
         wire::{self, CleanOnData, CleanOnEof, Event, Wire},
     },
+    recover,
     scenario::case::listener::Listener,
 };
 
@@ -176,8 +177,4 @@ fn retires_plaintext() {
                 Event::Retired
             ]
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

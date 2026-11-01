@@ -1,4 +1,4 @@
-use std::{marker, mem, num, ops::ControlFlow, ptr, task, time};
+use std::{cell::Cell, marker, mem, num, ops::ControlFlow, ptr, task, time};
 
 use dope_sys::{engine, io::reactor::ready::delivery::Quota as _, kernel};
 use o3::{
@@ -383,6 +383,7 @@ pub(crate) struct Shared {
     pub(in crate::driver) receive: crate::Permits,
     buffer: <Engine as engine::Buffer>::Context,
     pub(in crate::driver) retire: queues::Pending,
+    pub(in crate::driver) generations: [Cell<Option<route::Epoch>>; route::CAPACITY],
     pub(in crate::driver) sequence: sequence::Owner,
     timer: heap::raw::Store<time::Instant, slot::Slot, timer::Tag>,
 }
@@ -423,6 +424,7 @@ impl Shared {
                 receive,
                 buffer,
                 retire: queues::Pending::new(),
+                generations: [const { Cell::new(Some(route::Epoch::INITIAL)) }; route::CAPACITY],
                 sequence: sequence::Owner::new(),
                 timer,
             }),

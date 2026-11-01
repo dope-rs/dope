@@ -9,6 +9,7 @@ use common::{
         Ingress, Observation, Probe,
         wire::{self, CleanOnData, Event, FailOnData, FailOnEof, Fault, StallOnData, Wire},
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::driver::{
@@ -25,6 +26,7 @@ use dope_runtime::{executor::session::Completion, topology::error::Kind};
 use dope_test::{
     fibers::{Run, Wait},
     harness::{
+        GUARD,
         peer::{Half, Peer},
         signals::{Gate, Progress as _},
     },
@@ -159,7 +161,9 @@ fn hard_abort_wins() {
         events.take().as_slice()
             == [
                 Event::Chunk(b"abort before eof observation".to_vec()),
+                Event::Application(receive::Failure::Contract),
                 Event::Close,
+                Event::Application(receive::Failure::Contract),
                 Event::Retired,
             ]
     );
@@ -217,7 +221,56 @@ fn app_failure_wins() {
         events.take().as_slice()
             == [
                 Event::Chunk(b"clean terminal application failure".to_vec()),
+                Event::Application(receive::Failure::Contract),
                 Event::Close,
+                Event::Application(receive::Failure::Contract),
+                Event::Retired,
+            ]
+    );
+}
+
+#[test]
+fn keeps_accept_failure() {
+    let mut finish = Completion::new();
+    let done = Gate::new();
+    let events = Rc::new(Cell::new(Vec::new()));
+    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let cause = receive::Failure::ParseCapacity;
+    let prepared = Listener::<receive::Coupled>::new::<1>(Default::default())
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<CleanOnData>, Throughput>>((
+            Probe::<Wire<CleanOnData>, receive::Coupled, _> {
+                close: Gate::new(),
+                retired: done.clone(),
+                events: Rc::clone(&events),
+                ingress: Ingress::AcceptFailure(cause),
+                marker: PhantomData,
+                observe: terminal,
+            },
+            Rc::clone(&wire),
+        ))
+        .expect("listener layout");
+    let mut reports =
+        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    prepared
+        .with_run(
+            &mut finish,
+            |case| {
+                let peer = Peer::at(case.addr()).try_read(GUARD).expect("peer");
+                reached(case.try_wait(&done, 1), done.hits(), 1);
+                assert!(Peer::try_read_all(&peer).expect("peer EOF").is_empty());
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+            native,
+        )
+        .expect("listener run");
+    wire.check();
+    assert!(reports.events().expect("reclaimed events").is_empty());
+    assert!(
+        events.take().as_slice()
+            == [
+                Event::Application(cause),
+                Event::Close,
+                Event::Application(cause),
                 Event::Retired,
             ]
     );
@@ -408,8 +461,4 @@ fn abandons_stalled_control() {
 fn close_layout() {
     assert_eq!(mem::size_of::<failures::Close>(), 0);
     assert!(!mem::needs_drop::<failures::Close>());
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

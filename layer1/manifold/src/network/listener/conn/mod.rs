@@ -43,6 +43,7 @@ pub enum Failure {
     Submit(result::SubmitError),
     Tuning(dope_core::Errno),
     Receive(dope_core::Errno),
+    Application(crate::app::receive::Failure),
     Park(event::ParkError),
     Write(body::Failure),
 }

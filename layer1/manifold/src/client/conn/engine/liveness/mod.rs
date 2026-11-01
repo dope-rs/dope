@@ -323,7 +323,7 @@ where
         &mut self,
         now: clock::Moment<'d>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> oneshot::Progress<side::Ticket<'d, ID>> {
+    ) -> Option<oneshot::Progress<side::Ticket<'d, ID>>> {
         self.io.io.expire_one(now, driver)
     }
 }

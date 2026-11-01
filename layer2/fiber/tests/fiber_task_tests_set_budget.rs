@@ -1,12 +1,9 @@
-use std::{cell::Cell, convert::Infallible, pin::pin, rc::Rc};
+use std::{cell::Cell, pin::pin, rc::Rc};
 
-use dope::core::{
-    driver::{
-        life::recovery::{self, Policy},
-        route::{Epoch, KeyTag, indices::SlotIndex},
-        schedule,
-    },
-    io::Reclaimed,
+use dope::core::driver::{
+    life::recovery::Policy,
+    route::{Epoch, KeyTag, indices::SlotIndex},
+    schedule,
 };
 use dope_fiber::{
     context::wake::RootWaker,
@@ -23,19 +20,12 @@ use crate::common::{
     schedule::tasks::retained::Retain as _,
 };
 pub mod common;
+use common::recover;
 
 use crate::common::schedule::tasks::fixtures::*;
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
 
 #[test]
 fn resumes_after_budget() {
@@ -97,9 +87,9 @@ fn resumes_after_budget() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -180,9 +170,9 @@ fn budget_wakes_one_parent() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -241,9 +231,9 @@ fn remove_keeps_batch() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -326,14 +316,7 @@ fn remove_hands_off_batch() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reports(&reports);
 }

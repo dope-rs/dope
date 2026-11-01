@@ -52,8 +52,7 @@ fn copy<'d, R: buffer::Cursor + hold::raw::Retain<'d>>(source: &R, budget: &resi
         .try_charge(budget.available() - 2)
         .expect("reserve remaining credit");
     let result = plan.try_retain();
-    assert!(result.is_err(), "two bytes cannot admit three");
-    let Err((plan, error)) = result else { return };
+    let (plan, error) = result.err().expect("two bytes cannot admit three");
     assert!(
         matches!(error, hold::Error::Copy(copy::Error::Budget(error))
         if error.into_parts() == (num::NonZero::<usize>::MIN.saturating_add(2), 2))
@@ -62,8 +61,7 @@ fn copy<'d, R: buffer::Cursor + hold::raw::Retain<'d>>(source: &R, budget: &resi
     drop(charge);
 
     let result = Tracker::fail_after(0, || plan.try_retain());
-    assert!(result.is_err(), "copy allocation fails");
-    let Err((plan, error)) = result else { return };
+    let (plan, error) = result.err().expect("copy allocation fails");
     assert!(matches!(
         error,
         hold::Error::Copy(copy::Error::Allocation(alloc::Exhausted))

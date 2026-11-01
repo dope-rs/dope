@@ -71,6 +71,7 @@ pub fn accepted(event: Observation<'_>) {
 
 pub enum Ingress {
     Fail,
+    AcceptFailure(receive::Failure),
     Rejected(Gate),
     Close,
     Reply,
@@ -154,6 +155,7 @@ where
                 handler::Timing::timeout(Duration::from_millis(100))
             }
             Ingress::Fail
+            | Ingress::AcceptFailure(_)
             | Ingress::Rejected(_)
             | Ingress::Close
             | Ingress::Reply
@@ -168,6 +170,16 @@ where
         None
     }
 
+    fn accept(
+        self: Pin<&mut Self>,
+        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+    ) -> Outcome {
+        match &self.get_mut().ingress {
+            Ingress::AcceptFailure(cause) => Outcome::Failed(*cause),
+            _ => Outcome::Continue,
+        }
+    }
+
     fn close<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire<M>, I::Conn, Shared>,
@@ -176,6 +188,9 @@ where
         'd: 'w,
     {
         let this = self.get_mut();
+        if let Some(conn::Failure::Application(cause)) = conn.failure() {
+            this.events.push(Event::Application(*cause));
+        }
         this.events.push(Event::Close);
         this.close.hit();
         conn
@@ -230,6 +245,7 @@ where
                 handler::Timeout::Continue(handler::Deadline::Clear)
             }
             Ingress::Fail
+            | Ingress::AcceptFailure(_)
             | Ingress::Rejected(_)
             | Ingress::Close
             | Ingress::Reply
@@ -296,6 +312,9 @@ where
         conn: conn::Retired<'_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
     ) {
         let this = app.get_mut();
+        if let Some(conn::Failure::Application(cause)) = conn.failure() {
+            this.events.push(Event::Application(*cause));
+        }
         if matches!(this.ingress, Ingress::Rejected(_)) {
             (this.observe)(Observation::Failure(conn.failure()));
         }
@@ -357,6 +376,7 @@ where
                 Outcome::Continue
             }
             Ingress::Fail => Outcome::Failed(receive::Failure::Contract),
+            Ingress::AcceptFailure(cause) => Outcome::Failed(*cause),
             Ingress::Rejected(ready) => {
                 conn.write()
                     .reject(body::Failure::Capacity(write::Reject::Header));

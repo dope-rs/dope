@@ -6,9 +6,9 @@ use dope::{
 use dope_core::{driver::route::KeyTag, platform::wake};
 use dope_test::harness::scenario;
 pub mod common;
+use common::recover;
 
 use std::{
-    convert::Infallible,
     io::{Error, ErrorKind, Read as _, Write as _},
     time::Duration,
 };
@@ -207,10 +207,6 @@ fn fiber_listener_roundtrip() {
 
         assert!(result.is_ok(), "listener driver must finish");
         });
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 #[test]

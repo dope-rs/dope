@@ -199,8 +199,15 @@ pub(in crate::network::listener) fn finish<'w, 'd: 'w, ID: Identity, A, E>(
             Some(mut egress) => {
                 egress.connection.open(now);
                 let outcome = A::accept(this.app.as_mut(), egress.context(turn.reborrow().app()));
-                if matches!(outcome, receive::Outcome::CloseAfter) {
-                    egress.connection.close_after();
+                match outcome {
+                    receive::Outcome::CloseAfter => egress.connection.close_after(),
+                    receive::Outcome::Failed(cause) => {
+                        egress
+                            .connection
+                            .state
+                            .fail(conn::Failure::Application(cause));
+                    }
+                    receive::Outcome::Continue => {}
                 }
                 outcome
             }

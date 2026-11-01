@@ -25,12 +25,6 @@ pub enum Config {
         actual: u16,
     },
     ReceiveBuffer(Zero),
-    ReceiveAllocationTooLarge {
-        entries: u16,
-        buffer_len: u32,
-        actual: u64,
-        maximum: u64,
-    },
     DatagramPayload(payload::Error),
     DescriptorCapacityOutOfRange {
         accepted: u32,

@@ -1,9 +1,10 @@
 pub mod common;
 
-use std::{convert::Infallible, net, num::NonZero, time::Duration};
+use std::{net, num::NonZero, time::Duration};
 
 use common::{
     manifold::datagram::{Receive, budget, handler},
+    recover,
     scenario::Runtime,
 };
 use dope_core::driver::{
@@ -192,8 +193,4 @@ fn check_retained<'d>(this: &mut budget::Receive<'d>, event: handler::Event<'_, 
             "unexpected datagram callback"
         ),
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

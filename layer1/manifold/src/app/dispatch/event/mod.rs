@@ -1,19 +1,68 @@
 //! Completion capability set.
 
+use std::ops;
+
+use dope_core::{driver::schedule, io};
+use dope_runtime::executor;
+
+use crate::app::dispatch;
+
 mod call;
-mod complete;
-mod drive;
 mod driven;
-mod observe;
 mod set;
 mod timed;
-mod turn;
 
 pub use call::Call;
-pub use complete::Complete;
-pub use drive::Drive;
 pub use driven::Driven;
-pub use observe::Observe;
 pub use set::Set;
 pub use timed::Timed;
-pub use turn::Turn;
+
+/// A completion consumer that needs no driver authority.
+pub trait Complete<'d>: Sized {
+    fn dispatch<'app>(
+        call: executor::raw::Call<'app, Self, (), io::Event<'d>>,
+    ) -> ops::ControlFlow<io::Event<'d>>;
+}
+
+/// A completion consumer that also needs driver authority.
+pub trait Drive<'d>: Sized {
+    type Access;
+
+    fn dispatch<'app, 'driver, 'root>(
+        call: executor::raw::Call<
+            'app,
+            Self,
+            (),
+            (
+                io::Event<'d>,
+                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+            ),
+        >,
+    ) -> ops::ControlFlow<io::Event<'d>>
+    where
+        'd: 'root,
+        Self: 'root;
+}
+
+/// Event-only completion capability.
+pub struct Observe;
+
+/// A completion consumer that needs scheduler and driver authority.
+pub trait Turn<'d>: Sized {
+    type Access;
+
+    fn dispatch<'app, 'driver, 'turn, 'root>(
+        call: executor::raw::Call<
+            'app,
+            Self,
+            (),
+            (
+                io::Event<'d>,
+                schedule::Turn<'turn, 'd>,
+                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+            ),
+        >,
+    ) -> ops::ControlFlow<io::Event<'d>>
+    where
+        'd: 'root;
+}

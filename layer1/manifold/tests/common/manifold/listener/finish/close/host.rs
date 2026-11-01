@@ -19,6 +19,8 @@ use o3::buffer::{bytes::TryRetain, resident};
 
 pub struct App<'d> {
     pub(crate) id: Rc<Cell<Option<conn::Id<'d, KeyTag<0>>>>>,
+    pub(crate) accepted: Gate,
+    pub(crate) received: Gate,
     pub(crate) closed: Gate,
 }
 
@@ -49,6 +51,7 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
         conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Identity, ()>,
     ) -> receive::Outcome {
         self.id.set(Some(conn.id()));
+        self.accepted.hit();
         receive::Outcome::Continue
     }
 
@@ -67,10 +70,15 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
 impl<'d> handler::Borrowed<'d, KeyTag<0>> for App<'d> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Identity, ()>,
+        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Identity, ()>,
         _: R,
         _: &mut retained::Context<'_, '_, 'd>,
     ) -> receive::Outcome {
+        assert!(
+            !conn.is_closing(),
+            "stale close marked current connection draining"
+        );
+        self.received.hit();
         receive::Outcome::Continue
     }
 }
@@ -94,11 +102,17 @@ pub struct Host<'n, 'p, 's, 'd: 's> {
     >,
     #[dispatcher(state)]
     pub(crate) id: Rc<Cell<Option<conn::Id<'d, KeyTag<0>>>>>,
+    #[dispatcher(state)]
+    pub(crate) checked: Option<(Rc<Cell<bool>>, Gate)>,
 }
 
 impl<'n, 'p, 's, 'd> Host<'n, 'p, 's, 'd> {
     fn coordinate(mut this: host_coord::Fields<'_, 'n, 'p, 's, 'd>) -> control::Flow {
         if let Some(id) = this.id.take() {
+            if let Some((matched, checked)) = this.checked.as_ref() {
+                matched.set(this.listener.with_conn(id, |state| *state).is_some());
+                checked.hit();
+            }
             this.listener.close_after(id);
         }
         control::Flow::Idle

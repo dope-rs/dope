@@ -20,6 +20,7 @@ use common::{
         },
         trace::One,
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::driver::{
@@ -405,8 +406,4 @@ fn publishes_eof() {
                 Event::Retired,
             ]
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

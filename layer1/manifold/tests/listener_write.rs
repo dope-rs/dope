@@ -15,6 +15,7 @@ use common::{
         prefix::{Admission, Attempt, Prefix, Seen, State},
         wake::{self, Wake, Zero, ZeroEvent},
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::driver::route::{FrameworkTag, KeyTag, Tag, kind};
@@ -445,8 +446,4 @@ fn reserves_before_callback() {
         reports.events().expect("reclaimed events").is_empty(),
         "{reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

@@ -297,7 +297,7 @@ where
                 let (next, captured) = done.into_parts();
                 let (ready, avail) = next.into_parts();
                 let op = conn.control.engine.operations.submission(source);
-                let ready = captured.resolve(ready, send::Prepared::close_after);
+                let ready = ready.resolve(captured);
                 let submit = op.submit(fd, slots, driver, target, ready);
                 (submit, avail, captured)
             }

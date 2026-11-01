@@ -10,9 +10,6 @@ license.workspace = true
 authors.workspace = true
 exclude = ["tests"]
 
-[lints]
-workspace = true
-
 [dependencies]
 dope-core.workspace = true
 o3.workspace = true

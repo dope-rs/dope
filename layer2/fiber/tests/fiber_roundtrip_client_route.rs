@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope::{
     core::{
         driver::{
@@ -16,6 +14,7 @@ use o3::depot::capacity::Count;
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
 use dope::{
     core::driver::{
@@ -127,10 +126,6 @@ fn roundtrip() {
         },
     )
     .expect("reply server");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

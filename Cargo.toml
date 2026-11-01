@@ -17,42 +17,28 @@ exclude = ["layer0/uring", "layer0/kqueue"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.98"
-version = "0.20.0"
+version = "0.21.0"
 description = "The manifold runtime"
 repository = "https://github.com/dope-rs/dope"
 readme = "README.md"
 license = "MIT"
 authors = ["inq <gofiri@gmail.com>"]
 
-[workspace.lints.rust]
-unreachable_pub = "deny"
-
-[workspace.lints.clippy]
-question_mark = "forbid"
-
 [workspace.dependencies]
 dope-test = { path = "layer2/test" }
-dope = { path = "layer1/dope", version = "0.20.0" }
-dope-core = { path = "layer0/core", version = "0.20.0" }
-dope-net = { path = "layer1/net", version = "0.20.0" }
-dope-runtime = { path = "layer1/runtime", version = "0.20.0" }
-dope-manifold = { path = "layer1/manifold", version = "0.20.0" }
-dope-fiber = { path = "layer2/fiber", version = "0.20.0" }
-dope-uring = { path = "layer0/uring", version = "0.20.0" }
-dope-sys = { path = "layer0/sys", version = "0.20.0" }
-dope-kqueue = { path = "layer0/kqueue", version = "0.20.0" }
-dope-gen = { path = "layer1/gen", version = "0.20.0" }
-o3 = "=0.20.0"
+dope = { path = "layer1/dope", version = "0.21.0" }
+dope-core = { path = "layer0/core", version = "0.21.0" }
+dope-net = { path = "layer1/net", version = "0.21.0" }
+dope-runtime = { path = "layer1/runtime", version = "0.21.0" }
+dope-manifold = { path = "layer1/manifold", version = "0.21.0" }
+dope-fiber = { path = "layer2/fiber", version = "0.21.0" }
+dope-uring = { path = "layer0/uring", version = "0.21.0" }
+dope-sys = { path = "layer0/sys", version = "0.21.0" }
+dope-kqueue = { path = "layer0/kqueue", version = "0.21.0" }
+dope-gen = { path = "layer1/gen", version = "0.21.0" }
+o3 = "0.20.1"
 libc = "0.2"
 pin-project = "1"
 
-[patch.crates-io]
-dope-core = { path = "layer0/core" }
-dope-fiber = { path = "layer2/fiber" }
-dope-runtime = { path = "layer1/runtime" }
-
 [profile.release]
 panic = "abort"
-
-[profile.contracts]
-inherits = "dev"

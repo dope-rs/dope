@@ -157,7 +157,10 @@ where
                     slot.state.fail(conn::Failure::Submit(error));
                 }
                 ingress::CloseCause::Receive(error) => slot.state.fail(conn::Failure::Park(error)),
-                _ => {}
+                ingress::CloseCause::Application(error) => {
+                    slot.state.fail(conn::Failure::Application(error));
+                }
+                ingress::CloseCause::Local | ingress::CloseCause::Transport => {}
             }
         }
         control::close_slot(self, key, turn, driver);

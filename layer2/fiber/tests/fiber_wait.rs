@@ -1,8 +1,9 @@
-use dope::core::{driver::life::recovery, io::Reclaimed};
+use dope::core::driver::life::recovery;
 use dope_test::alloc;
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, pin::pin};
+use std::pin::pin;
 
 use dope::core::driver::route::{Epoch, KeyTag, indices::SlotIndex};
 use dope_fiber::{
@@ -115,9 +116,9 @@ fn moves_waiter() {
             assert!(next.matches(woken[1]));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -151,9 +152,9 @@ fn allocates_nothing() {
             assert_eq!(hot, (0, 0));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -229,9 +230,9 @@ fn keeps_replacement_order() {
             assert_eq!(hot, (0, 0));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -310,9 +311,9 @@ fn preserves_full_source() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -367,9 +368,9 @@ fn unlinks_on_drop() {
             assert!(turn.ready().drain(|_| {}).is_none());
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -413,9 +414,9 @@ fn keeps_exhausted_waiter() {
             assert!(matches!(slot.wake_one(work), WakeStatus::Complete));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -479,22 +480,7 @@ fn replaces_occupied_slot() {
             assert_eq!(hot, (0, 0));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reports(&reports);
 }

@@ -1,12 +1,9 @@
-use std::{cell::Cell, convert::Infallible, pin::pin, rc::Rc, task::Poll};
+use std::{cell::Cell, pin::pin, rc::Rc, task::Poll};
 
-use dope::core::{
-    driver::{
-        life::recovery,
-        route::{Epoch, KeyTag, indices::SlotIndex},
-        schedule,
-    },
-    io::Reclaimed,
+use dope::core::driver::{
+    life::recovery,
+    route::{Epoch, KeyTag, indices::SlotIndex},
+    schedule,
 };
 use dope_fiber::{
     abi::Ready,
@@ -19,6 +16,7 @@ use crate::common::{
     storage::stores::DropOutput,
 };
 pub mod common;
+use common::recover;
 
 use core::array::from_fn;
 
@@ -96,9 +94,9 @@ fn indexed_construction() {
             assert_eq!(drops.get(), 8);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -148,9 +146,9 @@ fn construction_has_ceiling() {
             assert_eq!(allocs, 0);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -213,9 +211,9 @@ fn batches_share_ceiling() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -294,22 +292,7 @@ fn idle_retargets_root() {
             assert_eq!(polls.get(), 1);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reports(&reports);
 }

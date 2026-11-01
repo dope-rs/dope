@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, ptr, rc::Rc, time::Duration};
+use std::{ptr, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     self,
@@ -41,6 +41,7 @@ use crate::common::{
         },
         error,
     },
+    recover,
     scenario::{Runtime, case::attempt::Attempts, ports::Loopback},
 };
 
@@ -356,8 +357,4 @@ fn checked(audit: &Report<error::Error, 16>, trace: &Trace) {
         [0; 4]
     );
     assert!(trace.reason.get().is_none());
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

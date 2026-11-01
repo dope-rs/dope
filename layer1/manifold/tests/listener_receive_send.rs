@@ -10,7 +10,10 @@ use std::{
 };
 
 use common::{
-    manifold::listener::coupled::{App, BODY_LEN, DynamicApp, DynamicEvent, Event, State},
+    manifold::listener::coupled::{
+        App, BODY_LEN, BorrowedApp, BorrowedWire, DynamicApp, DynamicEvent, Event, State,
+    },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::{
@@ -265,6 +268,115 @@ fn gate_drains() {
     );
 }
 
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
+#[test]
+fn borrowed_reservation_tracks_native_send() {
+    let mut finish = Completion::new();
+    let setting = option::Buffer::try_from(1024_usize).expect("socket buffer size");
+    let first = Gate::new();
+    let second = Gate::new();
+    let sent = Gate::new();
+    let closed = Gate::new();
+    let seen = Rc::new(Trace::new());
+    let written = Rc::new(Trace::new());
+    let released = Rc::new(Trace::new());
+    let reservations = Rc::new(Trace::new());
+    let (wait, next) = wake::Ends::blocking().expect("second input pipe").split();
+    let (start, read) = wake::Ends::blocking().expect("read release pipe").split();
+    let (done, complete) = wake::Ends::blocking().expect("completion pipe").split();
+    let prepared = Listener::<receive::Borrowed>::new::<4>(Default::default())
+        .direct(0)
+        .stream(tcp::StreamConfig {
+            send_buffer_size: Some(setting),
+            no_delay: Some(option::Switch::On),
+            ..Default::default()
+        })
+        .prepare::<KeyTag<0>, _, Bundle<tcp::Tcp, BorrowedWire, Throughput>>((
+            BorrowedApp {
+                first: first.clone(),
+                second: second.clone(),
+                sent: sent.clone(),
+                closed: closed.clone(),
+                seen: Rc::clone(&seen),
+                written: Rc::clone(&written),
+                released: Rc::clone(&released),
+            },
+            BorrowedWire(Rc::clone(&reservations)),
+        ))
+        .expect("listener layout");
+    let mut reports =
+        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    prepared
+        .with_run(
+            &mut finish,
+            |case| {
+                Peer::at(case.addr())
+                    .with(
+                        move |socket| -> io::Result<Vec<u8>> {
+                            socket.write_all(b"A")?;
+                            assert!(
+                                wait.wait_timeout(Duration::from_secs(5)).is_ok(),
+                                "release second input"
+                            );
+                            socket.write_all(b"B")?;
+                            assert!(
+                                start.wait_timeout(Duration::from_secs(5)).is_ok(),
+                                "release response read"
+                            );
+                            let mut body = vec![0; BODY_LEN];
+                            socket.read_exact(&mut body)?;
+                            assert!(
+                                done.wait_timeout(Duration::from_secs(5)).is_ok(),
+                                "observe exact send completion"
+                            );
+                            socket.write_all(b"C")?;
+                            socket.shutdown(Shutdown::Write)?;
+                            socket.read_to_end(&mut body)?;
+                            Ok(body)
+                        },
+                        |peer| {
+                            reached(case.try_wait(&first, 1), first.hits(), 1);
+                            assert_eq!(&*written.values().expect("write result"), &[true]);
+                            case.try_pause(Duration::from_millis(100))
+                                .expect("drive blocked send");
+                            assert!(next.notify().is_ok(), "release borrowed input");
+                            reached(case.try_wait(&second, 1), second.hits(), 1);
+                            assert_eq!(
+                                &*reservations.values().expect("receive reservations"),
+                                &[true, false],
+                                "native send storage was exposed during its retained flight"
+                            );
+                            assert_eq!(sent.hits(), 0, "peer has not drained the output");
+
+                            assert!(read.notify().is_ok(), "release borrowed response read");
+                            reached(case.try_wait(&sent, 1), sent.hits(), 1);
+                            assert_eq!(
+                                &*released.values().expect("send release"),
+                                &[true],
+                                "only the exact completed payload may release the next input"
+                            );
+                            assert!(complete.notify().is_ok(), "release completed input");
+                            reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                            let body = peer
+                                .finish()
+                                .expect("finish client peer")
+                                .expect("client peer failed");
+                            assert_eq!(body.len(), BODY_LEN);
+                            assert!(body.iter().all(|byte| *byte == 0x6b));
+                        },
+                    )
+                    .expect("spawn borrowed peer");
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+            native,
+        )
+        .expect("listener run");
+    assert_eq!(&*seen.values().expect("borrowed input"), b"ABC");
+    assert_eq!(
+        &*reservations.values().expect("receive reservations"),
+        &[true, false, true]
+    );
+    assert!(
+        reports.events().expect("reclaimed events").is_empty(),
+        "unexpected reclaimed operations: {reports:?}"
+    );
 }

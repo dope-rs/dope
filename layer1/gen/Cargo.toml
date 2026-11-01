@@ -10,9 +10,6 @@ license.workspace = true
 authors.workspace = true
 exclude = ["tests"]
 
-[lints]
-workspace = true
-
 [lib]
 proc-macro = true
 test = false

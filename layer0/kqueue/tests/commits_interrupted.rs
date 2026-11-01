@@ -1,10 +1,11 @@
 pub mod common;
 
 use std::{
-    io::{self, Write as _},
+    io::{self, Read as _, Write as _},
     mem,
     num::NonZeroUsize,
-    ptr, time,
+    os::unix::net::UnixStream,
+    ptr, thread, time,
 };
 
 use dope_sys::{
@@ -18,7 +19,8 @@ use o3::mem::quota;
 
 use common::{Budget, Files, Poll, slots::inputs::Layout, socket::try_pair};
 
-fn main() {
+#[test]
+fn commits_interrupted() {
     let mut queue = Poll::try_new().expect("kqueue creation");
     let mut files = Files::try_new(Layout).expect("file table");
     let (handle, mut peer) = try_pair().expect("socket pair");
@@ -41,53 +43,112 @@ fn main() {
         unsafe { libc::sigaddset(&mut action.sa_mask, libc::SIGALRM) },
         0
     );
-    // SAFETY: this process owns its disposition until exit; no handler state can escape.
+    let mut previous_action = mem::MaybeUninit::uninit();
+    // SAFETY: this sole test owns the disposition and retains its previous value.
     assert_eq!(
-        unsafe { libc::sigaction(libc::SIGALRM, &action, ptr::null_mut()) },
+        unsafe { libc::sigaction(libc::SIGALRM, &action, previous_action.as_mut_ptr()) },
         0,
         "{}",
         io::Error::last_os_error()
     );
-    // SAFETY: only this isolated process's main-thread mask is changed.
+    // SAFETY: the successful call initialized the previous disposition.
+    let previous_action = unsafe { previous_action.assume_init() };
+    let mut previous_mask = mem::MaybeUninit::uninit();
+    // SAFETY: only this waiting test thread's mask is changed and retained.
     assert_eq!(
-        unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &action.sa_mask, ptr::null_mut()) },
+        unsafe {
+            libc::pthread_sigmask(
+                libc::SIG_UNBLOCK,
+                &action.sa_mask,
+                previous_mask.as_mut_ptr(),
+            )
+        },
+        0
+    );
+    // SAFETY: the successful call initialized the previous thread mask.
+    let previous_mask = unsafe { previous_mask.assume_init() };
+    let (stop, mut stopped) = UnixStream::pair().expect("signal sender lifetime");
+    stopped
+        .set_read_timeout(Some(time::Duration::from_millis(20)))
+        .expect("bounded signal retry");
+    // SAFETY: the scoped sender joins before this waiting thread can return.
+    let waiting = unsafe { libc::pthread_self() } as usize;
+    let (result, errno) = thread::scope(|scope| {
+        let sender = scope.spawn(move || {
+            // Repeated directed delivery closes the wait-entry race; the sender is bounded.
+            for _ in 0..250 {
+                match stopped.read(&mut [0]) {
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        // SAFETY: the waiting thread outlives this sender and owns SIGALRM.
+                        assert_eq!(
+                            unsafe {
+                                libc::pthread_kill(waiting as libc::pthread_t, libc::SIGALRM)
+                            },
+                            0
+                        );
+                    }
+                    result => {
+                        assert_eq!(result.expect("signal sender termination"), 0);
+                        break;
+                    }
+                }
+            }
+        });
+        // SAFETY: __error names this thread's errno; no handler or commit changes it.
+        unsafe { *libc::__error() = 0 };
+        let result = queue.wait(
+            &mut files,
+            &mut storage,
+            1,
+            Some(time::Duration::from_secs(5)),
+            &mut budget,
+        );
+        // SAFETY: capture the result before the sender's shutdown changes errno.
+        let errno = unsafe { *libc::__error() };
+        // SAFETY: block this thread's owned signal before stopping its sender.
+        assert_eq!(
+            unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &action.sa_mask, ptr::null_mut()) },
+            0
+        );
+        drop(stop);
+        sender.join().expect("joined signal sender");
+        (result, errno)
+    });
+    let mut pending = mem::MaybeUninit::uninit();
+    // SAFETY: the output owns one signal set and the signal remains blocked.
+    assert_eq!(
+        unsafe { libc::sigpending(pending.as_mut_ptr()) },
         0,
         "{}",
         io::Error::last_os_error()
     );
-    let tick = libc::timeval {
-        tv_sec: 0,
-        tv_usec: 20_000,
-    };
-    let mut timer = libc::itimerval {
-        it_interval: tick,
-        it_value: tick,
-    };
-    // SAFETY: this process owns the timer; repeating delivery closes the wait-entry race.
+    // SAFETY: the successful query initialized the set.
+    let pending = unsafe { pending.assume_init() };
+    // SAFETY: SIGALRM is valid and the initialized set stays borrowed.
+    let pending = unsafe { libc::sigismember(&pending, libc::SIGALRM) };
+    assert!(matches!(pending, 0 | 1));
+    if pending == 1 {
+        let mut signal = 0;
+        // SAFETY: the pending signal is blocked and its sender has joined.
+        assert_eq!(unsafe { libc::sigwait(&action.sa_mask, &mut signal) }, 0);
+        assert_eq!(signal, libc::SIGALRM);
+    }
+    // SAFETY: no signal sender remains and the test restores the saved disposition.
     assert_eq!(
-        unsafe { libc::setitimer(libc::ITIMER_REAL, &timer, ptr::null_mut()) },
+        unsafe { libc::sigaction(libc::SIGALRM, &previous_action, ptr::null_mut()) },
         0,
         "{}",
         io::Error::last_os_error()
     );
-    // SAFETY: __error names this thread's errno; no handler or commit changes it.
-    unsafe { *libc::__error() = 0 };
-    let result = queue.wait(
-        &mut files,
-        &mut storage,
-        1,
-        Some(time::Duration::from_secs(5)),
-        &mut budget,
-    );
-    // SAFETY: capture the native result before any subsequent syscall can change errno.
-    let errno = unsafe { *libc::__error() };
-    timer.it_value.tv_usec = 0;
-    // SAFETY: zero initial expiry disarms this process's owned interval timer.
+    // SAFETY: pending test delivery was drained before restoring the original mask.
     assert_eq!(
-        unsafe { libc::setitimer(libc::ITIMER_REAL, &timer, ptr::null_mut()) },
-        0,
-        "{}",
-        io::Error::last_os_error()
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &previous_mask, ptr::null_mut()) },
+        0
     );
     assert_eq!(
         errno,

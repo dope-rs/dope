@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 
+use dope::core::io::Reclaimed;
 use dope::{
     core::driver::{
         life::creation::Attempt,
@@ -152,4 +153,15 @@ impl Setup {
                 Err(error) => finish(Err(Error::Close(error.cause()))),
             })
     }
+}
+
+pub fn check_scope(result: Result<(), Error<'_>>) {
+    result.expect("driver lifecycle");
+}
+
+pub fn check_reports(reports: &[Reclaimed]) {
+    assert!(
+        reports.is_empty(),
+        "unexpected reclaimed operations: {reports:?}"
+    );
 }

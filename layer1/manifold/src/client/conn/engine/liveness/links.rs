@@ -77,7 +77,7 @@ where
         io: X::Transport<<E::Transport as dope_net::Transport>::Prepared>,
         timer: timer::Timer<'d>,
     ) -> Result<Self, creation::Error> {
-        let liveness = liveness::State::try_new(pool.inspect().capacity(), io, timer)?;
+        let liveness = liveness::State::try_new(primary.into(), io, timer)?;
         Ok(Self {
             pool,
             liveness,
@@ -90,7 +90,7 @@ where
         target: ready::Target<'d>,
     ) -> Option<liveness::Egress<'_, 'p, 'w, 'd, ID, A, E, X>> {
         let view = self.pool.egress_mut(key)?;
-        // SAFETY: this book was allocated from the retained pool's exact slot extent.
+        // SAFETY: this retained primary slot lies within the book's admitted primary extent.
         let source = unsafe { engine::raw::reunite(&mut self.liveness, view.connection, key) };
         Some(liveness::Egress {
             flights: view.flights,

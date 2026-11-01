@@ -9,11 +9,8 @@
 fn indexing_requires_checked_lookup() -> Result<(), dope_test::checks::Error> {
     let suite = dope_test::checks::Suite::new(env!("CARGO_MANIFEST_DIR"), file!(), &["dope-dns"]);
     let exe = std::env::current_exe()?;
-    let status = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.status()?;
-    assert!(status.success(), "build original library: {status}");
-    assert_eq!(
-        suite.try_errors(&exe, include_str!("compile_contracts.rs"))?,
-        1
-    );
+    let output = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let suite = suite.try_collect(&exe, output)?;
+    assert_eq!(suite.try_errors(include_str!("compile_contracts.rs"))?, 1);
     Ok(())
 }

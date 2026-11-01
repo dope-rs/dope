@@ -4,8 +4,7 @@ use dope_test::{alloc, harness::scenario};
 
 use crate::common::runtime::{self, Empty, Setup};
 pub mod common;
-
-use std::convert::Infallible;
+use common::recover;
 
 use dope::runtime::executor::drive;
 use dope_core::io::Reclaimed;
@@ -18,14 +17,6 @@ use crate::common::storage::replies::support::{
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
-}
 
 #[test]
 fn wakes_each_waiter() {
@@ -190,7 +181,7 @@ fn wakes_each_waiter() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -296,7 +287,7 @@ fn cancels_round_frontier() {
             });
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
 }
 
@@ -406,7 +397,7 @@ fn keeps_release_order() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),

@@ -55,6 +55,7 @@ use crate::common::{
 };
 
 pub mod app;
+pub mod limited;
 
 #[derive(Debug)]
 pub enum Error {

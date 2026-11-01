@@ -11,8 +11,9 @@ use dope_fiber::task::storage::{
 
 use crate::common::runtime::profile;
 pub mod common;
+use common::recover;
 
-use std::{cell::Cell, convert::Infallible, mem::size_of, pin::pin, rc::Rc, task};
+use std::{cell::Cell, mem::size_of, pin::pin, rc::Rc, task};
 
 use dope::core::driver::{
     life::recovery,
@@ -84,7 +85,7 @@ fn staged_take_once() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -123,7 +124,7 @@ fn keeps_pinned_on_drop() {
             assert_eq!(observed.get(), (1, true));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -301,10 +302,7 @@ fn staging_keeps_output() {
                     .route::<Right<Here>>()
                     .as_mut()
                     .try_remove(task);
-                assert!(result.is_err(), "foreign staged owner");
-                let Err(task) = result else {
-                    return;
-                };
+                let task = result.err().expect("foreign staged owner");
                 assert!(
                     (stores
                         .as_mut()
@@ -320,7 +318,7 @@ fn staging_keeps_output() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -362,7 +360,7 @@ fn removal_drops_output() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -431,15 +429,7 @@ fn deferred_completion() {
             },
             recover,
         ),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(report.is_none(), "unexpected reclamation: {report:?}");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

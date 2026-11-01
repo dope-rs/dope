@@ -40,6 +40,7 @@ pub enum Event {
     PeerEof,
     MissingAdmission,
     Wire(Fault, Option<Fault>, usize),
+    Application(dope_manifold::app::receive::Failure),
     Eof,
     Timeout,
     Close,

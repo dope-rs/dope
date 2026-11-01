@@ -4,8 +4,7 @@ use dope_test::{alloc, harness::scenario};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
-
-use std::convert::Infallible;
+use common::recover;
 
 use dope_core::io::Reclaimed;
 use dope_fiber::{
@@ -22,14 +21,6 @@ use crate::common::storage::replies::{
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
-}
 
 #[test]
 fn register_allocates_none() {
@@ -151,7 +142,7 @@ fn build_failure_rolls_back() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),

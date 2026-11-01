@@ -1,4 +1,4 @@
-use std::{env, io::Write, process::Stdio};
+use std::env;
 
 use dope_test::checks::{Error, Suite};
 
@@ -10,11 +10,8 @@ fn ownership_contracts() -> Result<(), Error> {
         &["dope-core", "dope-runtime"],
     );
     let exe = env::current_exe()?;
-    let status = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.status()?;
-    assert!(
-        status.success(),
-        "build original runtime libraries: {status}"
-    );
+    let output = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let suite = suite.try_collect(&exe, output)?;
     let output_escape = include_str!("common/contracts/positive.rs")
         .replace("|data, _app| data", "|_data, _app| _client");
     let session_client_escape = include_str!("common/contracts/positive.rs").replace(
@@ -187,18 +184,7 @@ fn ownership_contracts() -> Result<(), Error> {
             "error: lifetime may not live long enough",
         ),
     ] {
-        let mut compiler = suite
-            .try_compiler(&exe)?
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        compiler
-            .stdin
-            .take()
-            .expect("compiler stdin")
-            .write_all(source.as_bytes())?;
-        let output = compiler.wait_with_output()?;
+        let output = suite.try_compile(source)?;
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert!(
             output.status.success() == expected.is_empty() && diag.contains(expected),

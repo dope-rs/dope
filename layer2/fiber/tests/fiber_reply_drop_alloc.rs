@@ -4,8 +4,9 @@ use dope_test::{alloc, harness::scenario};
 
 use crate::common::runtime::{self, Empty, Setup};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, mem};
+use std::mem;
 
 use dope_core::io::Reclaimed;
 use dope_fiber::{reply::recv, task::done::Once};
@@ -18,14 +19,6 @@ use crate::common::storage::replies::*;
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
-}
 
 #[test]
 fn drop_allocates_none() {
@@ -206,7 +199,7 @@ fn mixed_lanes_release() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -356,7 +349,7 @@ fn owner_holds_credits() {
                     .expect("reply storage construction");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            check_scope,
+            runtime::check_scope,
         );
         assert!(
             matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -422,7 +415,7 @@ fn batch_drops_before_pool() {
                 .expect("reply storage construction");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            check_scope,
+            runtime::check_scope,
         );
         assert!(
             matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),

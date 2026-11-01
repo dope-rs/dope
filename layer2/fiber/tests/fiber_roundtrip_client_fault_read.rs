@@ -6,8 +6,9 @@ use dope_test::harness::{
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, net::Shutdown};
+use std::net::Shutdown;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
@@ -237,10 +238,6 @@ fn typed_capacities() {
         Read::ChunkCountTooLarge { actual, maximum }
             if actual.get() == 5 && maximum.get() == 4
     ));
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

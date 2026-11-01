@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     io::{Read as _, Write as _},
     num::NonZero,
     ptr,
@@ -58,6 +57,7 @@ use crate::common::{
             terminal::{clean::Clean, queued},
         },
     },
+    recover,
 };
 
 #[test]
@@ -492,8 +492,4 @@ fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error,
         matches!(wait, Ok(fibers::Wait::Reached)),
         "progress: {wait:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

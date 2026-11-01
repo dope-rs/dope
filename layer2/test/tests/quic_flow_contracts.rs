@@ -1,8 +1,8 @@
 use std::num::NonZero;
 
 use dope_test::quic::{
-    Datagram, EncodeError, FlowOracle, HEADER_BYTES, Observation, Oracle, ShapeError, Violation,
-    net,
+    Datagram, EncodeError, FlowOracle, HEADER_BYTES, Lane, Observation, Oracle, ShapeError,
+    Violation, net,
 };
 use o3::alloc;
 
@@ -126,6 +126,8 @@ fn rejects_huge_payload() {
 
 #[test]
 fn transport_conservation() {
+    assert!(!Lane::Plain.is_gso());
+    assert!(Lane::Gso.is_gso());
     let batch = (NonZero::new(8)).expect("eight datagrams are nonzero");
     let mut oracle = net::Oracle::default();
     std::assert_matches!(

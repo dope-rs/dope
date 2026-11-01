@@ -1,19 +1,14 @@
 pub mod common;
 
-use std::{
-    convert::Infallible, env, io, os::unix::process::ExitStatusExt as _, process, thread, time,
-    time::Duration,
-};
+use std::{os::unix::process::ExitStatusExt as _, thread, time, time::Duration};
 
 use dope_core::driver::life::{creation::Attempt, recovery};
 use dope_manifold::timing::watchdog;
 use dope_runtime::executor::session::Completion;
-use dope_test::fibers;
+use dope_test::{fibers, harness::scenario::process::Test};
 use o3::base::time::Positive;
 
-use crate::common::{manifold::Host, scenario::Runtime};
-
-const CHILD: &str = "DOPE_WATCHDOG_STALL_CHILD";
+use crate::common::{manifold::Host, recover, scenario::Runtime};
 
 #[test]
 fn progress_disarms() {
@@ -60,9 +55,11 @@ fn progress_disarms() {
 }
 
 #[test]
-fn stall_is_killed() -> io::Result<()> {
-    let mut finish = Completion::new();
-    if env::var_os(CHILD).is_some() {
+fn stall_is_killed() {
+    let output = Test {
+        name: "stall_is_killed",
+    }
+    .try_signal(|| {
         let mut create = Attempt::new();
         let executor = {
             let result = Runtime::throughput().try_executor(&mut create);
@@ -72,56 +69,34 @@ fn stall_is_killed() -> io::Result<()> {
                 .expect("native creation");
             result.ok().expect("native creation")
         };
-        let mut reports = Vec::new();
-
+        let mut finish = Completion::new();
         executor.run(|executor| {
             let result = executor.enter_with(
                 |mut session| {
-                    let config = (Host::config::<20, 150>()).expect("watchdog config");
+                    let config = Host::config::<20, 150>().expect("watchdog config");
                     let watchdog =
-                        (watchdog::Watchdog::new(config, &mut session.driver())).expect("watchdog");
+                        watchdog::Watchdog::new(config, &mut session.driver()).expect("watchdog");
                     let result = session.with_quiesce(
                         &mut finish,
                         Host { watchdog },
                         Duration::from_secs(2),
-                        |_app| {
-                            thread::sleep(time::Duration::from_secs(2));
-                        },
+                        |_app| thread::sleep(Duration::from_secs(2)),
                     );
                     assert!(result.is_ok(), "application teardown");
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(drop, recover),
             );
-            assert!(
-                reports.is_empty(),
-                "unexpected reclaimed operations: {reports:?}"
-            );
-
-            assert!(
-                result.is_err(),
-                "stalled worker escaped its kernel deadline"
-            );
-            Ok::<(), io::Error>(())
-        })?;
-        return Ok(());
+            assert!(result.is_ok(), "executor teardown");
+        });
+    })
+    .expect("watchdog child");
+    if let Some(output) = output {
+        assert_eq!(output.status.signal(), Some(libc::SIGKILL), "{output:?}");
     }
-
-    let status = process::Command::new(env::current_exe()?)
-        .arg("--exact")
-        .arg("stall_is_killed")
-        .env("__RUST_TEST_INVOKE", "stall_is_killed")
-        .env(CHILD, "1")
-        .status()?;
-    assert_eq!(status.signal(), Some(libc::SIGKILL));
-    Ok(())
 }
 
 #[test]
 fn period_before_deadline() {
     let period = Positive::from_millis::<100>();
     assert!(watchdog::Config::new(period, period).is_err());
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

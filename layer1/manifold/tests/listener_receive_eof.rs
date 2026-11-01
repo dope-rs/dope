@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     io::{Read as _, Write as _},
     net::Shutdown,
     rc::Rc,
@@ -14,6 +13,7 @@ use common::{
         Observation, eof,
         wire::{self, EofOnData, Event, Wire},
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::driver::{
@@ -255,8 +255,4 @@ fn eof_flushes_control() {
                 Event::Retired,
             ]
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

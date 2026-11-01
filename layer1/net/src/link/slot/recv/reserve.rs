@@ -59,7 +59,12 @@ where
                 });
             }
         };
-        let txn = match R::try_reserve(&mut conn.wire, &mut conn.send, rt) {
+        let send = if conn.control.engine.operations.sending.is_inflight() {
+            None
+        } else {
+            Some(&mut conn.send)
+        };
+        let txn = match R::try_reserve(&mut conn.wire, send, rt) {
             reserve::Outcome::Ready(txn) => txn,
             reserve::Outcome::Blocked(block) => {
                 let bind = credit.bind(resident.key().target().dispatch());

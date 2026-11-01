@@ -1,9 +1,10 @@
 pub mod common;
 
-use std::{convert::Infallible, io::Write as _, ptr, time::Duration};
+use std::{io::Write as _, ptr, time::Duration};
 
 use common::{
     manifold::listener::trace::One,
+    recover,
     requests::{App, Event, State, Wire},
 };
 use dope_core::driver::{
@@ -184,8 +185,4 @@ fn scoped_keeps_cause() {
         });
         reports.closed().expect("retired descriptors");
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

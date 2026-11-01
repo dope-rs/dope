@@ -1,17 +1,15 @@
 use std::{
     env::consts::DLL_EXTENSION,
+    fs::File,
     io::{self, Write as _},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output, Stdio},
 };
 
-use dope_core::{
-    Backend, Errno,
-    dope_sys::io::file::{self, File as _, Mode, Open},
-    io::fs::path::{CStrExt as _, CopyError},
-};
+mod message;
 
-/// Checks contracts against the consuming crate's original build artifacts.
+use message::Value;
+
 #[derive(Debug)]
 pub struct Suite<'a> {
     pub manifest: &'a str,
@@ -32,6 +30,7 @@ impl<'a> Suite<'a> {
         }
     }
 
+    /// Selects the test's dependency graph, including its library and panic profile.
     pub fn try_build(&self, exe: &Path, package: &str) -> Result<Command, Error> {
         let outputs = Self::outputs(exe)?;
         let target = outputs.parent().ok_or(Error::Target)?;
@@ -43,37 +42,180 @@ impl<'a> Suite<'a> {
         let name = Path::new(self.source).file_stem().ok_or(Error::Target)?;
         let mut cargo = self.command("cargo");
         cargo
-            .args(["build", "--offline", "--locked", "--lib", "--test"])
+            .args([
+                "build",
+                "--offline",
+                "--locked",
+                "--message-format=json",
+                "--test",
+            ])
             .arg(name)
             .args(["--profile", profile])
             .arg("--target-dir")
             .arg(target)
             .args(["-p", package]);
-        for package in self.packages {
-            let (_, package) = package.split_once('=').unwrap_or((package, package));
-            cargo.args(["-p", package]);
-        }
         Ok(cargo)
     }
 
-    pub fn try_rustdoc(&self, exe: &Path) -> Result<Command, Error> {
-        let outputs = Self::outputs(exe)?;
-        let source = Path::new(self.source).file_name().ok_or(Error::Target)?;
-        let tests = Path::new(self.manifest).join("tests");
-        let mut rustdoc = self.command("rustdoc");
+    /// Selects only artifacts reported by this exact Cargo invocation.
+    pub fn try_collect(self, exe: &Path, output: Output) -> Result<Artifacts<'a>, Error> {
+        if !output.status.success() {
+            return Err(Error::Build(output));
+        }
+        let outputs = Self::outputs(exe)?.to_owned();
+        let mut libraries: Vec<Option<(String, PathBuf)>> =
+            self.packages.iter().map(|_| None).collect();
+        let mut native = Vec::new();
+        for line in std::str::from_utf8(&output.stdout)?
+            .lines()
+            .filter(|line| !line.is_empty())
+        {
+            let message = Value::parse(line)?;
+            match message.field("reason")?.string()?.as_ref() {
+                "build-script-executed" => {
+                    for path in message.field("linked_paths")?.array()? {
+                        let path = path.string()?.into_owned();
+                        if !native.contains(&path) {
+                            native.push(path);
+                        }
+                    }
+                }
+                "compiler-artifact" => {
+                    if message.field("profile")?.field("test")?.text != "false" {
+                        continue;
+                    }
+                    let target = message.field("target")?;
+                    let kinds = target.field("kind")?.array()?;
+                    let kinds = kinds
+                        .iter()
+                        .map(Value::string)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let proc_macro = kinds.iter().any(|kind| kind == "proc-macro");
+                    if !proc_macro && !kinds.iter().any(|kind| kind == "lib" || kind == "rlib") {
+                        continue;
+                    }
+                    let name = target.field("name")?.string()?;
+                    for (index, package) in self.packages.iter().enumerate() {
+                        let (_, package) = package.split_once('=').unwrap_or((package, package));
+                        if name != package.replace('-', "_") {
+                            continue;
+                        }
+                        let identity = message.field("package_id")?.string()?;
+                        for path in message.field("filenames")?.array()? {
+                            let path = PathBuf::from(path.string()?.as_ref());
+                            let extension = if proc_macro { DLL_EXTENSION } else { "rlib" };
+                            if path.extension().and_then(|ext| ext.to_str()) != Some(extension) {
+                                continue;
+                            }
+                            match &libraries[index] {
+                                Some((previous, file))
+                                    if previous.as_str() != identity.as_ref() || file != &path =>
+                                {
+                                    return Err(Error::Ambiguous {
+                                        package: package.to_string(),
+                                        first: (previous.clone(), file.clone()),
+                                        next: (identity.into_owned(), path),
+                                    });
+                                }
+                                Some(_) => {}
+                                None => {
+                                    libraries[index] = Some((identity.clone().into_owned(), path))
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let libraries = self
+            .packages
+            .iter()
+            .zip(libraries)
+            .map(|(package, library)| {
+                library
+                    .map(|(_, path)| path)
+                    .ok_or_else(|| Error::Missing((*package).to_owned()))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Artifacts {
+            suite: self,
+            outputs,
+            libraries,
+            native,
+        })
+    }
+
+    fn outputs(exe: &Path) -> Result<&Path, Error> {
+        exe.ancestors()
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name == "deps" || name == "build")
+            })
+            .and_then(Path::parent)
+            .ok_or(Error::Target)
+    }
+
+    fn command(&self, tool: &str) -> Command {
+        let mut command = if self.toolchain.is_empty() {
+            let exe = match tool {
+                "cargo" => env!("CARGO"),
+                "rustdoc" => option_env!("RUSTDOC").unwrap_or(tool),
+                _ => option_env!("RUSTC").unwrap_or(tool),
+            };
+            let mut command = Command::new(exe);
+            if let Some(chain) = option_env!("RUSTUP_TOOLCHAIN") {
+                command.env("RUSTUP_TOOLCHAIN", chain);
+            }
+            command
+        } else {
+            let mut command = Command::new("rustup");
+            command.args(["run", self.toolchain, tool]);
+            command
+        };
+        command
+            .current_dir(self.manifest)
+            .env("RUSTC_BOOTSTRAP", "1");
+        command
+    }
+}
+
+#[derive(Debug)]
+pub struct Artifacts<'a> {
+    suite: Suite<'a>,
+    outputs: PathBuf,
+    libraries: Vec<PathBuf>,
+    native: Vec<String>,
+}
+
+impl Artifacts<'_> {
+    pub fn try_rustdoc(&self) -> Result<Command, Error> {
+        let tests = Path::new(self.suite.manifest).join("tests");
+        let mut rustdoc = self.suite.command("rustdoc");
         rustdoc
-            .arg("--test")
-            .arg(tests.join(source))
+            .args([
+                "--test",
+                "-",
+                "-Zunstable-options",
+                "--doctest-build-arg=-Znext-solver=globally",
+            ])
+            .stdin(File::open(
+                Path::new(self.suite.manifest).join("tests").join(
+                    Path::new(self.suite.source)
+                        .file_name()
+                        .ok_or(Error::Target)?,
+                ),
+            )?)
+            .current_dir(&tests)
+            .env("CARGO_MANIFEST_DIR", self.suite.manifest)
             .args(["--edition=2024", "-Cpanic=abort", "--test-run-directory"])
             .arg(&tests);
-        self.libraries(&mut rustdoc, outputs)?;
+        self.libraries(&mut rustdoc);
         Ok(rustdoc)
     }
 
-    /// Compiles an original fixture supplied on stdin without creating a source file.
-    pub fn try_compiler(&self, exe: &Path) -> Result<Command, Error> {
-        let outputs = Self::outputs(exe)?;
-        let mut compiler = self.command("rustc");
+    pub fn compiler(&self) -> Command {
+        let mut compiler = self.suite.command("rustc");
         compiler.args([
             "-Znext-solver=globally",
             "--edition=2024",
@@ -83,15 +225,24 @@ impl<'a> Suite<'a> {
             "--emit=llvm-ir=-",
             "--color=never",
         ]);
-        compiler.arg("--out-dir").arg(outputs);
-        self.libraries(&mut compiler, outputs)?;
+        compiler
+            .arg("--out-dir")
+            .arg(&self.outputs)
+            .current_dir(Path::new(self.suite.manifest).join("tests"))
+            .env("CARGO_MANIFEST_DIR", self.suite.manifest);
+        self.libraries(&mut compiler);
         compiler.arg("-");
-        Ok(compiler)
+        compiler
+    }
+
+    /// Compiles one fixture while always collecting and reaping its compiler.
+    pub fn try_compile(&self, source: &str) -> Result<Output, Error> {
+        try_compile(&mut self.compiler(), source)
     }
 
     /// Checks the original `compile_fail,E####` doc blocks that stable rustdoc treats
     /// as plain text. Other doctests remain owned by `try_rustdoc`.
-    pub fn try_errors(&self, exe: &Path, source: &str) -> Result<usize, Error> {
+    pub fn try_errors(&self, source: &str) -> Result<usize, Error> {
         let mut lines = source.lines().enumerate();
         let mut count = 0;
         while let Some((line, text)) = lines.next() {
@@ -134,27 +285,16 @@ impl<'a> Suite<'a> {
                 body.insert_str(0, "fn main() {\n");
                 body.push_str("}\n");
             }
-            let mut child = self
-                .try_compiler(exe)?
-                .current_dir(Path::new(self.manifest).join("tests"))
-                .env("CARGO_MANIFEST_DIR", self.manifest)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()?;
-            let input = match child.stdin.take() {
-                Some(mut input) => input.write_all(body.as_bytes()).map_err(Error::Io),
-                None => Err(Error::Input),
-            };
-            let output = child.wait_with_output()?;
-            input?;
+            let output = self.try_compile(&body)?;
             let expected = format!("error[{code}]:");
-            if output.status.success()
-                || !output
-                    .stderr
-                    .split(|byte| *byte == b'\n')
-                    .any(|line| line.starts_with(expected.as_bytes()))
-            {
+            let mut errors = output.stderr.split(|byte| *byte == b'\n').filter(|line| {
+                line.starts_with(b"error") && !line.starts_with(b"error: aborting due to")
+            });
+            let matches = errors
+                .next()
+                .is_some_and(|line| line.starts_with(expected.as_bytes()))
+                && errors.all(|line| line.starts_with(expected.as_bytes()));
+            if output.status.success() || !matches {
                 return Err(Error::Contract {
                     line,
                     expected,
@@ -174,134 +314,38 @@ impl<'a> Suite<'a> {
         Some(text.strip_prefix(' ').unwrap_or(text))
     }
 
-    fn outputs(exe: &Path) -> Result<&Path, Error> {
-        exe.ancestors()
-            .find(|path| {
-                path.file_name()
-                    .is_some_and(|name| name == "deps" || name == "build")
-            })
-            .and_then(Path::parent)
-            .ok_or(Error::Target)
-    }
-
-    fn libraries(&self, command: &mut Command, outputs: &Path) -> Result<(), Error> {
-        Self::search(command, &outputs.join("deps"));
-        Self::directories(command, &outputs.join("build"), 2)?;
-        for package in self.packages {
-            let (alias, package) = package.split_once('=').unwrap_or((package, package));
-            let name = alias.replace('-', "_");
-            let libname = package.replace('-', "_");
-            let mut library = outputs.join(format!("lib{libname}.rlib"));
-            if !Self::try_exists(&library)? {
-                library.set_extension(DLL_EXTENSION);
-                if !Self::try_exists(&library)? {
-                    return Err(Error::Target);
-                }
-            }
+    fn libraries(&self, command: &mut Command) {
+        command.arg("-L").arg(format!(
+            "dependency={}",
+            self.outputs.join("deps").display()
+        ));
+        for path in &self.native {
+            command.arg("-L").arg(path);
+        }
+        for (package, path) in self.suite.packages.iter().zip(&self.libraries) {
+            let (alias, _) = package.split_once('=').unwrap_or((package, package));
             command
                 .arg("--extern")
-                .arg(format!("{name}={}", library.display()));
+                .arg(format!("{}={}", alias.replace('-', "_"), path.display()));
         }
-        Ok(())
-    }
-
-    fn try_exists(path: &Path) -> Result<bool, Error> {
-        let path = Box::try_copy(path).map_err(Error::Path)?;
-        match Backend::stat::<Errno>(&path) {
-            Ok(_) => Ok(true),
-            Err(error) if error == Errno::NOT_FOUND => Ok(false),
-            Err(error) => Err(Error::Syscall(error)),
-        }
-    }
-
-    fn command(&self, tool: &str) -> Command {
-        let mut command = if self.toolchain.is_empty() {
-            let exe = match tool {
-                "cargo" => env!("CARGO"),
-                "rustdoc" => option_env!("RUSTDOC").unwrap_or(tool),
-                _ => option_env!("RUSTC").unwrap_or(tool),
-            };
-            let mut command = Command::new(exe);
-            if let Some(chain) = option_env!("RUSTUP_TOOLCHAIN") {
-                command.env("RUSTUP_TOOLCHAIN", chain);
-            }
-            command
-        } else {
-            let mut command = Command::new("rustup");
-            command.args(["run", self.toolchain, tool]);
-            command
-        };
-        command.current_dir(self.manifest);
-        command
-    }
-
-    fn search(command: &mut Command, path: &Path) {
-        command
-            .arg("-L")
-            .arg(format!("dependency={}", path.display()));
-    }
-
-    /// Cargo directories retain exact crate hashes; explicit externs select the fresh graph.
-    fn directories(command: &mut Command, root: &Path, depth: u8) -> Result<(), Error> {
-        let path = Box::try_copy(root).map_err(Error::Path)?;
-        let mut dir = match file::Dir::<Backend>::open::<Errno>(&path) {
-            Ok(dir) => dir,
-            Err(file::OpenError::Syscall(error)) if error == Errno::NOT_FOUND => {
-                return Ok(());
-            }
-            Err(error) => return Err(Error::Directory(error)),
-        };
-        Self::directory(command, root, depth, &mut dir)
-    }
-
-    fn directory(
-        command: &mut Command,
-        root: &Path,
-        depth: u8,
-        dir: &mut file::Dir<Backend>,
-    ) -> Result<(), Error> {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        let (fd, mut entries) = dir.entries();
-        while let Some(entry) = entries.try_next::<Errno>().map_err(Error::Read)? {
-            if matches!(entry.name.to_bytes(), b"." | b"..") {
-                continue;
-            }
-            let kind = match entry.kind {
-                Some(kind) => kind,
-                None => Backend::metadata_at::<Errno>(Some(fd), entry.name)
-                    .map_err(Error::Syscall)?
-                    .kind(),
-            };
-            if !kind.is_dir() {
-                continue;
-            }
-            let path = root.join(std::ffi::OsStr::from_bytes(entry.name.to_bytes()));
-            if entry.name == c"out" {
-                Self::search(command, &path);
-            } else if depth > 0 {
-                let child = match Backend::open_at::<Errno>(
-                    fd,
-                    entry.name,
-                    Open::DIRECTORY | Open::NO_FOLLOW | Open::CLOSE_ON_EXEC,
-                    Mode::new(0),
-                ) {
-                    Ok(child) => child,
-                    Err(error) if error == Errno::NOT_FOUND => continue,
-                    Err(error) => return Err(Error::Syscall(error)),
-                };
-                let mut child =
-                    file::Dir::<Backend>::from_fd::<Errno>(child).map_err(Error::Directory)?;
-                Self::directory(command, &path, depth - 1, &mut child)?;
-            }
-        }
-        Ok(())
     }
 }
 
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
+    Utf8(std::str::Utf8Error),
+    Message {
+        offset: usize,
+    },
+    Field(&'static str),
+    Build(Output),
+    Missing(String),
+    Ambiguous {
+        package: String,
+        first: (String, PathBuf),
+        next: (String, PathBuf),
+    },
     Input,
     Fixture {
         line: usize,
@@ -311,10 +355,6 @@ pub enum Error {
         expected: String,
         output: Output,
     },
-    Path(CopyError),
-    Directory(file::OpenError<Errno>),
-    Read(file::ReadError<Errno>),
-    Syscall(Errno),
     Target,
 }
 
@@ -322,4 +362,26 @@ impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+impl From<std::str::Utf8Error> for Error {
+    fn from(error: std::str::Utf8Error) -> Self {
+        Self::Utf8(error)
+    }
+}
+
+/// Supplies an in-memory fixture to a configured compiler without creating a source copy.
+pub fn try_compile(command: &mut Command, source: &str) -> Result<Output, Error> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let input = match child.stdin.take() {
+        Some(mut input) => input.write_all(source.as_bytes()).map_err(Error::Io),
+        None => Err(Error::Input),
+    };
+    let output = child.wait_with_output()?;
+    input?;
+    Ok(output)
 }

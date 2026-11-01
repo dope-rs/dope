@@ -205,7 +205,35 @@ async fn retained<'d>() {
 fn main() { let _ = retained(); }
 "#;
     let tagged = inert.replace("#[deny(unused_variables)]", "#[opaque::rewrite]");
-    let cases: [(String, &[&str]); 30] = [
+    let optional = r#"
+use engine::{core::driver::route::KeyTag, manifold::timing::interval::Interval};
+use engine::runtime::control;
+mod choice { pub use core::option::Option; }
+#[pin_project::pin_project]
+#[derive(engine::Application)]
+#[dispatcher(crate = ::engine)]
+#[coordinate]
+struct App<'d> {
+    #[pin]
+    #[manifold(optional, control)]
+    timer: choice::Option<Interval<'d, KeyTag<1>>>,
+}
+impl<'d> App<'d> {
+    fn coordinate(_: app_coord::Fields<'_, 'd>) -> control::Flow {
+        control::Flow::Idle
+    }
+}
+fn main() {}
+"#;
+    let optional_wrapper = optional
+        .replace(
+            "mod choice { pub use core::option::Option; }",
+            "mod common { pub mod optional; }\nuse common::optional::Option;",
+        )
+        .replace("choice::Option<", "Option<");
+    let cases: [(String, &[&str]); 32] = [
+        (optional.into(), &[]),
+        (optional_wrapper, &["error[E0308]:"]),
         (include_str!("compile_fiber.rs").into(), &[]),
         (
             include_str!("compile_future.rs").into(),

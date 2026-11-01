@@ -43,6 +43,7 @@ fn rejects_arming() {
 #[test]
 fn rejects_exhaustion() {
     use std::{env, process};
+
     const CHILD: &str = "DOPE_TIMER_QUOTA_CHILD";
     if env::var_os(CHILD).is_some() {
         let limit = libc::rlimit {

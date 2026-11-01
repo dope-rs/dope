@@ -1,15 +1,19 @@
-use std::{cell::Cell, convert::Infallible, env, process, thread::sleep, time};
+use std::{
+    cell::Cell, convert::Infallible, env, os::unix::process::ExitStatusExt as _, thread::sleep,
+    time,
+};
 
 use dope_core::platform::{thread, wake};
 use dope_runtime::{process::STACK, shutdown};
-use dope_test::harness::{scenario::run, server::Pair};
+use dope_test::harness::{
+    scenario::{process::Test, run},
+    server::Pair,
+};
 
 pub mod common;
 use common::harness::{
     E2E_DEADLINE, LATE_STARTUP, LateFailure, STARTUP_TIMEOUT, serve, with_harness,
 };
-
-const WATCHDOG_CHILD: &str = "DOPE_TEST_WATCHDOG_CHILD";
 
 fn assert_startup_timeout<E>(
     error: run::Error<E, wake::CreateError, shutdown::FireError, wake::WaitError>,
@@ -100,37 +104,54 @@ fn watchdogs_are_isolated() {
 }
 
 #[test]
-fn watchdog_kills_hang() {
-    if env::var_os(WATCHDOG_CHILD).is_some() {
-        with_harness(time::Duration::from_millis(100), |harness| {
-            ((harness.run_unbound(
-                |source| {
-                    let (wait, notify) =
-                        wake::Ends::blocking().expect("stalled server gate").split();
-                    wait.wait().expect("stalled server gate remains connected");
-                    drop((notify, source));
-                    Ok::<_, Infallible>(())
-                },
-                |addr| addr,
-            ))
-            .expect("stalled server returned before the watchdog killed it"));
-        });
-        return;
+fn child_succeeds() {
+    let output = Test {
+        name: "child_succeeds",
     }
+    .try_run(|| {})
+    .expect("isolated success");
+    if let Some(output) = output {
+        assert!(output.status.success(), "{output:?}");
+    }
+}
 
-    use std::os::unix;
+#[test]
+fn child_fails() {
+    let output = Test {
+        name: "child_fails",
+    }
+    .try_run(|| panic!("isolated failure"))
+    .expect("isolated failure");
+    if let Some(output) = output {
+        assert!(!output.status.success(), "{output:?}");
+    }
+}
 
-    let binary = (env::current_exe()).expect("current test binary");
-    let status = process::Command::new(binary)
-        .args(["watchdog_kills_hang", "--exact", "--nocapture"])
-        .env("__RUST_TEST_INVOKE", "watchdog_kills_hang")
-        .env(WATCHDOG_CHILD, "1")
-        .status();
-    let status = (status).expect("spawn watchdog child test");
-    assert_eq!(
-        unix::process::ExitStatusExt::signal(&status),
-        Some(libc::SIGKILL)
-    );
+#[test]
+fn watchdog_kills_hang() {
+    let output = Test {
+        name: "watchdog_kills_hang",
+    }
+    .try_signal(|| {
+        with_harness(time::Duration::from_millis(100), |harness| {
+            harness
+                .run_unbound(
+                    |source| {
+                        let (wait, notify) =
+                            wake::Ends::blocking().expect("stalled server gate").split();
+                        wait.wait().expect("stalled server gate remains connected");
+                        drop((notify, source));
+                        Ok::<_, Infallible>(())
+                    },
+                    |addr| addr,
+                )
+                .expect("stalled server returned before the watchdog killed it");
+        });
+    })
+    .expect("spawn watchdog child test");
+    if let Some(output) = output {
+        assert_eq!(output.status.signal(), Some(libc::SIGKILL));
+    }
 }
 
 #[test]
@@ -139,34 +160,45 @@ fn watchdog_releases_locks() {
 
     use dope_test::harness::support::file::Directory;
 
-    let base = env::temp_dir();
-    let dir = Directory::try_with(&base, "watchdog-lock", |closed| {
-        closed.expect("temporary directory cleanup");
-    })
-    .expect("temporary path");
-    let path = dir.path().join("owner");
-    let owner = fs::File::create_new(&path).expect("lock file");
-    let harness = Pair::bind().expect("watchdog harness");
-    let result = harness.run_unbound(
-        |source| {
-            {
-                let owner = owner;
+    // Other tests may spawn children that briefly inherit descriptors before exec.
+    let output = Test {
+        name: "watchdog_releases_locks",
+    }
+    .try_run(|| {
+        let base = env::temp_dir();
+        let dir = Directory::try_with(&base, "watchdog-lock", |closed| {
+            closed.expect("temporary directory cleanup");
+        })
+        .expect("temporary path");
+        let path = dir.path().join("owner");
+        let owner = fs::File::create_new(&path).expect("lock file");
+        let harness = Pair::bind().expect("watchdog harness");
+        let result = harness.run_unbound(
+            |source| {
+                {
+                    let owner = owner;
+                    let locked =
+                        unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                    assert_eq!(locked, 0, "initial lock: {}", io::Error::last_os_error());
+                }
+                let next = fs::File::open(&path).expect("reopen lock file");
                 let locked =
-                    unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-                assert_eq!(locked, 0, "initial lock: {}", io::Error::last_os_error());
-            }
-            let next = fs::File::open(&path).expect("reopen lock file");
-            let locked = unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            assert_eq!(
-                locked,
-                0,
-                "watchdog retained lock: {}",
-                io::Error::last_os_error()
-            );
-            serve(source);
-            Ok::<_, Infallible>(())
-        },
-        |_| (),
-    );
-    assert!(result.is_ok(), "watchdog harness must finish");
+                    unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                assert_eq!(
+                    locked,
+                    0,
+                    "watchdog retained lock: {}",
+                    io::Error::last_os_error()
+                );
+                serve(source);
+                Ok::<_, Infallible>(())
+            },
+            |_| (),
+        );
+        assert!(result.is_ok(), "watchdog harness must finish");
+    })
+    .expect("isolated descriptor ownership");
+    if let Some(output) = output {
+        assert!(output.status.success(), "{output:?}");
+    }
 }

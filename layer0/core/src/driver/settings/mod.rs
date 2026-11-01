@@ -108,9 +108,9 @@ impl Datagram {
         }
     }
 
-    pub fn try_new(entries: Ring, payload: payload::Len) -> Result<Self, errors::Config> {
+    pub const fn new(entries: Ring, payload: payload::Len) -> Self {
         let len = transfer::NonZero::from_payload(payload);
-        Ok(Self(Receive::assemble(entries, len)?))
+        Self(Receive::from_parts(entries.buffers(), len))
     }
 
     pub const fn receive(self) -> Receive {

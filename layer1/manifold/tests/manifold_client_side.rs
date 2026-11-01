@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, io::Read as _, net::SocketAddr, rc::Rc, time::Duration};
+use std::{io::Read as _, net::SocketAddr, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
@@ -42,10 +42,15 @@ use o3::{buffer::storage::Shared, depot::map::direct};
 
 use crate::common::{
     contract::Report,
-    manifold::client::side::{
-        Reservation, Storage,
-        app::{App, Wait},
+    manifold::client::{
+        finish::lifetime::{self, Lifetime},
+        side::{
+            Reservation, Storage,
+            app::{App, Wait},
+            limited::Limited,
+        },
     },
+    recover,
 };
 
 #[test]
@@ -181,6 +186,77 @@ fn startup_hides_target() {
     );
 }
 
+#[test]
+fn empty_side_preserves_primary_timeout_quota() {
+    let mut finish = Completion::new();
+    peer::TcpScript::with_many::<2, _>(
+        |_| {},
+        |server| {
+            let ready = LocalGate::new();
+            let events = Trace::new();
+            let audit = Rc::new(Report::default());
+            let addr = server.addr();
+            let snapshot = service::Snapshot::from_one(
+                service::Revision::new(1),
+                service::Endpoint::new(addr, addr),
+            );
+            let plan = plan::Plan::<KeyTag<0>, 1, plan::Side>::try_new(
+                1,
+                plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
+                    .expect("retry bounds")
+                    .with_ttl(lifetime::LIMIT),
+            )
+            .expect("side connector plan");
+            let prepared = Plan::new(Storage, plan)
+                .with_install(settings::Config::for_profile::<Balanced>())
+                .expect("side connector layout");
+            let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
+            prepared.try_scoped(
+                |scope| {
+                    let result = scope.lend(|plan, stage| {
+                        let setup = session::Setup::new(
+                            Lifetime {
+                                audit: Rc::clone(&audit),
+                                ready: ready.handle(),
+                                events: &events,
+                            },
+                            ingress::Plan::none(),
+                        );
+                        let mode = Enabled::new(stage.storage());
+                        let hash = stage.hash_state(health::Domain::for_id(0));
+                        let plan = plan.bind(domain::Local::new(wire::Identity), hash);
+                        plan.install::<_, _, _, sync::Preserve, _, env::Bundle<tcp::Tcp, wire::Identity, Balanced>, 16, _, _>(
+                            setup, mode, snapshot, stage, lending::Stage::driver,
+                            |pool, stage| stage.with_quiesce(
+                                &mut finish,
+                                app::Host::new(Limited { inner: pool }),
+                                Duration::from_secs(2),
+                                |mut app| dope_test::fibers::TEST.try_wait(&mut app, &ready.handle(), 2),
+                            ),
+                        )
+                    });
+                    assert_eq!(
+                        result.expect("install client").expect("client teardown").expect("client progress"),
+                        dope_test::fibers::Wait::Reached,
+                    );
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                |entered| assert!(entered.is_ok()),
+            );
+            assert!(events.values().expect("lifetime events").iter().any(|event| matches!(
+                event,
+                lifetime::Event::Closed(dope_manifold::client::close::Reason::Timeout(
+                    dope_manifold::client::deadline::Kind::Lifetime,
+                )),
+            )));
+            assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+            audit.checked((0, 0));
+            server.finish().expect("finish peers");
+        },
+    )
+    .expect("spawn peers");
+}
+
 fn run(
     addr: SocketAddr,
     eager: bool,
@@ -270,8 +346,4 @@ fn run(
 
 fn side_ready<'d>(target: Option<ready::Target<'d>>) -> ready::Target<'d> {
     target.expect("side registry is running")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

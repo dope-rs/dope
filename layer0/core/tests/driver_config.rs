@@ -245,21 +245,7 @@ fn datagram_layout() {
             let len = settings::Receive::MIN_DATAGRAM_SLOT.into_nonzero().get()
                 + u32::from(bytes.get())
                 - 1;
-            let total = u64::from(slots) * u64::from(len);
-            if total > isize::MAX as u64 {
-                assert!(
-                    settings::Datagram::try_new(ring, payload)
-                        == Err(errors::Config::ReceiveAllocationTooLarge {
-                            entries: slots,
-                            buffer_len: len,
-                            actual: total,
-                            maximum: isize::MAX as u64,
-                        },)
-                );
-                continue;
-            }
-            let datagram = (settings::Datagram::try_new(ring, payload))
-                .expect("bounded datagram layout must fit the native allocation");
+            let datagram = settings::Datagram::new(ring, payload);
             let receive = datagram.receive();
             let claim = demands::Receive::from(datagram);
             assert!(settings::Receive::exact(claim) == Ok(receive));

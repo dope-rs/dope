@@ -37,7 +37,7 @@ pub struct Plain;
 /// Driver access authorized to retain storage owned by the installed app.
 pub struct Retained;
 
-/// A zero-cost, statically narrowed driver context.
+/// A statically narrowed driver context.
 ///
 /// Plain callbacks cannot call the retained submission boundary:
 ///

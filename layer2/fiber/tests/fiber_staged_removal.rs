@@ -1,8 +1,9 @@
 use dope::core::driver::life::recovery;
 
 pub mod common;
+use common::recover;
 
-use std::{cell::Cell, convert::Infallible, pin::pin, rc::Rc, task::Poll};
+use std::{cell::Cell, pin::pin, rc::Rc, task::Poll};
 
 use common::{
     runtime::{self, Setup, profile},
@@ -90,15 +91,7 @@ fn removes_once() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty());
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

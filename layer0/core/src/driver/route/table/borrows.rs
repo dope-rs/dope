@@ -40,6 +40,10 @@ impl<'a, T, Tag: route::Tag> View<'a, T, Tag> {
         self.inner.is_empty()
     }
 
+    pub fn next_generation(&self) -> Option<route::Epoch> {
+        self.inner.next_generation()
+    }
+
     pub fn get(self, parts: table::Parts<Tag>) -> Option<&'a T> {
         self.inner.get(parts.external())
     }
@@ -59,6 +63,10 @@ pub struct Access<'a, T, Tag: route::Tag>(&'a mut table::Storage<T, Tag>);
 impl<'a, T, Tag: route::Tag> Access<'a, T, Tag> {
     pub(in crate::driver::route::table) fn new(inner: &'a mut table::Storage<T, Tag>) -> Self {
         Self(inner)
+    }
+
+    pub fn advance_to(self, floor: Option<route::Epoch>) {
+        self.0.advance_to(floor);
     }
 
     pub fn get(self, parts: table::Parts<Tag>) -> Option<&'a mut T> {

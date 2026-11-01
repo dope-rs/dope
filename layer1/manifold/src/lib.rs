@@ -1,5 +1,4 @@
 //! Typed operations retain storage, exclusive borrows, and callback identity.
-//! Worker affinity is checked in `tests/manifold_affinity.rs`.
 
 pub mod app;
 pub mod client;

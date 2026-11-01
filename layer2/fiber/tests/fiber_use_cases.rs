@@ -1,10 +1,7 @@
 use std::pin::pin;
 
 use dope::{
-    core::{
-        driver::{life::recovery, schedule::ready::wake::store::Slot},
-        io::Reclaimed,
-    },
+    core::driver::{life::recovery, schedule::ready::wake::store::Slot},
     runtime::executor::session::Completion,
 };
 use dope_fiber::{
@@ -19,8 +16,9 @@ use dope_test::harness::scenario;
 
 use crate::common::runtime::{self, Empty, profile::Tasks};
 pub mod common;
+use common::recover;
 
-use std::{cell::Cell, convert::Infallible, num, pin, rc::Rc};
+use std::{cell::Cell, num, pin, rc::Rc};
 
 use dope::core::driver::{
     route::{Epoch, FrameworkTag, KeyTag, indices::SlotIndex, kind},
@@ -75,9 +73,9 @@ fn preserves_batch_child() {
             assert_eq!(count, LIMIT);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -107,9 +105,9 @@ fn binds_exact_waker() {
             assert!(stored.get().is_some_and(|current| current != distinct));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -144,9 +142,9 @@ fn owns_task_bindings() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -207,9 +205,9 @@ fn admits_one_task() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -251,9 +249,9 @@ fn revokes_plane_bindings() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -307,22 +305,7 @@ fn consumes_exact_wake() {
             assert_eq!(state.polls_before_wake.get(), Some(1));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reports(&reports);
 }

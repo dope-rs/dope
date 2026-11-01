@@ -1,11 +1,19 @@
-use std::{cell, mem, ops, thread, time};
+use std::{cell, io, mem, ops};
 
-use dope_core::{
-    dope_sys::kernel,
-    platform::{affinity, affinity::Cpu, channel::Channel, wake},
-};
-use dope_runtime::process::watch;
-use o3::{base::time::Positive, depot::array::init};
+use dope_core::platform::{affinity, affinity::Cpu};
+use o3::depot::array::init;
+
+pub fn try_limit() -> io::Result<(libc::rlim_t, libc::rlim_t)> {
+    let mut limit = mem::MaybeUninit::uninit();
+    // SAFETY: the output points to storage for one complete resource limit.
+    let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the successful query initialized both limit fields.
+    let limit = unsafe { limit.assume_init() };
+    Ok((limit.rlim_cur, limit.rlim_max))
+}
 
 pub trait Cpus: Sized {
     fn try_current() -> Result<Self, Error>;
@@ -35,9 +43,6 @@ impl<const N: usize> Cpus for [Cpu; N] {
 pub enum Error {
     Discovery(affinity::Error),
     Count { actual: usize, required: usize },
-    Wait(wake::WaitError),
-    Signal(dope_core::Errno),
-    Starved,
 }
 
 pub struct Resources {
@@ -65,111 +70,5 @@ impl Drop for Input<'_> {
     fn drop(&mut self) {
         self.0
             .set(self.0.get().and_then(|drops| drops.checked_add(1)));
-    }
-}
-
-pub enum Ordered {
-    First(Channel),
-    Last(Channel),
-}
-
-thread_local! {
-    static EXIT: cell::Cell<Option<Channel>> = const { cell::Cell::new(None) };
-}
-
-pub struct Stop;
-
-pub struct Restart {
-    pub ready: wake::Wait,
-    pub heartbeat: bool,
-}
-
-impl watch::Notify for Restart {
-    type Error = Error;
-    type Heartbeat = Pulse;
-
-    fn ready(self) -> Result<Pulse, Error> {
-        self.ready.wait().map_err(Error::Wait)?;
-        if !self.heartbeat {
-            Stop.ready()?;
-        }
-        Ok(Pulse {
-            enabled: self.heartbeat,
-            pulsed: cell::Cell::new(false),
-            draining: cell::Cell::new(false),
-        })
-    }
-}
-
-const PERIOD: Positive = Positive::from_secs::<1>();
-
-impl watch::Notify for Stop {
-    type Error = Error;
-    type Heartbeat = Self;
-
-    fn ready(self) -> Result<Self, Self::Error> {
-        // SAFETY: target this manager thread after Runtime installed its signal receiver.
-        let result = unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGTERM) };
-        unsafe { kernel::raw::Status::new(result).try_pthread() }.map_err(Error::Signal)?;
-        Ok(self)
-    }
-}
-
-impl watch::Heartbeat<Error> for Stop {
-    fn period(&self) -> Positive {
-        PERIOD
-    }
-
-    fn pulse(&self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn draining(&self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl Ordered {
-    pub fn install(self) -> Result<Option<Channel>, thread::AccessError> {
-        match self {
-            Ordered::First(sender) => EXIT.try_with(|exit| {
-                exit.set(Some(sender));
-                None
-            }),
-            Ordered::Last(receiver) => Ok(Some(receiver)),
-        }
-    }
-}
-
-pub struct Pulse {
-    enabled: bool,
-    pulsed: cell::Cell<bool>,
-    draining: cell::Cell<bool>,
-}
-
-impl watch::Heartbeat<Error> for Pulse {
-    fn period(&self) -> Positive {
-        if !self.enabled {
-            return PERIOD;
-        }
-        Positive::from_nanos::<1>()
-    }
-
-    fn pulse(&self) -> Result<(), Error> {
-        if !self.enabled {
-            return Ok(());
-        }
-        if !self.pulsed.replace(true) {
-            watch::Notify::ready(Stop)?;
-            thread::sleep(time::Duration::from_millis(1));
-        } else if !self.draining.get() {
-            return Err(Error::Starved);
-        }
-        Ok(())
-    }
-
-    fn draining(&self) -> Result<(), Error> {
-        self.draining.set(true);
-        Ok(())
     }
 }

@@ -4,8 +4,9 @@ use dope_test::alloc;
 
 use crate::common::runtime::profile::Tasks;
 pub mod common;
+use common::recover;
 
-use std::{cell::Cell, convert::Infallible, mem, pin, rc::Rc};
+use std::{cell::Cell, mem, pin, rc::Rc};
 
 use dope::core::driver::{
     route::{Epoch, KeyTag, indices::SlotIndex},
@@ -87,7 +88,7 @@ fn drop_requeues_task() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -161,7 +162,7 @@ fn forgotten_keeps_order() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -286,7 +287,7 @@ fn drop_preserves_routes() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -330,7 +331,7 @@ fn yield_preserves_ready() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -423,7 +424,7 @@ fn external_wake_survives_requeue() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -533,15 +534,7 @@ fn external_wake_survives_admissions() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
 }

@@ -1,7 +1,7 @@
-use std::{convert::Infallible, pin::pin};
+use std::pin::pin;
 
 use dope::core::driver::{
-    life::recovery::{self, Policy},
+    life::recovery::Policy,
     route::{Epoch, KeyTag, indices::SlotIndex},
 };
 use dope_fiber::{
@@ -16,16 +16,9 @@ use o3::depot::capacity::Count;
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
 use crate::common::schedule::tasks::fixtures::*;
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
 
 #[test]
 fn preserves_target_type() {
@@ -54,7 +47,7 @@ fn preserves_target_type() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),

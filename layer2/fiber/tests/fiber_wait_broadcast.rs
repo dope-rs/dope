@@ -1,4 +1,4 @@
-use std::{convert::Infallible, pin::pin};
+use std::pin::pin;
 
 use common::runtime::Setup;
 use dope::core::driver::{
@@ -12,6 +12,7 @@ use dope_fiber::{
 use dope_test::alloc::Tracker;
 
 pub mod common;
+use common::recover;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -72,8 +73,4 @@ fn wakes_after_cancellation() {
         ),
         |result| result.expect("driver lifecycle"),
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

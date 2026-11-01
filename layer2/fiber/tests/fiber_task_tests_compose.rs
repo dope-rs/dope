@@ -1,12 +1,9 @@
-use std::{cell::Cell, convert::Infallible, pin::pin, rc::Rc, task::Poll};
+use std::{cell::Cell, pin::pin, rc::Rc, task::Poll};
 
-use dope::core::{
-    driver::{
-        life::recovery,
-        route::{Epoch, KeyTag, indices::SlotIndex},
-        schedule,
-    },
-    io::Reclaimed,
+use dope::core::driver::{
+    life::recovery,
+    route::{Epoch, KeyTag, indices::SlotIndex},
+    schedule,
 };
 use dope_fiber::{
     abi::{
@@ -22,6 +19,7 @@ use crate::common::{
     schedule::tasks::retained::Retain as _,
 };
 pub mod common;
+use common::recover;
 
 use dope_fiber::abi::Join;
 
@@ -69,9 +67,9 @@ fn awaits_share_ceiling() {
             assert!(turn.turn().app().permit().is_none());
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -108,7 +106,7 @@ fn returns_keep_admission() {
                 assert!(turn.turn().app().permit().is_none());
             },
             recovery::Policy::new(|_| {}, recover),
-            check_scope,
+            runtime::check_scope,
         );
     }
 }
@@ -167,9 +165,9 @@ fn lazy_waits_for_admission() {
             assert!(turn.turn().app().permit().is_none());
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -233,7 +231,7 @@ fn owned_retains_state() {
                 assert_eq!(drops.get(), 1);
             },
             recovery::Policy::new(|_| {}, recover),
-            check_scope,
+            runtime::check_scope,
         );
     }
 }
@@ -261,7 +259,7 @@ fn pins_preserve_admission() {
             });
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
 }
 
@@ -315,7 +313,7 @@ fn nested_completion() {
             assert_eq!(drops.get(), 1);
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
 }
 
@@ -340,9 +338,9 @@ fn race_restores_left() {
             assert_eq!(activity, (0, 0));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 
     assert_eq!((left.get(), right.get()), (2, 1));
 }
@@ -389,9 +387,9 @@ fn race_repoll_is_inert() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -459,9 +457,9 @@ fn race_resumes_skipped() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -523,9 +521,9 @@ fn nested_race_restores() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -546,24 +544,9 @@ fn join_rotates_first() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 
     assert_eq!((left.get(), right.get()), (1, 2));
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
 }

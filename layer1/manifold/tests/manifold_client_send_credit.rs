@@ -4,7 +4,6 @@ pub mod common;
 
 use std::{
     cell::{Cell, RefCell},
-    convert::Infallible,
     fmt::Debug,
     io::{Read as _, Write as _},
     rc::Rc,
@@ -41,6 +40,7 @@ use crate::common::{
         requests::{self, Requests},
         wire::Wire,
     },
+    recover,
     scenario::case::{Connector, Value},
 };
 
@@ -399,8 +399,4 @@ fn checked(audit: &Report<error::Error, 16>) {
     let faults = audit.faults.values().expect("fault observations");
     let result = error::Error::check(&faults);
     assert!(result.is_ok(), "{result:?}");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

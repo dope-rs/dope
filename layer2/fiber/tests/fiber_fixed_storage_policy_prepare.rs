@@ -1,6 +1,3 @@
-use std::convert::Infallible;
-
-use dope::core::driver::life::recovery;
 use dope_fiber::{
     abi::Ready,
     task::storage::fixed::{
@@ -13,6 +10,7 @@ use dope_test::{alloc, alloc::Tracker, scope};
 
 pub mod common;
 use crate::common::storage::policies::prepare::{self, with_plane};
+use common::recover;
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
@@ -138,10 +136,6 @@ fn abandoned_admission() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn check_plane(

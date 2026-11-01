@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     fmt::Debug,
     net,
     rc::Rc,
@@ -44,6 +43,7 @@ use crate::common::{
         },
         probe::{self, IDLE_TIMEOUT, Probe, REDIAL_BACKOFF},
     },
+    recover,
     scenario::case::{Connector, Value},
 };
 
@@ -241,8 +241,4 @@ fn run(timeout: Option<Positive>, want: u32) -> (Wait, u32, Option<Duration>) {
 
 fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
     result.expect("native lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

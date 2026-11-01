@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, pin::pin};
+use std::{cell::Cell, pin::pin};
 
 use dope::core::driver::{
     life::recovery,
@@ -14,6 +14,7 @@ use o3::depot::array::Len;
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
 #[test]
 fn transfers_one_credit() {
@@ -69,7 +70,7 @@ fn transfers_one_credit() {
             assert!(!group.is_ready());
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
 }
 
@@ -138,7 +139,7 @@ fn seed_failure_drops() {
             assert_eq!((polls.get(), drops.get()), (0, 5));
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
 }
 
@@ -197,14 +198,6 @@ fn seed_partial_drop() {
             assert_eq!(turn.ready_round(|_| {}), 0);
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

@@ -72,6 +72,29 @@ pub struct Connections<
     prepared: change::raw::Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
 }
 
+impl<
+    'p,
+    'w,
+    'd,
+    ID: Identity + 'w,
+    T: crate::Transport,
+    W: wire::Spec + 'w + 'd,
+    S,
+    M: input::Mode<W>,
+    B,
+    const IOV: usize,
+    D: demand::Mode,
+> Drop for Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
+where
+    'd: 'w,
+{
+    fn drop(&mut self) {
+        // Preserve issued generations before the route owner releases its claim.
+        self.keys
+            .advance_to(self.prepared.slab.view().next_generation());
+    }
+}
+
 pub struct Pool<
     'p,
     'w,

@@ -102,6 +102,11 @@ impl<'d, B: route::App> Claim<'d, B> {
         self.driver.sink().driver()
     }
 
+    /// Returns this route's issuance floor across prior installations.
+    pub fn next_generation(&self) -> Option<route::Epoch> {
+        self.driver().shared.context().generations[<B as route::App>::ID.raw() as usize].get()
+    }
+
     /// Releases this reservation immediately through its branded driver.
     pub fn rollback(self, driver: &mut driver::Context<'_, 'd>) {
         let (reserved, ()) = self.driver.into_parts();
@@ -141,6 +146,17 @@ impl<'d, B: route::App> Owner<'d, B> {
 impl<'d, B: route::App, T> Owner<'d, B, T> {
     pub fn driver(&self) -> driver::Reference<'d> {
         self.claim.driver()
+    }
+
+    /// Preserves every issued generation before this route can be reused.
+    pub fn advance_to(&self, floor: Option<route::Epoch>) {
+        let next =
+            &self.driver().shared.context().generations[<B as route::App>::ID.raw() as usize];
+        next.set(
+            next.get()
+                .zip(floor)
+                .map(|(current, floor)| current.max(floor)),
+        );
     }
 
     pub(super) fn new(claim: Claim<'d, B>, value: T) -> Self {

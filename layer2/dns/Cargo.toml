@@ -10,9 +10,6 @@ license.workspace = true
 authors.workspace = true
 exclude = ["tests"]
 
-[lints]
-workspace = true
-
 [dependencies]
 dope.workspace = true
 o3.workspace = true
@@ -21,4 +18,4 @@ pin-project.workspace = true
 [dev-dependencies]
 libc.workspace = true
 dope-test.workspace = true
-dope-fiber.workspace = true
+dope-fiber = { path = "../fiber" }

@@ -1,11 +1,8 @@
-use std::{cell::Cell, convert::Infallible, rc::Rc};
+use std::{cell::Cell, rc::Rc};
 
-use dope::core::{
-    driver::{
-        life::recovery::{self, Policy},
-        route::{Epoch, KeyTag, indices::SlotIndex},
-    },
-    io::Reclaimed,
+use dope::core::driver::{
+    life::recovery::Policy,
+    route::{Epoch, KeyTag, indices::SlotIndex},
 };
 use dope_fiber::{
     abi::Ready,
@@ -16,6 +13,7 @@ use dope_test::{alloc, alloc::Tracker};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
 use std::{mem, num::NonZero};
 
@@ -25,14 +23,6 @@ use crate::common::schedule::tasks::fixtures::{set::ordered::*, *};
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
 
 #[test]
 fn survives_backshift() {
@@ -99,9 +89,9 @@ fn survives_backshift() {
             .expect("grouped task allocation");
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -183,9 +173,9 @@ fn keeps_group_identity() {
             .expect("grouped task allocation");
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -291,9 +281,9 @@ fn selects_owner() {
             .expect("tasks");
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -362,9 +352,9 @@ fn rebinds_idle_owner() {
             .expect("tasks");
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -429,13 +419,6 @@ fn failed_reserve_rebinds() {
             .expect("tasks");
         },
         Policy::new(|_| {}, recover),
-        check_scope,
-    );
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
+        runtime::check_scope,
     );
 }

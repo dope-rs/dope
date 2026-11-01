@@ -31,7 +31,8 @@ impl<'p, 's, 'd, ID: Identity, C, B> State<'p, 's, 'd, ID, C, B> {
 }
 
 const _: () = {
-    assert!(mem::size_of::<Option<conn::Failure>>() == 6 * mem::size_of::<usize>());
+    assert!(mem::size_of::<crate::app::receive::Failure>() == 6 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Option<conn::Failure>>() == 7 * mem::size_of::<usize>());
     assert!(
         mem::size_of::<State<'static, 'static, 'static, KeyTag<0>, ()>>()
             == mem::size_of::<state::Send<'static, 'static, 'static, KeyTag<0>>>()
@@ -40,6 +41,6 @@ const _: () = {
     );
     assert!(
         mem::size_of::<State<'static, 'static, 'static, KeyTag<0>, ()>>()
-            == 13 * mem::size_of::<usize>()
+            == 14 * mem::size_of::<usize>()
     );
 };

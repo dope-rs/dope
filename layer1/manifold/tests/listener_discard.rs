@@ -15,6 +15,7 @@ use common::{
     manifold::listener::pipeline::discard::{
         ACK, Discard, Event, Finish, PAYLOAD, PREFIX, REQUEST,
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::driver::{
@@ -221,8 +222,4 @@ fn partial_prefix_finishes() {
             "unexpected reclaimed operations: {reports:?}"
         );
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

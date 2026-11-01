@@ -11,7 +11,7 @@ use dope_core::{
     Errno,
     io::fs::{File, Len, Offset, open},
 };
-use dope_test::harness::support::file::{Directory, Remove};
+use dope_test::harness::support::file::Directory;
 
 #[test]
 fn preserves_file_ownership() {
@@ -204,6 +204,6 @@ fn wake_precedes_timeout() {
     ));
 }
 
-fn cleanup(result: Result<(), Remove>) {
+fn cleanup(result: std::io::Result<()>) {
     result.expect("fixture directory cleanup");
 }

@@ -6,8 +6,9 @@ use dope_test::harness::scenario;
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, net::SocketAddr};
+use std::net::SocketAddr;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
@@ -149,10 +150,6 @@ fn keeps_unread_error() {
             .is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

@@ -5,7 +5,7 @@ use o3::mem::{Lease, Return, lease::Open};
 use crate::{
     lookup::error,
     query::answer::reply,
-    storage::queries::{index, ledger, state, stream, tx},
+    storage::queries::{index, ledger, state, tx},
     wire::cookies,
 };
 
@@ -40,7 +40,9 @@ impl<'ledger, 's, const N: usize> State<'ledger, 's, N> {
         retry: state::Retry,
         now: time::Instant,
     ) {
-        self.transition(|probe, hard, live, row| probe.apply(reply, retry, hard, now, live, row));
+        let hard = self.hard;
+        let Active { slot, reg, probe } = self.take();
+        probe.apply(reply, retry, hard, now, &mut reg.live, slot);
     }
 
     pub(in crate::storage::queries) fn deadline(&self) -> time::Instant {
@@ -53,7 +55,9 @@ impl<'ledger, 's, const N: usize> State<'ledger, 's, N> {
         now: time::Instant,
         cause: error::Kind,
     ) {
-        self.transition(|probe, hard, live, row| probe.retry(retry, hard, now, live, cause, row));
+        let hard = self.hard;
+        let Active { slot, reg, probe } = self.take();
+        probe.retry(retry, hard, now, &mut reg.live, cause, slot);
     }
 
     pub(in crate::storage::queries) fn stream(self) {
@@ -78,15 +82,6 @@ impl<'ledger, 's, const N: usize> State<'ledger, 's, N> {
     pub(in crate::storage::queries) fn cookie(self) {
         let Active { slot, reg, probe } = self.take();
         probe.cookie(&mut reg.live, slot);
-    }
-
-    fn transition(
-        self,
-        f: impl FnOnce(state::Attempt<'s>, time::Instant, &mut stream::Live, &mut state::Row<'s, N>),
-    ) {
-        let hard = self.hard;
-        let Active { slot, reg, probe } = self.take();
-        f(probe, hard, &mut reg.live, slot);
     }
 
     fn take(self) -> Active<'ledger, 's, N> {

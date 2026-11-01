@@ -183,8 +183,7 @@ fn rejects_held_provider() {
                             });
                             assert!(matches!(result, Err(lending::Error::Build(37))));
                         } else {
-                            let next = move || drop(held);
-                            drop(next);
+                            drop(held);
                         }
                         Err::<(), _>(37)
                     });

@@ -3,9 +3,9 @@ use dope_test::harness::{peer::TcpScript, scenario};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
 use std::{
-    convert::Infallible,
     io::{Read, Write},
     net::Shutdown,
     time::Duration,
@@ -160,10 +160,6 @@ fn writes_after_receive_eof() {
             "unexpected reclaimed operations: {reports:?}"
         );
     }).expect("half-close server must start");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

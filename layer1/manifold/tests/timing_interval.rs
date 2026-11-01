@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{cell::Cell, convert::Infallible, rc::Rc, time, time::Duration};
+use std::{cell::Cell, rc::Rc, time, time::Duration};
 
 use dope_core::driver::life::{creation::Attempt, recovery};
 use dope_manifold::timing::interval::Interval;
@@ -12,6 +12,7 @@ use dope_test::{
 
 use crate::common::{
     manifold::root::{Host, Root},
+    recover,
     scenario::Runtime,
 };
 
@@ -159,8 +160,4 @@ fn observes_manual_time() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

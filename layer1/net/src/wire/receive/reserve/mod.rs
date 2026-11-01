@@ -83,9 +83,10 @@ pub trait Try<W: wire::Spec> {
 
     /// Returns all provisional resources before reporting failure, leaving
     /// the wire ready for terminal drain with its exact owned cause.
+    /// Send storage is unavailable while its native operation is in flight.
     fn try_reserve<'a, 'w, 'd, ID: Identity + 'w>(
         wire: &'a mut W::Connection<'w, ID>,
-        send: &'a mut W::SendStorage<'w>,
+        send: Option<&'a mut W::SendStorage<'w>>,
         run: &'a mut W::Runtime<'w, 'd, ID>,
     ) -> Outcome<
         Self::Transaction<'a, 'w, 'd, ID>,

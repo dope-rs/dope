@@ -4,8 +4,7 @@ use std::{
     os::unix::fs::{PermissionsExt as _, symlink},
 };
 
-use dope_core::Errno;
-use dope_test::harness::support::file::{Directory, Remove};
+use dope_test::harness::support::file::Directory;
 
 #[test]
 fn preserves_targets() {
@@ -37,7 +36,7 @@ fn preserves_targets() {
     fs::write(root.path(), b"regular").expect("root replaced by regular file");
     assert!(matches!(
         root.try_remove(),
-        Err(Remove::Io(error)) if error == Errno::NOT_DIRECTORY
+        Err(error) if error.raw_os_error() == Some(libc::ENOTDIR)
     ));
     assert_eq!(
         fs::read(root.path()).expect("regular root remains"),
@@ -46,7 +45,7 @@ fn preserves_targets() {
     fs::remove_file(root.path()).expect("regular root cleanup");
     assert!(matches!(
         root.try_remove(),
-        Err(Remove::Io(error)) if error == Errno::NOT_FOUND
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT)
     ));
 }
 
@@ -104,7 +103,7 @@ fn cleans_failed_scope() {
     }
     assert!(matches!(
         removed,
-        Some(Err(Remove::Io(error))) if error == Errno::NOT_FOUND
+        Some(Err(error)) if error.raw_os_error() == Some(libc::ENOENT)
     ));
 }
 
@@ -125,15 +124,15 @@ fn keeps_cleanup_owner() {
     fs::write(child.path(), b"regular").expect("regular child");
     assert!(matches!(
         child.try_close(),
-        Err(Remove::Io(error)) if error == Errno::NOT_DIRECTORY
+        Err(error) if error.raw_os_error() == Some(libc::ENOTDIR)
     ));
     assert_eq!(calls.get(), 0);
     assert!(!path.try_exists().expect("observer owner cleanup"));
 }
 
-fn cleanup(result: Result<(), Remove>) {
+fn cleanup(result: io::Result<()>) {
     match result {
-        Err(Remove::Io(error)) if error == Errno::NOT_FOUND => {}
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {}
         result => result.expect("fixture cleanup"),
     }
 }

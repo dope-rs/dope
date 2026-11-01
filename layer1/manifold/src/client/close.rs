@@ -9,6 +9,7 @@ pub enum Reason {
     Local(LocalOrigin),
     Capacity(Capacity),
     EndpointRetired,
+    /// The transport or established wire failed; its typed cause is reported separately.
     Transport,
     Timeout(deadline::Kind),
     Protocol,

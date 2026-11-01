@@ -7,8 +7,9 @@ use dope_test::harness::scenario;
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, rc::Rc};
+use std::rc::Rc;
 
 use dope::{
     core::driver::{
@@ -364,10 +365,6 @@ fn credit_resumes_close() {
 }).expect("gated peers")
     .expect("gated peer I/O");
     assert_eq!(request, *b"ping");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

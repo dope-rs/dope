@@ -5,7 +5,7 @@ use o3::depot::arena::slab::Vacancy;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use std::{cell::Cell, convert::Infallible, mem, ptr, rc::Rc};
+use std::{cell::Cell, mem, ptr, rc::Rc};
 
 use dope_core::driver::{
     life::{domain, recovery},
@@ -25,6 +25,7 @@ use dope_test::{
 use o3::depot::capacity::Count;
 use queue::mailbox::{Cancellation, Conflict, Domain, Error};
 
+use crate::common::recover;
 use crate::common::scenario::{
     Runtime,
     case::attempt::Mailbox,
@@ -290,8 +291,4 @@ fn scoped(result: Result<(), scope::Error<'_, ()>>) {
         .as_ref()
         .map_err(scope::Error::cause)
         .expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

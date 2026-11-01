@@ -189,10 +189,7 @@ impl From<settings::Receive> for Receive {
 
 impl From<settings::Datagram> for Receive {
     fn from(layout: settings::Datagram) -> Self {
-        Self::new(
-            Entries(u32::from(layout.0.entries())),
-            transfer::Len::from_nonzero(layout.0.buffer_len()),
-        )
+        Self::from(layout.receive())
     }
 }
 

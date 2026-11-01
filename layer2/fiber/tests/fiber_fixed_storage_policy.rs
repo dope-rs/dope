@@ -5,8 +5,9 @@ use o3::alloc::Error;
 
 use crate::common::runtime::{self, profile::Tasks};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, mem, num, pin};
+use std::{mem, num, pin};
 
 use dope::core::driver::{
     route::{Epoch, KeyTag, indices::SlotIndex},
@@ -346,7 +347,7 @@ fn thirteen_routes_are_free() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -409,7 +410,7 @@ fn drive_hot_path_is_free() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -472,7 +473,7 @@ fn deferred_batch_is_free() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -483,11 +484,3 @@ fn deferred_batch_is_free() {
 type Direct = Slab<'static, abi::Ready<()>, 3, Domain>;
 type SharedRoute = Pool<'static, abi::Ready<()>, 3, (), u8>;
 type Multiplexed = Plane<'static, Leaf<SharedRoute>>;
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
-}

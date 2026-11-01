@@ -1,7 +1,6 @@
 pub mod common;
 
 use std::{
-    convert::Infallible,
     net::{Ipv4Addr, UdpSocket},
     time::Duration,
 };
@@ -19,6 +18,7 @@ use dope_test::{fibers, harness::signals::Gate, reclaim::Reports};
 
 use crate::common::{
     manifold::datagram::{expected::*, handler, *},
+    recover,
     scenario::Runtime,
 };
 
@@ -279,8 +279,4 @@ fn check_exhaustion<'d>(this: &mut Exhaustion<'d>, event: handler::Event<'_, '_,
             "unexpected datagram callback"
         ),
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

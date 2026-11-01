@@ -230,22 +230,6 @@ pub trait File: errno::Source + raw::Directory {
         }
     }
 
-    /// Removes one empty directory entry without following a replacement symlink.
-    fn remove_dir<E: From<Errno>>(
-        dir: Option<BorrowedFd<'_>>,
-        name: &std::ffi::CStr,
-    ) -> Result<(), E> {
-        // SAFETY: the parent and terminated name stay borrowed; unlinkat returns zero or -1.
-        unsafe {
-            kernel::raw::Status::new(libc::unlinkat(
-                dir.map_or(libc::AT_FDCWD, |dir| dir.as_raw_fd()),
-                name.as_ptr(),
-                libc::AT_REMOVEDIR,
-            ))
-            .try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
-    }
-
     fn open_at<E: From<Errno>>(
         dir: BorrowedFd<'_>,
         name: &std::ffi::CStr,

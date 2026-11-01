@@ -81,15 +81,6 @@ pub(crate) enum Captured {
     Terminal,
 }
 
-impl Captured {
-    pub(crate) fn resolve<T>(self, output: T, terminal: impl FnOnce(T) -> T) -> T {
-        match self {
-            Self::None | Self::Eof => output,
-            Self::Terminal => terminal(output),
-        }
-    }
-}
-
 /// The terminal state observed by a wire transition.
 #[must_use]
 pub enum Terminal<E> {

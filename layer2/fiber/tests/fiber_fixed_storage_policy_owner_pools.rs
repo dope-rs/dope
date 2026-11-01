@@ -4,8 +4,9 @@ use dope_test::alloc;
 
 use crate::common::runtime::profile;
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, pin};
+use std::pin;
 
 use dope::core::driver::route::{Epoch, KeyTag, indices::SlotIndex};
 use dope_fiber::{
@@ -90,7 +91,7 @@ fn reuse_rejects_stale() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -193,7 +194,7 @@ fn rejects_another_pool() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -264,7 +265,7 @@ fn retired_slots_stay_full() {
                 });
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            check_scope,
+            runtime::check_scope,
         );
         assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
     }
@@ -400,18 +401,10 @@ fn transfer_rearms_parent() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
 }

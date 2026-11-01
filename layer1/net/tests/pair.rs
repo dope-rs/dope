@@ -89,8 +89,7 @@ fn retains_empty_owners() {
     {
         let prefix = (pool.cursor()).expect("prefix slot missing");
         let result = pair::Source::try_new(prefix, storage::Shared::new());
-        assert!(result.is_err());
-        let Err(rejected) = result else { return };
+        let rejected = result.err().expect("assertion failed: result.is_err()");
         let (mut prefix, body, cause) = rejected.into_parts();
         assert!(prefix.as_ref().is_empty());
         assert!(body.as_ref().is_empty());

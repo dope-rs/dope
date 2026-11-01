@@ -1,12 +1,13 @@
 pub mod common;
 
-use std::{convert::Infallible, net, num::NonZero, time::Duration};
+use std::{net, num::NonZero, time::Duration};
 
 use common::{
     manifold::datagram::{
         Receive,
         group::{self, State},
     },
+    recover,
     scenario::Runtime,
 };
 use dope_core::{
@@ -393,8 +394,4 @@ fn forced_finish_retains() {
         receives[0], receives[1],
         "each socket retains a distinct native receive"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

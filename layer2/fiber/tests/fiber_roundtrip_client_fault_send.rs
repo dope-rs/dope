@@ -4,8 +4,9 @@ use dope_test::harness::{peer::TcpScript, scenario};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, io::Read as _, net::Shutdown};
+use std::{io::Read as _, net::Shutdown};
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
@@ -127,10 +128,6 @@ fn submits_before_error() {
         },
     )
     .expect("the send-failure peer thread must start");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

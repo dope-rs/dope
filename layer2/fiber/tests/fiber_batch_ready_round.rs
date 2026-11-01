@@ -7,9 +7,10 @@ use dope_test::harness::scenario;
 
 use crate::common::runtime::Empty;
 pub mod common;
+use common::recover;
 
 use core::array;
-use std::{cell::Cell, convert::Infallible};
+use std::cell::Cell;
 
 use dope_fiber::{
     BlockOn,
@@ -63,7 +64,7 @@ fn preserves_ready_round() {
             assert!(polls.iter().all(|polls| polls.get() == Some(2)));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -126,18 +127,10 @@ fn preserves_parked_child() {
             assert_eq!(polls[1].get(), Some(1));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

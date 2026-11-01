@@ -3,18 +3,12 @@ name = "dope-fiber"
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
-description = "Worker-local stackful execution for dope"
+description = "Worker-local async execution for dope"
 repository.workspace = true
 readme.workspace = true
 license.workspace = true
 authors.workspace = true
 exclude = ["tests"]
-
-[lints]
-workspace = true
-
-[lib]
-path = "src/lib.rs"
 
 [dependencies]
 dope.workspace = true
@@ -24,4 +18,4 @@ pin-project.workspace = true
 
 [dev-dependencies]
 dope-test.workspace = true
-dope-core.workspace = true
+dope-core = { path = "../../layer0/core" }

@@ -113,7 +113,7 @@ where
             let context = send::Context::new(&mut slot.wire, send::Storage::new(&mut slot.send));
             let done = <W::Send as send::Policy<W>>::prepare_many::<ID, IOV>(context, plain, end);
             let (ready, captured) = done.into_parts();
-            let ready = captured.resolve(ready, send::Prepared::close_after);
+            let ready = ready.resolve(captured);
             let submit = submit.submit(fd, slots, driver, target, ready);
             (submit, captured)
         };

@@ -147,7 +147,7 @@ where
                 flow::Active::Sealed => return ingress::Terminal::Closed,
             }
         }
-        self.close_slot(key, Reason::Protocol, turn, driver);
+        self.close_slot(key, Reason::Transport, turn, driver);
         ingress::Terminal::Closed
     }
 

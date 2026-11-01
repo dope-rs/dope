@@ -10,6 +10,7 @@ use common::{
         trace::One,
     },
     observed::{App, Observed, State},
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::driver::{
@@ -166,8 +167,4 @@ fn replay_preserves_wake() {
     );
     let writes = writes.values().expect("wire writes");
     assert!(writes.is_empty(), "wire write failures: {writes:?}");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

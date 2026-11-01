@@ -1,7 +1,7 @@
-use std::{cell::Cell, convert::Infallible, pin::pin, rc::Rc};
+use std::{cell::Cell, pin::pin, rc::Rc};
 
 use dope::core::driver::{
-    life::recovery::{self, Policy},
+    life::recovery::Policy,
     route::{Epoch, KeyTag, indices::SlotIndex},
 };
 use dope_fiber::{
@@ -16,19 +16,12 @@ use o3::depot::capacity::Count;
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
 use dope::core::driver::schedule::ready::task;
 use dope_fiber::task::storage::set::insert;
 
 use crate::common::schedule::tasks::fixtures::{set::failure::*, *};
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
 
 #[test]
 fn full_preserves_resident() {
@@ -67,7 +60,7 @@ fn full_preserves_resident() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -133,7 +126,7 @@ fn preserves_failed_vacancy() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),

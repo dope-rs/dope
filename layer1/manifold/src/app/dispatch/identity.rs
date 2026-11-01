@@ -1,4 +1,4 @@
-//! Common zero-cost connection identity storage.
+//! Connection identity storage.
 use std::{cell, mem};
 
 use dope_core::driver::route::indices;

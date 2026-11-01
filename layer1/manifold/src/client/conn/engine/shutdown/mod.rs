@@ -129,7 +129,7 @@ where
             let step = turn.reborrow().maint().run(|| {
                 let this = self.as_mut().project();
                 let queue = this.side.registry.pending().intake();
-                let capacity = this.links.pool().inspect().capacity();
+                let capacity = this.links.capacity().into();
                 let plan = this.shutdown.plan(queue, capacity)?;
                 match plan {
                     state::Plan::Intake(cursor) => match this.side.registry.reject() {

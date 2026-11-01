@@ -9,8 +9,7 @@ use dope_test::harness::scenario;
 
 use crate::common::runtime::profile::Tasks;
 pub mod common;
-
-use std::convert::Infallible;
+use common::recover;
 
 use dope_fiber::{BlockOn, abi::Pending};
 
@@ -44,10 +43,7 @@ fn finishes_interrupted_app() {
                         app.block_on(Pending::<()>::default())
                     })
                     .expect("shutdown application teardown failed");
-                assert!(result.is_err(), "pending app must be interrupted");
-                let Err(error) = result else {
-                    return;
-                };
+                let error = result.err().expect("pending app must be interrupted");
                 assert!((error.kind()) == (Kind::Shutdown));
             },
             recovery::Policy::new(|event| reports.push(event), recover),
@@ -62,8 +58,4 @@ fn finishes_interrupted_app() {
             return;
         };
     });
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

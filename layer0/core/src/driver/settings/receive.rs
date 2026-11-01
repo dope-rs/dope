@@ -49,25 +49,7 @@ impl Receive {
         let entries = Ring::try_round(need.entries().get())?;
         let len = transfer::NonZero::try_from(need.buffer_len())
             .map_err(errors::Config::ReceiveBuffer)?;
-        Self::assemble(entries, len).map_err(Into::into)
-    }
-
-    pub(super) const fn assemble(
-        entries: Ring,
-        len: transfer::NonZero,
-    ) -> Result<Self, errors::Config> {
-        let entries = entries.buffers();
-        let raw = len.into_nonzero().get();
-        let bytes = entries.get() as u64 * raw as u64;
-        if bytes > isize::MAX as u64 {
-            return Err(errors::Config::ReceiveAllocationTooLarge {
-                entries: entries.get(),
-                buffer_len: raw,
-                actual: bytes,
-                maximum: isize::MAX as u64,
-            });
-        }
-        Ok(Self { entries, len })
+        Ok(Self::from_parts(entries.buffers(), len))
     }
 
     pub const fn buffers(self) -> Buffers {

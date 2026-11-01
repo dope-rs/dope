@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    convert::Infallible,
     env::consts,
     io::Read as _,
     net::{SocketAddr, TcpListener},
@@ -55,6 +54,7 @@ use dope_test::{
 };
 
 pub mod common;
+use common::recover;
 
 use common::{
     network::{
@@ -280,10 +280,6 @@ fn completion_failure() {
         );
     assert_eq!(reports.get(), 1, "one exact native failure report");
     assert_eq!(cause.get(), Some(Failure::Syscall(Errno::INVALID_ARGUMENT)));
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

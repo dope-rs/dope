@@ -45,6 +45,7 @@ use crate::common::{
         wait::{self, PAYLOAD_BYTES, Wait},
         wire::Wire,
     },
+    recover,
     scenario::case::{Connector, Value},
 };
 
@@ -491,8 +492,4 @@ fn checked(audit: &Report<error::Error, 16>) {
     let faults = audit.faults.values().expect("fault observations");
     let result = error::Error::check(&faults);
     assert!(result.is_ok(), "{result:?}");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

@@ -8,10 +8,6 @@ repository.workspace = true
 readme.workspace = true
 license.workspace = true
 authors.workspace = true
-exclude = ["tests"]
-
-[lints]
-workspace = true
 
 [dependencies]
 dope-core.workspace = true

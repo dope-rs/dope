@@ -1,7 +1,6 @@
 pub mod common;
 
 use std::{
-    convert::Infallible,
     net::{Ipv4Addr, UdpSocket},
     time::Duration,
 };
@@ -23,6 +22,7 @@ use dope_test::{
 
 use crate::common::{
     manifold::datagram::{Idle, handler},
+    recover,
     scenario::Runtime,
 };
 
@@ -282,8 +282,4 @@ fn check_idle<'d>(this: &mut Idle, event: handler::Event<'_, '_, '_, '_, 'd>) {
             "unexpected datagram callback"
         ),
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

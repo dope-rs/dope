@@ -90,17 +90,29 @@ pub struct Test<'a> {
 
 impl Test<'_> {
     pub fn try_run(self, run: impl FnOnce()) -> io::Result<Option<process::Output>> {
+        self.try_invoke(run, false)
+    }
+
+    /// Runs the child directly so libtest cannot replace its termination signal.
+    pub fn try_signal(self, run: impl FnOnce()) -> io::Result<Option<process::Output>> {
+        self.try_invoke(run, true)
+    }
+
+    fn try_invoke(self, run: impl FnOnce(), direct: bool) -> io::Result<Option<process::Output>> {
         const FLAG: &str = "O3_TEST_CHILD";
         if env::var_os(FLAG).as_deref() == Some(std::ffi::OsStr::new(self.name)) {
             run();
             return Ok(None);
         }
-        process::Command::new(env::current_exe()?)
-            .arg(self.name)
-            .arg("--exact")
+        let mut child = process::Command::new(env::current_exe()?);
+        child
+            .args([self.name, "--exact"])
             .env(FLAG, self.name)
-            .output()
-            .map(Some)
+            .env_remove("__RUST_TEST_INVOKE");
+        if direct {
+            child.env("__RUST_TEST_INVOKE", self.name);
+        }
+        child.output().map(Some)
     }
 }
 

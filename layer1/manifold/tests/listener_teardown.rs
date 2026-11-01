@@ -24,6 +24,7 @@ use common::{
             trace::One,
         },
     },
+    recover,
     scenario::{app::Empty, case::listener::Listener},
 };
 use dope_core::{
@@ -135,8 +136,7 @@ fn forced_detaches_credit() {
                                 let result = session.run_quiesce(
                                     &mut finish, Host::new(listener), Duration::ZERO,
                                 );
-                                assert!(result.is_err(), "zero-duration quiescence must time out after forced cleanup");
-                                let Err(failure) = result else { return; };
+                                let failure = result.err().expect("zero-duration quiescence must time out after forced cleanup");
                                 assert!(matches!(
                                     &failure,
                                     session::Error::Quiesce {
@@ -283,6 +283,8 @@ fn control_closes_idle() {
                     .with_driver(
                         host::App {
                             id: Rc::clone(&id),
+                            accepted: Gate::new(),
+                            received: Gate::new(),
                             closed: closed.clone(),
                         },
                         hash,
@@ -293,7 +295,11 @@ fn control_closes_idle() {
                             session
                                 .with_quiesce(
                                     &mut finish,
-                                    host::Host { listener, id },
+                                    host::Host {
+                                        listener,
+                                        id,
+                                        checked: None,
+                                    },
                                     Duration::from_secs(2),
                                     |mut app| {
                                         let peer = Peer::at(addr).try_connect().expect("connect");
@@ -320,6 +326,119 @@ fn control_closes_idle() {
     );
 }
 
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
+#[test]
+fn reinstalls_reject_stale_id() {
+    let mut attempt = Attempt::new();
+    let config = One::driver().expect("settings");
+    let mut reports = Reports::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    let executor = Executor::new(&mut attempt, config);
+    executor
+        .as_ref()
+        .map_err(|error| error.kind())
+        .expect("create executor");
+    let executor = executor.ok().expect("executor");
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut session| {
+                let mut finish = Completion::new();
+                let mut previous = None;
+                for _ in 0..2 {
+                    let accepted = Gate::new();
+                    let received = Gate::new();
+                    let closed = Gate::new();
+                    let observed = Rc::new(Cell::new(None));
+                    let requested = Rc::new(Cell::new(None));
+                    let matched = Rc::new(Cell::new(false));
+                    let checked = Gate::new();
+                    let hash = session.hash_state(listener::Domain::DEFAULT);
+                    listener::Install::<KeyTag<0>, Bundle<Tcp, Identity, Throughput>, _>::new(
+                        One::config(),
+                        domain::Local::new(Identity),
+                    )
+                    .with_driver(
+                        host::App {
+                            id: Rc::clone(&observed),
+                            accepted: accepted.clone(),
+                            received: received.clone(),
+                            closed: closed.clone(),
+                        },
+                        hash,
+                        &mut session,
+                        session::Scope::driver,
+                        |listener, session| {
+                            let addr = listener.local_addr();
+                            session
+                                .with_quiesce(
+                                    &mut finish,
+                                    host::Host {
+                                        listener,
+                                        id: Rc::clone(&requested),
+                                        checked: Some((Rc::clone(&matched), checked.clone())),
+                                    },
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        let mut peer =
+                                            Peer::at(addr).try_connect().expect("connect");
+                                        assert_eq!(
+                                            fibers::TEST
+                                                .try_wait(&mut app, &accepted, 1)
+                                                .expect("accept"),
+                                            Wait::Reached,
+                                        );
+                                        let current = observed.get().expect("accepted id");
+                                        if let Some(old) = previous {
+                                            requested.set(Some(old));
+                                            assert_eq!(
+                                                fibers::TEST
+                                                    .try_wait(&mut app, &checked, 1)
+                                                    .expect("query old id"),
+                                                Wait::Reached,
+                                            );
+                                            assert!(
+                                                !matched.get(),
+                                                "previous installation id accessed new connection"
+                                            );
+                                            peer.write_all(b"x").expect("write after stale close");
+                                            assert_eq!(
+                                                fibers::TEST
+                                                    .try_wait(&mut app, &received, 1)
+                                                    .expect("receive after stale close"),
+                                                Wait::Reached,
+                                            );
+                                            assert_eq!(
+                                                closed.hits(),
+                                                0,
+                                                "old id closed new connection"
+                                            );
+                                            requested.set(Some(current));
+                                            assert_eq!(
+                                                fibers::TEST
+                                                    .try_wait(&mut app, &closed, 1)
+                                                    .expect("close current id"),
+                                                Wait::Reached,
+                                            );
+                                            assert!(
+                                                matched.get(),
+                                                "current id must select its connection"
+                                            );
+                                        } else {
+                                            previous = Some(current);
+                                        }
+                                        Peer::try_reset(peer).expect("reset peer");
+                                    },
+                                )
+                                .expect("retire listener");
+                        },
+                    )
+                    .expect("install same route");
+                }
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        result
+            .as_ref()
+            .map_err(|error| error.cause())
+            .expect("listener runtime");
+    });
+    assert!(reports.events().expect("reclaimed events").is_empty());
 }

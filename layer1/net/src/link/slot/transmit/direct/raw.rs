@@ -70,7 +70,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
         let context = send::Context::new(self.wire, send::Storage::new(self.store));
         let done = prepare(context, end);
         let (ready, captured) = done.into_parts();
-        let ready = captured.resolve(ready, send::Prepared::close_after);
+        let ready = ready.resolve(captured);
         let submit = submit.submit(fd, slots, driver, self.target, ready);
         self.engine.captured(captured);
         outcome::Handoff::from_attempt(submit)

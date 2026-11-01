@@ -11,6 +11,7 @@ use common::{
         probes::{Allocation, Opening, Wire},
         trace::{self, Active, App, Connect, One, Turns},
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::{
@@ -650,8 +651,4 @@ fn alloc_error_releases_ip() {
         reports.events().expect("reclaimed events").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

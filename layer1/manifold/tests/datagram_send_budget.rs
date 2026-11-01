@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, mem, net, time::Duration};
+use std::{mem, net, time::Duration};
 
 use common::{
     manifold::datagram::{
@@ -11,6 +11,7 @@ use common::{
         },
         handler,
     },
+    recover,
     scenario::Runtime,
 };
 use dope_core::driver::{
@@ -260,10 +261,9 @@ fn check_capacity<'d>(this: &mut Capacity, event: handler::Event<'_, '_, '_, '_,
                         let owner = second.as_ref().as_ptr();
                         let resident = second.resident();
                         let result = socket.as_mut().queue_vec(second, this.addr);
-                        assert!(result.is_err(), "two resident capacities exceed the bound");
-                        let Err(rejected) = result else {
-                            return;
-                        };
+                        let rejected = result
+                            .err()
+                            .expect("two resident capacities exceed the bound");
                         let (second, cause) = rejected.into_parts();
                         assert_eq!(second.as_ref().as_ptr(), owner);
                         assert_eq!(second.as_ref(), [2]);
@@ -300,8 +300,4 @@ fn check_capacity<'d>(this: &mut Capacity, event: handler::Event<'_, '_, '_, '_,
             "unexpected datagram callback"
         ),
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

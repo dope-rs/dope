@@ -1,4 +1,4 @@
-use std::{env, io::Write as _, process::Stdio};
+use std::env;
 
 use dope_test::checks::{Error, Suite};
 
@@ -10,8 +10,8 @@ fn ownership_contracts() -> Result<(), Error> {
         file!(),
         &["dope-net", "dope-core", "o3"],
     );
-    let status = suite.try_build(&exe, "dope-net")?.status()?;
-    assert!(status.success());
+    let output = suite.try_build(&exe, "dope-net")?.output()?;
+    let suite = suite.try_collect(&exe, output)?;
 
     for (source, expected) in [
         (include_str!("common/ownership/admitted.rs"), ""),
@@ -64,8 +64,12 @@ fn ownership_contracts() -> Result<(), Error> {
             "error[E0423]: cannot initialize a tuple struct which contains private fields",
         ),
         (
+            include_str!("common/ownership/prepared_forge.rs"),
+            "error[E0624]: associated function `new` is private",
+        ),
+        (
             include_str!("common/ownership/prepared_alias.rs"),
-            "error[E0499]: cannot borrow `storage` as mutable more than once at a time",
+            "error[E0382]: use of moved value: `storage`\nerror[E0505]: cannot move out of `storage` because it is borrowed",
         ),
         (
             include_str!("common/ownership/round_escape.rs"),
@@ -84,21 +88,11 @@ fn ownership_contracts() -> Result<(), Error> {
             "error[E0499]: cannot borrow `*token` as mutable more than once at a time",
         ),
     ] {
-        let mut compiler = suite
-            .try_compiler(&exe)?
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        compiler
-            .stdin
-            .take()
-            .expect("compiler stdin")
-            .write_all(source.as_bytes())?;
-        let output = compiler.wait_with_output()?;
+        let output = suite.try_compile(source)?;
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert!(
-            output.status.success() == expected.is_empty() && diag.contains(expected),
+            output.status.success() == expected.is_empty()
+                && expected.lines().all(|expected| diag.contains(expected)),
             "{source}\n{diag}"
         );
     }

@@ -5,9 +5,6 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 WORKSPACE=$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)
 cd "$WORKSPACE"
 
-# Keep release optimization with the standard test harness.
-export CARGO_PROFILE_RELEASE_PANIC=unwind
-
 if ! command -v strace >/dev/null 2>&1; then
     echo "error: strace is required to verify the immediate-drive syscall contract" >&2
     exit 1

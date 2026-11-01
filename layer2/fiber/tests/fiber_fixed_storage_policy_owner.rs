@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, num, pin, rc::Rc};
+use std::{cell::Cell, num, pin, rc::Rc};
 
 use dope::core::driver::{
     life::recovery,
@@ -36,6 +36,7 @@ use crate::common::{
     storage::policies::{Rearm, owner::*},
 };
 pub mod common;
+use common::recover;
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
@@ -152,7 +153,7 @@ fn scope_keeps_foreign() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -212,7 +213,7 @@ fn phase_defers_self_wakes() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -262,7 +263,7 @@ fn drive_returns_observed() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -304,7 +305,7 @@ fn pending_target_is_exact() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -348,7 +349,7 @@ fn ready_pending_restores() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
 }
@@ -468,15 +469,7 @@ fn ingress_uses_work() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
 }

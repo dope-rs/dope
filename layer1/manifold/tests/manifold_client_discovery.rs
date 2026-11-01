@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     io,
     net::{SocketAddr, TcpListener},
     rc::Rc,
@@ -59,6 +58,7 @@ use crate::common::{
             observe::{Events, Session},
         },
     },
+    recover,
 };
 
 /// Withdrawal preserves the endpoint owned by an already selected epoch.
@@ -271,8 +271,4 @@ fn retired_retries() {
             assert!(server.finish().expect("join discovery peer").is_ok());
         });
     }).expect("bind discovery endpoint");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

@@ -19,6 +19,7 @@ use common::{
         },
         pipeline::prefix::Admission,
     },
+    recover,
     scenario::case::{Failure, listener::Listener},
 };
 use dope_core::driver::route::{FrameworkTag, KeyTag, Tag, kind};
@@ -452,8 +453,4 @@ fn unbounded_needs_direct() {
         reports.events().expect("reclaimed events").is_empty(),
         "{reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

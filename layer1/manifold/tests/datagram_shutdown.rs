@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, net, num::NonZero, rc::Rc, time, time::Duration};
+use std::{net, num::NonZero, rc::Rc, time, time::Duration};
 
 use dope_core::{
     driver::{
@@ -21,6 +21,7 @@ use o3::mem::quota;
 use crate::common::{
     Sequence,
     manifold::datagram::{budget, budget::shutdown::*, handler, *},
+    recover,
     scenario::Runtime,
 };
 
@@ -305,8 +306,4 @@ fn check_state<'d>(this: &mut State, event: handler::Event<'_, '_, '_, '_, 'd>) 
             "unexpected datagram callback"
         ),
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

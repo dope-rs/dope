@@ -112,7 +112,7 @@ impl reserve::Try<Wire> for Receive {
 
     fn try_reserve<'a, 'w, 'd, ID: Identity + 'w>(
         _: &'a mut wire::Identity,
-        _: &'a mut (),
+        _: Option<&'a mut ()>,
         state: &'a mut &'w State,
     ) -> reserve::Outcome<Transaction, Wait<'a>, terminal::Error<'w, Wire>>
     where

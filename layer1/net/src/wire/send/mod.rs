@@ -12,7 +12,7 @@ use dope_core::{
 use o3::base::marker::ThreadBound;
 pub use policy::Policy;
 
-use crate::wire;
+use crate::wire::{self, terminal};
 
 mod sources;
 pub use sources::{either::Either, empty::Empty, plain::Plain, vectored::Vectored};
@@ -113,7 +113,7 @@ impl<'a, S: Consume> Completion<'a, reclaim::OnSubmit, S> {
 
 impl<'a, S: Store> Storage<'a, S> {
     /// Begins one exclusive transaction over connection-local send storage.
-    pub fn new(store: &'a mut S) -> Self {
+    pub(crate) fn new(store: &'a mut S) -> Self {
         Self {
             storage: store,
             scope: Scope(marker::PhantomData),
@@ -283,6 +283,13 @@ impl<'a, P: reclaim::Policy, B: Payload<'a>> Prepared<'a, P, B> {
     pub fn close_after(mut self) -> Self {
         self.control.mark_close();
         self
+    }
+
+    pub(crate) fn resolve(self, captured: terminal::Captured) -> Self {
+        match captured {
+            terminal::Captured::None | terminal::Captured::Eof => self,
+            terminal::Captured::Terminal => self.close_after(),
+        }
     }
 
     pub(crate) const fn is_waiting(&self) -> bool {

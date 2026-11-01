@@ -18,6 +18,7 @@ use common::{
             wire::{BYE, Wire},
         },
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::{
@@ -424,8 +425,4 @@ fn quiesces_buffered_send() {
     assert_eq!(close.hits(), 1);
     let writes = writes.values().expect("wire writes");
     assert!(writes.is_empty(), "wire write failures: {writes:?}");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

@@ -1,7 +1,9 @@
-use std::{env, io::Write, process::Stdio};
+use std::env;
 
+#[cfg(test)]
 use dope_test::checks::{Error, Suite};
 
+#[cfg(test)]
 pub mod common;
 
 #[test]
@@ -17,30 +19,17 @@ fn fibers_and_pinned_owners() -> Result<(), Error> {
             "pin-project",
         ],
     );
-    let status = suite.try_build(&exe, "dope-gen")?.status()?;
-    assert!(status.success(), "{status}");
+    let output = suite.try_build(&exe, "dope-gen")?.output()?;
+    let suite = suite.try_collect(&exe, output)?;
 
-    let mut failures = Vec::new();
     for (source, expected) in common::compile::cases() {
-        let mut compiler = suite
-            .try_compiler(&exe)?
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        compiler
-            .stdin
-            .take()
-            .expect("compiler stdin")
-            .write_all(source.as_bytes())?;
-        let output = compiler.wait_with_output()?;
+        let output = suite.try_compile(&source)?;
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
-        if !(output.status.success() == expected.is_empty()
-            && expected.iter().all(|expected| diag.contains(expected)))
-        {
-            failures.push(format!("{source}\n{diag}"));
-        }
+        assert!(
+            output.status.success() == expected.is_empty()
+                && expected.iter().all(|expected| diag.contains(expected)),
+            "{source}\n{diag}"
+        );
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     Ok(())
 }

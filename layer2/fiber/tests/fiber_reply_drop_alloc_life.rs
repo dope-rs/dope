@@ -7,8 +7,7 @@ use dope_test::harness::scenario;
 
 use crate::common::runtime::{self, Empty, Setup};
 pub mod common;
-
-use std::convert::Infallible;
+use common::recover;
 
 use dope_core::io::Reclaimed;
 use dope_fiber::{
@@ -24,14 +23,6 @@ use crate::common::storage::replies::{
         RetainOne,
     },
 };
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
-}
 
 #[test]
 fn deferral_holds_credit() {
@@ -114,7 +105,7 @@ fn deferral_holds_credit() {
             |event| assert!(matches!(event, Reclaimed::Shutdown)),
             recover,
         ),
-        check_scope,
+        runtime::check_scope,
     );
     assert_eq!(failures.count(), 1);
 }
@@ -213,7 +204,7 @@ fn mismatch_rolls_back() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -307,7 +298,7 @@ fn terminal_follows_values() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -412,7 +403,7 @@ fn reuse_waits_for_owner() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -471,7 +462,7 @@ fn releases_stay_distinct() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),

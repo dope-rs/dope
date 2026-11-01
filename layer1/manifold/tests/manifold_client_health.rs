@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     io,
     net::TcpListener,
     rc::Rc,
@@ -63,6 +62,7 @@ use crate::common::{
             observe::{Events, Session},
         },
     },
+    recover,
     scenario::case::{Connector, Value},
 };
 
@@ -404,8 +404,4 @@ fn recovery_keeps_turn() {
         },
     )
     .expect("first endpoint");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

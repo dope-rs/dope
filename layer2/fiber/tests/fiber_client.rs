@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope::{
     core::driver::{life::recovery, settings::Config, storage::Value},
     net::{link::event::ConnectFault, wire::domain::Local},
@@ -8,6 +6,7 @@ use dope::{
 use dope_fiber::net::client::ConnectError;
 use dope_test::harness::scenario;
 pub mod common;
+use common::recover;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
@@ -83,8 +82,4 @@ fn failed_dial_reuses_slot() {
 
     assert!(result.is_ok(), "client route failed");
     });
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

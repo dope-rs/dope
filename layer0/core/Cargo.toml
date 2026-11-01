@@ -10,9 +10,6 @@ license.workspace = true
 authors.workspace = true
 exclude = ["tests"]
 
-[lints]
-workspace = true
-
 [dependencies]
 dope-sys.workspace = true
 o3.workspace = true
@@ -27,7 +24,3 @@ dope-kqueue.workspace = true
 [dev-dependencies]
 dope-test.workspace = true
 libc.workspace = true
-
-[[test]]
-name = "signal_scope"
-harness = false

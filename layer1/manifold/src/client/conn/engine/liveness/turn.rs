@@ -209,14 +209,12 @@ where
         };
         loop {
             let step = turn.reborrow().maint().run(|| {
-                Some(
-                    self.machine
-                        .as_mut()
-                        .project()
-                        .links
-                        .liveness_mut()
-                        .expire_one(now, driver),
-                )
+                self.machine
+                    .as_mut()
+                    .project()
+                    .links
+                    .liveness_mut()
+                    .expire_one(now, driver)
             });
             match step {
                 quota::Admission::Item(oneshot::Progress::Complete {

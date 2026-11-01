@@ -4,8 +4,7 @@ use dope_test::{alloc, alloc::Tracker, harness::scenario};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
-
-use std::convert::Infallible;
+use common::recover;
 
 use dope_core::io::Reclaimed;
 use dope_fiber::{
@@ -26,14 +25,6 @@ use crate::common::storage::replies::{
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement failed: {:?}", failure.cause())
-}
 
 #[test]
 fn retry_after_cancel() {
@@ -121,7 +112,7 @@ fn retry_after_cancel() {
             |event| assert!(matches!(event, Reclaimed::Shutdown)),
             recover,
         ),
-        check_scope,
+        runtime::check_scope,
     );
     assert_eq!(drops.count(), 2);
 }
@@ -185,7 +176,7 @@ fn detach_waits_for_finish() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -274,7 +265,7 @@ fn drops_one_per_step() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -337,7 +328,7 @@ fn complete_during_drain() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -409,7 +400,7 @@ fn partial_stays_live() {
                 .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
@@ -482,7 +473,7 @@ fn failure_uses_budget() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),

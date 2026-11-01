@@ -101,14 +101,14 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode> Front<'queue, 'token, 'p, 'd, T
                 return task::Poll::Ready(Err(reason));
             }
         };
-        let moved = vacant.with_region(|token| match offer.poll_reserve(token, target) {
+        let moved = match offer.poll_reserve(vacant.region_token(), target) {
             exact::Outcome::Ready(prepared) => {
                 publish(prepared);
                 Move::Published
             }
             exact::Outcome::Pending(load) => Move::Pending(load),
             exact::Outcome::Rejected(rejected) => Move::Rejected(rejected),
-        });
+        };
         match moved {
             Move::Published => task::Poll::Ready(Ok(())),
             Move::Pending(value) => {

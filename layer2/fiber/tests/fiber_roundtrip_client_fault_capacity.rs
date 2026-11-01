@@ -3,8 +3,9 @@ use dope_test::harness::{peer::TcpScript, scenario, signals::Gate};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, io::Write, num::NonZero};
+use std::{io::Write, num::NonZero};
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
@@ -138,10 +139,6 @@ fn retains_both_failures() {
         },
     )
     .expect("capacity server must start");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

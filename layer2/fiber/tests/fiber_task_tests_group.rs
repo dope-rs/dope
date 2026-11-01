@@ -1,11 +1,8 @@
-use std::{cell::Cell, convert::Infallible, pin::pin, rc::Rc};
+use std::{cell::Cell, pin::pin, rc::Rc};
 
-use dope::core::{
-    driver::{
-        life::recovery,
-        route::{Epoch, KeyTag, indices::SlotIndex},
-    },
-    io::Reclaimed,
+use dope::core::driver::{
+    life::recovery,
+    route::{Epoch, KeyTag, indices::SlotIndex},
 };
 use dope_fiber::{
     abi::{Pending, Ready},
@@ -16,6 +13,7 @@ use o3::depot::array::Len;
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
 use core::array::from_fn;
 
@@ -82,9 +80,9 @@ fn self_wake_waits_for_turn() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -127,9 +125,9 @@ fn insert_wakes_parent() {
             }));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -189,9 +187,9 @@ fn polls_ready_members() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -286,9 +284,9 @@ fn stale_wake_misses_reuse() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -345,22 +343,7 @@ fn hot_path_allocates_none() {
             assert_eq!(next, 17);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reports(&reports);
 }

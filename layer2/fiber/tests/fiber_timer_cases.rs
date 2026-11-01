@@ -1,7 +1,4 @@
-use dope::{
-    core::{driver::life::recovery, io::Reclaimed},
-    runtime::executor::session::Completion,
-};
+use dope::{core::driver::life::recovery, runtime::executor::session::Completion};
 use dope_fiber::task::time::{
     budget::{Budget, Elapsed},
     sleep::{Error, Sleep},
@@ -11,6 +8,7 @@ use slots::Slots;
 
 use crate::common::runtime::Empty;
 pub mod common;
+use common::recover;
 
 use std::{
     convert::Infallible,
@@ -48,9 +46,9 @@ fn rejects_long_sleep() {
                 );
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            check_scope,
+            runtime::check_scope,
         );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -98,9 +96,9 @@ fn reuses_timer_slot() {
                 assert!(matches!(done, Ok(Ok(()))), "application drive and teardown");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            check_scope,
+            runtime::check_scope,
         );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -163,8 +161,8 @@ fn checks_bound_first() {
                 }))
             });
             assert!(matches!(done, Ok(Ok(()))), "application drive and teardown");
-        }, recovery::Policy::new(|event| reports.push(event), recover), check_scope);
-    check_reports(&reports);
+        }, recovery::Policy::new(|event| reports.push(event), recover), runtime::check_scope);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -208,22 +206,7 @@ fn checks_ready_child_time() {
                 assert!(matches!(done, Ok(Ok(()))), "application drive and teardown");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            check_scope,
+            runtime::check_scope,
         );
-    check_reports(&reports);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reports(&reports);
 }

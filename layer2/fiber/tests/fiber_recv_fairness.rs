@@ -6,9 +6,9 @@ use dope::{
 use dope_core::{driver::route::KeyTag, platform::wake};
 use dope_test::harness::{GUARD, scenario};
 pub mod common;
+use common::recover;
 
 use std::{
-    convert::Infallible,
     io::{Read, Write},
     rc::Rc,
 };
@@ -171,8 +171,4 @@ fn hoarder_yields_to_peer() {
     let limits = limits.get().expect("wire bootstrap limits observed");
     assert!(limits.retained().into_raw() >= QUEUE_CAP);
     assert_eq!(limits.receive_len().into_nonzero().get(), 1);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

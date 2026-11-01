@@ -20,6 +20,7 @@ use common::{
         script::{self, BODY_LEN, Payload, Script, Until},
         wire::{Profile, Wire},
     },
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::{
@@ -456,8 +457,4 @@ fn deadline_resumes_waiter() {
 
     assert!(result.is_ok(), "manual listener runtime teardown");
     });
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

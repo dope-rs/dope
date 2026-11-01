@@ -4,6 +4,7 @@ use std::{convert::Infallible, fmt::Debug, time::Duration};
 
 use common::{
     manifold::listener::finish::lifetime::{Expiry, Lifetime},
+    recover,
     scenario::case::listener::Listener,
 };
 use dope_core::driver::{
@@ -251,8 +252,4 @@ fn clear_deadline() {
         reports.events().expect("reclaimed events").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

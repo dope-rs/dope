@@ -4,8 +4,9 @@ use dope_test::harness::{peer::TcpScript, scenario};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
-use std::{array, convert::Infallible, io::Read as _};
+use std::{array, io::Read as _};
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
@@ -134,10 +135,6 @@ fn shutdown_preserves_write() {
         },
     )
     .expect("shutdown peers");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

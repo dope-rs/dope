@@ -1,6 +1,4 @@
 //! Retained-owner driver access.
-//!
-//!
 
 use std::ops;
 

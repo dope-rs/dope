@@ -209,27 +209,27 @@ where
         Some(self.deadlines.peek()?.1.at())
     }
 
+    /// Returns one consumed deadline, including a stale owner, or no due work.
+    #[inline]
     pub fn expire_one(
         &mut self,
         now: clock::Moment<'d>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Progress<A> {
-        let Some(entry) = self.deadlines.first_entry() else {
-            return Progress::Idle;
-        };
+    ) -> Option<Progress<A>> {
+        let entry = self.deadlines.first_entry()?;
         if entry.priority().at() > now {
-            return Progress::Idle;
+            return None;
         }
         let index = entry.key();
         let due = entry.remove();
         // SAFETY: this exact Pool's heap retained the admitted physical position.
         let access = Access::new(unsafe { depot::raw::Proof::new((self, index)) });
-        match Entry::try_new(access, due.epoch()) {
+        Some(match Entry::try_new(access, due.epoch()) {
             Ok(entry) => entry.expire(now, due, driver),
             Err(errors::Lookup::Physical { .. } | errors::Lookup::Generation { .. }) => {
                 Progress::Idle
             }
-        }
+        })
     }
 
     pub fn has_retries(&self) -> bool {

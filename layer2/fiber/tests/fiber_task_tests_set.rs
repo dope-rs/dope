@@ -1,12 +1,9 @@
-use std::{cell::Cell, convert::Infallible, pin::pin, rc::Rc};
+use std::{cell::Cell, pin::pin, rc::Rc};
 
 use dope::{
-    core::{
-        driver::{
-            life::recovery::{self, Policy},
-            route::{Epoch, KeyTag, indices::SlotIndex},
-        },
-        io::Reclaimed,
+    core::driver::{
+        life::recovery::Policy,
+        route::{Epoch, KeyTag, indices::SlotIndex},
     },
     runtime::executor::session::Completion,
 };
@@ -26,19 +23,12 @@ use crate::common::{
     schedule::tasks::retained::Retain as _,
 };
 pub mod common;
+use common::recover;
 
 use crate::common::schedule::tasks::fixtures::*;
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
 
 #[test]
 fn polls_coalesced() {
@@ -82,9 +72,9 @@ fn polls_coalesced() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -119,9 +109,9 @@ fn reuse_clears_ready() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -163,9 +153,9 @@ fn independent_owners() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -233,9 +223,9 @@ fn preserves_parents() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -317,9 +307,9 @@ fn wake_next_keeps_owner() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -369,9 +359,9 @@ fn stale_root_is_noop() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -410,14 +400,7 @@ fn hot_path_allocates_none() {
             });
         },
         Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
-    check_reports(&reports);
-}
-
-fn check_reports(reports: &[Reclaimed]) {
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reports(&reports);
 }

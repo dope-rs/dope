@@ -1,9 +1,8 @@
-mod epoch;
 pub mod indices;
 use core::{hash, marker, mem, num};
 
-pub use epoch::Epoch;
 use indices::SlotIndex;
+pub use o3::base::num::Epoch;
 pub use token::Token;
 pub(crate) use token::{Brand, OutboundKey};
 

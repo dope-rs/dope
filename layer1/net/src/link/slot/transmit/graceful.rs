@@ -34,7 +34,7 @@ where
     };
     let done = <W::Send as send::Policy<W>>::close::<ID>(context, end);
     let (ready, captured) = done.into_parts();
-    let ready = captured.resolve(ready, send::Prepared::close_after);
+    let ready = ready.resolve(captured);
     let submit = seal.seal(ready.is_waiting());
     let submit = submit.submit(fd, slots, driver, target, ready);
     let handoff = outcome::Handoff::from_attempt(submit);
@@ -80,7 +80,7 @@ where
         terminal::Admission::Open(end) => {
             let done = <W::Send as send::Policy<W>>::flush::<ID>(context, end);
             let (ready, captured) = done.into_parts();
-            let ready = captured.resolve(ready, send::Prepared::close_after);
+            let ready = ready.resolve(captured);
             let attempt = op.submit(fd, slots, driver, target, ready);
             (attempt, captured)
         }

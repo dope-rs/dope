@@ -117,16 +117,16 @@
 //! use dope_core::driver::schedule;
 //! use dope_manifold::app::dispatch::raw::{Context, Manifold};
 //!
-//! fn bypass_install<'d, M: Manifold<'d>>(
+//! fn bypass_install<'owner, 'd: 'owner, M: Manifold<'d> + 'owner>(
 //!     owner: Pin<&mut M>,
 //!     turn: schedule::Turn<'_, 'd>,
-//!     driver: &mut Context<'_, '_, 'd, M::PrePark>,
+//!     driver: &mut Context<'_, 'owner, 'd, M::PrePark>,
 //! ) {
 //!     M::pre_park(owner, turn, driver);
 //! }
 //! ```
 
-use std::{env, io::Write, process::Stdio};
+use std::env;
 
 use dope_test::checks::{Error, Suite};
 
@@ -138,11 +138,11 @@ fn discard_requires_enabled() -> Result<(), Error> {
         file!(),
         &["dope-core", "dope-net", "dope-manifold", "o3"],
     );
-    let status = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.status()?;
-    assert!(status.success());
+    let output = suite.try_build(&exe, "dope-manifold")?.output()?;
+    let suite = suite.try_collect(&exe, output)?;
 
     assert_eq!(
-        suite.try_errors(&exe, include_str!("listener_discard_contracts.rs"))?,
+        suite.try_errors(include_str!("listener_discard_contracts.rs"))?,
         11
     );
 
@@ -194,18 +194,7 @@ fn discard_requires_enabled() -> Result<(), Error> {
             &["lifetime may not live long enough"],
         ),
     ] {
-        let mut compiler = suite
-            .try_compiler(&exe)?
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        compiler
-            .stdin
-            .take()
-            .expect("compiler stdin")
-            .write_all(source.as_bytes())?;
-        let output = compiler.wait_with_output()?;
+        let output = suite.try_compile(source)?;
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert!(
             output.status.success() == expected.is_empty()

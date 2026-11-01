@@ -178,9 +178,10 @@ where
     /// Install the owning lifecycle before submission, then retain through shutdown and finish.
     /// Before installation, dropping is valid only while no operation has been submitted.
     pub unsafe fn bind(
-        self,
+        mut self,
         route: lease::Claim<'d, ID>,
     ) -> pool::Pool<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
+        self.slab.access().advance_to(route.next_generation());
         let keys = pool::Keyspace::from_claim(&route);
         pool::Pool {
             storage: pool::Connections {

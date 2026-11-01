@@ -1,5 +1,5 @@
 pub mod common;
-use std::{cell, io, iter, mem};
+use std::{cell, iter, mem};
 
 use dope_core::platform::affinity::Cpu;
 use dope_runtime::process;
@@ -7,7 +7,7 @@ use dope_test::{alloc::Tracker, harness::scenario::process::Test};
 use o3::alloc;
 use process::failure::{config, create};
 
-use crate::common::process::{Cpus as _, Input, Resources};
+use crate::common::process::{Cpus as _, Input, Resources, try_limit};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -81,25 +81,13 @@ fn reports_alloc_failure() {
     assert_eq!(mapped.get(), 0);
 }
 
-fn try_limit() -> io::Result<(libc::rlim_t, libc::rlim_t)> {
-    let mut limit = mem::MaybeUninit::uninit();
-    // SAFETY: the output points to storage for one complete resource limit.
-    let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the successful query initialized both limit fields.
-    let limit = unsafe { limit.assume_init() };
-    Ok((limit.rlim_cur, limit.rlim_max))
-}
-
 #[test]
 fn preserves_nofile_limit() {
     let output = Test {
         name: "preserves_nofile_limit",
     }
     .try_run(|| {
-        let [cpu] = <[Cpu; 1]>::try_current().expect("required available CPUs");
+        let [cpu] = <[Cpu; 1]>::try_current().expect("required available CPU");
         let before = try_limit().expect("query open-file limit");
         assert!(
             process::Layout::pinned([cpu])

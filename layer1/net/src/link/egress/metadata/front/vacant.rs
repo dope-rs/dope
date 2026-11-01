@@ -51,11 +51,10 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
         }
     }
 
-    pub(in crate::link::egress::metadata::front) fn with_region<R>(
+    pub(in crate::link::egress::metadata::front) fn region_token(
         &mut self,
-        f: impl FnOnce(&mut region::Token<region::Identity<'d>>) -> R,
-    ) -> R {
-        f(self.parts.parts_mut().0)
+    ) -> &mut region::Token<region::Identity<'d>> {
+        self.parts.parts_mut().0
     }
 
     pub(in crate::link::egress::metadata::front) fn restore(self, value: egress::NonEmpty<T>) {

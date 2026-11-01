@@ -7,8 +7,9 @@ use dope_fiber::{
 
 use crate::common::runtime::profile::Tasks;
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, hint, mem, pin};
+use std::{hint, mem, pin};
 
 use dope::core::driver::{
     route::{Epoch, KeyTag, indices::SlotIndex},
@@ -131,7 +132,7 @@ fn scheduled_quota() {
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        check_scope,
+        runtime::check_scope,
     );
     assert!(
         reports.is_empty(),
@@ -141,11 +142,3 @@ fn scheduled_quota() {
 
 type Local = Slab<'static, abi::Ready<()>, 1, Domain>;
 type LocalRoutes = Branch<Leaf<Local>, Leaf<Local>>;
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
-}

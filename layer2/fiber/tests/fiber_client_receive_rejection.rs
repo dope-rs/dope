@@ -1,7 +1,4 @@
-use std::{
-    convert::Infallible,
-    io::{Read as _, Write as _},
-};
+use std::io::{Read as _, Write as _};
 
 use dope::{
     core::driver::{
@@ -24,6 +21,7 @@ use dope_test::{
 use o3::depot::queue::tagged::entry;
 
 pub mod common;
+use common::recover;
 
 use common::{
     network::rounds::client::fault::park::{State, Wire},
@@ -120,8 +118,4 @@ fn keeps_receive_rejection() {
         },
     )
     .expect("peer startup");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

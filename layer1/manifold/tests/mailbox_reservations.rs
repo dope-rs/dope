@@ -5,7 +5,7 @@ use o3::depot::arena::slab::Vacancy;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use std::{convert::Infallible, mem};
+use std::mem;
 
 use dope_core::driver::{
     life::{creation::Attempt, domain, recovery},
@@ -25,6 +25,7 @@ use dope_test::{
 use o3::depot::capacity::Count;
 use queue::mailbox::{Cancellation, Conflict, Error, Poll, Vacant};
 
+use crate::common::recover;
 use crate::common::scenario::{case::attempt::Mailbox, ports::Loopback};
 
 #[test]
@@ -234,8 +235,4 @@ fn prepared<O>(result: Result<(), domain::Error<'_, domain::Rejected<creation::E
         .as_ref()
         .map_err(|error| error.cause().map_storage(|rejected| &rejected.cause))
         .expect("native storage");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

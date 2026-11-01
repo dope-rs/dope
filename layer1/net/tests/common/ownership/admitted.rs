@@ -1,6 +1,6 @@
 use std::num::NonZero;
 
-use dope_core::io::transfer::Len;
+use dope_core::{driver::route, io::transfer::Len};
 use dope_net::{
     link::{
         egress::{
@@ -82,13 +82,26 @@ fn classify_completion(done: Completion<'_>) {
     }
 }
 
-fn reborrow_storage() -> Len {
-    let mut storage = ();
-    let prepared = send::Storage::new(&mut storage).empty::<reclaim::OnSubmit>();
-    let count = prepared.into_parts().1;
-    let alias = &mut storage;
-    let () = *alias;
-    count
+fn admit_storage<'a, 'd: 'a, ID: route::Identity + 'd>(
+    context: send::Context<'a, 'd, ID, Identity, send::Storage<'a, ()>>,
+) -> (Len, usize) {
+    let storage = context.into_state();
+    let len = storage.as_slice().len();
+    let prepared = storage.empty::<reclaim::OnSubmit>();
+    (prepared.into_parts().1, len)
+}
+
+fn complete_storage<'a, 'd: 'a, ID: route::Identity + 'd>(
+    context: send::Context<'a, 'd, ID, Identity, send::Storage<'a, ()>>,
+) -> (send::Empty, Len, send::End, send::Availability) {
+    let (ready, available) = send::Transition::completed(context.into_state()).into_parts();
+    let (body, used, end) = ready.into_parts();
+    (
+        body,
+        <reclaim::OnComplete as reclaim::Policy>::immediate(used),
+        end,
+        available,
+    )
 }
 
 fn retain_round<'p, 'd>(round: Round<'p, 'd>) -> Round<'p, 'd> {

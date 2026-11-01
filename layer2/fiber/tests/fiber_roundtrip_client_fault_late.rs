@@ -3,8 +3,9 @@ use dope_test::harness::{peer::AcceptScript, scenario};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
+use common::recover;
 
-use std::{convert::Infallible, io, io::Read, rc::Rc, time::Duration};
+use std::{io, io::Read, rc::Rc, time::Duration};
 
 use dope::{
     core::{
@@ -116,10 +117,6 @@ fn reuses_after_late_error() {
         },
     )
     .expect("late-error server must start");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }
 
 fn finish(result: Result<(), runtime::Error<'_>>) {

@@ -48,7 +48,7 @@ impl Inspect for Identity {
 }
 
 use dope_core::Errno;
-use dope_test::harness::support::file::{Directory, Remove};
+use dope_test::harness::support::file::Directory;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -110,7 +110,7 @@ pub trait NativePath {
     fn c_path(&self) -> Result<std::ffi::CString, std::ffi::NulError>;
 }
 
-impl<F: FnOnce(Result<(), Remove>)> NativePath for Directory<F> {
+impl<F: FnOnce(io::Result<()>)> NativePath for Directory<F> {
     fn c_path(&self) -> Result<std::ffi::CString, std::ffi::NulError> {
         use std::os::unix::ffi::OsStrExt as _;
 

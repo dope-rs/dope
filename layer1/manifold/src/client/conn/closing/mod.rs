@@ -260,7 +260,7 @@ impl Closing {
             self.apply(close::Directive::reconnect(close::Reason::Remote));
             return;
         }
-        self.failed(close::Reason::Protocol)
+        self.failed(close::Reason::Transport)
     }
 
     pub(super) fn failed(&mut self, reason: close::Reason) {

@@ -1,4 +1,4 @@
-use std::{convert::Infallible, pin::pin, task::Poll};
+use std::{pin::pin, task::Poll};
 
 use dope::core::driver::{
     life::recovery,
@@ -12,6 +12,7 @@ use dope_fiber::{
 };
 
 pub mod common;
+use common::recover;
 use common::{
     runtime::{self, Setup, profile},
     schedule::tasks::{fixtures::Rounds as _, retained::Retain as _},
@@ -97,7 +98,7 @@ fn retire_lanes_fairly() {
             });
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
 }
 
@@ -200,14 +201,6 @@ fn retained_order_release() {
             });
         },
         recovery::Policy::new(|_| {}, recover),
-        check_scope,
+        runtime::check_scope,
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
-}
-
-fn check_scope(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

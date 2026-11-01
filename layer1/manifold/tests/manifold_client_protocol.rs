@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     io::{self, Read as _, Write as _},
     net::Shutdown,
     rc::Rc,
@@ -63,6 +62,7 @@ use crate::common::{
         },
         switch::terminal::clean::Clean,
     },
+    recover,
     scenario::case::{Connector, Value},
 };
 
@@ -406,8 +406,4 @@ fn held_eof_timeout_closes() {
         },
     )
     .expect("spawn EOF peer");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

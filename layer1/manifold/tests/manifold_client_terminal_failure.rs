@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     fmt::Debug,
     io::{Read as _, Write as _},
     net,
@@ -63,6 +62,7 @@ use crate::common::{
         },
         reject::{Decode, Reject},
     },
+    recover,
     scenario::case::{Connector, Value},
 };
 
@@ -152,7 +152,7 @@ fn wire_failure_wins() {
                         Event::Connected { .. },
                         Event::Quarantined,
                         Event::Failed(Cause::Receive, None),
-                        Event::Closed(close::Reason::Protocol)
+                        Event::Closed(close::Reason::Transport)
                     ]
                 ),
                 "terminal sequence: {events:?}"
@@ -216,7 +216,7 @@ fn close_error_once() {
                         Event::Connected { notified: None, .. },
                         Event::Quarantined,
                         Event::Failed(Cause::Close, None),
-                        Event::Closed(close::Reason::Protocol),
+                        Event::Closed(close::Reason::Transport),
                     ]
                 ),
                 "terminal sequence: {events:?}"
@@ -302,7 +302,7 @@ fn completion_error_once() {
                         Event::Connected { notified: None, .. },
                         Event::Quarantined,
                         Event::Failed(Cause::Completion, None),
-                        Event::Closed(close::Reason::Protocol),
+                        Event::Closed(close::Reason::Transport),
                     ]
                 ),
                 "terminal sequence: {events:?}"
@@ -424,8 +424,4 @@ where
 
 fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
     result.expect("native lifecycle")
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

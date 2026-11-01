@@ -414,6 +414,6 @@ fn finish(result: Result<(), Error<'_, ()>>) {
         .expect("driver lifecycle");
 }
 
-fn cleanup(result: Result<(), file::Remove>) {
+fn cleanup(result: std::io::Result<()>) {
     result.expect("fixture directory cleanup");
 }

@@ -140,7 +140,7 @@ impl<R, A, S, X, P> Startup<R, A, S, X, P> {
                     let bound = pool::raw::Prepared::try_reserve(base, total.into(), &driver)?;
                     let bound = bound.try_flights(driver.storage.reborrow())?;
                     let route = route.prepare(&mut driver)?;
-                    // SAFETY: Links::try_new only inspects capacity before allocating;
+                    // SAFETY: Links::try_new only allocates;
                     // it neither exposes this pool nor submits. Machine installs and
                     // retains the completed pool through shutdown and finish.
                     let pool = unsafe { bound.bind(route) };

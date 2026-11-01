@@ -1,8 +1,9 @@
 pub mod common;
 
-use std::{convert::Infallible, io::Write as _, rc::Rc};
+use std::{io::Write as _, rc::Rc};
 
 use common::manifold::listener::finish::close::{script, wire::Wire};
+use common::recover;
 use dope_core::driver::{
     life::recovery,
     route::{FrameworkTag, KeyTag, Tag, kind},
@@ -221,8 +222,4 @@ fn shutdown_keeps_deadline() {
     assert_eq!(release.hits(), 0);
     let _peer = result.expect("shutdown keeps send deadline");
     assert_eq!(closed.hits(), 1);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

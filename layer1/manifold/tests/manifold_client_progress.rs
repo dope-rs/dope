@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    convert::Infallible,
     fmt::Debug,
     io::{self, Read as _},
     rc::Rc,
@@ -47,6 +46,7 @@ use crate::common::{
             yielding::{Life, Yielding},
         },
     },
+    recover,
     scenario::case::{Connector, Value, attempt::Attempt},
 };
 
@@ -402,8 +402,4 @@ fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error,
         matches!(wait, Ok(fibers::Wait::Reached)),
         "progress: {wait:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause())
 }

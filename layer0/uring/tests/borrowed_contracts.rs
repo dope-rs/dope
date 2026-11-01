@@ -43,6 +43,7 @@ fn preserves_borrows() -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cargo target"))?;
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let status = Command::new("rustup")
+        .env("RUSTC_BOOTSTRAP", "1")
         .env_remove("RUSTC")
         .args(["run", "stable", "cargo"])
         .args(["build", "--offline", "--locked", "--lib", "--profile"])
@@ -66,6 +67,38 @@ fn preserves_borrows() -> io::Result<()> {
         .current_dir(manifest)
         .status()?;
     assert!(status.success(), "contract build: {status}");
+
+    let mut compiler = Command::new("rustup");
+    compiler
+        .env("RUSTC_BOOTSTRAP", "1")
+        .args([
+            "run",
+            "stable",
+            "rustc",
+            "-Znext-solver=globally",
+            "--edition=2024",
+            "--crate-name=uring_borrowed_contract",
+            "--crate-type=lib",
+            "-Cpanic=abort",
+            "--emit=llvm-ir=-",
+            "--color=never",
+            "-L",
+        ])
+        .arg(format!("dependency={}", outputs.join("deps").display()))
+        .arg("--out-dir")
+        .arg(outputs)
+        .current_dir(manifest.join("tests/common"));
+    for name in ["dope_uring", "dope_sys", "o3", "libc"] {
+        compiler.arg("--extern").arg(format!(
+            "{name}={}",
+            outputs.join(format!("lib{name}.rlib")).display(),
+        ));
+    }
+    compiler
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
 
     for (source, expected) in [
         (include_str!("common/borrowed.rs"), ""),
@@ -94,42 +127,14 @@ fn preserves_borrows() -> io::Result<()> {
             "error[E0505]: cannot move out of `file` because it is borrowed",
         ),
     ] {
-        let mut compiler = Command::new("rustup");
-        compiler
-            .args([
-                "run",
-                "stable",
-                "rustc",
-                "--edition=2024",
-                "--crate-name=uring_borrowed_contract",
-                "--crate-type=lib",
-                "-Cpanic=abort",
-                "--emit=llvm-ir=-",
-                "--color=never",
-                "-L",
-            ])
-            .arg(format!("dependency={}", outputs.join("deps").display()))
-            .arg("--out-dir")
-            .arg(outputs)
-            .current_dir(manifest.join("tests/common"));
-        for name in ["dope_uring", "dope_sys", "o3", "libc"] {
-            compiler.arg("--extern").arg(format!(
-                "{name}={}",
-                outputs.join(format!("lib{name}.rlib")).display(),
-            ));
-        }
-        let mut child = compiler
-            .arg("-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        child
+        let mut child = compiler.spawn()?;
+        let input = child
             .stdin
             .take()
             .expect("compiler input")
-            .write_all(source.as_bytes())?;
+            .write_all(source.as_bytes());
         let output = child.wait_with_output()?;
+        input?;
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert_eq!(
             output.status.success(),

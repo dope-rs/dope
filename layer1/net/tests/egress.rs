@@ -42,10 +42,7 @@ fn rejection_retains_owner() {
     assert!(charge.resident().get() > 0);
     let (result, alloc) = Tracker::usage(|| load.try_bound::<bound::AtMost<0>>());
     assert_eq!(alloc, (0, 0));
-    assert!(result.is_err(), "owned alloc must exceed zero backing");
-    let Err(excess) = result else {
-        return;
-    };
+    let excess = result.err().expect("owned alloc must exceed zero backing");
     assert_eq!(excess.maximum, 0);
     assert!(excess.load.charge() == charge);
     assert_eq!(excess.load.as_inner().as_slice().as_ptr(), pointer);
@@ -101,8 +98,7 @@ fn nonempty_rejection() {
     let charge = load.charge();
     let (result, alloc) = Tracker::usage(|| load.try_bound::<bound::AtMost<0>>());
     assert_eq!(alloc, (0, 0));
-    assert!(result.is_err());
-    let Err(rejected) = result else { return };
+    let rejected = result.err().expect("assertion failed: result.is_err()");
     let (load, maximum) = rejected.into_parts();
     assert_eq!(maximum, egress::ResidentSize::ZERO);
     assert_eq!(load.geometry().wire(), count);

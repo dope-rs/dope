@@ -111,7 +111,7 @@ impl reserve::Try<Wire> for Receive {
 
     fn try_reserve<'a, 'w, 'd, ID: Identity + 'w>(
         _: &'a mut wire::Identity,
-        _: &'a mut (),
+        _: Option<&'a mut ()>,
         _: &'a mut Runtime,
     ) -> reserve::Outcome<
         Self::Transaction<'a, 'w, 'd, ID>,
