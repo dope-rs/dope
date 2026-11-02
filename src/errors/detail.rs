@@ -116,6 +116,17 @@ impl From<Flow> for Plan {
 }
 
 impl Plan {
+    pub(crate) fn try_capacity(slot: Slot, needed: usize, available: usize) -> Result<(), Self> {
+        if needed > available {
+            return Err(Self::Capacity {
+                slot,
+                needed,
+                available,
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn close_code(&self) -> Option<conn::Error> {
         match self {
             Self::Payload(_)

@@ -123,6 +123,83 @@ fn higher_ids_open_peers() {
 }
 
 #[test]
+fn stop_after_fin_ack_does_not_reopen_peer_send() {
+    use dope_quic::conn::{output::transmit::Effects, stream::event};
+
+    let (mut server, mut client, mut work) =
+        Pair::try_default().expect("connected peers").into_parts();
+    let request = client.send_streams().open_bidi().expect("request stream");
+    client
+        .send_streams()
+        .send(request, b"request")
+        .expect("request keeps receive half open");
+    let now = Instant::now() + Duration::from_secs(1);
+    server
+        .receive_from(&mut work, &mut client, now)
+        .expect("request delivery");
+    while server.poll().poll_event().is_some() {}
+    let response = request.bind(&server).expect("peer request");
+    server
+        .send_streams()
+        .send(response, b"response")
+        .expect("nonzero final size");
+    server
+        .send_streams()
+        .finish(response)
+        .expect("response FIN");
+    let response_at = server
+        .view()
+        .recovery()
+        .send_at(now + Duration::from_millis(30));
+    client
+        .receive_from(&mut work, &mut server, response_at)
+        .expect("response delivery");
+    client
+        .recv()
+        .stop(request, Code::from_u8(0x52))
+        .expect("stop unread response");
+
+    let ack_at = client
+        .view()
+        .recovery()
+        .send_at(response_at + Duration::from_millis(30));
+    let mut packet = Batch::default();
+    let effects = client
+        .with_scope(|mut scope| scope.output().send_effects(&mut packet, ack_at, 1, 1_200))
+        .expect("ACK and STOP_SENDING output");
+    assert_eq!(packet.packets(), 1);
+    assert!(effects.contains(Effects::ACK));
+    assert!(effects.contains(Effects::CONTROL));
+    server
+        .receive_all(&mut work, &mut packet, ack_at)
+        .expect("ACK and STOP_SENDING in one datagram");
+    server.with_scope(|mut scope| {
+        let mut streams = scope.streams();
+        let stream = streams
+            .view()
+            .resolve_bidi(response.id())
+            .expect("retained request");
+        assert!(streams.resident().handle(response.id()).is_some());
+        assert!(!streams.view().is_recv_eof(stream.receive()));
+        assert_eq!(streams.view().buffered(stream.send()), 0);
+        assert_eq!(streams.view().stopped(stream.send()), None);
+        while let Some(item) = streams.events().poll() {
+            assert!(!matches!(item, event::Item::Stopped { .. }));
+        }
+    });
+    let mut reply = Batch::default();
+    let effects = server
+        .with_scope(|mut scope| {
+            scope
+                .output()
+                .send_effects(&mut reply, ack_at + Duration::from_millis(30), 1, 1_200)
+        })
+        .expect("acknowledge STOP_SENDING");
+    assert!(!effects.contains(Effects::CONTROL));
+    assert!(!effects.contains(Effects::STREAM));
+}
+
+#[test]
 fn drained_reschedules() {
     let (mut server, mut client, mut work) =
         Pair::try_default().expect("connected peers").into_parts();

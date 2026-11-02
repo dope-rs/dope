@@ -83,33 +83,25 @@ impl<'state, B: stream::Recv, D: buffer::raw::Segment> Commit<'state, B, D> {
         }
         let create = !streams::Relative::new(id, self.local()).is_local();
         let key = self.resident.read().key(id);
-        Ok(match key {
-            Some(key) => {
-                if self.transmit.map.find_key(key, &self.resident).is_some() {
-                    queue::StopImpact {
-                        key: Some(key),
-                        active: true,
-                        event_slots: usize::from(!self.resident.read().has_event::<true>(key)),
-                        stream_slots: 0,
-                    }
-                } else if create {
-                    queue::StopImpact {
-                        key: Some(key),
-                        active: true,
-                        event_slots: 1,
-                        stream_slots: 1,
-                    }
-                } else {
-                    queue::StopImpact::NONE
-                }
-            }
-            None if create => queue::StopImpact {
-                key: None,
+        if let Some(key) = key
+            && self.transmit.map.find_key(key, &self.resident).is_some()
+        {
+            return Ok(queue::StopImpact {
+                key: Some(key),
+                active: true,
+                event_slots: usize::from(!self.resident.read().has_event::<true>(key)),
+                stream_slots: 0,
+            });
+        }
+        Ok(if create {
+            queue::StopImpact {
+                key,
                 active: true,
                 event_slots: 1,
                 stream_slots: 1,
-            },
-            None => queue::StopImpact::NONE,
+            }
+        } else {
+            queue::StopImpact::NONE
         })
     }
 
@@ -131,6 +123,10 @@ impl<'state, B: stream::Recv, D: buffer::raw::Segment> Commit<'state, B, D> {
         params: Option<&param::Set>,
         effects: Effects<'_, '_, E>,
     ) -> Result<(), Error> {
+        // ACK processing can retire a sender after its STOP was planned.
+        if self.is_send_done(id) {
+            return Ok(());
+        }
         let Effects {
             control: ctrl,
             events,
@@ -177,6 +173,7 @@ impl<'state, B: stream::Recv, D: buffer::raw::Segment> Commit<'state, B, D> {
             }
         }
         occupied.refresh();
+        self.open_peer(id);
         Ok(())
     }
 }

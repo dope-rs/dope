@@ -1,9 +1,9 @@
 //! Bounded stream event admission and delivery.
-use o3::{alloc, base::num::bounded};
+use o3::{alloc, base::num::bounded, depot::capacity::Shortage};
 
 use o3::depot::queue::{indexed::slab, links};
 use slab::phase;
-use std::mem;
+use std::{mem, num::NonZero};
 
 use crate::conn::stream::state::resident::events;
 use crate::conn::stream::{Event, resident};
@@ -299,8 +299,17 @@ impl Pending {
         self.pending.available()
     }
 
-    pub(in crate::conn) fn reserve(&mut self, count: usize) -> Option<Permit<'_>> {
-        (count <= self.available()).then_some(Permit {
+    pub(in crate::conn) fn try_reserve(&mut self, count: usize) -> Result<Permit<'_>, Shortage> {
+        let available = self.available();
+        if let Some(requested) = NonZero::new(count)
+            && requested.get() > available
+        {
+            return Err(Shortage {
+                requested,
+                available,
+            });
+        }
+        Ok(Permit {
             events: self,
             remaining: count,
         })

@@ -5,7 +5,7 @@ use crate::runtime::brand;
 use o3::buffer::{self, resident::Shared};
 
 use crate::conn;
-use crate::conn::stream::{Error, SendOutcome, id, resident, state::transmit};
+use crate::conn::stream::{Error, SendOutcome, abandon, id, resident, state::transmit};
 use crate::stream::{self, send};
 use crate::wire::stream::Direction;
 use send::admit;
@@ -150,6 +150,26 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer:
         sink: &mut E,
     ) -> Result<(), Error> {
         let result = self.kernel().reset_with(stream.id(), code, sink);
+        if result.is_ok() {
+            self.track();
+        }
+        result
+    }
+
+    /// Applies peer abandonment reported by the application protocol.
+    ///
+    /// Peer bidirectional streams may be admitted before their first transport
+    /// frame, within the advertised stream limit. Locally initiated streams
+    /// must already be open. Success closes the send half and queues the same
+    /// reset and `Stopped` event as a received STOP_SENDING. Retired send halves are
+    /// unchanged; admission failures preserve streams and retained owners.
+    pub fn abandon_with<E: release::Sink>(
+        &mut self,
+        stream: id::Send<'conn>,
+        code: crate::errors::Code,
+        sink: &mut E,
+    ) -> Result<(), abandon::Error> {
+        let result = self.kernel().abandon_with(stream.id(), code, sink);
         if result.is_ok() {
             self.track();
         }

@@ -86,13 +86,6 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
         }
     }
 
-    pub(in crate::conn) fn open_peer(&mut self, id: Id) {
-        let stream = streams::Relative::new(id, self.local());
-        if !stream.is_local() {
-            self.peer_initiated.open_through(stream);
-        }
-    }
-
     fn is_send_done(&self, id: Id, stream: streams::Relative) -> bool {
         if stream.is_local() {
             let opened = stream.number() < *stream.direction().bind(&self.local_initiated.opened);

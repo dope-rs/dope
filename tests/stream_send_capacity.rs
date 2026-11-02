@@ -5,8 +5,11 @@ use common::{
     suite::commit::Retain,
 };
 use dope_quic::{
-    conn::stream::{Error, SendOutcome},
-    errors::Code,
+    conn::stream::{Error, SendOutcome, abandon},
+    errors::{
+        Code,
+        detail::{Plan, Slot},
+    },
     stream::send::{self, admit},
     wire::stream::Id,
 };
@@ -91,6 +94,26 @@ fn implicit_send_capacity() {
         pair.server.send_streams().reset(low, Code::ZERO),
         Err(Error::Capacity)
     );
+    pair.server.with_scope(|mut scope| {
+        let mut streams = scope.streams();
+        let id = streams
+            .view()
+            .resolve_send(low.id())
+            .expect("implicit peer stream");
+        let mut released = 0usize;
+        assert!(matches!(
+            streams
+                .send()
+                .abandon_with(id, Code::ZERO, &mut |_| released += 1),
+            Err(abandon::Error::Plan(Plan::Capacity {
+                slot: Slot::Resident,
+                needed: 1,
+                available: 0
+            })),
+        ));
+        assert_eq!(released, 0);
+        assert!(streams.view().is_send_open(id));
+    });
 
     let owner = vec![3; 64];
     let pointer = owner.as_ptr();

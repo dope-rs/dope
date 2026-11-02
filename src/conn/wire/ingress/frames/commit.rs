@@ -93,7 +93,7 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             {
                 path.observe(meta.number());
             }
-            let Some(mut events) = queue.reserve(evcap) else {
+            let Ok(mut events) = queue.try_reserve(evcap) else {
                 return Ok(frames::Disposition::Drop);
             };
             let (applied, control);
@@ -396,7 +396,6 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                         id,
                         error_code: code,
                     } => {
-                        state.open_peer(id);
                         if let Err(error) = transmit::Commit::new(state).try_stop(
                             key,
                             id,

@@ -1,3 +1,4 @@
+pub mod abandon;
 pub mod access;
 mod build;
 pub mod event;
@@ -355,6 +356,13 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Streams<B, D> {
 impl<B: stream::Recv, D: buffer::raw::Segment> State<B, D> {
     pub(in crate::conn) const fn local(&self) -> Initiator {
         self.local_initiated.next[0].initiator()
+    }
+
+    pub(in crate::conn) fn open_peer(&mut self, id: Id) {
+        let stream = streams::Relative::new(id, self.local());
+        if !stream.is_local() {
+            self.peer_initiated.open_through(stream);
+        }
     }
 
     pub(in crate::conn) fn validate(&self, id: Id, access: Access) -> Result<(), conn::Error> {

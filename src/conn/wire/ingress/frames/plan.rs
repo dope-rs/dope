@@ -215,30 +215,21 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
             Ok::<_, detail::Plan>(())
         })?;
 
-        let cap = streams.receive.map.parts().available();
-        if recv_n > cap {
-            return Err(detail::Plan::Capacity {
-                slot: detail::Slot::Receive,
-                needed: recv_n,
-                available: cap,
-            });
-        }
-        let cap = streams.transmit.map().view().vacancy();
-        if send_n > cap {
-            return Err(detail::Plan::Capacity {
-                slot: detail::Slot::Send,
-                needed: send_n,
-                available: cap,
-            });
-        }
-        let cap = streams.resident.read().available();
-        if resident > cap {
-            return Err(detail::Plan::Capacity {
-                slot: detail::Slot::Resident,
-                needed: resident,
-                available: cap,
-            });
-        }
+        detail::Plan::try_capacity(
+            detail::Slot::Receive,
+            recv_n,
+            streams.receive.map.parts().available(),
+        )?;
+        detail::Plan::try_capacity(
+            detail::Slot::Send,
+            send_n,
+            streams.transmit.map().view().vacancy(),
+        )?;
+        detail::Plan::try_capacity(
+            detail::Slot::Resident,
+            resident,
+            streams.resident.read().available(),
+        )?;
         let mut flow = streams.receive.connection_window;
         let credit = flow.try_record(credit)?;
         self.bytes = bytes;

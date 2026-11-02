@@ -4,9 +4,10 @@ use o3::buffer::{self, resident::Shared};
 
 use std::mem;
 
+use crate::errors::detail;
 use crate::wire::stream::{Direction, Id, Initiator};
 use crate::{conn, stream};
-use conn::stream::{Error, SendOutcome, resident, state::transmit};
+use conn::stream::{Error, SendOutcome, abandon, resident, state::transmit};
 use send::admit;
 use stream::send;
 use transmit::request;
@@ -175,6 +176,54 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             sink,
         );
         request.apply(&mut transmit::Sender::new(&mut self.connection.streams))
+    }
+
+    pub(in crate::conn) fn abandon_with<E: release::Sink>(
+        &mut self,
+        id: Id,
+        code: crate::errors::Code,
+        sink: &mut E,
+    ) -> Result<(), abandon::Error> {
+        if !Self::is_available(self.connection) {
+            return Err(abandon::Error::Stream(Error::NotEstablished));
+        }
+        let conn::Machine {
+            streams,
+            control,
+            peer,
+            ..
+        } = &mut *self.connection;
+        let impact = transmit::Commit::new(&mut streams.state)
+            .plan_stop(id)
+            .map_err(|error| abandon::Error::Plan(error.into()))?;
+        if !impact.active {
+            return Ok(());
+        }
+        detail::Plan::try_capacity(
+            detail::Slot::Send,
+            impact.stream_slots,
+            streams.transmit.map().view().vacancy(),
+        )
+        .map_err(abandon::Error::Plan)?;
+        detail::Plan::try_capacity(
+            detail::Slot::Resident,
+            usize::from(impact.key.is_none()),
+            streams.resident.read().available(),
+        )
+        .map_err(abandon::Error::Plan)?;
+        let mut events = streams
+            .events
+            .try_reserve(impact.event_slots)
+            .map_err(abandon::Error::Events)?;
+        transmit::Commit::new(&mut streams.state)
+            .try_stop(
+                impact.key,
+                id,
+                code,
+                peer.transport_params.as_ref(),
+                transmit::Effects::new(control, &mut events, sink),
+            )
+            .map_err(abandon::Error::Stream)
     }
 
     pub(in crate::conn) fn try_reset<E: release::Sink>(
