@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, io};
+use std::{cell::Cell, convert::Infallible};
 
 use dope_core::{
     Errno, driver,
@@ -76,8 +76,7 @@ fn check_failure(failure: conn::Transmit) {
     assert!(
         matches!(failure,
             conn::Transmit::Io(event::SendFailure::Queued(error))
-                if matches!(io::Error::from(error).kind(),
-                    io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+                if error.is_pipe() || error.is_reset()
         ),
         "unexpected native send failure: {failure:?}",
     );

@@ -6,7 +6,7 @@ use crate::common::runtime::{self, Setup};
 pub mod common;
 use common::recover;
 
-use std::{array, io::Read as _};
+use std::array;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},

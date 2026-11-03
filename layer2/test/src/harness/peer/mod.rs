@@ -1,7 +1,20 @@
-use std::{io, io::Write as _, mem, net, ops, os::fd::AsFd as _, time};
+use std::{mem, net, ops, os::fd, time};
 
-use dope_core::{dope_sys::io::poll, platform::wake};
-use o3::depot::array::init;
+use dope_core::{
+    Backend, Errno,
+    dope_sys::{
+        Nonblock,
+        io::{
+            fd::Fd as _,
+            poll,
+            socket::{self, Prepare as _, Socket as _, addr},
+        },
+    },
+    io::socket::install::adopt,
+    platform::wake,
+};
+use fd::AsFd as _;
+use o3::{base::marker::ThreadBound, depot::array::init};
 use scripts::{Control, Script};
 
 use crate::harness::scenario::run;
@@ -16,7 +29,6 @@ mod stream;
 pub mod udp;
 
 pub use client::Client;
-pub use connect::Connect;
 pub use finish::Finish;
 pub use half::Half;
 pub use release::Release;
@@ -24,15 +36,39 @@ pub use stream::Stream;
 
 #[derive(Debug)]
 pub enum Exchange {
-    Write(io::Error),
-    Read(io::Error),
+    Write(Error),
+    Read(Error),
 }
 
 #[derive(Debug)]
 pub enum Spawn {
-    Io(io::Error),
+    Io(Error),
     Wake(wake::CreateError),
     Thread(run::Start),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    Syscall(Errno),
+    Create(socket::Create),
+    Setup(socket::Setup),
+    Adopt(adopt::Error),
+    Vectors(o3::depot::array::Error),
+    Address(addr::Error),
+    Local(addr::Local<Errno>),
+    ConnectEvents(i16),
+    Cancelled,
+    TimedOut,
+    UnexpectedEof,
+    WriteZero,
+    ZeroTimeout,
+    NonLoopback(net::SocketAddr),
+}
+
+impl From<Errno> for Error {
+    fn from(error: Errno) -> Self {
+        Self::Syscall(error)
+    }
 }
 
 const IO_TIMEOUT: time::Duration = time::Duration::from_secs(5);
@@ -72,15 +108,13 @@ impl Peer {
         Self { addr }
     }
 
-    pub fn try_connect(self) -> io::Result<net::TcpStream> {
-        net::TcpStream::connect_timeout(&self.addr, crate::harness::GUARD)
+    pub fn try_connect(self) -> Result<Stream<'static>, Error> {
+        connect::open(self.addr, None)
     }
 
-    pub fn try_read(self, timeout: time::Duration) -> Result<net::TcpStream, Connect> {
-        let stream = self.try_connect().map_err(Connect::Open)?;
-        if let Err(error) = stream.set_read_timeout(Some(timeout)) {
-            return Err(Connect::ReadTimeout { stream, error });
-        }
+    pub fn try_read(self, timeout: time::Duration) -> Result<Stream<'static>, Error> {
+        let stream = self.try_connect()?;
+        stream.read_wait(Some(timeout))?;
         Ok(stream)
     }
 
@@ -101,16 +135,7 @@ impl Peer {
         let addr = self.addr;
         Script::with(
             addr,
-            move |control| {
-                fixed(
-                    || {
-                        control.check()?;
-                        let socket = net::TcpStream::connect_timeout(&addr, crate::harness::GUARD)?;
-                        Stream::new(socket, control)
-                    },
-                    script,
-                )
-            },
+            move |control| fixed(|| connect::open(addr, Some(control)), script),
             |inner| run(Client::new(inner)),
         )
     }
@@ -129,44 +154,32 @@ impl Peer {
         )
     }
 
-    pub fn try_read_all(mut stream: impl io::Read) -> io::Result<Vec<u8>> {
+    pub fn try_read_all(stream: &Stream<'_>) -> Result<Vec<u8>, Error> {
         let mut got = Vec::new();
         stream.read_to_end(&mut got)?;
         Ok(got)
     }
 
-    pub fn try_reset(socket: net::TcpStream) -> io::Result<()> {
-        raw::reset(socket.as_fd())
+    pub fn try_reset(socket: impl fd::AsFd) -> Result<(), Error> {
+        Backend::reset_on_close(socket.as_fd())
     }
 }
 
 mod raw {
-    use std::{
-        io, mem,
-        os::fd::{AsRawFd as _, BorrowedFd},
+    use std::os::fd;
+
+    use dope_core::{
+        Backend, Errno,
+        dope_sys::io::socket::{addr, raw::Source as _},
     };
 
-    /// Turns descriptor close into a reset.
-    pub(super) fn reset(file: BorrowedFd<'_>) -> io::Result<()> {
-        let linger = libc::linger {
-            l_onoff: 1,
-            l_linger: 0,
-        };
-        // SAFETY: the descriptor borrow and complete native value outlive the call.
-        let status = unsafe {
-            libc::setsockopt(
-                file.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_LINGER,
-                std::ptr::from_ref(&linger).cast(),
-                mem::size_of::<libc::linger>() as libc::socklen_t,
-            )
-        };
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+    pub(super) fn accept(
+        file: fd::BorrowedFd<'_>,
+        address: &mut addr::Storage,
+    ) -> Result<fd::OwnedFd, Errno> {
+        let (storage, len) = address.output_mut();
+        // SAFETY: the initialized address and length retain their exclusive full extents.
+        unsafe { Backend::accept(file, std::ptr::from_mut(storage).cast(), len) }
     }
 }
 
@@ -189,11 +202,17 @@ impl<T: Send> TcpScript<'_, T> {
         run: impl for<'scope> FnOnce(TcpScript<'scope, T, N>) -> R,
     ) -> Result<R, Spawn> {
         nonempty::<N>();
-        let (addr, listener) = bind_script().map_err(Spawn::Io)?;
+        let listener =
+            bind((net::Ipv4Addr::LOCALHOST, 0).into(), socket::Kind::Stream).map_err(Spawn::Io)?;
+        let addr = local(listener.as_fd()).map_err(Spawn::Io)?;
         Script::with(
             addr,
             move |control| {
-                let mut acceptor = TcpAcceptor { listener, control };
+                let acceptor = TcpAcceptor {
+                    listener,
+                    control: Some(control),
+                    _thread: ThreadBound::NEW,
+                };
                 fixed(|| acceptor.accept(), script)
             },
             |inner| run(TcpScript { inner }),
@@ -222,11 +241,17 @@ impl<T: Send> AcceptScript<'_, T> {
         script: impl FnOnce(&mut TcpAcceptor<'_>) -> T + Send,
         run: impl for<'scope> FnOnce(AcceptScript<'scope, T>) -> R,
     ) -> Result<R, Spawn> {
-        let (addr, listener) = bind_script().map_err(Spawn::Io)?;
+        let listener =
+            bind((net::Ipv4Addr::LOCALHOST, 0).into(), socket::Kind::Stream).map_err(Spawn::Io)?;
+        let addr = local(listener.as_fd()).map_err(Spawn::Io)?;
         Script::with(
             addr,
             move |control| {
-                let mut acceptor = TcpAcceptor { listener, control };
+                let mut acceptor = TcpAcceptor {
+                    listener,
+                    control: Some(control),
+                    _thread: ThreadBound::NEW,
+                };
                 Ok(script(&mut acceptor))
             },
             |inner| run(AcceptScript { inner }),
@@ -250,75 +275,152 @@ impl<T> AcceptScript<'_, T> {
 
 /// Sequential accepts on one worker-owned listener.
 pub struct TcpAcceptor<'a> {
-    listener: net::TcpListener,
-    control: &'a Control,
+    listener: fd::OwnedFd,
+    control: Option<&'a Control>,
+    _thread: ThreadBound,
+}
+
+impl TcpAcceptor<'static> {
+    pub fn bind(address: net::SocketAddr) -> Result<Self, Error> {
+        Ok(Self {
+            listener: bind(address, socket::Kind::Stream)?,
+            control: None,
+            _thread: ThreadBound::NEW,
+        })
+    }
+
+    /// Consumes one loopback listener, closing the descriptor if admission fails.
+    pub fn try_adopt(listener: fd::OwnedFd) -> Result<Self, Error> {
+        Ok(Self {
+            listener: adopt(listener, socket::Kind::Stream)?,
+            control: None,
+            _thread: ThreadBound::NEW,
+        })
+    }
 }
 
 impl<'a> TcpAcceptor<'a> {
-    pub fn accept(&mut self) -> io::Result<Stream<'a>> {
-        self.next(None)?.ok_or_else(|| io::ErrorKind::Other.into())
+    pub fn local_addr(&self) -> Result<net::SocketAddr, Error> {
+        local(self.listener.as_fd())
     }
 
-    pub fn try_accept(&mut self) -> io::Result<Option<Stream<'a>>> {
+    pub fn accept(&self) -> Result<Stream<'a>, Error> {
+        match self.next(None)? {
+            Some(stream) => Ok(stream),
+            None => unreachable!("accept"),
+        }
+    }
+
+    pub fn try_accept(&self) -> Result<Option<Stream<'a>>, Error> {
         self.next(Some(time::Duration::ZERO))
     }
 
-    pub fn accept_for(&mut self, timeout: time::Duration) -> io::Result<Option<Stream<'a>>> {
+    pub fn accept_for(&self, timeout: time::Duration) -> Result<Option<Stream<'a>>, Error> {
         self.next(Some(timeout))
     }
 
-    fn next(&mut self, timeout: Option<time::Duration>) -> io::Result<Option<Stream<'a>>> {
+    fn next(&self, timeout: Option<time::Duration>) -> Result<Option<Stream<'a>>, Error> {
         let start = time::Instant::now();
         loop {
             let left = timeout.map(|limit| limit.saturating_sub(start.elapsed()));
-            if !self
-                .control
-                .ready(poll::Entry::readable(self.listener.as_fd()), left)?
+            if scripts::ready(
+                self.control,
+                poll::Entry::readable(self.listener.as_fd()),
+                left,
+            )?
+            .is_none()
             {
                 return Ok(None);
             }
-            match self.listener.accept() {
-                Ok((stream, peer)) => {
+            let mut address = addr::Storage::empty();
+            match raw::accept(self.listener.as_fd(), &mut address) {
+                Ok(stream) => {
+                    let peer = address.to_std().map_err(Error::Address)?;
                     if !peer.ip().is_loopback() {
-                        return Err(io::ErrorKind::InvalidData.into());
+                        return Err(Error::NonLoopback(peer));
                     }
-                    return Stream::new(stream, self.control).map(Some);
+                    let stream = Backend::adopt(stream).map_err(Error::Setup)?;
+                    return Stream::new(Backend::into_fd(stream), self.control).map(Some);
                 }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                    ) =>
-                {
+                Err(error) if error.is_intr() || error.is_block() => {
                     if timeout.is_some_and(|limit| start.elapsed() >= limit) {
                         return Ok(None);
                     }
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(Error::Syscall(error)),
             }
         }
     }
 }
 
-fn bind_script() -> io::Result<(net::SocketAddr, net::TcpListener)> {
-    let listener = net::TcpListener::bind((net::Ipv4Addr::LOCALHOST, 0))?;
-    let addr = listener.local_addr()?;
-    listener.set_nonblocking(true)?;
-    Ok((addr, listener))
+impl fd::AsFd for TcpAcceptor<'_> {
+    fn as_fd(&self) -> fd::BorrowedFd<'_> {
+        self.listener.as_fd()
+    }
+}
+
+fn adopt(file: fd::OwnedFd, kind: socket::Kind) -> Result<fd::OwnedFd, Error> {
+    let actual = Backend::kind::<Errno>(file.as_fd())?;
+    match kind {
+        socket::Kind::Stream => {
+            if !actual.is_stream() {
+                return Err(Error::Adopt(adopt::Error::ListenerKind {
+                    actual: actual.raw(),
+                }));
+            }
+            if !Backend::is_listening::<Errno>(file.as_fd())? {
+                return Err(Error::Adopt(adopt::Error::ListenerState { actual: 0 }));
+            }
+        }
+        socket::Kind::Dgram => {
+            if !actual.is_datagram() {
+                return Err(Error::Adopt(adopt::Error::DatagramKind {
+                    actual: actual.raw(),
+                }));
+            }
+        }
+    }
+    let address = local(file.as_fd())?;
+    if !address.ip().is_loopback() {
+        return Err(Error::NonLoopback(address));
+    }
+    let file = Backend::adopt(file).map_err(Error::Setup)?;
+    let file = Backend::into_fd(file);
+    Backend::update::<Nonblock>(file.as_fd())
+        .map_err(socket::Setup::nonblock)
+        .map_err(Error::Setup)?;
+    Ok(file)
+}
+
+fn bind(address: net::SocketAddr, kind: socket::Kind) -> Result<fd::OwnedFd, Error> {
+    let socket = Backend::open(socket::Domain::for_addr(&address), kind).map_err(Error::Create)?;
+    let socket = Backend::into_fd(socket);
+    Backend::update::<Nonblock>(socket.as_fd())
+        .map_err(socket::Setup::nonblock)
+        .map_err(Error::Setup)?;
+    addr::Internet::from_std::<Backend>(address)
+        .as_addr()
+        .try_bind::<Backend, Errno>(socket.as_fd())?;
+    if kind == socket::Kind::Stream {
+        Backend::listen::<Errno>(socket.as_fd(), socket::BACKLOG)?;
+    }
+    Ok(socket)
+}
+
+fn local(socket: fd::BorrowedFd<'_>) -> Result<net::SocketAddr, Error> {
+    let mut address = addr::Storage::empty();
+    addr::Addr::local::<Backend, Errno>(socket, &mut address).map_err(Error::Local)?;
+    address.to_std().map_err(Error::Address)
 }
 
 fn nonempty<const N: usize>() {
     const { assert!(N != 0, "TCP script requires at least one peer") }
 }
 
-fn cancelled() -> io::Error {
-    io::ErrorKind::Interrupted.into()
-}
-
 fn fixed<'a, T, const N: usize>(
-    mut next: impl FnMut() -> io::Result<Stream<'a>>,
+    mut next: impl FnMut() -> Result<Stream<'a>, Error>,
     script: impl FnOnce(&mut [&Stream<'a>; N]) -> T,
-) -> io::Result<T> {
+) -> Result<T, Error> {
     let mut backing = mem::MaybeUninit::uninit();
     let mut guard = init::Guard::<_, N, true>::new(&mut backing);
     let streams = loop {

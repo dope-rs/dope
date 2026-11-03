@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, io::Write};
+use std::convert::Infallible;
 
 use common::{discard::eof, wire::Input};
 use dope_core::{
@@ -26,7 +26,7 @@ use dope_test::scope;
 #[test]
 fn full_returns_exhausted() {
     let (mut reports, input) = eof::run::<input::Scoped>(
-        |pool, key, scope, mut peer| {
+        |pool, key, scope, peer| {
             eof::arm(pool, key, scope).expect("receive admission");
             pool.suspend(key);
             for _ in 0..2 {

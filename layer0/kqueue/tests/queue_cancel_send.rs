@@ -33,8 +33,6 @@ type Retry<'a> = <Kqueue as retry::Source>::Retry<'a, Context, Write, Poll>;
 
 #[test]
 fn cancel_keeps_indices() {
-    use std::io::{ErrorKind, Read as _};
-
     let Blocked {
         mut files,
         mut state,
@@ -115,7 +113,7 @@ fn cancel_keeps_indices() {
                 received += count;
             }
             Err(error) => {
-                assert_eq!(error.kind(), ErrorKind::WouldBlock, "drain peer: {error}");
+                assert!(error.is_block(), "drain peer: {error:?}");
                 break;
             }
         }

@@ -1,12 +1,7 @@
-use std::{
-    io::{self, Read, Write},
-    iter, mem,
-    net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
-    thread::sleep,
-    time::Duration,
-};
+use std::{iter, mem, net::SocketAddr, os::fd::OwnedFd, thread::sleep, time::Duration};
 
 use dope::core::platform::thread;
+use dope_test::harness::peer::{self, Stream, TcpAcceptor, udp};
 
 use crate::common::{cookies::Client, lookup::failure::Server};
 
@@ -245,16 +240,15 @@ pub enum Mode<'a> {
 
 pub struct Peer<'a> {
     pub addr: SocketAddr,
-    listen: TcpListener,
-    udp: UdpSocket,
+    listen: OwnedFd,
+    udp: OwnedFd,
     mode: Mode<'a>,
     rounds: usize,
 }
 
 impl<'a> Peer<'a> {
-    pub fn new(mode: Mode<'a>, rounds: usize) -> io::Result<Self> {
-        let (addr, listen, udp) = bind()?;
-        udp.set_read_timeout(Some(LIMIT))?;
+    pub fn new(mode: Mode<'a>, rounds: usize) -> Result<Self, peer::Error> {
+        let (addr, listen, udp) = crate::common::socket::bind()?;
         Ok(Self {
             addr,
             listen,
@@ -269,15 +263,18 @@ impl thread::Task for Peer<'_> {
     type Output = Result<usize, Server>;
 
     fn run(self) -> Self::Output {
-        self.mode.run(&self.udp, &self.listen, self.rounds)
+        let udp = udp::Socket::try_adopt(self.udp).map_err(Server::Io)?;
+        udp.read_wait(Some(LIMIT)).map_err(Server::Io)?;
+        let listen = TcpAcceptor::try_adopt(self.listen).map_err(Server::Io)?;
+        self.mode.run(&udp, &listen, self.rounds)
     }
 }
 
 impl Mode<'_> {
     fn run(
         mut self,
-        udp: &UdpSocket,
-        listen: &TcpListener,
+        udp: &udp::Socket<'_>,
+        listen: &TcpAcceptor<'_>,
         rounds: usize,
     ) -> Result<usize, Server> {
         let mut buf = [0; 512];
@@ -394,51 +391,51 @@ impl Mode<'_> {
         }
         match self {
             Self::Stream(reply) => {
-                let mut conn = listen.accept().map_err(Server::Io)?.0;
-                let query = read(&mut conn)?;
-                write(&mut conn, &query.reply(reply, false)?)?;
+                let conn = listen.accept().map_err(Server::Io)?;
+                let query = read(&conn)?;
+                write(&conn, &query.reply(reply, false)?)?;
             }
             Self::Malformed(retry) => {
-                let mut conn = listen.accept().map_err(Server::Io)?.0;
-                let bad = read(&mut conn)?;
+                let conn = listen.accept().map_err(Server::Io)?;
+                let bad = read(&conn)?;
                 bad.require_kind(A)?;
-                write(&mut conn, &bad.buf[..2])?;
+                write(&conn, &bad.buf[..2])?;
                 if retry {
-                    let query = read(&mut conn)?;
-                    answer(&mut conn, query, &[[192, 0, 2, 3]])?;
+                    let query = read(&conn)?;
+                    answer(&conn, query, &[[192, 0, 2, 3]])?;
                 }
             }
             Self::Close(retry) => {
                 {
-                    let mut conn = listen.accept().map_err(Server::Io)?.0;
-                    read(&mut conn)?.require_kind(A)?;
+                    let conn = listen.accept().map_err(Server::Io)?;
+                    read(&conn)?.require_kind(A)?;
                 }
                 if retry {
-                    let mut conn = listen.accept().map_err(Server::Io)?.0;
-                    let query = read(&mut conn)?;
-                    answer(&mut conn, query, &[[192, 0, 2, 6]])?;
+                    let conn = listen.accept().map_err(Server::Io)?;
+                    let query = read(&conn)?;
+                    answer(&conn, query, &[[192, 0, 2, 6]])?;
                 }
             }
             Self::Partial => {
                 let kind = {
-                    let mut conn = listen.accept().map_err(Server::Io)?.0;
-                    let done = read(&mut conn)?;
-                    let lost = read(&mut conn)?;
+                    let conn = listen.accept().map_err(Server::Io)?;
+                    let done = read(&conn)?;
+                    let lost = read(&conn)?;
                     let kind = lost.kind;
-                    answer(&mut conn, done, &[[192, 0, 2, 7]])?;
+                    answer(&conn, done, &[[192, 0, 2, 7]])?;
                     kind
                 };
-                let mut conn = listen.accept().map_err(Server::Io)?.0;
-                let retry = read(&mut conn)?;
+                let conn = listen.accept().map_err(Server::Io)?;
+                let retry = read(&conn)?;
                 retry.require_kind(kind)?;
-                answer(&mut conn, retry, &[[192, 0, 2, 7]])?;
+                answer(&conn, retry, &[[192, 0, 2, 7]])?;
             }
             Self::Cookie(Cookie::Missing | Cookie::Bad) => {
-                let mut conn = listen.accept().map_err(Server::Io)?.0;
+                let conn = listen.accept().map_err(Server::Io)?;
                 let mut left = 2;
                 while left != 0 {
-                    let query = read(&mut conn)?;
-                    answer(&mut conn, query, &[[192, 0, 2, 8]])?;
+                    let query = read(&conn)?;
+                    answer(&conn, query, &[[192, 0, 2, 8]])?;
                     left -= 1;
                 }
             }
@@ -455,21 +452,8 @@ impl Mode<'_> {
     }
 }
 
-fn bind() -> io::Result<(SocketAddr, TcpListener, UdpSocket)> {
-    for _ in 0..32 {
-        let listen = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listen.local_addr()?;
-        match UdpSocket::bind(addr) {
-            Ok(udp) => return Ok((addr, listen, udp)),
-            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Err(io::ErrorKind::AddrInUse.into())
-}
-
-fn read(conn: &mut TcpStream) -> Result<Query<Vec<u8>>, Server> {
-    conn.set_read_timeout(Some(LIMIT)).map_err(Server::Io)?;
+fn read(conn: &Stream<'_>) -> Result<Query<Vec<u8>>, Server> {
+    conn.read_wait(Some(LIMIT)).map_err(Server::Io)?;
     let mut head = [0; 2];
     conn.read_exact(&mut head).map_err(Server::Io)?;
     let mut buf = vec![0; usize::from(u16::from_be_bytes(head))];
@@ -483,14 +467,14 @@ fn read(conn: &mut TcpStream) -> Result<Query<Vec<u8>>, Server> {
     Ok(query)
 }
 
-fn write(conn: &mut TcpStream, buf: &[u8]) -> Result<(), Server> {
-    conn.set_write_timeout(Some(LIMIT)).map_err(Server::Io)?;
+fn write(conn: &Stream<'_>, buf: &[u8]) -> Result<(), Server> {
+    conn.write_wait(Some(LIMIT)).map_err(Server::Io)?;
     let len = u16::try_from(buf.len()).map_err(Server::Length)?;
     conn.write_all(&len.to_be_bytes()).map_err(Server::Io)?;
     conn.write_all(buf).map_err(Server::Io)
 }
 
-fn answer(conn: &mut TcpStream, query: Query<Vec<u8>>, vals: &[[u8; 4]]) -> Result<(), Server> {
+fn answer(conn: &Stream<'_>, query: Query<Vec<u8>>, vals: &[[u8; 4]]) -> Result<(), Server> {
     let reply = if query.kind == A {
         Reply::Addrs(vals, false, false)
     } else {

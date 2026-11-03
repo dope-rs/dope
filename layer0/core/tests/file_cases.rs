@@ -414,6 +414,6 @@ fn finish(result: Result<(), Error<'_, ()>>) {
         .expect("driver lifecycle");
 }
 
-fn cleanup(result: std::io::Result<()>) {
+fn cleanup(result: Result<(), dope_test::harness::support::file::Error>) {
     result.expect("fixture directory cleanup");
 }

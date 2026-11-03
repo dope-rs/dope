@@ -1,12 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell,
-    io::{self, Read as _, Write as _},
-    net::Shutdown,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, net::Shutdown, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     life::{creation::Attempt, recovery},
@@ -193,7 +187,7 @@ fn retained_eof_send_close() {
                 stream.shutdown(Shutdown::Write)?;
                 let mut got = Vec::new();
                 stream.read_to_end(&mut got)?;
-                Ok::<_, io::Error>(got)
+                Ok::<_, peer::Error>(got)
             },
             |peer| {
                 let address = peer.addr();
@@ -286,7 +280,7 @@ fn held_eof_timeout_closes() {
             stream.write_all(b"x")?;
             let mut got = Vec::new();
             stream.read_to_end(&mut got)?;
-            Ok::<_, io::Error>(got)
+            Ok::<_, peer::Error>(got)
         },
         |peer| {
             let address = peer.addr();

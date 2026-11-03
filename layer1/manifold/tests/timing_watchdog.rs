@@ -113,37 +113,41 @@ fn stall_is_killed() {
     let output = Test {
         name: "stall_is_killed",
     }
-    .try_signal(|| {
-        let mut create = Attempt::new();
-        let executor = {
-            let result = Runtime::throughput().try_executor(&mut create);
-            result
-                .as_ref()
-                .map_err(|error| error.kind())
-                .expect("native creation");
-            result.ok().expect("native creation")
-        };
-        let mut finish = Completion::new();
-        executor.run(|executor| {
-            let result = executor.enter_with(
-                |mut session| {
-                    let config = Host::config::<20, 150>().expect("watchdog config");
-                    let watchdog =
-                        watchdog::Watchdog::new(config, &mut session.driver()).expect("watchdog");
-                    let result = session.with_quiesce(
-                        &mut finish,
-                        Host { watchdog },
-                        Duration::from_secs(2),
-                        |_app| thread::sleep(Duration::from_secs(2)),
-                    );
-                    assert!(result.is_ok(), "application teardown");
-                },
-                recovery::Policy::new(drop, recover),
-            );
-            assert!(result.is_ok(), "executor teardown");
-        });
-    })
-    .expect("watchdog child");
+    .signal(
+        &std::env::current_exe().expect("test executable"),
+        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
+        || {
+            let mut create = Attempt::new();
+            let executor = {
+                let result = Runtime::throughput().try_executor(&mut create);
+                result
+                    .as_ref()
+                    .map_err(|error| error.kind())
+                    .expect("native creation");
+                result.ok().expect("native creation")
+            };
+            let mut finish = Completion::new();
+            executor.run(|executor| {
+                let result = executor.enter_with(
+                    |mut session| {
+                        let config = Host::config::<20, 150>().expect("watchdog config");
+                        let watchdog = watchdog::Watchdog::new(config, &mut session.driver())
+                            .expect("watchdog");
+                        let result = session.with_quiesce(
+                            &mut finish,
+                            Host { watchdog },
+                            Duration::from_secs(2),
+                            |_app| thread::sleep(Duration::from_secs(2)),
+                        );
+                        assert!(result.is_ok(), "application teardown");
+                    },
+                    recovery::Policy::new(drop, recover),
+                );
+                assert!(result.is_ok(), "executor teardown");
+            });
+        },
+    )
+    .map(|mut child| child.output().expect("watchdog child"));
     if let Some(output) = output {
         assert_eq!(output.status.signal(), Some(libc::SIGKILL), "{output:?}");
     }

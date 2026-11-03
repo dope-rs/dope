@@ -1,11 +1,14 @@
 use dope::{core::driver::life::recovery, net::wire::domain::Local, runtime::executor::session};
-use dope_test::harness::{peer::AcceptScript, scenario};
+use dope_test::harness::{
+    peer::{self, AcceptScript},
+    scenario,
+};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
 use common::recover;
 
-use std::{io, io::Read, rc::Rc, time::Duration};
+use std::{rc::Rc, time::Duration};
 
 use dope::{
     core::{
@@ -30,8 +33,8 @@ fn reuses_after_late_error() {
         .expect("reuse acknowledgement")
         .split();
     AcceptScript::with(
-        move |peer| -> io::Result<()> {
-            let mut first = peer.accept()?;
+        move |peer| -> Result<(), peer::Error> {
+            let first = peer.accept()?;
             first.read_wait(Some(Duration::from_secs(5)))?;
             let mut body = Vec::new();
             first.read_to_end(&mut body)?;

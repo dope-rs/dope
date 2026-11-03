@@ -1,4 +1,4 @@
-use std::{io, num, ptr};
+use std::num;
 
 use dope_sys::{Errno, kernel, kernel::raw::Status};
 
@@ -40,25 +40,4 @@ fn rejects_nonpositive() {
             assert_eq!(Errno::try_from(code), Err(error));
         }
     }
-}
-
-#[test]
-fn keeps_std_error_owner() {
-    let error = io::Error::from(Errno::INTERRUPTED);
-    assert_eq!(
-        Errno::try_from(error).expect("native errno"),
-        Errno::INTERRUPTED,
-    );
-    for raw in [0, -1] {
-        let error =
-            Errno::try_from(io::Error::from_raw_os_error(raw)).expect_err("nonpositive errno");
-        assert_eq!(error.raw_os_error(), Some(raw));
-    }
-    let error = io::Error::other("retained payload");
-    let payload = ptr::from_ref(error.get_ref().expect("payload"));
-    let error = Errno::try_from(error).expect_err("non-native error");
-    assert!(ptr::eq(
-        payload,
-        ptr::from_ref(error.get_ref().expect("payload")),
-    ));
 }

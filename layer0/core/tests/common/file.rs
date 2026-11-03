@@ -1,4 +1,4 @@
-use std::{io, mem, path::Path};
+use std::{mem, path::Path};
 
 use dope_core::{
     driver,
@@ -15,16 +15,27 @@ pub struct Identity {
     inode: u128,
 }
 
-impl Identity {
-    pub fn try_new(path: &Path) -> io::Result<Self> {
-        use std::os::unix::ffi::OsStrExt as _;
+#[derive(Debug)]
+pub enum IdentityError {
+    Path(fs::path::CopyError),
+    Syscall(Errno),
+}
 
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+impl Identity {
+    pub fn try_new(path: &Path) -> Result<Self, IdentityError> {
+        use fs::path::CStrExt as _;
+
+        let path = Box::try_copy(path).map_err(IdentityError::Path)?;
         let mut stat = mem::MaybeUninit::<libc::stat>::uninit();
         // SAFETY: path remains terminated and borrowed, and stat is writable.
-        if unsafe { libc::stat(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
+        let result = unsafe { libc::stat(path.as_ptr(), stat.as_mut_ptr()) };
+        // SAFETY: stat returns zero or -1 with this thread's unchanged errno.
+        unsafe {
+            dope_sys::kernel::raw::Status::new(result).try_zero::<Errno>(|| {
+                dope_sys::kernel::raw::Code::last::<dope_core::Backend>().into()
+            })
         }
+        .map_err(IdentityError::Syscall)?;
         // SAFETY: successful stat initialized the complete value.
         let stat = unsafe { stat.assume_init() };
         Ok(Self {
@@ -48,7 +59,6 @@ impl Inspect for Identity {
 }
 
 use dope_core::Errno;
-use dope_test::harness::support::file::Directory;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -103,18 +113,6 @@ impl<'owner, 'd: 'owner> Submit<'owner, 'd> for retained::Context<'_, 'owner, 'd
             .map_err(Error::Submit)?;
         drop(flight);
         Ok(())
-    }
-}
-
-pub trait NativePath {
-    fn c_path(&self) -> Result<std::ffi::CString, std::ffi::NulError>;
-}
-
-impl<F: FnOnce(io::Result<()>)> NativePath for Directory<F> {
-    fn c_path(&self) -> Result<std::ffi::CString, std::ffi::NulError> {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        std::ffi::CString::new(self.path().as_os_str().as_bytes())
     }
 }
 

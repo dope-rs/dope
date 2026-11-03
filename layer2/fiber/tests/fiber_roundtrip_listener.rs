@@ -8,10 +8,7 @@ use dope_test::harness::scenario;
 pub mod common;
 use common::recover;
 
-use std::{
-    io::{Error, ErrorKind, Read as _, Write as _},
-    time::Duration,
-};
+use std::time::Duration;
 
 use dope::{
     core::{
@@ -182,8 +179,7 @@ fn fiber_listener_roundtrip() {
                                     assert!(matches!(
                                         stream.read().await,
                                         Err(Read::Transport(error))
-                                            if Error::from(error).kind()
-                                                == ErrorKind::ConnectionReset
+                                            if error.is_reset()
                                     ));
                                     assert_eq!(prefix, b"abcde");
                                     assert_eq!(tail, b"fg");
@@ -301,7 +297,7 @@ fn cancelled_inflight_reuses_slot() {
                                                     loop {
                                                         match io.read().await {
                                                             Err(Read::Transmit(Transmit::Io(SendFailure::Queued(error)))) => {
-                                                                assert!(matches!(Error::from(error).kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset));
+                                                                assert!(error.is_pipe() || error.is_reset());
                                                                 break;
                                                             }
                                                             Ok(None) => fibers::Yield::new().await,

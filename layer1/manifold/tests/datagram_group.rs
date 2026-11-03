@@ -26,7 +26,10 @@ use dope_runtime::executor::{
 };
 use dope_test::{
     fibers,
-    harness::signals::{Gate, Progress as _},
+    harness::{
+        peer,
+        signals::{Gate, Progress as _},
+    },
     reclaim::{Matches as _, Reports},
 };
 use o3::buffer::{pool, write::Sink as _};
@@ -39,13 +42,12 @@ fn routes_work_budget() {
     ] {
         let mut finish = Completion::new();
         let mut create = Attempt::new();
-        let client = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("client socket");
+        let client =
+            peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
         let upstream =
-            net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("upstream socket");
-        client.set_nonblocking(true).expect("nonblocking client");
-        upstream
-            .set_nonblocking(true)
-            .expect("nonblocking upstream");
+            peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("upstream socket");
+        client.nonblock(true);
+        upstream.nonblock(true);
         let received = Gate::new();
         let sent = Gate::new();
         let dropped = Gate::new();
@@ -198,8 +200,9 @@ fn pooled_admission_keeps_owner() {
     for (pending, slot) in [(1, SlotIndex::ZERO), (2, SlotIndex::fixed::<1>())] {
         let mut finish = Completion::new();
         let mut create = Attempt::new();
-        let client = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("client socket");
-        client.set_nonblocking(true).expect("nonblocking client");
+        let client =
+            peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
+        client.nonblock(true);
         let pool = pool::Pool::try_new(2, 16).expect("two send owners");
         let received = Gate::new();
         let sent = Gate::new();
@@ -341,7 +344,8 @@ fn pooled_admission_keeps_owner() {
 fn reports_native_failure() {
     let mut finish = Completion::new();
     let mut create = Attempt::new();
-    let client = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("client socket");
+    let client =
+        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
     let pool = pool::Pool::try_new(1, 16).expect("send owner");
     let received = Gate::new();
     let sent = Gate::new();
@@ -433,8 +437,10 @@ fn reports_native_failure() {
 fn forced_finish_retains() {
     let mut finish = Completion::new();
     let mut create = Attempt::new();
-    let client = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("client socket");
-    let upstream = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("upstream socket");
+    let client =
+        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
+    let upstream =
+        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("upstream socket");
     let pool = pool::Pool::try_new(1, 16).expect("send owner");
     let received = Gate::new();
     let sent = Gate::new();

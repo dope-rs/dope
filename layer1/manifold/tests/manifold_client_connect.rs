@@ -1,13 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell,
-    fmt::Debug,
-    io::{Read as _, Write as _},
-    net::SocketAddr,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, fmt::Debug, net::SocketAddr, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
@@ -107,8 +100,6 @@ fn reject_skips_callbacks() {
 #[test]
 fn reports_state_failure() {
     let mut finish = Completion::new();
-
-    use std::io::Read as _;
 
     TcpScript::with(
         |stream| {

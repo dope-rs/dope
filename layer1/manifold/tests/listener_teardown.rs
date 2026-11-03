@@ -5,7 +5,7 @@ use std::{
     convert::Infallible,
     env,
     fmt::Debug,
-    io::{self, Write as _},
+    io::Write as _,
     net::TcpStream,
     rc::Rc,
     thread,
@@ -69,10 +69,6 @@ use dope_test::{
     reclaim::Reports,
 };
 
-fn written(result: io::Result<()>) {
-    result.expect("write retained receive marker");
-}
-
 fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
     outcome.expect("native lifecycle")
 }
@@ -130,7 +126,11 @@ fn forced_detaches_credit() {
                     |mut session| {
                         let hash = session.hash_state(Domain::DEFAULT);
                         let result = listener::Listener::<KeyTag<0>, App<'_, '_, _>, Bundle<Tcp, Teardown, Throughput>>::adopt_in(
-                            App { held: None, marker: server, observed: written }, cfg, bound, hash, &mut session,
+                            App {
+                                held: None,
+                                observed: move || std::fs::write(&server, b"held")
+                                    .expect("write retained receive marker"),
+                            }, cfg, bound, hash, &mut session,
                             session::Scope::driver,
                             |listener, session| {
                                 let result = session.run_quiesce(
@@ -377,8 +377,7 @@ fn reinstalls_reject_stale_id() {
                                     },
                                     Duration::from_secs(2),
                                     |mut app| {
-                                        let mut peer =
-                                            Peer::at(addr).try_connect().expect("connect");
+                                        let peer = Peer::at(addr).try_connect().expect("connect");
                                         assert_eq!(
                                             fibers::TEST
                                                 .try_wait(&mut app, &accepted, 1)

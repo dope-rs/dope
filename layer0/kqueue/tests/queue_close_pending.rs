@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{io::Write as _, num::NonZeroUsize, os::fd::AsFd as _, time::Duration};
+use std::{num::NonZeroUsize, os::fd::AsFd as _, time::Duration};
 
 use dope_kqueue::Kqueue;
 use dope_sys::{

@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, io::Write, net::TcpStream, ops::ControlFlow, rc::Rc};
+use std::{cell::Cell, convert::Infallible, ops::ControlFlow, rc::Rc};
 
 use dope_core::{
     driver::{
@@ -33,7 +33,10 @@ use dope_net::{
     tcp::Tcp,
     wire::domain::{Local, Resident, Retained},
 };
-use dope_test::scope::{self, Driver};
+use dope_test::{
+    harness::peer,
+    scope::{self, Driver},
+};
 use o3::buffer::storage::Shared;
 
 use crate::common::{
@@ -44,14 +47,14 @@ use crate::common::{
 pub type Route = KeyTag<24>;
 type Pool<'p, 'd, M> =
     pool::Pool<'p, 'd, 'd, Route, Tcp, Eof, (), M, compose::Either<&'d [u8], Shared>>;
-type Opened<'d> = (pool::Key<'d, Route>, TcpStream);
+type Opened<'d> = (pool::Key<'d, Route>, peer::Stream<'static>);
 
 pub fn run<M: input::Mode<Eof>>(
     test: impl for<'p, 'd> FnOnce(
         &mut Pool<'p, 'd, M>,
         pool::Key<'d, Route>,
         &mut life::Scope<'_, 'd>,
-        TcpStream,
+        peer::Stream<'static>,
     ),
     recover: impl recovery::Recover,
     finish: impl for<'owner> FnOnce(Result<Result<(), Error>, scope::Error<'owner, Result<(), Error>>>),
@@ -72,7 +75,7 @@ pub fn run_pair<M: input::Mode<Eof>>(
         &mut Pool<'p, 'd, M>,
         [pool::Key<'d, Route>; 2],
         &mut life::Scope<'_, 'd>,
-        [TcpStream; 2],
+        [peer::Stream<'static>; 2],
     ),
     recover: impl recovery::Recover,
     finish: impl for<'owner> FnOnce(Result<Result<(), Error>, scope::Error<'owner, Result<(), Error>>>),
@@ -172,7 +175,8 @@ fn prepare<'d, M: input::Mode<Eof>>(
                     if flight.is_none() {
                         return Err(Error::Flight);
                     }
-                    let peer = TcpStream::connect(stream.peer_addr().map_err(Error::Peer)?)
+                    let peer = peer::Peer::at(stream.peer_addr().map_err(Error::Peer)?)
+                        .try_connect()
                         .map_err(Error::Peer)?;
                     let fd = match next(scope)?.into_kind() {
                         event::Kind::Accept(done) => {
@@ -276,7 +280,7 @@ pub fn final_byte<'p, 'd, M: input::Mode<Eof>>(
     pool: &mut Pool<'p, 'd, M>,
     key: pool::Key<'d, Route>,
     scope: &mut life::Scope<'_, 'd>,
-    peer: &mut TcpStream,
+    peer: &peer::Stream<'_>,
 ) -> Result<(Flow, recv::Data<'d>), Error> {
     arm(pool, key, scope)?;
     peer.write_all(b"F").map_err(Error::Peer)?;

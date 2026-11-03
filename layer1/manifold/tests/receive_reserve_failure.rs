@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{io::Write as _, ptr, time::Duration};
+use std::{ptr, time::Duration};
 
 use common::{
     manifold::listener::trace::One,
@@ -66,8 +66,7 @@ fn batched_keeps_cause() {
                                 Host::new(listener),
                                 Duration::from_secs(2),
                                 |mut app| {
-                                    let mut peer =
-                                        Peer::at(addr).try_connect().expect("connect peer");
+                                    let peer = Peer::at(addr).try_connect().expect("connect peer");
                                     peer.write_all(b"failure").expect("write receive");
                                     assert_eq!(
                                         fibers::TEST
@@ -147,8 +146,7 @@ fn scoped_keeps_cause() {
                                 Host::new(listener),
                                 Duration::from_secs(2),
                                 |mut app| {
-                                    let mut peer =
-                                        Peer::at(addr).try_connect().expect("connect peer");
+                                    let peer = Peer::at(addr).try_connect().expect("connect peer");
                                     peer.write_all(b"failure").expect("write receive");
                                     assert_eq!(
                                         fibers::TEST

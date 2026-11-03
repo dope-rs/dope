@@ -1,13 +1,6 @@
 pub mod common;
 
-use std::{
-    convert::Infallible,
-    fmt::Debug,
-    io::{self, Read, Write},
-    net::Shutdown,
-    rc::Rc,
-    time::Duration,
-};
+use std::{convert::Infallible, fmt::Debug, net::Shutdown, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::coupled::{
@@ -35,7 +28,7 @@ use dope_test::{
     fibers::{Run, Wait},
     harness::{
         observe::Trace,
-        peer::Peer,
+        peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -122,7 +115,7 @@ fn send_replays_receive() {
                 |case| {
                     Peer::at(case.addr())
                         .with(
-                            move |socket| -> io::Result<Vec<u8>> {
+                            move |socket| -> Result<Vec<u8>, peer::Error> {
                                 socket.write_all(b"A")?;
                                 assert!(wait.wait().is_ok(), "release second coupled byte");
                                 socket.write_all(b"B")?;
@@ -221,7 +214,7 @@ fn gate_drains_before_tail() {
             move |case| {
                 Peer::at(case.addr())
                     .with(
-                        move |socket| -> io::Result<Vec<u8>> {
+                        move |socket| -> Result<Vec<u8>, peer::Error> {
                             socket.write_all(b"A")?;
                             assert!(wait.wait().is_ok(), "release second gated byte");
                             socket.write_all(b"B")?;
@@ -313,7 +306,7 @@ fn borrowed_reservation_tracks_native_send() {
             |case| {
                 Peer::at(case.addr())
                     .with(
-                        move |socket| -> io::Result<Vec<u8>> {
+                        move |socket| -> Result<Vec<u8>, peer::Error> {
                             socket.write_all(b"A")?;
                             assert!(
                                 wait.wait_timeout(Duration::from_secs(5)).is_ok(),

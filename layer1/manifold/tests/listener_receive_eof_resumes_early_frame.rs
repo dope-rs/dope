@@ -1,11 +1,6 @@
 pub mod common;
 
-use std::{
-    convert::Infallible,
-    io::{self, Read as _, Write as _},
-    iter,
-    time::Instant,
-};
+use std::{convert::Infallible, iter, time::Instant};
 
 use common::{
     manifold::listener::defer::preamble::{self, FRAMES, HANDSHAKE, PREFIX},
@@ -26,7 +21,7 @@ use dope_test::{
     fibers::{self, Wait},
     harness::{
         GUARD,
-        peer::Peer,
+        peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -78,7 +73,7 @@ fn eof_resumes_early_frame() {
         .with_run(
             &mut finish,
             |case| {
-                let mut peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+                let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
                 assert_eq!(
                     case.try_wait(&admitted, 1).expect("admitted early frame"),
                     Wait::Reached
@@ -93,7 +88,7 @@ fn eof_resumes_early_frame() {
                 let want: Vec<_> = iter::once(PREFIX)
                     .chain(FRAMES[0].iter().copied())
                     .collect();
-                peer.set_nonblocking(true).expect("nonblocking peer");
+                peer.nonblock(true);
                 let started = Instant::now();
                 let mut reply = Vec::new();
                 let mut bytes = [0; 64];
@@ -104,11 +99,9 @@ fn eof_resumes_early_frame() {
                         Ok(count) => reply.extend_from_slice(&bytes[..count]),
                         Err(error) => {
                             assert!(
-                                matches!(
-                                    error.kind(),
-                                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                                ),
-                                "read peer EOF: {error}"
+                                matches!(error, peer::Error::Syscall(error)
+                                    if error.is_block() || error.is_intr()),
+                                "read peer EOF: {error:?}"
                             );
                             case.try_drive(fibers::Yield::new())
                                 .expect("drive peer EOF");

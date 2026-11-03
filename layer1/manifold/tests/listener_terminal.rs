@@ -1,8 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell, convert::Infallible, fmt::Debug, io::Write as _, marker::PhantomData, mem, rc::Rc,
-};
+use std::{cell::Cell, convert::Infallible, fmt::Debug, marker::PhantomData, mem, rc::Rc};
 
 use common::{
     manifold::listener::terminal::{
@@ -79,7 +77,7 @@ fn keeps_write_failure() {
         .with_run(
             &mut finish,
             |case| {
-                let mut peer = Peer::at(case.addr()).try_connect().expect("peer");
+                let peer = Peer::at(case.addr()).try_connect().expect("peer");
                 peer.write_all(b"reject").expect("write trigger");
                 reached(case.try_wait(&rejected, 1), rejected.hits(), 1);
                 assert_eq!(retired.hits(), 0);

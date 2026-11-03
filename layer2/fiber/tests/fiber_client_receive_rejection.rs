@@ -1,5 +1,3 @@
-use std::io::{Read as _, Write as _};
-
 use dope::{
     core::driver::{
         life::recovery,

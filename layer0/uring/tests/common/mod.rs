@@ -6,15 +6,24 @@ pub mod packets;
 pub mod receive;
 pub mod ring;
 
+#[derive(Debug)]
+pub enum DirectoryError {
+    Path(std::ffi::NulError),
+    Syscall(dope_sys::Errno),
+}
+
 pub struct Directory(std::ffi::CString, o3::base::marker::ThreadBound);
 
 impl Directory {
-    pub fn try_new(base: &std::path::Path, tag: &str, nonce: u128) -> std::io::Result<Self> {
-        use std::os::unix::{ffi::OsStrExt as _, fs::DirBuilderExt as _};
+    pub fn try_new(base: &std::path::Path, tag: &str, nonce: u128) -> Result<Self, DirectoryError> {
+        use dope_sys::io::file::{File as _, Mode};
+        use std::os::unix::ffi::OsStrExt as _;
 
         let path = base.join(format!("du-{tag}-{}-{nonce}", std::process::id()));
-        let encoded = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+        let encoded =
+            std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(DirectoryError::Path)?;
+        dope_uring::Uring::mkdir::<dope_sys::Errno>(&encoded, Mode::new(0o700))
+            .map_err(DirectoryError::Syscall)?;
         Ok(Self(encoded, o3::base::marker::ThreadBound::NEW))
     }
 
@@ -31,6 +40,9 @@ impl Directory {
 
 impl Drop for Directory {
     fn drop(&mut self) {
-        std::fs::remove_dir(self.path()).expect("fixture directory cleanup");
+        use dope_sys::io::file::File as _;
+
+        dope_uring::Uring::remove_dir_at::<dope_sys::Errno>(None, &self.0)
+            .expect("fixture directory cleanup");
     }
 }

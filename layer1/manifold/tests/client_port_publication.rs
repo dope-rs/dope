@@ -1,8 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell, convert::Infallible, io::Read as _, mem, num::NonZero, rc::Rc, time::Duration,
-};
+use std::{cell::Cell, convert::Infallible, mem, num::NonZero, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     life::{creation::Attempt, recovery},

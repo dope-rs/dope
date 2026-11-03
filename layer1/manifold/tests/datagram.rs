@@ -21,7 +21,10 @@ use dope_manifold::{
 use dope_runtime::executor::session::Completion;
 use dope_test::{
     alloc::Tracker,
-    harness::signals::{Gate, Progress as _},
+    harness::{
+        peer,
+        signals::{Gate, Progress as _},
+    },
     reclaim::Reports,
 };
 
@@ -53,8 +56,8 @@ fn send_bounds_progress() {
 fn shares_one_credit() {
     let mut finish = Completion::new();
     let mut create = Attempt::new();
-    let peer = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("peer socket");
-    peer.set_nonblocking(true).expect("nonblocking peer");
+    let peer = peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("peer socket");
+    peer.nonblock(true);
     let handled = Gate::new();
     let received = Gate::new();
     let settled = Gate::new();

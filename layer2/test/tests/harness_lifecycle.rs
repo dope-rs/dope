@@ -108,8 +108,12 @@ fn child_succeeds() {
     let output = Test {
         name: "child_succeeds",
     }
-    .try_run(|| {})
-    .expect("isolated success");
+    .run(
+        &std::env::current_exe().expect("current test executable"),
+        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
+        || {},
+    )
+    .map(|mut child| child.output().expect("isolated success"));
     if let Some(output) = output {
         assert!(output.status.success(), "{output:?}");
     }
@@ -120,8 +124,12 @@ fn child_fails() {
     let output = Test {
         name: "child_fails",
     }
-    .try_run(|| panic!("isolated failure"))
-    .expect("isolated failure");
+    .run(
+        &std::env::current_exe().expect("current test executable"),
+        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
+        || panic!("isolated failure"),
+    )
+    .map(|mut child| child.output().expect("isolated failure"));
     if let Some(output) = output {
         assert!(!output.status.success(), "{output:?}");
     }
@@ -132,23 +140,27 @@ fn watchdog_kills_hang() {
     let output = Test {
         name: "watchdog_kills_hang",
     }
-    .try_signal(|| {
-        with_harness(time::Duration::from_millis(100), |harness| {
-            harness
-                .run_unbound(
-                    |source| {
-                        let (wait, notify) =
-                            wake::Ends::blocking().expect("stalled server gate").split();
-                        wait.wait().expect("stalled server gate remains connected");
-                        drop((notify, source));
-                        Ok::<_, Infallible>(())
-                    },
-                    |addr| addr,
-                )
-                .expect("stalled server returned before the watchdog killed it");
-        });
-    })
-    .expect("spawn watchdog child test");
+    .signal(
+        &std::env::current_exe().expect("current test executable"),
+        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
+        || {
+            with_harness(time::Duration::from_millis(100), |harness| {
+                harness
+                    .run_unbound(
+                        |source| {
+                            let (wait, notify) =
+                                wake::Ends::blocking().expect("stalled server gate").split();
+                            wait.wait().expect("stalled server gate remains connected");
+                            drop((notify, source));
+                            Ok::<_, Infallible>(())
+                        },
+                        |addr| addr,
+                    )
+                    .expect("stalled server returned before the watchdog killed it");
+            });
+        },
+    )
+    .map(|mut child| child.output().expect("spawn watchdog child test"));
     if let Some(output) = output {
         assert_eq!(output.status.signal(), Some(libc::SIGKILL));
     }
@@ -164,40 +176,45 @@ fn watchdog_releases_locks() {
     let output = Test {
         name: "watchdog_releases_locks",
     }
-    .try_run(|| {
-        let base = env::temp_dir();
-        let dir = Directory::try_with(&base, "watchdog-lock", |closed| {
-            closed.expect("temporary directory cleanup");
-        })
-        .expect("temporary path");
-        let path = dir.path().join("owner");
-        let owner = fs::File::create_new(&path).expect("lock file");
-        let harness = Pair::bind().expect("watchdog harness");
-        let result = harness.run_unbound(
-            |source| {
-                {
-                    let owner = owner;
+    .run(
+        &std::env::current_exe().expect("current test executable"),
+        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
+        || {
+            let base = env::temp_dir();
+            let dir = Directory::try_with(&base, "watchdog-lock", |closed| {
+                closed.expect("temporary directory cleanup");
+            })
+            .expect("temporary path");
+            let path = dir.path().join("owner");
+            let owner = fs::File::create_new(&path).expect("lock file");
+            let harness = Pair::bind().expect("watchdog harness");
+            let result = harness.run_unbound(
+                |source| {
+                    {
+                        let owner = owner;
+                        let locked = unsafe {
+                            libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+                        };
+                        assert_eq!(locked, 0, "initial lock: {}", io::Error::last_os_error());
+                    }
+                    let next = fs::File::open(&path).expect("reopen lock file");
                     let locked =
-                        unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-                    assert_eq!(locked, 0, "initial lock: {}", io::Error::last_os_error());
-                }
-                let next = fs::File::open(&path).expect("reopen lock file");
-                let locked =
-                    unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-                assert_eq!(
-                    locked,
-                    0,
-                    "watchdog retained lock: {}",
-                    io::Error::last_os_error()
-                );
-                serve(source);
-                Ok::<_, Infallible>(())
-            },
-            |_| (),
-        );
-        assert!(result.is_ok(), "watchdog harness must finish");
-    })
-    .expect("isolated descriptor ownership");
+                        unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                    assert_eq!(
+                        locked,
+                        0,
+                        "watchdog retained lock: {}",
+                        io::Error::last_os_error()
+                    );
+                    serve(source);
+                    Ok::<_, Infallible>(())
+                },
+                |_| (),
+            );
+            assert!(result.is_ok(), "watchdog harness must finish");
+        },
+    )
+    .map(|mut child| child.output().expect("isolated descriptor ownership"));
     if let Some(output) = output {
         assert!(output.status.success(), "{output:?}");
     }

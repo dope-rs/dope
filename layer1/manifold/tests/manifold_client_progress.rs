@@ -1,11 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell,
-    fmt::Debug,
-    io::{self, Read as _},
-    rc::Rc,
-};
+use std::{cell::Cell, fmt::Debug, rc::Rc};
 
 use dope_core::{
     driver::{
@@ -141,7 +136,7 @@ fn exhaustion_waits() {
             loop {
                 match acceptor.accept() {
                     Ok(stream) => extra.push(stream),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    Err(peer::Error::Cancelled) => {
                         return Ok(2 + extra.len());
                     }
                     Err(error) => return Err(error),
@@ -226,7 +221,7 @@ fn run(kind: Mode) -> Result<Run, peer::Spawn> {
                         held.push(stream);
                         tx.notify().expect("accept observer remains alive");
                     }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    Err(peer::Error::Cancelled) => {
                         return Ok(held.len());
                     }
                     Err(error) => return Err(error),

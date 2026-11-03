@@ -8,7 +8,6 @@ use dope_runtime::topology::error::Kind;
 static ALLOCATOR: Tracker = Tracker::new();
 
 use std::{
-    io::Write as _,
     iter,
     time::{self, Duration},
 };

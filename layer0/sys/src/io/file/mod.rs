@@ -230,6 +230,22 @@ pub trait File: errno::Source + raw::Directory {
         }
     }
 
+    fn remove_dir_at<E: From<Errno>>(
+        dir: Option<BorrowedFd<'_>>,
+        name: &std::ffi::CStr,
+    ) -> Result<(), E> {
+        // SAFETY: the parent and terminated name remain borrowed; unlinkat removes
+        // only an empty directory and returns zero or -1 with this thread's errno.
+        unsafe {
+            kernel::raw::Status::new(libc::unlinkat(
+                dir.map_or(libc::AT_FDCWD, |dir| dir.as_raw_fd()),
+                name.as_ptr(),
+                libc::AT_REMOVEDIR,
+            ))
+            .try_zero(|| kernel::raw::Code::last::<Self>().into())
+        }
+    }
+
     fn open_at<E: From<Errno>>(
         dir: BorrowedFd<'_>,
         name: &std::ffi::CStr,

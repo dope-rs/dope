@@ -7,11 +7,7 @@ pub mod fault;
 pub mod gated;
 pub mod shutdown;
 
-use std::{
-    io,
-    io::{Read, Write},
-    time::Duration,
-};
+use std::time::Duration;
 
 use dope::{
     manifold::client::conn,
@@ -64,9 +60,13 @@ pub struct App<'p, 'scope, 'd> {
     pub(crate) connector: Machine<'p, 'scope, 'd, 'd, KeyTag<0>, Tcp, Identity>,
 }
 
-pub fn try_reply(peer: &mut peer::TcpAcceptor<'_>, reply: &[u8], tries: usize) -> io::Result<()> {
+pub fn try_reply(
+    peer: &mut peer::TcpAcceptor<'_>,
+    reply: &[u8],
+    tries: usize,
+) -> Result<(), peer::Error> {
     for _ in 0..tries {
-        let mut stream = peer.accept()?;
+        let stream = peer.accept()?;
         stream.read_wait(Some(Duration::from_secs(2)))?;
         let mut req = [0u8; 64];
         match stream.read(&mut req) {

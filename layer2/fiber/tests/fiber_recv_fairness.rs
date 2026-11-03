@@ -8,10 +8,7 @@ use dope_test::harness::{GUARD, scenario};
 pub mod common;
 use common::recover;
 
-use std::{
-    io::{Read, Write},
-    rc::Rc,
-};
+use std::rc::Rc;
 
 use dope::{
     core::{
@@ -114,7 +111,6 @@ fn hoarder_yields_to_peer() {
                             .with_many::<2, _, _>(move |[bulk, probe]| {
                                 bulk.write_all(&[b'H'; QUEUE_CAP])
                                     .expect("fill receive queue");
-                                bulk.flush().expect("flush receive queue");
                                 rx.wait_timeout(GUARD)
                                     .expect("hoarder must retain all input");
                                 probe.write_all(b"P").expect("write probe");

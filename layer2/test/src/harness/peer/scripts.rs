@@ -1,4 +1,4 @@
-use std::{cell::Cell, io, net, os::fd, time};
+use std::{cell::Cell, net, os::fd, time};
 
 use dope_core::{
     Backend, Errno,
@@ -12,11 +12,12 @@ use fd::AsFd as _;
 use o3::base::marker::ThreadBound;
 
 use crate::harness::{
-    peer::{FINISH_TIMEOUT, Finish, Spawn, cancelled},
+    peer::{Error, FINISH_TIMEOUT, Finish, Spawn},
     scenario::run,
 };
 
 /// Only this worker owns its sockets and cancellation reader.
+#[derive(Debug)]
 pub(super) struct Control {
     read: fd::OwnedFd,
     _thread: ThreadBound,
@@ -25,38 +26,90 @@ pub(super) struct Control {
 impl Control {
     /// The private nonblocking pipe is never written: live means WouldBlock,
     /// and dropping its sole sender leaves persistent EOF for cancellation.
-    pub(super) fn check(&self) -> io::Result<()> {
+    pub(super) fn check(&self) -> Result<(), Error> {
         match Backend::read::<Errno>(self.read.as_fd(), &mut [0]) {
-            Ok(_) => return Err(cancelled()),
+            Ok(_) => return Err(Error::Cancelled),
             Err(error) if error.is_block() => return Ok(()),
             Err(error) if error.is_intr() => {}
             Err(error) => return Err(error.into()),
         }
         let mut entries = [poll::Entry::readable(self.read.as_fd())];
         if wait(&mut entries, Some(time::Duration::ZERO))? {
-            return Err(cancelled());
+            return Err(Error::Cancelled);
         }
         Ok(())
     }
+}
 
-    pub(super) fn ready(
-        &self,
-        entry: poll::Entry<'_>,
-        timeout: Option<time::Duration>,
-    ) -> io::Result<bool> {
-        let mut entries = [poll::Entry::readable(self.read.as_fd()), entry];
+pub(super) fn timeout(
+    slot: &Cell<Option<time::Duration>>,
+    timeout: Option<time::Duration>,
+) -> Result<(), Error> {
+    if timeout.is_some_and(|timeout| timeout.is_zero()) {
+        return Err(Error::ZeroTimeout);
+    }
+    slot.set(timeout);
+    Ok(())
+}
+
+pub(super) fn ready(
+    control: Option<&Control>,
+    entry: poll::Entry<'_>,
+    timeout: Option<time::Duration>,
+) -> Result<Option<i16>, Error> {
+    if let Some(control) = control {
+        let mut entries = [poll::Entry::readable(control.read.as_fd()), entry];
         let ready = wait(&mut entries, timeout)?;
         if entries[0].is_ready() {
-            return Err(cancelled());
+            return Err(Error::Cancelled);
         }
-        Ok(ready)
+        Ok(ready.then_some(entries[1].revents()))
+    } else {
+        let mut entries = [entry];
+        Ok(wait(&mut entries, timeout)?.then_some(entries[0].revents()))
+    }
+}
+
+pub(super) fn io<T>(
+    control: Option<&Control>,
+    entry: poll::Entry<'_>,
+    timeout: Option<time::Duration>,
+    nonblocking: bool,
+    mut run: impl FnMut() -> Result<T, Errno>,
+) -> Result<T, Error> {
+    if nonblocking {
+        if let Some(control) = control {
+            control.check()?;
+        }
+        return run().map_err(Error::Syscall);
+    }
+    let start = time::Instant::now();
+    let mut waiting = false;
+    loop {
+        if waiting {
+            let left = timeout.map(|limit| limit.saturating_sub(start.elapsed()));
+            if ready(control, entry, left)?.is_none() {
+                return Err(Error::TimedOut);
+            }
+        } else if let Some(control) = control {
+            control.check()?;
+        }
+        match run() {
+            Err(error) if error.is_intr() || error.is_block() => {
+                if timeout.is_some_and(|limit| start.elapsed() >= limit) {
+                    return Err(Error::TimedOut);
+                }
+                waiting = error.is_block();
+            }
+            result => return result.map_err(Error::Syscall),
+        }
     }
 }
 
 fn wait<const N: usize>(
     entries: &mut [poll::Entry<'_>; N],
     timeout: Option<time::Duration>,
-) -> io::Result<bool> {
+) -> Result<bool, Errno> {
     let start = time::Instant::now();
     loop {
         let millis = timeout.map_or(-1, |limit| {
@@ -69,7 +122,7 @@ fn wait<const N: usize>(
             Ok(events) if events.count() != 0 => return Ok(true),
             Ok(_) => {}
             Err(error) if error.is_intr() => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         }
         if timeout.is_some_and(|limit| start.elapsed() >= limit) {
             return Ok(false);
@@ -81,7 +134,7 @@ pub(super) struct Script<'scope, T> {
     pub(super) addr: net::SocketAddr,
     done: &'scope fd::OwnedFd,
     cancel: &'scope Cell<Option<wake::Notify>>,
-    join: &'scope mut dyn FnMut() -> Result<io::Result<T>, run::Join>,
+    join: &'scope mut dyn FnMut() -> Result<Result<T, Error>, run::Join>,
 }
 
 impl<T: Send> Script<'_, T> {
@@ -89,7 +142,7 @@ impl<T: Send> Script<'_, T> {
     /// including when the callback forgets the view. HUP remains observable.
     pub(super) fn with<R>(
         addr: net::SocketAddr,
-        worker: impl FnOnce(&Control) -> io::Result<T> + Send,
+        worker: impl FnOnce(&Control) -> Result<T, Error> + Send,
         run: impl for<'scope> FnOnce(Script<'scope, T>) -> R,
     ) -> Result<R, Spawn> {
         let (read, cancel) = wake::Ends::event().map_err(Spawn::Wake)?.split();
@@ -135,7 +188,7 @@ impl<T> Script<'_, T> {
         match ready {
             Ok(true) => output.map_err(Finish::Worker),
             Ok(false) => Err(Finish::Timeout),
-            Err(error) => Err(Finish::Worker(error)),
+            Err(error) => Err(Finish::Worker(Error::Syscall(error))),
         }
     }
 }

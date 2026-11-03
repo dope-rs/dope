@@ -1,13 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell,
-    fmt::Debug,
-    io::{Read as _, Write as _},
-    net,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, fmt::Debug, net, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{

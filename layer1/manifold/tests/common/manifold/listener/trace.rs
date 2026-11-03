@@ -1,11 +1,4 @@
-use std::{
-    cell::Cell,
-    convert, io,
-    net::{SocketAddr, TcpStream},
-    pin::Pin,
-    rc::Rc,
-    task,
-};
+use std::{cell::Cell, convert, net::SocketAddr, pin::Pin, rc::Rc, task};
 
 use dope_core::{
     driver::{
@@ -36,7 +29,10 @@ use dope_manifold::{
     timing::Throughput,
 };
 use dope_net::{tcp, tcp::Tcp, wire::Identity};
-use dope_test::harness::{peer::Peer, signals::Gate};
+use dope_test::harness::{
+    peer::{self, Peer},
+    signals::Gate,
+};
 use o3::buffer::{bytes::TryRetain, resident};
 
 #[derive(Default)]
@@ -172,10 +168,10 @@ impl One {
 }
 
 pub trait Connect {
-    fn connect_n(&self, n: usize) -> io::Result<Vec<TcpStream>>;
+    fn connect_n(&self, n: usize) -> Result<Vec<peer::Stream<'static>>, peer::Error>;
 }
 impl Connect for SocketAddr {
-    fn connect_n(&self, n: usize) -> io::Result<Vec<TcpStream>> {
+    fn connect_n(&self, n: usize) -> Result<Vec<peer::Stream<'static>>, peer::Error> {
         (0..n).map(|_| Peer::at(*self).try_connect()).collect()
     }
 }

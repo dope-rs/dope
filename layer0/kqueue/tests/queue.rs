@@ -3,7 +3,6 @@ pub mod common;
 
 use std::{
     fs,
-    io::Write as _,
     num::NonZeroUsize,
     os::fd::{AsFd as _, AsRawFd as _},
     time,
@@ -40,6 +39,7 @@ fn confined<T: ?Sized + MaybeSend<A> + MaybeSync<B>, A, B>() {}
 const _: fn() = || {
     confined::<Poll, _, _>();
     confined::<dope_sys::io::file::Dir<Kqueue>, _, _>();
+    confined::<common::socket::Peer, _, _>();
 };
 
 #[test]

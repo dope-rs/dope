@@ -1,7 +1,6 @@
 use std::{
     cell::Cell,
     env::consts,
-    io::Read as _,
     net::{SocketAddr, TcpListener},
     os::fd::AsFd as _,
     pin::pin,
@@ -72,7 +71,7 @@ fn accepts_after_exhaustion() {
         let (wait, start) = wake::Ends::blocking().expect("accept release").split();
         let peer = Entry(move || {
             wait.wait_timeout(scenario::TIMEOUT).expect("accept waiter");
-            let mut stream = Peer::at(addr).try_read(scenario::TIMEOUT).expect("connect");
+            let stream = Peer::at(addr).try_read(scenario::TIMEOUT).expect("connect");
             let mut byte = [0];
             stream.read_exact(&mut byte).expect("accepted reply");
             byte

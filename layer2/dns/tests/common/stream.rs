@@ -1,10 +1,9 @@
 use std::{
     cell::Cell,
-    io::{self, Read as _, Write as _},
     iter,
-    net::{SocketAddr, TcpListener, UdpSocket},
+    net::SocketAddr,
     num,
-    os::fd::AsFd as _,
+    os::fd::{AsFd as _, OwnedFd},
     pin,
     rc::Rc,
     task::Poll,
@@ -35,7 +34,10 @@ use dope_dns::{
     storage,
     topology::Plan,
 };
-use dope_test::harness::scenario::TIMEOUT;
+use dope_test::harness::{
+    peer::{self, TcpAcceptor, udp},
+    scenario::TIMEOUT,
+};
 use o3::alloc;
 
 use crate::common::Owner;
@@ -46,7 +48,7 @@ use crate::common::refresh::{
 
 #[derive(Debug)]
 pub enum Error {
-    Io(io::Error),
+    Io(peer::Error),
     Packet,
     Source,
     Length(num::TryFromIntError),
@@ -59,25 +61,18 @@ pub enum Error {
 pub struct Server {
     pub address: SocketAddr,
     pub other: SocketAddr,
-    listener: TcpListener,
-    udp: UdpSocket,
-    fallback: TcpListener,
-    socket: UdpSocket,
+    listener: OwnedFd,
+    udp: OwnedFd,
+    fallback: OwnedFd,
+    socket: OwnedFd,
     waiting: wake::Notify,
     released: wake::Wait,
 }
 
 impl Server {
     pub fn new() -> Result<(Self, Signals), Error> {
-        let listener = TcpListener::bind("127.0.0.1:0").map_err(Error::Io)?;
-        let address = listener.local_addr().map_err(Error::Io)?;
-        let udp = UdpSocket::bind(address).map_err(Error::Io)?;
-        udp.set_read_timeout(Some(TIMEOUT)).map_err(Error::Io)?;
-        let fallback = TcpListener::bind("127.0.0.1:0").map_err(Error::Io)?;
-        let other = fallback.local_addr().map_err(Error::Io)?;
-        fallback.set_nonblocking(true).map_err(Error::Io)?;
-        let socket = UdpSocket::bind(other).map_err(Error::Io)?;
-        socket.set_read_timeout(Some(TIMEOUT)).map_err(Error::Io)?;
+        let (address, listener, udp) = crate::common::socket::bind().map_err(Error::Io)?;
+        let (other, fallback, socket) = crate::common::socket::bind().map_err(Error::Io)?;
         let (observed, waiting) = wake::Ends::blocking().map_err(Error::Create)?.split();
         let (released, release) = wake::Ends::blocking().map_err(Error::Create)?.split();
         Ok((
@@ -112,6 +107,12 @@ impl thread::Task for Server {
             released,
             ..
         } = self;
+        let listener = TcpAcceptor::try_adopt(listener).map_err(Error::Io)?;
+        let other = TcpAcceptor::try_adopt(other).map_err(Error::Io)?;
+        let udp = udp::Socket::try_adopt(udp).map_err(Error::Io)?;
+        udp.read_wait(Some(TIMEOUT)).map_err(Error::Io)?;
+        let socket = udp::Socket::try_adopt(socket).map_err(Error::Io)?;
+        socket.read_wait(Some(TIMEOUT)).map_err(Error::Io)?;
         let mut packet = [0; 512];
         for _ in 0..2 {
             let (len, source) = socket.recv_from(&mut packet).map_err(Error::Io)?;
@@ -126,8 +127,8 @@ impl thread::Task for Server {
             udp.send_to(&reply, source).map_err(Error::Io)?;
             peer = Some(source);
         }
-        let mut stream = listener.accept().map_err(Error::Io)?.0;
-        stream.set_read_timeout(Some(TIMEOUT)).map_err(Error::Io)?;
+        let stream = listener.accept().map_err(Error::Io)?;
+        stream.read_wait(Some(TIMEOUT)).map_err(Error::Io)?;
         let mut queries = Vec::new();
         for _ in 0..2 {
             let mut prefix = [0; 2];
@@ -146,10 +147,9 @@ impl thread::Task for Server {
             stream.write_all(&length.to_be_bytes()).map_err(Error::Io)?;
             stream.write_all(&reply).map_err(Error::Io)?;
         }
-        match other.accept() {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Err(error) => Err(Error::Io(error)),
-            Ok(_) => Err(Error::Peer),
+        match other.try_accept().map_err(Error::Io)? {
+            None => Ok(()),
+            Some(_) => Err(Error::Peer),
         }
     }
 }

@@ -4,7 +4,6 @@ use std::{
     cell::Cell,
     convert::Infallible,
     fmt::Debug,
-    io::{self, Read as _, Write as _},
     marker::PhantomData,
     net::Shutdown,
     rc::Rc,
@@ -46,7 +45,7 @@ use dope_test::{
     harness::{
         GUARD,
         observe::VecCellExt as _,
-        peer::{Half, Peer},
+        peer::{self, Half, Peer},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -211,10 +210,10 @@ fn half_close_before_gate() {
         .with_run(
             &mut finish,
             |case| {
-                let mut peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+                let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
                 peer.write_all(b"x").expect("write request");
                 peer.shutdown(Shutdown::Write).expect("peer half-close");
-                peer.set_nonblocking(true).expect("nonblocking peer");
+                peer.nonblock(true);
                 let started = Instant::now();
                 let mut reply = Vec::new();
                 let mut bytes = [0; 64];
@@ -228,11 +227,9 @@ fn half_close_before_gate() {
                         Ok(count) => reply.extend_from_slice(&bytes[..count]),
                         Err(error) => {
                             assert!(
-                                matches!(
-                                    error.kind(),
-                                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                                ),
-                                "read peer EOF: {error}"
+                                matches!(error, peer::Error::Syscall(error)
+                                    if error.is_block() || error.is_intr()),
+                                "read peer EOF: {error:?}"
                             );
                             case.try_drive(fibers::Yield::new())
                                 .expect("drive peer EOF");
@@ -362,7 +359,7 @@ fn publishes_eof() {
         .with_run(
             &mut finish,
             |case| {
-                let mut peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
                 peer.write_all(b"close before eof observation")
                     .expect("write request");
                 assert_eq!(

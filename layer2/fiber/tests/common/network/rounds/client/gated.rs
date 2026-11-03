@@ -1,10 +1,4 @@
-use std::{
-    cell::Cell,
-    io::{self, Read as _, Write as _},
-    net::SocketAddr,
-    ops,
-    rc::Rc,
-};
+use std::{cell::Cell, net::SocketAddr, ops, rc::Rc};
 
 use dope::{
     core::io::{recv, recv::Lease, transfer, transfer::Length},
@@ -371,7 +365,7 @@ impl Probe {
     pub fn try_reply(
         reply: &[u8],
         run: impl FnOnce(SocketAddr, Rc<Probe>),
-    ) -> Result<io::Result<[u8; 4]>, peer::Finish> {
+    ) -> Result<Result<[u8; 4], peer::Error>, peer::Finish> {
         TcpScript::try_gated::<1>(
             |[stream]| {
                 stream.write_all(b"H")?;

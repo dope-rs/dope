@@ -1,12 +1,6 @@
 pub mod common;
 
-use std::{
-    convert::Infallible,
-    fmt::Debug,
-    io::{self, Read as _, Write as _},
-    net::Shutdown,
-    rc::Rc,
-};
+use std::{convert::Infallible, fmt::Debug, net::Shutdown, rc::Rc};
 
 use common::{
     manifold::{
@@ -338,7 +332,7 @@ fn survives_peer_eof() {
             |case| {
                 Peer::at(case.addr())
                     .with(
-                        |stream| -> io::Result<Vec<u8>> {
+                        |stream| -> Result<Vec<u8>, peer::Error> {
                             stream.write_all(b"REQ")?;
                             stream.shutdown(Shutdown::Write)?;
                             Peer::try_read_all(stream)

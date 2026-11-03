@@ -5,6 +5,7 @@ pub use extent::Extent;
 pub mod fixture;
 pub mod lookup;
 pub mod refresh;
+mod socket;
 pub mod stream;
 
 type Owner<'q, 'h, 'p, 'life, 's, 'd, R> = dope_dns::Resolver<

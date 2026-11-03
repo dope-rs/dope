@@ -1,10 +1,4 @@
-use std::{
-    convert,
-    io::{self, Write as _},
-    net::Shutdown,
-    pin::Pin,
-    task,
-};
+use std::{convert, net::Shutdown, pin::Pin, task};
 
 use dope_core::{
     driver::{retained, route::Identity, schedule::clock},
@@ -44,10 +38,10 @@ pub struct Script {
 
 #[derive(Debug)]
 pub enum Failure {
-    Write(io::Error),
-    Shutdown(io::Error),
+    Write(peer::Error),
+    Shutdown(peer::Error),
     Release(wake::WaitError),
-    Read(io::Error),
+    Read(peer::Error),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,7 +80,7 @@ impl Script {
         Self { release }
     }
 
-    pub fn try_run(self, mut socket: &peer::Stream<'_>) -> Result<Vec<u8>, Failure> {
+    pub fn try_run(self, socket: &peer::Stream<'_>) -> Result<Vec<u8>, Failure> {
         socket.write_all(b"open").map_err(Failure::Write)?;
         socket
             .shutdown(Shutdown::Write)

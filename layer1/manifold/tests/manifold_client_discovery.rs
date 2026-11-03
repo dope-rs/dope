@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    io,
     net::{SocketAddr, TcpListener},
     rc::Rc,
     time::Duration,
@@ -39,7 +38,7 @@ use dope_test::{
     harness::{
         GUARD,
         observe::Trace,
-        peer::AcceptScript,
+        peer::{self, AcceptScript},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -347,7 +346,7 @@ fn retired_retries() {
                 let second = acceptor.accept()?;
                 end_rx.wait_timeout(GUARD).expect("release reused endpoint");
                 drop(second);
-                Ok::<_, io::Error>(())
+                Ok::<_, peer::Error>(())
             }, |server| {
         drop(refused);
         let good = server.addr();

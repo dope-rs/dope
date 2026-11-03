@@ -1,19 +1,16 @@
 use dope::{
     core::driver::life::recovery, net::wire::domain::Local, runtime::executor::session::Completion,
 };
-use dope_test::harness::{peer::AcceptScript, scenario};
+use dope_test::harness::{
+    peer::{self, AcceptScript},
+    scenario,
+};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
 use common::recover;
 
-use std::{
-    io,
-    io::{Read, Write},
-    pin::Pin,
-    rc::Rc,
-    time::Duration,
-};
+use std::{pin::Pin, rc::Rc, time::Duration};
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
@@ -34,8 +31,8 @@ fn reuses_settled_slot() {
     const RESPONSE: &[u8] = b"PONG-after-settled-cancel";
 
     AcceptScript::with(
-        |peer| -> io::Result<()> {
-            let mut old = peer.accept()?;
+        |peer| -> Result<(), peer::Error> {
+            let old = peer.accept()?;
             old.read_wait(Some(Duration::from_secs(2)))?;
             old.write_all(b"H")?;
             let mut byte = [0; 1];
@@ -45,7 +42,7 @@ fn reuses_settled_slot() {
                 "settled cancellation must actively close the unclaimed socket"
             );
 
-            let mut new = peer.accept()?;
+            let new = peer.accept()?;
             new.write_all(b"H")?;
             let mut req = [0; 4];
             new.read_exact(&mut req)?;

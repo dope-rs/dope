@@ -1,7 +1,4 @@
-use std::{
-    num::{NonZero, NonZeroUsize},
-    os::unix::net::UnixStream,
-};
+use std::num::{NonZero, NonZeroUsize};
 
 use dope_kqueue::Kqueue;
 use dope_sys::{
@@ -59,7 +56,7 @@ pub struct Pending {
     pub reads: Registry,
     pub poll: Poll,
     pub queue: Queue,
-    pub peer: UnixStream,
+    pub peer: socket::Peer,
 }
 
 pub fn insert(

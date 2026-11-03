@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, io::Write as _, rc::Rc, time::Duration};
+use std::{convert::Infallible, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::trace::{self, App, Connect as _, One},
@@ -126,10 +126,10 @@ fn local_slots_reuse() {
                                                 if want != 0 {
                                                     assert_eq!(host.try_wait(&second.closed, want).expect("second close"), Wait::Reached);
                                                 }
-                                                let mut peer = Peer::at(a).try_connect().expect("first recovery");
+                                                let peer = Peer::at(a).try_connect().expect("first recovery");
                                                 peer.write_all(b"first").expect("first data");
                                                 assert_eq!(host.try_wait(&first.received, 1).expect("first receive"), Wait::Reached);
-                                                let mut peer = Peer::at(b).try_connect().expect("second recovery");
+                                                let peer = Peer::at(b).try_connect().expect("second recovery");
                                                 peer.write_all(b"second").expect("second data");
                                                 assert_eq!(host.try_wait(&second.received, 1).expect("second receive"), Wait::Reached);
                                                 return;
@@ -312,7 +312,7 @@ fn burst_recovers() {
                     case.try_wait(&trace.closed, 1).expect("first close"),
                     Wait::Reached
                 );
-                let mut peer = Peer::at(case.addr()).try_connect().expect("recovery peer");
+                let peer = Peer::at(case.addr()).try_connect().expect("recovery peer");
                 peer.write_all(b"recovered").expect("recovery data");
                 assert_eq!(
                     case.try_wait(&trace.received, 1).expect("recovery receive"),

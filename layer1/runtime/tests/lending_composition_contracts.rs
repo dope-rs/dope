@@ -9,8 +9,11 @@ fn ownership_contracts() -> Result<(), Error> {
         file!(),
         &["dope-core", "dope-runtime"],
     );
-    let exe = env::current_exe()?;
-    let output = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let exe = env::current_exe().expect("current test executable");
+    let output = suite
+        .try_build(&exe, env!("CARGO_PKG_NAME"))?
+        .output()
+        .expect("run cargo");
     let suite = suite.try_collect(&exe, output)?;
     let output_escape = include_str!("common/contracts/positive.rs")
         .replace("|data, _app| data", "|_data, _app| _client");
@@ -184,7 +187,7 @@ fn ownership_contracts() -> Result<(), Error> {
             "error: lifetime may not live long enough",
         ),
     ] {
-        let output = suite.try_compile(source)?;
+        let output = compile(&mut suite.compiler(), source);
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert!(
             output.status.success() == expected.is_empty() && diag.contains(expected),
@@ -192,4 +195,17 @@ fn ownership_contracts() -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

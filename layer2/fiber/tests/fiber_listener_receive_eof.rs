@@ -1,8 +1,4 @@
-use std::{
-    convert::Infallible,
-    io::{self, Read as _, Write as _},
-    net::Shutdown,
-};
+use std::{convert::Infallible, net::Shutdown};
 
 use dope::{
     core::{
@@ -114,8 +110,7 @@ fn writes_after_eof() {
                                                 ));
                                                 assert!(matches!(io.read().await,
                                                     Err(Read::Transmit(Transmit::Io(SendFailure::Queued(error))))
-                                                        if matches!(io::Error::from(error).kind(),
-                                                            io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+                                                        if error.is_pipe() || error.is_reset()
                                                 ));
                                                 assert!(matches!(io.read().await, Ok(None)));
                                             }))

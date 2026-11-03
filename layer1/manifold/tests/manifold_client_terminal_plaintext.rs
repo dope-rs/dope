@@ -1,11 +1,6 @@
 pub mod common;
 
-use std::{
-    fmt::Debug,
-    io::{Read as _, Write as _},
-    rc::Rc,
-    time::Duration,
-};
+use std::{fmt::Debug, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     life::recovery,

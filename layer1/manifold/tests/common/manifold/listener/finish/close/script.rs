@@ -1,4 +1,4 @@
-use std::{convert, io, io::Write as _, net, pin::Pin, time};
+use std::{convert, net, pin::Pin, time};
 
 use dope_core::{
     driver::{retained, route::Identity, schedule::clock},
@@ -32,19 +32,19 @@ pub struct App<F> {
 
 #[derive(Debug)]
 pub enum Read {
-    Connect(peer::Connect),
-    Write(io::Error),
-    Receive(io::Error),
+    Connect(peer::Error),
+    Write(peer::Error),
+    Receive(peer::Error),
 }
 
 pub struct Script(pub(crate) net::SocketAddr);
 impl Script {
     pub fn try_read(self) -> Result<Vec<u8>, Read> {
-        let mut stream = Peer::at(self.0)
+        let stream = Peer::at(self.0)
             .try_read(time::Duration::from_secs(10))
             .map_err(Read::Connect)?;
         stream.write_all(b"REQ").map_err(Read::Write)?;
-        Peer::try_read_all(&mut stream).map_err(Read::Receive)
+        Peer::try_read_all(&stream).map_err(Read::Receive)
     }
 }
 

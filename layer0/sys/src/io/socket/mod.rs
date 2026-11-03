@@ -323,6 +323,44 @@ pub trait Socket: errno::Source {
         }
     }
 
+    /// Observes the connected peer into caller-owned native address storage.
+    fn peer_addr<E: From<Errno>>(
+        file: BorrowedFd<'_>,
+        address: &mut addr::Storage,
+    ) -> Result<(), E> {
+        let (storage, len) = address.output_mut();
+        *len = mem::size_of_val(storage) as socklen_t;
+        // SAFETY: both exclusive output borrows retain their full native extents.
+        let raw =
+            unsafe { libc::getpeername(file.as_raw_fd(), ptr::from_mut(storage).cast(), len) };
+        // SAFETY: getpeername returns zero or -1; errno is captured immediately.
+        unsafe {
+            kernel::raw::Status::new(raw).try_zero(|| kernel::raw::Code::last::<Self>().into())
+        }
+    }
+
+    /// Makes closing this exclusively owned connection send a reset.
+    fn reset_on_close<E: From<Errno>>(file: BorrowedFd<'_>) -> Result<(), E> {
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        // SAFETY: the live descriptor and complete native value outlive the call.
+        let raw = unsafe {
+            libc::setsockopt(
+                file.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                ptr::from_ref(&linger).cast(),
+                mem::size_of_val(&linger) as socklen_t,
+            )
+        };
+        // SAFETY: setsockopt returns zero or -1; errno is captured immediately.
+        unsafe {
+            kernel::raw::Status::new(raw).try_zero(|| kernel::raw::Code::last::<Self>().into())
+        }
+    }
+
     /// Observes the socket type of one adopted descriptor.
     fn kind<E: From<Errno>>(file: BorrowedFd<'_>) -> Result<Type, E> {
         Self::get_option::<{ libc::SO_TYPE }, E>(file).map(Type)
@@ -432,6 +470,55 @@ pub trait Socket: errno::Source {
         };
         // SAFETY: the admitted flags exclude MSG_TRUNC, so recv cannot report a
         // successful count beyond the supplied output capacity.
+        unsafe {
+            io::raw::Buffer::try_native(output, raw, || kernel::raw::Code::last::<Self>().into())
+        }
+    }
+
+    /// Sends one datagram to the retained native destination.
+    fn send_to<'a, E: From<Errno>>(
+        file: BorrowedFd<'_>,
+        input: &'a [u8],
+        address: addr::Addr<'_>,
+    ) -> Result<&'a [u8], E> {
+        let (address, len) = address.parts();
+        // SAFETY: the input and admitted address retain their complete extents.
+        let raw = unsafe {
+            libc::sendto(
+                file.as_raw_fd(),
+                input.as_ptr().cast(),
+                input.len(),
+                libc::MSG_NOSIGNAL,
+                address,
+                len.raw(),
+            )
+        };
+        // SAFETY: sendto returns -1 or a count within this exact input extent.
+        unsafe {
+            io::raw::Buffer::try_native(input, raw, || kernel::raw::Code::last::<Self>().into())
+        }
+    }
+
+    /// Receives one datagram and its source into caller-owned storage.
+    fn recv_from<'a, E: From<Errno>>(
+        file: BorrowedFd<'_>,
+        output: &'a mut [u8],
+        address: &mut addr::Storage,
+    ) -> Result<&'a mut [u8], E> {
+        let (storage, len) = address.output_mut();
+        *len = mem::size_of_val(storage) as socklen_t;
+        // SAFETY: the exclusive output and address borrows retain their full extents.
+        let raw = unsafe {
+            libc::recvfrom(
+                file.as_raw_fd(),
+                output.as_mut_ptr().cast(),
+                output.len(),
+                0,
+                ptr::from_mut(storage).cast(),
+                len,
+            )
+        };
+        // SAFETY: without MSG_TRUNC, recvfrom returns -1 or initializes at most output.len().
         unsafe {
             io::raw::Buffer::try_native(output, raw, || kernel::raw::Code::last::<Self>().into())
         }

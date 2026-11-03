@@ -5,11 +5,7 @@ use crate::common::runtime::{self, Setup};
 pub mod common;
 use common::recover;
 
-use std::{
-    io::{Read, Write},
-    net::Shutdown,
-    time::Duration,
-};
+use std::{net::Shutdown, time::Duration};
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},

@@ -1,7 +1,6 @@
 pub mod common;
 
 use std::{
-    io::Read as _,
     iter, mem,
     num::NonZeroUsize,
     os::fd::{AsFd as _, AsRawFd as _},

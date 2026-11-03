@@ -1,5 +1,4 @@
 use std::{
-    io,
     net::{Ipv4Addr, SocketAddr},
     num::NonZero,
     pin::Pin,
@@ -13,7 +12,10 @@ use dope_manifold::network::datagram::{
     hook::{self, app::Schedule, ingress},
     send::{self, owners},
 };
-use dope_test::harness::{peer::udp, signals::Gate};
+use dope_test::harness::{
+    peer::{self, udp},
+    signals::Gate,
+};
 use o3::buffer::pool;
 
 use crate::common::manifold::datagram::handler;
@@ -25,7 +27,7 @@ pub struct Collected {
 
 #[derive(Debug)]
 pub enum Collect {
-    Io(io::Error),
+    Io(peer::Error),
     Source {
         expected: SocketAddr,
         actual: SocketAddr,

@@ -5,7 +5,6 @@ pub mod common;
 use std::{
     cell::{Cell, RefCell},
     fmt::Debug,
-    io::{Read as _, Write as _},
     rc::Rc,
     time::Duration,
 };
@@ -139,11 +138,8 @@ fn close_relays_capacity() {
             for peer in peers.iter_mut() {
                 if let Err(error) = peer.write_all(b"open") {
                     assert!(
-                        matches!(
-                            error.kind(),
-                            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
-                        ),
-                        "unexpected open failure: {error}"
+                        matches!(error, peer::Error::Syscall(error) if error.is_reset() || error.is_pipe()),
+                        "unexpected open failure: {error:?}"
                     );
                 }
             }
@@ -157,13 +153,9 @@ fn close_relays_capacity() {
                     }
                     Err(error) => {
                         assert!(
-                            matches!(
-                                error.kind(),
-                                std::io::ErrorKind::UnexpectedEof
-                                    | std::io::ErrorKind::ConnectionReset
-                                    | std::io::ErrorKind::BrokenPipe
-                            ),
-                            "unexpected read failure: {error}"
+                            matches!(error, peer::Error::UnexpectedEof)
+                                || matches!(error, peer::Error::Syscall(error) if error.is_reset() || error.is_pipe()),
+                            "unexpected read failure: {error:?}"
                         );
                     }
                 }

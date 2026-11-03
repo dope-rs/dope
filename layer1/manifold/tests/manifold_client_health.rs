@@ -2,7 +2,6 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    io,
     net::TcpListener,
     rc::Rc,
     time::{Duration, Instant},
@@ -42,7 +41,7 @@ use dope_test::{
     harness::{
         GUARD,
         observe::Trace,
-        peer::{AcceptScript, TcpScript},
+        peer::{self, AcceptScript, TcpScript},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -95,7 +94,7 @@ fn stale_epoch_is_ignored() {
                 "release recovered connections"
             );
             drop((probe, next));
-            Ok::<_, io::Error>(())
+            Ok::<_, peer::Error>(())
         },
         |server| {
             let addr = server.addr();

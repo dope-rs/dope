@@ -1,9 +1,11 @@
-use std::{env, fs, os::fd::AsFd as _, time};
+use std::{
+    env, fs,
+    os::{fd::AsFd as _, unix::ffi::OsStrExt as _},
+    time,
+};
 
 use dope_core::Backend;
 use dope_sys::{io::file::Mode, kernel::errno::Source as _};
-
-use crate::common::file::NativePath as _;
 
 pub mod common;
 use common::file::Failure;
@@ -17,7 +19,7 @@ use dope_test::harness::support::file::Directory;
 fn preserves_file_ownership() {
     let base = env::temp_dir();
     let temp = Directory::try_with(&base, "syscalls", cleanup).expect("isolated directory");
-    let mut path = temp.c_path().expect("directory path").into_bytes();
+    let mut path = temp.path().as_os_str().as_bytes().to_vec();
     path.extend_from_slice(b"/data");
     let path = std::ffi::CString::new(path).expect("child path");
     let file = open::Options::new(open::Access::ReadWrite)
@@ -101,7 +103,7 @@ fn reads_at_without_moving_cursor() {
 fn open_keeps_failure() {
     let base = env::temp_dir();
     let temp = Directory::try_with(&base, "syscalls", cleanup).expect("isolated directory");
-    let mut path = temp.c_path().expect("directory path").into_bytes();
+    let mut path = temp.path().as_os_str().as_bytes().to_vec();
     path.extend_from_slice(b"/missing");
     let path = std::ffi::CString::new(path).expect("child path");
     let failure = open::Options::new(open::Access::Read)
@@ -159,12 +161,12 @@ fn close_releases_endpoint() {
 
 #[test]
 fn pipe_keeps_nonblocking() {
-    use std::{io::Read as _, os::fd::AsRawFd as _};
+    use std::os::fd::AsRawFd as _;
 
-    use dope_core::platform::wake::Ends;
+    use dope_core::{dope_sys::io::fd::Fd as _, platform::wake::Ends};
 
     let mut output = [0; 16];
-    let mut read = {
+    let read = {
         let (read, write) = Ends::event().expect("open nonblocking pipe").split();
         for file in [read.as_fd(), write.as_fd()] {
             // SAFETY: descriptor flags are read from a live borrowed pipe endpoint.
@@ -172,18 +174,25 @@ fn pipe_keeps_nonblocking() {
             assert!(flags >= 0);
             assert_ne!(flags & libc::O_NONBLOCK, 0);
         }
-        let mut read = fs::File::from(read);
-        let empty = read
-            .read(&mut output)
+        let empty = Backend::read::<Errno>(read.as_fd(), &mut output)
             .err()
-            .map(|error| Errno::try_from(error).expect("native error").is_block());
+            .map(Errno::is_block);
         assert_eq!(empty, Some(true), "empty live pipe would block");
         write.notify().expect("write notification");
-        assert_eq!(read.read(&mut output).expect("read pipe"), 1);
+        assert_eq!(
+            Backend::read::<Errno>(read.as_fd(), &mut output)
+                .expect("read pipe")
+                .len(),
+            1
+        );
         assert_eq!(output[0], 1);
         read
     };
-    assert_eq!(read.read(&mut output).expect("closed pipe reports EOF"), 0);
+    assert!(
+        Backend::read::<Errno>(read.as_fd(), &mut output)
+            .expect("closed pipe reports EOF")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -204,6 +213,6 @@ fn wake_precedes_timeout() {
     ));
 }
 
-fn cleanup(result: std::io::Result<()>) {
+fn cleanup(result: Result<(), dope_test::harness::support::file::Error>) {
     result.expect("fixture directory cleanup");
 }

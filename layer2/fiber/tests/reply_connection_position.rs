@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{cell::Cell, convert::Infallible, io::Read as _, num::NonZero};
+use std::{cell::Cell, convert::Infallible, num::NonZero};
 
 use common::{
     runtime::Setup,

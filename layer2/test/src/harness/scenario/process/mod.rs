@@ -1,11 +1,13 @@
-use std::{env, io, process, time};
+use std::{ffi::OsStr, path::Path, process, time};
 
-use dope_core::platform::wake;
+use dope_core::{Errno, platform::wake};
 
 use crate::harness::scenario::{native, run};
 
 pub mod deadline;
 mod state;
+
+pub const CHILD: &str = "O3_TEST_CHILD";
 
 pub struct Deadline<'scope> {
     cancel: Option<wake::Notify>,
@@ -65,9 +67,9 @@ impl Deadline<'_> {
 
 #[derive(Debug)]
 pub enum Error {
-    Limit(io::Error),
-    Signal(io::Error),
-    Both { limit: io::Error, signal: io::Error },
+    Limit(Errno),
+    Signal(Errno),
+    Both { limit: Errno, signal: Errno },
 }
 
 /// Native resource operations supplied by the consuming platform fixture.
@@ -75,11 +77,11 @@ pub trait Resource {
     type Limits;
     type Handler: Copy;
 
-    fn limits() -> io::Result<Self::Limits>;
-    fn soft(limits: &Self::Limits, value: u64) -> io::Result<()>;
-    fn restore(limits: &Self::Limits) -> io::Result<()>;
-    fn ignore() -> io::Result<Self::Handler>;
-    fn signal(handler: Self::Handler) -> io::Result<()>;
+    fn limits() -> Result<Self::Limits, Errno>;
+    fn soft(limits: &Self::Limits, value: u64) -> Result<(), Errno>;
+    fn restore(limits: &Self::Limits) -> Result<(), Errno>;
+    fn ignore() -> Result<Self::Handler, Errno>;
+    fn signal(handler: Self::Handler) -> Result<(), Errno>;
 }
 
 /// One integration test run in its own child process.
@@ -89,30 +91,45 @@ pub struct Test<'a> {
 }
 
 impl Test<'_> {
-    pub fn try_run(self, run: impl FnOnce()) -> io::Result<Option<process::Output>> {
-        self.try_invoke(run, false)
+    pub fn run(
+        self,
+        exe: &Path,
+        child: Option<&OsStr>,
+        run: impl FnOnce(),
+    ) -> Option<process::Command> {
+        self.invoke(exe, child, run, false)
     }
 
-    /// Runs the child directly so libtest cannot replace its termination signal.
-    pub fn try_signal(self, run: impl FnOnce()) -> io::Result<Option<process::Output>> {
-        self.try_invoke(run, true)
+    /// Configures direct child execution so libtest cannot replace its termination signal.
+    pub fn signal(
+        self,
+        exe: &Path,
+        child: Option<&OsStr>,
+        run: impl FnOnce(),
+    ) -> Option<process::Command> {
+        self.invoke(exe, child, run, true)
     }
 
-    fn try_invoke(self, run: impl FnOnce(), direct: bool) -> io::Result<Option<process::Output>> {
-        const FLAG: &str = "O3_TEST_CHILD";
-        if env::var_os(FLAG).as_deref() == Some(std::ffi::OsStr::new(self.name)) {
+    fn invoke(
+        self,
+        exe: &Path,
+        child: Option<&OsStr>,
+        run: impl FnOnce(),
+        direct: bool,
+    ) -> Option<process::Command> {
+        if child == Some(OsStr::new(self.name)) {
             run();
-            return Ok(None);
+            return None;
         }
-        let mut child = process::Command::new(env::current_exe()?);
+        let mut child = process::Command::new(exe);
         child
             .args([self.name, "--exact"])
-            .env(FLAG, self.name)
+            .env(CHILD, self.name)
             .env_remove("__RUST_TEST_INVOKE");
         if direct {
             child.env("__RUST_TEST_INVOKE", self.name);
         }
-        child.output().map(Some)
+        Some(child)
     }
 }
 

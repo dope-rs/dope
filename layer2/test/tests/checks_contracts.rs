@@ -9,13 +9,16 @@ use dope_test::checks::{Error, Suite};
 
 #[test]
 fn selects_exact_artifacts() -> Result<(), Error> {
-    let exe = env::current_exe()?;
+    let exe = env::current_exe().expect("current test executable");
     let suite = Suite::new(env!("CARGO_MANIFEST_DIR"), file!(), PACKAGES);
     let actual = Suite {
         packages: &["dope-test", "o3"],
         ..suite
     };
-    let output = actual.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let output = actual
+        .try_build(&exe, env!("CARGO_PKG_NAME"))?
+        .output()
+        .expect("run cargo");
     actual.try_collect(&exe, output)?;
     let output = checks::output(&format!("{NATIVE_PATH}\n{ARTIFACT}\n{ARTIFACT}\n"));
     let artifacts = suite.try_collect(&exe, output)?;
@@ -41,7 +44,7 @@ fn selects_exact_artifacts() -> Result<(), Error> {
 
 #[test]
 fn rejects_ambiguous_missing_and_invalid_artifacts() -> Result<(), Error> {
-    let exe = env::current_exe()?;
+    let exe = env::current_exe().expect("current test executable");
     let suite = || Suite::new(env!("CARGO_MANIFEST_DIR"), file!(), PACKAGES);
     assert!(matches!(
         suite().try_collect(&exe, checks::output(&format!("{ARTIFACT}\n{FOREIGN}\n"))),
@@ -63,7 +66,7 @@ fn rejects_ambiguous_missing_and_invalid_artifacts() -> Result<(), Error> {
     let artifacts = Suite::new(env!("CARGO_MANIFEST_DIR"), file!(), &[])
         .try_collect(&exe, checks::output(""))?;
     let error = artifacts
-        .try_errors(MIXED_ERRORS)
+        .try_errors(MIXED_ERRORS, compile)
         .expect_err("unrelated compiler errors");
     let Error::Contract { output, .. } = error else {
         panic!("unexpected error: {error:?}");
@@ -72,4 +75,17 @@ fn rejects_ambiguous_missing_and_invalid_artifacts() -> Result<(), Error> {
     assert!(diagnostics.contains("error[E0308]:"));
     assert!(diagnostics.contains("error[E0425]:"));
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

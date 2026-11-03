@@ -1,13 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell,
-    convert::Infallible,
-    fmt::Debug,
-    io::{self, Read as _, Write as _},
-    marker::PhantomData,
-    rc::Rc,
-};
+use std::{cell::Cell, convert::Infallible, fmt::Debug, marker::PhantomData, rc::Rc};
 
 use dope_core::driver::{
     life::recovery,
@@ -22,7 +15,7 @@ use dope_runtime::{executor::session::Completion, topology::error::Kind};
 use dope_test::{
     fibers::{Run, Wait},
     harness::{
-        peer::Peer,
+        peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -83,7 +76,7 @@ fn resumes_owned_plaintext() {
             |case| {
                 Peer::at(case.addr())
                     .with(
-                        |stream| -> io::Result<_> {
+                        |stream| -> Result<_, peer::Error> {
                             stream.write_all(b"x")?;
                             let mut response = [0; OWNED_REPLY.len()];
                             stream.read_exact(&mut response)?;

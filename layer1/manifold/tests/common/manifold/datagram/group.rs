@@ -1,4 +1,4 @@
-use std::{io, net, num::NonZero, pin::Pin, task::Poll};
+use std::{net, num::NonZero, pin::Pin, task::Poll};
 
 use dope_core::{
     driver::route::{KeyTag, indices::SlotIndex},
@@ -6,7 +6,7 @@ use dope_core::{
 };
 use dope_manifold::network::datagram::{group, packet::Packet, send::Outcome};
 use dope_runtime::executor::root;
-use dope_test::harness::signals::Gate;
+use dope_test::harness::{peer, signals::Gate};
 
 pub struct State {
     pub client: net::SocketAddr,
@@ -82,13 +82,13 @@ pub struct App<'d, H> {
 }
 
 pub struct Read<'a> {
-    pub socket: &'a net::UdpSocket,
+    pub socket: &'a peer::udp::Socket<'a>,
     pub bytes: &'a mut [u8],
     pub credits: NonZero<usize>,
 }
 
 impl<'d> root::Root<'d> for Read<'_> {
-    type Output = io::Result<(usize, net::SocketAddr, usize)>;
+    type Output = Result<(usize, net::SocketAddr, usize), peer::Error>;
 
     fn poll(context: root::Context<'_, 'd, Self>) -> Poll<Self::Output> {
         let (this, wake, work, _) = context.into_parts();
@@ -99,7 +99,7 @@ impl<'d> root::Root<'d> for Read<'_> {
             }
         }
         match this.socket.recv_from(this.bytes) {
-            Err(cause) if cause.kind() == io::ErrorKind::WouldBlock => {
+            Err(peer::Error::Syscall(cause)) if cause.is_block() => {
                 wake.wake();
                 Poll::Pending
             }

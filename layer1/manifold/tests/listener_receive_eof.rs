@@ -1,12 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell,
-    io::{Read as _, Write as _},
-    net::Shutdown,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, net::Shutdown, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::terminal::{
@@ -82,7 +76,7 @@ fn eof_holds_gated_tail() {
         .with_run(
             &mut finish,
             |case| {
-                let mut peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
                 peer.write_all(b"x").expect("write request");
                 assert_eq!(
                     case.try_wait(&ready, 1).expect("initial scoped input"),
@@ -217,7 +211,7 @@ fn eof_flushes_control() {
         .with_run(
             &mut finish,
             |case| {
-                let mut peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
                 peer.write_all(b"x").expect("write request");
                 assert_eq!(case.try_wait(&eof, 1).expect("wire EOF"), Wait::Reached);
                 case.try_pause(Duration::from_millis(20))

@@ -1,10 +1,6 @@
 pub mod common;
 
-use std::{
-    convert::Infallible,
-    io::{self, Read, Write},
-    net::Shutdown,
-};
+use std::{convert::Infallible, net::Shutdown};
 
 use common::{
     discard::{self, eof},
@@ -76,9 +72,9 @@ fn settled(reports: Vec<Reclaimed>) {
 #[test]
 fn tail_keeps_cancel() {
     let (reports, input) = eof::run::<input::Scoped>(
-        |pool, key, scope, mut peer| {
+        |pool, key, scope, peer| {
             let (flow, done) =
-                eof::final_byte(pool, key, scope, &mut peer).expect("final byte completion");
+                eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
             assert!(flow == Flow::More || std::env::consts::OS != "linux");
             let data = match pool.reserve().data(done) {
                 Reservation::Ready(data) => Some(data),
@@ -161,9 +157,9 @@ fn tail_keeps_cancel() {
 #[test]
 fn credit_return_keeps_eof() {
     let (reports, input) = eof::run::<input::Retained>(
-        |pool, key, scope, mut peer| {
+        |pool, key, scope, peer| {
             let (flow, done) =
-                eof::final_byte(pool, key, scope, &mut peer).expect("final byte completion");
+                eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
             let data = match pool.reserve().data(done) {
                 Reservation::Ready(data) => Some(data),
                 _ => None,
@@ -283,7 +279,7 @@ fn closing_settles_eof() {
 #[test]
 fn close_after_keeps_pending_reply() {
     let (reports, input) = eof::run::<input::Borrowed>(
-        |pool, key, scope, mut peer| {
+        |pool, key, scope, peer| {
             pool.get_mut(key).expect("live connection").close_after();
             let bytes = Shared::try_copy(b"reply").expect("pending response owner");
             let bytes = egress::NonEmpty::try_new(bytes).expect("nonempty response");
@@ -440,7 +436,7 @@ fn shutdown_wakes_terminal() {
 #[test]
 fn closing_wakes_exhaustion() {
     let (mut reports, input) = eof::run::<input::Scoped>(
-        |pool, key, scope, mut peer| {
+        |pool, key, scope, peer| {
             eof::arm(pool, key, scope).expect("receive admission");
             pool.suspend(key);
             for _ in 0..2 {
@@ -534,10 +530,7 @@ fn closing_wakes_reset() {
                 _ => None,
             }
             .expect("native reset error");
-            assert_eq!(
-                io::Error::from_raw_os_error(error.code().get()).kind(),
-                io::ErrorKind::ConnectionReset
-            );
+            assert!(error.is_reset());
             assert!(matches!(
                 pool.recv().dispatch(done),
                 Dispatch::Ready(ControlRecv::Failed { key: seen, error: cause })

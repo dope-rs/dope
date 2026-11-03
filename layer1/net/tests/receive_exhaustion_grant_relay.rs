@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, io::Write, net::Shutdown, time::Duration};
+use std::{convert::Infallible, net::Shutdown, time::Duration};
 
 use common::{discard::eof, wire::Input};
 use dope_core::{
@@ -40,7 +40,7 @@ fn idle_peer_progress() {
             };
             let mut tails = 0;
             let (reports, input) = eof::run_pair::<input::Scoped>(
-                |pool, [a, b], scope, [left, mut right]| {
+                |pool, [a, b], scope, [left, right]| {
                     eof::arm(pool, b, scope).expect("receive admission");
                     let [first, second] = [(); 2].map(|()| {
                         right.write_all(b"H").expect("hold native buffer");

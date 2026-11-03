@@ -1,4 +1,4 @@
-use std::{convert::Infallible, io, net::Shutdown};
+use std::{convert::Infallible, net::Shutdown};
 
 use dope::{
     core::{
@@ -71,8 +71,7 @@ fn reports_send_failure() {
                                         ));
                                         assert!(matches!(app.block_on(stream.read())?,
                                             Err(Read::Transmit(Transmit::Io(SendFailure::Queued(error))))
-                                                if matches!(io::Error::from(error).kind(),
-                                                    io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+                                                if error.is_pipe() || error.is_reset()
                                         ));
                                         assert!(matches!(app.block_on(stream.read())?, Ok(None)));
                                         Ok::<_, drive::Error>(())

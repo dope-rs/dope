@@ -1,4 +1,4 @@
-use std::{convert, io::Error, mem, num};
+use std::{convert, mem, num};
 
 use o3::{base::time::Positive, buffer, mem::quota};
 
@@ -66,6 +66,18 @@ impl Errno {
         self.0.get() == libc::EPIPE
     }
 
+    pub const fn is_reset(self) -> bool {
+        self.0.get() == libc::ECONNRESET
+    }
+
+    pub const fn is_aborted(self) -> bool {
+        self.0.get() == libc::ECONNABORTED
+    }
+
+    pub const fn is_not_connected(self) -> bool {
+        self.0.get() == libc::ENOTCONN
+    }
+
     pub const fn is_not_found(self) -> bool {
         self.0.get() == libc::ENOENT || self.0.get() == libc::ENOTDIR
     }
@@ -99,23 +111,6 @@ impl TryFrom<num::NonZero<i32>> for Errno {
                 maximum: i32::MAX as libc::ssize_t,
             })
         }
-    }
-}
-
-impl TryFrom<Error> for Errno {
-    type Error = Error;
-
-    fn try_from(error: Self::Error) -> Result<Self, Self::Error> {
-        match error.raw_os_error() {
-            Some(raw) => Self::try_from(raw).map_err(|_| error),
-            None => Err(error),
-        }
-    }
-}
-
-impl From<Errno> for Error {
-    fn from(error: Errno) -> Self {
-        Self::from_raw_os_error(error.code().get())
     }
 }
 

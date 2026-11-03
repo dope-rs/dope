@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr, num::TryFromIntError};
+use std::{net::SocketAddr, num::TryFromIntError};
 
 use dope::{manifold::app::creation, runtime::executor::session};
 use dope_dns::{
@@ -39,5 +39,5 @@ pub enum Server {
     Pointer,
     Offset(usize),
     Length(TryFromIntError),
-    Io(io::Error),
+    Io(dope_test::harness::peer::Error),
 }

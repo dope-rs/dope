@@ -1,17 +1,20 @@
 use std::{
-    io::{self, ErrorKind, Read as _, Write as _},
+    mem,
     num::NonZeroUsize,
-    os::{fd::AsFd as _, unix::net::UnixStream},
-    time,
+    os::fd::{self, AsFd as _, AsRawFd as _},
+    ptr,
 };
 
 use dope_kqueue::Kqueue;
 use dope_sys::{
-    Errno,
-    io::{reactor::ready::Poll as _, socket, socket::Prepare as _},
+    Errno, Nonblock,
+    io::{
+        fd::Fd as _, reactor::ready::Poll as _, socket, socket::Prepare as _, socket::Socket as _,
+    },
+    kernel::raw::{Code, Status},
     table::{self, Files as _, change},
 };
-use o3::base::num::bounded;
+use o3::base::{marker::ThreadBound, num::bounded};
 
 use crate::common::{
     Files, Poll,
@@ -23,48 +26,107 @@ use crate::common::{
 
 type Handle = <Files as table::Files<Slots>>::Handle;
 type Index = <Slots as change::raw::Slots>::Index;
-type Pair = (Option<UnixStream>, UnixStream);
+type Pair = (Option<Peer>, Peer);
 
 #[derive(Debug)]
 pub enum Error {
-    Pair(io::Error),
-    Timeout(io::Error),
-    Nonblock(io::Error),
-    Clone(io::Error),
-    Write(io::Error),
-    Read(io::Error),
+    Pair(socket::record::Error),
+    Timeout(Errno),
+    Nonblock(Nonblock),
+    Write(Errno),
+    Read(Errno),
     Adopt(socket::Setup),
     Install(table::Install<Index>),
     Arm(Errno),
     Missing(Physical),
     WriteZero,
+    UnexpectedEof,
     Empty,
     Overflow(bounded::Error),
 }
 
-pub fn try_pair() -> Result<(Handle, UnixStream), Error> {
-    let (stream, peer) = UnixStream::pair().map_err(Error::Pair)?;
-    peer.set_read_timeout(Some(time::Duration::from_secs(5)))
-        .map_err(Error::Timeout)?;
-    let handle = Kqueue::adopt(stream.into()).map_err(Error::Adopt)?;
-    Ok((handle, peer))
+pub struct Peer {
+    file: fd::OwnedFd,
+    _thread: ThreadBound,
 }
 
-pub fn try_exchange(
-    files: &Files,
-    slot: Physical,
-    peer: &mut UnixStream,
-) -> Result<[u8; 1], Error> {
-    let owned = files
-        .borrow(slot)
-        .ok_or(Error::Missing(slot))?
-        .try_clone_to_owned()
-        .map_err(Error::Clone)?;
-    let mut stream = UnixStream::from(owned);
-    peer.write_all(b"x").map_err(Error::Write)?;
+impl Peer {
+    fn new(file: fd::OwnedFd) -> Self {
+        Self {
+            file,
+            _thread: ThreadBound::NEW,
+        }
+    }
+
+    pub fn read(&mut self, output: &mut [u8]) -> Result<usize, Errno> {
+        read(self.as_fd(), output)
+    }
+
+    pub fn write_all(&mut self, mut input: &[u8]) -> Result<(), Error> {
+        while !input.is_empty() {
+            match Kqueue::send_quiet::<Errno>(self.as_fd(), input) {
+                Ok([]) => return Err(Error::WriteZero),
+                Ok(bytes) => input = &input[bytes.len()..],
+                Err(error) if error.is_intr() => {}
+                Err(error) => return Err(Error::Write(error)),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fd::AsFd for Peer {
+    fn as_fd(&self) -> fd::BorrowedFd<'_> {
+        self.file.as_fd()
+    }
+}
+
+impl fd::AsRawFd for Peer {
+    fn as_raw_fd(&self) -> fd::RawFd {
+        self.file.as_raw_fd()
+    }
+}
+
+pub fn try_pair() -> Result<(Handle, Peer), Error> {
+    let (stream, peer) = Kqueue::pair().map_err(Error::Pair)?;
+    let timeout = libc::timeval {
+        tv_sec: 5,
+        tv_usec: 0,
+    };
+    // SAFETY: the live socket and complete timeval stay borrowed through setsockopt;
+    // its result is zero or -1, with the failing errno captured immediately.
+    unsafe {
+        Status::new(libc::setsockopt(
+            peer.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            ptr::from_ref(&timeout).cast(),
+            mem::size_of::<libc::timeval>() as libc::socklen_t,
+        ))
+        .try_zero::<Errno>(|| Code::last::<Kqueue>().into())
+    }
+    .map_err(Error::Timeout)?;
+    let handle = Kqueue::adopt(stream).map_err(Error::Adopt)?;
+    Ok((handle, Peer::new(peer)))
+}
+
+pub fn try_exchange(files: &Files, slot: Physical, peer: &mut Peer) -> Result<[u8; 1], Error> {
+    let stream = files.borrow(slot).ok_or(Error::Missing(slot))?;
+    peer.write_all(b"x")?;
     let mut byte = [0];
-    stream.read_exact(&mut byte).map_err(Error::Read)?;
-    Ok(byte)
+    match read(stream, &mut byte).map_err(Error::Read)? {
+        0 => Err(Error::UnexpectedEof),
+        _ => Ok(byte),
+    }
+}
+
+fn read(file: fd::BorrowedFd<'_>, output: &mut [u8]) -> Result<usize, Errno> {
+    loop {
+        match Kqueue::read::<Errno>(file, output) {
+            Err(error) if error.is_intr() => {}
+            result => return result.map(|bytes| bytes.len()),
+        }
+    }
 }
 
 pub fn try_pairs(poll: &mut Poll, files: &mut Files) -> Result<[Pair; 3], Error> {
@@ -77,10 +139,10 @@ pub fn try_pairs(poll: &mut Poll, files: &mut Files) -> Result<[Pair; 3], Error>
 }
 
 fn try_arm(poll: &mut Poll, files: &mut Files, token: NonZeroUsize) -> Result<Pair, Error> {
-    let (read, write) = UnixStream::pair().map_err(Error::Pair)?;
+    let (read, write) = Kqueue::pair().map_err(Error::Pair)?;
     let read = if token == NonZeroUsize::MIN {
         let slot = Physical::at::<1>();
-        let handle = Kqueue::adopt(read.into()).map_err(Error::Adopt)?;
+        let handle = Kqueue::adopt(read).map_err(Error::Adopt)?;
         files
             .install(Owned::from(slot), handle)
             .map_err(Error::Install)?;
@@ -89,23 +151,21 @@ fn try_arm(poll: &mut Poll, files: &mut Files, token: NonZeroUsize) -> Result<Pa
         None
     } else {
         poll.arm_shutdown(read.as_fd(), token).map_err(Error::Arm)?;
-        Some(read)
+        Some(Peer::new(read))
     };
-    Ok((read, write))
+    Ok((read, Peer::new(write)))
 }
 
-pub fn try_blocked() -> Result<(Handle, UnixStream, NonZeroUsize), Error> {
+pub fn try_blocked() -> Result<(Handle, Peer, NonZeroUsize), Error> {
     let (socket, peer) = try_pair()?;
-    peer.set_nonblocking(true).map_err(Error::Nonblock)?;
-    let mut writer = UnixStream::from(socket.as_fd().try_clone_to_owned().map_err(Error::Clone)?);
+    Kqueue::update::<Nonblock>(peer.as_fd()).map_err(Error::Nonblock)?;
     let mut buffered = bounded::Usize::<{ usize::MAX }>::ZERO;
     loop {
-        match writer.write(&[42; 4096]) {
-            Ok(0) => return Err(Error::WriteZero),
-            Ok(count) => {
-                buffered = buffered.try_add(count).map_err(Error::Overflow)?;
-            }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+        match Kqueue::send_quiet::<Errno>(socket.as_fd(), &[42; 4096]) {
+            Ok([]) => return Err(Error::WriteZero),
+            Ok(bytes) => buffered = buffered.try_add(bytes.len()).map_err(Error::Overflow)?,
+            Err(error) if error.is_block() => break,
+            Err(error) if error.is_intr() => {}
             Err(error) => return Err(Error::Write(error)),
         }
     }

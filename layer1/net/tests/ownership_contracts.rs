@@ -4,13 +4,16 @@ use dope_test::checks::{Error, Suite};
 
 #[test]
 fn ownership_contracts() -> Result<(), Error> {
-    let exe = env::current_exe()?;
+    let exe = env::current_exe().expect("current test executable");
     let suite = Suite::new(
         env!("CARGO_MANIFEST_DIR"),
         file!(),
         &["dope-net", "dope-core", "o3"],
     );
-    let output = suite.try_build(&exe, "dope-net")?.output()?;
+    let output = suite
+        .try_build(&exe, "dope-net")?
+        .output()
+        .expect("run cargo");
     let suite = suite.try_collect(&exe, output)?;
 
     for (source, expected) in [
@@ -88,7 +91,7 @@ fn ownership_contracts() -> Result<(), Error> {
             "error[E0499]: cannot borrow `*token` as mutable more than once at a time",
         ),
     ] {
-        let output = suite.try_compile(source)?;
+        let output = compile(&mut suite.compiler(), source);
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert!(
             output.status.success() == expected.is_empty()
@@ -97,4 +100,17 @@ fn ownership_contracts() -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

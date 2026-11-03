@@ -1,4 +1,4 @@
-use std::{convert, io, pin::Pin};
+use std::{convert, pin::Pin};
 
 use dope_core::{
     driver::{retained, route::Identity, schedule::clock},
@@ -14,7 +14,7 @@ use dope_manifold::{
     },
 };
 use dope_net::link::slot::types::CloseGate;
-use dope_test::harness::signals::Gate;
+use dope_test::harness::{peer, signals::Gate};
 use o3::buffer::{bytes::TryRetain, resident};
 
 use crate::common::manifold::listener::finish::close::wire::Wire;
@@ -156,10 +156,10 @@ pub enum Stage {
 
 #[derive(Debug)]
 pub enum Flow {
-    First(io::Error),
-    Read(io::Error),
-    Second(io::Error),
-    Shutdown(io::Error),
+    First(peer::Error),
+    Read(peer::Error),
+    Second(peer::Error),
+    Shutdown(peer::Error),
 }
 
 impl<'d, ID: Identity, F: for<'a> Fn(Half<'a>)> Application<'d, ID> for Duplex<F> {

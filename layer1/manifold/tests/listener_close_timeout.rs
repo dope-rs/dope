@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{io::Write as _, rc::Rc};
+use std::rc::Rc;
 
 use common::manifold::listener::finish::close::{script, wire::Wire};
 use common::recover;
@@ -111,7 +111,7 @@ fn wait_keeps_deadlines() {
                                     start,
                                     Duration::from_secs(2),
                                     |mut app| {
-                                        let mut peer =
+                                        let peer =
                                             Peer::at(addr).try_connect().expect("connect peer");
                                         peer.write_all(b"REQ").expect("write request");
                                         app.drive_for(
@@ -207,7 +207,7 @@ fn shutdown_keeps_deadline() {
     let result = prepared.with_run(
         &mut finish,
         |case| {
-            let mut peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+            let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
             peer.write_all(b"REQ").expect("write request");
             assert_eq!(
                 case.try_wait(&received, 1).expect("receive request"),

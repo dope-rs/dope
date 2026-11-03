@@ -1,7 +1,5 @@
 use std::{
     env::consts::DLL_EXTENSION,
-    fs::File,
-    io::{self, Write as _},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
 };
@@ -195,17 +193,14 @@ impl Artifacts<'_> {
         rustdoc
             .args([
                 "--test",
-                "-",
                 "-Zunstable-options",
                 "--doctest-build-arg=-Znext-solver=globally",
             ])
-            .stdin(File::open(
-                Path::new(self.suite.manifest).join("tests").join(
-                    Path::new(self.suite.source)
-                        .file_name()
-                        .ok_or(Error::Target)?,
-                ),
-            )?)
+            .arg(
+                Path::new(self.suite.source)
+                    .file_name()
+                    .ok_or(Error::Target)?,
+            )
             .current_dir(&tests)
             .env("CARGO_MANIFEST_DIR", self.suite.manifest)
             .args(["--edition=2024", "-Cpanic=abort", "--test-run-directory"])
@@ -229,20 +224,22 @@ impl Artifacts<'_> {
             .arg("--out-dir")
             .arg(&self.outputs)
             .current_dir(Path::new(self.suite.manifest).join("tests"))
-            .env("CARGO_MANIFEST_DIR", self.suite.manifest);
+            .env("CARGO_MANIFEST_DIR", self.suite.manifest)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
         self.libraries(&mut compiler);
         compiler.arg("-");
         compiler
     }
 
-    /// Compiles one fixture while always collecting and reaping its compiler.
-    pub fn try_compile(&self, source: &str) -> Result<Output, Error> {
-        try_compile(&mut self.compiler(), source)
-    }
-
     /// Checks the original `compile_fail,E####` doc blocks that stable rustdoc treats
-    /// as plain text. Other doctests remain owned by `try_rustdoc`.
-    pub fn try_errors(&self, source: &str) -> Result<usize, Error> {
+    /// as plain text. The caller supplies compiler execution; `try_rustdoc` owns other doctests.
+    pub fn try_errors(
+        &self,
+        source: &str,
+        mut run: impl FnMut(&mut Command, &str) -> Output,
+    ) -> Result<usize, Error> {
         let mut lines = source.lines().enumerate();
         let mut count = 0;
         while let Some((line, text)) = lines.next() {
@@ -285,7 +282,7 @@ impl Artifacts<'_> {
                 body.insert_str(0, "fn main() {\n");
                 body.push_str("}\n");
             }
-            let output = self.try_compile(&body)?;
+            let output = run(&mut self.compiler(), &body);
             let expected = format!("error[{code}]:");
             let mut errors = output.stderr.split(|byte| *byte == b'\n').filter(|line| {
                 line.starts_with(b"error") && !line.starts_with(b"error: aborting due to")
@@ -333,7 +330,6 @@ impl Artifacts<'_> {
 
 #[derive(Debug)]
 pub enum Error {
-    Io(io::Error),
     Utf8(std::str::Utf8Error),
     Message {
         offset: usize,
@@ -346,7 +342,6 @@ pub enum Error {
         first: (String, PathBuf),
         next: (String, PathBuf),
     },
-    Input,
     Fixture {
         line: usize,
     },
@@ -358,30 +353,8 @@ pub enum Error {
     Target,
 }
 
-impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
 impl From<std::str::Utf8Error> for Error {
     fn from(error: std::str::Utf8Error) -> Self {
         Self::Utf8(error)
     }
-}
-
-/// Supplies an in-memory fixture to a configured compiler without creating a source copy.
-pub fn try_compile(command: &mut Command, source: &str) -> Result<Output, Error> {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let input = match child.stdin.take() {
-        Some(mut input) => input.write_all(source.as_bytes()).map_err(Error::Io),
-        None => Err(Error::Input),
-    };
-    let output = child.wait_with_output()?;
-    input?;
-    Ok(output)
 }

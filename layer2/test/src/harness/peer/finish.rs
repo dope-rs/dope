@@ -1,14 +1,15 @@
-use std::io;
-
 use dope_core::platform::wake;
 
-use crate::harness::{peer::Spawn, scenario::run};
+use crate::harness::{
+    peer::{Error, Spawn},
+    scenario::run,
+};
 
 #[derive(Debug)]
 pub enum Finish {
     Spawn(Spawn),
     Join(run::Join),
     Release(wake::WaitError),
-    Worker(io::Error),
+    Worker(Error),
     Timeout,
 }

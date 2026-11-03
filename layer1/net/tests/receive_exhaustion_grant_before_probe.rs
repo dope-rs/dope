@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{convert::Infallible, io::Write, net::Shutdown, ops::ControlFlow, time::Duration};
+use std::{convert::Infallible, net::Shutdown, ops::ControlFlow, time::Duration};
 
 use common::{discard::eof, wire::Input};
 use dope_core::{
@@ -40,7 +40,7 @@ fn grant_before_probe() {
             let active = matches!(order, Order::Active);
             let mut tail = false;
             let (reports, input) = eof::run::<input::Scoped>(
-                |pool, key, scope, mut peer| {
+                |pool, key, scope, peer| {
                     eof::arm(pool, key, scope).expect("receive admission");
                     let [first, second] = [(); 2].map(|()| {
                         peer.write_all(b"H").expect("hold native buffer");

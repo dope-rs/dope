@@ -1,9 +1,15 @@
-use std::{io, mem, ptr};
+use std::{mem, ptr};
+
+use dope_sys::{
+    Errno,
+    kernel::raw::{Code, Status},
+};
+use dope_uring::Uring;
 
 #[derive(Debug)]
 pub enum Error {
-    NoNewPrivileges(io::Error),
-    Filter(io::Error),
+    NoNewPrivileges(Errno),
+    Filter(Errno),
 }
 
 const LOAD: u32 = libc::BPF_LD | libc::BPF_W | libc::BPF_ABS;
@@ -86,23 +92,23 @@ fn install(filter: &mut [libc::sock_filter]) -> Result<(), Error> {
         filter: filter.as_mut_ptr(),
     };
     // SAFETY: all prctl arguments are scalars; the flag changes only this thread.
-    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-        return Err(Error::NoNewPrivileges(io::Error::last_os_error()));
+    unsafe {
+        Status::new(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
+            .try_zero::<Errno>(|| Code::last::<Uring>().into())
     }
+    .map_err(Error::NoNewPrivileges)?;
     // SAFETY: the complete program remains live during installation. Zero flags
     // exclude thread synchronization, and every unmatched syscall is allowed.
-    if unsafe {
-        libc::syscall(
+    unsafe {
+        Status::new(libc::syscall(
             libc::SYS_seccomp,
             libc::SECCOMP_SET_MODE_FILTER,
             0,
             ptr::from_ref(&program),
-        )
-    } != 0
-    {
-        return Err(Error::Filter(io::Error::last_os_error()));
+        ) as libc::c_int)
+        .try_zero::<Errno>(|| Code::last::<Uring>().into())
     }
-    Ok(())
+    .map_err(Error::Filter)
 }
 
 const fn instruction(code: u32, jt: u8, jf: u8, k: u32) -> libc::sock_filter {

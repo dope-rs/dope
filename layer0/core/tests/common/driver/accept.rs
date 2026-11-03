@@ -1,5 +1,5 @@
 use std::{
-    net::{SocketAddr, TcpStream},
+    net::SocketAddr,
     ops::ControlFlow,
     time::{Duration, Instant},
 };
@@ -8,13 +8,14 @@ use dope_core::{
     driver::{life, result::poll, retained::accept::Readiness},
     io::event::{Kind, net::accept::Completion},
 };
+use dope_test::harness::peer::{Peer, Stream};
 
 use super::Wait;
 
 pub fn connect<'d>(
     scope: &mut life::Scope<'_, 'd>,
     address: SocketAddr,
-) -> (TcpStream, Completion<'d>) {
+) -> (Stream<'static>, Completion<'d>) {
     let deadline = Instant::now() + Duration::from_secs(1);
     while !matches!(Readiness::from(scope.driver_ref()), Readiness::Ready) {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -32,7 +33,7 @@ pub fn connect<'d>(
             .expect("descriptor retirement");
         });
     }
-    let peer = TcpStream::connect(address).expect("peer");
+    let peer = Peer::at(address).try_connect().expect("peer");
     let mut completed = None;
     while completed.is_none() {
         let left = deadline.saturating_duration_since(Instant::now());

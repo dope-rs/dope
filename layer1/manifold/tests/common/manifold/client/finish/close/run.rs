@@ -1,4 +1,4 @@
-use std::{convert::Infallible, io, io::Write as _};
+use std::convert::Infallible;
 
 use dope_manifold::client::{
     close::Reason,
@@ -60,8 +60,8 @@ pub struct Run<C: Codec> {
     pub reason: Reason,
 }
 
-pub fn serve(acceptor: &mut peer::TcpAcceptor<'_>) -> io::Result<()> {
-    let mut first = acceptor.accept()?;
+pub fn serve(acceptor: &mut peer::TcpAcceptor<'_>) -> Result<(), peer::Error> {
+    let first = acceptor.accept()?;
     first.write_all(&[0xff])?;
     let second = acceptor.accept()?;
     let release = acceptor.accept()?;

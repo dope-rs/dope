@@ -1,9 +1,6 @@
 use std::{
     num::{NonZero, NonZeroUsize},
-    os::{
-        fd::{AsFd as _, AsRawFd as _, RawFd},
-        unix::net::UnixStream,
-    },
+    os::fd::{AsFd as _, AsRawFd as _, RawFd},
 };
 
 use dope_kqueue::Kqueue;
@@ -56,7 +53,7 @@ pub struct Blocked {
     pub state: State,
     pub poll: Poll,
     pub queue: Queue,
-    pub peer: UnixStream,
+    pub peer: socket::Peer,
     pub raw: RawFd,
     pub buffered: NonZeroUsize,
 }

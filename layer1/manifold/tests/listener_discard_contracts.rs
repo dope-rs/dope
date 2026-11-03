@@ -132,17 +132,20 @@ use dope_test::checks::{Error, Suite};
 
 #[test]
 fn discard_requires_enabled() -> Result<(), Error> {
-    let exe = env::current_exe()?;
+    let exe = env::current_exe().expect("current test executable");
     let suite = Suite::new(
         env!("CARGO_MANIFEST_DIR"),
         file!(),
         &["dope-core", "dope-net", "dope-manifold", "o3"],
     );
-    let output = suite.try_build(&exe, "dope-manifold")?.output()?;
+    let output = suite
+        .try_build(&exe, "dope-manifold")?
+        .output()
+        .expect("run cargo");
     let suite = suite.try_collect(&exe, output)?;
 
     assert_eq!(
-        suite.try_errors(include_str!("listener_discard_contracts.rs"))?,
+        suite.try_errors(include_str!("listener_discard_contracts.rs"), compile)?,
         11
     );
 
@@ -199,7 +202,7 @@ fn discard_requires_enabled() -> Result<(), Error> {
             &["lifetime may not live long enough"],
         ),
     ] {
-        let output = suite.try_compile(source)?;
+        let output = compile(&mut suite.compiler(), source);
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert!(
             output.status.success() == expected.is_empty()
@@ -208,4 +211,17 @@ fn discard_requires_enabled() -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

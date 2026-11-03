@@ -1,9 +1,9 @@
 use std::{
     convert::Infallible,
-    io::{self, Read as _, Write as _},
     iter,
-    net::{Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
-    os::fd::AsFd as _,
+    net::{Ipv6Addr, SocketAddr},
+    num::TryFromIntError,
+    os::fd::{AsFd as _, OwnedFd},
     time::Duration,
 };
 
@@ -18,7 +18,10 @@ use dope::core::{
 };
 use dope::runtime::executor::session::Completion;
 use dope_dns::config;
-use dope_test::harness::scenario::run::Task as _;
+use dope_test::harness::{
+    peer::{self, Stream, TcpAcceptor, udp},
+    scenario::run::Task as _,
+};
 use o3::alloc;
 
 use super::{ADDRESSES, LANES, OUTBOUND, Run, compose, try_configure};
@@ -26,7 +29,9 @@ use crate::common::{cookies::Client, fixture};
 
 #[derive(Debug)]
 pub enum Failure {
-    Io(io::Error),
+    Io(peer::Error),
+    Packet,
+    Length(TryFromIntError),
     Kind(Option<u16>),
     Generation,
     Create(channel::Create),
@@ -35,7 +40,6 @@ pub enum Failure {
     Allocation(alloc::Error),
     Poll(Errno),
     Source(usize),
-    Peer(SocketAddr),
     Alias,
     Cookie,
 }
@@ -365,19 +369,15 @@ impl Stub {
 
 pub struct Server {
     addr: SocketAddr,
-    tcp: TcpListener,
-    udp: UdpSocket,
+    tcp: OwnedFd,
+    udp: OwnedFd,
     signal: Channel,
     stub: Stub,
 }
 
 impl Server {
     fn new(stub: Stub) -> Result<(Self, Channel), Failure> {
-        let tcp = TcpListener::bind("127.0.0.1:0").map_err(Failure::Io)?;
-        let addr = tcp.local_addr().map_err(Failure::Io)?;
-        let udp = UdpSocket::bind(addr).map_err(Failure::Io)?;
-        tcp.set_nonblocking(true).map_err(Failure::Io)?;
-        udp.set_nonblocking(true).map_err(Failure::Io)?;
+        let (addr, tcp, udp) = crate::common::socket::bind().map_err(Failure::Io)?;
         let (signal, parent) = Channel::pair().map_err(Failure::Create)?;
         Ok((
             Self {
@@ -395,37 +395,36 @@ impl Server {
         self.addr
     }
 
-    fn stream(mut stream: TcpStream) -> io::Result<()> {
-        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+    fn stream(stream: Stream<'_>) -> Result<(), Failure> {
+        stream
+            .read_wait(Some(Duration::from_millis(100)))
+            .map_err(Failure::Io)?;
         loop {
             let mut prefix = [0; 2];
-            if let Err(error) = stream.read_exact(&mut prefix) {
-                return match error.kind() {
-                    io::ErrorKind::UnexpectedEof
-                    | io::ErrorKind::WouldBlock
-                    | io::ErrorKind::TimedOut => Ok(()),
-                    _ => Err(error),
-                };
+            match stream.read_exact(&mut prefix) {
+                Ok(()) => {}
+                Err(peer::Error::UnexpectedEof | peer::Error::TimedOut) => return Ok(()),
+                Err(peer::Error::Syscall(error)) if error.is_block() => return Ok(()),
+                Err(error) => return Err(Failure::Io(error)),
             }
             let mut query = vec![0; usize::from(u16::from_be_bytes(prefix))];
-            stream.read_exact(&mut query)?;
-            let Some(reply) = Stub::answer(&query, 0, &[30], false) else {
-                return Err(io::ErrorKind::InvalidData.into());
-            };
-            let Ok(len) = u16::try_from(reply.len()) else {
-                return Err(io::ErrorKind::InvalidData.into());
-            };
+            stream.read_exact(&mut query).map_err(Failure::Io)?;
+            let reply = Stub::answer(&query, 0, &[30], false).ok_or(Failure::Packet)?;
+            let len = u16::try_from(reply.len()).map_err(Failure::Length)?;
             let write = stream
                 .write_all(&len.to_be_bytes())
                 .and_then(|()| stream.write_all(&reply));
-            if let Err(error) = write {
-                return match error.kind() {
-                    io::ErrorKind::BrokenPipe
-                    | io::ErrorKind::ConnectionAborted
-                    | io::ErrorKind::ConnectionReset
-                    | io::ErrorKind::NotConnected => Ok(()),
-                    _ => Err(error),
-                };
+            match write {
+                Ok(()) => {}
+                Err(peer::Error::Syscall(error))
+                    if error.is_pipe()
+                        || error.is_aborted()
+                        || error.is_reset()
+                        || error.is_not_connected() =>
+                {
+                    return Ok(());
+                }
+                Err(error) => return Err(Failure::Io(error)),
             }
         }
     }
@@ -442,6 +441,9 @@ impl thread::Task for Server {
             mut stub,
             ..
         } = self;
+        let tcp = TcpAcceptor::try_adopt(tcp).map_err(Failure::Io)?;
+        let udp = udp::Socket::try_adopt(udp).map_err(Failure::Io)?;
+        udp.nonblock(true);
         let mut events = poll::Set::try_new(
             [signal.as_fd(), udp.as_fd(), tcp.as_fd()].into_iter(),
             iter::empty(),
@@ -469,21 +471,17 @@ impl thread::Task for Server {
                             udp.send_to(&reply, peer).map_err(Failure::Io)?;
                         }
                     }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(peer::Error::Syscall(error)) if error.is_block() => {}
                     Err(error) => return Err(Failure::Io(error)),
                 },
-                2 => match tcp.accept() {
-                    Ok((stream, peer)) => {
-                        if !peer.ip().is_loopback() {
-                            return Err(Failure::Peer(peer));
-                        }
+                2 => match tcp.try_accept().map_err(Failure::Io)? {
+                    Some(stream) => {
                         if matches!(stub.cookie, Cookie::Renew(_)) {
                             return Err(Failure::Cookie);
                         }
-                        Self::stream(stream).map_err(Failure::Io)?;
+                        Self::stream(stream)?;
                     }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(error) => return Err(Failure::Io(error)),
+                    None => {}
                 },
                 _ => return Err(Failure::Source(index)),
             }

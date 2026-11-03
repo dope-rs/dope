@@ -1,7 +1,6 @@
 use std::{
     convert::Infallible,
-    io,
-    net::{SocketAddr, TcpStream},
+    net::SocketAddr,
     ops::ControlFlow,
     time::{Duration, Instant},
 };
@@ -43,7 +42,10 @@ use dope_net::{
     tcp::{self, Tcp},
     wire::domain::{Local, Resident, Retained},
 };
-use dope_test::scope::{self, Driver};
+use dope_test::{
+    harness::peer,
+    scope::{self, Driver},
+};
 use o3::alloc;
 
 use crate::common::segments::Wire;
@@ -57,7 +59,7 @@ pub enum Error {
     Submit(result::SubmitError),
     Rejected(SendFailure<result::SubmitError>),
     Invalid(transmit::Invalid),
-    Peer(io::Error),
+    Peer(peer::Error),
     Dispatch(fault::Dispatch),
     Wait(poll::Error),
     Deadline {
@@ -158,7 +160,7 @@ pub fn next<'d>(scope: &mut life::Scope<'_, 'd>) -> Result<Event<'d>, Error> {
 pub struct Peer<'d> {
     listener: handles::Descriptor<'d>,
     flight: Option<flight::Flight<'d, kind::Accept>>,
-    pub stream: TcpStream,
+    pub stream: peer::Stream<'static>,
 }
 
 impl<'d> Peer<'d> {
@@ -208,7 +210,7 @@ impl<'d> Peer<'d> {
                 target.operation::<kind::Accept>(),
             )
             .map_err(Error::Submit)?;
-        let stream = TcpStream::connect(address).map_err(Error::Peer)?;
+        let stream = peer::Peer::at(address).try_connect().map_err(Error::Peer)?;
         Ok(Self {
             listener,
             flight: Some(flight),
@@ -219,7 +221,10 @@ impl<'d> Peer<'d> {
     pub fn close(
         self,
         scope: &mut life::Scope<'_, 'd>,
-    ) -> (Option<flight::Flight<'d, kind::Accept>>, TcpStream) {
+    ) -> (
+        Option<flight::Flight<'d, kind::Accept>>,
+        peer::Stream<'static>,
+    ) {
         self.listener.close(&mut scope.context());
         (self.flight, self.stream)
     }

@@ -1,7 +1,7 @@
 pub mod common;
 
 use std::{
-    io::{self, Read as _, Write as _},
+    io::{self, Read as _},
     net::TcpStream,
     time::Duration,
 };

@@ -4,7 +4,6 @@ use std::{
     cell::Cell,
     convert::Infallible,
     fmt::Debug,
-    io::{self, Read, Write},
     marker,
     net::Shutdown,
     rc::Rc,
@@ -33,7 +32,7 @@ use dope_test::{
     fibers::{Run, Wait},
     harness::{
         GUARD,
-        peer::Peer,
+        peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -166,7 +165,7 @@ fn partial_prefix_finishes() {
                 |case| {
                     Peer::at(case.addr())
                         .with(
-                            move |socket| -> io::Result<(Option<Instant>, Vec<u8>)> {
+                            move |socket| -> Result<(Option<Instant>, Vec<u8>), peer::Error> {
                                 socket.write_all(REQUEST)?;
                                 let mut ack = [0; ACK.len()];
                                 socket.read_exact(&mut ack)?;
@@ -177,10 +176,8 @@ fn partial_prefix_finishes() {
                                     let error = socket.read(&mut [0]).expect_err(
                                         "incomplete prefix must keep the connection open",
                                     );
-                                    assert!(matches!(
-                                        error.kind(),
-                                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                                    ));
+                                    assert!(matches!(error, peer::Error::TimedOut)
+                                        || matches!(error, peer::Error::Syscall(error) if error.is_block()));
                                     socket.read_wait(Some(GUARD))?;
                                 }
                                 let released = (!timeout).then(Instant::now);

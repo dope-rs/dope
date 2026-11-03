@@ -195,7 +195,7 @@ impl eof::Eof<Eof> for Eof {
 }
 
 pub mod contract {
-    use std::{convert::Infallible, io::Read as _, time::Duration};
+    use std::{convert::Infallible, time::Duration};
 
     use dope_core::{
         driver::{
@@ -418,7 +418,7 @@ pub mod contract {
         pub fn run(self) -> (Vec<u8>, bool, bool) {
             type Route = KeyTag<24>;
             let config = Config::default().with_files(FileSlots::fixed::<1, 1>());
-            let ((queued, closing, sent, buffered), returned, mut stream) = Driver::new(config)
+            let ((queued, closing, sent, buffered), returned, stream) = Driver::new(config)
                 .with_scope(
                     |scope| {
                         let (peer, fd) = Peer::new(scope)?;
@@ -607,7 +607,7 @@ pub mod contract {
             assert!(!buffered, "completion must release the buffered prefix");
             assert_eq!(returned, if matches!(self, Self::Buffered) { 4 } else { 0 });
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .read_wait(Some(Duration::from_secs(5)))
                 .expect("peer timeout");
             let mut bytes = vec![0; len];
             stream.read_exact(&mut bytes).expect("submitted bytes");

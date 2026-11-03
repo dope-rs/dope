@@ -5,7 +5,7 @@ use dope_core::platform::affinity::Cpu;
 use dope_runtime::process;
 use dope_test::{
     alloc::Tracker,
-    checks::{Error, Suite, try_compile},
+    checks::{Error, Suite},
     harness::{scenario::process::Test, support::file::Directory},
 };
 use o3::alloc;
@@ -90,17 +90,21 @@ fn preserves_nofile_limit() {
     let output = Test {
         name: "preserves_nofile_limit",
     }
-    .try_run(|| {
-        let [cpu] = <[Cpu; 1]>::try_current().expect("required available CPU");
-        let before = try_limit().expect("query open-file limit");
-        assert!(
-            process::Layout::pinned([cpu])
-                .and_then(|layout| layout.try_assign([()]))
-                .is_ok()
-        );
-        assert_eq!(try_limit().expect("query open-file limit"), before);
-    })
-    .expect("isolated nofile process");
+    .run(
+        &std::env::current_exe().expect("current test executable"),
+        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
+        || {
+            let [cpu] = <[Cpu; 1]>::try_current().expect("required available CPU");
+            let before = try_limit().expect("query open-file limit");
+            assert!(
+                process::Layout::pinned([cpu])
+                    .and_then(|layout| layout.try_assign([()]))
+                    .is_ok()
+            );
+            assert_eq!(try_limit().expect("query open-file limit"), before);
+        },
+    )
+    .map(|mut child| child.output().expect("isolated nofile process"));
     if let Some(output) = output {
         assert!(
             output.status.success(),
@@ -182,8 +186,11 @@ fn cancels_gated_startup() -> Result<(), Error> {
             "pin-project",
         ],
     );
-    let exe = env::current_exe()?;
-    let output = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let exe = env::current_exe().expect("current test executable");
+    let output = suite
+        .try_build(&exe, env!("CARGO_PKG_NAME"))?
+        .output()
+        .expect("run process");
     let artifacts = suite.try_collect(&exe, output)?;
     let directory = Directory::try_with(
         exe.parent().expect("test executable directory"),
@@ -194,21 +201,34 @@ fn cancels_gated_startup() -> Result<(), Error> {
     let binary = directory.path().join("startup_cancel");
     let mut compiler = artifacts.compiler();
     compiler.arg(format!("--emit=link={}", binary.display()));
-    let compiled = try_compile(
+    let compiled = compile(
         &mut compiler,
         r#"pub mod common;
 #[global_allocator]
 static ALLOCATOR: dope_test::alloc::Tracker = dope_test::alloc::Tracker::new();
 fn main() { common::process::cancel_gated_startup(); }
 "#,
-    )?;
+    );
     assert!(
         compiled.status.success(),
         "{}",
         String::from_utf8_lossy(&compiled.stderr)
     );
-    let output = Command::new(&binary).output()?;
+    let output = Command::new(&binary).output().expect("run process");
     assert!(output.status.success(), "startup cancellation: {output:?}");
-    directory.try_close()?;
+    directory.try_close().expect("remove compiler output");
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

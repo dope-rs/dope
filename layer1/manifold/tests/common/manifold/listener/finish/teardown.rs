@@ -1,6 +1,6 @@
 //! Listener teardown and retained-credit integration coverage.
 
-use std::{convert, fs, io, path::PathBuf, pin::Pin};
+use std::{convert, pin::Pin};
 
 use dope_core::{
     driver::{
@@ -141,13 +141,10 @@ impl domain::Init<Teardown> for Teardown {
 
 pub struct App<'w, 'd: 'w, F> {
     pub(crate) held: Option<Chunk<'w, 'd, Teardown>>,
-    pub(crate) marker: PathBuf,
     pub(crate) observed: F,
 }
 
-impl<'w, 'd: 'w, ID: route::Identity, F: Fn(io::Result<()>) + Unpin> Application<'d, ID>
-    for App<'w, 'd, F>
-{
+impl<'w, 'd: 'w, ID: route::Identity, F: Fn() + Unpin> Application<'d, ID> for App<'w, 'd, F> {
     type Conn = ();
     type Build = convert::Infallible;
     type Wire = Teardown;
@@ -170,7 +167,7 @@ impl<'w, 'd: 'w, ID: route::Identity, F: Fn(io::Result<()>) + Unpin> Application
     }
 }
 
-impl<'w, 'd: 'w, ID: route::Identity, F: Fn(io::Result<()>) + Unpin> handler::Owned<'w, 'd, ID>
+impl<'w, 'd: 'w, ID: route::Identity, F: Fn() + Unpin> handler::Owned<'w, 'd, ID>
     for App<'w, 'd, F>
 {
     const RETENTION: limits::Retention = limits::Retention::new(1, 0);
@@ -183,7 +180,7 @@ impl<'w, 'd: 'w, ID: route::Identity, F: Fn(io::Result<()>) + Unpin> handler::Ow
     ) -> Outcome {
         let this = self.get_mut();
         this.held = Some(chunk);
-        (this.observed)(fs::write(&this.marker, b"held"));
+        (this.observed)();
         Outcome::Continue
     }
 }

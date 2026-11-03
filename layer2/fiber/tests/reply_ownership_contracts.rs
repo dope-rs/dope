@@ -130,10 +130,16 @@ use dope_test::checks::{Error, Suite};
 #[test]
 fn preserves_ownership() -> Result<(), Error> {
     let suite = Suite::new(env!("CARGO_MANIFEST_DIR"), file!(), &["dope-fiber", "o3"]);
-    let exe = env::current_exe()?;
-    let output = suite.try_build(&exe, "dope-fiber")?.output()?;
+    let exe = env::current_exe().expect("current test executable");
+    let output = suite
+        .try_build(&exe, "dope-fiber")?
+        .output()
+        .expect("run cargo");
     let suite = suite.try_collect(&exe, output)?;
-    let output = suite.try_compile(include_str!("common/compile_resume_unpin.rs"))?;
+    let output = compile(
+        &mut suite.compiler(),
+        include_str!("common/compile_resume_unpin.rs"),
+    );
     let message = String::from_utf8(output.stderr).expect("compiler diagnostics");
     assert!(
         !output.status.success()
@@ -143,10 +149,23 @@ fn preserves_ownership() -> Result<(), Error> {
         "consuming resume requires Unpin: {message}"
     );
     assert_eq!(
-        suite.try_errors(include_str!("reply_ownership_contracts.rs"))?,
+        suite.try_errors(include_str!("reply_ownership_contracts.rs"), compile)?,
         3
     );
-    let status = suite.try_rustdoc()?.status()?;
+    let status = suite.try_rustdoc()?.status().expect("run rustdoc");
     assert!(status.success(), "compile-time contracts: {status}");
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

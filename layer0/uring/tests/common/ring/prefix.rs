@@ -1,9 +1,12 @@
-use std::{io, mem, num::NonZero};
+use std::{mem, num::NonZero};
+
+use dope_sys::{Errno, kernel::raw::Code};
+use dope_uring::Uring;
 
 /// # Safety
 /// Own registered ring zero on this thread; publish `count` SQEs and retain
 /// their backing storage through completion.
-pub unsafe fn submit(count: NonZero<u32>) -> io::Result<u32> {
+pub unsafe fn submit(count: NonZero<u32>) -> Result<u32, Errno> {
     const REGISTERED: u32 = 1 << 4;
     // SAFETY: the caller retains the registered ring and published requests;
     // this enter supplies no signal mask or extended argument pointers.
@@ -19,7 +22,8 @@ pub unsafe fn submit(count: NonZero<u32>) -> io::Result<u32> {
         )
     };
     if result < 0 {
-        Err(io::Error::last_os_error())
+        // SAFETY: the failed enter left this thread's positive errno unchanged.
+        Err(unsafe { Code::last::<Uring>() }.into())
     } else {
         Ok(result as u32)
     }

@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{io::Read as _, net::SocketAddr, rc::Rc, time::Duration};
+use std::{net::SocketAddr, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
