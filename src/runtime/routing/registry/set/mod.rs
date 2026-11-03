@@ -74,6 +74,19 @@ type Record<'a, C, const DOMAIN: u8, B, D, T> = planes::Entry<
     { mux::QUEUE_PLANES },
 >;
 
+/// Counts blocked FLUSH heads; queue changes or returned byte credit restart the sweep.
+#[derive(Default)]
+struct Flush {
+    blocked: usize,
+    bytes: usize,
+}
+
+impl Flush {
+    fn blocked_at(&self, bytes: usize) -> usize {
+        if self.bytes == bytes { self.blocked } else { 0 }
+    }
+}
+
 /// Owns every initialized slot, current routing extent and lifecycle transition.
 pub(in crate::runtime) struct Set<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T>
 {
@@ -81,6 +94,7 @@ pub(in crate::runtime) struct Set<C, const DOMAIN: u8, B: stream::Recv, D: buffe
     cids: registry::Table,
     reset: reset::Reset,
     active: u32,
+    flush: Flush,
 }
 
 impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DOMAIN, B, D, T> {
@@ -108,6 +122,7 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
             cids,
             reset: reset::Reset::new(hash),
             active: 0,
+            flush: Flush::default(),
         })
     }
 
@@ -152,7 +167,25 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
             .map_err(ResizeError::Storage)?;
         cids();
         reset();
+        self.flush.blocked = 0;
+        for _ in 0..self.entries.len_in::<{ mux::FREE_QUEUE }>() {
+            let Some(entry) = self.entries.front_entry::<{ mux::FREE_QUEUE }>() else {
+                unreachable!("vacancy");
+            };
+            Self::recycle(entry.pop());
+        }
         Ok(())
+    }
+
+    /// Vacant entries remain claimable only while their next generation exists.
+    pub(in crate::runtime::routing::registry) fn recycle(
+        mut entry: Record<'_, C, DOMAIN, B, D, T>,
+    ) {
+        if entry.metadata().next().is_some() {
+            entry.plane::<{ mux::FREE_QUEUE }>().link_back();
+        } else {
+            entry.plane::<{ mux::FREE_QUEUE }>().unlink();
+        }
     }
 
     pub(in crate::runtime) fn len(&self) -> usize {
@@ -168,6 +201,10 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
         self.entries.len_in::<PLANE>() == 0
     }
 
+    pub(in crate::runtime) fn can_flush(&self, bytes: usize) -> bool {
+        self.flush.blocked_at(bytes) < self.entries.len_in::<{ mux::FLUSH_QUEUE }>()
+    }
+
     pub(in crate::runtime) fn deadline(&self) -> Option<time::Instant> {
         self.entries.heap().peek().map(|(_, at)| *at)
     }
@@ -177,6 +214,14 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
         domain: id::Domain<I, DOMAIN>,
         handle: id::Handle<I, DOMAIN>,
     ) -> Option<&registry::Slot<C, DOMAIN, B, D, T>> {
+        self.bound(domain, handle)?.get()
+    }
+
+    fn bound<I: Copy>(
+        &self,
+        domain: id::Domain<I, DOMAIN>,
+        handle: id::Handle<I, DOMAIN>,
+    ) -> Option<&slot::Storage<registry::Slot<C, DOMAIN, B, D, T>, registry::Epoch>> {
         if !handle.belongs_to(domain) {
             return None;
         }
@@ -184,7 +229,44 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
         if !entry.metadata().matches(handle.generation()) {
             return None;
         }
-        entry.get()
+        Some(entry)
+    }
+
+    fn is_retained(
+        entry: &slot::Storage<registry::Slot<C, DOMAIN, B, D, T>, registry::Epoch>,
+    ) -> bool {
+        entry.metadata().next().is_some()
+            && entry
+                .get()
+                .is_some_and(|slot| slot.conn.view().lifecycle().is_closing())
+    }
+
+    pub(in crate::runtime) fn is_waiting<I: Copy>(
+        &self,
+        domain: id::Domain<I, DOMAIN>,
+        handle: id::Handle<I, DOMAIN>,
+    ) -> bool {
+        self.entries.len_in::<{ mux::FREE_QUEUE }>() == 0
+            && self.bound(domain, handle).is_some_and(Self::is_retained)
+    }
+
+    /// Only a reusable terminal owner makes full capacity temporary.
+    pub(in crate::runtime) fn admission<I: Copy>(
+        &self,
+        domain: id::Domain<I, DOMAIN>,
+    ) -> router::Admission<I, DOMAIN> {
+        if self.entries.len_in::<{ mux::FREE_QUEUE }>() != 0 {
+            return router::Admission::Available;
+        }
+        for index in 0..self.entries.len() {
+            let Some((index, entry)) = self.entries.resolve(index) else {
+                continue;
+            };
+            if Self::is_retained(entry) {
+                return router::Admission::Retained(domain.handle(index, entry.metadata().get()));
+            }
+        }
+        router::Admission::Full
     }
 
     pub(in crate::runtime) fn sole<I: Copy>(

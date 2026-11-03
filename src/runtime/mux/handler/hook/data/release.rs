@@ -3,7 +3,7 @@ use o3::buffer;
 use o3::buffer::hold::evidence;
 use std::pin;
 
-use crate::conn::{self, id};
+use crate::conn::{self, id, scope};
 use crate::runtime::mux::handler::hook::set;
 use crate::runtime::mux::{app, handler::Handler};
 use crate::stream::{self, release, send::admit};
@@ -11,14 +11,26 @@ use crate::stream::{self, release, send::admit};
 pub trait Mode<H, const DOMAIN: u8, B, D, I: id::Temporal>: Boundary {
     type Evidence: release::Mode;
 
-    /// Releases all send owners after slot detachment, consuming final readiness.
-    fn retire(
+    /// Returns application send owners while packet protection remains retained.
+    fn cancel(
         handler: pin::Pin<&mut H>,
-        conn: conn::Connection<DOMAIN, B, D>,
+        conn: scope::Access<'_, DOMAIN, B, false, D>,
         handle: id::Handle<I, DOMAIN>,
     ) where
         B: stream::Recv,
         D: buffer::raw::Segment;
+
+    /// Releases all send owners after slot detachment, consuming final readiness.
+    fn retire(
+        handler: pin::Pin<&mut H>,
+        mut conn: conn::Connection<DOMAIN, B, D>,
+        handle: id::Handle<I, DOMAIN>,
+    ) where
+        B: stream::Recv,
+        D: buffer::raw::Segment,
+    {
+        conn.with_scope(|scope| Self::cancel(handler, scope, handle));
+    }
 
     fn release(
         handler: pin::Pin<&mut H>,
@@ -32,12 +44,15 @@ pub trait Mode<H, const DOMAIN: u8, B, D, I: id::Temporal>: Boundary {
 impl<H, const DOMAIN: u8, B, D, I: id::Temporal> Mode<H, DOMAIN, B, D, I> for set::Off {
     type Evidence = evidence::Off;
 
-    fn retire(_: pin::Pin<&mut H>, conn: conn::Connection<DOMAIN, B, D>, _: id::Handle<I, DOMAIN>)
-    where
+    fn cancel(
+        _: pin::Pin<&mut H>,
+        mut conn: scope::Access<'_, DOMAIN, B, false, D>,
+        _: id::Handle<I, DOMAIN>,
+    ) where
         B: stream::Recv,
         D: buffer::raw::Segment,
     {
-        conn.retire(release::Cause::Closed, &mut release::Ignore);
+        conn.release(&mut release::Ignore);
     }
 
     fn release(
@@ -61,13 +76,12 @@ where
 {
     type Evidence = evidence::On;
 
-    fn retire(
+    fn cancel(
         mut handler: pin::Pin<&mut H>,
-        conn: conn::Connection<DOMAIN, B, D>,
+        mut conn: scope::Access<'_, DOMAIN, B, false, D>,
         handle: id::Handle<I, DOMAIN>,
     ) {
-        conn.retire(
-            release::Cause::Closed,
+        conn.release(
             &mut |release| match H::release(Event::new(handler.as_mut(), handle, release)) {
                 app::Readiness::Preserve | app::Readiness::Idle | app::Readiness::Ready => (),
             },

@@ -15,7 +15,7 @@ use crate::{
 };
 use registry::{
     Key,
-    set::{Entries, scope::Scope},
+    set::{Entries, Set, scope::Scope},
 };
 use router::routing::state::cids;
 
@@ -43,11 +43,7 @@ impl<'storage, 'id, C, I: Copy, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
     }
 
     pub(in crate::runtime) fn reject(mut self) {
-        self.owner
-            .entries
-            .entry(self.key)
-            .plane::<{ mux::FREE_QUEUE }>()
-            .link_back();
+        Set::recycle(self.owner.entries.entry(self.key));
     }
 
     pub(in crate::runtime) fn install<R>(
@@ -61,6 +57,7 @@ impl<'storage, 'id, C, I: Copy, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
             cids,
             tokens,
             active,
+            flush,
         } = self.owner;
         let (entries, key) = entries.install::<{ mux::FREE_QUEUE }>(self.key, slot);
         *active += 1;
@@ -72,7 +69,9 @@ impl<'storage, 'id, C, I: Copy, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
             cids,
             tokens,
             active,
+            flush,
         };
+        scope.reset_flush();
         let routes = self.routes;
         let (value, hash) = routes.local();
         let index = pack(key, array::Index::at::<0>());

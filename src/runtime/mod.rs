@@ -1,6 +1,6 @@
 use crate::runtime::mux::output;
 use crate::wire::packet::long::retry;
-use dope::core::driver::route;
+use dope::core::{driver::route, io::datagram::GsoPayload};
 use dope::manifold::network::datagram::{self, send::owners};
 use o3::buffer::{self, storage};
 use std::{marker, mem, pin};
@@ -49,66 +49,86 @@ impl<'op> Transit<'op> {
             value,
             operation: brand,
         } = self;
-        match value.into_kind() {
-            output::Kind::Plain(addr, value) => socket
-                .as_mut()
-                .queue_vec(
-                    Transit {
-                        value,
-                        operation: brand,
-                    },
-                    addr,
-                )
-                .map_err(|rejected| {
-                    let (item, cause) = rejected.into_parts();
-                    (
-                        Self {
-                            value: output::Flight::plain(addr, item.value),
-                            operation: item.operation,
+        let (addr, value) = match value.into_kind() {
+            output::Kind::Plain(addr, value) => {
+                return socket
+                    .as_mut()
+                    .queue_vec(
+                        Transit {
+                            value,
+                            operation: brand,
                         },
-                        cause,
+                        addr.addr(),
                     )
-                }),
-            output::Kind::Suffix(addr, value) => socket
-                .as_mut()
-                .queue_pooled(
-                    Transit {
-                        value,
-                        operation: brand,
-                    },
-                    addr,
-                )
-                .map_err(|rejected| {
-                    let (item, cause) = rejected.into_parts();
-                    (
-                        Self {
-                            value: output::Flight::suffix(addr, item.value),
-                            operation: item.operation,
+                    .map_err(|rejected| {
+                        let (item, cause) = rejected.into_parts();
+                        (
+                            Self {
+                                value: output::Flight::plain(addr, item.value),
+                                operation: item.operation,
+                            },
+                            cause,
+                        )
+                    });
+            }
+            output::Kind::Suffix(addr, value) => {
+                return socket
+                    .as_mut()
+                    .queue_pooled(
+                        Transit {
+                            value,
+                            operation: brand,
                         },
-                        cause,
+                        addr.addr(),
                     )
-                }),
-            output::Kind::Batch(addr, value, size, packets) => socket
-                .as_mut()
-                .queue_gso(
-                    Transit {
-                        value,
-                        operation: brand,
+                    .map_err(|rejected| {
+                        let (item, cause) = rejected.into_parts();
+                        (
+                            Self {
+                                value: output::Flight::suffix(addr, item.value),
+                                operation: item.operation,
+                            },
+                            cause,
+                        )
+                    });
+            }
+            output::Kind::Batch(addr, value, size, packets) => {
+                let value = match GsoPayload::try_new(value, size) {
+                    Ok(value) => value.into_storage(),
+                    Err(rejected) => {
+                        let (value, cause) = rejected.into_parts();
+                        return Err((
+                            Self {
+                                value: output::Flight::batch(addr, value, size, packets),
+                                operation: brand,
+                            },
+                            cause.into(),
+                        ));
+                    }
+                };
+                (addr, value)
+            }
+            output::Kind::Segmented(addr, value) => (addr, value),
+        };
+        socket
+            .as_mut()
+            .queue_gso_payload(
+                Transit {
+                    value,
+                    operation: brand,
+                },
+                addr.addr(),
+            )
+            .map_err(|rejected| {
+                let (item, cause) = rejected.into_parts();
+                (
+                    Self {
+                        value: output::Flight::segmented(addr, item.value),
+                        operation: item.operation,
                     },
-                    size,
-                    addr,
+                    cause,
                 )
-                .map_err(|rejected| {
-                    let (item, cause) = rejected.into_parts();
-                    (
-                        Self {
-                            value: output::Flight::batch(addr, item.value, size, packets),
-                            operation: item.operation,
-                        },
-                        cause,
-                    )
-                }),
-        }
+            })
     }
 }
 
@@ -128,6 +148,13 @@ impl<T: buffer::Residency> buffer::Residency for Transit<'_, T> {
 unsafe impl buffer::raw::Convert<Vec<u8>> for Transit<'_, storage::NonEmpty<Vec<u8>>> {
     fn into(self) -> Vec<u8> {
         buffer::raw::Convert::into(self.value)
+    }
+}
+
+// SAFETY: removing only the operation brand preserves the complete owned value.
+unsafe impl<T> buffer::raw::Convert<T> for Transit<'_, T> {
+    fn into(self) -> T {
+        self.value
     }
 }
 

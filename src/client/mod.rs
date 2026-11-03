@@ -1,4 +1,4 @@
-use std::{mem, net, num, time};
+use std::{net, num, time};
 
 pub use bridge::Bridge;
 pub use dialer::Dialer;
@@ -6,7 +6,10 @@ use dope::core::driver::schedule::clock;
 use o3::{base::num::bounded, mem::rc};
 
 use crate::{
-    conn::life::{options, tls::clients},
+    conn::{
+        id,
+        life::{options, tls::clients},
+    },
     runtime::brand,
 };
 
@@ -62,10 +65,12 @@ impl<'scope> SlotScope<'scope> {
 }
 
 /// Generation-checked identity of one attempt at a configured remote.
-/// Its generation never resets, so stale identities cannot alias later attempts.
+/// The endpoint domain distinguishes independent dialers. Its generation never
+/// resets, so stale identities cannot alias later attempts in that domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(C)]
 pub struct AttemptId {
+    domain: id::Domain,
     slot: SlotId,
     generation: num::NonZero<u32>,
 }
@@ -118,18 +123,25 @@ pub enum RetryCause {
     ConnectionClosed,
 }
 
+/// The exact counter that cannot admit another client attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Exhausted {
+    Generation,
+    Ordinal,
+}
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Retry {
+    domain: id::Domain,
     slot: SlotId,
     prior: bounded::NonZeroU32<1, { u32::MAX - 1 }>,
     previous_ordinal: num::NonZero<u32>,
     next_ordinal: num::NonZero<u32>,
-    observed_at: time::Instant,
 }
 
 /// Causal edge from one completed attempt or connection to its exact next
-/// scheduled attempt. Backoff observes the proto event time, not a later
+/// scheduled attempt. Its delay is applied to the proto event time, not a later
 /// client notification-drain time.
 #[repr(transparent)]
 pub struct RetryScope<'scope>(brand::Branded<'scope, Retry>);
@@ -138,6 +150,7 @@ impl<'scope> RetryScope<'scope> {
     pub fn previous_id(&self) -> AttemptId {
         let retry = self.0.value();
         AttemptId {
+            domain: retry.domain,
             slot: retry.slot,
             generation: retry.prior.nonzero(),
         }
@@ -150,6 +163,7 @@ impl<'scope> RetryScope<'scope> {
     pub fn next_id(&self) -> AttemptId {
         let retry = self.0.value();
         AttemptId {
+            domain: retry.domain,
             slot: retry.slot,
             generation: num::NonZero::<u32>::MIN.saturating_add(retry.prior.get()),
         }
@@ -199,17 +213,17 @@ impl Successor {
     pub(in crate::client) fn retry_scope<'scope>(
         self,
         brand: brand::Token<'scope>,
+        domain: id::Domain,
         slot: SlotId,
-        seen: time::Instant,
     ) -> RetryScope<'scope> {
         RetryScope(brand::Branded::new(
             brand,
             Retry {
+                domain,
                 slot,
                 prior: self.prior,
                 previous_ordinal: self.ordinal,
                 next_ordinal: self.next.ordinal_raw(),
-                observed_at: seen,
             },
         ))
     }
@@ -235,22 +249,26 @@ impl AttemptState {
         self.ordinal
     }
 
-    pub(in crate::client) fn id(self, slot: SlotId) -> AttemptId {
+    pub(in crate::client) fn id(self, domain: id::Domain, slot: SlotId) -> AttemptId {
         AttemptId {
+            domain,
             slot,
             generation: self.generation(),
         }
     }
 
-    pub(in crate::client) fn successor(self, restart: bool) -> Option<Successor> {
-        let prior = bounded::NonZeroU32::new(self.generation().get())?;
+    pub(in crate::client) fn try_successor(self, restart: bool) -> Result<Successor, Exhausted> {
+        let prior =
+            bounded::NonZeroU32::new(self.generation().get()).ok_or(Exhausted::Generation)?;
         let epoch = num::NonZero::<u32>::MIN.saturating_add(prior.get());
         let ordinal = if restart {
             num::NonZero::<u32>::MIN
         } else {
-            self.ordinal_raw().checked_add(1)?
+            self.ordinal_raw()
+                .checked_add(1)
+                .ok_or(Exhausted::Ordinal)?
         };
-        Some(Successor {
+        Ok(Successor {
             next: Self::from_parts(epoch, ordinal),
             prior,
             ordinal: self.ordinal_raw(),
@@ -260,13 +278,14 @@ impl AttemptState {
     pub(in crate::client) fn scope<'scope, 'd>(
         self,
         brand: brand::Token<'scope>,
+        domain: id::Domain,
         slot: SlotId,
         started: clock::Moment<'d>,
     ) -> AttemptScope<'scope, 'd> {
         AttemptScope(brand::Branded::new(
             brand,
             Start {
-                id: self.id(slot),
+                id: self.id(domain, slot),
                 ordinal: self.ordinal_raw(),
                 started_at: started,
             },
@@ -342,14 +361,10 @@ pub struct PathStats {
 }
 
 const _: () = {
-    assert!(mem::size_of::<SlotScope<'static>>() == mem::size_of::<u64>());
-    assert!(!mem::needs_drop::<SlotScope<'static>>());
-};
-const _: () = {
     assert!(std::mem::size_of::<SlotScope<'static>>() == std::mem::size_of::<AttemptId>());
     assert!(std::mem::align_of::<SlotScope<'static>>() == std::mem::align_of::<AttemptId>());
     assert!(!std::mem::needs_drop::<SlotScope<'static>>());
-    assert!(std::mem::size_of::<AttemptId>() == 2 * std::mem::size_of::<u32>());
+    assert!(std::mem::size_of::<AttemptId>() == 2 * std::mem::size_of::<u64>());
     assert!(std::mem::size_of::<AttemptState>() == std::mem::size_of::<u64>());
     assert!(std::mem::align_of::<AttemptState>() == std::mem::align_of::<u64>());
     assert!(std::mem::size_of::<Option<AttemptState>>() == std::mem::size_of::<u64>());
@@ -357,17 +372,14 @@ const _: () = {
     assert!(!std::mem::needs_drop::<Successor>());
     assert!(
         std::mem::size_of::<AttemptScope<'static, 'static>>()
-            == std::mem::size_of::<(SlotId, u32, u32, time::Instant)>()
+            == std::mem::size_of::<(AttemptId, u32, time::Instant)>()
     );
     assert!(
         std::mem::align_of::<AttemptScope<'static, 'static>>()
-            == std::mem::align_of::<(SlotId, u32, u32, time::Instant)>()
+            == std::mem::align_of::<(AttemptId, u32, time::Instant)>()
     );
     assert!(!std::mem::needs_drop::<AttemptScope<'static, 'static>>());
-    assert!(
-        std::mem::size_of::<RetryScope<'static>>()
-            == std::mem::size_of::<AttemptScope<'static, 'static>>()
-    );
+    assert!(std::mem::size_of::<RetryScope<'static>>() == 3 * std::mem::size_of::<u64>());
     assert!(
         std::mem::align_of::<RetryScope<'static>>()
             == std::mem::align_of::<AttemptScope<'static, 'static>>()

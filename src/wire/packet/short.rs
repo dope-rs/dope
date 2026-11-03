@@ -123,9 +123,11 @@ impl<'wire> Ref<'wire> {
     pub(crate) fn prefix<'out>(
         self,
         out: &'out mut Vec<u8>,
+        prefix: &[u8],
     ) -> Result<header::Prefix<'out>, alloc::Error> {
         out.clear();
+        out.write_slice(prefix)?;
         let layout = self.append(&mut write::Append::new(out))?;
-        Ok(header::Prefix::new(out, layout))
+        Ok(header::Prefix::new(out, layout, prefix.len()))
     }
 }

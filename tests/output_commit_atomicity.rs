@@ -97,6 +97,40 @@ fn retains_pending_journal() {
 }
 
 #[test]
+fn journal_pressure_waits_for_progress() {
+    use common::runtime::gso::{Capture, Pair as MuxPair};
+    use std::pin::Pin;
+
+    let mut pair = MuxPair::new(|| Options::try_journal().expect("journal options"))
+        .expect("constrained mux peers");
+    let now = pair.now + Duration::from_secs(1);
+    for byte in [0x31, 0x32] {
+        Capture::send(&mut pair.client, pair.handle, vec![byte; 1_150], now)
+            .expect("queued datagram");
+    }
+    let first = Capture::output(&mut pair.client, now).expect("first tracked packet");
+    assert_eq!(
+        first
+            .iter()
+            .map(|flight| flight.packet_count().get())
+            .sum::<usize>(),
+        1,
+    );
+    let blocked_at = now + Duration::from_millis(1);
+    assert!(
+        Capture::output(&mut pair.client, blocked_at)
+            .expect("journal pressure preserves the queue")
+            .is_empty(),
+    );
+    assert!(
+        Pin::new(&mut pair.client)
+            .observe(blocked_at, |turn| turn.deadline())
+            .is_none_or(|due| due > blocked_at),
+        "journal pressure must wait for recovery or ingress",
+    );
+}
+
+#[test]
 fn control_full_is_atomic() {
     const CONTROL_CAPACITY: usize = 32;
     let options = || {

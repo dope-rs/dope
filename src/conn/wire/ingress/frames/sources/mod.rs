@@ -235,15 +235,23 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
         self.input.records.source()
     }
 
-    pub(super) fn try_datagram(&self) -> Result<Vec<B>, detail::Unavailable> {
-        let entries = self
+    pub(super) fn try_datagram(&self) -> Result<(Option<B>, Vec<B>), detail::Unavailable> {
+        let mut entries = self
             .entries()
             .filter(|entry| entry.record.admission() == record::Admission::Datagram);
         let Some(count) = NonZero::new(entries.clone().count()) else {
-            return Ok(Vec::new());
+            return Ok((None, Vec::new()));
         };
+        if count.get() == 1 {
+            let Some(entry) = entries.next() else {
+                unreachable!("datagram");
+            };
+            let value = entry.datagram().map_err(detail::Unavailable::Backing)?;
+            return Ok((Some(value), Vec::new()));
+        }
         // SAFETY: this exact immutable filter and its retained rows establish the count.
-        unsafe { raw::try_datagram(count, entries.map(|entry| entry.datagram())) }
+        let values = unsafe { raw::try_datagram(count, entries.map(|entry| entry.datagram())) }?;
+        Ok((None, values))
     }
 
     pub(super) fn controls(

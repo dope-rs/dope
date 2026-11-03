@@ -1,10 +1,13 @@
+use crate::proto::path::Peer;
+use crate::security::relay::Ticket;
+use o3::buffer::write::{self, Sink as _};
 use o3::{
     alloc,
     buffer::{self, resident},
     depot::capacity::{self, Reason},
 };
 
-use std::{collections, net, num::NonZero, time};
+use std::{collections, num::NonZero, time};
 
 use crate::conn::output::{Count, control};
 use crate::conn::wire::packet::{Allocation, Batch, Fresh, Gso, Sink, Slot};
@@ -45,6 +48,10 @@ type Protected<'a, const DOMAIN: u8, B, D, P, O> = Result<
 pub enum Admission<P = crypto::Error> {
     Amplification {
         bytes: NonZero<usize>,
+    },
+    OuterAmplification {
+        bytes: NonZero<usize>,
+        overhead: usize,
     },
     Crypto {
         needed: usize,
@@ -160,6 +167,9 @@ impl Admission<crypto::Dimensions> {
     pub fn into_error(self) -> Admission {
         match self {
             Self::Amplification { bytes } => Admission::Amplification { bytes },
+            Self::OuterAmplification { bytes, overhead } => {
+                Admission::OuterAmplification { bytes, overhead }
+            }
             Self::Crypto { needed, reason } => Admission::Crypto { needed, reason },
             Self::Encoding { epoch, error } => Admission::Encoding { epoch, error },
             Self::Header { epoch, error } => Admission::Header { epoch, error },
@@ -204,18 +214,38 @@ pub struct Emission<
 #[derive(Clone, Copy)]
 pub(crate) enum Destination {
     Direct,
-    Network(net::SocketAddr),
+    Network(Peer),
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum Policy {
     Direct,
-    Fallback(net::SocketAddr),
-    Exact(net::SocketAddr),
+    Fallback(Peer),
+    Exact(Peer),
 }
 
 impl Destination {
-    pub(crate) fn network(self) -> Option<net::SocketAddr> {
+    pub(in crate::conn) fn overhead(self) -> usize {
+        self.network().map_or(0, Peer::overhead)
+    }
+
+    fn max_payload(self) -> usize {
+        self.network()
+            .map_or(usize::MAX, |peer| usize::from(peer.max_payload().get()))
+    }
+
+    fn prefix(self, out: &mut write::Append<'_>) -> Result<(), Admission> {
+        if let Some(ticket) = self.network().and_then(|peer| peer.ticket().copied()) {
+            out.write_slice(ticket.as_bytes())
+                .map_err(|error| Admission::Payload {
+                    error,
+                    requested: Ticket::LEN,
+                })?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn network(self) -> Option<Peer> {
         match self {
             Self::Direct => None,
             Self::Network(address) => Some(address),
@@ -224,7 +254,14 @@ impl Destination {
 }
 
 impl Policy {
-    fn resolve(self, routed: Option<net::SocketAddr>) -> Option<Destination> {
+    fn max_payload(self) -> usize {
+        match self {
+            Self::Direct => usize::MAX,
+            Self::Fallback(peer) | Self::Exact(peer) => usize::from(peer.max_payload().get()),
+        }
+    }
+
+    fn resolve(self, routed: Option<Peer>) -> Option<Destination> {
         match self {
             Self::Direct => Some(match routed {
                 Some(address) => Destination::Network(address),
@@ -256,10 +293,33 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         now: time::Instant,
         max: usize,
     ) -> Result<datagram::Sealed<'pool>, errors::SendFailure<datagram::Packet<'pool>>> {
+        self.try_packet_with(packet, now, max, Policy::Direct)
+    }
+
+    pub(crate) fn try_packet_to<'pool>(
+        &mut self,
+        packet: datagram::Packet<'pool>,
+        now: time::Instant,
+        max: usize,
+        peer: Peer,
+    ) -> Result<datagram::Sealed<'pool>, errors::SendFailure<datagram::Packet<'pool>>> {
+        self.try_packet_with(packet, now, max, Policy::Exact(peer))
+    }
+
+    fn try_packet_with<'pool>(
+        &mut self,
+        packet: datagram::Packet<'pool>,
+        now: time::Instant,
+        max: usize,
+        target: Policy,
+    ) -> Result<datagram::Sealed<'pool>, errors::SendFailure<datagram::Packet<'pool>>> {
         use crate::conn::life::datagram::Datagrams;
         use builder::app::datagram::{Outcome, Pooled};
         use errors::SendFailure;
 
+        if self.connection.is_closing() {
+            return Err(SendFailure::Closed(packet));
+        }
         let Some(limit) = Datagrams::<DOMAIN, B, false, D>::new(self.connection).max_payload()
         else {
             return Err(SendFailure::Unsupported(packet));
@@ -268,13 +328,15 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
             return Err(SendFailure::TooLarge(packet));
         }
         let pto = match stage::Stage::new(self.connection).try_one_rtt(now) {
-            Ok(stage::Outcome::Ready(pto)) => pto,
-            Ok(stage::Outcome::Closed) => return Err(SendFailure::Closed(packet)),
+            Ok(stage::Outcome::Ready(pto)) if !self.connection.is_closing() => pto,
+            Ok(stage::Outcome::Ready(_) | stage::Outcome::Closed) => {
+                return Err(SendFailure::Closed(packet));
+            }
             Err(error) => {
                 return Err(SendFailure::Admission(packet, error));
             }
         };
-        let Some(max) = NonZero::new(max) else {
+        let Some(max) = NonZero::new(max.min(target.max_payload())) else {
             return Err(SendFailure::Full(packet));
         };
         let pooled = match Pooled::try_new(self.connection, now, max) {
@@ -287,7 +349,6 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
             }
         };
         let mut records = builder::Records::new();
-        let target = Policy::Direct;
         match pooled.build(now, packet, &target, &mut records, pto) {
             Outcome::Admission(packet, error) => {
                 if let Admission::Timing(timing) = error {
@@ -385,7 +446,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         now: time::Instant,
         packets: usize,
         bytes: usize,
-        active: net::SocketAddr,
+        active: Peer,
     ) -> (Option<Destination>, Result<(), Error>) {
         let (outcome, result) =
             self.report::<false>(batch, now, packets, bytes, Policy::Fallback(active));
@@ -403,7 +464,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         batch: &mut Gso,
         now: time::Instant,
         bytes: usize,
-        active: net::SocketAddr,
+        active: Peer,
     ) -> Result<(), Error> {
         let mut append = batch.append();
         batch::Batch::new(&mut *self.connection, Policy::Exact(active)).fill(
@@ -450,7 +511,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         packet: &mut Vec<u8>,
         now: time::Instant,
         bytes: usize,
-        active: net::SocketAddr,
+        active: Peer,
     ) -> (Option<Destination>, Result<(), Error>) {
         let mut sink = Slot {
             packet,

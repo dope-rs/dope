@@ -10,11 +10,14 @@ use aws_lc_rs::hmac;
 use subtle::ConstantTimeEq as _;
 use zeroize::Zeroize as _;
 
-use crate::{proto::epoch, wire::packet::cid};
+use crate::{
+    proto::{epoch, path},
+    wire::packet::cid,
+};
 
 pub(crate) const RETRY_TOKEN_TTL: Positive = Positive::from_secs::<10>();
 pub(crate) const ADDRESS_TOKEN_TTL: Positive = Positive::from_secs::<{ 7 * 24 * 60 * 60 }>();
-const TOKEN_TAG_LEN: usize = 16;
+pub(super) const TOKEN_TAG_LEN: usize = 16;
 
 pub(crate) const SOCKET_ADDR_LEN: usize = 1 + 16 + 2 + 4 + 4;
 
@@ -42,13 +45,13 @@ pub(crate) fn encode_socket_addr(addr: net::SocketAddr) -> [u8; SOCKET_ADDR_LEN]
 
 /// Exclusively owns a SHA-256 context and retains its 32-byte output proof.
 #[derive(Debug)]
-struct Context {
+pub(super) struct Context {
     inner: hmac::Context,
     _bound: ThreadBound,
 }
 
 impl Context {
-    fn new(secret: &[u8; 32]) -> Self {
+    pub(super) fn new(secret: &[u8; 32]) -> Self {
         let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
         Self {
             inner: hmac::Context::with_key(&key),
@@ -56,20 +59,31 @@ impl Context {
         }
     }
 
-    /// Canonical HMAC prefix shared by time-bounded address capabilities.
-    fn address(secret: &[u8; 32], domain: &[u8], addr: net::SocketAddr, expiry: u64) -> Self {
+    /// Direct capabilities retain their original bytes. Relayed capabilities
+    /// use a distinct domain and bind the complete opaque return path.
+    fn address(
+        secret: &[u8; 32],
+        direct: &[u8],
+        relayed: &[u8],
+        peer: &path::Peer,
+        expiry: u64,
+    ) -> Self {
         let mut ctx = Self::new(secret);
-        ctx.update(domain);
-        ctx.update(&encode_socket_addr(addr));
+        let ticket = peer.ticket();
+        ctx.update(if ticket.is_some() { relayed } else { direct });
+        ctx.update(&encode_socket_addr(peer.addr()));
+        if let Some(ticket) = ticket {
+            ctx.update(ticket.as_bytes());
+        }
         ctx.update(&expiry.to_be_bytes());
         ctx
     }
 
-    fn update(&mut self, bytes: &[u8]) {
+    pub(super) fn update(&mut self, bytes: &[u8]) {
         self.inner.update(bytes);
     }
 
-    fn finish(self) -> [u8; TOKEN_TAG_LEN] {
+    pub(super) fn finish(self) -> [u8; TOKEN_TAG_LEN] {
         const { assert!(TOKEN_TAG_LEN <= 32, "tag") };
         let tag = self.inner.sign();
         // SAFETY: new selects HMAC_SHA256 and no operation replaces that
@@ -116,13 +130,13 @@ impl Retry {
     pub(crate) fn issue_into(
         &self,
         out: &mut write::Append<'_>,
-        addr: &net::SocketAddr,
+        peer: &path::Peer,
         odcid: cid::Ref<'_>,
         scid: cid::Ref<'_>,
         expiry: epoch::TokenExpiry<'_>,
     ) -> Result<(), alloc::Error> {
         let expiry = expiry.unix_seconds();
-        let tag = self.tag(addr, odcid, scid, expiry);
+        let tag = self.tag(peer, odcid, scid, expiry);
         out.write_slices([
             &expiry.to_be_bytes(),
             &[odcid.length().get()],
@@ -133,7 +147,7 @@ impl Retry {
 
     pub(crate) fn validate(
         &self,
-        addr: &net::SocketAddr,
+        peer: &path::Peer,
         token: &[u8],
         dcid: cid::Ref<'_>,
         now: &epoch::Observed<'_>,
@@ -151,7 +165,7 @@ impl Retry {
         }
         let odcid = cid::Ref::new(&token[9..9 + len]).ok()?;
         let tag = &token[9 + len..];
-        let expected = self.tag(addr, odcid, dcid, expiry);
+        let expected = self.tag(peer, odcid, dcid, expiry);
         if !bool::from(tag.ct_eq(&expected[..])) {
             return None;
         }
@@ -160,12 +174,12 @@ impl Retry {
 
     fn tag(
         &self,
-        addr: &net::SocketAddr,
+        peer: &path::Peer,
         odcid: cid::Ref<'_>,
         cid: cid::Ref<'_>,
         expiry: u64,
     ) -> [u8; TOKEN_TAG_LEN] {
-        let mut ctx = Context::address(&self.0, b"qretrytok", *addr, expiry);
+        let mut ctx = Context::address(&self.0, b"qretrytok", b"qretrytok-relay", peer, expiry);
         ctx.update(&[odcid.length().get()]);
         ctx.update(odcid.into_slice());
         ctx.update(&[cid.length().get()]);
@@ -184,11 +198,11 @@ impl Address<'_> {
 
     pub(crate) fn issue(
         &self,
-        addr: &net::SocketAddr,
+        peer: &path::Peer,
         expiry: epoch::TokenExpiry<'_>,
     ) -> [u8; Address::WIRE_LEN] {
         let expiry = expiry.unix_seconds();
-        let tag = self.tag(addr, expiry);
+        let tag = self.tag(peer, expiry);
         let mut wire = [0; Address::WIRE_LEN];
         wire[..8].copy_from_slice(&expiry.to_be_bytes());
         wire[8..].copy_from_slice(&tag);
@@ -197,7 +211,7 @@ impl Address<'_> {
 
     pub(crate) fn is_valid(
         &self,
-        addr: &net::SocketAddr,
+        peer: &path::Peer,
         wire: &[u8],
         now: &epoch::Observed<'_>,
     ) -> bool {
@@ -210,11 +224,11 @@ impl Address<'_> {
         if now.unix_seconds() >= expiry {
             return false;
         }
-        let expected = self.tag(addr, expiry);
+        let expected = self.tag(peer, expiry);
         bool::from(wire[8..].ct_eq(&expected))
     }
 
-    fn tag(&self, addr: &net::SocketAddr, expiry: u64) -> [u8; TOKEN_TAG_LEN] {
-        Context::address(self.0, b"qnewtoken", *addr, expiry).finish()
+    fn tag(&self, peer: &path::Peer, expiry: u64) -> [u8; TOKEN_TAG_LEN] {
+        Context::address(self.0, b"qnewtoken", b"qnewtoken-relay", peer, expiry).finish()
     }
 }

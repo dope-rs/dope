@@ -132,6 +132,7 @@ fn explicit_close_is_once() -> Result<(), Error> {
     let handle = Capture::handshake(&mut server, &mut client, key, tp, SERVER, CLIENT, t0)?;
 
     assert_eq!(Capture::close(&mut client, handle, t0), Ok(()));
+    Capture::drive(&mut client, t0).map_err(Error::Output)?;
     assert_eq!(cli_log.borrow().closed.len(), 1);
 
     Capture::drive(&mut client, t0).map_err(Error::Output)?;
@@ -169,11 +170,12 @@ fn close_releases_owners() -> Result<(), Error> {
         stream.id()
     })
     .expect("connection");
-    Pin::new(&mut client).observe(now, |turn| {
-        let mut sealed = turn.seal();
-        assert_eq!(sealed.close_all(), 1);
-        assert_eq!(sealed.close_all(), 0);
-    });
+    Capture::close(&mut client, handle, now).expect("close application");
+    Capture::drive(&mut client, now).map_err(Error::Output)?;
+    assert!(client.conn(handle).is_some());
+    let deadline = Pin::new(&mut client)
+        .observe(now, |turn| turn.deadline())
+        .expect("terminal deadline");
     let events = cli_log.borrow();
     assert_eq!(events.released.len(), 1);
     let (owner, release) = &events.released[0];
@@ -185,6 +187,11 @@ fn close_releases_owners() -> Result<(), Error> {
     assert!(events.closed == [handle]);
     assert!(!client.handler().events.borrow().release_after_close);
     assert!(!server.handler().events.borrow().release_after_close);
+    drop(events);
+    Capture::drive(&mut client, deadline).map_err(Error::Output)?;
+    assert!(client.conn(handle).is_none());
+    assert_eq!(cli_log.borrow().released.len(), 1);
+    assert!(cli_log.borrow().closed == [handle]);
     Ok(())
 }
 
@@ -255,6 +262,18 @@ fn peer_close_reaps() -> Result<(), Error> {
         1,
         "peer CONNECTION_CLOSE → reap fires close on server",
     );
+    for router in [&mut client, &mut server] {
+        assert_eq!(router.active_conns(), 1);
+        let deadline = Pin::new(&mut *router)
+            .observe(t0, |turn| turn.deadline())
+            .expect("terminal deadline");
+        Capture::drive(router, deadline - Duration::from_nanos(1)).map_err(Error::Output)?;
+        assert_eq!(router.active_conns(), 1);
+        Capture::drive(router, deadline).map_err(Error::Output)?;
+        assert_eq!(router.active_conns(), 0);
+    }
+    assert_eq!(cli_log.borrow().closed.len(), 1);
+    assert_eq!(srv_log.borrow().closed.len(), 1);
     assert!(!client.handler().events.borrow().release_after_close);
     assert!(!server.handler().events.borrow().release_after_close);
     Ok(())
@@ -342,12 +361,18 @@ fn scope_commits() -> Result<(), Error> {
         !Pin::new(&mut client).output().is_empty(),
         "normal return must cross the lexical commit boundary"
     );
-    assert!(client.conn(handle).is_none());
+    assert!(client.conn(handle).is_some());
     assert!(client.handler().events.borrow().closed == vec![handle]);
     assert_eq!(
         Capture::close(&mut client, handle, now),
-        Err(errors::Access::InvalidHandle)
+        Err(errors::Access::Closed)
     );
+    assert_eq!(client.active_conns(), 1);
+    let deadline = Pin::new(&mut client)
+        .observe(now, |turn| turn.deadline())
+        .expect("terminal deadline");
+    Capture::drive(&mut client, deadline).map_err(Error::Output)?;
+    assert!(client.conn(handle).is_none());
     assert_eq!(client.active_conns(), 0);
     assert!(!client.handler().events.borrow().release_after_close);
     Ok(())

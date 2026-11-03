@@ -1,4 +1,5 @@
-use std::{net, num::NonZero, time};
+use crate::proto::path::Peer;
+use std::{num::NonZero, time};
 
 use o3::depot::array::copy;
 
@@ -13,7 +14,7 @@ use router::drive;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Class {
-    destination: net::SocketAddr,
+    destination: Peer,
     max_packet_bytes: NonZero<usize>,
     encoded_packet_bytes: usize,
 }
@@ -52,7 +53,11 @@ pub(super) fn flush_group<
     let Some(class) = classify(slots.get(anchor)) else {
         return Ok(Step::Idle);
     };
-    let room = outgoing.gso_room(class.max_packet_bytes);
+    let room = outgoing.gso_room(
+        class
+            .max_packet_bytes
+            .saturating_add(class.destination.overhead()),
+    );
     if room < MIN_GSO_PACKETS {
         return Ok(Step::Idle);
     }

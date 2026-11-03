@@ -43,6 +43,10 @@ fn projection_domain() {
     }
     assert!(shards.resolve(3, 12).is_none());
     assert_eq!(shards.index(3, Shard::from_index(4), 0), None);
+    assert_eq!(shards.dense_len(0), None);
+    assert!(shards.resolve(0, 0).is_none());
+    assert_eq!(shards.dense_len(usize::MAX), None);
+    assert!(shards.resolve(usize::MAX, 0).is_none());
 
     let shards = Count::try_from(256).expect("all byte-valued shards are inside the domain");
     assert!(shards.resolve(1, 255) == Some((Shard::from_index(255), 0)));

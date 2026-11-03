@@ -215,9 +215,50 @@ pub(crate) const fn is_initial_size(len: usize) -> bool {
 }
 
 struct Route {
+    start: usize,
     dcid: cid::Span,
     scid: cid::Span,
     token: ops::Range<usize>,
+    pn_offset: NonZero<usize>,
+    len: NonZero<usize>,
+}
+
+impl Route {
+    fn new(read: Layout<'_, ops::Range<usize>>, start: usize) -> Self {
+        Self {
+            start,
+            dcid: read.ids.dcid,
+            scid: read.ids.scid,
+            token: read.token,
+            pn_offset: read.pn_offset,
+            len: read.packet_len,
+        }
+    }
+
+    fn next(
+        input: &[u8],
+        mut start: usize,
+        dcid: cid::Ref<'_>,
+    ) -> Result<Option<Self>, decode::Error> {
+        while start < input.len() {
+            let prefix = Prefix::decode(&input[start..])?;
+            let same = prefix.ids.dcid() == dcid;
+            match prefix.kind {
+                Type::Initial => {
+                    let read = initial(prefix)?;
+                    if same {
+                        return Ok(Some(Self::new(read, start)));
+                    }
+                    start += read.packet_len.get();
+                }
+                Type::ZeroRtt | Type::Handshake => {
+                    start += plain(prefix)?.packet_len.get();
+                }
+                Type::Retry => break,
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// A minimum-sized server Initial owning its decoded datagram.
@@ -237,39 +278,163 @@ impl<P: buffer::raw::Source> Admission<P> {
                     minimum: conn::MIN_INITIAL_LEN,
                 });
             }
-            let read = decode_initial(input)?;
-            Route {
-                dcid: read.ids.dcid,
-                scid: read.ids.scid,
-                token: read.token,
-            }
+            Route::new(decode_initial(input)?, 0)
         };
         Ok(Self { packet, route })
     }
 
     pub(crate) fn dcid(&self) -> cid::Ref<'_> {
         // SAFETY: admission retains the exact source whose CID extent was decoded.
-        unsafe { self.route.dcid.get(self.packet.as_ref()) }
+        unsafe {
+            self.route
+                .dcid
+                .get(self.packet.as_ref().get_unchecked(self.route.start..))
+        }
     }
 
     pub(crate) fn scid(&self) -> cid::Ref<'_> {
         // SAFETY: admission retains the exact source whose CID extent was decoded.
-        unsafe { self.route.scid.get(self.packet.as_ref()) }
+        unsafe {
+            self.route
+                .scid
+                .get(self.packet.as_ref().get_unchecked(self.route.start..))
+        }
     }
 
     pub(crate) fn token(&self) -> &[u8] {
         // SAFETY: construction admitted this token in the retained stable source.
-        unsafe { self.packet.as_ref().get_unchecked(self.route.token.clone()) }
+        unsafe {
+            self.packet
+                .as_ref()
+                .get_unchecked(self.route.start..)
+                .get_unchecked(self.route.token.clone())
+        }
     }
 
     pub(crate) fn datagram_len(&self) -> usize {
         self.packet.as_ref().len()
     }
 
+    pub(crate) fn is_single(&self) -> bool {
+        self.route.start == 0 && self.route.len.get() == self.packet.as_ref().len()
+    }
+
     pub(crate) fn into_inner(self) -> P {
         self.packet
     }
 }
+
+impl<P: buffer::raw::Mutable> Admission<P> {
+    pub(crate) fn decrypt(
+        mut self,
+        key: &crypto::Key<kind::Initial, qkdf::origin::Peer, op::Open>,
+    ) -> Result<(Admission<Datagram<P>>, Option<crypto::Error>), conn::Error> {
+        let dcid = self.route.dcid;
+        let mut failure = None;
+        loop {
+            let start = self.route.start;
+            let len = self.route.len.saturating_add(start);
+            // SAFETY: the decoded extent belongs to this unchanged datagram owner.
+            let packet = unsafe { self.packet.as_mut().get_unchecked_mut(start..len.get()) };
+            let plain = Protected::<kind::Initial, _>::new(
+                packet,
+                Proof {
+                    scid: self.route.scid,
+                    pn_offset: self.route.pn_offset,
+                },
+            )
+            .decrypt(key, 0);
+            match plain {
+                Ok(plain) => {
+                    let (number, _, body) = plain.into_bound();
+                    let body = start + body.start..start + body.end;
+                    return Ok((
+                        Admission {
+                            packet: Datagram {
+                                packet: self.packet,
+                                initial: Some(Initial { len, number, body }),
+                            },
+                            route: self.route,
+                        },
+                        failure,
+                    ));
+                }
+                Err(
+                    error @ (crypto::Error::Decrypt(_)
+                    | crypto::Error::Sample { .. }
+                    | crypto::Error::Number { .. }),
+                ) => {
+                    failure.get_or_insert(error);
+                }
+                Err(error) => return Err(error.into()),
+            }
+            let bytes = self.packet.as_ref();
+            // SAFETY: decryption does not change the admitted first packet's CID bytes.
+            let original = unsafe { dcid.get(bytes) };
+            match Route::next(bytes, len.get(), original) {
+                Ok(Some(route)) => self.route = route,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let Some(error) = failure else {
+            unreachable!("initial");
+        };
+        Err(error.into())
+    }
+}
+
+struct Initial {
+    len: NonZero<usize>,
+    number: header::Number,
+    body: ops::Range<usize>,
+}
+
+/// Original datagram retaining its already authenticated first Initial, if any.
+pub(crate) struct Datagram<P> {
+    packet: P,
+    initial: Option<Initial>,
+}
+
+impl<P> Datagram<P> {
+    pub(crate) const fn protected(packet: P) -> Self {
+        Self {
+            packet,
+            initial: None,
+        }
+    }
+
+    pub(crate) fn into_inner(self) -> P {
+        self.packet
+    }
+
+    pub(crate) fn initial<'a>(
+        &'a mut self,
+    ) -> Option<
+        Result<Decrypted<kind::Initial, <&'a mut P as sequence::Sequence>::First>, decode::Error>,
+    >
+    where
+        &'a mut P: sequence::Sequence,
+    {
+        use sequence::Sequence as _;
+
+        let Initial { len, number, body } = self.initial.take()?;
+        Some((&mut self.packet).take(len).map(|packet| Decrypted {
+            packet,
+            packet_number: number,
+            body,
+            marker: marker::PhantomData,
+        }))
+    }
+}
+
+impl<P: buffer::raw::Source> AsRef<[u8]> for Datagram<P> {
+    fn as_ref(&self) -> &[u8] {
+        self.packet.as_ref()
+    }
+}
+
+// SAFETY: shared access forwards the original source unchanged; cursor mutation is exclusive.
+unsafe impl<P: buffer::raw::Source> buffer::raw::Source for Datagram<P> {}
 
 /// A protected long header refined to its encoded packet kind.
 pub enum Parsed<P> {
@@ -371,10 +536,14 @@ impl<P: buffer::raw::Source> Parsed<P> {
     }
 
     pub fn scid(&self) -> cid::Id {
+        self.scid_ref().into_owned()
+    }
+
+    pub(crate) fn scid_ref(&self) -> cid::Ref<'_> {
         match self {
-            Self::Initial(packet) => packet.scid(),
-            Self::ZeroRtt(packet) => packet.scid(),
-            Self::Handshake(packet) => packet.scid(),
+            Self::Initial(packet) => packet.scid_ref(),
+            Self::ZeroRtt(packet) => packet.scid_ref(),
+            Self::Handshake(packet) => packet.scid_ref(),
         }
     }
 }
@@ -391,8 +560,12 @@ impl<K: kind::Long, P> Protected<K, P> {
 
 impl<K: kind::Long, P: buffer::raw::Source> Protected<K, P> {
     pub fn scid(&self) -> cid::Id {
+        self.scid_ref().into_owned()
+    }
+
+    fn scid_ref(&self) -> cid::Ref<'_> {
         // SAFETY: parsing binds the decoded extent to this exact stable source.
-        unsafe { self.proof.scid.get(self.packet.as_ref()) }.into_owned()
+        unsafe { self.proof.scid.get(self.packet.as_ref()) }
     }
 }
 
@@ -441,4 +614,4 @@ impl<K: kind::Long, P: buffer::raw::Source> Decrypted<K, P> {
 
 const _: () = assert!(usize::BITS >= 64);
 const _: () = assert!(mem::size_of::<Proof>() <= 16);
-const _: () = assert!(mem::size_of::<Admission<&[u8]>>() <= mem::size_of::<&[u8]>() + 24);
+const _: () = assert!(mem::size_of::<Admission<&[u8]>>() == mem::size_of::<&[u8]>() + 48);

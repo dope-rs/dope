@@ -58,7 +58,7 @@ pub(in crate::conn::output::transmit) fn build<
         build.connection.scratch.frames = frames;
         return Ok(None);
     }
-    let policy = build.destination;
+    let target = build.destination;
     let unbound = build.connection.peer.transport_params.is_none();
     let mut schedule = journal::Schedule::new(build);
     let mut fresh = 0u64;
@@ -156,13 +156,13 @@ pub(in crate::conn::output::transmit) fn build<
         }
     };
     commit.flags.set_flight(true);
-    let Some(target) = build.owner().target(policy, commit.path.route) else {
+    if let Err(error) = target.prefix(dst) {
         header.clear();
         let scratch = build.cancel().into_scratch();
         scratch.header = header;
         scratch.frames = frames;
-        return Ok(None);
-    };
+        return Err(error);
+    }
     let prepared = match pending::Packet::try_new(build, commit, target) {
         Ok(prepared) => prepared,
         Err((scratch, error)) => {

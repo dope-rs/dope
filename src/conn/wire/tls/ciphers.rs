@@ -14,6 +14,7 @@ use crate::conn::wire::tls::{keys, packets};
 
 pub(in crate::conn) enum Update {
     AeadLimitReached,
+    ConfidentialityLimit,
     Key,
     UnexpectedEpoch,
     Timing(conn::Timing),
@@ -36,6 +37,7 @@ impl From<Update> for conn::Error {
     fn from(error: Update) -> Self {
         match error {
             Update::AeadLimitReached => Self::AeadLimitReached,
+            Update::ConfidentialityLimit => Self::Crypto(crypto::Error::Limit),
             Update::Key => Self::KeyUpdate,
             Update::UnexpectedEpoch => Self::UnexpectedEpoch,
             Update::Timing(error) => Self::Timing(error),
@@ -90,6 +92,10 @@ impl Usage {
 
     fn count(&self) -> u64 {
         self.encrypted.get()
+    }
+
+    pub(super) fn remaining(&self) -> u64 {
+        self.limit.saturating_sub(self.count())
     }
 
     pub(super) fn is_near(&self) -> bool {

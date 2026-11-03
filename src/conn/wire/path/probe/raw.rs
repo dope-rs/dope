@@ -6,17 +6,25 @@ pub(in crate::conn) enum Response {}
 
 // SAFETY: encoding selected this same initialized challenge in its original
 // ready prefix. The packet owner excludes any removal through publication.
-unsafe impl depot::raw::Project<probe::Position, Challenge> for &mut probe::State {
+unsafe impl depot::raw::Project<(probe::Position, usize), Challenge> for &mut probe::State {
     type Output = ();
 
-    unsafe fn project(self, index: probe::Position) {
+    unsafe fn project(self, (index, bytes): (probe::Position, usize)) {
         let mut entry = unsafe {
             depot::raw::Project::<_, storage::Selected<'_, _, _, true>>::project(
                 &mut self.challenges,
                 usize::from(index.0),
             )
         };
-        entry.get_mut().outstanding = true;
+        let sent = &mut entry.get_mut().sent;
+        // A delayed response to a short transmission cannot prove a later MTU probe.
+        *sent = if bytes < crate::proto::recovery::pmtud::BASE_PMTU as usize
+            || matches!(sent, probe::Sent::Short)
+        {
+            probe::Sent::Short
+        } else {
+            probe::Sent::Expanded
+        };
     }
 }
 

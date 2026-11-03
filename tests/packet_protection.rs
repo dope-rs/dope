@@ -220,6 +220,135 @@ fn decrypt_keeps_error() {
 }
 
 #[test]
+fn integrity_limit_stops_packet_processing() {
+    use dope_quic::{conn, security::crypto, wire::packet::cid};
+    use peer::Receiver as _;
+    use std::time::Instant;
+
+    let mut pair = peer::Pair::try_config(
+        peer::Config::default()
+            .try_build()
+            .expect("server transport"),
+        peer::Config::default()
+            .try_build()
+            .expect("client transport"),
+        cid::Id::try_from([0x71; 8]).expect("fixture connection ID"),
+        |config, _| {
+            sealer::suite(
+                config,
+                sealer::Dimensions::<16, 16, false, false, false, 64>::SUITE
+                    .expect("native AES has TLS13 and QUIC support"),
+            )
+            .expect("bounded native cipher suite");
+        },
+    )
+    .expect("native peers");
+    let mut now = Instant::now();
+    pair.exchange(now, 6).expect("native handshake");
+    pair.client
+        .with_scope(|mut scope| scope.datagrams().try_send(vec![0x53; 64]))
+        .expect("payload keeps the tag outside the header sample");
+    now = pair.client.view().recovery().send_at(now);
+    let (packets, result) = pair.client.with_scope(|mut scope| scope.output().send(now));
+    result.expect("protected datagram");
+    let valid = packets
+        .into_iter()
+        .find(|packet| packet.len() >= 80 && packet[0] & 0x80 == 0)
+        .expect("application packet");
+    for failed in 1..=64 {
+        let mut corrupt = valid.clone();
+        *corrupt.last_mut().expect("authentication tag") ^= 1;
+        let result = pair.server.receive(&mut pair.work, &mut corrupt, now);
+        if failed == 64 {
+            assert!(matches!(
+                result,
+                Err(peer::Transfer::Input(conn::Error::AeadLimitReached))
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(peer::Transfer::Input(conn::Error::Crypto(
+                    crypto::Error::Decrypt(rustls::Error::DecryptError)
+                )))
+            ));
+        }
+    }
+    assert!(pair.server.view().lifecycle().is_closed());
+    let mut ignored = valid.clone();
+    pair.server
+        .receive(&mut pair.work, &mut ignored, now)
+        .expect("terminal input is ignored");
+    assert_eq!(ignored, valid);
+    let (packets, result) = pair.server.with_scope(|mut scope| scope.output().send(now));
+    result.expect("terminal output");
+    assert!(packets.is_empty());
+}
+
+#[test]
+fn confidentiality_limit_preserves_final_close() {
+    use dope_quic::{conn, conn::wire::packet::Batch, wire::packet::cid};
+    use peer::Receiver as _;
+    use std::time::{Duration, Instant};
+
+    let mut pair = peer::Pair::try_config(
+        peer::Config::default()
+            .try_build()
+            .expect("server transport"),
+        peer::Config::default()
+            .try_build()
+            .expect("client transport"),
+        cid::Id::try_from([0x71; 8]).expect("fixture connection ID"),
+        |config, _| {
+            sealer::suite(
+                config,
+                sealer::Dimensions::<16, 16, false, false, false, 64>::SUITE
+                    .expect("native AES has TLS13 and QUIC support"),
+            )
+            .expect("bounded native cipher suite");
+        },
+    )
+    .expect("native peers");
+    let mut now = Instant::now();
+    pair.exchange(now, 6).expect("native handshake");
+    pair.server
+        .with_scope(|mut scope| scope.security().at(now).update())
+        .expect("first key update");
+    for value in 0..64 {
+        pair.server
+            .with_scope(|mut scope| scope.datagrams().try_send(vec![value; 64]))
+            .expect("queued datagram");
+    }
+    now = pair
+        .server
+        .view()
+        .recovery()
+        .send_at(now + Duration::from_secs(1));
+    let mut batch = Batch::default();
+    pair.server
+        .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 64, 1200))
+        .expect("ordinary packets retain the final encryption");
+    assert_eq!(batch.packets(), 63);
+    pair.client
+        .receive_all(&mut pair.work, &mut batch, now)
+        .expect("authenticated datagrams");
+    for value in 0..63 {
+        assert_eq!(
+            pair.client.with_scope(|mut scope| scope.datagrams().recv()),
+            Some(vec![value; 64]),
+        );
+    }
+    now = pair.server.view().recovery().send_at(now);
+    pair.client
+        .receive_from(&mut pair.work, &mut pair.server, now)
+        .expect("the final legal encryption carries CONNECTION_CLOSE");
+    assert_eq!(pair.server.view().lifecycle().state(), conn::State::Closing);
+    assert_eq!(
+        pair.client.view().lifecycle().state(),
+        conn::State::Draining
+    );
+}
+
+#[test]
 fn rejects_provider_extent() {
     use dope_quic::{conn, conn::life::options::Options, security::crypto, wire::packet::cid};
     use peer::Receiver as _;

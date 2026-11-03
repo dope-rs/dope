@@ -687,24 +687,65 @@
 //! }
 //! ```
 
+//! Relay socket admission remains affine, and the admitted route cannot be fabricated.
+//!
+//! ```compile_fail
+//! use dope_quic::runtime::routing::Single;
+//! fn duplicate(binding: Single) -> (Single, Single) { (binding, binding) }
+//! ```
+//!
+//! ```compile_fail
+//! use dope_quic::runtime::routing::Single;
+//! fn duplicate(binding: Single) -> Single { binding.clone() }
+//! ```
+//!
+//! ```compile_fail
+//! use dope_quic::runtime::routing::SingleRoute;
+//! fn fabricate(route: SingleRoute) -> SingleRoute { SingleRoute { ..route } }
+//! ```
+
+//! SHA-256 derivation admits its bounded context before code generation.
+//!
+//! ```compile_fail,E0080
+//! use dope_quic::security::crypto::sha256::Prk;
+//! let key = Prk::try_extract(b"salt", &[0; 32]).expect("extract");
+//! let _ = key.try_expand(&[0; 81], &mut [0; 32]);
+//! ```
+
 #[cfg(test)]
 use dope_test::checks::{Error, Suite};
 
 #[test]
 fn retains_ownership_proofs() -> Result<(), Error> {
-    let exe = std::env::current_exe()?;
+    let exe = std::env::current_exe().expect("current test executable");
     let suite = Suite::new(
         env!("CARGO_MANIFEST_DIR"),
         file!(),
         &["dope-quic", "dope", "o3", "rustls"],
     );
-    let output = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let output = suite
+        .try_build(&exe, env!("CARGO_PKG_NAME"))?
+        .output()
+        .expect("run cargo");
     let suite = suite.try_collect(&exe, output)?;
     assert_eq!(
-        suite.try_errors(include_str!("ownership_contracts.rs"))?,
-        11
+        suite.try_errors(include_str!("ownership_contracts.rs"), compile)?,
+        12
     );
-    let status = suite.try_rustdoc()?.status()?;
+    let status = suite.try_rustdoc()?.status().expect("run rustdoc");
     assert!(status.success(), "QUIC ownership contracts: {status}");
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

@@ -1,7 +1,7 @@
 use crate::{proto::datagram::Size, runtime::brand};
 use o3::{buffer, mem::slot};
 
-use std::net;
+use crate::proto::path::Peer;
 
 use crate::conn::wire::path;
 use crate::{conn, stream};
@@ -15,8 +15,8 @@ pub(in crate::runtime) struct Slot<C, const DOMAIN: u8, B: stream::Recv, D: buff
     pub(in crate::runtime) conn: conn::Connection<DOMAIN, B, D>,
     alias: slot::Storage<Assigned>,
     pub(in crate::runtime) tls: Option<T>,
-    pub(in crate::runtime) connection: C,
-    pub(in crate::runtime) peer_addr: net::SocketAddr,
+    pub(in crate::runtime) connection: Option<C>,
+    pub(in crate::runtime) peer_addr: Peer,
     pub(in crate::runtime) max_packet_bytes: Size,
     flags: Flags,
 }
@@ -36,14 +36,14 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Slot<C, D
         conn: conn::Connection<DOMAIN, B, D>,
         tls: Option<T>,
         app: C,
-        peer: net::SocketAddr,
+        peer: Peer,
         limit: Size,
     ) -> Self {
         Self {
             conn,
             alias: slot::Storage::new(()),
             tls,
-            connection: app,
+            connection: Some(app),
             peer_addr: peer,
             max_packet_bytes: limit,
             flags: Flags {
@@ -82,8 +82,8 @@ pub(in crate::runtime) struct Access<
 > {
     pub(in crate::runtime) conn: scope::Access<'loan, DOMAIN, B, TRACK, D>,
     pub(in crate::runtime) tls: &'loan mut Option<T>,
-    pub(in crate::runtime) connection: &'loan mut C,
-    pub(in crate::runtime) peer_addr: &'loan mut net::SocketAddr,
+    pub(in crate::runtime) connection: &'loan mut Option<C>,
+    pub(in crate::runtime) peer_addr: &'loan mut Peer,
     pub(in crate::runtime) notified_established: &'loan mut bool,
     pub(in crate::runtime) max_packet_bytes: &'loan mut Size,
     pub(in crate::runtime) first_flush: &'loan mut bool,
@@ -105,16 +105,18 @@ impl Epoch {
         self.used && self.generation == epoch
     }
 
-    pub(in crate::runtime) fn claim(&mut self) -> Option<u32> {
-        let epoch = if self.used {
+    pub(in crate::runtime) fn next(&self) -> Option<u32> {
+        if self.used {
             self.generation.checked_add(1)
         } else {
-            self.used = true;
             Some(0)
-        };
-        if let Some(epoch) = epoch {
-            self.generation = epoch;
         }
-        epoch
+    }
+
+    pub(in crate::runtime) fn claim(&mut self) -> Option<u32> {
+        let epoch = self.next()?;
+        self.used = true;
+        self.generation = epoch;
+        Some(epoch)
     }
 }

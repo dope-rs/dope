@@ -116,10 +116,13 @@ impl<'a> View<'a> {
             .challenges
             .iter()
             .any(|item| item.path == Some(path))
-            || self
-                .state
-                .response_controls
-                .iter()
-                .any(|response| response.path == Some(path))
+            || self.has_response(path)
+    }
+
+    pub(in crate::conn) fn has_response(&self, path: path::Key) -> bool {
+        self.state
+            .response_controls
+            .iter()
+            .any(|response| response.path == Some(path))
     }
 }

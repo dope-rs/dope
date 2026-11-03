@@ -1,5 +1,4 @@
-use std::net;
-
+use crate::proto::path::Peer;
 use crate::wire::stream::Initiator;
 
 /// Exhaustive role and proto-parameter policy for peer address changes.
@@ -20,10 +19,10 @@ impl Policy {
         }
     }
 
-    pub(super) fn allows(self, active: net::SocketAddr, source: net::SocketAddr) -> bool {
+    pub(super) fn allows(self, active: Peer, source: Peer) -> bool {
         match self {
             Self::Fixed => false,
-            Self::NatRebinding => source.ip().eq(&active.ip()),
+            Self::NatRebinding => source.addr().ip().eq(&active.addr().ip()),
             Self::Active => true,
         }
     }

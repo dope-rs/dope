@@ -17,13 +17,12 @@ use dope_quic::runtime::mux::handler::hook::wire::ingress;
 use dope_quic::runtime::mux::handler::hook::wire::packet;
 use dope_quic::wire::packet::{decode, encode, long::initial};
 use dope_quic::{
-    conn::{self, id},
+    conn::id,
     errors,
     runtime::mux::{
         handler::{self, hook},
         router,
     },
-    security::crypto,
     wire::packet::QUIC_V1,
 };
 use hook::life::close::On;
@@ -34,7 +33,8 @@ use std::{net::SocketAddr, pin::Pin, time::Instant};
 #[derive(Debug)]
 pub enum Error {
     Header(encode::Error),
-    Admission(Result<(), runtime::Error>),
+    Initial(peer::sealer::NewError),
+    Protection(peer::sealer::SealError),
     Runtime(runtime::Error),
     MissingFlight,
     Prefix(decode::Error),
@@ -82,8 +82,8 @@ impl close::Sink<0, Vec<u8>, storage::Shared, id::Static> for Counter {
     }
 }
 
-pub fn initial(dcid: &[u8], scid: &[u8]) -> Result<Vec<u8>, encode::Error> {
-    let payload = vec![0_u8; 1200];
+pub fn initial(dcid: &[u8], scid: &[u8]) -> Result<Vec<u8>, Error> {
+    let payload = [0_u8; 1200];
     let header = initial::Header {
         version: QUIC_V1,
         dcid: dcid.to_vec(),
@@ -92,9 +92,12 @@ pub fn initial(dcid: &[u8], scid: &[u8]) -> Result<Vec<u8>, encode::Error> {
         packet_number: 0,
         pn_len: 4,
     };
-    let mut wire = header.encode(payload.len() - 16)?.as_bytes().to_vec();
-    wire.extend_from_slice(&payload);
-    Ok(wire)
+    let header = header.encode(payload.len()).map_err(Error::Header)?;
+    let bytes = header.as_bytes();
+    peer::sealer::Raw::initial(dcid, rustls::Side::Client, 0)
+        .map_err(Error::Initial)?
+        .seal(bytes, &payload, 0, bytes.len() - 4, 4)
+        .map_err(Error::Protection)
 }
 
 pub fn server() -> Result<router::Router<Counter>, Setup> {
@@ -129,25 +132,7 @@ pub fn admit(
     scid: &[u8],
     now: Instant,
 ) -> Result<(), Error> {
-    admitted(receive(
-        mux,
-        peer,
-        &mut initial(dcid, scid).map_err(Error::Header)?,
-        now,
-    ))
-}
-
-fn admitted(result: Result<(), runtime::Error>) -> Result<(), Error> {
-    if matches!(
-        result,
-        Err(runtime::Error::Receive(errors::Receive::Packet(
-            conn::Error::Crypto(crypto::Error::Decrypt(rustls::Error::DecryptError))
-        )))
-    ) {
-        Ok(())
-    } else {
-        Err(Error::Admission(result))
-    }
+    receive(mux, peer, &mut initial(dcid, scid)?, now).map_err(Error::Runtime)
 }
 
 pub fn close(
@@ -156,6 +141,24 @@ pub fn close(
     now: Instant,
 ) -> Result<(), errors::Access> {
     Pin::new(mux).observe(now, |mut turn| turn.protocol().try_close(handle))
+}
+
+pub fn reap(
+    mux: &mut router::Router<Counter>,
+    handle: id::Handle,
+    now: Instant,
+) -> Result<(), runtime::Error> {
+    Pin::new(&mut *mux)
+        .observe(now, |mut turn| turn.output().drive())
+        .map_err(runtime::Error::Output)?;
+    let deadline = mux
+        .conn(handle)
+        .and_then(|conn| conn.view().recovery().next_timer())
+        .ok_or(runtime::Error::Deadline(now))?;
+    Pin::new(&mut *mux)
+        .observe(deadline, |mut turn| turn.output().drive())
+        .map_err(runtime::Error::Output)?;
+    Ok(())
 }
 
 pub fn transfer(
@@ -219,12 +222,7 @@ pub fn alias_admit(
     scid: &[u8],
     now: Instant,
 ) -> Result<(), Error> {
-    admitted(Capture::receive(
-        mux,
-        from,
-        &mut initial(dcid, scid).map_err(Error::Header)?,
-        now,
-    ))
+    Capture::receive(mux, from, &mut initial(dcid, scid)?, now).map_err(Error::Runtime)
 }
 
 pub fn unsupported(dcid: &[u8], scid: &[u8], len: usize) -> Vec<u8> {

@@ -32,6 +32,13 @@ pub(in crate::runtime) mod routing;
 mod state;
 mod turn;
 
+/// Capacity pressure qualified by the exact transport that can release it.
+pub(crate) enum Admission<I, const DOMAIN: u8> {
+    Available,
+    Retained(id::Handle<I, DOMAIN>),
+    Full,
+}
+
 /// Exact failure to allocate the router's resident indices.
 #[derive(Debug)]
 pub enum Error {
@@ -97,6 +104,21 @@ impl<
         self.state.registry.len()
     }
 
+    pub(crate) fn admission(&self) -> Admission<A::Identity, DOMAIN> {
+        if self.state.lifecycle.shutting_down {
+            return Admission::Full;
+        }
+        self.state.registry.admission(self.state.binding.domain)
+    }
+
+    pub(crate) fn is_waiting(&self, handle: id::Handle<A::Identity, DOMAIN>) -> bool {
+        !self.state.lifecycle.shutting_down
+            && self
+                .state
+                .registry
+                .is_waiting(self.state.binding.domain, handle)
+    }
+
     #[doc(hidden)]
     pub const fn domain(&self) -> id::Domain<A::Identity, DOMAIN> {
         self.state.domain()
@@ -142,7 +164,7 @@ impl<
         read: impl FnOnce(&H, &H::Connection, &conn::Connection<DOMAIN, B, A::Send>) -> R,
     ) -> Option<R> {
         let slot = self.state.registry.get(self.state.binding.domain, handle)?;
-        Some(read(&self.handler, &slot.connection, &slot.conn))
+        Some(read(&self.handler, slot.connection.as_ref()?, &slot.conn))
     }
 
     pub fn observe<'mux, R>(
@@ -197,7 +219,7 @@ impl<
         let registry = &self.state.registry;
         if !registry.is_empty_in::<{ mux::NOTIFY_QUEUE }>()
             || !registry.is_empty_in::<{ mux::REAP_QUEUE }>()
-            || (!registry.is_empty_in::<{ mux::FLUSH_QUEUE }>()
+            || (registry.can_flush(self.state.outgoing.pending.bytes())
                 && self.state.outgoing.pending.len() < self.state.outgoing.pending.capacity()
                 && self.state.outgoing.pending.bytes() < self.state.outgoing.bytes_capacity)
         {

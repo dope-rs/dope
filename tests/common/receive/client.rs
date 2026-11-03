@@ -55,17 +55,28 @@ pub struct State {
     pub error: Option<Error>,
 }
 
-pub struct Received<F> {
+pub struct Received<F, const PULL: bool = false> {
     pub state: Rc<RefCell<State>>,
     pub active: Option<client::AttemptId>,
     pub observe: F,
 }
 
-impl<'d, F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin> protocol::Protocol<'d>
-    for Received<F>
+impl<'d, F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin, const PULL: bool>
+    protocol::Protocol<'d> for Received<F, PULL>
 {
     type Writable = Off;
     type Receive = RecvBuffer<'d>;
+
+    const DATAGRAMS: protocol::Datagrams = if PULL {
+        protocol::Datagrams::Pull
+    } else {
+        protocol::Datagrams::Push
+    };
+    const STREAMS: protocol::Streams = if PULL {
+        protocol::Streams::Pull
+    } else {
+        protocol::Streams::Push
+    };
 
     fn connect<'scope>(self: Pin<&'scope mut Self>, slot: client::SlotScope<'scope>) {
         let this = self.get_mut();

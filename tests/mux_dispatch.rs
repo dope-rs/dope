@@ -143,6 +143,9 @@ fn handshake() {
 
     let closed = Pin::new(&mut client).observe(at, |mut turn| turn.protocol().try_close(cli_h));
     closed.expect("active client connection closes");
+    Pin::new(&mut client)
+        .observe(at, |mut turn| turn.output().drive())
+        .expect("close notification");
     assert!(cli_log.borrow().closed == vec![cli_h]);
     assert_eq!(cli_log.borrow().certificates, 0);
     assert_eq!(srv_log.borrow().certificates, 0);

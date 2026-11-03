@@ -1,5 +1,5 @@
 use crate::wire::packet::long::retry;
-use std::{marker, mem, net, ops, pin};
+use std::{marker, mem, net, num, ops, pin};
 
 use dope::{
     core::{
@@ -8,7 +8,10 @@ use dope::{
             schedule::{self, clock},
             settings::{self, claim, errors::Claim},
         },
-        io::{self, datagram::Residency},
+        io::{
+            self,
+            datagram::{Residency, payload},
+        },
     },
     manifold::{
         app::{
@@ -19,6 +22,7 @@ use dope::{
     },
     runtime::executor,
 };
+use dope_sys::io::socket::route::selector::PrefixPlan;
 use o3::{
     base::cell::region,
     buffer::{self, resident},
@@ -45,8 +49,10 @@ use crate::{
                     writable,
                 },
             },
+            manage, router,
         },
         receive::{self, Storage},
+        routing,
     },
     stream,
 };
@@ -132,6 +138,10 @@ pub enum BindError {
     Connection(errors::Connect),
     Mux(builder::Failure),
     Datagram(creation::Error),
+    Framing {
+        plan: Option<(PrefixPlan, num::NonZero<u16>)>,
+        socket: Option<(PrefixPlan, num::NonZero<u16>)>,
+    },
 }
 
 /// Preserves a caller's app-construction failure at the endpoint seam.
@@ -200,18 +210,40 @@ pub struct Plan<const ID: u8, R: receive::Policy> {
 
 impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
     pub fn new(config: config::Config) -> Result<Self, config::Error> {
-        let (config, datagram, slots) = config.validated()?.into_parts();
+        Ok(Self::from_validated(config.validated(None)?))
+    }
+
+    /// Reserves the outer datagram extent selected by this socket's routing plan.
+    pub fn routed(
+        config: config::Config,
+        binding: &routing::Binding,
+    ) -> Result<Self, config::Error> {
+        Ok(Self::from_validated(config.validated(binding.framing())?))
+    }
+
+    /// Reserves return-ticket storage for one unsharded native UDP socket.
+    pub fn single(
+        config: config::Config,
+        binding: &routing::Single,
+    ) -> Result<Self, config::Error> {
+        Ok(Self::from_validated(
+            config.validated(Some(binding.framing()))?,
+        ))
+    }
+
+    fn from_validated(validation: config::Validation) -> Self {
+        let (config, datagram, slots) = validation.into_parts();
         let datagram = if <R::Buffer<'_> as Storage<'_>>::RETAINS {
             datagram.retain_slots(slots)
         } else {
             datagram
         };
         let datagram = plan::Plan::new(datagram);
-        Ok(Self {
+        Self {
             config,
             datagram,
             receive: marker::PhantomData,
-        })
+        }
     }
 
     pub const fn len(&self) -> usize {
@@ -232,6 +264,17 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
 
     pub(crate) const fn packet(&self) -> Size {
         self.config.packet()
+    }
+
+    fn admit(&self, framing: Option<(PrefixPlan, net::SocketAddr)>) -> Result<(), BindError> {
+        let framing = framing.map(|(prefix, address)| (prefix, payload::maximum(address)));
+        if self.config.framing() != framing {
+            return Err(BindError::Framing {
+                plan: self.config.framing(),
+                socket: framing,
+            });
+        }
+        Ok(())
     }
 
     fn prepare<'d, Q: buffer::Residency + buffer::raw::Source>(
@@ -295,13 +338,16 @@ where
         finish: executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self>,
     ) -> executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self> {
         let (mut owner, install, proof) = finish.into_parts();
-        let this = owner.as_mut().project();
+        let mut this = owner.as_mut().project();
         this.rotation.seal();
+        manage::Shutdown::new(this.udp.as_mut().handler_mut().mux_mut()).finish(proof);
         let child = executor::raw::Finish::new(this.udp, install, proof);
         let child = <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Finish as executor::raw::Finishes<'d, _>>::call(
             child
         );
         let (install, proof) = child.into_finish();
+        // Native settlements can return packet storage after the connection cursor ended.
+        manage::Shutdown::new(owner.as_mut().project().udp.handler_mut().mux_mut()).finish(proof);
         executor::raw::Finish::new(owner, install, proof)
     }
 }
@@ -373,8 +419,24 @@ where
         self.udp.handler().mux.handler()
     }
 
+    pub(crate) fn has_ready(&self) -> bool {
+        crate::runtime::mux::app::has_ready(&self.udp.handler().mux)
+    }
+
     pub fn len(&self) -> usize {
         self.udp.handler().mux.active_conns()
+    }
+
+    pub(crate) fn domain(&self) -> id::Domain<id::Driver<'d>, ID> {
+        self.udp.handler().mux.domain()
+    }
+
+    pub(crate) fn admission(&self) -> router::Admission<id::Driver<'d>, ID> {
+        self.udp.handler().mux.admission()
+    }
+
+    pub(crate) fn is_waiting(&self, handle: id::Handle<id::Driver<'d>, ID>) -> bool {
+        self.udp.handler().mux.is_waiting(handle)
     }
 
     pub fn is_empty(&self) -> bool {

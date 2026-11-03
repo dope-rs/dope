@@ -1,5 +1,6 @@
+use crate::proto::path::Peer;
 use o3::buffer;
-use std::{net, time};
+use std::time;
 
 use crate::{conn, proto::datagram::Size, runtime::mux::router::routing::state::cids, stream};
 
@@ -15,7 +16,7 @@ pub(in crate::runtime::mux) struct Plan<
 > {
     pub(super) connection: conn::Connection<DOMAIN, B, D>,
     pub(super) tls: Option<T>,
-    pub(super) peer_addr: net::SocketAddr,
+    pub(super) peer_addr: Peer,
     pub(super) max_packet_bytes: Size,
     pub(super) now: time::Instant,
     pub(super) routes: cids::Prepared<'storage, 'id, C, DOMAIN, B, D, T>,
@@ -27,7 +28,7 @@ impl<'storage, 'id, C, T, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Seg
     pub(in crate::runtime::mux) fn new(
         conn: conn::Connection<DOMAIN, B, D>,
         tls: Option<T>,
-        peer: net::SocketAddr,
+        peer: impl Into<Peer>,
         limit: Size,
         now: time::Instant,
         routes: cids::Prepared<'storage, 'id, C, DOMAIN, B, D, T>,
@@ -35,7 +36,7 @@ impl<'storage, 'id, C, T, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Seg
         Self {
             connection: conn,
             tls,
-            peer_addr: peer,
+            peer_addr: peer.into(),
             max_packet_bytes: limit,
             now,
             routes,

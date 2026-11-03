@@ -59,6 +59,7 @@ pub struct Session {
     target: cid::Id,
     offsets: [u64; 2],
     number: u64,
+    phase: bool,
 }
 
 impl Session {
@@ -100,6 +101,7 @@ impl Session {
             target: local,
             offsets: [0; 2],
             number: 0,
+            phase: false,
         };
         peer.wire.write(&mut peer.tls, peer.number)?;
         Ok(peer)
@@ -263,8 +265,37 @@ impl Session {
             .map_err(Error::Seal)
     }
 
+    pub fn set_target(&mut self, target: cid::Id) {
+        self.target = target;
+    }
+
+    /// Advances native keys or restores a retained generation for adversarial packets.
+    pub fn update_key(
+        &mut self,
+        previous: Option<Box<dyn quic::PacketKey>>,
+    ) -> Result<Box<dyn quic::PacketKey>, Error> {
+        let (_, write) = self
+            .wire
+            .application
+            .as_mut()
+            .ok_or(Error::Epoch(Epoch::Application))?;
+        let key = match previous {
+            Some(key) => key,
+            None => {
+                self.wire
+                    .next
+                    .as_mut()
+                    .ok_or(Error::Epoch(Epoch::Application))?
+                    .next_packet_keys()
+                    .local
+            }
+        };
+        self.phase = !self.phase;
+        Ok(write.replace_packet(key))
+    }
+
     pub fn packet(&mut self, frames: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut header = vec![0x43];
+        let mut header = vec![0x43 | (u8::from(self.phase) << 2)];
         header.extend(self.target.as_slice());
         let offset = header.len();
         let number = u32::try_from(self.number).map_err(|_| Error::Number(self.number))?;

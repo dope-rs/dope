@@ -194,7 +194,7 @@ impl Transmission {
     const EARLY_DATA: u8 = 1 << 0;
     const ACK_ELICITING: u8 = 1 << 1;
     const IN_FLIGHT: u8 = 1 << 2;
-    const PTO_PROTECTED: u8 = 1 << 3;
+    const ACK_AFTER: u8 = 1 << 3;
 
     pub(in crate::conn::output) fn new(early: bool, elicits: bool, flight: bool) -> Self {
         Self(
@@ -216,12 +216,12 @@ impl Transmission {
         self.0 & Self::IN_FLIGHT != 0
     }
 
-    pub(in crate::conn::output) fn is_pto(self) -> bool {
-        self.0 & Self::PTO_PROTECTED != 0
+    pub(in crate::conn::output) fn has_ack_after(self) -> bool {
+        self.0 & Self::ACK_AFTER != 0
     }
 
-    pub(in crate::conn::output) fn protect_pto(&mut self) {
-        self.0 |= Self::PTO_PROTECTED;
+    pub(in crate::conn::output::journals) fn set_ack_after(&mut self) {
+        self.0 |= Self::ACK_AFTER;
     }
 }
 
@@ -241,6 +241,10 @@ pub(in crate::conn::output) struct Entry<'a> {
 }
 
 impl<'a> Entry<'a> {
+    pub(in crate::conn::output) fn bytes(&self) -> usize {
+        self.packet.bytes_sent
+    }
+
     fn new(
         packet: &'a mut Packet,
         controls: &'a mut stack::raw::Slab<revision::Key, controls::Tag>,

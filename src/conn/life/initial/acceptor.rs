@@ -25,6 +25,7 @@ impl Acceptor {
     pub(crate) fn try_owned<const DOMAIN: u8, B, D>(
         self,
         config: Arc<ServerConfig>,
+        keys: Option<qkdf::Pair>,
     ) -> Result<conn::Connection<DOMAIN, B, D>, errors::Connect>
     where
         B: stream::Recv,
@@ -49,9 +50,12 @@ impl Acceptor {
             .encode(&mut params)?;
         let state = quic::ServerConnection::new(config, quic::Version::V1, params)
             .map_err(errors::Connect::Setup)?;
-        let keys = qkdf::Initial::try_new(&self.seed.initial_dcid)
-            .and_then(qkdf::Pair::try_server)
-            .map_err(|error| errors::Connect::Protocol(error.into()))?;
+        let keys = match keys {
+            Some(keys) => keys,
+            None => qkdf::Initial::try_new(&self.seed.initial_dcid)
+                .and_then(qkdf::Pair::try_server)
+                .map_err(|error| errors::Connect::Protocol(error.into()))?,
+        };
         let hs = tls::Handshake::try_new(
             state.into(),
             keys.peer,
@@ -72,13 +76,14 @@ impl Acceptor {
     pub(crate) fn try_pooled<'pool, const DOMAIN: u8, B, D>(
         self,
         pool: &'pool servers::Pool<DOMAIN>,
+        keys: Option<qkdf::Pair>,
     ) -> Result<(conn::Connection<DOMAIN, B, D>, life::tls::Permit<'pool>), errors::Connect>
     where
         B: stream::Recv,
         D: buffer::raw::Segment,
     {
         let permit = pool.reserve()?;
-        let conn = self.try_owned(pool.authority().config())?;
+        let conn = self.try_owned(pool.authority().config(), keys)?;
         Ok((conn, permit))
     }
 }

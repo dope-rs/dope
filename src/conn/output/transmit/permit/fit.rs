@@ -40,6 +40,12 @@ pub(in crate::conn) fn timer_deadline<
 >(
     permit: &Permit<'_, DOMAIN, B, D>,
 ) -> Option<time::Instant> {
+    if matches!(
+        permit.connection.egress.lifecycle.state,
+        conn::State::Closing | conn::State::Draining
+    ) {
+        return permit.connection.egress.lifecycle.close_deadline;
+    }
     super::earliest(
         loss_deadline(permit),
         permit.connection.egress.recovery.timer.idle,
@@ -77,7 +83,10 @@ pub(in crate::conn) fn can_probe<const DOMAIN: u8, B: stream::Recv, D: buffer::r
     epoch: conn::Epoch,
 ) -> bool {
     let conn = permit.connection;
-    if conn.egress.lifecycle.pending_close.is_some() {
+    if matches!(
+        conn.egress.lifecycle.state,
+        conn::State::Closing | conn::State::Draining
+    ) {
         return false;
     }
     let pn = epoch.bind(&conn.egress.recovery.spaces).next_pn;
@@ -126,7 +135,16 @@ pub(super) fn can_crypto<
     intent: CryptoIntent,
 ) -> bool {
     let conn = permit.connection;
-    if K::TYPE != packet::LONG_INITIAL && conn.egress.activity.peer_address_validated {
+    if K::TYPE != packet::LONG_INITIAL
+        && conn.egress.activity.peer_address_validated
+        && (intent == CryptoIntent::AckOnly
+            || conn
+                .egress
+                .recovery
+                .packet_journals
+                .space(K::EPOCH)
+                .has_room_for(K::EPOCH.bind(&conn.egress.recovery.spaces).next_pn, 2))
+    {
         return true;
     }
     let Some(max) = permit.send_limit(conn.egress.cc.metrics().current_mtu() as usize) else {
@@ -200,6 +218,7 @@ pub(super) fn can_app<
     if conn.egress.activity.peer_address_validated
         && (intent != AppIntent::CongestionControlledPacket
             || !conn.path.output().has_output(&conn.control))
+        && (intent == AppIntent::AckOnly || permit.can_track())
     {
         return true;
     }
@@ -272,7 +291,7 @@ pub(super) fn has_app<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment
     let conn = permit.connection;
     let valid = conn.egress.activity.peer_address_validated;
     let routed = conn.path.output().has_output(&conn.control);
-    if valid && !routed {
+    if valid && !routed && permit.can_track() {
         return true;
     }
     if conn.egress.derived.is_sendable(&conn.path, &conn.control)
@@ -297,7 +316,7 @@ pub(super) fn has_app<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment
         || (!conn.egress.datagrams.pending_datagrams.is_empty()
             && can_app::<false, DOMAIN, B, D>(permit, now, AppIntent::CongestionControlledDatagram))
         || (permit.can_track()
-            && conn.egress.cc.metrics().next_probe().is_some_and(|probe| {
+            && permit.next_probe().is_some_and(|probe| {
                 permit
                     .send_limit(probe.get())
                     .is_some_and(|max| probe.get() <= max)

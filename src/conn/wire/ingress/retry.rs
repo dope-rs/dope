@@ -36,99 +36,109 @@ impl<'a, 'driver, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: b
         Self { input }
     }
 
-    pub(super) fn receive(self, wire: &[u8], now: time::Instant) -> Result<(), conn::Error> {
-        use builder::crypto::Room;
+    pub(super) fn receive(
+        self,
+        wire: &[u8],
+        now: time::Instant,
+    ) -> (Result<(), conn::Error>, bool) {
+        let mut authenticated = false;
+        let result = (|| {
+            use builder::crypto::Room;
 
-        let input = self.input;
-        if !matches!(input.connection.peer.local, Initiator::Client)
-            || input.connection.control.probe().is_retry()
-        {
-            return Ok(());
-        }
-        if !input.connection.handshake.keys.long.can_retry()
-            || input.connection.path.origin.peer_first_scid.is_some()
-        {
-            return Ok(());
-        }
-        let retry = retry::Ref::decode(wire).map_err(conn::Error::Long)?;
-        let odcid = input.connection.path.origin.original_dcid;
-        let local = input.connection.path.local.id();
-        let mut buf = mem::take(&mut input.connection.scratch.header);
-        buf.clear();
-        let (peer, size) = {
-            let check = match retry.verify_into(odcid.as_ref_id(), local.as_ref_id(), &mut buf) {
-                Ok(check) => check,
-                Err(error) => {
+            let input = self.input;
+            if !matches!(input.connection.peer.local, Initiator::Client)
+                || input.connection.control.probe().is_retry()
+            {
+                return Ok(());
+            }
+            if !input.connection.handshake.keys.long.can_retry()
+                || input.connection.path.origin.peer_first_scid.is_some()
+            {
+                return Ok(());
+            }
+            let retry = retry::Ref::decode(wire).map_err(conn::Error::Long)?;
+            let odcid = input.connection.path.origin.original_dcid;
+            let local = input.connection.path.local.id();
+            let mut buf = mem::take(&mut input.connection.scratch.header);
+            buf.clear();
+            let (peer, size) = {
+                let check = match retry.verify_into(odcid.as_ref_id(), local.as_ref_id(), &mut buf)
+                {
+                    Ok(check) => check,
+                    Err(error) => {
+                        buf.clear();
+                        input.connection.scratch.header = buf;
+                        return Err(conn::Error::Retry(error));
+                    }
+                };
+                let Some(valid) = check else {
                     buf.clear();
                     input.connection.scratch.header = buf;
-                    return Err(conn::Error::Retry(error));
-                }
+                    return Ok(());
+                };
+                authenticated = true;
+                let peer = valid.scid().into_owned();
+                input.connection.path.peer.validate_id(peer.as_ref_id())?;
+                (peer, valid.token().len())
             };
-            let Some(valid) = check else {
-                buf.clear();
-                input.connection.scratch.header = buf;
+            input.connection.scratch.header = input.connection.path.origin.retry(buf);
+            let pmtu = input.connection.egress.cc.metrics().current_mtu() as usize;
+            let limit = input.connection.egress.cc.metrics().ceiling().min(pmtu);
+            let Some(number) = conn::Epoch::Initial
+                .bind_mut(&mut input.connection.egress.recovery.spaces)
+                .next()
+            else {
+                input.connection.close_now();
+                input
+                    .context
+                    .record(conn::Effects::from_bits(conn::Effects::LIFECYCLE));
                 return Ok(());
             };
-            let peer = valid.scid().into_owned();
-            input.connection.path.peer.validate_id(peer.as_ref_id())?;
-            (peer, valid.token().len())
-        };
-        input.connection.scratch.header = input.connection.path.origin.retry(buf);
-        let pmtu = input.connection.egress.cc.metrics().current_mtu() as usize;
-        let limit = input.connection.egress.cc.metrics().ceiling().min(pmtu);
-        let Some(number) = conn::Epoch::Initial
-            .bind_mut(&mut input.connection.egress.recovery.spaces)
-            .next()
-        else {
-            input.connection.egress.lifecycle.state = conn::State::Closed;
+            let plain = builder::Builder::<'_, DOMAIN, B, D>::initial_for(
+                peer.len(),
+                local.len(),
+                size,
+                limit,
+                number.encoded_len(),
+            );
+            let crypto = input
+                .connection
+                .handshake
+                .crypto
+                .bytes(conn::Epoch::Initial)
+                .len();
+            if limit < conn::MIN_INITIAL_LEN || crypto == 0 || Room::new(plain).limit(0) == 0 {
+                input.connection.close_now();
+                input
+                    .context
+                    .record(conn::Effects::from_bits(conn::Effects::LIFECYCLE));
+                return Err(conn::Error::PacketCeiling);
+            }
+            let secret = qkdf::Initial::try_new(peer.as_slice())?;
+            epochs::Epochs::new(input.connection).retry();
+            let keys = qkdf::Pair::try_client(secret)?;
+            input
+                .connection
+                .handshake
+                .keys
+                .long
+                .replace(keys.peer, keys.local);
+            input.connection.path.origin.retry_source_cid = Some(peer);
+            input.connection.path.peer.set_id(peer)?;
+            input.connection.control.queue().retry();
+            input.connection.egress.lifecycle.sent_initial = false;
             input
                 .context
-                .record(conn::Effects::from_bits(conn::Effects::LIFECYCLE));
-            return Ok(());
-        };
-        let plain = builder::Builder::<'_, DOMAIN, B, D>::initial_for(
-            peer.len(),
-            local.len(),
-            size,
-            limit,
-            number.encoded_len(),
-        );
-        let crypto = input
-            .connection
-            .handshake
-            .crypto
-            .bytes(conn::Epoch::Initial)
-            .len();
-        if limit < conn::MIN_INITIAL_LEN || crypto == 0 || Room::new(plain).limit(0) == 0 {
-            input.connection.egress.lifecycle.state = conn::State::Closed;
-            input
-                .context
-                .record(conn::Effects::from_bits(conn::Effects::LIFECYCLE));
-            return Err(conn::Error::PacketCeiling);
-        }
-        let secret = qkdf::Initial::try_new(peer.as_slice())?;
-        epochs::Epochs::new(input.connection).retry();
-        let keys = qkdf::Pair::try_client(secret)?;
-        input
-            .connection
-            .handshake
-            .keys
-            .long
-            .replace(keys.peer, keys.local);
-        input.connection.path.origin.retry_source_cid = Some(peer);
-        input.connection.path.peer.set_id(peer)?;
-        input.connection.control.queue().retry();
-        input.connection.egress.lifecycle.sent_initial = false;
-        input
-            .context
-            .record(conn::Effects::from_bits(conn::Effects::SCHEDULER));
-        timer::Timer::try_update(
-            &mut input.connection.egress,
-            &input.connection.handshake.keys,
-            input.connection.peer.local,
-            now,
-        )
-        .or_else(|error| input.reject(error.into()))
+                .record(conn::Effects::from_bits(conn::Effects::SCHEDULER));
+            timer::Timer::try_update(
+                &mut input.connection.egress,
+                &input.connection.handshake.keys,
+                input.connection.peer.local,
+                now,
+            )
+            .or_else(|error| input.reject(error.into()))
+        })();
+        (result, authenticated)
     }
 }
 

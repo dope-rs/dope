@@ -3,6 +3,7 @@ use crate::runtime::{brand, endpoint::owner, routing};
 use dope::core::driver::{route, schedule};
 use dope::manifold::app::dispatch;
 use dope::manifold::app::dispatch::event;
+use dope::runtime::executor;
 use std::pin;
 
 // SAFETY: all retained addresses belong to the structurally pinned endpoint.
@@ -26,7 +27,7 @@ where
     type Route = route::KeyTag<ID>;
     type Dispatch = event::Driven<dispatch::raw::Plain>;
     type Install = dispatch::raw::Projected<Self>;
-    type Finish = dispatch::raw::Projected<Self>;
+    type Finish = Self;
     type Activate = dispatch::raw::Projected<Self>;
     type Probe = Self;
     type PrePark = dispatch::raw::Retained;
@@ -52,10 +53,10 @@ where
             )
         };
         let budget = self.as_ref().get_ref().limits.events.get();
-        self.as_mut().project().inner.drain_events(budget);
+        let now = driver.driver_ref().clock().now();
+        self.as_mut().project().inner.drain_ready(now, budget);
         let mut changed = false;
         let mut left = self.as_ref().get_ref().limits.retries.get();
-        let now = driver.driver_ref().clock().now();
         while left != 0 {
             let Some(did) =
                 brand::Token::with(|scope| self.as_mut().project().inner.try_due(scope, now))
@@ -86,11 +87,35 @@ where
     where
         Self: 'root,
     {
+        self.as_mut().seal();
         {
             let this = self.as_mut().project();
             dispatch::raw::Manifold::shutdown(this.inner.project().endpoint, turn, driver);
         }
-        self.as_mut().close_all(driver.driver_ref().clock().now());
+        self.as_mut().project().inner.drain_events(usize::MAX);
         self
+    }
+}
+
+impl<'pool, 'd, const ID: u8, P, B, A, C, R> executor::raw::Finishes<'d, Self>
+    for client::Dialer<'pool, 'd, ID, P, B, A, C, R>
+where
+    P: protocol::Protocol<'d>,
+    B: client::Backoff,
+    A: auth::Mode,
+    A::Binding: owner::Binding<'d, ID>,
+    C: client::ConfigSource,
+    R: routing::PeerRoute,
+    Self: dispatch::raw::Projection<'d>,
+    <Self as dispatch::raw::Projection<'d>>::Inner: dispatch::raw::Manifold<'d>,
+{
+    fn call<'app, 'finish, 'owner, 'epoch>(
+        finish: executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self>,
+    ) -> executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self> {
+        let finish =
+            <dispatch::raw::Projected<Self> as executor::raw::Finishes<'d, Self>>::call(finish);
+        let (mut owner, install, proof) = finish.into_parts();
+        owner.as_mut().project().inner.drain_events(usize::MAX);
+        executor::raw::Finish::new(owner, install, proof)
     }
 }

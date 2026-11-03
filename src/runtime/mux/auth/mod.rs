@@ -1,6 +1,7 @@
 use crate::{
     conn, errors,
     runtime::{mux, routing},
+    security::qkdf,
     stream,
 };
 use conn::{id, life};
@@ -42,7 +43,7 @@ pub struct PooledServer<'tls, const DOMAIN: u8> {
 pub struct ConfigRef<'a>(pub(super) &'a options::Options);
 
 #[doc(hidden)]
-pub struct ServerConfig(pub(super) options::Options);
+pub struct ServerConfig(pub(super) options::Options, pub(super) qkdf::Pair);
 
 /// Compile-time coupling of identity, routing, admission, and send ownership.
 #[doc(hidden)]
@@ -102,7 +103,7 @@ where
         config: ServerConfig,
     ) -> Accepted<DOMAIN, B, Self::Send, Self::Session> {
         let init = initial::Acceptor::new(ids, config.0);
-        let conn = init.try_owned(server.config())?;
+        let conn = init.try_owned(server.config(), Some(config.1))?;
         Ok((conn, None))
     }
 }
@@ -140,7 +141,7 @@ where
         config: ServerConfig,
     ) -> Accepted<DOMAIN, B, Self::Send, Self::Session> {
         let init = initial::Acceptor::new(ids, config.0);
-        let (conn, permit) = init.try_pooled(server.pool)?;
+        let (conn, permit) = init.try_pooled(server.pool, Some(config.1))?;
         Ok((conn, Some(permit)))
     }
 }

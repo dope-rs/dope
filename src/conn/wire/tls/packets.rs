@@ -40,8 +40,11 @@ impl<'key> Read<'key> {
         next: u64,
         now: time::Instant,
         pto: time::Duration,
+        advance: bool,
     ) -> Result<crypto::Opened<P>, Rejected<P, conn::Error>> {
-        self.read.expire(now);
+        if advance {
+            self.read.expire(now);
+        }
         let opened = self.read.current.unprotect(wire, next, |number, phase| {
             let pn = number.get();
             if phase == self.read.phase {
@@ -69,25 +72,28 @@ impl<'key> Read<'key> {
             }
         };
         let pn = opened.number().get();
-        match key {
-            Candidate::Current => {
-                self.read.first_current_pn.get_or_insert(pn);
-            }
-            Candidate::Previous => {}
-            Candidate::Next => {
-                if !self.read.can_advance() || !self.write.can_advance() {
-                    let (_, packet, _) = opened.into_parts();
-                    return Err(Rejected::new(packet, conn::Error::KeyUpdate));
+        if advance {
+            match key {
+                Candidate::Current => {
+                    let first = self.read.first_current_pn.get_or_insert(pn);
+                    *first = (*first).min(pn);
                 }
-                if let Err(error) = self.read.promote(pn, now, pto) {
-                    let (_, packet, _) = opened.into_parts();
-                    return Err(Rejected::new(packet, error.into()));
-                }
-                if self.write.phase != self.read.phase
-                    && let Err(error) = self.write.advance()
-                {
-                    let (_, packet, _) = opened.into_parts();
-                    return Err(Rejected::new(packet, error.into()));
+                Candidate::Previous => {}
+                Candidate::Next => {
+                    if !self.read.can_advance() || !self.write.can_advance() {
+                        let (_, packet, _) = opened.into_parts();
+                        return Err(Rejected::new(packet, conn::Error::KeyUpdate));
+                    }
+                    if let Err(error) = self.read.promote(pn, now, pto) {
+                        let (_, packet, _) = opened.into_parts();
+                        return Err(Rejected::new(packet, error.into()));
+                    }
+                    if self.write.phase != self.read.phase
+                        && let Err(error) = self.write.advance()
+                    {
+                        let (_, packet, _) = opened.into_parts();
+                        return Err(Rejected::new(packet, error.into()));
+                    }
                 }
             }
         }
@@ -117,6 +123,11 @@ impl<'key> Write<'key> {
 
     pub(in crate::conn) const fn is_key_phase(&self) -> bool {
         self.write.phase
+    }
+
+    /// Leaves one encryption for CONNECTION_CLOSE.
+    pub(in crate::conn) fn limit(&self, packets: usize) -> usize {
+        self.write.remaining().saturating_sub(1).min(packets as u64) as usize
     }
 
     pub(in crate::conn) fn permit(self) -> Result<Permit<'key>, crypto::Error> {

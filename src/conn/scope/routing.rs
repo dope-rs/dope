@@ -1,6 +1,7 @@
 use crate::conn::machine::Reset;
+use crate::proto::path::Peer;
 use o3::buffer;
-use std::{net, time};
+use std::time;
 
 use crate::{
     conn, stream,
@@ -20,23 +21,29 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Routing<'_, DOM
         Routing { machine }
     }
 
-    pub(crate) fn bind_peer(&mut self, address: net::SocketAddr) {
+    pub(crate) fn bind_peer(&mut self, address: Peer) {
         self.machine.path.bind(address);
     }
 
-    pub(crate) fn is_new(&self, address: net::SocketAddr) -> bool {
-        self.machine.path.ingress().is_new(address)
+    pub(crate) fn is_new(&self, address: Peer) -> bool {
+        !self.machine.is_closing() && self.machine.path.ingress().is_new(address)
     }
 
-    pub(crate) fn begin(&mut self, address: net::SocketAddr, bytes: usize, token: Option<[u8; 8]>) {
-        self.machine.path.begin(address, bytes, token);
+    pub(crate) fn begin(
+        &mut self,
+        address: Peer,
+        bytes: usize,
+        outer_bytes: usize,
+        token: Option<[[u8; 8]; 2]>,
+    ) {
+        self.machine.path.begin(address, bytes, outer_bytes, token);
     }
 
     pub(crate) fn end_datagram(&mut self) {
         self.machine.path.end(&self.machine.control);
     }
 
-    pub(crate) fn peer(&self) -> Option<net::SocketAddr> {
+    pub(crate) fn peer(&self) -> Option<Peer> {
         self.machine.path.ingress().peer()
     }
 
@@ -45,6 +52,9 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Routing<'_, DOM
         now: time::Instant,
         token: Option<[u8; 8]>,
     ) -> Result<(), transmit::Error> {
+        if self.machine.is_closing() {
+            return Ok(());
+        }
         let (_, pto) = self.machine.try_pto().map_err(transmit::Error::Timing)?;
         let effects = self
             .machine
@@ -71,13 +81,13 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Routing<'_, DOM
             return false;
         }
         if !vn.contains(packet::QUIC_V1) {
-            self.machine.egress.lifecycle.state = conn::State::Closed;
+            self.machine.close_now();
             return true;
         }
         false
     }
 
-    pub(crate) fn reset(&mut self, source: net::SocketAddr, token: reset::Token) -> Reset {
+    pub(crate) fn reset(&mut self, source: Peer, token: reset::Token) -> Reset {
         self.machine.reset(Some(source), token)
     }
 

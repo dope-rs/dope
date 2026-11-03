@@ -27,7 +27,7 @@ pub(in crate::conn) struct State {
     cc: reno::NewReno,
     pacer: pacer::Pacer,
     pmtud: pmtud::Pmtud,
-    packet_ceiling: usize,
+    packet_ceiling: pmtud::Maximum,
     probe: Option<(Packet, pmtud::Probe)>,
 }
 
@@ -46,7 +46,7 @@ impl State {
             cc,
             pacer,
             pmtud,
-            packet_ceiling: max_pmtu.get() as usize,
+            packet_ceiling: max_pmtu,
             probe: None,
         }
     }
@@ -121,13 +121,14 @@ impl State {
             .reconfigure(now, self.cc.window(), rtt, self.cc.mtu());
     }
 
-    pub(in crate::conn) fn set_peer_max(&mut self, max: u64) -> Option<pmtud::Capped> {
+    pub(in crate::conn) fn set_peer_max(&mut self, max: u64) -> Option<pmtud::Maximum> {
         let capped = self.pmtud.cap(max)?;
+        self.packet_ceiling = capped;
         Some(capped)
     }
 
     pub(in crate::conn) fn restart_path(&mut self) {
-        self.pmtud.restart_path();
+        self.pmtud = pmtud::Pmtud::new(self.packet_ceiling);
         self.probe = None;
         self.cc = reno::NewReno::new(self.pmtud.current());
         self.pacer = pacer::Pacer::new(self.cc.window(), rtt::INITIAL_RTT, self.cc.mtu());
@@ -150,15 +151,15 @@ impl Metrics<'_> {
         self.state.pmtud.current()
     }
 
-    pub(in crate::conn) fn next_probe(&self) -> Option<pmtud::Probe> {
+    pub(in crate::conn) fn next_probe(&self, ceiling: num::NonZero<u16>) -> Option<pmtud::Probe> {
         if self.state.probe.is_some() {
             return None;
         }
-        self.state.pmtud.next_probe()
+        self.state.pmtud.next_probe(ceiling)
     }
 
     pub(in crate::conn) const fn ceiling(&self) -> usize {
-        self.state.packet_ceiling
+        self.state.packet_ceiling.get() as usize
     }
 
     pub(in crate::conn) const fn window(&self) -> u64 {

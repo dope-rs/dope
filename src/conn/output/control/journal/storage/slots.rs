@@ -11,7 +11,6 @@ use crate::conn::output::control::journal::{
 };
 use crate::conn::output::{control, delivery};
 use control::{owner, revision};
-use o3::depot::arena::slab::key::Parts;
 
 pub(super) struct Insert<'a> {
     pub(super) set: &'a mut Set,
@@ -160,8 +159,7 @@ impl<'a, P> Occupied<'a, P> {
 
     pub(in crate::conn::output::control) fn revision(&self) -> revision::Key {
         let slot = self.slot.get();
-        let parts = Parts::new(self.slot.key().index(), slot.revision);
-        revision::Key::new(parts)
+        revision::Key::new(self.slot.key().parts(), slot.revision)
     }
 
     pub(in crate::conn::output::control) fn owner<Kind>(&self) -> owner::Key<Kind> {

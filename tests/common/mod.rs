@@ -8,4 +8,5 @@ pub mod receive;
 pub mod peer;
 pub mod suite;
 
+pub mod routing;
 pub mod runtime;

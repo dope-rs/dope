@@ -135,6 +135,9 @@ where
     D: buffer::raw::Segment,
     I: id::Temporal,
 {
+    /// Retains native datagrams for explicit application-queue consumption.
+    const PULL: bool = false;
+
     fn call<'scope, F>(take: impl FnOnce() -> Option<F>) -> ops::ControlFlow<()>
     where
         F: FnOnce() -> datagram::Event<'scope, H, DOMAIN, B, D, I>,
@@ -196,6 +199,9 @@ where
     D: buffer::raw::Segment,
     I: id::Temporal,
 {
+    /// Retains the native event and payload for the application queue.
+    const PULL: bool = false;
+
     fn call<'scope>(
         event: impl FnOnce() -> stream::Event<'scope, H, DOMAIN, B, D, I>,
     ) -> mux::Disposition

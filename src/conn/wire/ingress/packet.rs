@@ -1,10 +1,11 @@
 use o3::buffer;
-use std::{net, time};
+use std::time;
 
 use crate::wire::packet::header;
 
 use crate::conn;
 use crate::conn::output::recovery::{epochs, timer};
+use crate::proto::path::Peer;
 use crate::proto::recovery::numbers;
 use crate::stream;
 use crate::wire::stream::Initiator;
@@ -23,7 +24,7 @@ pub(in crate::conn::wire::ingress) struct Packet<
     epoch: conn::Epoch,
     fresh: numbers::Fresh,
     discard: epochs::Discarded,
-    peer: Option<net::SocketAddr>,
+    peer: Option<Peer>,
     pending: conn::Effects,
 }
 
@@ -70,6 +71,17 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
 
     pub(in crate::conn::wire::ingress) fn record(&mut self, effects: conn::Effects) {
         self.pending.merge(effects);
+    }
+
+    pub(in crate::conn::wire::ingress) fn drain(
+        &mut self,
+        now: time::Instant,
+    ) -> Result<(), conn::Timing> {
+        if let Some(change) = self.connection.drain() {
+            self.pending.merge(change.effects());
+        }
+        self.connection.try_terminal(now)?;
+        Ok(())
     }
 
     pub(in crate::conn::wire::ingress) fn close(&mut self, error: &conn::Error) -> conn::Effects {

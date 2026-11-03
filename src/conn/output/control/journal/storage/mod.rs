@@ -83,7 +83,7 @@ impl<'a> View<'a> {
     ) -> (Key, revision::Key, &'a Entry) {
         let live = unsafe { live.map(|(view, index)| (view.0.entries(), index)) };
         let (owner, slot) = demand::Entries::project(live);
-        let revision = revision::Key::new(Parts::new(owner.index(), slot.revision));
+        let revision = revision::Key::new(owner.parts(), slot.revision);
         (Key::new(owner), revision, &slot.value)
     }
 
@@ -249,15 +249,12 @@ impl Set {
         &mut self,
         rev: revision::Key,
     ) -> Option<Occupied<'_>> {
-        let parts = rev.parts();
-        let entry = self.slots.entry_at(parts.index())?;
-        if entry.get().revision != parts.generation() {
+        let (parts, revision) = rev.parts();
+        let entry = self.owner(owner::Key::<()>::new(parts))?;
+        if entry.slot.get().revision != revision {
             return None;
         }
-        Some(Occupied {
-            slot: entry,
-            queues: &mut self.topology,
-        })
+        Some(entry)
     }
 
     pub(in crate::conn::output::control) fn project<'a, C, P>(

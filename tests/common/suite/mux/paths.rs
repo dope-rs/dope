@@ -93,15 +93,44 @@ pub fn try_response(
     packets: Vec<Flight>,
     source: SocketAddr,
 ) -> Result<Vec<u8>, WireError> {
-    let mut token = None;
+    let [response] = try_responses(peer, packets, [source])?;
+    Ok(response)
+}
+
+/// Opens every emitted packet in order before creating independent replies.
+pub fn try_responses<const N: usize>(
+    peer: &mut packet::Session,
+    packets: Vec<Flight>,
+    sources: [SocketAddr; N],
+) -> Result<[Vec<u8>; N], WireError> {
+    let tokens = try_challenges(peer, packets, sources)?;
+    let mut replies = std::array::from_fn(|_| Vec::new());
+    for (reply, token) in replies.iter_mut().zip(tokens) {
+        let mut response = [0; 1_200];
+        response[0] = frame::TYPE_PATH_RESPONSE;
+        response[1..9].copy_from_slice(&token);
+        *reply = peer.packet(&response).map_err(WireError::Packet)?;
+    }
+    Ok(replies)
+}
+
+pub fn try_challenges<const N: usize>(
+    peer: &mut packet::Session,
+    packets: Vec<Flight>,
+    sources: [SocketAddr; N],
+) -> Result<[[u8; 8]; N], WireError> {
+    let mut tokens = [None; N];
     for mut packet in packets {
-        let selected = packet.addr() == source;
+        let selected = sources.iter().position(|source| *source == packet.addr());
         for segment in packet.segments_mut() {
             let Some(mut wire) = peer.receive(segment).map_err(WireError::Packet)? else {
                 continue;
             };
             let (_, body) = peer.open(&mut wire).map_err(WireError::Packet)?;
-            if !selected || token.is_some() {
+            let Some(index) = selected else {
+                continue;
+            };
+            if tokens[index].is_some() {
                 continue;
             }
             for frame in frame::Frame::decode_all(&body)
@@ -109,17 +138,17 @@ pub fn try_response(
                 .map_err(WireError::Packet)?
             {
                 if let frame::View::PathChallenge { data } = frame.view() {
-                    token = Some(*data);
+                    tokens[index] = Some(*data);
                     break;
                 }
             }
         }
     }
-    let token = token.ok_or(WireError::Runtime(Error::EmptyReply))?;
-    let mut response = [0; 1_200];
-    response[0] = frame::TYPE_PATH_RESPONSE;
-    response[1..9].copy_from_slice(&token);
-    peer.packet(&response).map_err(WireError::Packet)
+    let mut challenges = [[0; 8]; N];
+    for (challenge, token) in challenges.iter_mut().zip(tokens) {
+        *challenge = token.ok_or(WireError::Runtime(Error::EmptyReply))?;
+    }
+    Ok(challenges)
 }
 
 pub struct Pending {
@@ -147,6 +176,9 @@ impl Pending {
             .map_err(Setup::Options)
     }
     pub fn try_new(seed: u8, cid: u8) -> Result<Self, Setup> {
+        Self::try_with(seed, cid, Self::options()?)
+    }
+    pub fn try_with(seed: u8, cid: u8, options: Options) -> Result<Self, Setup> {
         let (signing, key) = peer::raw(seed).map_err(Setup::Identity)?;
         let auth =
             accept::Authority::new(signing.server().map_err(Setup::Tls)?, Pending::options()?)
@@ -158,7 +190,6 @@ impl Pending {
             .build()
             .map_err(Setup::ClientBuild)?;
         let start = Instant::now();
-        let options = Pending::options()?;
         let auth = tls::client(key).map_err(Setup::Tls)?;
         let handle = Pin::new(&mut client)
             .observe(start, |mut turn| {
@@ -350,6 +381,7 @@ impl Pair {
         target: Option<SocketAddr>,
     ) -> Result<(Instant, Vec<Flight>), Error> {
         let mut at = start;
+        let mut received = Vec::new();
         for _ in 0..turns {
             let deadline = Pin::new(&mut *router)
                 .observe(at, |turn| turn.deadline())
@@ -357,12 +389,14 @@ impl Pair {
             at = deadline
                 .checked_add(Duration::from_micros(1))
                 .ok_or(Error::Deadline(deadline))?;
-            let packets = dispatch::Capture::output(router, at).map_err(Error::Output)?;
-            if target.is_none_or(|target| Self::path(&packets, target).next().is_some()) {
-                return Ok((at, packets));
+            let mut packets = dispatch::Capture::output(router, at).map_err(Error::Output)?;
+            let found = target.is_none_or(|target| Self::path(&packets, target).next().is_some());
+            received.append(&mut packets);
+            if found {
+                return Ok((at, received));
             }
         }
-        Ok((at, Vec::new()))
+        Ok((at, received))
     }
     pub fn short_cid(packet: &Flight) -> Option<&[u8]> {
         let payload = packet.payload();

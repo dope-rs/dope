@@ -30,8 +30,6 @@ impl Failures {
 #[repr(transparent)]
 pub(crate) struct Probe(num::NonZero<u16>);
 
-pub(crate) struct Capped;
-
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub(crate) struct Maximum(datagram::Size);
@@ -87,25 +85,21 @@ impl Pmtud {
 
     /// Applies the authenticated peer UDP payload ceiling before discovery can
     /// arm a probe. Transport parameters guarantee a minimum of 1200 bytes.
-    pub(crate) fn cap(&mut self, max: u64) -> Option<Capped> {
-        if max < BASE_PMTU || self.current != BASE_PMTU || !matches!(self.failures, Failures::None)
-        {
+    pub(crate) fn cap(&mut self, max: u64) -> Option<Maximum> {
+        if self.current != BASE_PMTU || !matches!(self.failures, Failures::None) {
             return None;
         }
-        self.upper_bound = self.upper_bound.min(max);
-        Some(Capped)
+        let maximum = Maximum::new(self.upper_bound.min(max))?;
+        self.upper_bound = maximum.get();
+        Some(maximum)
     }
 
-    pub(crate) fn restart_path(&mut self) {
-        self.current = BASE_PMTU;
-        self.failures = Failures::None;
-    }
-
-    pub(crate) fn next_probe(&self) -> Option<Probe> {
-        if self.upper_bound <= self.current + SEARCH_DONE_INTERVAL {
+    pub(crate) fn next_probe(&self, ceiling: num::NonZero<u16>) -> Option<Probe> {
+        let upper_bound = self.upper_bound.min(u64::from(ceiling.get()));
+        if upper_bound <= self.current + SEARCH_DONE_INTERVAL {
             return None;
         }
-        let size = (self.current + self.upper_bound) / 2;
+        let size = (self.current + upper_bound) / 2;
         let size = num::NonZero::<u16>::new(u16::try_from(size).ok()?)?;
         Some(Probe(size))
     }

@@ -2,6 +2,7 @@ use crate::common::peer;
 use common::suite::peers::tls;
 pub mod common;
 use common::suite::cid::{Count, INITIAL};
+use dope_quic::conn::State;
 use dope_quic::errors::{Access, Code};
 use dope_quic::proto::cid::Rotation;
 use dope_quic::runtime::mux::builder::{Builder, Plan};
@@ -88,6 +89,10 @@ fn rotates_before_retiring() {
         }
     }
     assert_eq!(server.handler().established, 1);
+    let inbound = server
+        .handler()
+        .last_handle
+        .expect("established server connection handle");
 
     let mut rotation = Pin::new(&mut server).observe(started, |turn| {
         turn.plan_cid(
@@ -157,14 +162,30 @@ fn rotates_before_retiring() {
             })
         })
         .expect("established client handle must resolve for close");
-    for turn in 0..8 {
-        let now = close_at + Duration::from_millis(turn * 10);
-        Count::relay_at(&mut client, &mut server, local, now).expect("CID relay_at");
-        Count::relay_at(&mut server, &mut client, peer, now).expect("CID relay_at");
-        if client.active_conns() == 0 && server.active_conns() == 1 {
-            break;
-        }
-    }
+    Count::relay_at(&mut client, &mut server, local, close_at).expect("CID close relay");
+    let closing = client.conn(handle).expect("closing client retained");
+    assert_eq!(closing.view().lifecycle().state(), State::Closing);
+    let client_deadline = closing
+        .view()
+        .recovery()
+        .next_timer()
+        .expect("client terminal deadline");
+    let draining = server.conn(inbound).expect("draining server retained");
+    assert_eq!(draining.view().lifecycle().state(), State::Draining);
+    let server_deadline = draining
+        .view()
+        .recovery()
+        .next_timer()
+        .expect("server terminal deadline");
+    assert!(client_deadline > close_at);
+    assert!(server_deadline > close_at);
+    Pin::new(&mut client)
+        .observe(client_deadline, |mut turn| turn.output().drive())
+        .expect("client terminal expiry");
+    Pin::new(&mut server)
+        .observe(server_deadline, |mut turn| turn.output().drive())
+        .expect("server terminal expiry");
+    assert!(server.conn(inbound).is_none());
     assert_eq!(client.active_conns(), 0);
     assert_eq!(server.active_conns(), 1);
     assert_eq!(next.active_conns(), 1);

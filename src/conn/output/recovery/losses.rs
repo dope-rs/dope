@@ -145,7 +145,13 @@ where
                 if matches!(
                     epoch
                         .bind_mut(&mut self.delivery.egress.recovery.streaks)
-                        .lost(pn, sent, elicits, period),
+                        .lost(
+                            pn,
+                            sent,
+                            elicits,
+                            journal.transmission.has_ack_after(),
+                            period
+                        ),
                     recovery::Finding::Persistent
                 ) {
                     lost.persistent = true;

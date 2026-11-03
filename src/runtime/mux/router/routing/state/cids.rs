@@ -169,9 +169,8 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         self.alias.value
     }
 
-    pub(in crate::runtime::mux) fn is_full(&self) -> bool {
-        let (active, limit) = self.source.owner.capacity();
-        active >= limit.get()
+    pub(in crate::runtime::mux) fn is_full(&mut self) -> bool {
+        self.source.owner.is_full()
     }
 
     pub(in crate::runtime::mux) fn new_away<R: routing::LocalRoute, G: issuer::Source>(

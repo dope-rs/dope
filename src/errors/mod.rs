@@ -117,7 +117,9 @@ pub enum Receive {
     },
     Civil(civil::Error),
     Expiry(time::Add),
+    Framing(dope_sys::io::socket::route::selector::PrefixError),
     Packet(conn::Error),
+    Relay(crate::security::relay::Reject),
     Retry(retry::Crypto),
 }
 

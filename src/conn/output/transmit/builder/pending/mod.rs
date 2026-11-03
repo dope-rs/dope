@@ -248,12 +248,33 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         P: seals::Seal<DOMAIN>,
     {
         let bytes = seal.wire_len();
-        let Some(amp) = self.conn().egress.activity.plan_amp(bytes) else {
+        let destination = self.builder.owner().destination();
+        if let Some(peer) = destination.network()
+            && let Err(cause) =
+                dope::core::io::datagram::payload::try_extent(peer.addr(), bytes, peer.overhead())
+        {
             return Err(Failure::Admission(
                 seal,
                 self.builder.cancel().cancel(),
-                transmit::Admission::Amplification { bytes },
+                transmit::Admission::Datagram(crate::proto::datagram::Error::Extent(cause)),
             ));
+        }
+        let overhead = destination.overhead();
+        let amp = match self.conn().egress.activity.plan_amp(bytes, overhead) {
+            Ok(amp) => amp,
+            Err(cause) => {
+                let error = match cause {
+                    output::AmpError::Inner => transmit::Admission::Amplification { bytes },
+                    output::AmpError::Outer => {
+                        transmit::Admission::OuterAmplification { bytes, overhead }
+                    }
+                };
+                return Err(Failure::Admission(
+                    seal,
+                    self.builder.cancel().cancel(),
+                    error,
+                ));
+            }
         };
         let Self {
             mut builder,

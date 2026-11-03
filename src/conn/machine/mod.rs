@@ -1,9 +1,10 @@
-use std::{net, time};
+use std::{collections, time};
 
 use o3::buffer::{self, storage::Shared};
 
 pub(in crate::conn) mod storage;
 
+use crate::proto::path::Peer;
 use crate::{conn, stream, wire::varint};
 use conn::stream::Streams;
 use conn::{output, wire};
@@ -47,8 +48,71 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
     }
 
     pub(in crate::conn) fn is_closing(&self) -> bool {
-        self.egress.lifecycle.state == conn::State::Closed
-            || self.egress.lifecycle.pending_close.is_some()
+        matches!(
+            self.egress.lifecycle.state,
+            conn::State::Closing | conn::State::Draining | conn::State::Closed
+        )
+    }
+
+    fn discard_queued(&mut self) {
+        if self.is_closing() {
+            return;
+        }
+        self.streams.state.receive.map.discard();
+        self.receive.datagrams = collections::VecDeque::new();
+        self.egress.datagrams.clear();
+    }
+
+    pub(in crate::conn) fn close_now(&mut self) {
+        self.discard_queued();
+        self.egress.lifecycle.state = conn::State::Closed;
+        self.egress.lifecycle.pending_close = None;
+        self.set_deadline(None);
+        self.peer.reconcile.set_ready(false);
+    }
+
+    /// Admits one fixed terminal deadline independently of output availability.
+    pub(in crate::conn) fn try_terminal(
+        &mut self,
+        now: time::Instant,
+    ) -> Result<bool, conn::Timing> {
+        if !self.is_closing() {
+            return Ok(false);
+        }
+        if self.egress.lifecycle.state == conn::State::Closed {
+            return Ok(true);
+        }
+        let deadline = match self.egress.lifecycle.close_deadline {
+            Some(deadline) => deadline,
+            None => {
+                let deadline = timer::Timer::new(self)
+                    .try_terminal(now)
+                    .map_err(|error| self.fail_timing(error))?;
+                self.egress.lifecycle.close_deadline = Some(deadline);
+                self.peer.reconcile.insert(conn::Effects::LIFECYCLE);
+                deadline
+            }
+        };
+        if now >= deadline {
+            self.close_now();
+            self.peer.reconcile.insert(conn::Effects::LIFECYCLE);
+        }
+        Ok(true)
+    }
+
+    pub(in crate::conn) fn drain(&mut self) -> Option<CloseChange> {
+        if matches!(
+            self.egress.lifecycle.state,
+            conn::State::Draining | conn::State::Closed
+        ) {
+            return None;
+        }
+        self.discard_queued();
+        self.egress.lifecycle.state = conn::State::Draining;
+        self.egress.lifecycle.pending_close = None;
+        self.set_deadline(None);
+        self.peer.reconcile.set_ready(false);
+        Some(CloseChange)
     }
 
     pub(in crate::conn) fn set_deadline(&mut self, due: Option<time::Instant>) -> conn::Mutation {
@@ -86,6 +150,9 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         changed: bool,
         admitted: Option<(time::Duration, time::Duration)>,
     ) -> Result<(), conn::Timing> {
+        if self.try_terminal(now)? {
+            return Ok(());
+        }
         let timer = timer::Timer::new(self)
             .try_prepare(now, changed, admitted)
             .map_err(|error| self.fail_timing(error))?;
@@ -94,6 +161,9 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
     }
 
     pub(in crate::conn) fn try_idle(&mut self) -> Result<(), conn::Timing> {
+        if self.is_closing() {
+            return Ok(());
+        }
         let idle = timer::Timer::new(self)
             .try_activity(self.egress.activity.last_activity, None)
             .map_err(|error| self.fail_timing(error))?;
@@ -102,9 +172,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
     }
 
     pub(in crate::conn) fn fail_timing(&mut self, error: conn::Timing) -> conn::Timing {
-        self.egress.lifecycle.state = conn::State::Closed;
-        self.set_deadline(None);
-        self.peer.reconcile.set_ready(false);
+        self.close_now();
         self.peer.reconcile.insert(conn::Effects::LIFECYCLE);
         error
     }
@@ -115,17 +183,13 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         }
     }
 
-    pub(in crate::conn) fn reset(
-        &mut self,
-        source: Option<net::SocketAddr>,
-        token: reset::Token,
-    ) -> Reset {
-        if self.egress.lifecycle.state != conn::State::Established
+    pub(in crate::conn) fn reset(&mut self, source: Option<Peer>, token: reset::Token) -> Reset {
+        if self.egress.lifecycle.state == conn::State::Handshaking
             || !self.path.ingress().has_reset(source, token)
         {
             return Reset::Ignore;
         }
-        self.egress.lifecycle.state = conn::State::Closed;
+        let _ = self.drain();
         self.control.queue().reset();
         Reset::Accept
     }
@@ -134,6 +198,14 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         if let conn::Error::Timing(error) = error {
             let changed = self.egress.lifecycle.state != conn::State::Closed;
             self.fail_timing(*error);
+            return changed.then_some(CloseChange);
+        }
+        if matches!(
+            error,
+            conn::Error::AeadLimitReached | conn::Error::ConnectionIdUnavailable
+        ) {
+            let changed = self.egress.lifecycle.state != conn::State::Closed;
+            self.close_now();
             return changed.then_some(CloseChange);
         }
         let code = error.close_code()?;
@@ -147,7 +219,9 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         if self.is_closing() {
             return None;
         }
+        self.discard_queued();
         self.egress.lifecycle.pending_close = Some(close);
+        self.egress.lifecycle.state = conn::State::Closing;
         self.set_deadline(None);
         self.peer.reconcile.set_ready(false);
         Some(CloseChange)

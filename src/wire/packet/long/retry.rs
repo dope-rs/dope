@@ -209,6 +209,17 @@ impl Suffix {
         Ok(Self { storage, start })
     }
 
+    /// Reveals the preallocated prefix after the Retry integrity tag is complete.
+    pub(crate) fn try_prepend(&mut self, prefix: &[u8]) -> Result<(), alloc::Error> {
+        let start = self
+            .start
+            .checked_sub(prefix.len())
+            .ok_or(alloc::Error::Overflow)?;
+        self.storage[start..self.start].copy_from_slice(prefix);
+        self.start = start;
+        Ok(())
+    }
+
     pub fn append(&mut self) -> Append<'_> {
         Append::new(&mut self.storage)
     }

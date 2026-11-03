@@ -94,6 +94,9 @@ impl<'conn, const DOMAIN: u8, B: Recv, D: buffer::raw::Segment> Receive<'conn, D
         absent: R,
         read: impl for<'map> FnOnce(map::Occupied<'map, B>) -> map::DeliveryRead<'map, B, R>,
     ) -> R {
+        if self.connection.is_closing() {
+            return absent;
+        }
         let done = {
             let ctrl = &mut self.connection.control;
             let Streams { state, events } = &mut self.connection.streams;
@@ -155,6 +158,9 @@ impl<'conn, const DOMAIN: u8, B: Recv, D: buffer::raw::Segment> Receive<'conn, D
     }
 
     pub(in crate::conn) fn hold_parts(&mut self, id: Id) -> (Option<map::Held<B>>, bool) {
+        if self.connection.is_closing() {
+            return (None, false);
+        }
         let done = {
             let ctrl = &mut self.connection.control;
             let Streams { state, events } = &mut self.connection.streams;
@@ -174,6 +180,7 @@ impl<'conn, const DOMAIN: u8, B: Recv, D: buffer::raw::Segment> Receive<'conn, D
         &mut self,
         local: resident::Local,
     ) -> Result<(Option<map::Held<B>>, bool), resident::Stale> {
+        let closing = self.connection.is_closing();
         let done = {
             let ctrl = &mut self.connection.control;
             let Streams { state, events } = &mut self.connection.streams;
@@ -184,6 +191,9 @@ impl<'conn, const DOMAIN: u8, B: Recv, D: buffer::raw::Segment> Receive<'conn, D
             } = state;
             let mut slots = recv.map.parts();
             let slot = slots.try_prepared(local, table)?;
+            if closing {
+                return Ok((None, false));
+            }
             Self::hold_slot(slot, ctrl, table, events)
         };
         Ok(done.map_or((None, false), |done| self.finish::<_, false>(done)))

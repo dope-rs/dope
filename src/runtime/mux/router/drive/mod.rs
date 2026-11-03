@@ -51,7 +51,14 @@ fn flush_slot_round<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
 ) -> Result<router::Flush, transmit::Error> {
     let max = slot_max_packet_bytes(*slot.first_flush, *slot.max_packet_bytes);
     let size = max.get();
-    if size > output.bytes_capacity {
+    let path = slot.conn.view().path();
+    let overhead = if path.has_output() {
+        slot.peer_addr.overhead().max(path.max_overhead())
+    } else {
+        slot.peer_addr.overhead()
+    };
+    let outer = max.saturating_add(overhead);
+    if outer.get() > output.bytes_capacity {
         return Ok(router::Flush::Closed);
     }
     let gso = if slot
@@ -78,8 +85,8 @@ fn flush_slot_round<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         Some(limits) => mux::FLUSH_BYTE_QUANTUM.min(limits.max_bytes().into_raw()),
         None => mux::FLUSH_BYTE_QUANTUM,
     };
-    let bytes = space.min(chunk.max(size));
-    let mut count = room.min(bytes / max);
+    let bytes = space.min(chunk.max(outer.get()));
+    let mut count = room.min(bytes / outer);
     if let Some(limits) = gso {
         count = count.min(limits.capacity().count());
     }
@@ -101,7 +108,7 @@ fn flush_slot_round<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             (target.and_then(transmit::Destination::network), result)
         })
     } else {
-        output.emit_round(count, size, *slot.peer_addr, |packet| {
+        output.emit_round(count, outer.get(), *slot.peer_addr, |packet| {
             let (target, result) = slot
                 .conn
                 .output()
@@ -163,6 +170,7 @@ fn flush_slot<
     binding: &mut router::Binding<A, DOMAIN>,
     outgoing: &mut output::Storage,
     now: time::Instant,
+    blocked: usize,
 ) -> Result<router::Flush, errors::Transmit<A::Identity, DOMAIN>> {
     let peers = slots.len_in::<{ mux::FLUSH_QUEUE }>();
     let handle = slots.handle(binding.domain, key);
@@ -183,6 +191,11 @@ fn flush_slot<
         },
     );
     let round = round.map_err(|cause| errors::Transmit::new(handle, cause))?;
+    if matches!(round, router::Flush::Backpressure)
+        && slots.entry(key).is_linked::<{ mux::FLUSH_QUEUE }>()
+    {
+        slots.block_flush(outgoing.pending.bytes(), blocked + 1);
+    }
     match round {
         router::Flush::Closed => {
             let taken = slots.into_taken(key, binding.domain);
@@ -207,6 +220,7 @@ fn flush_one<
     }
     if turn.outgoing.pending.len() >= turn.outgoing.pending.capacity()
         || turn.outgoing.pending.bytes() >= turn.outgoing.bytes_capacity
+        || !turn.registry.can_flush(turn.outgoing.pending.bytes())
     {
         return Ok(Step::Idle);
     }
@@ -216,6 +230,7 @@ fn flush_one<
         let outgoing = &mut state.outgoing;
         let sink = turn.handler.as_mut();
         Scope::with(&mut state.registry, |mut slots| {
+            let blocked = slots.blocked_flush(outgoing.pending.bytes());
             let Some(key) = slots.pop_front::<{ mux::FLUSH_QUEUE }>() else {
                 return Ok(Step::Idle);
             };
@@ -224,7 +239,9 @@ fn flush_one<
             {
                 return Ok(Step::Driven);
             }
-            flush_slot::<A, H, DOMAIN, B>(sink, scope, slots, key, binding, outgoing, now)?;
+            flush_slot::<A, H, DOMAIN, B>(
+                sink, scope, slots, key, binding, outgoing, now, blocked,
+            )?;
             Ok(Step::Driven)
         })
     })

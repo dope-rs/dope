@@ -113,12 +113,13 @@ pub(in crate::conn::output::transmit) fn probe<
     commit.flags.set_elicit(true);
     commit.flags.set_flight(true);
     commit.path.pmtud_probe = Some(probe);
-    let Some(target) = build.target(commit.path.route) else {
+    let target = build.destination;
+    if let Err(error) = target.prefix(dst) {
         header.clear();
         build.connection.scratch.header = header;
         build.connection.scratch.frames = frames;
-        return Ok(None);
-    };
+        return Err(error);
+    }
     let prepared =
         match pending::Packet::try_new(journal::Schedule::new(build).finish(), commit, target) {
             Ok(prepared) => prepared,
@@ -251,7 +252,7 @@ pub(in crate::conn::output::transmit) fn close<
     dst: &mut write::Append<'_>,
     max: usize,
 ) -> transmit::Built<'connection, DOMAIN, B, D> {
-    let Some(close) = build.connection.egress.lifecycle.pending_close.as_ref() else {
+    let Some(close) = build.connection.egress.lifecycle.close() else {
         return Ok(None);
     };
     let Some(Close {
@@ -309,10 +310,10 @@ pub(in crate::conn::output::transmit) fn close<
     let mut frames = mem::take(&mut build.connection.scratch.frames);
     let mut commit = Plan::new(epoch, number);
     commit.flags.set_close(true);
-    let Some(target) = build.target(commit.path.route) else {
-        build.connection.scratch.frames = frames;
-        return Ok(None);
-    };
+    let target = build.destination;
+    target.prefix(dst).inspect_err(|_| {
+        build.connection.scratch.frames = mem::take(&mut frames);
+    })?;
     let mut prepared =
         match pending::Packet::try_new(journal::Schedule::new(build).finish(), commit, target) {
             Ok(prepared) => prepared,

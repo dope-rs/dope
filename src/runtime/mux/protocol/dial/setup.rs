@@ -77,14 +77,13 @@ impl<
     }
 
     pub(super) fn reserve(
-        self,
+        mut self,
         options: &options::Options,
     ) -> Result<Ready<'storage, 'id, A, H, DOMAIN, B>, errors::Preflight> {
         if self.closed {
             return Err(errors::Preflight::Closed);
         }
-        let (active, capacity) = self.owner.capacity();
-        if active >= capacity.get() {
+        if self.owner.is_full() {
             return Err(errors::Preflight::Capacity);
         }
         let limit = options
@@ -92,7 +91,7 @@ impl<
             .ok_or(errors::Preflight::InvalidConfig)?;
         let local = cids::Source::new(self.owner)
             .reserve(&self.binding.route, &mut self.binding.issuer)
-            .ok_or(errors::Preflight::Capacity)?;
+            .ok_or(errors::Preflight::IdentifierSpaceExhausted)?;
         Ok(Ready {
             local,
             handler: self.handler,

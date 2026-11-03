@@ -2,10 +2,11 @@ use o3::buffer::{self, write};
 use std::time;
 
 use crate::conn;
+use crate::conn::life::datagram::Datagrams;
 use crate::conn::output::recovery;
 use crate::conn::output::transmit::{self, builder, builder::pending, permit, stage};
 use crate::conn::stream::state::receive;
-use crate::conn::wire::packet;
+use crate::conn::wire::{packet, path};
 use crate::stream;
 use crate::wire::{frame, packet::kind, stream::Initiator};
 
@@ -97,6 +98,27 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
             stage::Outcome::Ready(pto) => pto,
             stage::Outcome::Closed => return Ok(()),
         };
+        if self
+            .connection
+            .try_terminal(now)
+            .map_err(transmit::Error::Timing)?
+        {
+            if packets != 0 && self.connection.egress.lifecycle.close().is_some() {
+                let mtu = max_len.min(self.connection.egress.cc.metrics().current_mtu() as usize);
+                if let Some(ceiling) = permit::Permit::new(self.connection).send_limit(mtu) {
+                    self.emit_packet(sink, now, ceiling, commit, |builder, dst, ceiling| {
+                        terminal::close(builder, dst, ceiling)
+                    })?;
+                }
+            }
+            return Ok(());
+        }
+        let packets = self
+            .connection
+            .handshake
+            .keys
+            .write()
+            .map_or(packets, |key| key.limit(packets));
         self.connection
             .egress
             .derived
@@ -125,14 +147,6 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
         };
         let mtu = max_len.min(self.connection.egress.cc.metrics().current_mtu() as usize);
         let mut left = packets;
-        if left != 0 && self.connection.egress.lifecycle.pending_close.is_some() {
-            if let Some(ceiling) = permit::Permit::new(self.connection).send_limit(mtu) {
-                self.emit_packet(sink, now, ceiling, commit, |builder, dst, ceiling| {
-                    terminal::close(builder, dst, ceiling)
-                })?;
-            }
-            return Ok(());
-        }
         let mut hs_done = false;
 
         let result: Result<(), transmit::Admission> = (|| {
@@ -283,6 +297,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                             let Some(done) = self.emit_with(
                                 sink,
                                 now,
+                                permit.route(),
                                 permit.ceiling(),
                                 commit,
                                 |builder, dst, ceiling| {
@@ -321,15 +336,21 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                         break;
                     }
                 }
-                while left != 0
-                    && !self
-                        .connection
-                        .egress
-                        .datagrams
-                        .pending_datagrams
-                        .is_empty()
-                    && permit::Permit::new(self.connection).can_send(now)
-                {
+                let payload = Datagrams::<DOMAIN, B, false, D>::new(self.connection).max_payload();
+                while left != 0 {
+                    let Some(data) = self.connection.egress.datagrams.pending_datagrams.front()
+                    else {
+                        break;
+                    };
+                    // A path change may invalidate an already owned unreliable payload.
+                    if payload.is_none_or(|max| data.len() > max) {
+                        self.connection.egress.datagrams.pop_front();
+                        left -= 1;
+                        continue;
+                    }
+                    if !permit::Permit::new(self.connection).can_send(now) {
+                        break;
+                    }
                     let Some(ceiling) = permit::Permit::new(self.connection).send_limit(mtu) else {
                         break;
                     };
@@ -353,7 +374,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                     left -= 1;
                 }
                 if left != 0
-                    && let Some(probe) = self.connection.egress.cc.metrics().next_probe()
+                    && let Some(probe) = permit::Permit::new(self.connection).next_probe()
                     && permit::Permit::new(self.connection).can_send(now)
                     && let Some(ceiling) = permit::Permit::new(self.connection).send_limit(max_len)
                 {
@@ -401,7 +422,15 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
     where
         C: for<'pending> FnMut(pending::Packet<'pending, DOMAIN, B, D>, time::Instant),
     {
-        match self.emit_with(sink, now, limit, commit, build, |_| ())? {
+        match self.emit_with(
+            sink,
+            now,
+            path::OutputRoute::ACTIVE,
+            limit,
+            commit,
+            build,
+            |_| (),
+        )? {
             Some(()) => Ok(Emission::Committed),
             None => Ok(Emission::Absent),
         }
@@ -411,6 +440,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
         &'emission mut self,
         sink: &mut S,
         now: time::Instant,
+        route: path::OutputRoute,
         limit: usize,
         commit: &mut C,
         build: impl FnOnce(
@@ -424,12 +454,27 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
         F: FnOnce(&pending::Packet<'_, DOMAIN, B, D>) -> T,
         C: for<'pending> FnMut(pending::Packet<'pending, DOMAIN, B, D>, time::Instant),
     {
+        let path = self.connection.path.output();
+        let Some(destination) = path
+            .target(route)
+            .and_then(|routed| self.destination.resolve(routed))
+        else {
+            return Ok(None);
+        };
+        let limit = if route.path().is_none() {
+            limit.min(usize::from(path.max_payload().get()))
+        } else {
+            limit
+        }
+        .min(destination.max_payload());
         sink.try_emit(
             self,
             limit,
+            destination.overhead(),
+            |prepared: &pending::Packet<'_, DOMAIN, B, D>| prepared.destination().overhead(),
             |batch, dst, limit| {
                 build(
-                    builder::Builder::new(batch.connection, &batch.destination, &mut batch.records),
+                    builder::Builder::new(batch.connection, destination, &mut batch.records),
                     dst,
                     limit,
                 )

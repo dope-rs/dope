@@ -107,6 +107,11 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer:
     pub(crate) fn events(&mut self) -> events::Events<'_, DOMAIN, B, D> {
         events::Events::new(self.machine)
     }
+
+    pub(crate) fn release<E: stream::release::Sink>(&mut self, proof: &mut E) {
+        conn::stream::state::transmit::Sender::new(&mut self.machine.streams)
+            .release_all(stream::release::Cause::Closed, proof);
+    }
 }
 
 impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Access<'_, DOMAIN, B, false, D> {

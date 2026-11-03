@@ -30,9 +30,9 @@ pub(super) enum Finding {
 }
 
 impl Streak {
-    pub(super) fn acknowledged(&mut self, pn: header::Number, elicits: bool) {
-        if elicits && self.first.is_some_and(|entry| pn >= entry.0) {
-            *self = Self::default();
+    pub(super) fn acknowledged(&mut self, pn: u64) {
+        if self.first.is_some_and(|(first, _)| pn >= first.get()) {
+            self.first = None;
         }
     }
 
@@ -41,26 +41,35 @@ impl Streak {
         pn: header::Number,
         sent: time::Instant,
         elicits: bool,
+        ack_after: bool,
         limit: time::Duration,
     ) -> Finding {
-        if self
-            .last_pn
-            .is_some_and(|previous| previous.get() + 1 != pn.get())
-        {
-            *self = Self::default();
+        // Out-of-order losses cannot move this retained run backwards.
+        if self.last_pn.is_some_and(|previous| pn <= previous) {
+            return Finding::Pending;
         }
         self.last_pn = Some(pn);
-        if !elicits {
-            return Finding::Pending;
+        let finding = if elicits {
+            let first = self.first.get_or_insert((pn, sent)).1;
+            if sent.saturating_duration_since(first) >= limit {
+                self.first = None;
+                Finding::Persistent
+            } else {
+                Finding::Pending
+            }
+        } else {
+            Finding::Pending
+        };
+        if ack_after {
+            // For this owner p, its ACK a and any later loss q across a,
+            // p < a < q < largest_acked forces p out first by threshold 3.
+            self.first = None;
         }
-        let first = self.first.get_or_insert((pn, sent)).1;
-        if sent.saturating_duration_since(first) < limit {
-            return Finding::Pending;
-        }
-        *self = Self::default();
-        Finding::Persistent
+        finding
     }
 }
+
+const _: () = assert!(crate::proto::recovery::rtt::PACKET_THRESHOLD <= 3);
 
 pub struct Progress<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> {
     machine: &'a mut conn::Machine<DOMAIN, B, D>,
@@ -77,13 +86,13 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Progress<'a
     }
 
     fn try_advance(&mut self, now: time::Instant) -> Result<(), conn::Timing> {
-        if self.machine.egress.lifecycle.state == conn::State::Closed {
+        if self.machine.try_terminal(now)? {
             return Ok(());
         }
         if let Some(idle) = self.machine.egress.recovery.timer.idle
             && now >= idle
         {
-            self.machine.egress.lifecycle.state = conn::State::Closed;
+            self.machine.close_now();
             self.machine.peer.reconcile.insert(conn::Effects::LIFECYCLE);
             return Ok(());
         }
@@ -117,14 +126,6 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Progress<'a
         {
             delivery.egress.recovery.probe.epoch = Some(epoch);
             delivery.egress.recovery.probe.allowance.arm();
-            if epoch == conn::Epoch::Application {
-                delivery
-                    .egress
-                    .recovery
-                    .packet_journals
-                    .space_mut(conn::Epoch::Application)
-                    .protect_pto();
-            }
             delivery.handshake.crypto.arm_probes(epoch);
             if epoch == conn::Epoch::Application {
                 probes::Probes::new(&mut *delivery.control).arm(epoch);

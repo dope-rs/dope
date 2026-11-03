@@ -8,7 +8,7 @@ use o3::buffer::{self, storage::Shared};
 
 use crate::proto::{datagram::Size, param, recovery::numbers};
 use crate::runtime::brand;
-use crate::stream::{Recv, release};
+use crate::stream::Recv;
 use crate::wire::varint;
 use crate::wire::{frame, packet, stream::Initiator};
 use packet::header::widths;
@@ -27,7 +27,6 @@ pub(crate) use stream::state::transmit::queue::{Publication, Reclaim};
 
 use life::{options, status};
 use machine::Machine;
-use stream::state::transmit;
 use wire::{crypto::chunks, scratch};
 
 /// The retained owner and exact key prove initialization in one operation plane.
@@ -55,11 +54,6 @@ impl<const DOMAIN: u8, B: crate::stream::Recv, D: buffer::raw::Segment> Connecti
 
     pub(crate) fn machine_mut(&mut self) -> &mut Machine<DOMAIN, B, D> {
         &mut self.0
-    }
-
-    pub(crate) fn retire<E: release::Sink>(self, cause: release::Cause, proof: &mut E) {
-        let Self(mut machine) = self;
-        transmit::Sender::new(&mut machine.streams).release_all(cause, proof);
     }
 
     pub(crate) fn mark(&mut self, bits: u8) {
@@ -313,6 +307,11 @@ const AEAD_LIMIT_REACHED: varint::VarInt = varint::VarInt::from_u8(0x0f);
 pub enum State {
     Handshaking,
     Established,
+    /// Application access has ended; retained keys can repeat CONNECTION_CLOSE.
+    Closing,
+    /// Application access has ended; retained routes silently discard packets.
+    Draining,
+    /// Terminal retention has ended and the transport can be reclaimed.
     Closed,
 }
 

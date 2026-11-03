@@ -116,6 +116,14 @@ impl<I, const ID: u8> Domain<I, ID> {
             epoch,
         }
     }
+
+    /// Retains this endpoint's identity without granting driver or route access.
+    pub(crate) const fn identity(self) -> Domain {
+        Domain {
+            value: self.value,
+            brand: marker::PhantomData,
+        }
+    }
 }
 
 /// Complete connection generation within one endpoint domain.

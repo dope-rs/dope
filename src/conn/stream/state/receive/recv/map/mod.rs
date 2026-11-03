@@ -92,6 +92,17 @@ impl<B: Recv> Map<B> {
         &self.meta
     }
 
+    pub(in crate::conn) fn discard(&mut self) {
+        for entry in self.core.values_mut() {
+            let mut view = views::Write {
+                entry,
+                arena: &self.ranges,
+            };
+            view.clear();
+            view.entry.buffer.assembled = B::Ready::default();
+        }
+    }
+
     pub(in crate::conn) fn mark_data(&mut self) {
         self.meta.mark_data();
     }
@@ -136,7 +147,7 @@ impl<B: Recv> Map<B> {
     ) -> Result<Option<Resolved<'_, B>>, resident::Stale> {
         Ok(registry
             .read()
-            .try_slot(local)?
+            .try_slot::<false>(local)?
             .and_then(|slot| self.current(slot)))
     }
 

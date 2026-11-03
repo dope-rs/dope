@@ -4,6 +4,7 @@ pub mod op;
 mod opened;
 pub(crate) mod output;
 mod plain;
+pub mod sha256;
 
 pub trait KeyOperation: op::Boundary {}
 impl KeyOperation for op::Open {}

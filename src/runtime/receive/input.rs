@@ -12,7 +12,14 @@ use protocol::recv;
 use recv::Recv as _;
 
 pub trait Input<'d, D: buffer::raw::Segment>: stream::Recv {
-    fn recv<'turn, 'tls, const ID: u8, H, M, T: Mutable<'d, Account: retain::Retain<'d>>>(
+    fn recv<
+        'turn,
+        'tls,
+        const ID: u8,
+        H,
+        M,
+        T: Mutable<'d, Account: retain::Retain<'d>> + buffer::raw::Store,
+    >(
         io: &mut protocol::Io<'_, 'tls, H, ID, Self, M>,
         addr: net::SocketAddr,
         packet: packet::Packet<'turn, 'd, T>,
@@ -25,7 +32,14 @@ pub trait Input<'d, D: buffer::raw::Segment>: stream::Recv {
 }
 
 impl<'d, D: buffer::raw::Segment> Input<'d, D> for Vec<u8> {
-    fn recv<'turn, 'tls, const ID: u8, H, M, T: Mutable<'d, Account: retain::Retain<'d>>>(
+    fn recv<
+        'turn,
+        'tls,
+        const ID: u8,
+        H,
+        M,
+        T: Mutable<'d, Account: retain::Retain<'d>> + buffer::raw::Store,
+    >(
         io: &mut protocol::Io<'_, 'tls, H, ID, Self, M>,
         addr: net::SocketAddr,
         mut packet: packet::Packet<'turn, 'd, T>,
@@ -43,7 +57,14 @@ impl<'d, D: buffer::raw::Segment> Input<'d, D> for Vec<u8> {
 impl<'d, D: buffer::raw::Segment, const ADAPTIVE: bool> Input<'d, D>
     for stream::RecvBuffer<'d, ADAPTIVE>
 {
-    fn recv<'turn, 'tls, const ID: u8, H, M, T: Mutable<'d, Account: retain::Retain<'d>>>(
+    fn recv<
+        'turn,
+        'tls,
+        const ID: u8,
+        H,
+        M,
+        T: Mutable<'d, Account: retain::Retain<'d>> + buffer::raw::Store,
+    >(
         io: &mut protocol::Io<'_, 'tls, H, ID, Self, M>,
         addr: net::SocketAddr,
         packet: packet::Packet<'turn, 'd, T>,

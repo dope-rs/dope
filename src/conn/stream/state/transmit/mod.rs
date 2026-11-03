@@ -90,25 +90,33 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         ready: bool,
     ) -> Result<(), Error> {
         self.validate(id, Access::Send, ready)?;
-        if self.is_send_done(id) || data.is_empty() {
+        if data.is_empty() {
             return Ok(());
         }
-        plan::check_copy(&mut self.transmit.map, data)?;
+        if self.is_send_done(id) {
+            return Err(Error::Discarded(admit::Cause::PeerRetired));
+        }
         let stream = streams::Relative::new(id, self.state.local());
-        let credit = queue::Entry::limit(params, stream);
-        let mode = queue::Preparation::new(stream);
         let state = &mut self.streams.state;
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
+        if let Some((_, mut occupied)) = transmit.map.bind(id, registry) {
+            return occupied.copy(data);
+        }
+        if stream.is_local() {
+            return Err(Error::Discarded(admit::Cause::Retired));
+        }
+        plan::check_copy(&mut transmit.map, data)?;
+        let credit = queue::Entry::limit(params, stream);
         let Some(mut occupied) = transmit.map.try_prepared(
             queue::Id::new(id),
             None,
             credit,
-            mode,
+            queue::Preparation::Create,
             registry,
             |_, slot| slot,
         )?
         else {
-            return Ok(());
+            return Err(Error::Discarded(admit::Cause::Retired));
         };
         occupied.copy(data)
     }
@@ -135,7 +143,10 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let mode = queue::Preparation::new(stream);
         let state = &mut self.streams.state;
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
-        let plan = match plan::Plan::try_new(parts, &mut transmit.map) {
+        let plan = match plan::Plan::try_new(parts, &mut transmit.map, |queue| {
+            let slot = registry.read().find::<true>(id).map(|(_, slot)| slot);
+            plan::terminal(queue, slot, stream.is_local())
+        }) {
             Ok(plan) => plan,
             Err(rejected) => return rejected.into_outcome(),
         };
@@ -173,10 +184,14 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let mode = queue::Preparation::new(stream);
         let state = &mut self.streams.state;
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
-        let plan = match plan::Observed::try_new(source, owner, commit, &mut transmit.map) {
-            Ok(plan) => plan,
-            Err(rejected) => return rejected.into_outcome(convert::identity),
-        };
+        let plan =
+            match plan::Observed::try_new(source, owner, commit, &mut transmit.map, |queue| {
+                let slot = registry.read().find::<true>(id).map(|(_, slot)| slot);
+                plan::terminal(queue, slot, stream.is_local())
+            }) {
+                Ok(plan) => plan,
+                Err(rejected) => return rejected.into_outcome(convert::identity),
+            };
         plan.apply(queue::Id::new(id), credit, mode, registry)
     }
 
@@ -211,10 +226,14 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let credit = queue::Entry::limit(params, stream);
         let state = &mut self.streams.state;
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
-        let plan = match plan::Observed::try_new(source, owner, commit, &mut transmit.map) {
-            Ok(plan) => plan,
-            Err(rejected) => return rejected.into_outcome(resident::Error::Stream),
-        };
+        let plan =
+            match plan::Observed::try_new(source, owner, commit, &mut transmit.map, |queue| {
+                let slot = registry.read().try_slot::<true>(local).ok()?;
+                plan::terminal(queue, slot, stream.is_local())
+            }) {
+                Ok(plan) => plan,
+                Err(rejected) => return rejected.into_outcome(resident::Error::Stream),
+            };
         plan.try_apply(local, credit, queue::Preparation::new(stream), registry)
     }
 

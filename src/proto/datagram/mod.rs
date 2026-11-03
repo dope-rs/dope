@@ -26,6 +26,7 @@ pub struct Full;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Full(Full),
+    Extent(dope::core::io::datagram::payload::ExtentError),
     Storage(borrowed::Error),
     Maximum {
         bytes: usize,
@@ -149,7 +150,8 @@ const _: () = {
             == align_of::<storage::Shared<owners::Edge<owners::Plain, pool::Borrowed<'static>>>>()
     );
     assert!(size_of::<Packet<'static>>() == 3 * size_of::<usize>());
-    assert!(size_of::<Error>() == 3 * size_of::<usize>());
+    assert!(size_of::<dope::core::io::datagram::payload::ExtentError>() == 3 * size_of::<usize>());
+    assert!(size_of::<Error>() == 4 * size_of::<usize>());
     assert!(size_of::<Result<Packet<'static>, Error>>() == 4 * size_of::<usize>());
 };
 

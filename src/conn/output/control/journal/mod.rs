@@ -36,7 +36,7 @@ const _: () = {
     assert!(std::mem::size_of::<Queues>() == 200);
     assert!(std::mem::size_of::<Lanes>() == 136);
     assert!(std::mem::size_of::<Flights>() == 64);
-    assert!(std::mem::size_of::<Error>() == 8);
+    assert!(std::mem::size_of::<Error>() == 16);
     assert!(std::mem::size_of::<State>() == 8);
 };
 

@@ -47,20 +47,19 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer
         use frames::{Disposition, commit, plan};
 
         let input = self.input;
+        if input.connection.is_closing() {
+            if input.connection.egress.lifecycle.received() {
+                input
+                    .context
+                    .record(conn::Effects::from_bits(conn::Effects::TRANSMIT));
+            }
+            return Ok(());
+        }
         let epoch = meta.epoch();
         let local = input.connection.peer.local;
         let Some(mut packet) = packet::Packet::begin(input.connection, epoch, meta.number()) else {
             return Ok(());
         };
-        if let Some(cid) = &cid {
-            let (conn, _) = packet.state();
-            let (admitted, effects) = conn
-                .path
-                .try_admit(&mut conn.control, meta.now, cid.pto)
-                .into_parts();
-            input.context.record(effects);
-            admitted.map_err(conn::Error::Path)?;
-        }
         let (slots, max) = {
             let (conn, _) = packet.state();
             (

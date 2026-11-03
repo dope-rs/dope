@@ -33,20 +33,26 @@ pub(in crate::conn) trait Sink {
     /// invariant with authenticated QUIC PADDING before protection.
     const PAD_TO_CEILING: bool = false;
 
-    fn reserve(&mut self, limit: usize) -> Result<Option<Self::Reservation<'_>>, Allocation>;
+    fn reserve(
+        &mut self,
+        limit: usize,
+        overhead: usize,
+    ) -> Result<Option<Self::Reservation<'_>>, Allocation>;
 
     /// Publishes metadata only after byte validation and state commit succeed.
     fn try_emit<'a, C, T, U, E>(
         &mut self,
         context: &'a mut C,
         limit: usize,
+        overhead: usize,
+        extent: impl FnOnce(&T) -> usize,
         build: impl FnOnce(&'a mut C, &mut write::Append<'_>, usize) -> Result<Option<T>, E>,
         commit: impl FnOnce(T) -> U,
     ) -> Result<Option<U>, E>
     where
         E: From<Allocation>,
     {
-        let Some(mut permit) = self.reserve(limit).map_err(E::from)? else {
+        let Some(mut permit) = self.reserve(limit, overhead).map_err(E::from)? else {
             return Ok(None);
         };
         let limit = permit.limit();
@@ -65,7 +71,7 @@ pub(in crate::conn) trait Sink {
             permit.rollback();
             return Ok(None);
         };
-        let ready = match permit.validate() {
+        let ready = match permit.validate(extent(&state)) {
             Ok(ready) => ready,
             Err(permit) => {
                 permit.rollback();
@@ -125,18 +131,23 @@ impl Batch {
 impl Sink for Batch {
     type Reservation<'sink> = permits::Batch<'sink>;
 
-    fn reserve(&mut self, limit: usize) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+    fn reserve(
+        &mut self,
+        limit: usize,
+        overhead: usize,
+    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
         self.segs
             .try_grow(1)
             .map_err(|error| Allocation::Segments {
                 error,
                 requested: 1,
             })?;
+        let outer = outer_limit(limit, overhead)?;
         self.buf
-            .try_grow(limit)
+            .try_grow(outer)
             .map_err(|error| Allocation::Payload {
                 error,
-                requested: limit,
+                requested: outer,
             })?;
         Ok(Some(permits::Batch::new(self, limit)))
     }
@@ -241,7 +252,11 @@ impl Sink for Gso {
 
     const PAD_TO_CEILING: bool = true;
 
-    fn reserve(&mut self, max: usize) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+    fn reserve(
+        &mut self,
+        max: usize,
+        overhead: usize,
+    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
         if matches!(&self.storage, Storage::Ready(ready) if ready.sealed)
             || self.packets() >= self.limits.capacity().count()
         {
@@ -252,18 +267,21 @@ impl Sink for Gso {
             .max_bytes()
             .into_raw()
             .saturating_sub(self.len());
-        let limit = self
+        let outer =
+            outer_limit(max, overhead)?.min(crate::proto::recovery::pmtud::MAX_PMTU as usize);
+        let outer = self
             .segment_size()
-            .map_or(max, |size| max.min(usize::from(size.get())))
+            .map_or(outer, |size| outer.min(usize::from(size.get())))
             .min(room);
+        let limit = outer.saturating_sub(overhead);
         if limit == 0 {
             return Ok(None);
         }
         self.out()
-            .try_grow(limit)
+            .try_grow(outer)
             .map_err(|error| Allocation::Payload {
                 error,
-                requested: limit,
+                requested: outer,
             })?;
         Ok(Some(permits::Gso::new(self, limit)))
     }
@@ -293,20 +311,28 @@ impl<'batch> Sink for GsoAppend<'batch> {
 
     const PAD_TO_CEILING: bool = true;
 
-    fn reserve(&mut self, limit: usize) -> Result<Option<Self::Reservation<'_>>, Allocation> {
-        self.batch.reserve(limit)
+    fn reserve(
+        &mut self,
+        limit: usize,
+        overhead: usize,
+    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+        self.batch.reserve(limit, overhead)
     }
 }
 
 impl Sink for Vec<Vec<u8>> {
     type Reservation<'sink> = permits::Fresh<'sink>;
 
-    fn reserve(&mut self, limit: usize) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+    fn reserve(
+        &mut self,
+        limit: usize,
+        overhead: usize,
+    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
         self.try_grow(1).map_err(|error| Allocation::Packets {
             error,
             requested: 1,
         })?;
-        permits::Fresh::new(self, limit).map(Some)
+        permits::Fresh::new(self, limit, overhead).map(Some)
     }
 }
 
@@ -321,7 +347,18 @@ impl<'packet> Sink for Slot<'packet> {
     where
         Self: 'sink;
 
-    fn reserve(&mut self, limit: usize) -> Result<Option<Self::Reservation<'_>>, Allocation> {
-        permits::Single::new(self, limit).map(Some)
+    fn reserve(
+        &mut self,
+        limit: usize,
+        overhead: usize,
+    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+        permits::Single::new(self, limit, overhead).map(Some)
     }
+}
+
+pub(super) fn outer_limit(limit: usize, overhead: usize) -> Result<usize, Allocation> {
+    limit.checked_add(overhead).ok_or(Allocation::Payload {
+        error: alloc::Error::Overflow,
+        requested: limit,
+    })
 }

@@ -124,7 +124,7 @@ where
                 Ok(sent) => sent,
                 Err(cause) => return Err(mem::Rejected::new(self, cause)),
             };
-        self.slot.insert((addr, buffers::Entry { packet }));
+        self.slot.insert((addr.addr(), buffers::Entry { packet }));
         Ok(())
     }
 }

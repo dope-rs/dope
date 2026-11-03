@@ -2,7 +2,7 @@ pub mod common;
 
 use common::peer::Receiver as _;
 use common::suite::peers::life;
-use dope_quic::conn::Epoch;
+use dope_quic::conn::{Epoch, State};
 use dope_quic::errors::Code;
 use std::time::{Duration, Instant};
 
@@ -59,14 +59,21 @@ fn close_closes_peer() {
         .receive_from(&mut work, &mut client, t0)
         .expect("peer packet accepted");
 
-    assert!(
-        client.view().lifecycle().is_closed(),
-        "client closed after sending CLOSE"
-    );
-    assert!(
-        server.view().lifecycle().is_closed(),
-        "server closed after receiving CLOSE"
-    );
+    assert_eq!(client.view().lifecycle().state(), State::Closing);
+    assert_eq!(server.view().lifecycle().state(), State::Draining);
+    let (packets, result) = server.with_scope(|mut scope| scope.output().send(t0));
+    result.expect("draining output");
+    assert!(packets.is_empty());
+    for conn in [&mut client, &mut server] {
+        let deadline = conn
+            .view()
+            .recovery()
+            .next_timer()
+            .expect("terminal deadline");
+        conn.with_scope(|mut scope| scope.recovery().try_loss(deadline))
+            .expect("terminal expiry");
+        assert!(conn.view().lifecycle().is_closed());
+    }
 }
 
 #[test]

@@ -10,6 +10,233 @@ use std::{
 };
 
 #[test]
+fn retransmits_retiring_advertisement() {
+    use common::suite::mux::{
+        dispatch,
+        paths::{self, CLIENT, Pair},
+    };
+    use dope_quic::{
+        conn::scope::path::Rotation,
+        wire::{frame, varint::VarInt},
+    };
+
+    let (mut peer, mut server, handle, mut now) = paths::try_wire().expect("wire CID fixture");
+    let lost = dispatch::Capture::output(&mut server, now).expect("initial CID advertisements");
+    assert!(!lost.is_empty());
+    for mut packet in lost {
+        for segment in packet.segments_mut() {
+            if let Some(mut wire) = peer.receive(segment).expect("discarded CID packet") {
+                // Advance the fixture's authenticated packet sequence without
+                // processing the lost advertisements or acknowledging them.
+                peer.open(&mut wire).expect("authenticate discarded packet");
+            }
+        }
+        Pin::new(&mut server).output().recycle(packet);
+    }
+
+    let mut watermark = 0;
+    for step in 0_u8..4 {
+        if step < 3 {
+            assert!(matches!(
+                Pin::new(&mut server).observe(now, |mut turn| turn.protocol().rotate_cid(handle)),
+                Ok(Rotation::Queued)
+            ));
+            now = server
+                .conn(handle)
+                .expect("live connection")
+                .view()
+                .recovery()
+                .send_at(now);
+        } else {
+            assert!(matches!(
+                Pin::new(&mut server).observe(now, |mut turn| turn.protocol().rotate_cid(handle)),
+                Ok(Rotation::Unavailable)
+            ));
+            now = server
+                .conn(handle)
+                .expect("live connection")
+                .view()
+                .recovery()
+                .next_timer()
+                .expect("unacknowledged advertisements arm PTO")
+                + Duration::from_nanos(1);
+        }
+
+        let flight = dispatch::Capture::output(&mut server, now).expect("CID output");
+        let mut advertised = Vec::new();
+        for mut packet in flight {
+            for segment in packet.segments_mut() {
+                let Some(mut wire) = peer.receive(segment).expect("receive CID packet") else {
+                    continue;
+                };
+                let (_, body) = peer.open(&mut wire).expect("authenticated CID packet");
+                for frame in frame::Frame::decode_all(&body).expect("valid CID frames") {
+                    if let frame::View::NewConnectionId { notice, .. } = frame.view() {
+                        let mut encoded = Vec::new();
+                        frame.encode(&mut encoded).expect("CID frame encoding");
+                        let (sequence, length) =
+                            VarInt::decode(&encoded[1..]).expect("CID sequence");
+                        let (prior, _) =
+                            VarInt::decode(&encoded[1 + length..]).expect("retirement floor");
+                        watermark = watermark.max(prior.get());
+                        advertised.push((sequence.get(), prior.get(), *notice.id()));
+                    }
+                }
+            }
+            Pin::new(&mut server).output().recycle(packet);
+        }
+
+        if step < 3 {
+            let expected = u64::from(step) + 4;
+            assert_eq!(
+                advertised
+                    .iter()
+                    .map(|&(sequence, prior, _)| (sequence, prior))
+                    .collect::<Vec<_>>(),
+                [(expected, u64::from(step) + 1)],
+                "CID 2 remains unknown while newer advertisements raise the floor",
+            );
+            peer.set_target(advertised[0].2);
+        } else {
+            assert_eq!(watermark, 3);
+            assert!(
+                advertised
+                    .iter()
+                    .any(|&(sequence, prior, _)| sequence == 2 && prior == 0),
+                "PTO retains the retiring CID's original valid advertisement",
+            );
+        }
+        if step == 2 {
+            continue;
+        }
+        let sequence = step.min(2);
+        let mut retire = peer
+            .packet(&[frame::TYPE_RETIRE_CONNECTION_ID, sequence])
+            .expect("retirement packet on a replacement CID");
+        Pair::receive(&mut server, CLIENT, &mut retire, now).expect("peer retirement");
+    }
+
+    assert!(matches!(
+        Pin::new(&mut server).observe(now, |mut turn| turn.protocol().rotate_cid(handle)),
+        Ok(Rotation::Queued)
+    ));
+}
+
+#[test]
+fn replenishes_before_retirement_within_slot_limit() {
+    use common::suite::mux::dispatch::Capture;
+    use dope_quic::{conn::scope::path::Rotation, proto::param};
+
+    for limit in [2_u64, 8] {
+        let (signing, key) = peer::raw(0x39).expect("raw identity");
+        let mut server = Count::server(signing.server().expect("server TLS"), Plan::standard())
+            .expect("CID server");
+        let mut client = Builder::client(Count::default())
+            .build()
+            .expect("CID client");
+        let remote = SocketAddr::from(([10, 0, 0, 2], 443));
+        let local = SocketAddr::from(([10, 0, 0, 1], 50_000));
+        let started = Instant::now();
+        let params = param::Set::builder()
+            .idle_ms(30_000)
+            .datagram(Some(65535))
+            .cid_limit(limit)
+            .try_build()
+            .expect("peer CID limit");
+        let options = Count::options()
+            .expect("CID options")
+            .into_builder()
+            .transport(|path| path.params(params))
+            .try_build()
+            .expect("bounded CID options");
+        let outbound =
+            Capture::connect(&mut client, remote, key, options, INITIAL.to_vec(), started)
+                .expect("CID connection");
+        for turn in 0..8 {
+            let now = started + Duration::from_millis(turn * 10);
+            Count::relay_at(&mut client, &mut server, local, now).expect("client handshake");
+            Count::relay_at(&mut server, &mut client, remote, now).expect("server handshake");
+        }
+        assert_eq!(server.handler().established, 1);
+        assert_eq!(client.handler().established, 1);
+        let inbound = server.handler().last_handle.expect("server handle");
+        let initial = server
+            .conn(inbound)
+            .expect("live server")
+            .view()
+            .path()
+            .local_cids()
+            .entries()
+            .map(|(sequence, _)| sequence.get())
+            .collect::<Vec<_>>();
+        assert_eq!(initial, (0..limit).collect::<Vec<_>>());
+
+        let now = started + Duration::from_secs(1);
+        assert!(matches!(
+            Count::rotate(&mut server, inbound, now),
+            Ok(Rotation::Queued)
+        ));
+        assert!(matches!(
+            Count::rotate(&mut server, inbound, now),
+            Ok(Rotation::Unavailable)
+        ));
+        let retained = server
+            .conn(inbound)
+            .expect("retiring route retained")
+            .view()
+            .path()
+            .local_cids()
+            .entries()
+            .map(|(sequence, _)| sequence.get())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained,
+            (0..(limit + 1).min(8)).collect::<Vec<_>>(),
+            "a replacement uses a vacant slot while the retiring route stays registered"
+        );
+        let send_at = server
+            .conn(inbound)
+            .expect("live server")
+            .view()
+            .recovery()
+            .send_at(now);
+        let rotation = Count::relay_at(&mut server, &mut client, remote, send_at)
+            .expect("authenticated rotation");
+        assert!(!rotation.is_empty());
+        assert!(
+            client
+                .conn(outbound)
+                .expect("peer retains the connection")
+                .view()
+                .lifecycle()
+                .is_ready(),
+            "the advertisement respects the peer's active CID limit"
+        );
+
+        let retire_at = client
+            .conn(outbound)
+            .expect("live client")
+            .view()
+            .recovery()
+            .send_at(send_at + Duration::from_millis(1));
+        let retirement = Count::relay_at(&mut client, &mut server, local, retire_at)
+            .expect("authenticated retirement");
+        assert!(!retirement.is_empty());
+        let mut remaining = server
+            .conn(inbound)
+            .expect("retirement preserves the connection")
+            .view()
+            .path()
+            .local_cids()
+            .entries()
+            .map(|(sequence, _)| sequence.get())
+            .collect::<Vec<_>>();
+        remaining.sort_unstable();
+        assert_eq!(remaining, (1..=limit).collect::<Vec<_>>());
+    }
+}
+
+#[test]
 fn reuses_rotated_slot() {
     let (signing, key) = peer::raw(0x39).expect("raw identity");
     let mut server =
@@ -140,10 +367,10 @@ fn reuses_rotated_slot() {
     let mut active = (Count::changed_cid(&wires, old_dcid)).expect("RETIRE uses a replacement CID");
 
     let fill_at = retire + Duration::from_millis(1);
-    let flights = Count::relay_at(&mut server, &mut client, peer, fill_at).expect("CID relay_at");
-    assert!(!flights.is_empty(), "retirement replenishes a local CID");
+    Count::relay_at(&mut server, &mut client, peer, fill_at).expect("CID relay_at");
     let conn =
         (server.conn(inbound)).expect("established server connection must survive CID retirement");
+    assert_eq!(conn.view().path().local_cids().entries().count(), 4);
     assert!(
         conn.view()
             .path()
@@ -171,7 +398,7 @@ fn reuses_rotated_slot() {
     Pin::new(&mut server).observe(fill_at, |mut turn| turn.output().drain().count());
 
     let mut cycle_at = fill_at;
-    for _ in 0..3 {
+    for _ in 0..4 {
         let start = cycle_at + Duration::from_millis(100);
         let conn = (server.conn(inbound))
             .expect("established server connection must survive repeated CID rotation");
@@ -226,9 +453,12 @@ fn reuses_rotated_slot() {
             now = deadline;
         }
         let done = (done).expect("rotation reaches RETIRE_CONNECTION_ID");
-        let deadline = (Pin::new(&mut server).observe(done, |turn| turn.deadline()))
-            .expect("retirement replenishment owns a mux deadline");
-        let fill_at = deadline.max(done);
+        let fill_at = server
+            .conn(inbound)
+            .expect("retirement retains the replacement CIDs")
+            .view()
+            .recovery()
+            .send_at(done);
         Count::relay_at(&mut server, &mut client, peer, fill_at).expect("CID relay_at");
         cycle_at = fill_at;
     }
@@ -239,7 +469,7 @@ fn reuses_rotated_slot() {
             .path()
             .local_cids()
             .entries()
-            .any(|(sequence, cid)| sequence.get() >= 4 && cid == active),
+            .any(|(sequence, cid)| sequence.get() >= 5 && cid == active),
         "the peer eventually selects a CID stored in a generation-reused slot",
     );
 
@@ -250,19 +480,59 @@ fn reuses_rotated_slot() {
     );
     let deadline = (Pin::new(&mut client).observe(final_at, |turn| turn.deadline()))
         .expect("application datagram owns a mux deadline");
-    let send_at = deadline.max(final_at);
-    let wires = Count::relay_at(&mut client, &mut server, local, send_at).expect("CID relay_at");
-    assert!(
-        wires
-            .iter()
-            .filter_map(|wire| Count::short_cid(wire))
-            .any(|cid| cid == active)
-    );
-    Pin::new(&mut server).observe(send_at, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture server connections must admit final CID output"
+    let mut send_at = deadline.max(final_at);
+    let mut recovery_bound = None;
+    loop {
+        assert_eq!(
+            client
+                .conn(outbound)
+                .expect("live client")
+                .inspection()
+                .tx_queued(),
+            1,
+            "the final DATAGRAM remains owned until packet construction"
         );
-    });
+        let wires = Count::relay_at(&mut client, &mut server, local, send_at)
+            .expect("final DATAGRAM and control output");
+        assert!(
+            wires
+                .iter()
+                .filter_map(|wire| Count::short_cid(wire))
+                .all(|cid| cid == active)
+        );
+        let acknowledgments = Count::relay_at(&mut server, &mut client, peer, send_at)
+            .expect("deliver final DATAGRAM and return acknowledgments");
+        let conn = client.conn(outbound).expect("live client");
+        if conn.inspection().tx_queued() == 0 {
+            assert!(
+                wires
+                    .iter()
+                    .filter_map(|wire| Count::short_cid(wire))
+                    .any(|cid| cid == active),
+                "the flight consuming the DATAGRAM uses the generation-reused CID"
+            );
+            break;
+        }
+        assert_eq!(server.handler().datagrams, 1);
+        let bound = *recovery_bound.get_or_insert_with(|| {
+            conn.view()
+                .recovery()
+                .next_timer()
+                .expect("pending output retains a recovery deadline")
+        });
+        let next = [
+            Pin::new(&mut client).observe(send_at, |turn| turn.deadline()),
+            Pin::new(&mut server).observe(send_at, |turn| turn.deadline()),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .expect("the queued DATAGRAM or its acknowledgment owns a wake");
+        assert!(
+            next <= bound && (next > send_at || (next == send_at && !acknowledgments.is_empty())),
+            "delivery progresses within its recovery deadline"
+        );
+        send_at = next;
+    }
     assert_eq!(server.handler().datagrams, 2);
 }

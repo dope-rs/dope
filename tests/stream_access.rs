@@ -34,6 +34,19 @@ fn tracks_one_stream() {
             .send()
             .reset(first.send(), Code::ZERO)
             .expect("first stream must reset");
+        assert_eq!(
+            streams.send().send(first.send(), b"late"),
+            Err(Error::Discarded(admit::Cause::Reset))
+        );
+        assert_eq!(streams.send().send(first.send(), &[]), Ok(()));
+        streams
+            .send()
+            .finish(first.send())
+            .expect("reset finish remains inert");
+        streams
+            .send()
+            .reset(first.send(), Code::ZERO)
+            .expect("repeat reset remains inert");
         assert_eq!(streams.view().buffered(first.send()), 0);
         assert_eq!(streams.view().buffered(second.send()), 6);
         assert!(!streams.view().is_send_open(first.send()));
@@ -59,6 +72,15 @@ fn branded_ids_work() {
             .send()
             .finish(stream.send())
             .expect("client stream must finish");
+        assert_eq!(
+            streams.send().send(stream.send(), b"late"),
+            Err(Error::Discarded(admit::Cause::Finished))
+        );
+        assert_eq!(streams.send().send(stream.send(), &[]), Ok(()));
+        streams
+            .send()
+            .finish(stream.send())
+            .expect("repeat finish remains inert");
         assert!(!streams.view().is_send_open(stream.send()));
         stream.id()
     });
@@ -349,8 +371,12 @@ fn stopped_peer_closed() {
     let sent = Instant::now() + Duration::from_secs(1);
     Receiver::receive_from(&mut server, &mut wire, &mut client, sent).expect("STOP delivery");
     server.with_scope(|mut scope| {
-        let streams = scope.streams();
+        let mut streams = scope.streams();
         let send = streams.view().resolve_send(stopped).expect("stopped half");
+        assert_eq!(
+            streams.send().send(send, b"late"),
+            Err(Error::Discarded(admit::Cause::Reset))
+        );
         assert_eq!(streams.view().stopped(send), Some(code));
         assert!(!streams.view().is_send_open(send));
         let other = streams.view().resolve_send(other).expect("unrelated half");
@@ -364,8 +390,21 @@ fn stopped_peer_closed() {
         .send_at(reset + Duration::from_millis(30));
     Receiver::receive_from(&mut server, &mut wire, &mut client, ack).expect("reset ACK");
     server.with_scope(|mut scope| {
-        let streams = scope.streams();
+        let mut streams = scope.streams();
         let send = streams.view().resolve_send(stopped).expect("retired half");
+        assert_eq!(
+            streams.send().send(send, b"late"),
+            Err(Error::Discarded(admit::Cause::PeerRetired))
+        );
+        assert_eq!(streams.send().send(send, &[]), Ok(()));
+        streams
+            .send()
+            .finish(send)
+            .expect("retired finish is inert");
+        streams
+            .send()
+            .reset(send, code)
+            .expect("retired reset is inert");
         assert_eq!(streams.view().stopped(send), None, "send entry retired");
         assert!(!streams.view().is_send_open(send), "retained closed half");
         let recv = streams.view().resolve_recv(stopped).expect("receive half");

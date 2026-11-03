@@ -58,11 +58,11 @@ impl<'a, 'd, const DOMAIN: u8, const RECONCILE: bool, const ADAPTIVE: bool, D: b
         T: provided::Mutable<'d, Account: retain::Retain<'d>>,
     >(
         &mut self,
-        packet: packet::Packet<'turn, 'd, T>,
+        packet: long::Datagram<packet::Packet<'turn, 'd, T>>,
         keep: packet::Retainer<'d>,
         now: time::Instant,
         sink: &mut E,
-    ) -> Result<(), conn::Error> {
+    ) -> ingress::Received {
         receiver::Receiver::new(self, now, sink).run(packet, keep)
     }
 }

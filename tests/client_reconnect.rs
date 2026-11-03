@@ -377,7 +377,7 @@ fn pool_recycles() {
                             .try_add(Duration::from_secs(2))
                             .expect("fixture deadline range");
                         let server = serve
-                            .bind(Close(errors.clone()), &mut driver)
+                            .bind(Close::<false>(errors.clone()), &mut driver)
                             .expect("server plan binds to the session driver");
                         let options =
                             Options::try_from(params).expect("fixture connection options");
@@ -414,7 +414,21 @@ fn pool_recycles() {
                         )
                         .expect("session completion")
                         .expect("application completion");
-                    assert!(!elapsed.get(), "pooled reconnect deadline elapsed");
+                    assert!(
+                        !elapsed.get(),
+                        "pooled reconnect deadline elapsed: connects={}, done={:?}, connection_errors={:?}, violations={:?}, backoff={:?}",
+                        connects.get(),
+                        done.take(),
+                        {
+                            let errors = errors.connections.take();
+                            (errors.len(), errors.into_iter().take(4).collect::<Vec<_>>())
+                        },
+                        {
+                            let errors = errors.violations.take();
+                            (errors.len(), errors.into_iter().take(4).collect::<Vec<_>>())
+                        },
+                        backoff.0.get(),
+                    );
                     assert_eq!(connects.get(), 3, "one-slot TLS pool did not recycle");
                     for failure in failures.take().iter() {
                         assert!(
@@ -422,7 +436,7 @@ fn pool_recycles() {
                                 failure,
                                 errors::SendFailure::Closed(data) if data.as_slice() == [0x42]
                             ),
-                            "immediate peer close must retain the rejected datagram",
+                            "peer close must retain the rejected datagram",
                         );
                     }
                     assert!(!address.get().is_null(), "pooled protocol was never pinned");

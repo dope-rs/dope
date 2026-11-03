@@ -144,13 +144,16 @@ impl Window {
 
     pub(in crate::conn::output::journals) fn drain<const REVERSE: bool>(
         &mut self,
-        accept: impl FnMut(&journals::Packet) -> bool,
+        mut accept: impl FnMut(&journals::Packet) -> bool,
         mut emit: impl FnMut(journals::Packet),
     ) {
-        match self.try_drain::<REVERSE, Infallible>(accept, |packet| {
-            emit(packet);
-            Ok(())
-        }) {
+        match self.try_drain::<REVERSE, Infallible>(
+            |packet, select| select && accept(packet),
+            |packet| {
+                emit(packet);
+                Ok(())
+            },
+        ) {
             Ok(()) => {}
             Err(never) => match never {},
         }
@@ -158,7 +161,7 @@ impl Window {
 
     fn try_drain<const REVERSE: bool, E>(
         &mut self,
-        mut accept: impl FnMut(&journals::Packet) -> bool,
+        mut accept: impl FnMut(&mut journals::Packet, bool) -> bool,
         mut emit: impl FnMut(journals::Packet) -> Result<(), E>,
     ) -> Result<(), E> {
         let capacity = self.block.extent().get();
@@ -192,7 +195,7 @@ impl Window {
             let (offset, source) = at(step);
             // SAFETY: each original initialized slot is visited once. Moves
             // only fill already visited slots, including across the wrap.
-            if accept(unsafe { (*source).assume_init_ref() }) {
+            if accept(unsafe { (*source).assume_init_mut() }, true) {
                 removed += 1;
                 if let Err(error) = emit(unsafe { source.read().assume_init() }) {
                     break Err(error);
@@ -203,6 +206,10 @@ impl Window {
         };
         for step in steps {
             let (offset, source) = at(step);
+            // SAFETY: error cleanup visits each untouched initialized slot
+            // before its sole move. Selection is disabled; ACK boundaries
+            // already observed can still move onto their retained owner.
+            let _ = accept(unsafe { (*source).assume_init_mut() }, false);
             retain(offset, source, removed);
         }
         if removed == 0 {
@@ -253,30 +260,46 @@ impl Window {
             stack::raw::Drain<'_, revision::Key, controls::Tag>,
             stack::raw::Drain<'_, delivery::Handle<delivery::Stream>, streams::Tag>,
         ) -> Result<(), E>,
-    ) -> Result<(), E> {
+    ) -> (Result<(), E>, Option<u64>) {
         if self
             .first()
             .is_none_or(|packet| packet.pn.get() > ranges.largest())
         {
-            return Ok(());
+            return (Ok(()), Some(ranges.largest()));
         }
         let (first, mut rest) = ranges.spans();
         let mut current = Some(first);
-        self.try_drain::<true, E>(
-            |journal| loop {
-                let Some(span) = current else {
-                    return false;
-                };
-                if journal.pn.get() > span.largest() {
-                    return false;
+        // Descending spans lend each observed ACK boundary to its nearest
+        // lower survivor. An ACKed owner is itself a new boundary, including
+        // when it carried an older marker. No matching journal is required.
+        let mut boundary = None;
+        let result = self.try_drain::<true, E>(
+            |journal, select| {
+                if select {
+                    while let Some(span) = current {
+                        if journal.pn.get() > span.largest() {
+                            break;
+                        }
+                        boundary.get_or_insert(span.largest());
+                        if journal.pn.get() >= span.smallest() {
+                            return true;
+                        }
+                        current = rest.next();
+                    }
                 }
-                if journal.pn.get() >= span.smallest() {
-                    return true;
+                if boundary.take().is_some() {
+                    journal.transmission.set_ack_after();
                 }
-                current = rest.next();
+                false
             },
             |journal| Self::emit(pools, flight, journal, emit),
-        )
+        );
+        if result.is_ok()
+            && let Some(span) = current
+        {
+            boundary.get_or_insert(span.largest());
+        }
+        (result, boundary)
     }
 
     pub(in crate::conn::output::journals) fn drain_where(
@@ -291,18 +314,6 @@ impl Window {
         ),
     ) {
         self.drain::<false>(accept, |journal| Self::emit(pools, flight, journal, emit));
-    }
-
-    pub(in crate::conn::output::journals) fn protect_pto(&mut self) {
-        let (head, first, second) = self.block.state().split(self.block.extent().get());
-        let pointer = self.block.as_mut_ptr().cast::<journals::Packet>();
-        let first = unsafe { slice::from_raw_parts_mut(pointer.add(head), first) };
-        let second = unsafe { slice::from_raw_parts_mut(pointer, second) };
-        for packet in first.iter_mut().chain(second) {
-            if packet.transmission.is_flight() {
-                packet.transmission.protect_pto();
-            }
-        }
     }
 }
 

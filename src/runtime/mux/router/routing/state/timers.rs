@@ -2,8 +2,8 @@ use o3::buffer;
 use std::{ops, pin, time};
 
 use crate::runtime::mux::handler::hook::{
-    data::{datagram, stream},
-    life::{early, ready},
+    data::{datagram, release::Mode as _, stream},
+    life::{close::Mode as _, closing::Mode as _, early, ready},
     set::{Datagram as _, Dispatch, Early as _, Established as _, Stream as _},
 };
 use crate::stream::Recv;
@@ -43,7 +43,10 @@ where
             }
             Some(move || {
                 let this = self;
-                early::Event::new(this.sink.as_mut(), &mut *this.slot.connection, this.handle)
+                let Some(app) = this.slot.connection.as_mut() else {
+                    unreachable!("application")
+                };
+                early::Event::new(this.sink.as_mut(), app, this.handle)
             })
         })
     }
@@ -56,30 +59,37 @@ where
             *self.slot.notified_established = true;
             Some(move || {
                 let this = self;
+                let Some(app) = this.slot.connection.as_mut() else {
+                    unreachable!("application")
+                };
                 ready::Event::new(
                     this.sink.as_mut(),
-                    handler::Slot::new(
-                        &mut *this.slot.connection,
-                        this.slot.conn.reborrow::<true>(),
-                    ),
+                    handler::Slot::new(app, this.slot.conn.reborrow::<true>()),
                     this.handle,
                     this.at,
+                    this.slot.notified_established,
                 )
             })
         })
     }
 
     fn datagram(&mut self) -> ops::ControlFlow<()> {
+        if <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Datagram::PULL {
+            if self.slot.conn.events().has_datagram() {
+                self.slot.conn.application().ready();
+            }
+            return ops::ControlFlow::Continue(());
+        }
         <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Datagram::call(move || {
             let data = self.slot.conn.datagrams().recv()?;
             *self.slot.stream_first = true;
             Some(move || {
+                let Some(app) = self.slot.connection.as_mut() else {
+                    unreachable!("application")
+                };
                 datagram::Event::new(
                     self.sink.as_mut(),
-                    handler::Slot::new(
-                        &mut *self.slot.connection,
-                        self.slot.conn.reborrow::<true>(),
-                    ),
+                    handler::Slot::new(app, self.slot.conn.reborrow::<true>()),
                     self.handle,
                     data,
                     self.at,
@@ -90,6 +100,12 @@ where
 
     /// Early deferrals retain their event without rearming its notification.
     fn stream(&mut self) -> ops::ControlFlow<()> {
+        if <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Stream::PULL {
+            if self.slot.conn.events().has_stream() {
+                self.slot.conn.application().ready();
+            }
+            return ops::ControlFlow::Continue(());
+        }
         let Some(lease) = self.slot.conn.events().poll_stream() else {
             return ops::ControlFlow::Continue(());
         };
@@ -99,12 +115,12 @@ where
         let bound = &lease;
         let event = move || {
             let this = owner;
+            let Some(app) = this.slot.connection.as_mut() else {
+                unreachable!("application")
+            };
             stream::Event::new(
                 this.sink.as_mut(),
-                handler::Slot::new(
-                    &mut *this.slot.connection,
-                    this.slot.conn.reborrow::<true>(),
-                ),
+                handler::Slot::new(app, this.slot.conn.reborrow::<true>()),
                 this.handle,
                 bound.bound_event(),
                 this.at,
@@ -139,7 +155,40 @@ where
     }
 
     fn dispatch(&mut self) {
-        if self.reject().is_break() || self.establish().is_break() || self.data().is_break() {
+        if self.slot.conn.view().lifecycle().is_closing() {
+            let Some(mut app) = self.slot.connection.take() else {
+                return;
+            };
+            <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Closing::notify(
+                self.sink.as_mut(),
+                handler::Slot::new(&mut app, self.slot.conn.reborrow::<true>()),
+                self.handle,
+            );
+            <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Release::cancel(
+                self.sink.as_mut(),
+                self.slot.conn.reborrow::<false>(),
+                self.handle,
+            );
+            let brand = self.slot.conn.brand();
+            <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Close::close(
+                self.sink.as_mut(),
+                handler::Close::new(brand.reborrow(), self.at.into()),
+                app,
+                self.handle,
+            );
+            return;
+        }
+        if self.reject().is_break() {
+            self.slot.conn.events().mark(conn::Effects::NOTIFY);
+            return;
+        }
+        if self.establish().is_break() {
+            if *self.slot.notified_established {
+                self.slot.conn.events().mark(conn::Effects::NOTIFY);
+            }
+            return;
+        }
+        if self.data().is_break() {
             self.slot.conn.events().mark(conn::Effects::NOTIFY);
         }
     }

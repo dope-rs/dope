@@ -1,5 +1,8 @@
+pub mod domains;
 pub mod queue;
 pub mod sender;
+pub mod socket;
+pub mod timing;
 pub mod traces;
 pub mod writable;
 use crate::common::retry::traces::{Backoff, CausalConfig, CauseBackoff, Immediate};
@@ -33,6 +36,7 @@ use dope_quic::errors::{self, Connect, SendFailure, detail};
 use dope_quic::proto::cid;
 use dope_quic::runtime::endpoint::Endpoint;
 use dope_quic::runtime::mux::handler;
+use dope_quic::runtime::mux::handler::hook::data::datagram;
 use dope_quic::runtime::mux::handler::hook::life::create;
 use dope_quic::runtime::mux::handler::hook::life::ready;
 use dope_quic::runtime::mux::handler::hook::set;
@@ -78,14 +82,16 @@ impl Finish {
     }
 }
 
-pub struct Close(pub Rc<Errors>);
+pub struct Close<const READY: bool = true>(pub Rc<Errors>);
 
-impl<'d> handler::Handler<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>> for Close {
+impl<'d, const READY: bool>
+    handler::Handler<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>> for Close<READY>
+{
     type Connection = ();
     type Create = create::Unit;
     type Events = set::Set<
         set::On,
-        set::Off,
+        set::On,
         set::Off,
         set::Off,
         set::Off,
@@ -95,12 +101,37 @@ impl<'d> handler::Handler<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Drive
     >;
 }
 
-impl<'d> ready::Sink<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>> for Close {
+impl<'d, const READY: bool> ready::Sink<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>>
+    for Close<READY>
+{
     fn established(
         event: ready::Event<'_, Self, SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>>,
     ) {
         let (_, mut slot, _, _) = event.into();
-        slot.transport().lifecycle().close(Code::ZERO, Vec::new());
+        if READY {
+            slot.transport().lifecycle().close(Code::ZERO, Vec::new());
+        }
+    }
+}
+
+impl<'d, const READY: bool>
+    datagram::Sink<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>> for Close<READY>
+{
+    fn datagram(
+        event: datagram::Event<
+            '_,
+            Self,
+            SERVER_ROUTE,
+            Vec<u8>,
+            resident::Shared<'d>,
+            id::Driver<'d>,
+        >,
+    ) {
+        let (_, mut slot, _, data, _) = event.into();
+        if !READY {
+            assert_eq!(data, [0x42], "client-ready datagram");
+            slot.transport().lifecycle().close(Code::ZERO, Vec::new());
+        }
     }
 }
 
@@ -161,9 +192,11 @@ impl Events {
         }
     }
 
-    fn slot(&self, slot: &client::SlotScope<'_>, expected: usize) {
+    fn slot(&self, callback: &'static str, slot: &client::SlotScope<'_>, expected: usize) {
         if slot.id() != SlotId::from_index(0) || slot.generation() != expected as u32 {
             self.errors.violations.push(Violation::Slot {
+                callback,
+                timed_out: self.timed_out.get(),
                 id: slot.id(),
                 generation: slot.generation(),
                 expected,
@@ -202,7 +235,7 @@ impl<'d> protocol::Protocol<'d> for Events {
     fn connect<'scope>(mut self: Pin<&'scope mut Self>, slot: client::SlotScope<'scope>) {
         self.as_ref().observe();
         let connects = self.attempts.connects.get() + 1;
-        self.slot(&slot, connects);
+        self.slot("connect", &slot, connects);
         if slot.attempt_id().generation() != slot.generation() {
             self.errors.violations.push(Violation::Generation {
                 attempt: slot.attempt_id().generation(),
@@ -226,7 +259,7 @@ impl<'d> protocol::Protocol<'d> for Events {
         data: Self::Receive,
     ) {
         self.as_ref().observe();
-        self.slot(&slot, self.attempts.connects.get());
+        self.slot("datagram", &slot, self.attempts.connects.get());
         if data.as_slice() != [0x42] {
             self.errors.violations.push(Violation::Datagram(data));
         }
@@ -249,7 +282,7 @@ impl<'d> protocol::Protocol<'d> for Events {
 
     fn close<'scope>(mut self: Pin<&'scope mut Self>, slot: client::SlotScope<'scope>) {
         self.as_ref().observe();
-        self.slot(&slot, self.attempts.connects.get());
+        self.slot("close", &slot, self.attempts.connects.get());
         self.as_mut().project().attempts.connected = false;
     }
 
@@ -391,7 +424,7 @@ impl<'d, 'state> Causal<'d, 'state> {
 pub struct Pooled<'d, 'tls> {
     #[pin]
     #[manifold]
-    pub server: Endpoint<'d, SERVER_ROUTE, Close>,
+    pub server: Endpoint<'d, SERVER_ROUTE, Close<false>>,
     #[pin]
     #[manifold(control)]
     pub client: Dialer<'d, 'd, CLIENT_ROUTE, Events, Immediate, auth::Pooled<'tls>>,
@@ -433,14 +466,16 @@ impl<'d, 'tls> Pooled<'d, 'tls> {
     }
 }
 
-impl<'d> cert::Sink<SERVER_ROUTE, id::Driver<'d>> for Close {
+impl<'d, const READY: bool> cert::Sink<SERVER_ROUTE, id::Driver<'d>> for Close<READY> {
     fn certificate(event: cert::Event<'_, '_, Self, SERVER_ROUTE, id::Driver<'d>>) {
         let (this, handle, from, failure) = event.into_parts();
         this.0.certificate(handle, from, failure);
     }
 }
 
-impl<'d> packet::Sink<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>> for Close {
+impl<'d, const READY: bool>
+    packet::Sink<SERVER_ROUTE, Vec<u8>, resident::Shared<'d>, id::Driver<'d>> for Close<READY>
+{
     fn packet(event: packet::Event<'_, Self>) {
         let (this, from, error, len) = event.into_parts();
         this.0.record(from, len, error);
@@ -460,6 +495,8 @@ pub struct Errors {
 pub enum Violation {
     Moved(*const Events, *const Events),
     Slot {
+        callback: &'static str,
+        timed_out: bool,
         id: SlotId,
         generation: u32,
         expected: usize,

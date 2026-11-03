@@ -186,174 +186,180 @@ fn backpressure_keeps() {
 }
 
 #[test]
-fn stale_ack_keeps_slot() {
-    const CONTROL_CAPACITY: usize = 32;
-    let (mut server, mut client, mut work) = path::try_pair::<CONTROL_CAPACITY>()
-        .expect("bounded path-validation peers")
-        .into_parts();
-    assert!(client.view().lifecycle().is_ready() && server.view().lifecycle().is_ready());
-    let first = 0x51_u64.to_ne_bytes();
-    let next = 0x52_u64.to_ne_bytes();
-    let sent_at = Instant::now() + Duration::from_secs(1);
+fn cancel_releases_probe_capacity() {
+    use common::suite::peers::packet;
+    use dope_quic::{
+        conn::wire::{packet::Batch, path::probe},
+        wire::{frame, varint::VarInt},
+    };
+    use o3::depot::capacity;
 
-    assert_eq!(
-        client.with_scope(|mut scope| scope.path().try_probe(first)),
-        Ok(())
-    );
-    let (mut original, send_result) = client.with_scope(|mut scope| scope.output().send(sent_at));
-    send_result.expect("warmed client journals must admit the original path challenge");
-    assert!(!original.is_empty(), "the first generation is encrypted");
-    for packet in &mut original {
-        server
-            .with_scope(|mut scope| {
-                scope
-                    .input(&mut work)
-                    .recv_packet(packet, sent_at, |_: &rustls::Error| {})
-            })
-            .expect("server must receive the first control generation");
+    let clock = Instant::now();
+    let mut pair = packet::Pair::try_new(1, clock, |_| {}).expect("independent peer");
+    pair.retired(clock).expect("settled handshake");
+    for value in 0..64_u64 {
+        pair.server
+            .with_scope(|mut scope| scope.path().try_probe(value.to_ne_bytes()))
+            .expect("bounded application probes");
     }
-    let (mut ack1, send_result) =
-        server.with_scope(|mut scope| scope.output().send(sent_at + Duration::from_millis(1)));
-    send_result.expect("warmed server journals must admit the first carrier acknowledgement");
-    assert!(
-        !ack1.is_empty(),
-        "the first carrier has a separately delayed ACK"
+    let next = 64_u64.to_ne_bytes();
+    assert_eq!(
+        pair.server
+            .with_scope(|mut scope| scope.path().try_probe(next)),
+        Err(probe::Error::Capacity {
+            data: next,
+            reason: capacity::Reason::Full,
+        })
     );
+    let unsent = 0_u64.to_ne_bytes();
+    assert!(
+        pair.server
+            .with_scope(|mut scope| scope.path().cancel_probe(unsent))
+    );
+    assert!(
+        !pair
+            .server
+            .with_scope(|mut scope| scope.path().cancel_probe(unsent))
+    );
+    pair.server
+        .with_scope(|mut scope| scope.path().try_probe(next))
+        .expect("canceled pending probe releases capacity");
 
-    let deadline = client
+    let now = pair
+        .server
+        .view()
+        .recovery()
+        .send_at(clock + Duration::from_secs(1));
+    let mut batch = Batch::default();
+    pair.server
+        .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1_200))
+        .expect("challenge carrier");
+    assert_eq!(batch.packets(), 1);
+    let (number, body) = pair
+        .peer
+        .open(batch.iter_mut().next().expect("one carrier"))
+        .expect("authenticated challenges");
+    let frames = frame::Frame::decode_all(&body).expect("challenge frames");
+    let sent = frames
+        .iter()
+        .find_map(|item| match item.view() {
+            frame::View::PathChallenge { data } => Some(*data),
+            _ => None,
+        })
+        .expect("outstanding application probe");
+    assert!(
+        !frames.iter().any(
+            |item| matches!(item.view(), frame::View::PathChallenge { data } if data == &unsent)
+        )
+    );
+    let mut ack = Vec::new();
+    frame::Borrowed::ack(
+        VarInt::try_from(number).expect("packet number"),
+        VarInt::ZERO,
+        VarInt::ZERO,
+        &[],
+    )
+    .expect("carrier receipt")
+    .encode(&mut ack)
+    .expect("encoded receipt");
+    pair.receive(&ack, now).expect("ACK without PATH_RESPONSE");
+    assert!(
+        pair.server
+            .with_scope(|mut scope| scope.path().cancel_probe(sent))
+    );
+    pair.server
+        .with_scope(|mut scope| scope.path().try_probe(65_u64.to_ne_bytes()))
+        .expect("canceled acknowledged probe releases capacity");
+    let mut response = vec![frame::TYPE_PATH_RESPONSE];
+    response.extend_from_slice(&sent);
+    pair.receive(&response, now)
+        .expect("delayed canceled response");
+    assert!(!pair.server.view().path().has_token(&sent));
+}
+
+#[test]
+fn stale_ack_keeps_slot() {
+    use common::suite::peers::packet;
+    use dope_quic::{
+        conn::wire::packet::Batch,
+        wire::{frame, varint::VarInt},
+    };
+
+    let clock = Instant::now();
+    let mut pair = packet::Pair::try_new(1, clock, |_| {}).expect("independent peer");
+    pair.retired(clock).expect("settled handshake");
+    let first = [0x51; 8];
+    let next = [0x52; 8];
+    let mut original = None;
+    let mut now = clock + Duration::from_secs(1);
+    let mut batch = Batch::default();
+    for token in [first, next] {
+        pair.server
+            .with_scope(|mut scope| scope.path().try_probe(token))
+            .expect("queued challenge");
+        now = pair.server.view().recovery().send_at(now);
+        pair.server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1_200))
+            .expect("challenge carrier");
+        assert_eq!(batch.packets(), 1);
+        let (number, body) = pair
+            .peer
+            .open(batch.iter_mut().next().expect("one carrier"))
+            .expect("authenticated challenge");
+        assert!(frame::Frame::decode_all(&body)
+            .expect("challenge frames")
+            .iter()
+            .any(|frame| matches!(frame.view(), frame::View::PathChallenge { data } if data == &token)));
+        if token == first {
+            original = Some(number);
+            let mut response = vec![frame::TYPE_PATH_RESPONSE];
+            response.extend_from_slice(&first);
+            pair.receive(&response, now)
+                .expect("response without carrier ACK");
+            assert!(pair.server.view().path().has_token(&first));
+        }
+        now += Duration::from_millis(1);
+    }
+
+    let mut ack = Vec::new();
+    frame::Borrowed::ack(
+        VarInt::try_from(original.expect("original carrier")).expect("packet number"),
+        VarInt::ZERO,
+        VarInt::ZERO,
+        &[],
+    )
+    .expect("old receipt")
+    .encode(&mut ack)
+    .expect("encoded receipt");
+    pair.receive(&ack, now)
+        .expect("delayed original carrier ACK");
+    assert!(!pair.server.view().path().has_token(&next));
+
+    let now = pair
+        .server
         .view()
         .recovery()
         .next_timer()
-        .expect("control PTO is armed");
-    let probe_at = deadline + Duration::from_millis(1);
-    assert_eq!(
-        client.with_scope(|mut scope| scope.recovery().try_loss(probe_at)),
-        Ok(())
-    );
-    let (mut probes, send_result) = client.with_scope(|mut scope| scope.output().send(probe_at));
-    send_result.expect("warmed client journals must admit the control PTO probe");
-    assert!(!probes.is_empty(), "PTO emits another control carrier");
-    server
-        .with_scope(|mut scope| {
-            scope
-                .input(&mut work)
-                .recv_packet(&mut probes[0], probe_at, |_: &rustls::Error| {})
-        })
-        .expect("server must receive the control PTO probe");
-    let (mut old_ack, send_result) =
-        server.with_scope(|mut scope| scope.output().send(probe_at + Duration::from_millis(1)));
-    send_result.expect("warmed server journals must admit the probe carrier acknowledgement");
-    assert!(
-        !old_ack.is_empty(),
-        "the probe carrier has an independently deliverable ACK"
-    );
-
-    for packet in &mut ack1 {
-        client
-            .with_scope(|mut scope| {
-                scope.input(&mut work).recv_packet(
-                    packet,
-                    probe_at + Duration::from_millis(2),
-                    |_: &rustls::Error| {},
-                )
-            })
-            .expect("client must receive the first control acknowledgement");
+        .expect("replacement PTO")
+        + Duration::from_nanos(1);
+    pair.server
+        .with_scope(|mut scope| scope.recovery().try_loss(now))
+        .expect("replacement timeout");
+    let (packets, result) = pair.server.with_scope(|mut scope| scope.output().send(now));
+    result.expect("replacement retransmission");
+    let mut retransmitted = false;
+    for mut packet in packets {
+        let (_, body) = pair
+            .peer
+            .open(&mut packet)
+            .expect("authenticated retransmission");
+        retransmitted |= frame::Frame::decode_all(&body)
+            .expect("retransmitted frames")
+            .iter()
+            .any(|frame| matches!(frame.view(), frame::View::PathChallenge { data } if data == &next));
     }
     assert!(
-        client.view().path().has_token(&first),
-        "the first ACK retires the original control owner"
+        retransmitted,
+        "the replacement owner must survive the original carrier ACK"
     );
-
-    assert_eq!(
-        client.with_scope(|mut scope| scope.path().try_probe(next)),
-        Ok(())
-    );
-    let next_at = probe_at + Duration::from_millis(3);
-    let (mut next_out, send_result) = client.with_scope(|mut scope| scope.output().send(next_at));
-    send_result.expect("warmed client journals must admit the replacement path challenge");
-    assert!(
-        !next_out.is_empty(),
-        "the freed slot is reused and committed before the old ACK arrives"
-    );
-
-    for packet in &mut old_ack {
-        client
-            .with_scope(|mut scope| {
-                scope
-                    .input(&mut work)
-                    .recv_packet(packet, next_at, |_: &rustls::Error| {})
-            })
-            .expect("client must receive the delayed probe acknowledgement");
-    }
-    assert!(
-        !client.view().path().has_token(&next),
-        "a stale ACK cannot fabricate path validation"
-    );
-
-    for packet in &mut next_out {
-        server
-            .with_scope(|mut scope| {
-                scope
-                    .input(&mut work)
-                    .recv_packet(packet, next_at, |_: &rustls::Error| {})
-            })
-            .expect("server must receive the replacement control generation");
-    }
-    let reply_at = next_at + Duration::from_millis(1);
-    let (mut reply, send_result) = server.with_scope(|mut scope| scope.output().send(reply_at));
-    send_result.expect("warmed server journals must admit the replacement response");
-    assert!(!reply.is_empty());
-    for packet in &mut reply {
-        client
-            .with_scope(|mut scope| {
-                scope
-                    .input(&mut work)
-                    .recv_packet(packet, reply_at, |_: &rustls::Error| {})
-            })
-            .expect("client must receive the replacement response");
-    }
-    for step in 1..=4 {
-        if client.view().path().has_token(&next) {
-            break;
-        }
-        let now = reply_at + Duration::from_millis(step);
-        let (emitted_packets, send_result) =
-            client.with_scope(|mut scope| scope.output().send(now));
-        send_result.expect("warmed client journals must admit replacement control traffic");
-        for mut packet in emitted_packets {
-            server
-                .with_scope(|mut scope| {
-                    scope
-                        .input(&mut work)
-                        .recv_packet(&mut packet, now, |_: &rustls::Error| {})
-                })
-                .expect("server must receive the emitted client packet");
-        }
-        let (emitted_packets, send_result) =
-            server.with_scope(|mut scope| scope.output().send(now));
-        send_result.expect("warmed server journals must admit replacement control traffic");
-        for mut packet in emitted_packets {
-            client
-                .with_scope(|mut scope| {
-                    scope
-                        .input(&mut work)
-                        .recv_packet(&mut packet, now, |_: &rustls::Error| {})
-                })
-                .expect("client must receive the emitted server packet");
-        }
-        assert_eq!(
-            client.with_scope(|mut scope| scope.recovery().try_loss(now)),
-            Ok(())
-        );
-        assert_eq!(
-            server.with_scope(|mut scope| scope.recovery().try_loss(now)),
-            Ok(())
-        );
-    }
-
-    assert!(
-        client.view().path().has_token(&next),
-        "the replacement generation survives the delayed old ACK end to end"
-    );
-    assert!(client.view().lifecycle().is_ready() && server.view().lifecycle().is_ready());
 }

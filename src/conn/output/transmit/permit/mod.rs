@@ -7,7 +7,7 @@ use crate::{
         output::transmit::{builder, packet::seals},
         stream::state::{receive, streams, transmit::queue},
     },
-    proto::recovery::numbers,
+    proto::recovery::{numbers, pmtud},
     stream::{self, send},
     wire::packet::{header, header::widths, kind},
 };
@@ -97,7 +97,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
 
     pub(crate) fn is_isolated(&self) -> bool {
         let conn = self.connection;
-        conn.egress.lifecycle.state != conn::State::Closed
+        !conn.is_closing()
             && !conn.egress.derived.is_pending()
             && !receive::Status::new(&conn.streams.state).has_ctrl()
             && !conn
@@ -106,7 +106,6 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
                 .has_sendable(&conn.streams.local_initiated, conn.streams.local())
             && conn.handshake.keys.has_write()
             && !conn.egress.recovery.probe.allowance.is_armed()
-            && conn.egress.lifecycle.pending_close.is_none()
             && (!conn.handshake.crypto.has_sendable(conn::Epoch::Initial)
                 && !conn.receive.packet_numbers.has_ack::<kind::Initial>())
             && (!conn.handshake.crypto.has_sendable(conn::Epoch::Handshake)
@@ -115,7 +114,17 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
             && !conn.handshake.crypto.has_sendable(conn::Epoch::Application)
             && !conn.streams.transmit.deliveries().has_retry()
             && !conn.streams.transmit.map().view().has_pending()
-            && conn.egress.cc.metrics().next_probe().is_none()
+            && self.next_probe().is_none()
+    }
+
+    pub(in crate::conn::output::transmit) fn next_probe(&self) -> Option<pmtud::Probe> {
+        let conn = self.connection;
+        let metrics = conn.egress.cc.metrics();
+        let remaining = metrics
+            .window()
+            .saturating_sub(conn.egress.recovery.in_flight()?);
+        let ceiling = remaining.min(u64::from(conn.path.output().max_payload().get()));
+        metrics.next_probe(NonZero::new(ceiling as u16)?)
     }
 
     pub(in crate::conn::output::transmit) fn can_track(&self) -> bool {
@@ -152,7 +161,8 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         }
         let normal = max
             .get()
-            .min(conn.egress.cc.metrics().current_mtu() as usize);
+            .min(conn.egress.cc.metrics().current_mtu() as usize)
+            .min(usize::from(conn.path.output().max_payload().get()));
         let limit = NonZero::new(self.send_limit(normal)?)?;
         let flight = conn.egress.recovery.in_flight()?;
         if !conn.egress.cc.allows_send(now, flight) {
@@ -217,7 +227,9 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         let width = widths::Width::from_pn(number.encoding());
         let body = header::Payload::new(payload + 1, width).get();
         let packet = 1 + conn.path.peer.id().len() + width.get() + body + conn::TAG_LEN;
-        let normal = max.min(conn.egress.cc.metrics().current_mtu() as usize);
+        let normal = max
+            .min(conn.egress.cc.metrics().current_mtu() as usize)
+            .min(usize::from(conn.path.output().max_payload().get()));
         let allowed = self.send_limit(normal)?;
         (packet <= allowed).then_some(packet)
     }
@@ -226,8 +238,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         let Some(flight) = self.connection.egress.recovery.in_flight() else {
             return false;
         };
-        self.connection.egress.activity.amp_credit() != 0
-            && self.connection.egress.cc.allows_send(now, flight)
+        self.amplification_credit() != 0 && self.connection.egress.cc.allows_send(now, flight)
     }
 
     pub(in crate::conn::output::transmit) fn plan_crypto<
@@ -241,7 +252,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         let intent = if conn.handshake.crypto.has_sendable(K::EPOCH) && self.can_send(now) {
             CryptoIntent::CongestionControlledPacket
         } else if conn.receive.packet_numbers.is_ack_ready::<K>(now)
-            && conn.egress.activity.amp_credit() != 0
+            && self.amplification_credit() != 0
         {
             CryptoIntent::AckOnly
         } else {
@@ -288,8 +299,8 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
 
     pub(crate) fn has_pending(&self) -> bool {
         let conn = self.connection;
-        if conn.egress.lifecycle.state == conn::State::Closed {
-            return false;
+        if conn.is_closing() {
+            return self.has_close();
         }
         if self.has_close() || conn.egress.recovery.probe.allowance.is_armed() {
             return true;
@@ -322,7 +333,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
                 || conn.handshake.crypto.has_sendable(conn::Epoch::Application)
                 || conn.streams.transmit.deliveries().has_retry()
                 || conn.streams.transmit.map().view().has_pending()
-                || conn.egress.cc.metrics().next_probe().is_some())
+                || self.next_probe().is_some())
     }
 
     pub(crate) fn deadline(&self, now: time::Instant) -> Option<time::Instant> {
@@ -330,13 +341,13 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         if !self.has_pending() {
             return None;
         }
-        if let Some(close) = conn.egress.lifecycle.pending_close.as_ref() {
+        if let Some(close) = conn.egress.lifecycle.close() {
             return self
                 .send_limit(conn.egress.cc.metrics().current_mtu() as usize)
                 .and_then(|max| terminal::admit(conn, close, max))
                 .map(|_| now);
         }
-        let amplify = conn.egress.activity.amp_credit() != 0;
+        let amplify = self.amplification_credit() != 0;
         if conn.egress.recovery.probe.allowance.is_armed()
             && conn
                 .egress
@@ -389,8 +400,20 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         earliest(Some(conn.egress.cc.deadline(now)), ack_at)
     }
 
+    fn amplification_credit(&self) -> u64 {
+        let activity = &self.connection.egress.activity;
+        if activity.peer_address_validated {
+            return u64::MAX;
+        }
+        activity.amp_credit().min(
+            activity
+                .outer_credit()
+                .saturating_sub(self.connection.path.output().max_overhead() as u64),
+        )
+    }
+
     pub(crate) fn send_limit(&self, request: usize) -> Option<usize> {
-        let credit = self.connection.egress.activity.amp_credit();
+        let credit = self.amplification_credit();
         let ceiling = if credit < request as u64 {
             credit as usize
         } else {
@@ -402,7 +425,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
     fn has_close(&self) -> bool {
         let conn = self.connection;
         let keys = &conn.handshake.keys;
-        conn.egress.lifecycle.pending_close.is_some()
+        conn.egress.lifecycle.close().is_some()
             && (keys.has_write()
                 || keys.long.handshake().is_some()
                 || keys.long.initial().is_some())
@@ -483,7 +506,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
                         .has_sendable(&conn.streams.local_initiated, conn.streams.local())
                     || conn.handshake.crypto.has_sendable(conn::Epoch::Application)
                     || self.has_stream()
-                    || conn.egress.cc.metrics().next_probe().is_some())
+                    || self.next_probe().is_some())
                 && fit::has_app(self, now))
     }
 }

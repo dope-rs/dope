@@ -1,9 +1,9 @@
 use std::time;
 
-use crate::{client, runtime::brand};
+use crate::{client, conn, conn::id, runtime::brand};
 
 pub(in crate::client::life) enum Retry {
-    Dormant(Option<client::AttemptState>),
+    Dormant(client::AttemptState),
     Scheduled {
         next: client::AttemptState,
         at: time::Instant,
@@ -11,26 +11,29 @@ pub(in crate::client::life) enum Retry {
 }
 
 impl Retry {
-    pub(in crate::client::life) fn new<B: client::Backoff>(
-        backoff: &B,
+    pub(in crate::client::life) fn try_new<'scope, B: client::Backoff>(
+        backoff: &'scope B,
         enabled: bool,
-        scope: brand::Token<'_>,
+        scope: brand::Token<'scope>,
+        domain: id::Domain,
         slot: client::SlotId,
         previous: client::AttemptState,
         restart: bool,
         seen: time::Instant,
-    ) -> Self {
-        let Some(next) = previous.successor(restart) else {
-            return Self::Dormant(None);
-        };
-        let state = next.state();
-        let at = enabled.then(|| {
-            let delay = backoff.retry_after(next.retry_scope(scope.reborrow(), slot, seen));
-            seen.checked_add(delay)
-        });
-        match at.flatten() {
-            Some(at) => Self::Scheduled { next: state, at },
-            None => Self::Dormant(Some(state)),
+    ) -> Result<Self, client::protocol::Failure> {
+        if !enabled {
+            return Ok(Self::Dormant(previous));
         }
+        let attempt = previous.id(domain, slot);
+        let next = previous
+            .try_successor(restart)
+            .map_err(|cause| client::protocol::Failure::Exhausted { attempt, cause })?;
+        let delay = backoff.retry_after(next.retry_scope(scope, domain, slot));
+        let at = conn::Timing::try_deadline(seen, delay)
+            .map_err(|cause| client::protocol::Failure::Timing { attempt, cause })?;
+        Ok(Self::Scheduled {
+            next: next.state(),
+            at,
+        })
     }
 }

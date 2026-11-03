@@ -358,9 +358,13 @@ impl<D: buffer::raw::Segment> Occupied<'_, D> {
         use o3::depot::capacity::Shortage;
         use std::num::NonZero;
         let (_, entry, mut chunks, pending, budget, buffers) = self.split();
-        let Ok(open) = entry.open() else {
-            return Ok(());
-        };
+        let open = entry.open().map_err(Error::Discarded)?;
+        budget
+            .admit(Charge::for_copy(data))
+            .map_err(|error| match error {
+                budget::Denied::Blocked => Error::Capacity,
+                budget::Denied::TooLarge => Error::ValueOutOfRange,
+            })?;
         let Some(append) = Append::new(open, pending, data.len()) else {
             return Err(Error::ValueOutOfRange);
         };

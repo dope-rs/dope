@@ -11,7 +11,7 @@ pub(in crate::conn) trait Reservation: Sized {
     /// The append owner exposes only its suffix and cannot shorten the retained prefix.
     fn out(&mut self) -> write::Append<'_>;
     fn limit(&self) -> usize;
-    fn validate(self) -> Result<Self::Validated, Self>;
+    fn validate(self, overhead: usize) -> Result<Self::Validated, Self>;
     fn publish<T, U>(packet: Self::Validated, state: T, commit: impl FnOnce(T) -> U) -> U;
     fn rollback(self);
 }
@@ -79,10 +79,12 @@ impl<'sink> Fresh<'sink> {
     pub(super) fn new(
         sink: &'sink mut Vec<Vec<u8>>,
         limit: usize,
+        overhead: usize,
     ) -> Result<Self, packet::Allocation> {
-        let packet = Vec::try_new(limit).map_err(|error| packet::Allocation::Payload {
+        let outer = packet::outer_limit(limit, overhead)?;
+        let packet = Vec::try_new(outer).map_err(|error| packet::Allocation::Payload {
             error,
-            requested: limit,
+            requested: outer,
         })?;
         Ok(Self {
             sink,
@@ -96,13 +98,15 @@ impl<'sink, 'packet> Single<'sink, 'packet> {
     pub(super) fn new(
         sink: &'sink mut packet::Slot<'packet>,
         limit: usize,
+        overhead: usize,
     ) -> Result<Self, packet::Allocation> {
         sink.packet.clear();
+        let outer = packet::outer_limit(limit, overhead)?;
         sink.packet
-            .try_grow(limit)
+            .try_grow(outer)
             .map_err(|error| packet::Allocation::Payload {
                 error,
-                requested: limit,
+                requested: outer,
             })?;
         Ok(Self { sink, limit })
     }
@@ -119,9 +123,10 @@ impl<'sink> Reservation for Batch<'sink> {
         self.limit
     }
 
-    fn validate(self) -> Result<Self::Validated, Self> {
+    fn validate(self, overhead: usize) -> Result<Self::Validated, Self> {
         let bytes = self.sink.buf.len() - self.start;
-        if bytes <= self.limit
+        if bytes > overhead
+            && bytes <= self.limit + overhead
             && let Ok(bytes) = u32::try_from(bytes)
             && let Some(bytes) = num::NonZero::<u32>::new(bytes)
         {
@@ -155,15 +160,15 @@ impl<'sink> Reservation for Gso<'sink> {
         self.limit
     }
 
-    fn validate(self) -> Result<Self::Validated, Self> {
+    fn validate(self, overhead: usize) -> Result<Self::Validated, Self> {
         let bytes = self.sink.len() - self.start;
         let width = self
             .sink
             .segment_size()
             .or_else(|| u16::try_from(bytes).ok().and_then(num::NonZero::<u16>::new));
         let packets = num::NonZero::<u8>::MIN.checked_add(self.sink.packets() as u8);
-        if bytes != 0
-            && bytes <= self.limit
+        if bytes > overhead
+            && bytes <= self.limit + overhead
             && let Some(width) = width
             && let Some(packets) = packets
         {
@@ -222,8 +227,8 @@ impl<'sink> Reservation for Fresh<'sink> {
         self.limit
     }
 
-    fn validate(self) -> Result<Self::Validated, Self> {
-        if !self.packet.is_empty() && self.packet.len() <= self.limit {
+    fn validate(self, overhead: usize) -> Result<Self::Validated, Self> {
+        if self.packet.len() > overhead && self.packet.len() <= self.limit + overhead {
             return Ok(ValidFresh {
                 sink: self.sink,
                 packet: self.packet,
@@ -254,8 +259,8 @@ impl<'sink, 'packet> Reservation for Single<'sink, 'packet> {
         self.limit
     }
 
-    fn validate(self) -> Result<Self::Validated, Self> {
-        if !self.sink.packet.is_empty() && self.sink.packet.len() <= self.limit {
+    fn validate(self, overhead: usize) -> Result<Self::Validated, Self> {
+        if self.sink.packet.len() > overhead && self.sink.packet.len() <= self.limit + overhead {
             return Ok(ValidSingle { sink: self.sink });
         }
         Err(self)

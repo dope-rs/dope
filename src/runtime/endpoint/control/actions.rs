@@ -13,6 +13,41 @@ use dgram::Dgram as _;
 use mux::{handler, protocol};
 use protocol::{control, dgram};
 
+/// Splits the callback owner from the native registry that resumes its input.
+pub(crate) fn split_ready<'a, 'd, const ID: u8, H, B, A, M, Q>(
+    ep: pin::Pin<&'a mut endpoint::Endpoint<'d, ID, H, B, A, M, Q>>,
+    now: time::Instant,
+) -> (
+    pin::Pin<&'a mut H>,
+    impl FnMut(id::Handle<id::Driver<'d>, ID>) -> Result<(), errors::Access> + 'a,
+)
+where
+    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
+    B: Storage<'d, resident::Shared<'d>>,
+    M: owner::Binding<'d, ID>,
+    Q: buffer::Residency + buffer::raw::Source,
+{
+    let mux = ep.project().udp.handler_mut().mux_mut().project();
+    (mux.handler, move |handle| mux.state.resume(handle, now))
+}
+
+pub(crate) fn next_app<'d, const ID: u8, H, B, M, Q, T, const PLANE: usize>(
+    ep: pin::Pin<&mut endpoint::Endpoint<'d, ID, H, B, endpoint::Idle, M, Q>>,
+    now: time::Instant,
+    op: impl for<'handler, 'scope> FnOnce(
+        pin::Pin<&'handler mut H>,
+        mux::app::Connection<'scope, H::Connection, ID, B, resident::Shared<'d>, id::Driver<'d>>,
+    ) -> T,
+) -> Option<T>
+where
+    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
+    B: Storage<'d, resident::Shared<'d>>,
+    M: owner::Binding<'d, ID>,
+    Q: buffer::Residency + buffer::raw::Source,
+{
+    mux::app::next::<_, _, ID, _, _, PLANE>(ep.project().udp.handler_mut().mux_mut(), now, op)
+}
+
 pub(crate) fn with_connection<
     'd,
     const ID: u8,

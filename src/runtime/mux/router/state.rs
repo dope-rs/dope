@@ -104,7 +104,7 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
                 let Some(key) = slots.bind(self.binding.domain, handle) else {
                     return Err((errors::Access::InvalidHandle, value));
                 };
-                if slots.get(key).conn.view().lifecycle().is_closed() {
+                if slots.get(key).conn.view().lifecycle().is_closing() {
                     return Err((errors::Access::Closed, value));
                 }
                 let result = f(slots.access::<true>(key, brand.reborrow()), value);
@@ -187,6 +187,19 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
             .map_err(|(error, ())| error)
     }
 
+    /// Resumes input after the owner consumes this exact connection's ready event.
+    pub(in crate::runtime) fn resume(
+        &mut self,
+        handle: id::Handle<A::Identity, DOMAIN>,
+        now: time::Instant,
+    ) -> Result<(), errors::Access> {
+        self.external(handle, now, (), |mut slot, ()| {
+            *slot.notified_established = true;
+            slot.conn.events().mark(conn::Effects::NOTIFY);
+        })
+        .map_err(|(error, ())| error)
+    }
+
     /// Settles handshake admission, then projects connection deadlines and readiness.
     pub(in crate::runtime::mux) fn reconcile<'id>(
         brand: brand::Token<'_>,
@@ -196,7 +209,7 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
         now: time::Instant,
         output: Option<bool>,
     ) {
-        let (dirty, notify, flush, app, retry) = {
+        let (dirty, notify, flush, app, retry, input) = {
             let mut slot = slots.access::<false>(key, brand.reborrow());
             let retry = slot.conn.events().retry(now);
             if slot.conn.view().lifecycle().is_closing()
@@ -213,12 +226,19 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
             } else {
                 dirty.ready()
             };
+            let input = (app.is_some() || dirty.contains(conn::Effects::NOTIFY)).then(|| {
+                let events = slot.conn.events();
+                (events.has_stream(), events.has_datagram())
+            });
             let active = if dirty.contains(conn::Effects::ROUTING) {
                 slot.conn.routing().peer()
             } else {
                 None
             };
             let notify = dirty.contains(conn::Effects::NOTIFY).then(|| {
+                if slot.conn.view().lifecycle().is_closing() {
+                    return slot.connection.is_some();
+                }
                 let notify = {
                     let events = slot.conn.events();
                     events.has_datagram() || events.has_stream()
@@ -245,9 +265,12 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
             {
                 *slot.peer_addr = active;
             }
-            (dirty, notify, flush, app, retry)
+            (dirty, notify, flush, app, retry, input)
         };
 
+        if flush.is_some() || dirty.contains(conn::Effects::ROUTING) {
+            slots.reset_flush();
+        }
         if dirty.contains(conn::Effects::ROUTING)
             && let Some(routing) = slots.routing(brand.reborrow(), key, |slot, resets, tokens| {
                 Self::sync_tokens(slot, resets, tokens)
@@ -258,10 +281,17 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
         Self::sync_queue::<{ mux::NOTIFY_QUEUE }>(slots, key, notify);
         Self::sync_queue::<{ mux::FLUSH_QUEUE }>(slots, key, flush);
         Self::sync_queue::<{ mux::APPLICATION_QUEUE }>(slots, key, app);
+        if let Some((stream, datagram)) = input {
+            let ready = slots.entry(key).is_linked::<{ mux::APPLICATION_QUEUE }>();
+            Self::sync_queue::<{ mux::STREAM_QUEUE }>(slots, key, Some(ready && stream));
+            Self::sync_queue::<{ mux::DATAGRAM_QUEUE }>(slots, key, Some(ready && datagram));
+        }
         if let Some(update) = dirty.deadline() {
             slots.refresh(key, now, update, retry);
         }
-        if dirty.contains(conn::Effects::EARLY_DATA_REJECTED) {
+        if dirty.contains(conn::Effects::EARLY_DATA_REJECTED)
+            && !slots.get(key).conn.view().lifecycle().is_closing()
+        {
             slots
                 .access::<false>(key, brand.reborrow())
                 .conn
@@ -313,7 +343,7 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
         }
     }
 
-    pub(in crate::runtime::mux) fn run_selected<'id, R, const QUEUED: bool>(
+    pub(in crate::runtime::mux) fn run_selected<'id, R, const QUEUED: bool, const PLANE: usize>(
         brand: brand::Token<'_>,
         slots: &mut registry::Scope<'_, 'id, C, DOMAIN, B, A::Send, A::Session>,
         key: registry::Key<'id>,
@@ -325,12 +355,19 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
         let result = {
             let mut entry = slots.entry(key);
             if QUEUED {
-                entry.unlink::<{ mux::APPLICATION_QUEUE }>();
+                entry.unlink::<PLANE>();
+                if PLANE == mux::APPLICATION_QUEUE {
+                    entry.unlink::<{ mux::STREAM_QUEUE }>();
+                    entry.unlink::<{ mux::DATAGRAM_QUEUE }>();
+                }
             }
             let slot = entry.access::<true>(brand.reborrow());
+            let Some(app) = slot.connection.as_mut() else {
+                unreachable!("application");
+            };
             op(app::Connection::new(
                 handle,
-                handler::Slot::new(slot.connection, slot.conn),
+                handler::Slot::new(app, slot.conn),
             ))
         };
         Self::reconcile(brand, slots, key, binding, now, None);

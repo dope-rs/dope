@@ -67,7 +67,7 @@ impl Records {
 
 pub(in crate::conn) struct Builder<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> {
     connection: &'a mut conn::Machine<DOMAIN, B, D>,
-    destination: &'a transmit::Policy,
+    destination: transmit::Destination,
     controls: &'a mut array::Vec<encode::Written, { conn::PACKET_CONTROL_CAPACITY }>,
     streams: &'a mut array::Vec<Entry, { conn::PACKET_STREAM_CAPACITY }>,
     crypto: &'a mut Option<tx::Commit>,
@@ -81,7 +81,7 @@ enum Selection {
 impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a, DOMAIN, B, D> {
     pub(in crate::conn::output::transmit) fn new(
         conn: &'a mut conn::Machine<DOMAIN, B, D>,
-        target: &'a transmit::Policy,
+        target: transmit::Destination,
         records: &'a mut Records,
     ) -> Self {
         records.controls = array::Vec::new();
@@ -94,21 +94,6 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a,
             streams: &mut records.streams,
             crypto: &mut records.crypto,
         }
-    }
-
-    fn target(&self, route: path::OutputRoute) -> Option<transmit::Destination> {
-        Self::target_for(self.connection, self.destination, route)
-    }
-
-    fn target_for(
-        conn: &conn::Machine<DOMAIN, B, D>,
-        policy: &transmit::Policy,
-        route: path::OutputRoute,
-    ) -> Option<transmit::Destination> {
-        conn.path
-            .output()
-            .target(route)
-            .and_then(|routed| policy.resolve(routed))
     }
 
     fn limit<K: kind::Long + numbers::AckSpace>(&self, max: usize, pn_len: u8) -> usize {
@@ -406,11 +391,11 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a,
         commit.flags.set_flight(elicit || padded);
         commit.flags.ack = ack;
         commit.flags.set_probe(PTO_PROBE);
-        let Some(target) = self.target(commit.path.route) else {
+        let target = self.destination;
+        target.prefix(dst).inspect_err(|_| {
             frames.clear();
-            self.connection.scratch.frames = frames;
-            return Ok(None);
-        };
+            self.connection.scratch.frames = mem::take(&mut frames);
+        })?;
         let prepared =
             match pending::Packet::try_new(journal::Schedule::new(self).finish(), commit, target) {
                 Ok(prepared) => prepared,
@@ -485,5 +470,3 @@ unsafe impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> jour
         }
     }
 }
-
-const _: () = assert!(mem::size_of::<encode::Written>() == 24);

@@ -18,6 +18,7 @@ where
     slot: Slot<'scope, H::Connection, DOMAIN, B, D>,
     handle: id::Handle<I, DOMAIN>,
     at: Observation<I>,
+    notified: &'scope mut bool,
 }
 
 impl<'scope, H, const DOMAIN: u8, B, D, I> Event<'scope, H, DOMAIN, B, D, I>
@@ -32,13 +33,20 @@ where
         slot: Slot<'scope, H::Connection, DOMAIN, B, D>,
         handle: id::Handle<I, DOMAIN>,
         at: Observation<I>,
+        notified: &'scope mut bool,
     ) -> Self {
         Self {
             handler,
             slot,
             handle,
             at,
+            notified,
         }
+    }
+
+    /// The client retains this notification until its bounded callback drain.
+    pub(crate) fn defer(&mut self) {
+        *self.notified = false;
     }
 }
 

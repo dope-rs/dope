@@ -6,7 +6,7 @@ use crate::{
             control::encode,
             delivery, journals,
             recovery::epochs,
-            transmit::{Destination, Policy, builder, packet::plan::Plan},
+            transmit::{builder, packet::plan::Plan},
         },
         stream::state::transmit,
         wire::{crypto::tx, path, tls},
@@ -81,14 +81,6 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Input<'a, D
 
     pub(in crate::conn::output::transmit::builder) fn controls(&self) -> &[encode::Written] {
         self.controls.as_slice()
-    }
-
-    pub(in crate::conn::output::transmit::builder) fn target(
-        &self,
-        policy: &Policy,
-        route: path::OutputRoute,
-    ) -> Option<Destination> {
-        builder::Builder::<DOMAIN, B, D>::target_for(self.connection, policy, route)
     }
 
     pub(in crate::conn::output::transmit::builder) fn into_scratch(self) -> &'a mut conn::Scratch {
@@ -172,7 +164,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Records<'a,
             let space = epoch.bind_mut(&mut conn.egress.recovery.spaces);
             space.time_of_last_ack_eliciting = Some(now);
         }
-        conn.egress.activity.commit_amp(amp);
+        let outer_bytes = conn.egress.activity.commit_amp(amp);
         let bytes = plan.bytes as u64;
         let flight = plan.is_tracked() && plan.flags.is_in_flight();
         let probe = if flight {
@@ -197,20 +189,23 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Records<'a,
             conn.egress.activity.ack_eliciting_sent_since_last_receive = true;
         }
         if plan.flags.is_close() {
-            conn.egress.lifecycle.pending_close = None;
-            conn.egress.lifecycle.state = crate::conn::State::Closed;
+            conn.egress.lifecycle.close_sent();
         }
         if epoch == crate::conn::Epoch::Application && included {
             conn.handshake.keys.confirm();
         }
-        let effects = conn
-            .path
-            .transmit(plan.path.route.path(), plan.bytes, &conn.control);
+        let effects = conn.path.transmit(
+            plan.path.route.path(),
+            plan.bytes,
+            outer_bytes,
+            &conn.control,
+        );
         conn.peer.reconcile.merge(effects);
         if queued {
             conn.egress.datagrams.pop_front();
         }
         if epoch == conn::Epoch::Handshake
+            && !conn.is_closing()
             && matches!(conn.peer.local, Initiator::Client)
             && conn.handshake.keys.long.initial().is_some()
         {
@@ -377,6 +372,7 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journals
                     &mut *context.control,
                     &mut context.path.local,
                     ctrl.as_mut_slice(),
+                    writer.bytes(),
                 )
             };
             writer.push_control(slot, handle);

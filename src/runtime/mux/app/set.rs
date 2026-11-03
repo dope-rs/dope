@@ -31,6 +31,7 @@ pub(in crate::runtime::mux) struct Selected<
     const DOMAIN: u8,
     B: stream::Recv,
     const QUEUED: bool,
+    const PLANE: usize,
 > {
     set: Set<'a, 'id, A, H, DOMAIN, B>,
     key: registry::Key<'id>,
@@ -57,6 +58,16 @@ where
             now,
         }
     }
+
+    pub(super) fn next_in<const PLANE: usize>(
+        self,
+    ) -> Option<Selected<'a, 'id, A, H, DOMAIN, B, true, PLANE>> {
+        let key = self.slots.front::<PLANE>()?;
+        if self.slots.get(key).conn.view().lifecycle().is_closing() {
+            return None;
+        }
+        Some(Selected { set: self, key })
+    }
 }
 
 impl<'a, 'id, A, H, const DOMAIN: u8, B> app::Set<H, DOMAIN, B, A::Send, A::Identity>
@@ -66,19 +77,15 @@ where
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
     B: stream::Recv,
 {
-    type Ready = Selected<'a, 'id, A, H, DOMAIN, B, true>;
-    type Exact = Selected<'a, 'id, A, H, DOMAIN, B, false>;
+    type Ready = Selected<'a, 'id, A, H, DOMAIN, B, true, { mux::APPLICATION_QUEUE }>;
+    type Exact = Selected<'a, 'id, A, H, DOMAIN, B, false, { mux::APPLICATION_QUEUE }>;
 
     fn has_ready(&self) -> bool {
         !self.slots.is_empty_in::<{ mux::APPLICATION_QUEUE }>()
     }
 
     fn next(self) -> Option<Self::Ready> {
-        let key = self.slots.front::<{ mux::APPLICATION_QUEUE }>()?;
-        if self.slots.get(key).conn.view().lifecycle().is_closing() {
-            return None;
-        }
-        Some(Selected { set: self, key })
+        self.next_in::<{ mux::APPLICATION_QUEUE }>()
     }
 
     fn try_select(
@@ -98,8 +105,9 @@ where
     }
 }
 
-impl<'a, 'id, A, H, const DOMAIN: u8, B, const QUEUED: bool>
-    app::Selected<H, DOMAIN, B, A::Send, A::Identity> for Selected<'a, 'id, A, H, DOMAIN, B, QUEUED>
+impl<'a, 'id, A, H, const DOMAIN: u8, B, const QUEUED: bool, const PLANE: usize>
+    app::Selected<H, DOMAIN, B, A::Send, A::Identity>
+    for Selected<'a, 'id, A, H, DOMAIN, B, QUEUED, PLANE>
 where
     A: auth::Mode<DOMAIN>,
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
@@ -111,7 +119,7 @@ where
             app::Connection<'scope, H::Connection, DOMAIN, B, A::Send, A::Identity>,
         ) -> R,
     ) -> R {
-        router::State::<A, H::Connection, DOMAIN, B>::run_selected::<_, QUEUED>(
+        router::State::<A, H::Connection, DOMAIN, B>::run_selected::<_, QUEUED, PLANE>(
             self.set.brand,
             &mut self.set.slots,
             self.key,

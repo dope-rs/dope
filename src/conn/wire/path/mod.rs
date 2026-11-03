@@ -1,4 +1,4 @@
-use std::{net, num, time};
+use std::{num, time};
 
 use o3::depot::capacity;
 
@@ -13,6 +13,7 @@ pub(crate) mod view;
 
 use crate::conn;
 use crate::conn::output::control;
+use crate::proto::path::Peer;
 use crate::wire::frame::decode;
 use crate::wire::packet::{cid, header};
 
@@ -70,15 +71,20 @@ impl OutputRoute {
 #[derive(Clone, Copy, Debug)]
 pub enum Address {
     Capacity {
-        address: net::SocketAddr,
+        address: Peer,
         reason: capacity::Reason,
     },
     Keys {
-        address: net::SocketAddr,
+        address: Peer,
         next: u64,
     },
     Bytes {
-        address: net::SocketAddr,
+        address: Peer,
+        received: u64,
+        bytes: usize,
+    },
+    OuterBytes {
+        address: Peer,
         received: u64,
         bytes: usize,
     },
@@ -86,14 +92,14 @@ pub enum Address {
         now: time::Instant,
         period: time::Duration,
     },
+    Cid {
+        address: Peer,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum Error {
-    Policy {
-        active: net::SocketAddr,
-        source: net::SocketAddr,
-    },
+    Policy { active: Peer, source: Peer },
     Address(Address),
     Peer(capacity::Reason),
     Probe(probe::Error),
@@ -104,6 +110,15 @@ pub(in crate::conn) enum Migration {
     Pending,
     Committed,
 }
+
+pub(in crate::conn) enum Admission {
+    Validate,
+    Respond,
+    Preserve,
+}
+
+/// A newer non-probing packet selected under the original packet owner.
+pub(in crate::conn) struct Intent(header::Number);
 
 impl State {
     pub(in crate::conn) fn new(setup: setup::Setup<'_>) -> Self {
@@ -139,7 +154,7 @@ impl State {
         view::Output::new(self)
     }
 
-    pub(in crate::conn) fn bind(&mut self, address: net::SocketAddr) {
+    pub(in crate::conn) fn bind(&mut self, address: Peer) {
         if self.address.active.is_none() {
             self.address.active = Some(address);
         }
@@ -147,13 +162,15 @@ impl State {
 
     pub(in crate::conn) fn begin(
         &mut self,
-        address: net::SocketAddr,
+        address: Peer,
         bytes: usize,
-        token: Option<[u8; 8]>,
+        outer_bytes: usize,
+        token: Option<[[u8; 8]; 2]>,
     ) {
         self.address.ingress = Some(state::Ingress {
             address,
             bytes,
+            outer_bytes,
             challenge: token,
         });
     }
@@ -174,19 +191,31 @@ impl State {
         control: &mut control::Pending,
         now: time::Instant,
         pto: time::Duration,
-    ) -> conn::Ingress<Result<(), Error>> {
+        admission: Admission,
+        response: bool,
+    ) -> conn::Ingress<Result<Option<Key>, Error>> {
         let mut effects = conn::Effects::none();
         let result = (|| {
             let Some(source) = self.address.ingress else {
-                return Ok(());
+                return Ok(None);
             };
-            let Some(active) = self.address.active else {
-                self.address.active = Some(source.address);
-                effects.merge(conn::Effects::from_bits(conn::Effects::ROUTING));
-                return Ok(());
+            let active = match self.address.active {
+                Some(active) => active,
+                None => {
+                    self.address.active = Some(source.address);
+                    effects.merge(conn::Effects::from_bits(conn::Effects::ROUTING));
+                    source.address
+                }
             };
             if source.address == active {
-                return Ok(());
+                return if response {
+                    self.address
+                        .try_observe(active, 0, 0)
+                        .map(Some)
+                        .map_err(Error::Address)
+                } else {
+                    Ok(None)
+                };
             }
             if !self.address.allows(active, source.address) {
                 return Err(Error::Policy {
@@ -194,45 +223,101 @@ impl State {
                     source: source.address,
                 });
             }
-            let path = self
-                .address
-                .try_observe(source.address, source.bytes)
-                .map_err(Error::Address)?;
-            if self
+            if matches!(admission, Admission::Preserve) {
+                return Ok(None);
+            }
+            let candidate = self
                 .address
                 .candidate
-                .is_some_and(|item| item.path() == path)
-            {
+                .and_then(|item| self.address.get(item.path()))
+                .is_some_and(|path| path.address == source.address)
+                && self.address.candidate.is_some_and(|item| {
+                    !item.is_stopped() || control.probe().has_response(item.path())
+                });
+            if matches!(admission, Admission::Respond) {
+                let previous = self
+                    .address
+                    .previous
+                    .and_then(|item| self.address.get(item.path()))
+                    .is_some_and(|path| path.address == source.address);
+                if !candidate && !previous {
+                    // A response cannot borrow a CID owned by another path.
+                    // The matched receipt was already settled before this
+                    // bounded route admission; this rejects only the reply.
+                    return Err(Error::Address(Address::Cid {
+                        address: source.address,
+                    }));
+                }
+            }
+            if candidate || matches!(admission, Admission::Respond) {
+                let path = self
+                    .address
+                    .try_observe(source.address, source.bytes, source.outer_bytes)
+                    .map_err(Error::Address)?;
                 effects.merge(conn::Effects::from_bits(conn::Effects::TRANSMIT));
-                return Ok(());
+                return Ok(Some(path));
             }
             let Some(data) = source.challenge else {
-                return Ok(());
+                return if response {
+                    Err(Error::Address(Address::Cid {
+                        address: source.address,
+                    }))
+                } else {
+                    Ok(None)
+                };
             };
             let deadline = now
                 .checked_add(pto)
                 .ok_or(Error::Address(Address::Deadline { now, period: pto }))?;
-            let next = state::Candidate::new(path, deadline);
-            let old = self.address.candidate.map(state::Candidate::path);
-            if old.is_some() {
-                self.peer.try_abandon(control).map_err(Error::Peer)?;
+            let old = self.address.candidate;
+            if old.is_some_and(|item| control.probe().has_response(item.path())) {
+                return Err(Error::Address(Address::Cid {
+                    address: source.address,
+                }));
+            }
+            if let Some(previous) = self.address.previous {
+                if control.probe().has_response(previous.path())
+                    && self
+                        .address
+                        .get(previous.path())
+                        .is_some_and(|path| path.address != active)
+                {
+                    return Err(Error::Address(Address::Cid {
+                        address: source.address,
+                    }));
+                }
+                self.try_expire_previous(previous.path(), control)
+                    .map_err(Error::Peer)?;
                 effects.merge(conn::Effects::from_bits(conn::Effects::TRANSMIT));
             }
-            if let Err(error) = control.queue().try_replace(data, path, old) {
-                if let Some(old) = old {
-                    control.challenges().abandon(old);
-                    self.address.candidate = None;
-                    self.sweep(old, control);
+            if let Some(old) = old {
+                self.peer.try_abandon(control).map_err(Error::Peer)?;
+                control.challenges().abandon(old.path());
+                self.address.candidate = None;
+                self.sweep(old.path(), control);
+                effects.merge(conn::Effects::from_bits(conn::Effects::TRANSMIT));
+            }
+            let path = self
+                .address
+                .try_observe(source.address, source.bytes, source.outer_bytes)
+                .map_err(Error::Address)?;
+            let previous = match self.address.try_observe(active, 0, 0) {
+                Ok(previous) => previous,
+                Err(error) => {
+                    self.sweep(path, control);
+                    return Err(Error::Address(error));
                 }
+            };
+            if let Err(error) = control.queue().try_pair(data, [path, previous]) {
+                self.sweep(path, control);
+                self.sweep(previous, control);
                 return Err(Error::Probe(error));
             }
             self.peer.reserve();
-            self.address.candidate = Some(next);
-            if let Some(old) = old {
-                self.sweep(old, control);
-            }
+            self.address.candidate = Some(state::Candidate::new(path, deadline));
+            self.address.previous = Some(state::Candidate::new(previous, deadline));
             effects.merge(conn::Effects::from_bits(conn::Effects::TRANSMIT));
-            Ok(())
+            Ok(Some(path))
         })();
         conn::Ingress::new(result, effects)
     }
@@ -244,7 +329,7 @@ impl State {
         token: Option<[u8; 8]>,
         control: &mut control::Pending,
     ) -> Result<conn::Effects, capacity::Reason> {
-        let Some(item) = self.address.candidate else {
+        let Some((kind, item)) = self.address.next_validation() else {
             return Ok(conn::Effects::none());
         };
         let Some(deadline) = item.deadline() else {
@@ -254,12 +339,16 @@ impl State {
             return Ok(conn::Effects::none());
         }
         if item.is_expired(now, pto) {
-            return self.try_expire(item.path(), control);
+            return self.try_expire(kind, item.path(), control);
         }
         let Some(data) = token else {
-            return self.try_expire(item.path(), control);
+            return self.try_expire(kind, item.path(), control);
         };
-        let Some(item) = self.address.candidate.as_mut() else {
+        let item = match kind {
+            state::Validation::Candidate => self.address.candidate.as_mut(),
+            state::Validation::Previous => self.address.previous.as_mut(),
+        };
+        let Some(item) = item else {
             return Ok(conn::Effects::none());
         };
         let path = item.path();
@@ -268,7 +357,7 @@ impl State {
                 if item.retry(pto).is_some() {
                     Ok(conn::Effects::from_bits(conn::Effects::TRANSMIT))
                 } else {
-                    self.try_expire(path, control)
+                    self.try_expire(kind, path, control)
                 }
             }
             Err(
@@ -276,26 +365,60 @@ impl State {
                 | probe::Error::Capacity { .. }
                 | probe::Error::Keys { .. }
                 | probe::Error::State { .. },
-            ) => self.try_expire(path, control),
+            ) => self.try_expire(kind, path, control),
         }
     }
 
     fn try_expire(
         &mut self,
+        kind: state::Validation,
         path: Key,
         control: &mut control::Pending,
     ) -> Result<conn::Effects, capacity::Reason> {
-        self.peer.try_abandon(control)?;
-        control.challenges().abandon(path);
-        self.address.candidate = None;
-        self.sweep(path, control);
+        match kind {
+            state::Validation::Candidate => {
+                control.challenges().abandon(path);
+                if control.probe().has_response(path) {
+                    if let Some(item) = self.address.candidate.as_mut() {
+                        item.stop();
+                    }
+                } else {
+                    self.peer.try_abandon(control)?;
+                    self.address.candidate = None;
+                    self.sweep(path, control);
+                }
+            }
+            state::Validation::Previous => self.try_expire_previous(path, control)?,
+        }
         Ok(conn::Effects::from_bits(conn::Effects::TRANSMIT))
+    }
+
+    fn try_expire_previous(
+        &mut self,
+        path: Key,
+        control: &mut control::Pending,
+    ) -> Result<(), capacity::Reason> {
+        // A candidate may still commit after the active path validates or
+        // expires. Retain that route for replies admitted before its commit.
+        if self.address.candidate.is_some() || control.probe().has_response(path) {
+            control.challenges().abandon(path);
+            if let Some(item) = self.address.previous.as_mut() {
+                item.stop();
+            }
+            return Ok(());
+        }
+        self.peer.try_release_previous(control)?;
+        control.challenges().abandon(path);
+        self.address.previous = None;
+        self.sweep(path, control);
+        Ok(())
     }
 
     pub(in crate::conn) fn transmit(
         &mut self,
         path: Option<Key>,
         bytes: usize,
+        outer_bytes: usize,
         control: &control::Pending,
     ) -> conn::Effects {
         'record: {
@@ -309,6 +432,13 @@ impl State {
             {
                 self.peer.use_spare();
             }
+            if self
+                .address
+                .previous
+                .is_some_and(|item| item.path() == path)
+            {
+                self.peer.use_previous();
+            }
             let active = self.address.active;
             let Some(item) = self.address.get_mut(path) else {
                 break 'record;
@@ -317,7 +447,11 @@ impl State {
                 let Some(sent) = item.sent.checked_add(bytes as u64) else {
                     break 'record;
                 };
+                let Some(outer_sent) = item.outer_sent.checked_add(outer_bytes as u64) else {
+                    break 'record;
+                };
                 item.sent = sent;
+                item.outer_sent = outer_sent;
             }
             self.sweep(path, control);
         }
@@ -331,11 +465,16 @@ impl State {
     pub(in crate::conn) fn try_respond(
         &mut self,
         token: [u8; 8],
+        now: time::Instant,
         control: &mut control::Pending,
-    ) -> Result<(), capacity::Reason> {
-        let key = match control.queue().try_respond(token)? {
-            probe::Completion::Unmatched | probe::Completion::Accepted(None) => return Ok(()),
-            probe::Completion::Accepted(Some(key)) => key,
+    ) -> Result<probe::Completion, capacity::Reason> {
+        let result = control.queue().try_respond(token)?;
+        let probe::Completion::Accepted {
+            path: Some(key),
+            expanded,
+        } = result
+        else {
+            return Ok(result);
         };
         if let Some(item) = self
             .address
@@ -343,22 +482,36 @@ impl State {
             .as_mut()
             .filter(|item| item.path() == key)
         {
-            item.validate();
+            if expanded {
+                item.validate();
+            } else {
+                item.expand(now);
+            }
             control.challenges().abandon(key);
         }
-        Ok(())
+        if let Some(path) = self.address.get_mut(key) {
+            path.validated = true;
+        }
+        if self.address.previous.is_some_and(|item| item.path() == key) {
+            self.try_expire_previous(key, control)?;
+        }
+        Ok(result)
     }
 
     /// Only the newest authenticated non-probing 1-RTT packet carries intent.
-    pub(in crate::conn) fn observe(&mut self, number: header::Number) {
+    pub(in crate::conn) fn intent(&self, number: header::Number) -> Option<Intent> {
         if self
             .address
             .highest_non_probing
             .is_some_and(|prior| number <= prior)
         {
-            return;
+            return None;
         }
-        self.address.highest_non_probing = Some(number);
+        Some(Intent(number))
+    }
+
+    pub(in crate::conn) fn observe(&mut self, intent: Intent) {
+        self.address.highest_non_probing = Some(intent.0);
         let ingress = self.ingress().response();
         if let Some(item) = self.address.candidate.as_mut() {
             item.observe(ingress == Some(item.path()));
@@ -370,22 +523,31 @@ impl State {
         &mut self,
         control: &mut control::Pending,
     ) -> Result<Migration, capacity::Reason> {
-        let Some(item) = self.address.candidate.as_ref() else {
+        let Some((path, address)) = self.candidate() else {
             return Ok(Migration::Pending);
         };
-        if !item.is_complete() {
+        if self
+            .peer
+            .try_activate(control, self.address.previous.is_some())?
+            == Migration::Pending
+        {
             return Ok(Migration::Pending);
         }
-        self.peer.try_activate(control)?;
-        let path = item.path();
-        let Some(address) = self.address.get(path).map(|item| item.address) else {
-            return Ok(Migration::Pending);
-        };
+        self.migrate(path, address, control);
+        Ok(Migration::Committed)
+    }
+
+    fn candidate(&self) -> Option<(Key, Peer)> {
+        let item = self.address.candidate.filter(|item| item.is_complete())?;
+        let address = self.address.get(item.path())?.address;
+        Some((item.path(), address))
+    }
+
+    fn migrate(&mut self, path: Key, address: Peer, control: &mut control::Pending) {
         control.challenges().abandon(path);
         self.address.active = Some(address);
         self.address.candidate = None;
         self.sweep(path, control);
-        Ok(Migration::Committed)
     }
 
     fn sweep(&mut self, path: Key, control: &control::Pending) {
@@ -393,6 +555,10 @@ impl State {
             .address
             .candidate
             .is_some_and(|item| item.path() == path)
+            || self
+                .address
+                .previous
+                .is_some_and(|item| item.path() == path)
             || control.probe().has_path(path)
         {
             return;
@@ -411,17 +577,53 @@ impl State {
         update: decode::Notice<cid::Id>,
         retire: decode::Retire,
         control: &mut control::Pending,
-    ) -> Result<(), peer::Error> {
-        self.peer.accept_cid(
+    ) -> Result<Migration, peer::Error> {
+        let previous = self
+            .address
+            .previous
+            .and_then(|item| self.address.get(item.path()))
+            .map(|route| {
+                (
+                    route.address,
+                    *self.peer.previous().unwrap_or_else(|| self.peer.id()),
+                )
+            });
+        let candidate = self.candidate();
+        let migration = self.peer.accept_cid(
             control,
             self.local.active_connection_id_limit,
             update,
             retire,
+            candidate.is_some(),
         )?;
+        if migration == Migration::Committed {
+            let Some((path, address)) = candidate else {
+                unreachable!("candidate")
+            };
+            self.migrate(path, address, control);
+        }
+        let previous = previous
+            .filter(|(address, _)| Some(*address) != self.address.active)
+            .map(|(_, cid)| cid);
+        if let Some(previous) = previous
+            && self.peer.previous().unwrap_or_else(|| self.peer.id()) != &previous
+        {
+            if let Some(path) = self.address.previous.as_mut() {
+                path.stop();
+                let key = path.path();
+                control.challenges().abandon(key);
+                if !control.probe().has_response(key) {
+                    self.address.previous = None;
+                    self.sweep(key, control);
+                }
+            }
+        }
         if self.address.candidate.is_some() {
             self.peer.reserve();
+        } else if previous.is_some() && self.address.previous.is_some() {
+            self.peer.reserve_previous();
         }
-        Ok(())
+        Ok(migration)
     }
 }
 

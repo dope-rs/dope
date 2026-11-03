@@ -54,6 +54,20 @@ impl Budget {
     }
 
     pub(super) fn admit(&mut self, charge: outbound::Charge) -> Result<(), Denied> {
+        match self.check(charge) {
+            Err(Denied::Blocked) => {
+                self.block();
+                Err(Denied::Blocked)
+            }
+            result => result,
+        }
+    }
+
+    pub(super) fn block(&mut self) {
+        self.wake = bounded::U32::exact::<1>();
+    }
+
+    pub(super) fn check(&self, charge: outbound::Charge) -> Result<(), Denied> {
         if !self.fits_limit(charge) {
             return Err(Denied::TooLarge);
         }
@@ -61,7 +75,6 @@ impl Budget {
             || charge.resident_bytes > self.limit.resident.get() - self.used.resident_bytes
             || charge.segments > self.limit.parts.get() - self.used.segments
         {
-            self.wake = bounded::U32::exact::<1>();
             return Err(Denied::Blocked);
         }
         Ok(())

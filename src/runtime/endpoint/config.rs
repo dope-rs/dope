@@ -1,9 +1,10 @@
 use dope::core::driver::settings::errors::Claim;
-use std::num;
+use std::{net, num};
 
 use dope::core::driver::{self, schedule::clock, settings};
 use dope::core::io::datagram::payload;
 use dope::manifold::{self, network::datagram::plan};
+use dope_sys::io::socket::route::selector::PrefixPlan;
 
 use crate::proto::cid::{Rotation, Schedule};
 use crate::proto::datagram::Size;
@@ -26,9 +27,20 @@ pub struct Config {
 #[repr(u8)]
 pub enum Error {
     Capacity(builder::Error),
-    OutgoingBytes { got: usize, min: usize },
+    OutgoingBytes {
+        got: usize,
+        min: usize,
+    },
     Receive(Claim),
-    PacketBytes { got: u32 },
+    PacketBytes {
+        got: u32,
+    },
+    Extent(payload::ExtentError),
+    OutgoingPrefix {
+        packets: usize,
+        bytes: usize,
+        prefix: num::NonZero<u8>,
+    },
     Datagram(manifold::ConfigError),
 }
 
@@ -38,6 +50,7 @@ pub(crate) struct Validated {
     capacity: builder::Plan,
     receive: settings::Datagram,
     packet: Size,
+    framing: Option<(PrefixPlan, num::NonZero<u16>)>,
     cid_rotation: Rotation,
 }
 
@@ -62,13 +75,25 @@ impl Config {
         )
     }
 
-    pub(crate) fn validated(self) -> Result<Validation, Error> {
-        let capacity = builder::Plan::try_new(
-            self.max_conns,
-            self.outgoing_capacity,
-            self.outgoing_bytes_capacity,
-        )
-        .map_err(Error::Capacity)?;
+    pub(crate) fn validated(
+        self,
+        framing: Option<(PrefixPlan, net::SocketAddr)>,
+    ) -> Result<Validation, Error> {
+        let outgoing_bytes = match framing {
+            Some((prefix, _)) => self
+                .outgoing_capacity
+                .checked_mul(usize::from(prefix.extent().get()))
+                .and_then(|extra| self.outgoing_bytes_capacity.checked_add(extra))
+                .ok_or(Error::OutgoingPrefix {
+                    packets: self.outgoing_capacity,
+                    bytes: self.outgoing_bytes_capacity,
+                    prefix: prefix.extent(),
+                })?,
+            None => self.outgoing_bytes_capacity,
+        };
+        let capacity =
+            builder::Plan::try_new(self.max_conns, self.outgoing_capacity, outgoing_bytes)
+                .map_err(Error::Capacity)?;
         if self.outgoing_bytes_capacity < 1200 {
             return Err(Error::OutgoingBytes {
                 got: self.outgoing_bytes_capacity,
@@ -84,6 +109,13 @@ impl Config {
             });
         };
         let bytes = num::NonZero::<u16>::from(packet);
+        let bytes = match framing {
+            Some((prefix, address)) => {
+                payload::try_extent(address, bytes.into(), usize::from(prefix.extent().get()))
+                    .map_err(Error::Extent)?
+            }
+            None => bytes,
+        };
         let receive = settings::Datagram::new(ring, payload::Len::from(bytes));
         let datagram =
             plan::Config::new(capacity.outgoing(), capacity.bytes(), capacity.outgoing())
@@ -93,6 +125,7 @@ impl Config {
                 capacity,
                 receive,
                 packet,
+                framing: framing.map(|(prefix, address)| (prefix, payload::maximum(address))),
                 cid_rotation: self.cid_rotation,
             },
             datagram,
@@ -116,6 +149,10 @@ impl Validated {
 
     pub(crate) const fn packet(self) -> Size {
         self.packet
+    }
+
+    pub(crate) const fn framing(self) -> Option<(PrefixPlan, num::NonZero<u16>)> {
+        self.framing
     }
 
     pub(crate) fn cid_rotation<'d>(

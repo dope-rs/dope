@@ -1,4 +1,4 @@
-use dope::core::driver::schedule::app;
+use dope::core::driver::{life::finish, schedule::app};
 use std::{marker, pin, time};
 
 use o3::buffer::resident;
@@ -101,9 +101,16 @@ impl<
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
     const DOMAIN: u8,
     B: stream::Recv,
-    A: auth::Mode<DOMAIN, Send = resident::Shared<'d>>,
+    A: auth::Mode<DOMAIN, Send = resident::Shared<'d>, Identity = id::Driver<'d>>,
 > Shutdown<'a, 'tls, H, DOMAIN, B, A>
 {
+    /// Completes the same retirement cursor after native ownership is quiescent.
+    pub(crate) fn finish(&mut self, proof: &finish::Finish<'_, 'd>) {
+        let now = proof.clock().now().into();
+        self.begin();
+        while matches!(self.step_inner(now), Step::Advanced) {}
+    }
+
     pub(crate) fn step<'turn>(&mut self, permit: app::Permit<'turn, 'd>, now: time::Instant) {
         permit.run(|| {
             if self.mux.as_ref().get_ref().state.lifecycle.shutting_down {

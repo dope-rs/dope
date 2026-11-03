@@ -41,6 +41,8 @@ pub(in crate::conn::output::transmit) fn build<
     if limit == 0 {
         return Ok(None);
     }
+    let target = build.destination;
+    target.prefix(dst)?;
     let mut draft = output::Draft::try_new(
         dst.append(),
         short::Ref::new(dcid.as_ref_id(), number.encoding(), phase),
@@ -89,9 +91,6 @@ pub(in crate::conn::output::transmit) fn build<
     commit.flags.set_flight(datagram);
     commit.flags.set_datagram(datagram);
     commit.set_queued(datagram);
-    let Some(target) = build.target(commit.path.route) else {
-        return Ok(None);
-    };
     let prepared = pending::Packet::try_new(journal::Schedule::new(build).finish(), commit, target)
         .map_err(|(_, error)| error.into_error())?;
     let ((), prepared) = match prepared.protect(draft) {

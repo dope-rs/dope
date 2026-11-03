@@ -3,7 +3,7 @@ use std::{net, ops, pin, time};
 use dope::core::driver::schedule::clock;
 use dope::manifold::network::datagram::packet::{Packet, Retainer};
 use dope::runtime;
-use o3::buffer::storage::provided::Mutable;
+use o3::buffer::{self, storage::provided::Mutable};
 use runtime::civil;
 
 use crate::conn::life;
@@ -219,7 +219,12 @@ where
     H: handler::Handler<DOMAIN, B, A::Send, id::Driver<'d>>,
     B: receive::Input<'d, A::Send>,
 {
-    pub(in crate::runtime) fn receive<'turn, Q, W, T: Mutable<'d, Account: retain::Retain<'d>>>(
+    pub(in crate::runtime) fn receive<
+        'turn,
+        Q,
+        W,
+        T: Mutable<'d, Account: retain::Retain<'d>> + buffer::raw::Store,
+    >(
         &mut self,
         from: net::SocketAddr,
         input: Packet<'turn, 'd, T>,

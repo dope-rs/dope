@@ -4,7 +4,6 @@ use dope_quic::conn::life::tls::{clients, servers};
 use dope_quic::proto::epoch;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZero;
-use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,7 +24,6 @@ use o3::buffer::storage;
 use peer::Setup;
 
 use crate::common::suite::openssl;
-use dope_test::harness::support::file::{self, Directory};
 use dope_tls::config::{self, Ext as _, ProviderExt as _};
 use rustls::client::Resumption;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, SubjectPublicKeyInfoDer};
@@ -229,8 +227,6 @@ pub enum Kind {
 
 #[derive(Debug)]
 pub enum Init {
-    Directory(file::Error),
-    OpenSsl(openssl::Init),
     Tls(dope_tls::Error),
     Verifier(VerifierBuilderError),
 }
@@ -238,8 +234,7 @@ pub enum Init {
 impl Kind {
     pub fn configs(
         self,
-        base: &Path,
-        cleanup: impl FnOnce(std::io::Result<()>),
+        create: impl FnOnce() -> openssl::Identity,
     ) -> Result<(rustls::ClientConfig, rustls::ServerConfig), Init> {
         match self {
             Self::Raw => {
@@ -251,10 +246,7 @@ impl Kind {
                 ))
             }
             Self::X509 => {
-                let root = Directory::try_with(base, "quic-certificate", cleanup)
-                    .map_err(Init::Directory)?;
-                let identity = openssl::Identity::new(root.path()).map_err(Init::OpenSsl)?;
-                drop(root);
+                let identity = create();
                 let chain: Vec<_> = identity
                     .chain
                     .into_iter()

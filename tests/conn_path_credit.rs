@@ -73,12 +73,13 @@ fn candidate_credit_parks() {
     let due = Pin::new(&mut server).observe(at, |turn| turn.deadline());
     assert!(due.is_none_or(|due| due > at), "blocked deadline: {due:?}");
     let mut wire = peer
-        .packet(&[frame::TYPE_PADDING])
+        .packet(&[frame::TYPE_PING])
         .expect("fresh candidate credit");
     let credit = wire.len() * 3;
     Pair::receive(&mut server, target, &mut wire, at).expect("candidate padding");
     let flight = dispatch::Capture::output(&mut server, at).expect("resumed candidate");
     let mut count = 0;
+    let mut short = None;
     for mut packet in flight {
         let selected = packet.addr() == target;
         for segment in packet.segments_mut() {
@@ -94,11 +95,11 @@ fn candidate_credit_parks() {
             count += 1;
             assert_eq!(size, credit);
             let frames = frame::Frame::decode_all(&frames).expect("challenge frames");
-            assert!(
-                frames
-                    .iter()
-                    .any(|frame| matches!(frame.view(), frame::View::PathChallenge { .. }))
-            );
+            short = frames.iter().find_map(|frame| match frame.view() {
+                frame::View::PathChallenge { data } => Some(*data),
+                _ => None,
+            });
+            assert!(short.is_some());
             assert!(
                 !frames
                     .iter()
@@ -107,5 +108,49 @@ fn candidate_credit_parks() {
         }
     }
     assert_eq!(count, 1);
+    let short = short.expect("short candidate challenge");
+    assert!(
+        !Pair::access(&mut server, handle, at, |mut conn| conn
+            .path()
+            .cancel_probe(short))
+        .expect("live candidate")
+    );
+    let mut response = vec![frame::TYPE_PATH_RESPONSE];
+    response.extend_from_slice(&short);
+    let mut wire = peer.packet(&response).expect("short challenge response");
+    Pair::receive(&mut server, target, &mut wire, at).expect("address validation");
+    let mut expanded = None;
+    for mut packet in dispatch::Capture::output(&mut server, at).expect("MTU validation") {
+        let selected = packet.addr() == target;
+        for segment in packet.segments_mut() {
+            let size = segment.len();
+            let mut wire = peer.receive(segment).expect("MTU packet").expect("1-RTT");
+            let (_, frames) = peer.open(&mut wire).expect("open MTU packet");
+            if !selected {
+                continue;
+            }
+            for item in frame::Frame::decode_all(&frames).expect("MTU frames") {
+                if let frame::View::PathChallenge { data } = item.view() {
+                    assert!(size >= 1_200);
+                    expanded = Some(*data);
+                }
+            }
+        }
+    }
+    let expanded = expanded.expect("expanded candidate challenge");
+    assert_ne!(short, expanded);
+    let mut wire = peer.packet(&response).expect("delayed short response");
+    Pair::receive(&mut server, target, &mut wire, at).expect("duplicate address proof");
+    assert_eq!(
+        Pair::peer(&mut server, handle, at).expect("active path"),
+        Some(CLIENT)
+    );
+    response[1..].copy_from_slice(&expanded);
+    let mut wire = peer.packet(&response).expect("expanded challenge response");
+    Pair::receive(&mut server, target, &mut wire, at).expect("MTU validation response");
+    assert_eq!(
+        Pair::peer(&mut server, handle, at).expect("validated path"),
+        Some(target)
+    );
     assert!(server.handler().errors.is_empty());
 }

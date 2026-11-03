@@ -68,7 +68,7 @@ impl<'a, O: buffer::raw::Segment, W> Admission<'a, O, W> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Cause {
     PeerRetired,
     Reset,

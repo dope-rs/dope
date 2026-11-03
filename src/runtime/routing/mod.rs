@@ -3,11 +3,15 @@
 
 pub(in crate::runtime) mod registry;
 
-use std::{mem, net};
+use std::{mem, net, num::NonZero};
 
 use dope::core::io::datagram;
-use dope_sys::io::socket::route::{count, selector::Selector};
+use dope_sys::io::socket::route::{
+    count,
+    selector::{PrefixPlan, Selector},
+};
 
+use crate::security::relay::Ticket;
 use crate::wire::packet::{self, cid};
 
 mod sealed;
@@ -35,6 +39,13 @@ const SELECTOR: Selector = Selector::fixed::<
     LONG_MINIMUM_LEN,
 >();
 
+const PREFIX: PrefixPlan = PrefixPlan::fixed::<
+    { Ticket::LEN as u8 },
+    { packet::FORM_LONG | packet::FIXED_BIT },
+    { Ticket::MARKERS[0] },
+    { Ticket::MARKERS[1] },
+>();
+
 /// Validated number of densely numbered QUIC shards.
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
@@ -47,24 +58,18 @@ impl Count {
         self.0.encode()
     }
 
-    pub(crate) fn iter(self) -> impl ExactSizeIterator<Item = Shard> + DoubleEndedIterator {
-        self.0.indices().map(Shard::from)
-    }
-
     pub fn dense_len(self, paths: usize) -> Option<usize> {
-        if paths == 0 {
-            return None;
-        }
-        self.iter().len().checked_mul(paths)
+        self.extent(NonZero::new(paths)?)
     }
 
     pub fn resolve(self, paths: usize, index: usize) -> Option<(Shard, usize)> {
-        if index >= self.dense_len(paths)? {
+        let paths = NonZero::new(paths)?;
+        if index >= self.extent(paths)? {
             return None;
         }
-        let shard = self.iter().nth(index / paths)?;
-        let path = index % paths;
-        Some((shard, path))
+        // index < count * paths proves index / paths < count <= 256.
+        let shard = Shard::from_index((index / paths) as u8);
+        Some((shard, index % paths))
     }
 
     pub fn index(self, paths: usize, shard: Shard, path: usize) -> Option<usize> {
@@ -73,6 +78,10 @@ impl Count {
         }
         let index = self.0.index(shard.index())?;
         index.into_raw().checked_mul(paths)?.checked_add(path)
+    }
+
+    fn extent(self, paths: NonZero<usize>) -> Option<usize> {
+        usize::from(self.get()).checked_mul(paths.get())
     }
 }
 
@@ -118,6 +127,10 @@ pub trait LocalRoute: Sealed {
     const CONNECTION_ID_LEN: usize;
 
     fn issue(&self, entropy: [u8; ENTROPY_LEN]) -> cid::Id;
+
+    fn prefix(&self) -> Option<PrefixPlan> {
+        None
+    }
 }
 
 /// Initial CID issuance and peer routing policy for one client topology.
@@ -198,10 +211,58 @@ impl PeerRoute for Shard {
     }
 }
 
+/// One unsharded socket intent admitting direct packets and one return ticket.
+pub struct Single {
+    address: net::SocketAddr,
+    prefix: PrefixPlan,
+}
+
+impl Single {
+    pub const fn new(address: net::SocketAddr) -> Self {
+        Self {
+            address,
+            prefix: PREFIX,
+        }
+    }
+
+    pub(crate) const fn framing(&self) -> (PrefixPlan, net::SocketAddr) {
+        (self.prefix, self.address)
+    }
+
+    pub(crate) fn into_parts(self) -> (net::SocketAddr, SingleRoute) {
+        (
+            self.address,
+            SingleRoute {
+                prefix: self.prefix,
+            },
+        )
+    }
+}
+
+/// Local packet framing recovered by consuming one unsharded socket intent.
+pub struct SingleRoute {
+    prefix: PrefixPlan,
+}
+
+impl Sealed for SingleRoute {}
+
+impl LocalRoute for SingleRoute {
+    const CONNECTION_ID_LEN: usize = ENTROPY_LEN;
+
+    fn issue(&self, entropy: [u8; ENTROPY_LEN]) -> cid::Id {
+        <Plain as LocalRoute>::issue(&Plain, entropy)
+    }
+
+    fn prefix(&self) -> Option<PrefixPlan> {
+        Some(self.prefix)
+    }
+}
+
 /// Local endpoint auth recovered only by consuming its affine binding.
 #[derive(Eq, PartialEq)]
 pub struct Routed {
     shard: Shard,
+    prefix: Option<PrefixPlan>,
 }
 
 impl Sealed for Routed {}
@@ -212,12 +273,18 @@ impl LocalRoute for Routed {
     fn issue(&self, entropy: [u8; ENTROPY_LEN]) -> cid::Id {
         self.shard.issue(entropy)
     }
+
+    fn prefix(&self) -> Option<PrefixPlan> {
+        self.prefix
+    }
 }
 
 /// One affine socket paired with the only QUIC shard that its selector admits.
 pub struct Binding {
     socket: datagram::Lease,
     shard: Shard,
+    prefix: Option<PrefixPlan>,
+    address: net::SocketAddr,
 }
 
 impl Binding {
@@ -225,40 +292,79 @@ impl Binding {
         self.shard
     }
 
+    pub(crate) fn framing(&self) -> Option<(PrefixPlan, net::SocketAddr)> {
+        self.prefix.map(|prefix| (prefix, self.address))
+    }
+
     pub(crate) fn into_parts(self) -> (datagram::Lease, Routed) {
-        (self.socket, Routed { shard: self.shard })
+        (
+            self.socket,
+            Routed {
+                shard: self.shard,
+                prefix: self.prefix,
+            },
+        )
     }
 }
 
 /// A completely installed QUIC routing group.
 pub struct Group {
     native: datagram::Group,
+    prefix: Option<PrefixPlan>,
+    address: net::SocketAddr,
 }
 
 impl Group {
     pub fn bind(addr: net::SocketAddr, count: Count) -> Result<Self, datagram::Error> {
         use dope_sys::io::socket::route::Plan;
 
+        Self::install(addr, Plan::new(count.0, SELECTOR))
+    }
+
+    /// Admits both direct QUIC packets and packets carrying one return ticket.
+    pub fn bind_relay(addr: net::SocketAddr, count: Count) -> Result<Self, datagram::Error> {
+        use dope_sys::io::socket::route::Plan;
+
+        Self::install(addr, Plan::new(count.0, SELECTOR).with_prefix(PREFIX))
+    }
+
+    fn install(
+        addr: net::SocketAddr,
+        plan: dope_sys::io::socket::route::Plan,
+    ) -> Result<Self, datagram::Error> {
         Ok(Self {
-            native: datagram::Group::bind(addr, Plan::new(count.0, SELECTOR))?,
+            native: datagram::Group::bind(addr, plan)?,
+            prefix: plan.prefix(),
+            address: addr,
         })
     }
 
     pub fn split(self) -> impl ExactSizeIterator<Item = Binding> {
-        self.native.into_entries().map(|(index, socket)| {
+        self.native.into_entries().map(move |(index, socket)| {
             let shard = Shard::from(index);
-            Binding { socket, shard }
+            Binding {
+                socket,
+                shard,
+                prefix: self.prefix,
+                address: self.address,
+            }
         })
     }
 }
 
 const _: () = {
     assert!(CONNECTION_ID_LEN <= cid::Id::MAX_LEN);
+    assert!(Ticket::LEN <= u8::MAX as usize);
     assert!(mem::size_of::<Count>() == mem::size_of::<u16>());
     assert!(mem::size_of::<Result<Count, count::Error>>() == 2 * mem::size_of::<u16>());
     assert!(mem::size_of::<Shard>() == 1);
     assert!(mem::size_of::<Plain>() == 0);
-    assert!(mem::size_of::<Routed>() == 1);
+    assert!(mem::size_of::<SingleRoute>() == mem::size_of::<PrefixPlan>());
+    assert!(!mem::needs_drop::<SingleRoute>());
+    assert!(mem::size_of::<Routed>() == mem::size_of::<(Shard, Option<PrefixPlan>)>());
     assert!(!mem::needs_drop::<Routed>());
-    assert!(mem::size_of::<Binding>() == 2 * mem::size_of::<datagram::Lease>());
+    assert!(
+        mem::size_of::<Binding>()
+            == mem::size_of::<(datagram::Lease, Shard, Option<PrefixPlan>, net::SocketAddr)>()
+    );
 };

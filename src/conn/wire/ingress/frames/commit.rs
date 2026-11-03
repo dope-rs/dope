@@ -41,6 +41,18 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
     {
         let epoch = meta.epoch();
         let now = meta.now;
+        let closes = {
+            let (conn, _) = self.packet.state();
+            plan.try_close(
+                &mut conn.streams.state,
+                epoch.bind(&conn.egress.recovery.spaces).next_pn,
+                cid.as_ref(),
+            )?
+        };
+        if closes {
+            self.packet.drain(now)?;
+            return Ok(frames::Disposition::Drop);
+        }
         let (conn, past) = self.packet.state();
         let conn::Machine {
             egress,
@@ -54,7 +66,6 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         } = &mut *conn;
         let queue = &mut state.events;
         let local = peer.local;
-        let route = path.ingress().response();
         ctrl.replies().retain();
         let grant = match plan.try_reserve(&mut state.state) {
             Ok(grant) => grant,
@@ -79,7 +90,8 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         };
         let mut discard = false;
         let mut done = frames::CommitState::new(egress.lifecycle.state);
-        let result = grant.commit(|work, input, state, credit, token| {
+        let mut path_effects = conn::Effects::none();
+        let result: Result<_, conn::Error> = grant.commit(|work, input, state, credit, token| {
             let body = input.body();
             let frames = input.frames();
             check::validate(
@@ -88,10 +100,55 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                 epoch.bind(&egress.recovery.spaces).next_pn,
                 cid.as_ref(),
             )?;
-            if meta.kind() == frames::PacketKind::ONE_RTT
-                && frames.iter().any(|record| !record.is_probing())
-            {
-                path.observe(meta.number());
+            let mut matched = false;
+            let mut non_probing = false;
+            let mut response = false;
+            for record in frames.iter() {
+                non_probing |= !record.is_probing();
+                match record.view() {
+                    frame::View::PathChallenge { .. } => response = true,
+                    frame::View::PathResponse { data } => {
+                        // A valid response belongs to its outstanding challenge,
+                        // independently of this packet's source or route capacity.
+                        path_effects.insert(conn::Effects::TRANSMIT);
+                        path_effects.project(conn::DeadlineMode::Exact);
+                        match path.try_respond(*data, now, ctrl) {
+                            Ok(path::probe::Completion::Unmatched) => {}
+                            Ok(path::probe::Completion::Accepted { .. }) => matched = true,
+                            Err(
+                                capacity::Reason::Full
+                                | capacity::Reason::Allocation(
+                                    alloc::Error::Exhausted | alloc::Error::Overflow,
+                                ),
+                            ) => return Ok(frames::Disposition::Drop),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let non_probing = meta.kind() == frames::PacketKind::ONE_RTT && non_probing;
+            let intent = non_probing.then(|| path.intent(meta.number())).flatten();
+            let mut route = None;
+            if let Some(cid) = cid.as_ref() {
+                let admission = if matched && intent.is_none() {
+                    if response {
+                        Some(path::Admission::Respond)
+                    } else {
+                        non_probing.then_some(path::Admission::Preserve)
+                    }
+                } else {
+                    Some(path::Admission::Validate)
+                };
+                if let Some(admission) = admission {
+                    let (admitted, effects) = path
+                        .try_admit(ctrl, now, cid.pto, admission, response)
+                        .into_parts();
+                    path_effects.merge(effects);
+                    route = admitted.map_err(conn::Error::Path)?;
+                }
+            }
+            if let Some(intent) = intent {
+                path.observe(intent);
             }
             let Ok(mut events) = queue.try_reserve(evcap) else {
                 return Ok(frames::Disposition::Drop);
@@ -109,15 +166,15 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             let segs = &mut work.segments;
             let parts = &mut work.parts;
             let frames = ready.frames();
-            let dgrams = match ready.try_datagram().and_then(|dgrams| {
-                let count = dgrams.len();
+            let mut dgrams = match ready.try_datagram().and_then(|(single, many)| {
+                let count = usize::from(single.is_some()) + many.len();
                 rx.datagrams
                     .try_reserve(count)
                     .map_err(|error| detail::Unavailable::Queue {
                         error,
                         requested: count,
                     })?;
-                Ok(dgrams)
+                Ok(single.into_iter().chain(many))
             }) {
                 Ok(dgrams) => dgrams,
                 Err(error) => {
@@ -148,20 +205,6 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             }
             state.receive.connection_window.record(token, credit);
             done.applied(frames, evcap != 0);
-            let mut dgrams = dgrams.into_iter();
-            for record in frames.iter() {
-                if let frame::View::PathResponse { data } = record.view() {
-                    match path.try_respond(*data, ctrl) {
-                        Ok(()) => {}
-                        Err(
-                            capacity::Reason::Full
-                            | capacity::Reason::Allocation(
-                                alloc::Error::Exhausted | alloc::Error::Overflow,
-                            ),
-                        ) => return Ok(frames::Disposition::Drop),
-                    }
-                }
-            }
             for record in frames.iter() {
                 if let frame::View::PathChallenge { data } = record.view() {
                     use path::probe::Error;
@@ -276,14 +319,18 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                             let Ok(token) = body.resolve(token.clone()) else {
                                 return Ok(frames::Disposition::Drop);
                             };
-                            hs.peer.store_token(token, path.ingress().peer());
+                            hs.peer.store_token(
+                                token,
+                                path.ingress().peer().map(crate::proto::path::Peer::addr),
+                            );
                         }
                         frame::View::ConnectionClose { .. } => {
-                            egress.lifecycle.state = conn::State::Closed;
+                            unreachable!("close");
                         }
                         frame::View::NewConnectionId { notice, retire } => {
                             match path.accept(notice.clone(), *retire, ctrl) {
-                                Ok(()) => {}
+                                Ok(path::Migration::Committed) => done.path_migrated = true,
+                                Ok(path::Migration::Pending) => {}
                                 Err(peer::Error::Capacity(error)) => {
                                     if let Some(observer) = proof.observer() {
                                         observer.observe(&Diagnostic::Peer(error));
@@ -411,26 +458,41 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                     }
                 }
             }
-            if matches!(
-                path.try_migrate(ctrl)
-                    .map_err(|reason| conn::Error::Path(path::Error::Peer(reason)))?,
-                path::Migration::Committed
-            ) {
+            Ok(frames::Disposition::Commit)
+        });
+        // A committed CID/address transaction keeps its recovery effects even
+        // if a later frame fails. Preserve the packet's first error.
+        let settlement = (|| {
+            if !result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.close_code().is_some())
+                && matches!(
+                    path.try_migrate(ctrl)
+                        .map_err(|reason| conn::Error::Path(path::Error::Peer(reason)))?,
+                    path::Migration::Committed
+                )
+            {
                 done.path_migrated = true;
+            }
+            if done.path_migrated {
                 shift::Shift::new(
-                    delivery::Graph::new(egress, ctrl, hs, state, events.events()),
+                    delivery::Graph::new(egress, ctrl, hs, &mut state.state, queue),
                     release::Ignore,
                 )
                 .try_commit(now)?;
             }
-            Ok(frames::Disposition::Commit)
-        });
+            Ok::<_, conn::Error>(())
+        })();
         if discard {
             rx.crypto.discard(conn::Epoch::Initial);
             rx.crypto.discard(conn::Epoch::Handshake);
         }
-        let effects = done.finish(egress.lifecycle.state);
+        let mut effects = done.finish(egress.lifecycle.state);
+        effects.merge(path_effects);
         self.packet.record(effects);
-        result
+        let result = result?;
+        settlement?;
+        Ok(result)
     }
 }

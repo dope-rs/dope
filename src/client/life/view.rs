@@ -4,7 +4,7 @@ use o3::mem::rc;
 use std::time;
 
 use crate::client::{self, auth, life};
-use crate::conn::id;
+use crate::{conn::id, errors};
 use life::{due, endpoint};
 
 #[repr(transparent)]
@@ -32,6 +32,7 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
     /// Returns a due endpoint without removing its resident retry entry.
     pub(in crate::client) fn next_due(
         &self,
+        domain: id::Domain,
         now: time::Instant,
     ) -> Option<due::Due<Result<A, rc::Error>, R>>
     where
@@ -44,6 +45,7 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
         ready?;
         let peer = self.0.topology.peer(index)?;
         Some(due::Due {
+            domain,
             slot: client::SlotId::from_index(index as u32),
             attempt: endpoint.attempt,
             addr: peer.addr,
@@ -62,13 +64,24 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
             .and_then(|(_, value)| endpoint::handle(value))
     }
 
-    pub(in crate::client) fn current(
+    pub(in crate::client) fn resolve(
         &self,
-        slot: client::SlotId,
-    ) -> Option<(client::AttemptId, id::Handle<id::Driver<'d>, DOMAIN>)> {
-        let (endpoint, value) = self.0.endpoints.get(slot.index() as usize)?;
-        let handle = endpoint::handle(value)?;
-        Some((endpoint.attempt.id(slot), handle))
+        domain: id::Domain,
+        attempt: client::AttemptId,
+    ) -> Result<id::Handle<id::Driver<'d>, DOMAIN>, errors::Access> {
+        if attempt.domain != domain {
+            return Err(errors::Access::InvalidHandle);
+        }
+        let (endpoint, value) = self
+            .0
+            .endpoints
+            .get(attempt.slot.index() as usize)
+            .ok_or(errors::Access::Closed)?;
+        let handle = endpoint::handle(value).ok_or(errors::Access::Closed)?;
+        if endpoint.attempt.generation() != attempt.generation {
+            return Err(errors::Access::InvalidHandle);
+        }
+        Ok(handle)
     }
 
     pub(in crate::client) fn handle_at(
@@ -87,8 +100,23 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
         handle: id::Handle<id::Driver<'d>, DOMAIN>,
     ) -> Option<client::SlotScope<'scope>> {
         let bound = self.0.index(handle)?;
-        let attempt = bound.attempt.id(bound.slot);
+        let attempt = bound.attempt.id(handle.domain().identity(), bound.slot);
         Some(client::SlotScope::new(brand, attempt))
+    }
+
+    /// Only a consumed ready event admits application delivery. Pending native
+    /// input retains its existing owner until that event has been delivered.
+    pub(in crate::client) fn bind_active<'scope>(
+        &self,
+        brand: brand::Token<'scope>,
+        handle: id::Handle<id::Driver<'d>, DOMAIN>,
+    ) -> Result<Option<client::SlotScope<'scope>>, errors::Access> {
+        let bound = self.0.index(handle).ok_or(errors::Access::InvalidHandle)?;
+        if !bound.active {
+            return Ok(None);
+        }
+        let attempt = bound.attempt.id(handle.domain().identity(), bound.slot);
+        Ok(Some(client::SlotScope::new(brand, attempt)))
     }
 
     pub(in crate::client) fn has_events(&self) -> bool {

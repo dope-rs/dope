@@ -36,7 +36,7 @@ impl<B: Recv> Slots<'_, B> {
         local: resident::Local,
         table: &Table,
     ) -> Result<Slot<'_, B>, resident::Stale> {
-        let Some(slot) = table.read().try_slot(local)? else {
+        let Some(slot) = table.read().try_slot::<false>(local)? else {
             return Ok(self.raw_entry(Id::new(local.id())));
         };
         Ok(self.core.bind_at(slot).map_or(Slot::Unavailable, |entry| {

@@ -131,3 +131,70 @@ fn retains_reordered_epoch() {
         );
     }
 }
+
+#[test]
+fn rejects_old_keys_above_reordered_current() {
+    use common::suite::peers::packet;
+    use dope_quic::{security::crypto, wire::frame};
+
+    let now = Instant::now();
+    let options = Config::default().try_build().expect("datagram transport");
+    let mut pair = packet::Pair::try_options(options, now, |_| {}).expect("native handshake");
+    let old_first = pair
+        .peer
+        .packet(&[frame::TYPE_DATAGRAM, 0])
+        .expect("old first");
+    let old_lower = pair
+        .peer
+        .packet(&[frame::TYPE_DATAGRAM, 1])
+        .expect("old lower");
+    let old_key = pair.peer.update_key(None).expect("next native key");
+    let new_lower = pair
+        .peer
+        .packet(&[frame::TYPE_DATAGRAM, 2])
+        .expect("new lower");
+    let new_key = pair
+        .peer
+        .update_key(Some(old_key))
+        .expect("retained old key");
+    let mut old_higher = pair
+        .peer
+        .packet(&[frame::TYPE_DATAGRAM, 3])
+        .expect("old higher");
+    drop(
+        pair.peer
+            .update_key(Some(new_key))
+            .expect("restore current key"),
+    );
+    let new_higher = pair
+        .peer
+        .packet(&[frame::TYPE_DATAGRAM, 4])
+        .expect("new higher");
+
+    for (mut packet, value) in [
+        (old_first, 0),
+        (new_higher, 4),
+        (new_lower, 2),
+        (old_lower, 1),
+    ] {
+        pair.server
+            .receive(&mut pair.work, &mut packet, now)
+            .expect("valid packet reordering");
+        assert_eq!(
+            pair.server.with_scope(|mut scope| scope.datagrams().recv()),
+            Some(vec![value])
+        );
+    }
+    assert!(matches!(
+        pair.server.receive(&mut pair.work, &mut old_higher, now),
+        Err(peer::Transfer::Input(conn::Error::Crypto(
+            crypto::Error::Decrypt(rustls::Error::DecryptError)
+        )))
+    ));
+    assert!(
+        pair.server
+            .with_scope(|mut scope| scope.datagrams().recv())
+            .is_none()
+    );
+    assert!(pair.server.view().lifecycle().is_ready());
+}

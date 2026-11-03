@@ -31,6 +31,7 @@ fn installs_then_rebinds() {
     assert_eq!(mux.handler().created, 1);
 
     assert_eq!(install::close(&mut mux, first, now), Ok(()));
+    install::reap(&mut mux, first, now).expect("retire closed transport");
     assert_eq!(mux.active_conns(), 0);
     assert!(mux.conn(first).is_none());
 
@@ -70,6 +71,7 @@ fn rejects_foreign_close() {
         assert_eq!(mux.sole(), Some(handle));
         assert_eq!(mux.handler().created, 1);
         assert_eq!(install::close(mux, handle, now), Ok(()));
+        install::reap(mux, handle, now).expect("retire closed transport");
         assert_eq!(mux.handler().closed.as_slice(), &[handle]);
         assert_eq!(mux.active_conns(), 0);
     }
@@ -122,6 +124,7 @@ fn resize_preserves_epochs() {
         assert_eq!(mux.active_conns(), capacity);
         for handle in added {
             assert_eq!(install::close(&mut mux, handle, now), Ok(()));
+            install::reap(&mut mux, handle, now).expect("retire closed transport");
         }
         assert_eq!(mux.active_conns(), 0);
         assert_eq!(
@@ -158,6 +161,7 @@ fn closes_all_generations() {
 
     assert_eq!(install::close(&mut mux, first[1], now), Ok(()));
     assert_eq!(install::close(&mut mux, first[3], now), Ok(()));
+    install::reap(&mut mux, first[1], now).expect("retire closed transports");
     assert_eq!(mux.active_conns(), 2);
 
     for ordinal in 4_u8..6 {

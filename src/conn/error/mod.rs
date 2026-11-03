@@ -46,6 +46,7 @@ pub enum Error {
     PacketCeiling,
     EventCapacity,
     ConnectionIdLimit,
+    ConnectionIdUnavailable,
     ProtocolViolation,
     KeyUpdate,
     AeadLimitReached,
@@ -102,6 +103,7 @@ impl Error {
             | Self::HeaderDecode
             | Self::PeerClosed
             | Self::IdleTimeout
+            | Self::ConnectionIdUnavailable
             | Self::StreamBufferExceeded
             | Self::EventCapacity => None,
         }

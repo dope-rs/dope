@@ -14,6 +14,7 @@ use wire::{frame, packet};
 pub(crate) struct Prepared<'pool> {
     lease: borrowed::Frame<'pool>,
     layout: header::Layout<kind::OneRtt>,
+    overhead: usize,
 }
 
 impl<'pool> Prepared<'pool> {
@@ -47,11 +48,11 @@ impl<'pool> Prepared<'pool> {
                 packet,
                 transmit::Admission::Payload {
                     error,
-                    requested: header.as_ref().len() + pad_len + 1,
+                    requested: header.storage_len() + pad_len + 1,
                 },
             ));
         }
-        let (prefix, layout) = header.into_parts();
+        let (prefix, layout, overhead) = header.into_parts();
         let lease = match packet.lease.try_frame(prefix, conn::TAG_LEN) {
             Ok(lease) => lease,
             Err((lease, error)) => {
@@ -61,7 +62,11 @@ impl<'pool> Prepared<'pool> {
                 ));
             }
         };
-        Ok(Self { lease, layout })
+        Ok(Self {
+            lease,
+            layout,
+            overhead,
+        })
     }
 
     pub(crate) fn reject(self) -> datagram::Packet<'pool> {
@@ -74,9 +79,9 @@ impl<'pool> Prepared<'pool> {
         mut self,
         seal: impl FnOnce(output::Packet<'_>) -> Result<R, crypto::Error>,
     ) -> Result<(datagram::Sealed<'pool>, R), crypto::Error> {
-        let end = self.lease.payload_end();
+        let end = self.lease.payload_end() - self.overhead;
         let result = seal(output::Packet {
-            bytes: self.lease.as_mut_slice(),
+            bytes: &mut self.lease.as_mut_slice()[self.overhead..],
             number: self.layout.number(),
             width: widths::Width::from_pn(self.layout.encoding()),
             offset: self.layout.pn_offset(),
@@ -91,8 +96,8 @@ impl<'pool> Prepared<'pool> {
 impl output::Extent for Prepared<'_> {
     /// The pooled frame retains its header and tag within one u32-sized slot.
     fn wire_len(&self) -> NonZero<usize> {
-        NonZero::<usize>::MIN.saturating_add(self.lease.len() - 1)
+        NonZero::<usize>::MIN.saturating_add(self.lease.len() - self.overhead - 1)
     }
 }
 
-const _: () = assert!(size_of::<Prepared<'static>>() == 6 * size_of::<usize>());
+const _: () = assert!(size_of::<Prepared<'static>>() == 7 * size_of::<usize>());

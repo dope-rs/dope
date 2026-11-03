@@ -1,10 +1,11 @@
-use std::{mem, net, num, time};
+use std::{mem, num, time};
 
 use crate::conn::wire::storage;
 
 use crate::conn;
 use crate::conn::wire::path;
 use crate::conn::wire::path::address;
+use crate::proto::path::Peer;
 use crate::wire::packet::header;
 use crate::wire::stream::Initiator;
 
@@ -13,9 +14,10 @@ use path::Address;
 
 #[derive(Clone, Copy)]
 pub(in crate::conn::wire::path) struct Ingress {
-    pub(in crate::conn::wire::path) address: net::SocketAddr,
+    pub(in crate::conn::wire::path) address: Peer,
     pub(in crate::conn::wire::path) bytes: usize,
-    pub(in crate::conn::wire::path) challenge: Option<[u8; 8]>,
+    pub(in crate::conn::wire::path) outer_bytes: usize,
+    pub(in crate::conn::wire::path) challenge: Option<[[u8; 8]; 2]>,
 }
 
 #[derive(Clone, Copy)]
@@ -28,9 +30,11 @@ pub(in crate::conn::wire::path) struct Candidate {
 
 #[derive(Clone, Copy)]
 enum Attempt {
+    Expanded,
     First,
     Second,
     Last,
+    Stopped,
 }
 
 #[derive(Clone, Copy)]
@@ -43,22 +47,24 @@ enum Proof {
 
 impl Attempt {
     const fn can_retry(self) -> bool {
-        !matches!(self, Self::Last)
+        matches!(self, Self::Expanded | Self::First | Self::Second)
     }
 
     const fn left(self) -> u32 {
         match self {
+            Self::Expanded => 3,
             Self::First => 2,
             Self::Second => 1,
-            Self::Last => 0,
+            Self::Last | Self::Stopped => 0,
         }
     }
 
     fn advance(self) -> Option<Self> {
         match self {
+            Self::Expanded => Some(Self::First),
             Self::First => Some(Self::Second),
             Self::Second => Some(Self::Last),
-            Self::Last => None,
+            Self::Last | Self::Stopped => None,
         }
     }
 }
@@ -104,7 +110,7 @@ impl Candidate {
     }
 
     pub(in crate::conn::wire::path) const fn deadline(self) -> Option<time::Instant> {
-        if self.proof.is_validated() {
+        if self.proof.is_validated() || self.is_stopped() {
             None
         } else {
             Some(self.deadline)
@@ -144,6 +150,11 @@ impl Candidate {
         self.proof = self.proof.validate();
     }
 
+    pub(in crate::conn::wire::path) fn expand(&mut self, now: time::Instant) {
+        self.deadline = now;
+        self.attempt = Attempt::Expanded;
+    }
+
     pub(in crate::conn::wire::path) const fn observe(&mut self, active: bool) {
         self.proof = self.proof.observe(active);
     }
@@ -151,21 +162,39 @@ impl Candidate {
     pub(in crate::conn::wire::path) const fn is_complete(self) -> bool {
         self.proof.is_complete()
     }
+
+    pub(in crate::conn::wire::path) const fn is_stopped(self) -> bool {
+        matches!(self.attempt, Attempt::Stopped)
+    }
+
+    pub(in crate::conn::wire::path) fn stop(&mut self) {
+        self.attempt = Attempt::Stopped;
+    }
 }
 
 pub(in crate::conn::wire::path) struct Retried;
 
+#[derive(Clone, Copy)]
+pub(in crate::conn::wire::path) enum Validation {
+    Candidate,
+    Previous,
+}
+
 pub(in crate::conn::wire::path) struct Observed {
     pub(in crate::conn::wire::path) key: path::Key,
-    pub(in crate::conn::wire::path) address: net::SocketAddr,
+    pub(in crate::conn::wire::path) address: Peer,
     pub(in crate::conn::wire::path) received: u64,
     pub(in crate::conn::wire::path) sent: u64,
+    pub(in crate::conn::wire::path) outer_received: u64,
+    pub(in crate::conn::wire::path) outer_sent: u64,
+    pub(in crate::conn::wire::path) validated: bool,
 }
 
 pub(in crate::conn::wire::path) struct State {
-    pub(in crate::conn::wire::path) active: Option<net::SocketAddr>,
+    pub(in crate::conn::wire::path) active: Option<Peer>,
     pub(in crate::conn::wire::path) ingress: Option<Ingress>,
     pub(in crate::conn::wire::path) candidate: Option<Candidate>,
+    pub(in crate::conn::wire::path) previous: Option<Candidate>,
     pub(in crate::conn::wire::path) highest_non_probing: Option<header::Number>,
     pub(in crate::conn::wire::path) observed: storage::Vec<Observed, { conn::MAX_PATH_TOKENS }>,
     next_path_key: num::NonZero<u64>,
@@ -178,6 +207,7 @@ impl State {
             active: None,
             ingress: None,
             candidate: None,
+            previous: None,
             highest_non_probing: None,
             observed: storage::Vec::new(),
             next_path_key: num::NonZero::<u64>::MIN,
@@ -185,18 +215,21 @@ impl State {
         }
     }
 
-    pub(in crate::conn::wire::path) fn allows(
-        &self,
-        active: net::SocketAddr,
-        source: net::SocketAddr,
-    ) -> bool {
+    pub(in crate::conn::wire::path) fn allows(&self, active: Peer, source: Peer) -> bool {
         self.policy.allows(active, source)
     }
 
-    pub(in crate::conn::wire::path) fn key_for(
-        &self,
-        address: net::SocketAddr,
-    ) -> Option<path::Key> {
+    pub(in crate::conn::wire::path) fn next_validation(&self) -> Option<(Validation, Candidate)> {
+        self.candidate
+            .map(|item| (Validation::Candidate, item))
+            .into_iter()
+            .chain(self.previous.map(|item| (Validation::Previous, item)))
+            .filter_map(|(kind, item)| item.deadline().map(|deadline| (kind, item, deadline)))
+            .min_by_key(|(_, _, deadline)| *deadline)
+            .map(|(kind, item, _)| (kind, item))
+    }
+
+    pub(in crate::conn::wire::path) fn key_for(&self, address: Peer) -> Option<path::Key> {
         self.observed
             .iter()
             .find(|path| path.address == address)
@@ -213,8 +246,9 @@ impl State {
 
     pub(in crate::conn::wire::path) fn try_observe(
         &mut self,
-        address: net::SocketAddr,
+        address: Peer,
         bytes: usize,
+        outer_bytes: usize,
     ) -> Result<path::Key, Address> {
         if let Some(path) = self
             .observed
@@ -228,7 +262,15 @@ impl State {
                     bytes,
                 });
             };
+            let Some(outer_received) = path.outer_received.checked_add(outer_bytes as u64) else {
+                return Err(Address::OuterBytes {
+                    address,
+                    received: path.outer_received,
+                    bytes: outer_bytes,
+                });
+            };
             path.received = received;
+            path.outer_received = outer_received;
             return Ok(path.key);
         }
         let growth = self
@@ -249,6 +291,9 @@ impl State {
             address,
             received: bytes as u64,
             sent: 0,
+            outer_received: outer_bytes as u64,
+            outer_sent: 0,
+            validated: Some(address) == self.active,
         });
         Ok(key)
     }
@@ -263,5 +308,8 @@ const _: () = {
     assert!(mem::size_of::<Proof>() == 1);
     assert!(mem::size_of::<Candidate>() == 32);
     assert!(!mem::needs_drop::<Candidate>());
-    assert!(mem::size_of::<storage::Vec<Observed, { conn::MAX_PATH_TOKENS }>>() == 120);
+    assert!(
+        mem::size_of::<storage::Vec<Observed, { conn::MAX_PATH_TOKENS }>>()
+            == 2 * mem::size_of::<Observed>() + mem::size_of::<u64>()
+    );
 };

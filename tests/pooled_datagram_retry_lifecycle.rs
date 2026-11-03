@@ -4,6 +4,7 @@ use common::peer::Config;
 use common::runtime::gso::{self, Capture, Pair};
 use common::suite::cid::Count;
 use common::suite::owners;
+use dope_quic::conn::State;
 use dope_quic::errors::{Code, SendFailure};
 use dope_quic::proto::datagram::Arena;
 use dope_test::harness::observe::VecCellExt as _;
@@ -112,7 +113,9 @@ fn close_reclaims_retry() {
             break;
         }
     }
-    let packet = blocked.expect("same-instant burst reaches pacing");
+    let mut packet = blocked.expect("same-instant burst reaches pacing");
+    packet.payload_mut().fill(7);
+    let payload = packet.payload().as_ptr();
     let due = client
         .conn(handle)
         .expect("live connection")
@@ -125,18 +128,32 @@ fn close_reclaims_retry() {
         Some(due)
     );
 
-    Pin::new(&mut client)
+    let result = Pin::new(&mut client)
         .observe(now, |mut turn| {
             turn.with_app(handle, |mut conn| {
                 conn.transport().lifecycle().close(Code::ZERO, Vec::new());
+                conn.transport().output().try_packet(packet, now, 1200)
             })
         })
         .expect("close the armed connection");
+    let Err(SendFailure::Closed(packet)) = result else {
+        panic!("closing connection must return Closed");
+    };
+    assert_eq!(packet.payload().as_ptr(), payload);
+    assert_eq!(packet.payload(), &[7; 1150]);
+    assert_eq!(arena.available(), 0);
     Capture::output(&mut client, now).expect("fixture output");
-    assert!(client.conn(handle).is_none());
+    let conn = client.conn(handle).expect("closing connection retained");
+    assert_eq!(conn.view().lifecycle().state(), State::Closing);
+    let deadline = conn
+        .view()
+        .recovery()
+        .next_timer()
+        .expect("terminal deadline");
+    assert!(deadline > due);
     assert_eq!(
         Pin::new(&mut client).observe(now, |turn| turn.deadline()),
-        None
+        Some(deadline)
     );
     assert!(
         Capture::output(&mut client, due)
@@ -144,8 +161,23 @@ fn close_reclaims_retry() {
             .is_empty()
     );
     assert!(client.handler().events.streams.len() == 0);
+    assert_eq!(
+        Pin::new(&mut client).observe(due, |turn| turn.deadline()),
+        Some(deadline),
+        "the old pacing deadline does not rearm the retry"
+    );
+    assert!(
+        Capture::output(&mut client, deadline)
+            .expect("terminal expiry")
+            .is_empty()
+    );
+    assert!(client.conn(handle).is_none());
+    assert_eq!(
+        Pin::new(&mut client).observe(deadline, |turn| turn.deadline()),
+        None
+    );
 
-    now = due;
+    now = deadline;
     let (key, config) = Count::try_keys().expect("next peer TLS configuration");
     let mut server = Capture::server(Capture::default(), config, options()).expect("next peer");
     let next = Capture::connect(
@@ -172,4 +204,5 @@ fn close_reclaims_retry() {
         "next does not inherit an armed retry"
     );
     drop(packet);
+    assert_eq!(arena.available(), 1);
 }

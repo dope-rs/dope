@@ -1,53 +1,61 @@
-use std::{net, num};
+use crate::proto::path::Peer;
+use std::num;
 
 use crate::wire::packet::long::retry;
+use dope::core::io::datagram::GsoPayload;
+use o3::base::marker::ThreadBound;
 use o3::buffer::{self, storage};
 
 use crate::runtime::mux::output;
 
 /// One nonempty allocation crossing the mux-to-proto ownership boundary.
 #[repr(transparent)]
-pub struct Flight(Kind);
+pub struct Flight(Kind, ThreadBound);
 
 pub(in crate::runtime) enum Kind {
-    Plain(net::SocketAddr, storage::NonEmpty<Vec<u8>>),
-    Suffix(net::SocketAddr, retry::Suffix),
+    Plain(Peer, storage::NonEmpty<Vec<u8>>),
+    Suffix(Peer, retry::Suffix),
     Batch(
-        net::SocketAddr,
+        Peer,
         storage::NonEmpty<Vec<u8>>,
         num::NonZero<u16>,
         num::NonZero<u8>,
     ),
+    Segmented(Peer, GsoPayload<Vec<u8>>),
 }
 
 impl Flight {
-    pub(in crate::runtime) fn plain(
-        addr: net::SocketAddr,
-        payload: storage::NonEmpty<Vec<u8>>,
-    ) -> Self {
-        Self(Kind::Plain(addr, payload))
+    pub(in crate::runtime) fn plain(addr: Peer, payload: storage::NonEmpty<Vec<u8>>) -> Self {
+        Self(Kind::Plain(addr, payload), ThreadBound::NEW)
     }
 
-    pub(in crate::runtime) fn suffix(addr: net::SocketAddr, payload: retry::Suffix) -> Self {
-        Self(Kind::Suffix(addr, payload))
+    pub(in crate::runtime) fn suffix(addr: Peer, payload: retry::Suffix) -> Self {
+        Self(Kind::Suffix(addr, payload), ThreadBound::NEW)
     }
 
     pub(in crate::runtime) fn batch(
-        addr: net::SocketAddr,
+        addr: Peer,
         payload: storage::NonEmpty<Vec<u8>>,
         size: num::NonZero<u16>,
         packets: num::NonZero<u8>,
     ) -> Self {
-        Self(Kind::Batch(addr, payload, size, packets))
+        Self(Kind::Batch(addr, payload, size, packets), ThreadBound::NEW)
+    }
+
+    pub(in crate::runtime) fn segmented(addr: Peer, payload: GsoPayload<Vec<u8>>) -> Self {
+        Self(Kind::Segmented(addr, payload), ThreadBound::NEW)
     }
 
     pub(in crate::runtime) fn into_kind(self) -> Kind {
         self.0
     }
 
-    pub fn addr(&self) -> net::SocketAddr {
+    pub fn addr(&self) -> std::net::SocketAddr {
         match self.0 {
-            Kind::Plain(addr, _) | Kind::Suffix(addr, _) | Kind::Batch(addr, ..) => addr,
+            Kind::Plain(addr, _)
+            | Kind::Suffix(addr, _)
+            | Kind::Batch(addr, ..)
+            | Kind::Segmented(addr, _) => addr.addr(),
         }
     }
 
@@ -55,6 +63,7 @@ impl Flight {
         match &self.0 {
             Kind::Plain(_, payload) | Kind::Batch(_, payload, ..) => payload,
             Kind::Suffix(_, payload) => payload.as_ref(),
+            Kind::Segmented(_, payload) => payload.as_ref(),
         }
     }
 
@@ -62,6 +71,7 @@ impl Flight {
         match &mut self.0 {
             Kind::Plain(_, payload) | Kind::Batch(_, payload, ..) => payload,
             Kind::Suffix(_, payload) => payload.as_mut(),
+            Kind::Segmented(_, payload) => payload.as_mut(),
         }
     }
 
@@ -71,6 +81,10 @@ impl Flight {
             Kind::Plain(_, payload) => output::Segments::one(payload),
             Kind::Suffix(_, payload) => output::Segments::one(payload.as_mut()),
             Kind::Batch(_, payload, size, _) => output::Segments::batch(payload, (*size).into()),
+            Kind::Segmented(_, payload) => {
+                let size = payload.segment_size();
+                output::Segments::batch(payload.as_mut(), size.into())
+            }
         }
     }
 
@@ -78,6 +92,7 @@ impl Flight {
         match &self.0 {
             Kind::Plain(_, _) | Kind::Suffix(_, _) => num::NonZero::<usize>::MIN,
             Kind::Batch(_, _, _, packets) => (*packets).into(),
+            Kind::Segmented(_, payload) => payload.packet_count().into(),
         }
     }
 
@@ -86,7 +101,7 @@ impl Flight {
     }
 
     pub const fn is_segmented(&self) -> bool {
-        matches!(self.0, Kind::Batch(..))
+        matches!(self.0, Kind::Batch(..) | Kind::Segmented(..))
     }
 
     pub const fn is_suffix(&self) -> bool {
@@ -96,6 +111,7 @@ impl Flight {
     pub(in crate::runtime) const fn segment_size(&self) -> Option<num::NonZero<u16>> {
         match &self.0 {
             Kind::Batch(_, _, size, _) => Some(*size),
+            Kind::Segmented(_, payload) => Some(payload.segment_size()),
             Kind::Plain(..) | Kind::Suffix(..) => None,
         }
     }
@@ -104,6 +120,7 @@ impl Flight {
         match self.0 {
             Kind::Plain(_, payload) | Kind::Batch(_, payload, ..) => payload.into_storage(),
             Kind::Suffix(_, payload) => payload.into_storage(),
+            Kind::Segmented(_, payload) => payload.into_payload().into_inner(),
         }
     }
 }
@@ -113,6 +130,10 @@ impl buffer::Residency for Flight {
         match &self.0 {
             Kind::Plain(_, payload) | Kind::Batch(_, payload, ..) => payload.resident(),
             Kind::Suffix(_, payload) => payload.resident(),
+            Kind::Segmented(_, payload) => payload.resident(),
         }
     }
 }
+
+// The original 64-bit Flight is 104 bytes, including its enum tag.
+const _: () = assert!(size_of::<Flight>() == 104);

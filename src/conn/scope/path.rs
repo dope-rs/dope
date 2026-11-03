@@ -30,6 +30,8 @@ impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::S
         Path { machine }
     }
 
+    /// Queues an application probe with a distinct token for each request.
+    /// Cancel it when the application stops waiting for its response.
     pub fn try_probe(&mut self, data: [u8; 8]) -> Result<(), probe::Error> {
         let state = self.machine.egress.lifecycle.state;
         if state != conn::State::Established {
@@ -40,19 +42,31 @@ impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::S
         Ok(())
     }
 
+    /// Releases an outstanding application probe, returning whether it existed.
+    /// Later responses to its token are ignored. Migration probes stay owned
+    /// by the connection and cannot be canceled here.
+    pub fn cancel_probe(&mut self, data: [u8; 8]) -> bool {
+        if !self.machine.control.queue().cancel(data) {
+            return false;
+        }
+        self.machine.record::<RECONCILE>(conn::Effects::SCHEDULER);
+        true
+    }
+
     pub(crate) fn rotate(&mut self) -> Rotation {
         use conn::wire::path::local;
 
         if self.machine.egress.lifecycle.state != conn::State::Established {
             return Rotation::Unavailable;
         }
-        match self.machine.path.local.rotate(&mut self.machine.control) {
+        match self.machine.path.local.rotate() {
             local::Rotation::Queued => {}
             local::Rotation::Unavailable => return Rotation::Unavailable,
         }
         let work = self.machine.path.local.work(&self.machine.control);
         self.machine.egress.derived.advertise(work.controls());
-        self.machine.record::<RECONCILE>(conn::Effects::TRANSMIT);
+        self.machine
+            .record::<RECONCILE>(conn::Effects::TRANSMIT | conn::Effects::ROUTING);
         Rotation::Queued
     }
 }

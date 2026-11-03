@@ -8,12 +8,7 @@ use common::{
         install,
     },
 };
-use dope_quic::{
-    conn::{self, life::options::Options},
-    errors,
-    runtime::mux::builder::Plan,
-    security::crypto,
-};
+use dope_quic::{conn::life::options::Options, errors, runtime::mux::builder::Plan};
 use dope_test::alloc::Tracker;
 use std::{pin::Pin, time::Instant};
 
@@ -51,12 +46,7 @@ fn reject_reuses_slot() {
         assert!(mux.conn(first).is_none());
 
         packet.copy_from_slice(&initial);
-        assert!(matches!(
-            Capture::recv(&mut mux, CLIENT, &mut packet, now),
-            Err(errors::Receive::Packet(conn::Error::Crypto(
-                crypto::Error::Decrypt(rustls::Error::DecryptError)
-            )))
-        ));
+        Capture::recv(&mut mux, CLIENT, &mut packet, now).expect("accepted Initial");
         let second = mux.sole().expect("rejected slot is reusable");
         assert_eq!(second.index(), first.index());
         assert_eq!(second.generation(), first.generation() + 1);
@@ -68,8 +58,11 @@ fn reject_reuses_slot() {
         );
         assert_eq!(
             Pin::new(&mut mux).observe(now, |mut turn| turn.protocol().try_close(second)),
-            Err(errors::Access::InvalidHandle)
+            Err(errors::Access::Closed)
         );
+        Pin::new(&mut mux)
+            .observe(now, |mut turn| turn.output().drive())
+            .expect("close notification");
         assert!(matches!(
             mux.handler().closed.as_slice(),
             [(closed, app)] if *closed == second && app == b"connection"

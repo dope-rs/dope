@@ -1,5 +1,5 @@
 use o3::buffer;
-use std::net;
+use std::net::SocketAddr;
 
 use crate::runtime::mux::handler::hook::writable;
 
@@ -8,7 +8,7 @@ pub(in crate::runtime::endpoint) struct Entry<Q> {
     pub(in crate::runtime::endpoint) packet: Q,
 }
 
-pub(in crate::runtime::endpoint) type Queued<Q> = (net::SocketAddr, Entry<Q>);
+pub(in crate::runtime::endpoint) type Queued<Q> = (SocketAddr, Entry<Q>);
 
 pub(in crate::runtime::endpoint) struct Pending<Q, W: writable::Interest> {
     entry: Option<Queued<Q>>,

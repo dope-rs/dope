@@ -40,7 +40,11 @@ fn ack_bypasses_full_cwnd() {
         client
             .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 64, 1_200))
             .expect("warmed congestion fixture journals must admit output");
-        if client.view().recovery().in_flight() >= client.view().recovery().window() {
+        assert!(
+            client.view().recovery().in_flight() <= client.view().recovery().window(),
+            "ordinary output must admit the whole next packet within the congestion window",
+        );
+        if batch.is_empty() {
             break;
         }
         now = client
@@ -48,10 +52,9 @@ fn ack_bypasses_full_cwnd() {
             .recovery()
             .send_at(now + Duration::from_nanos(1));
     }
-    assert!(!batch.is_empty());
     let full = client.view().recovery().in_flight();
     assert!(
-        full >= client.view().recovery().window(),
+        full > 0 && client.view().recovery().window() - full < client.view().path().mtu(),
         "test must close the congestion window: in_flight={full}, cwnd={}",
         client.view().recovery().window(),
     );

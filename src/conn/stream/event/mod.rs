@@ -78,6 +78,9 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer:
     }
 
     pub fn poll(&mut self) -> Option<Item<'conn>> {
+        if self.connection.is_closing() {
+            return None;
+        }
         let event = self
             .connection
             .streams

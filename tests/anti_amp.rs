@@ -230,17 +230,17 @@ fn close_waits_for_credit() -> Result<(), Error> {
             .map_err(Error::Output)?
             .is_empty()
     );
-    assert!(
-        server
-            .conn(handle)
-            .expect("pending close owner")
-            .view()
-            .lifecycle()
-            .is_closing()
-    );
+    let closing = server.conn(handle).expect("pending close owner");
+    assert!(closing.view().lifecycle().is_closing());
+    let deadline = closing
+        .view()
+        .recovery()
+        .next_timer()
+        .expect("terminal deadline survives amplification blocking");
+    assert!(deadline > now);
     assert_eq!(
         Pin::new(&mut server).observe(now, |turn| turn.deadline()),
-        None
+        Some(deadline)
     );
     assert_eq!(Capture::drive(&mut server, now).map_err(Error::Output)?, 0);
 
@@ -271,6 +271,15 @@ fn close_waits_for_credit() -> Result<(), Error> {
         .map(|flight| flight.payload().len() as u64)
         .sum::<u64>();
     assert!(total <= 3 * (received + 1200));
+    let closing = server.conn(handle).expect("emitted close owner retained");
+    assert!(closing.view().lifecycle().is_closing());
+    assert_eq!(closing.view().recovery().next_timer(), Some(deadline));
+    assert_eq!(srv_log.borrow().closed, [handle]);
+    assert!(
+        Capture::output(&mut server, deadline)
+            .map_err(Error::Output)?
+            .is_empty()
+    );
     assert!(server.conn(handle).is_none());
     assert_eq!(srv_log.borrow().closed, [handle]);
     Ok(())

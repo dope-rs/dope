@@ -40,15 +40,15 @@ impl<C, I, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T>
 {
     pub(in crate::runtime) fn close(
         self,
-        close: impl FnOnce(id::Handle<I, DOMAIN>, conn::Connection<DOMAIN, B, D>, C),
+        close: impl FnOnce(id::Handle<I, DOMAIN>, conn::Connection<DOMAIN, B, D>, Option<C>),
     ) {
         let Self {
             handle,
             slot,
-            mut entry,
+            entry,
         } = self;
         close(handle, slot.conn, slot.connection);
-        entry.plane::<{ mux::FREE_QUEUE }>().link_back();
+        Set::recycle(entry);
     }
 }
 
@@ -67,6 +67,7 @@ pub(in crate::runtime) struct Scope<
     pub(super) cids: &'storage mut registry::Table,
     pub(super) tokens: &'storage reset::Reset,
     pub(super) active: &'storage mut u32,
+    pub(super) flush: &'storage mut super::Flush,
 }
 
 impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T>
@@ -81,6 +82,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             cids,
             reset,
             active,
+            flush,
         } = set;
         bound::Scope::with(entries, |root| {
             let (entries, resets) = root.split();
@@ -92,6 +94,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
                 cids,
                 tokens: reset,
                 active,
+                flush,
             })
         })
     }
@@ -152,6 +155,18 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         self.entries.source.len_in::<PLANE>()
     }
 
+    pub(in crate::runtime) fn blocked_flush(&self, bytes: usize) -> usize {
+        self.flush.blocked_at(bytes)
+    }
+
+    pub(in crate::runtime) fn reset_flush(&mut self) {
+        self.flush.blocked = 0;
+    }
+
+    pub(in crate::runtime) fn block_flush(&mut self, bytes: usize, blocked: usize) {
+        *self.flush = super::Flush { blocked, bytes };
+    }
+
     pub(in crate::runtime) fn front<const PLANE: usize>(&self) -> Option<Key<'id>> {
         self.entries.source.front::<PLANE>().map(Key)
     }
@@ -174,6 +189,9 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
     pub(in crate::runtime) fn pop_front<const PLANE: usize>(&mut self) -> Option<Key<'id>> {
         let (key, front) = self.entries.source.front_entry::<PLANE>()?;
         front.pop();
+        if PLANE == mux::FLUSH_QUEUE {
+            self.flush.blocked = 0;
+        }
         Some(Key(key))
     }
 
@@ -225,6 +243,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         key: Key<'id>,
         domain: id::Domain<I, DOMAIN>,
     ) -> Taken<'storage, C, I, DOMAIN, B, D, T> {
+        self.reset_flush();
         let handle = self.handle(domain, key);
         node::detach(&mut self, key);
         let Self {
@@ -241,6 +260,8 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         entry.unlink::<{ mux::FLUSH_QUEUE }>();
         entry.unlink::<{ mux::REAP_QUEUE }>();
         entry.unlink::<{ mux::APPLICATION_QUEUE }>();
+        entry.unlink::<{ mux::STREAM_QUEUE }>();
+        entry.unlink::<{ mux::DATAGRAM_QUEUE }>();
         let (slot, entry) = entry.take();
         *active -= 1;
         Taken {

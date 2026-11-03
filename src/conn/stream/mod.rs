@@ -32,13 +32,15 @@ use crate::{
         stream::state::{receive::credits, streams::closed},
     },
     stream,
-    stream::send::Overflow,
+    stream::send::{Overflow, admit},
     wire::stream::{Direction, Id, Initiator},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Error {
     NotEstablished,
+    /// The send half rejected the nonempty input without retaining it.
+    Discarded(admit::Cause),
     PeerLimit,
     Allocation {
         error: alloc::Error,

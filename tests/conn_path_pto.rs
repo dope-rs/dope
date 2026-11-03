@@ -27,13 +27,18 @@ fn candidate_preserves_pto() {
     .expect("live connection");
 
     for _ in 0..32 {
-        let (sent, window, ready) = Pair::access(&mut server, handle, at, |conn| {
+        let (sent, window, ready, mtu) = Pair::access(&mut server, handle, at, |conn| {
             let view = conn.view();
             let state = view.recovery();
-            (state.in_flight(), state.window(), state.send_at(at))
+            (
+                state.in_flight(),
+                state.window(),
+                state.send_at(at),
+                view.path().mtu(),
+            )
         })
         .expect("congestion state");
-        if sent >= window {
+        if sent <= window && window - sent < mtu {
             break;
         }
         at = ready;
@@ -57,7 +62,10 @@ fn candidate_preserves_pto() {
         )
     })
     .expect("full congestion state");
-    assert!(sent >= window, "flight {sent} must fill window {window}");
+    assert!(
+        sent <= window && window - sent < mtu as u64,
+        "flight {sent} must leave less than the next MTU in window {window}",
+    );
     assert!(due > at && due < at + Duration::from_secs(30));
 
     at += Duration::from_micros(1);
@@ -85,7 +93,7 @@ fn candidate_preserves_pto() {
         (state.in_flight(), state.window(), state.next_timer())
     })
     .expect("staged congestion state");
-    assert!(sent >= window);
+    assert!(sent <= window && window - sent < mtu as u64);
     assert_eq!(timer, Some(due), "candidate must preserve the active PTO");
 
     let fired = due + Duration::from_nanos(1);

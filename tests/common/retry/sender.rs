@@ -20,6 +20,7 @@ pub enum Error<'pool> {
     Datagram(SendFailure<Vec<u8>>),
     Acquire(datagram::Error),
     Sender(SendError),
+    Protocol(usize),
     Accepted,
     Rejected(SendFailure<Packet<'pool>>),
     Returned {
@@ -148,6 +149,10 @@ where
                 available: free,
                 packet,
             });
+        }
+        let connected = sender.protocol().len();
+        if connected != 2 {
+            return Err(Error::Protocol(connected));
         }
         match sender.try_send(second, packet) {
             Ok(()) => *this.phase = Phase::Sent,

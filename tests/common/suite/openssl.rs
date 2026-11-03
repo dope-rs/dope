@@ -9,15 +9,12 @@ use dope_quic::runtime::mux::handler::hook::life::{create::Unit, ready};
 use dope_quic::runtime::mux::handler::hook::set::{On, Set};
 use dope_quic::runtime::mux::handler::hook::wire::cert;
 use dope_quic::runtime::mux::router::Router;
+use dope_test::harness::peer::{self as native, udp::Socket};
 use dope_tls::config::Ext as _;
 use o3::buffer::storage;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-use std::{
-    fs, io, net,
-    path::{Path, PathBuf},
-    pin, process, time,
-};
+use std::{net, pin, time};
 
 #[derive(Default)]
 pub struct Events {
@@ -52,153 +49,61 @@ pub struct Identity {
 
 #[derive(Debug)]
 pub enum Error {
-    Io(io::Error),
+    Socket(native::Error),
     Runtime(runtime::Error),
     Sent { expected: usize, actual: usize },
-}
-
-#[derive(Debug)]
-pub enum Init {
-    Io(io::Error),
-    Command {
-        args: &'static [&'static str],
-        directory: PathBuf,
-        output: process::Output,
-    },
 }
 
 #[derive(Debug)]
 pub enum Setup {
     Tls(dope_tls::Error),
     Runtime(runtime::Error),
-    Io(io::Error),
+    Socket(native::Error),
 }
 
-impl Identity {
-    pub fn new(root: &Path) -> Result<Self, Init> {
-        let commands: [&'static [&'static str]; 4] = [
-            &[
-                "genpkey",
-                "-algorithm",
-                "EC",
-                "-pkeyopt",
-                "ec_paramgen_curve:P-256",
-                "-out",
-                "key.pem",
-            ],
-            &[
-                "pkcs8", "-topk8", "-nocrypt", "-in", "key.pem", "-outform", "DER", "-out",
-                "key.der",
-            ],
-            &[
-                "req",
-                "-new",
-                "-x509",
-                "-key",
-                "key.pem",
-                "-sha256",
-                "-days",
-                "1",
-                "-subj",
-                "/CN=127.0.0.1",
-                "-addext",
-                "subjectAltName=IP:127.0.0.1",
-                "-addext",
-                "basicConstraints=critical,CA:FALSE",
-                "-addext",
-                "keyUsage=critical,digitalSignature",
-                "-addext",
-                "extendedKeyUsage=serverAuth,clientAuth",
-                "-out",
-                "cert.pem",
-            ],
-            &[
-                "x509", "-in", "cert.pem", "-outform", "DER", "-out", "cert.der",
-            ],
-        ];
-        for args in commands {
-            let mut command = process::Command::new("openssl");
-            command.args(args).current_dir(root);
-            let output = command.output().map_err(Init::Io)?;
-            if !output.status.success() {
-                return Err(Init::Command {
-                    args,
-                    directory: root.to_path_buf(),
-                    output,
-                });
-            }
-        }
-        Ok(Self {
-            key: fs::read(root.join("key.der")).map_err(Init::Io)?,
-            chain: [fs::read(root.join("cert.der")).map_err(Init::Io)?],
-        })
-    }
-}
-
-pub struct Peer<'a, F: FnMut(io::Result<process::ExitStatus>)> {
-    child: process::Child,
-    root: &'a Path,
-    report: F,
-}
-
-impl<'a, F: FnMut(io::Result<process::ExitStatus>)> Peer<'a, F> {
-    pub fn new(root: &'a Path, address: net::SocketAddr, report: F) -> io::Result<Self> {
-        let child = process::Command::new("openssl")
-            .args([
-                "s_client",
-                "-quic",
-                "-connect",
-                &address.to_string(),
-                "-alpn",
-                "h3",
-                "-CAfile",
-                "cert.pem",
-                "-verify_ip",
-                "127.0.0.1",
-                "-verify_return_error",
-                "-brief",
-                "-ign_eof",
-            ])
-            .current_dir(root)
-            .stdin(process::Stdio::null())
-            .stdout(fs::File::create(root.join("stdout"))?)
-            .stderr(fs::File::create(root.join("stderr"))?)
-            .spawn()?;
-        Ok(Self {
-            child,
-            root,
-            report,
-        })
-    }
-
-    pub fn diagnostic(&self) -> io::Result<String> {
-        fs::read_to_string(self.root.join("stderr"))
-    }
-
-    pub fn verified(&self) -> io::Result<bool> {
-        Ok(self.diagnostic()?.contains("Verification: OK"))
-    }
-
-    pub fn status(&mut self) -> io::Result<Option<process::ExitStatus>> {
-        self.child.try_wait()
-    }
-}
-
-impl<F: FnMut(io::Result<process::ExitStatus>)> Drop for Peer<'_, F> {
-    fn drop(&mut self) {
-        let result = self.child.try_wait().and_then(|status| {
-            if status.is_none() {
-                self.child.kill()?;
-            }
-            self.child.wait()
-        });
-        (self.report)(result);
-    }
-}
+pub const COMMANDS: [&[&str]; 4] = [
+    &[
+        "genpkey",
+        "-algorithm",
+        "EC",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-out",
+        "key.pem",
+    ],
+    &[
+        "pkcs8", "-topk8", "-nocrypt", "-in", "key.pem", "-outform", "DER", "-out", "key.der",
+    ],
+    &[
+        "req",
+        "-new",
+        "-x509",
+        "-key",
+        "key.pem",
+        "-sha256",
+        "-days",
+        "1",
+        "-subj",
+        "/CN=127.0.0.1",
+        "-addext",
+        "subjectAltName=IP:127.0.0.1",
+        "-addext",
+        "basicConstraints=critical,CA:FALSE",
+        "-addext",
+        "keyUsage=critical,digitalSignature",
+        "-addext",
+        "extendedKeyUsage=serverAuth,clientAuth",
+        "-out",
+        "cert.pem",
+    ],
+    &[
+        "x509", "-in", "cert.pem", "-outform", "DER", "-out", "cert.der",
+    ],
+];
 
 pub struct Server {
     pub router: Router<Events>,
-    socket: net::UdpSocket,
+    socket: Socket<'static>,
     packet: Vec<u8>,
     pub received: usize,
     pub sent: usize,
@@ -232,10 +137,10 @@ impl Server {
             .build()
             .map_err(runtime::Error::Storage)
             .map_err(Setup::Runtime)?;
-        let socket = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).map_err(Setup::Io)?;
+        let socket = Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).map_err(Setup::Socket)?;
         socket
-            .set_read_timeout(Some(time::Duration::from_millis(2)))
-            .map_err(Setup::Io)?;
+            .read_wait(Some(time::Duration::from_millis(2)))
+            .map_err(Setup::Socket)?;
         Ok(Self {
             router,
             socket,
@@ -245,7 +150,7 @@ impl Server {
         })
     }
 
-    pub fn addr(&self) -> io::Result<net::SocketAddr> {
+    pub fn addr(&self) -> Result<net::SocketAddr, native::Error> {
         self.socket.local_addr()
     }
 
@@ -262,12 +167,9 @@ impl Server {
                     .map_err(runtime::Error::Receive)
                     .map_err(Error::Runtime)?;
             }
-            Err(cause)
-                if matches!(
-                    cause.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
-            Err(cause) => return Err(Error::Io(cause)),
+            Err(native::Error::TimedOut) => {}
+            Err(native::Error::Syscall(cause)) if cause.is_block() => {}
+            Err(cause) => return Err(Error::Socket(cause)),
         }
         pin::Pin::new(&mut self.router)
             .observe(now, |mut turn| turn.output().drive())
@@ -279,7 +181,10 @@ impl Server {
             let address = outgoing.addr();
             for segment in outgoing.segments_mut() {
                 self.sent += 1;
-                let actual = self.socket.send_to(segment, address).map_err(Error::Io)?;
+                let actual = self
+                    .socket
+                    .send_to(segment, address)
+                    .map_err(Error::Socket)?;
                 if actual != segment.len() {
                     return Err(Error::Sent {
                         expected: segment.len(),

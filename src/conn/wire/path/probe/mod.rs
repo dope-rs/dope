@@ -41,7 +41,10 @@ pub enum Error {
 
 pub(in crate::conn) enum Completion {
     Unmatched,
-    Accepted(Option<path::Key>),
+    Accepted {
+        path: Option<path::Key>,
+        expanded: bool,
+    },
 }
 
 /// A position selected in an original ready prefix; publication retains its owner.
@@ -66,11 +69,18 @@ impl Relocated {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Sent {
+    Pending,
+    Short,
+    Expanded,
+}
+
 struct Challenge {
     key: path::ControlKey,
     data: [u8; 8],
     control: Option<owner::Key<kind::Challenge>>,
-    outstanding: bool,
+    sent: Sent,
     path: Option<path::Key>,
 }
 

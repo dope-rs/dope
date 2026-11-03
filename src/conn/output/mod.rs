@@ -168,6 +168,11 @@ impl Datagram {
         Some(datagram)
     }
 
+    pub(in crate::conn) fn clear(&mut self) {
+        self.pending_datagrams = collections::VecDeque::new();
+        self.bytes = 0;
+    }
+
     pub(in crate::conn) const fn bytes(&self) -> usize {
         self.bytes
     }
@@ -175,45 +180,113 @@ impl Datagram {
 
 pub(super) struct Lifecycle {
     pub(super) pending_close: Option<PendingClose>,
+    pub(super) close_deadline: Option<time::Instant>,
+    close_stride: NonZero<u32>,
+    close_remaining: u32,
     pub(super) state: conn::State,
     pub(super) sent_initial: bool,
     pub(super) handshake_confirmed: bool,
+}
+
+impl Lifecycle {
+    pub(super) fn close(&self) -> Option<&PendingClose> {
+        (self.state == conn::State::Closing && self.close_remaining == 0)
+            .then_some(self.pending_close.as_ref())
+            .flatten()
+    }
+
+    pub(super) fn close_sent(&mut self) {
+        self.close_remaining = self.close_stride.get();
+        self.close_stride = self
+            .close_stride
+            .saturating_mul(NonZero::<u32>::MIN.saturating_add(1));
+    }
+
+    pub(super) fn received(&mut self) -> bool {
+        if self.state != conn::State::Closing || self.close_remaining == 0 {
+            return false;
+        }
+        self.close_remaining -= 1;
+        self.close_remaining == 0
+    }
 }
 
 pub(super) struct Activity {
     pub(super) last_activity: Option<time::Instant>,
     pub(super) amplification_received: u64,
     pub(super) amplification_sent: u64,
+    pub(super) outer_amplification_received: u64,
+    pub(super) outer_amplification_sent: u64,
     pub(super) ack_eliciting_sent_since_last_receive: bool,
     pub(super) peer_address_validated: bool,
 }
 
-#[repr(transparent)]
-pub(super) struct AmpSent(u64);
+pub(super) struct AmpSent {
+    inner: u64,
+    outer: u64,
+    bytes: NonZero<usize>,
+}
+
+pub(super) enum AmpError {
+    Inner,
+    Outer,
+}
 
 impl Activity {
-    pub(super) fn amp_credit(&self) -> u64 {
+    fn credit(&self, received: u64, sent: u64) -> u64 {
         if self.peer_address_validated {
             return u64::MAX;
         }
-        let sent = self.amplification_sent;
         let room = u64::MAX - sent;
-        let Some(auth) = self.amplification_received.checked_mul(3) else {
-            return room;
-        };
-        auth.saturating_sub(sent).min(room)
+        received
+            .checked_mul(3)
+            .map_or(room, |auth| auth.saturating_sub(sent).min(room))
     }
 
-    pub(super) fn plan_amp(&self, bytes: NonZero<usize>) -> Option<AmpSent> {
-        if self.peer_address_validated {
-            return Some(AmpSent(self.amplification_sent));
+    pub(super) fn amp_credit(&self) -> u64 {
+        self.credit(self.amplification_received, self.amplification_sent)
+    }
+
+    pub(super) fn outer_credit(&self) -> u64 {
+        self.credit(
+            self.outer_amplification_received,
+            self.outer_amplification_sent,
+        )
+    }
+
+    pub(super) fn plan_amp(
+        &self,
+        bytes: NonZero<usize>,
+        overhead: usize,
+    ) -> Result<AmpSent, AmpError> {
+        let inner = u64::try_from(bytes.get()).map_err(|_| AmpError::Inner)?;
+        if inner > self.amp_credit() {
+            return Err(AmpError::Inner);
         }
-        let bytes = u64::try_from(bytes.get()).ok()?;
-        (bytes <= self.amp_credit()).then(|| AmpSent(self.amplification_sent + bytes))
+        let bytes = bytes.checked_add(overhead).ok_or(AmpError::Outer)?;
+        let outer = u64::try_from(bytes.get()).map_err(|_| AmpError::Outer)?;
+        if outer > self.outer_credit() {
+            return Err(AmpError::Outer);
+        }
+        Ok(AmpSent {
+            inner: if self.peer_address_validated {
+                self.amplification_sent
+            } else {
+                self.amplification_sent + inner
+            },
+            outer: if self.peer_address_validated {
+                self.outer_amplification_sent
+            } else {
+                self.outer_amplification_sent + outer
+            },
+            bytes,
+        })
     }
 
-    pub(super) fn commit_amp(&mut self, sent: AmpSent) {
-        self.amplification_sent = sent.0;
+    pub(super) fn commit_amp(&mut self, sent: AmpSent) -> usize {
+        self.amplification_sent = sent.inner;
+        self.outer_amplification_sent = sent.outer;
+        sent.bytes.get()
     }
 }
 
@@ -250,6 +323,9 @@ impl Egress {
             },
             lifecycle: Lifecycle {
                 pending_close: None,
+                close_deadline: None,
+                close_stride: NonZero::<u32>::MIN,
+                close_remaining: 0,
                 state: conn::State::Handshaking,
                 sent_initial: false,
                 handshake_confirmed: false,
@@ -258,6 +334,8 @@ impl Egress {
                 last_activity: None,
                 amplification_received: 0,
                 amplification_sent: 0,
+                outer_amplification_received: 0,
+                outer_amplification_sent: 0,
                 ack_eliciting_sent_since_last_receive: false,
                 peer_address_validated: setup.peer_address_validated,
             },
@@ -296,7 +374,7 @@ impl PendingClose {
 }
 
 const _: () = assert!(std::mem::size_of::<journals::Packet>() == 48);
-const _: () = assert!(std::mem::size_of::<AmpSent>() == std::mem::size_of::<u64>());
+const _: () = assert!(std::mem::size_of::<AmpSent>() == 3 * std::mem::size_of::<u64>());
 const _: () =
     assert!(std::mem::size_of::<Option<time::Instant>>() == std::mem::size_of::<time::Instant>());
 /// Keeps split close variants within the former tagged-record layout.

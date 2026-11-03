@@ -102,6 +102,11 @@ impl Raw {
         })
     }
 
+    /// Retains the nonce sequence and aggregate usage across adversarial key swaps.
+    pub fn replace_packet(&mut self, key: Box<dyn quic::PacketKey>) -> Box<dyn quic::PacketKey> {
+        std::mem::replace(&mut self.keys.packet, key)
+    }
+
     pub fn open(&mut self, wire: &mut [u8], offset: usize) -> Result<(u64, Vec<u8>), SealError> {
         let end = offset.checked_add(SAMPLE_END).ok_or(SealError::Overflow {
             base: offset,
@@ -241,6 +246,7 @@ fn add(base: usize, added: usize) -> Result<usize, SealError> {
 }
 
 /// A native AWS-LC suite with selected metadata and header-operation failures.
+/// LIMIT only lowers native usage ceilings; all key and packet operations stay native.
 pub struct Dimensions<
     'key,
     const SAMPLE: usize,
@@ -248,6 +254,7 @@ pub struct Dimensions<
     const ENCRYPT: bool = false,
     const DECRYPT: bool = false,
     const BODY: bool = false,
+    const LIMIT: u64 = { u64::MAX },
 > {
     alg: &'key dyn quic::Algorithm,
 }
@@ -258,7 +265,8 @@ impl<
     const ENCRYPT: bool,
     const DECRYPT: bool,
     const BODY: bool,
-> Dimensions<'_, SAMPLE, TAG, ENCRYPT, DECRYPT, BODY>
+    const LIMIT: u64,
+> Dimensions<'_, SAMPLE, TAG, ENCRYPT, DECRYPT, BODY, LIMIT>
 {
     pub const SUITE: Option<rustls::SupportedCipherSuite> =
         match cipher_suite::TLS13_AES_128_GCM_SHA256.tls13() {
@@ -272,7 +280,9 @@ impl<
                         },
                         hkdf_provider: suite.hkdf_provider,
                         aead_alg: suite.aead_alg,
-                        quic: Some(&Dimensions::<SAMPLE, TAG, ENCRYPT, DECRYPT, BODY> { alg }),
+                        quic: Some(&Dimensions::<SAMPLE, TAG, ENCRYPT, DECRYPT, BODY, LIMIT> {
+                            alg,
+                        }),
                     },
                 )),
                 None => None,
@@ -287,10 +297,11 @@ impl<
     const ENCRYPT: bool,
     const DECRYPT: bool,
     const BODY: bool,
-> quic::Algorithm for Dimensions<'_, SAMPLE, TAG, ENCRYPT, DECRYPT, BODY>
+    const LIMIT: u64,
+> quic::Algorithm for Dimensions<'_, SAMPLE, TAG, ENCRYPT, DECRYPT, BODY, LIMIT>
 {
     fn packet_key(&self, key: AeadKey, iv: Iv) -> Box<dyn quic::PacketKey> {
-        Box::new(Dimension::<_, TAG, false, false, BODY>(
+        Box::new(Dimension::<_, TAG, false, false, BODY, LIMIT>(
             self.alg.packet_key(key, iv),
         ))
     }
@@ -312,10 +323,11 @@ struct Dimension<
     const ENCRYPT: bool = false,
     const DECRYPT: bool = false,
     const BODY: bool = false,
+    const LIMIT: u64 = { u64::MAX },
 >(K);
 
-impl<const N: usize, const BODY: bool> quic::PacketKey
-    for Dimension<Box<dyn quic::PacketKey>, N, false, false, BODY>
+impl<const N: usize, const BODY: bool, const LIMIT: u64> quic::PacketKey
+    for Dimension<Box<dyn quic::PacketKey>, N, false, false, BODY, LIMIT>
 {
     fn encrypt_in_place(
         &self,
@@ -341,11 +353,11 @@ impl<const N: usize, const BODY: bool> quic::PacketKey
     }
 
     fn confidentiality_limit(&self) -> u64 {
-        self.0.confidentiality_limit()
+        self.0.confidentiality_limit().min(LIMIT)
     }
 
     fn integrity_limit(&self) -> u64 {
-        self.0.integrity_limit()
+        self.0.integrity_limit().min(LIMIT)
     }
 }
 

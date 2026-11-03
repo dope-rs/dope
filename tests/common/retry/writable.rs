@@ -1,7 +1,7 @@
 use crate::common::peer;
 use crate::common::retry::{Finish, traces::Immediate};
 use crate::common::suite::mux::dispatch::{self, Capture};
-use dope::core::driver::schedule::clock;
+use dope::core::{Errno, driver::schedule::clock, io::datagram::ReceiveError};
 use dope::runtime::control;
 use dope_quic::client::{self, auth, protocol};
 use dope_quic::conn::{id, life::options::Options, stream::Event};
@@ -9,16 +9,19 @@ use dope_quic::errors::{self, SendFailure};
 use dope_quic::proto::datagram::{self, Arena, Packet};
 use dope_quic::runtime::mux::{
     builder,
-    handler::hook::{wire::packet, writable},
+    handler::{
+        hook::{wire::packet, writable},
+        net,
+    },
     output::Flight,
     router,
 };
 use dope_quic::wire::stream::Id;
+use dope_test::harness::peer::{self as native, udp::Socket};
 use std::{
     cell::{Ref, RefCell},
-    io, mem,
+    mem,
     net::SocketAddr,
-    net::UdpSocket,
     num::NonZero,
     pin::Pin,
     rc::Rc,
@@ -35,16 +38,46 @@ pub enum Callback<'a> {
     Close,
     Packet(packet::Failure<'a>),
     Certificate(&'a rustls::Error),
+    SocketReceive(&'a ReceiveError),
+    SocketSend {
+        destination: SocketAddr,
+        payload: &'a [u8],
+        error: Errno,
+    },
 }
 
-pub struct Connected<F> {
+pub struct Connected<F, const PULL: bool = false> {
     active: usize,
     observe: F,
+    sockets: bool,
 }
 
 impl<F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin> Connected<F> {
     pub fn new(observe: F) -> Self {
-        Self { active: 0, observe }
+        Self::with_observer(observe)
+    }
+}
+
+impl<F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin> Connected<F, true> {
+    pub fn pull(observe: F) -> Self {
+        Self::with_observer(observe)
+    }
+}
+
+impl<F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin, const PULL: bool>
+    Connected<F, PULL>
+{
+    fn with_observer(observe: F) -> Self {
+        Self {
+            active: 0,
+            observe,
+            sockets: false,
+        }
+    }
+
+    pub fn with_socket_events(mut self) -> Self {
+        self.sockets = true;
+        self
     }
 
     pub fn len(&self) -> usize {
@@ -56,11 +89,17 @@ impl<F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin> Connected<F
     }
 }
 
-impl<'d, F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin> protocol::Protocol<'d>
-    for Connected<F>
+impl<'d, F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin, const PULL: bool>
+    protocol::Protocol<'d> for Connected<F, PULL>
 {
     type Receive = Vec<u8>;
     type Writable = writable::On;
+
+    const DATAGRAMS: protocol::Datagrams = if PULL {
+        protocol::Datagrams::Pull
+    } else {
+        protocol::Datagrams::Push
+    };
 
     fn connect<'scope>(self: Pin<&'scope mut Self>, slot: client::SlotScope<'scope>) {
         let this = self.get_mut();
@@ -117,6 +156,29 @@ impl<'d, F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin> protoco
         (self.get_mut().observe)(Err(Callback::Packet(cause)));
     }
 
+    fn socket<const DOMAIN: u8>(
+        self: Pin<&mut Self>,
+        event: &net::Event<'_, id::Driver<'d>, DOMAIN>,
+    ) {
+        let this = self.get_mut();
+        if !this.sockets {
+            return;
+        }
+        let callback = match event {
+            net::Event::Receive { error, .. } => Callback::SocketReceive(error),
+            net::Event::Settled(settlement) => match settlement.outcome() {
+                net::Outcome::Failed(error) => Callback::SocketSend {
+                    destination: settlement.destination(),
+                    payload: settlement.payload(),
+                    error: *error,
+                },
+                _ => return,
+            },
+            _ => return,
+        };
+        (this.observe)(Err(callback));
+    }
+
     fn certificate<const DOMAIN: u8>(
         self: Pin<&mut Self>,
         _: id::Handle<id::Driver<'d>, DOMAIN>,
@@ -127,9 +189,50 @@ impl<'d, F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin> protoco
     }
 }
 
+pub type PullControl<'step, 'pool, 'd, F> = InputControl<'step, 'pool, 'd, Connected<F, true>>;
+
+pub type InputControl<'step, 'pool, 'd, P> =
+    client::control::Control<'step, 'pool, 'd, 1, P, Immediate, auth::Owned>;
+
+#[pin_project::pin_project]
+#[derive(dope::Application)]
+#[dispatcher(driver = 'd)]
+#[coordinate]
+pub struct Pull<'d, 'pool, P, G>
+where
+    P: protocol::Protocol<'d>,
+    G: for<'step, 'clock> FnMut(
+        &mut InputControl<'step, 'pool, 'd, P>,
+        clock::Clock<'clock, 'd>,
+        &mut clock::Deadline<'d>,
+    ) -> control::Flow,
+{
+    #[pin]
+    #[manifold(control)]
+    pub client: client::Dialer<'pool, 'd, 1, P, Immediate, auth::Owned>,
+    #[dispatcher(state)]
+    pub poll: G,
+    #[dispatcher(schedule)]
+    pub next: clock::Deadline<'d>,
+}
+
+impl<'d, 'pool, P, G> Pull<'d, 'pool, P, G>
+where
+    P: protocol::Protocol<'d>,
+    G: for<'step, 'clock> FnMut(
+        &mut InputControl<'step, 'pool, 'd, P>,
+        clock::Clock<'clock, 'd>,
+        &mut clock::Deadline<'d>,
+    ) -> control::Flow,
+{
+    fn coordinate(mut this: pull_coord::Fields<'_, 'd, 'pool, P, G>) -> control::Flow {
+        (this.poll)(&mut this.client, this.step.clock(), this.next)
+    }
+}
+
 #[derive(Debug)]
 pub enum PeerError {
-    Io(io::Error),
+    Socket(native::Error),
     Plan(builder::Error),
     Setup(peer::Setup),
     Receive(errors::Receive),
@@ -139,7 +242,7 @@ pub enum PeerError {
 
 pub struct Peer {
     pub router: router::Router<Capture>,
-    socket: UdpSocket,
+    socket: Socket<'static>,
 }
 
 impl Peer {
@@ -152,8 +255,8 @@ impl Peer {
         options: Options,
         limit: NonZero<usize>,
     ) -> Result<Self, PeerError> {
-        let socket = UdpSocket::bind("127.0.0.1:0").map_err(PeerError::Io)?;
-        socket.set_nonblocking(true).map_err(PeerError::Io)?;
+        let socket = Socket::bind(([127, 0, 0, 1], 0).into()).map_err(PeerError::Socket)?;
+        socket.nonblock(true);
         Ok(Self {
             router: Capture::server(
                 Capture::default(),
@@ -166,7 +269,7 @@ impl Peer {
         })
     }
 
-    pub fn addr(&self) -> io::Result<SocketAddr> {
+    pub fn addr(&self) -> Result<SocketAddr, native::Error> {
         self.socket.local_addr()
     }
 
@@ -180,8 +283,8 @@ impl Peer {
             match self.socket.recv_from(&mut packet) {
                 Ok((len, from)) => Capture::recv(&mut self.router, from, &mut packet[..len], now)
                     .map_err(PeerError::Receive)?,
-                Err(cause) if cause.kind() == io::ErrorKind::WouldBlock => break,
-                Err(cause) => return Err(PeerError::Io(cause)),
+                Err(native::Error::Syscall(cause)) if cause.is_block() => break,
+                Err(cause) => return Err(PeerError::Socket(cause)),
             }
         }
         Ok(())
@@ -196,7 +299,10 @@ impl Peer {
     pub fn transmit(&self, flight: &mut Flight) -> Result<(), PeerError> {
         let addr = flight.addr();
         for packet in flight.segments_mut() {
-            let actual = self.socket.send_to(packet, addr).map_err(PeerError::Io)?;
+            let actual = self
+                .socket
+                .send_to(packet, addr)
+                .map_err(PeerError::Socket)?;
             if actual != packet.len() {
                 return Err(PeerError::ShortSend {
                     expected: packet.len(),

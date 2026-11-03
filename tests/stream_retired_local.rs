@@ -42,6 +42,15 @@ fn retired_local_stays_done() {
         let mut streams = scope.streams();
         let handle = streams.resident().handle(id).expect("retained binding");
         let send = streams.view().resolve_send(id).expect("retired send");
+        assert_eq!(
+            streams.send().send(send, b"late"),
+            Err(conn::stream::Error::Discarded(admit::Cause::Retired))
+        );
+        assert_eq!(streams.send().send(send, &[]), Ok(()));
+        streams
+            .send()
+            .finish(send)
+            .expect("retired finish is inert");
         assert!(!streams.view().is_send_open(send));
         streams.binding().try_prepare(handle).expect("retired send");
         let parts = send::Parts::new(send::Buffer::Owned(vec![2]), None, send::Boundary::End);

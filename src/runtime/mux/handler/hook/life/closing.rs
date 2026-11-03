@@ -27,7 +27,7 @@ where
     D: buffer::raw::Segment,
     I: id::Temporal,
 {
-    /// Moves reconnect ownership from the transport retired after this callback.
+    /// Moves reconnect ownership while terminal packet protection stays retained.
     pub fn into_saved(mut self) -> (Self, Option<life::Reconnect>) {
         let saved = self.slot.transport().security().take_final();
         (self, saved)
@@ -71,6 +71,12 @@ where
     D: buffer::raw::Segment,
     I: id::Temporal,
 {
+    fn notify<'scope>(
+        handler: pin::Pin<&'scope mut H>,
+        slot: Slot<'scope, H::Connection, DOMAIN, B, D>,
+        handle: id::Handle<I, DOMAIN>,
+    );
+
     fn retire(
         handler: pin::Pin<&mut H>,
         conn: conn::Connection<DOMAIN, B, D>,
@@ -87,6 +93,18 @@ where
     D: buffer::raw::Segment,
     I: id::Temporal,
 {
+    fn notify<'scope>(
+        handler: pin::Pin<&'scope mut H>,
+        slot: Slot<'scope, H::Connection, DOMAIN, B, D>,
+        handle: id::Handle<I, DOMAIN>,
+    ) {
+        H::closing(Event {
+            handler,
+            slot,
+            handle,
+        });
+    }
+
     fn retire(
         mut handler: pin::Pin<&mut H>,
         mut conn: conn::Connection<DOMAIN, B, D>,
@@ -94,14 +112,14 @@ where
         brand: brand::Token<'_>,
         handle: id::Handle<I, DOMAIN>,
     ) {
-        H::closing(Event {
-            handler: handler.as_mut(),
-            slot: Slot::new(
+        Self::notify(
+            handler.as_mut(),
+            Slot::new(
                 app,
                 scope::Access::new(conn.machine_mut(), brand.reborrow()),
             ),
             handle,
-        });
+        );
         <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Release::retire(handler, conn, handle);
     }
 }
@@ -113,6 +131,13 @@ where
     D: buffer::raw::Segment,
     I: id::Temporal,
 {
+    fn notify<'scope>(
+        _: pin::Pin<&'scope mut H>,
+        _: Slot<'scope, H::Connection, DOMAIN, B, D>,
+        _: id::Handle<I, DOMAIN>,
+    ) {
+    }
+
     fn retire(
         handler: pin::Pin<&mut H>,
         conn: conn::Connection<DOMAIN, B, D>,

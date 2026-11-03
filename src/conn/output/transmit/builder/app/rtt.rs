@@ -54,29 +54,18 @@ pub(in crate::conn::output::transmit) fn build<
     let route = permit
         .as_ref()
         .map_or(path::OutputRoute::ACTIVE, |permit| permit.route());
-    let selected = build.connection.path.output().cid(route);
-    let active = *build.connection.path.peer.id();
-    let dcid = if selected == active.as_ref_id() {
-        active
-    } else {
-        let Some(item) = build.connection.path.peer.spare().copied() else {
-            return Ok(None);
-        };
-        if selected != item.as_ref_id() {
-            return Ok(None);
-        }
-        item
-    };
+    let dcid = build.connection.path.output().cid(route).into_owned();
     let limit = build.short_limit(max, number.encoding(), route);
     if limit == 0 {
         return Ok(None);
     }
+    let target = build.destination;
+    target.prefix(dst)?;
     let mut draft = output::Draft::try_new(
         dst.append(),
         short::Ref::new(dcid.as_ref_id(), number.encoding(), phase),
     )
     .map_err(transmit::Admission::Protection)?;
-    let policy = build.destination;
     let (commit, build) = {
         let mut frames = draft.append();
         let mut commit = Plan::new(conn::Epoch::Application, number);
@@ -324,8 +313,16 @@ pub(in crate::conn::output::transmit) fn build<
                 pmtud::BASE_PMTU as usize,
                 commit.packet_number.encoding(),
                 route,
-            )
-            .min(limit);
+            );
+            if route.path().is_none()
+                && limit < padded
+                && transmit::permit::Permit::new(build.owner().conn())
+                    .send_limit(pmtud::BASE_PMTU as usize)
+                    .is_some_and(|limit| limit >= pmtud::BASE_PMTU as usize)
+            {
+                return Ok(None);
+            }
+            let padded = padded.min(limit);
             if frames.len() < padded {
                 let needed = padded - frames.len();
                 frames
@@ -340,9 +337,6 @@ pub(in crate::conn::output::transmit) fn build<
         let elicit = commit.flags.is_eliciting();
         commit.flags.set_flight(elicit);
         (commit, build)
-    };
-    let Some(target) = build.owner().target(policy, commit.path.route) else {
-        return Ok(None);
     };
     let prepared =
         pending::Packet::try_new(build, commit, target).map_err(|(_, error)| error.into_error())?;

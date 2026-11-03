@@ -41,24 +41,27 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E: release:
         let mut sample = None;
         let mut elicits = false;
         let mut journals = mem::take(&mut self.delivery.egress.recovery.packet_journals);
-        let result = journals
-            .space_mut(epoch)
-            .try_ack(ranges, |journal, controls, streams| {
-                changed = true;
-                let elicit = journal.transmission.is_eliciting();
-                elicits |= elicit;
-                epoch
-                    .bind_mut(&mut self.delivery.egress.recovery.streaks)
-                    .acknowledged(journal.pn, elicit && journal.transmission.is_flight());
-                if journal.pn.get() == largest {
-                    sample = Some(now.saturating_duration_since(journal.sent_time));
-                }
-                if valid && elicit {
-                    self.delivery.egress.recovery.probe.count.reset();
-                }
-                self.delivery.acknowledge(epoch, journal, controls, streams)
-            });
+        let (result, boundary) =
+            journals
+                .space_mut(epoch)
+                .try_ack(ranges, |journal, controls, streams| {
+                    changed = true;
+                    let elicit = journal.transmission.is_eliciting();
+                    elicits |= elicit;
+                    if journal.pn.get() == largest {
+                        sample = Some(now.saturating_duration_since(journal.sent_time));
+                    }
+                    if valid && elicit {
+                        self.delivery.egress.recovery.probe.count.reset();
+                    }
+                    self.delivery.acknowledge(epoch, journal, controls, streams)
+                });
         self.delivery.egress.recovery.packet_journals = journals;
+        if let Some(boundary) = boundary {
+            epoch
+                .bind_mut(&mut self.delivery.egress.recovery.streaks)
+                .acknowledged(boundary);
+        }
         result?;
         if elicits && let Some(sample) = sample {
             self.delivery.egress.recovery.rtt.update(sample, delay);

@@ -67,7 +67,10 @@ impl<'map, B: Recv> Slot<'map, B> {
                 let sides::Entry::Vacant(resident) = registry.side::<false>().claim(id) else {
                     return None;
                 };
-                let occupied = vacant.insert()?;
+                let Some(occupied) = vacant.insert() else {
+                    resident.release();
+                    return None;
+                };
                 resident.bind(occupied.entry.handle());
                 Some(occupied)
             }

@@ -11,7 +11,7 @@ use crate::conn::wire::{crypto::chunks, ingress, scratch};
 use crate::stream;
 use crate::wire::frame::{self, ack::ranges};
 use crate::wire::stream::Initiator;
-use frames::{record, sources};
+use frames::{check, record, sources};
 use ingress::frames;
 use receive::{credits, planner};
 
@@ -26,6 +26,7 @@ pub(super) struct Build {
     bytes: usize,
     dgrams: usize,
     max: Option<u64>,
+    close: bool,
 }
 
 impl Build {
@@ -53,6 +54,7 @@ impl Build {
             bytes: 0,
             dgrams,
             max,
+            close: false,
         }
     }
 
@@ -66,14 +68,18 @@ impl Build {
         used: NonZero<usize>,
     ) -> Result<(), detail::Plan> {
         let admitted = record::Admitted::new(kind, local, frame)?;
-        if let frame::View::Datagram { length, data } = admitted.frame().view()
-            && self.max.is_none_or(|max| used.get() as u64 > max)
-        {
-            return Err(detail::Plan::Datagram {
-                len: data.len(),
-                length,
-                maximum: self.max,
-            });
+        match admitted.frame().view() {
+            frame::View::ConnectionClose { .. } => self.close = true,
+            frame::View::Datagram { length, data }
+                if self.max.is_none_or(|max| used.get() as u64 > max) =>
+            {
+                return Err(detail::Plan::Datagram {
+                    len: data.len(),
+                    length,
+                    maximum: self.max,
+                });
+            }
+            _ => {}
         }
         let mut record = record::FrameRecord::new(admitted, body);
         if kind.is_app()
@@ -100,6 +106,7 @@ pub(super) struct Plan<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> {
     body: frame::Body<'wire, 'id>,
     records: record::Records<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>,
     bytes: usize,
+    close: bool,
 }
 
 pub(super) struct Reserved<
@@ -157,7 +164,25 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
             body,
             records,
             bytes: build.bytes,
+            close: build.close,
         }
+    }
+
+    pub(super) fn try_close<B: stream::Recv, D: buffer::raw::Segment>(
+        &self,
+        state: &mut State<B, D>,
+        next: u64,
+        cid: Option<&frames::PacketCid<'_>>,
+    ) -> Result<bool, conn::Error> {
+        if self.close {
+            check::validate(
+                &receive::Update::new(state),
+                self.records.as_slice(),
+                next,
+                cid,
+            )?;
+        }
+        Ok(self.close)
     }
 
     pub(super) fn try_reserve<'state, B: stream::Recv, D: buffer::raw::Segment>(

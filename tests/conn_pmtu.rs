@@ -76,6 +76,115 @@ fn probes_raise_mtu() {
 }
 
 #[test]
+fn probes_stop_at_ipv4_payload_ceiling() {
+    use common::suite::mux::{dispatch, paths};
+    use dope_quic::conn::life::options::Options;
+    use std::pin::Pin;
+
+    let params = paths::Pending::options()
+        .expect("path options")
+        .params()
+        .clone();
+    let options = Options::builder()
+        .transport(|path| path.params(params).max_pmtu(65_527))
+        .try_build()
+        .expect("maximum PMTU");
+    let mut pair = paths::Pending::try_with(0x39, 0x81, options)
+        .expect("IPv4 peers")
+        .establish()
+        .expect("handshake");
+    let mut now = pair.start;
+    for step in 1..=64 {
+        now = pair.start + Duration::from_millis(step * 100);
+        let mut flight = dispatch::Capture::output(&mut pair.client, now).expect("client output");
+        for packet in &mut flight {
+            for segment in packet.segments_mut() {
+                assert!(segment.len() <= 65_507);
+            }
+        }
+        paths::Pair::deliver(&mut flight, paths::CLIENT, &mut pair.server, now)
+            .expect("client delivery");
+        let mut flight = dispatch::Capture::output(&mut pair.server, now).expect("server output");
+        paths::Pair::deliver(&mut flight, paths::SERVER, &mut pair.client, now)
+            .expect("server delivery");
+    }
+    let mtu = paths::Pair::access(&mut pair.client, pair.client_id, now, |conn| {
+        conn.view().path().mtu()
+    })
+    .expect("client path");
+    assert!((65_503..=65_507).contains(&mtu));
+    assert!(
+        dispatch::Capture::output(&mut pair.client, now)
+            .expect("settled output")
+            .is_empty()
+    );
+    assert!(
+        Pin::new(&mut pair.client)
+            .observe(now, |turn| turn.deadline())
+            .is_none_or(|due| due > now)
+    );
+}
+
+#[test]
+fn probe_fits_congestion_window() {
+    use common::peer::Pair;
+    use dope_quic::{conn::life::options::Options, proto::param, wire::packet::cid};
+
+    let options = || {
+        let params = param::Set::builder()
+            .idle_ms(30_000)
+            .datagram(Some(65_535))
+            .try_build()
+            .expect("PMTU transport parameters");
+        Options::builder()
+            .transport(|path| path.params(params).max_pmtu(65_527))
+            .try_build()
+            .expect("maximum PMTU options")
+    };
+    let (mut server, mut client, mut work) = Pair::try_with(
+        options(),
+        options(),
+        cid::Id::try_from(MTU_CID).expect("PMTU connection ID"),
+    )
+    .expect("PMTU peers")
+    .into_parts();
+    let start = Instant::now();
+    let mut batch = Batch::default();
+    for turn in 0..8 {
+        let now = start + Duration::from_millis(turn * 100);
+        client
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 64, 1_200))
+            .expect("client handshake within base MTU");
+        server
+            .receive_all(&mut work, &mut batch, now)
+            .expect("client handshake flight");
+        server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 64, 1_200))
+            .expect("server handshake within base MTU");
+        client
+            .receive_all(&mut work, &mut batch, now)
+            .expect("server handshake flight");
+    }
+    assert!(client.view().lifecycle().is_ready());
+    assert_eq!(client.view().recovery().in_flight(), 0);
+
+    let now = start + Duration::from_secs(2);
+    let window = client.view().recovery().window();
+    let (packets, result) = client.with_scope(|mut scope| scope.output().send(now));
+    result.expect("PMTU discovery within the congestion window");
+    assert_eq!(
+        packets.len(),
+        1,
+        "discovery must make progress with an empty flight"
+    );
+    assert!(packets[0].len() > 1_200);
+    assert!(
+        client.view().recovery().in_flight() <= window,
+        "a discovery probe must fit the whole congestion window",
+    );
+}
+
+#[test]
 fn probe_loss() {
     let (mut server, mut client, mut work) = path::try_mtu(65_535, 65_535)
         .expect("PMTU peers")

@@ -29,6 +29,28 @@ impl<'a> Timer<'a> {
         self.egress.recovery.timer.idle
     }
 
+    pub(in crate::conn) fn try_terminal(
+        &self,
+        now: time::Instant,
+    ) -> Result<time::Instant, conn::Timing> {
+        let epoch = self.egress.recovery.timer.pto_epoch.unwrap_or_else(|| {
+            if self.egress.lifecycle.handshake_confirmed && self.keys.has_write() {
+                conn::Epoch::Application
+            } else if self.keys.long.handshake().is_some() {
+                conn::Epoch::Handshake
+            } else {
+                conn::Epoch::Initial
+            }
+        });
+        let ack = if epoch == conn::Epoch::Application {
+            self.egress.recovery.peer_max_ack_delay
+        } else {
+            time::Duration::ZERO
+        };
+        let period = Self::try_period(self.egress, ack, None)?;
+        conn::Timing::try_deadline(now, conn::Timing::try_mul(period, 3)?)
+    }
+
     pub(in crate::conn) fn try_activity(
         &self,
         last: Option<time::Instant>,
@@ -128,6 +150,17 @@ impl<'a> Timer<'a> {
         }
     }
 
+    fn try_period(
+        egress: &output::Egress,
+        ack: time::Duration,
+        admitted: Option<(time::Duration, time::Duration)>,
+    ) -> Result<time::Duration, conn::Timing> {
+        conn::Timing::try_mul(
+            Self::try_pto(egress, ack, admitted)?,
+            egress.recovery.probe.count.backoff(),
+        )
+    }
+
     fn try_loss(
         egress: &output::Egress,
         keys: &ciphers::State,
@@ -155,7 +188,6 @@ impl<'a> Timer<'a> {
             return Ok((Some(instant), None));
         }
 
-        let backoff = egress.recovery.probe.count.backoff();
         let mut pto: Option<(time::Instant, conn::Epoch)> = None;
         let mut periods = [None; 2];
         for (epoch, space) in conn::Epoch::ALL.into_iter().zip(&egress.recovery.spaces) {
@@ -178,8 +210,7 @@ impl<'a> Timer<'a> {
                         } else {
                             time::Duration::ZERO
                         };
-                        let period =
-                            conn::Timing::try_mul(Self::try_pto(egress, ack, admitted)?, backoff)?;
+                        let period = Self::try_period(egress, ack, admitted)?;
                         periods[with_ack as usize] = Some(period);
                         period
                     }
@@ -198,10 +229,7 @@ impl<'a> Timer<'a> {
             } else {
                 return Ok((None, None));
             };
-            let period = conn::Timing::try_mul(
-                Self::try_pto(egress, time::Duration::ZERO, admitted)?,
-                backoff,
-            )?;
+            let period = Self::try_period(egress, time::Duration::ZERO, admitted)?;
             pto = Some((conn::Timing::try_deadline(now, period)?, epoch));
         }
         Ok(pto.unzip())

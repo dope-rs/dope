@@ -209,8 +209,12 @@ impl Set {
         self.slots.iter().filter_map(|slot| slot.cid.get())
     }
 
-    fn len(&self) -> usize {
-        self.iter().count()
+    fn missing(&self) -> usize {
+        let usable = self
+            .iter()
+            .filter(|cid| cid.phase != Phase::Retiring)
+            .count();
+        usize::from(self.target).saturating_sub(usable)
     }
 
     fn watermark(&self) -> varint::VarInt {
@@ -221,7 +225,7 @@ impl Set {
             .unwrap_or(varint::VarInt::ZERO)
     }
 
-    fn rotate(&mut self) -> Option<&mut LocalCid> {
+    fn rotate(&mut self) -> Option<()> {
         if self.iter().any(|cid| cid.phase == Phase::Retiring) {
             return None;
         }
@@ -241,7 +245,7 @@ impl Set {
         }
         let cid = self.slots.get_mut(victim)?.cid.get_mut()?;
         cid.phase = Phase::Retiring;
-        Some(cid)
+        Some(())
     }
 
     fn issue(&mut self, issuance: &mut Issuance, pending: &routes::Pending) -> Fill {
@@ -267,7 +271,7 @@ impl Set {
 
     fn fill(&mut self, issuance: &mut Issuance, pending: &routes::Pending) -> Count {
         let mut count = 0;
-        for _ in self.len()..usize::from(self.target) {
+        for _ in 0..self.missing() {
             match self.issue(issuance, pending) {
                 Fill::Added => count += 1,
                 Fill::Sequence | Fill::Slots => break,
@@ -386,11 +390,15 @@ impl State {
         Work::new(self, control)
     }
 
-    pub(in crate::conn) fn rotate(&mut self, control: &mut control::Pending) -> Rotation {
-        let Some(cid) = self.cids.rotate() else {
+    pub(in crate::conn) fn rotate(&mut self) -> Rotation {
+        if self.cids.rotate().is_none() {
             return Rotation::Unavailable;
-        };
-        control.remove(&mut cid.control);
+        }
+        if let Some(issuance) = self.issuance.get_mut() {
+            self.cids.fill(issuance, &self.pending);
+        }
+        // Retain the original announcement until ACK or peer retirement: a lost
+        // advertisement must still reach the peer with its admitted watermark.
         Rotation::Queued
     }
 
@@ -423,8 +431,7 @@ impl State {
             let (mut retired, _) = retired.take();
             self.pending.remove(index);
             control.remove(&mut retired.control);
-            let count = usize::from(self.cids.target).saturating_sub(self.cids.len());
-            return Ok(Count::new(count as u32));
+            return Ok(Count::new(self.cids.missing() as u32));
         }
         Ok(Count::EMPTY)
     }

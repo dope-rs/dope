@@ -42,8 +42,14 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
         &mut self,
         now: time::Instant,
     ) -> Result<Outcome, Admission<crypto::Dimensions>> {
-        if self.conn.egress.lifecycle.state == conn::State::Closed {
-            return Ok(Outcome::Closed);
+        if self.conn.try_terminal(now)? {
+            return Ok(
+                if self.conn.egress.lifecycle.state == conn::State::Closing {
+                    Outcome::Ready(None)
+                } else {
+                    Outcome::Closed
+                },
+            );
         }
         let keys = &self.conn.handshake.keys;
         let spaces = &self.conn.egress.recovery.spaces;
@@ -54,12 +60,12 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
         let app = (keys.long.early().is_some() || keys.has_write())
             && conn::Epoch::Application.bind(spaces).is_exhausted();
         if initial || hs || app {
-            self.conn.egress.lifecycle.state = conn::State::Closed;
+            self.conn.close_now();
             return Ok(Outcome::Closed);
         }
         if self.conn.handshake.keys.long.is_exhausted() {
             if !self.conn.handshake.keys.has_write() {
-                self.conn.egress.lifecycle.state = conn::State::Closed;
+                self.conn.close_now();
                 return Ok(Outcome::Closed);
             }
             let _ = self.conn.queue_close(output::PendingClose::transport(
@@ -86,8 +92,12 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
                 ));
                 Err(Admission::Protection(error))
             }
-            Err(error @ (Update::AeadLimitReached | Update::Key)) => {
-                let code = if matches!(error, Update::AeadLimitReached) {
+            Err(Update::AeadLimitReached) => {
+                self.conn.close_now();
+                Ok(Outcome::Closed)
+            }
+            Err(error @ (Update::ConfidentialityLimit | Update::Key)) => {
+                let code = if matches!(error, Update::ConfidentialityLimit) {
                     conn::AEAD_LIMIT_REACHED
                 } else {
                     conn::KEY_UPDATE_ERROR

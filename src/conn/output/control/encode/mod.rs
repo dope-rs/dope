@@ -375,9 +375,9 @@ impl Prepared<'_, '_> {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<Selected<'static>>() == 56);
-    assert!(std::mem::size_of::<Option<Selected<'static>>>() == 56);
+    assert!(std::mem::size_of::<Selected<'static>>() == 64);
+    assert!(std::mem::size_of::<Option<Selected<'static>>>() == 64);
     assert!(std::mem::size_of::<Encoder<'static>>() == std::mem::size_of::<usize>());
 };
 
-const _: () = assert!(std::mem::size_of::<Written>() == 24);
+const _: () = assert!(std::mem::size_of::<Written>() == 32);

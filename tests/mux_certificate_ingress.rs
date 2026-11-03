@@ -2,6 +2,7 @@ use crate::common::peer;
 pub mod common;
 
 use crate::common::suite::mux::dispatch::{CLIENT, Capture, SERVER};
+use crate::common::suite::openssl::{COMMANDS, Identity};
 use crate::common::suite::peers::packet::Session;
 use crate::common::suite::peers::tls::{Kind, Rejected};
 use dope_quic::conn::life::tls::clients;
@@ -16,15 +17,17 @@ use dope_quic::runtime::mux::{
     builder::{Builder, Plan},
     handler,
 };
+use dope_test::harness::support::file::Directory;
 use dope_tls::config;
 use o3::buffer::storage;
 use rustls::pki_types::ServerName;
 use rustls::{AlertDescription, Error};
 use std::{
-    env,
+    env, fs,
     net::{Ipv4Addr, SocketAddr},
     path::Path,
     pin::Pin,
+    process::Command,
     time::Instant,
 };
 
@@ -38,7 +41,22 @@ where
         .try_build()
         .expect("fixture parameters");
     let mut cleanup = None;
-    let result = kind.configs(base, |result| cleanup = Some(result));
+    let result = kind.configs(|| {
+        let root = Directory::try_with(base, "quic-certificate", |result| cleanup = Some(result))
+            .expect("certificate directory");
+        for args in COMMANDS {
+            let output = Command::new("openssl")
+                .args(args)
+                .current_dir(root.path())
+                .output()
+                .expect("OpenSSL certificate command");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        }
+        Identity {
+            key: fs::read(root.path().join("key.der")).expect("DER private key"),
+            chain: [fs::read(root.path().join("cert.der")).expect("DER certificate")],
+        }
+    });
     result
         .as_ref()
         .map_err(|error| (error, &cleanup))
@@ -188,6 +206,11 @@ fn schedules_initial_close() {
             .expect("server Initial close output")
             .is_empty()
     );
+    assert_eq!(server.active_conns(), 1);
+    let deadline = Pin::new(&mut server)
+        .observe(now, |turn| turn.deadline())
+        .expect("close retention");
+    Capture::output(&mut server, deadline).expect("close expiry");
     assert_eq!(server.active_conns(), 0);
     for router in [&client, &server] {
         assert!(

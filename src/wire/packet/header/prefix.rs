@@ -5,6 +5,7 @@ use crate::wire::packet::{header, kind};
 /// An encoded header whose bytes can only be extended until admission.
 pub(crate) struct Prefix<'a> {
     out: &'a mut Vec<u8>,
+    start: usize,
     layout: header::Layout<kind::OneRtt>,
 }
 
@@ -12,22 +13,27 @@ impl<'a> Prefix<'a> {
     pub(in crate::wire::packet) fn new(
         out: &'a mut Vec<u8>,
         layout: header::Layout<kind::OneRtt>,
+        start: usize,
     ) -> Self {
-        Self { out, layout }
+        Self { out, layout, start }
+    }
+
+    pub(crate) fn storage_len(&self) -> usize {
+        self.out.len()
     }
 
     pub(crate) fn layout(&self) -> &header::Layout<kind::OneRtt> {
         &self.layout
     }
 
-    pub(crate) fn into_parts(self) -> (&'a [u8], header::Layout<kind::OneRtt>) {
-        (self.out, self.layout)
+    pub(crate) fn into_parts(self) -> (&'a [u8], header::Layout<kind::OneRtt>, usize) {
+        (self.out, self.layout, self.start)
     }
 }
 
 impl AsRef<[u8]> for Prefix<'_> {
     fn as_ref(&self) -> &[u8] {
-        self.out
+        &self.out[self.start..]
     }
 }
 
@@ -44,6 +50,6 @@ impl Sink for Prefix<'_> {
 }
 
 const _: () = {
-    assert!(size_of::<Prefix<'static>>() == 3 * size_of::<usize>());
+    assert!(size_of::<Prefix<'static>>() == 4 * size_of::<usize>());
     assert!(size_of::<Option<Prefix<'static>>>() == size_of::<Prefix<'static>>());
 };

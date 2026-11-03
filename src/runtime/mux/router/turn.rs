@@ -1,13 +1,13 @@
-use std::{net, ops, pin, time};
+use std::{ops, pin, time};
 
 use dope::runtime::civil;
 use o3::buffer::{self, write::Sink as _};
 
 use crate::{
     conn, errors,
-    proto::epoch,
+    proto::{epoch, path::Peer, recovery::pmtud},
     runtime::{brand, mux, routing::registry},
-    security::secrets,
+    security::{qkdf, relay::Ticket, secrets},
     stream,
     wire::packet::{
         self,
@@ -53,9 +53,9 @@ impl<
         }
     }
 
-    pub(in crate::runtime::mux) fn route<I: buffer::raw::Source, S>(
+    pub(in crate::runtime::mux) fn route<I: buffer::raw::Mutable, S>(
         &mut self,
-        from: net::SocketAddr,
+        from: Peer,
         input: I,
         now: time::Instant,
         epoch: epoch::Sample<S>,
@@ -74,7 +74,7 @@ impl<
             registry::Key<'id>,
             &'scope mut router::Binding<A, DOMAIN>,
             &'scope mut conn::Workspace,
-            I,
+            long::Datagram<I>,
         ) -> Result<(), errors::Receive>,
     ) -> Result<(), errors::Receive>
     where
@@ -83,32 +83,35 @@ impl<
         self.run(|scope, turn| {
             let state = &mut *turn.state;
             let mut sink = turn.handler.as_mut();
-            if !routing::packets::Header::new(input.as_ref()).is_initial() || state.server.is_none()
-            {
-                let result = Directory::with(&mut state.registry, |owner| {
-                    let header = routing::packets::Header::new(input.as_ref());
-                    let Some(value) = header.dcid::<A::LocalRoute>() else {
-                        return Err(input);
-                    };
-                    let hit = match cids::Source::new(owner).find(value) {
-                        Ok(hit) => hit,
-                        Err(_) => return Err(input),
-                    };
-                    let (mut slots, key, local) = hit.into_scope();
-                    Ok(apply(
-                        brand::Branded::new(scope.reborrow(), local),
-                        sink.as_mut(),
-                        &mut slots,
-                        key,
-                        &mut state.binding,
-                        &mut state.receive_workspace,
-                        input,
-                    ))
-                });
-                return match result {
-                    Ok(result) => result,
-                    Err(input) => routing::reset::receive(state, from, input.as_ref(), now),
+            let routed = Directory::with(&mut state.registry, |owner| {
+                let header = routing::packets::Header::new(input.as_ref());
+                let Some(value) = header.dcid::<A::LocalRoute>() else {
+                    return Err((input, apply));
                 };
+                let hit = match cids::Source::new(owner).find(value) {
+                    Ok(hit) => hit,
+                    Err(_) => return Err((input, apply)),
+                };
+                let (mut slots, key, local) = hit.into_scope();
+                Ok(apply(
+                    brand::Branded::new(scope.reborrow(), local),
+                    sink.as_mut(),
+                    &mut slots,
+                    key,
+                    &mut state.binding,
+                    &mut state.receive_workspace,
+                    long::Datagram::protected(input),
+                ))
+            });
+            let (input, apply) = match routed {
+                Ok(result) => return result,
+                Err(unrouted) => unrouted,
+            };
+            if routing::reset::receive(state, from, input.as_ref(), now)?
+                || !routing::packets::Header::new(input.as_ref()).is_initial()
+                || state.server.is_none()
+            {
+                return Ok(());
             }
             let init = match long::Admission::try_new(input) {
                 Ok(packet) => packet,
@@ -125,7 +128,7 @@ impl<
                             key,
                             &mut state.binding,
                             &mut state.receive_workspace,
-                            init.into_inner(),
+                            long::Datagram::protected(init.into_inner()),
                         )
                     }
                     cids::Lookup::Vacant(mut alias) => {
@@ -137,145 +140,209 @@ impl<
                             .as_ref()
                             .ok_or(errors::Receive::Packet(conn::Error::HeaderDecode))?;
                         let cfg = A::config(server).0;
-                        let (proof, seen) = 'gate: {
-                            let Some(secret) = cfg.security.retry_token_secret.as_ref() else {
-                                if !init.token().is_empty()
-                                    && init.token().len() != secrets::Address::WIRE_LEN
-                                {
-                                    return Ok(());
+                        if init.datagram_len() > pmtud::MAX_PMTU as usize {
+                            return Err(errors::Receive::Packet(conn::Error::PacketCeiling));
+                        }
+                        let dcid = alias.value();
+                        let gate = |dcid: packet::cid::Ref<'_>,
+                                    scid: packet::cid::Ref<'_>,
+                                    token: &[u8],
+                                    datagram_len: usize| {
+                            let admitted = 'gate: {
+                                let Some(secret) = cfg.security.retry_token_secret.as_ref() else {
+                                    if !token.is_empty()
+                                        && token.len() != secrets::Address::WIRE_LEN
+                                    {
+                                        return Ok(None);
+                                    }
+                                    if !cfg.security.require_address_validation {
+                                        break 'gate (
+                                            brand::Branded::new(
+                                                scope.reborrow(),
+                                                router::AddressProof::Unvalidated,
+                                            ),
+                                            None,
+                                        );
+                                    }
+                                    return Ok(None);
+                                };
+                                let seen = epoch
+                                    .observe(scope.reborrow())
+                                    .map_err(errors::Receive::Civil)?;
+                                if let Some(odcid) = secret.validate(&from, token, dcid, &seen) {
+                                    break 'gate (
+                                        brand::Branded::new(
+                                            scope.reborrow(),
+                                            router::AddressProof::Retry { odcid },
+                                        ),
+                                        Some(seen),
+                                    );
                                 }
-                                if !cfg.security.require_address_validation {
+                                if secrets::Address(&secret.0).is_valid(&from, token, &seen) {
+                                    break 'gate (
+                                        brand::Branded::new(
+                                            scope.reborrow(),
+                                            router::AddressProof::NewToken,
+                                        ),
+                                        Some(seen),
+                                    );
+                                }
+                                if !token.is_empty() && token.len() != secrets::Address::WIRE_LEN {
+                                    return Ok(None);
+                                }
+                                let Some(key) = state.retry.as_ref() else {
                                     break 'gate (
                                         brand::Branded::new(
                                             scope.reborrow(),
                                             router::AddressProof::Unvalidated,
                                         ),
-                                        None,
+                                        Some(seen),
                                     );
+                                };
+                                let expiry = seen
+                                    .expire(secrets::RETRY_TOKEN_TTL)
+                                    .map_err(errors::Receive::Expiry)?;
+                                let Some(new_scid) =
+                                    alias.new_away(&state.binding.route, &mut state.binding.issuer)
+                                else {
+                                    return Ok(None);
+                                };
+                                let Some(amp) = datagram_len.checked_mul(3) else {
+                                    return Ok(None);
+                                };
+                                let overhead = from.overhead();
+                                let Some(outer_amp) = datagram_len
+                                    .checked_add(overhead)
+                                    .and_then(|bytes| bytes.checked_mul(3))
+                                else {
+                                    return Ok(None);
+                                };
+                                let limit = cfg.packet_max().min(amp);
+                                let len = retry::Suffix::prefix_len(scid, new_scid.as_ref_id())
+                                    + secrets::Retry::encoded_len(dcid)
+                                    + retry::INTEGRITY_TAG_LEN;
+                                let wire_len = len + overhead;
+                                if len > limit
+                                    || wire_len > state.outgoing.bytes_capacity
+                                    || wire_len > outer_amp
+                                {
+                                    return Ok(None);
                                 }
-                                return Ok(());
+                                let prefix = 1 + dcid.len();
+                                let mut failure = None;
+                                let emission = state.outgoing.emit_owned(
+                                    wire_len,
+                                    prefix + wire_len,
+                                    |mut storage| {
+                                        if from.is_relayed()
+                                            && let Err(error) =
+                                                storage.write_slice(&[0; Ticket::LEN])
+                                        {
+                                            return Err((storage, Some(error)));
+                                        }
+                                        if let Err(error) = storage.write_slices([
+                                            &[dcid.length().get()],
+                                            dcid.into_slice(),
+                                        ]) {
+                                            return Err((storage, Some(error)));
+                                        }
+                                        let mut storage = match retry::Suffix::encode_into(
+                                            storage,
+                                            packet::QUIC_V1,
+                                            scid,
+                                            new_scid.as_ref_id(),
+                                            &[],
+                                        ) {
+                                            Ok(storage) => storage,
+                                            Err(rejected) => {
+                                                let (storage, error) = rejected.into_parts();
+                                                return Err((storage, Some(error)));
+                                            }
+                                        };
+                                        if let Err(error) = secret.issue_into(
+                                            &mut storage.append(),
+                                            &from,
+                                            dcid,
+                                            new_scid.as_ref_id(),
+                                            expiry,
+                                        ) {
+                                            return Err((storage.into_storage(), Some(error)));
+                                        }
+                                        let tag = match key
+                                            .tag_from_aad(&storage.storage()[overhead..])
+                                        {
+                                            Ok(tag) => tag,
+                                            Err(error) => {
+                                                failure = Some(error);
+                                                return Err((storage.into_storage(), None));
+                                            }
+                                        };
+                                        if let Err(error) = storage.append().write_slice(&tag) {
+                                            return Err((storage.into_storage(), Some(error)));
+                                        }
+                                        if let Some(ticket) = from.ticket()
+                                            && let Err(error) =
+                                                storage.try_prepend(ticket.as_bytes())
+                                        {
+                                            return Err((storage.into_storage(), Some(error)));
+                                        }
+                                        Ok(output::Flight::suffix(from, storage))
+                                    },
+                                );
+                                if let Some(error) = failure {
+                                    return Err(errors::Receive::Retry(error));
+                                }
+                                return match emission {
+                                    output::Emission::Sent | output::Emission::Skipped => Ok(None),
+                                    output::Emission::Allocation { error, requested } => {
+                                        Err(errors::Receive::Allocation { error, requested })
+                                    }
+                                };
                             };
-                            let seen = epoch
-                                .observe(scope.reborrow())
-                                .map_err(errors::Receive::Civil)?;
-                            if let Some(odcid) =
-                                secret.validate(&from, init.token(), init.dcid(), &seen)
-                            {
-                                break 'gate (
-                                    brand::Branded::new(
-                                        scope.reborrow(),
-                                        router::AddressProof::Retry { odcid },
-                                    ),
-                                    Some(seen),
-                                );
-                            }
-                            if secrets::Address(&secret.0).is_valid(&from, init.token(), &seen) {
-                                break 'gate (
-                                    brand::Branded::new(
-                                        scope.reborrow(),
-                                        router::AddressProof::NewToken,
-                                    ),
-                                    Some(seen),
-                                );
-                            }
-                            if !init.token().is_empty()
-                                && init.token().len() != secrets::Address::WIRE_LEN
-                            {
-                                return Ok(());
-                            }
-                            let Some(key) = state.retry.as_ref() else {
-                                break 'gate (
-                                    brand::Branded::new(
-                                        scope.reborrow(),
-                                        router::AddressProof::Unvalidated,
-                                    ),
-                                    Some(seen),
-                                );
-                            };
-                            let expiry = seen
-                                .expire(secrets::RETRY_TOKEN_TTL)
-                                .map_err(errors::Receive::Expiry)?;
-                            let Some(new_scid) =
-                                alias.new_away(&state.binding.route, &mut state.binding.issuer)
+                            Ok(Some(admitted))
+                        };
+                        let gate = if init.is_single() {
+                            let Some(admitted) =
+                                gate(init.dcid(), init.scid(), init.token(), init.datagram_len())?
                             else {
                                 return Ok(());
                             };
-                            let Some(amp) = init.datagram_len().checked_mul(3) else {
-                                return Ok(());
-                            };
-                            let limit =
-                                cfg.packet_max().min(state.outgoing.bytes_capacity).min(amp);
-                            let dcid = init.dcid();
-                            let scid = init.scid();
-                            let len = retry::Suffix::prefix_len(scid, new_scid.as_ref_id())
-                                + secrets::Retry::encoded_len(dcid)
-                                + retry::INTEGRITY_TAG_LEN;
-                            if len > limit {
-                                return Ok(());
-                            }
-                            let prefix = 1 + dcid.len();
-                            let mut failure = None;
-                            let emission =
-                                state.outgoing.emit_owned(len, prefix + len, |mut storage| {
-                                    if let Err(error) = storage
-                                        .write_slices([&[dcid.length().get()], dcid.into_slice()])
-                                    {
-                                        return Err((storage, Some(error)));
-                                    }
-                                    let mut storage = match retry::Suffix::encode_into(
-                                        storage,
-                                        packet::QUIC_V1,
-                                        scid,
-                                        new_scid.as_ref_id(),
-                                        &[],
-                                    ) {
-                                        Ok(storage) => storage,
-                                        Err(rejected) => {
-                                            let (storage, error) = rejected.into_parts();
-                                            return Err((storage, Some(error)));
-                                        }
-                                    };
-                                    if let Err(error) = secret.issue_into(
-                                        &mut storage.append(),
-                                        &from,
-                                        dcid,
-                                        new_scid.as_ref_id(),
-                                        expiry,
-                                    ) {
-                                        return Err((storage.into_storage(), Some(error)));
-                                    }
-                                    let tag = match key.tag_from_aad(storage.storage()) {
-                                        Ok(tag) => tag,
-                                        Err(error) => {
-                                            failure = Some(error);
-                                            return Err((storage.into_storage(), None));
-                                        }
-                                    };
-                                    if let Err(error) = storage.append().write_slice(&tag) {
-                                        return Err((storage.into_storage(), Some(error)));
-                                    }
-                                    Ok(output::Flight::suffix(from, storage))
-                                });
-                            if let Some(error) = failure {
-                                return Err(errors::Receive::Retry(error));
-                            }
-                            return match emission {
-                                output::Emission::Sent | output::Emission::Skipped => Ok(()),
-                                output::Emission::Allocation { error, requested } => {
-                                    Err(errors::Receive::Allocation { error, requested })
-                                }
-                            };
+                            ops::ControlFlow::Break(admitted)
+                        } else {
+                            ops::ControlFlow::Continue(gate)
                         };
-                        let cfg = cfg.copy();
-                        let dcid = alias.value();
+                        let keys = qkdf::Initial::try_new(dcid.as_ref())
+                            .and_then(qkdf::Pair::try_server)
+                            .map_err(|error| {
+                                errors::Receive::Accept(errors::Connect::Protocol(error.into()))
+                            })?;
+                        let (init, failure) =
+                            init.decrypt(&keys.peer).map_err(errors::Receive::Packet)?;
+                        let (proof, seen) = match gate {
+                            ops::ControlFlow::Break(admitted) => admitted,
+                            ops::ControlFlow::Continue(gate) => {
+                                let Some(admitted) = gate(
+                                    init.dcid(),
+                                    init.scid(),
+                                    init.token(),
+                                    init.datagram_len(),
+                                )?
+                                else {
+                                    return Ok(());
+                                };
+                                admitted
+                            }
+                        };
                         let remote = init.scid().into_owned();
+                        let cap = cfg
+                            .packet_cap(state.outgoing.bytes_capacity)
+                            .ok_or(errors::Receive::Packet(conn::Error::PacketCeiling))?;
+                        let input = init.into_inner();
+                        let cfg = cfg.copy();
                         let local = alias
                             .reserve_away(&state.binding.route, &mut state.binding.issuer)
                             .ok_or(errors::Receive::Packet(conn::Error::ConnectionIdLimit))?;
                         let cid = local.value();
-                        let cap = cfg
-                            .packet_cap(state.outgoing.bytes_capacity)
-                            .ok_or(errors::Receive::Packet(conn::Error::PacketCeiling))?;
                         let ids = match proof.value() {
                             router::AddressProof::Retry { odcid } => {
                                 accept::Ids::retry(dcid, cid, remote, *odcid, dcid)
@@ -300,7 +367,7 @@ impl<
                             None => None,
                         };
                         let ids = ids.with_token(token);
-                        let (conn, tls) = A::accept(server, ids, auth::ServerConfig(cfg))
+                        let (conn, tls) = A::accept(server, ids, auth::ServerConfig(cfg, keys))
                             .map_err(errors::Receive::Accept)?;
                         match install::Install::new(sink.as_mut(), &mut state.binding).attach(
                             proof.brand(),
@@ -313,11 +380,17 @@ impl<
                                     key,
                                     binding,
                                     &mut state.receive_workspace,
-                                    init.into_inner(),
+                                    input,
                                 )
                             },
                         ) {
-                            install::Outcome::Installed(value) => value,
+                            install::Outcome::Installed(value) => {
+                                value?;
+                                match failure {
+                                    Some(error) => Err(errors::Receive::Packet(error.into())),
+                                    None => Ok(()),
+                                }
+                            }
                             install::Outcome::Rejected => Err(errors::Receive::ApplicationRejected),
                             install::Outcome::Unavailable => {
                                 Err(errors::Receive::Packet(conn::Error::EventCapacity))
@@ -418,7 +491,11 @@ impl<
         scope: brand::Token<'_>,
         now: time::Instant,
     ) {
-        taken.close(|handle, conn, mut app| {
+        taken.close(|handle, conn, app| {
+            let Some(mut app) = app else {
+                drop(conn);
+                return;
+            };
             <H::Events as Dispatch<H, DOMAIN, B, A::Send, A::Identity>>::Closing::retire(
                 sink.as_mut(),
                 conn,

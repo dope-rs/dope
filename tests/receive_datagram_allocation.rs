@@ -18,6 +18,39 @@ use std::time::Instant;
 static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
+fn single_allocates_only_payload() {
+    let now = Instant::now();
+    let params = param::Set::builder()
+        .datagram(Some(4))
+        .try_build()
+        .expect("datagram parameters");
+    let mut pair = Pair::try_params(1, params, now, |_| {}).expect("peer handshake");
+    let frames = [frame::TYPE_DATAGRAM_LEN, 1, 0x51];
+    pair.receive(&frames, now).expect("warm receive queue");
+    assert_eq!(
+        pair.server
+            .with_scope(|mut scope| scope.datagrams().recv())
+            .as_deref(),
+        Some([0x51].as_slice()),
+    );
+    let mut packet = pair.peer.packet(&frames).expect("single datagram packet");
+    let (result, activity) = Tracker::activity(|| {
+        pair.server.with_scope(|mut scope| {
+            scope
+                .input(&mut pair.work)
+                .recv_packet(&mut packet, now, |_| {})
+        })
+    });
+    result.expect("single datagram receive");
+    assert_eq!(activity.allocations, 1, "only the copied payload allocates");
+    pair.server.with_scope(|mut scope| {
+        let mut queue = scope.datagrams();
+        assert_eq!(queue.recv().as_deref(), Some([0x51].as_slice()));
+        assert!(queue.recv().is_none());
+    });
+}
+
+#[test]
 fn queue_alloc_retry() {
     let old = [0xf0, 0xf1];
     let id = Id::new(2).expect("peer unidirectional stream");

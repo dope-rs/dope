@@ -1,6 +1,6 @@
 use crate::common::peer::sealer::Raw;
 use crate::common::suite::peers::packet::Error;
-use rustls::quic::{Connection, KeyChange};
+use rustls::quic::{Connection, KeyChange, Secrets};
 
 #[derive(Default)]
 pub(super) struct Wire {
@@ -9,6 +9,7 @@ pub(super) struct Wire {
     pub write: Option<Raw>,
     pub early: Option<Raw>,
     pub application: Option<(Raw, Raw)>,
+    pub next: Option<Secrets>,
     epoch: usize,
 }
 
@@ -21,12 +22,16 @@ impl Wire {
                     self.write = Some(Raw::from_keys(keys.local, 0).map_err(Error::Key)?);
                     self.epoch = 1;
                 }
-                Some(KeyChange::OneRtt { keys, .. }) => {
+                Some(KeyChange::OneRtt {
+                    keys,
+                    next: secrets,
+                }) => {
                     self.early = None;
                     self.application = Some((
                         Raw::from_keys(keys.remote, 0).map_err(Error::Key)?,
                         Raw::from_keys(keys.local, next).map_err(Error::Key)?,
                     ));
+                    self.next = Some(secrets);
                     self.epoch = 2;
                 }
                 None => return Ok(()),

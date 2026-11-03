@@ -2,7 +2,7 @@ use std::time;
 
 use crate::{conn, errors, runtime::mux, stream};
 use conn::{id, scope};
-use mux::{auth, handler, protocol, router};
+use mux::{auth, handler, protocol};
 
 pub(crate) type Result<T> = std::result::Result<T, errors::Access>;
 
@@ -50,7 +50,7 @@ where
     }
 
     fn close_at(&mut self, handle: id::Handle<A::Identity, DOMAIN>, now: time::Instant) {
-        let _ = router::Turn::new(self.mux.as_mut()).try_remove(handle, now);
+        let _ = self.try_close_at(handle, now);
     }
 
     fn try_close_at(
@@ -58,6 +58,8 @@ where
         handle: id::Handle<A::Identity, DOMAIN>,
         now: time::Instant,
     ) -> Result<()> {
-        router::Turn::new(self.mux.as_mut()).try_remove(handle, now)
+        self.with(handle, now, |mut scope| {
+            scope.lifecycle().close(errors::Code::ZERO, Vec::new())
+        })
     }
 }

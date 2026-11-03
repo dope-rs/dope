@@ -1,6 +1,7 @@
 use common::suite::mux::dispatch;
 pub mod common;
 
+use aws_lc_rs::hmac;
 use common::peer::Initial;
 use common::suite::{mux::retry, retry::Capture};
 use dope_quic::conn::{self, Epoch, Error, life::options};
@@ -48,6 +49,21 @@ fn initial_triggers_retry() {
     assert!(
         !verified.token().is_empty(),
         "retry must carry a server token"
+    );
+    let token = verified.token();
+    let mut address = [0; 27];
+    address[..5].copy_from_slice(&[4, 127, 0, 0, 1]);
+    address[17..19].copy_from_slice(&from.port().to_be_bytes());
+    let mut authenticated = b"qretrytok".to_vec();
+    authenticated.extend_from_slice(&address);
+    authenticated.extend_from_slice(&token[..token.len() - 16]);
+    authenticated.push(verified.scid().length().get());
+    authenticated.extend_from_slice(verified.scid().into_slice());
+    let expected = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &secret), &authenticated);
+    assert_eq!(
+        &token[token.len() - 16..],
+        &expected.as_ref()[..16],
+        "direct Retry keeps its existing authenticated bytes"
     );
 }
 

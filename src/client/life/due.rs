@@ -5,11 +5,12 @@ use std::net;
 use dope::core::driver::schedule::clock;
 use o3::mem::{Rejected, rc};
 
-use crate::{client, runtime::routing};
+use crate::{client, conn::id, runtime::routing};
 
 /// Snapshot of the resident retry entry selected for one attempt.
 #[must_use = "a due client attempt must be bound or deferred"]
 pub(in crate::client) struct Due<A, R> {
+    pub(super) domain: id::Domain,
     pub(super) slot: client::SlotId,
     pub(super) attempt: client::AttemptState,
     pub(super) addr: net::SocketAddr,
@@ -35,13 +36,14 @@ impl<A, R: routing::PeerRoute> Due<A, R> {
         brand: brand::Token<'scope>,
         started: clock::Moment<'d>,
     ) -> client::AttemptScope<'scope, 'd> {
-        self.attempt.scope(brand, self.slot, started)
+        self.attempt.scope(brand, self.domain, self.slot, started)
     }
 }
 
 impl<A, R: routing::PeerRoute> Due<Result<A, rc::Error>, R> {
     pub(in crate::client) fn transpose(self) -> Result<Due<A, R>, Rejected<Due<(), R>, rc::Error>> {
         let Self {
+            domain,
             slot,
             attempt,
             addr,
@@ -50,6 +52,7 @@ impl<A, R: routing::PeerRoute> Due<Result<A, rc::Error>, R> {
         } = self;
         match auth {
             Ok(auth) => Ok(Due {
+                domain,
                 slot,
                 attempt,
                 addr,
@@ -58,6 +61,7 @@ impl<A, R: routing::PeerRoute> Due<Result<A, rc::Error>, R> {
             }),
             Err(error) => Err(Rejected::new(
                 Due {
+                    domain,
                     slot,
                     attempt,
                     addr,

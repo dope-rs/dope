@@ -26,7 +26,9 @@ impl NewReno {
     }
 
     pub(crate) fn allows_send(&self, flight: u64) -> bool {
-        flight < self.cwnd
+        // Ordinary builders may fill one current-MTU packet. Reserve that
+        // complete ceiling so publication cannot overshoot the window.
+        self.cwnd.saturating_sub(flight) >= self.max_datagram_size
     }
 
     pub(crate) fn packet_acked(&mut self, bytes: u64, sent: time::Instant, tracked: bool) {

@@ -35,7 +35,7 @@ impl<const DOMAIN: u8> Pool<DOMAIN> {
         ids: accept::Ids,
     ) -> Result<life::Connection<'_, DOMAIN>, errors::Connect> {
         let (core, permit) =
-            initial::Acceptor::new(ids, self.auth.options().copy()).try_pooled(self)?;
+            initial::Acceptor::new(ids, self.auth.options().copy()).try_pooled(self, None)?;
         Ok(life::Connection::new(core, permit))
     }
 

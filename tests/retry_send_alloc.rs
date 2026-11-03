@@ -9,10 +9,8 @@ use std::pin::Pin;
 use std::time::Instant;
 
 use dope_quic::proto::epoch;
-use dope_quic::wire::packet::{self, QUIC_V1};
+use dope_quic::wire::{frame, packet::long::retry};
 use dope_test::alloc::Tracker;
-use long::{initial, retry};
-use packet::long;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -36,19 +34,10 @@ fn control_reuses_alloc() {
     .expect("fixture server");
     let orig = [0x11; 8];
     let peer = [0x22; 8];
-    let mut initial = initial::Header {
-        version: QUIC_V1,
-        dcid: orig.to_vec(),
-        scid: peer.to_vec(),
-        token: Vec::new(),
-        packet_number: 0,
-        pn_len: 1,
-    }
-    .encode(84)
-    .expect("encode Initial")
-    .as_bytes()
-    .to_vec();
-    initial.resize(initial.len() + 100, 0);
+    let packet = peer::Initial::new(&orig, &peer, 0)
+        .seal(&[frame::TYPE_PING])
+        .expect("authenticated Initial");
+    let mut initial = packet[..1199].to_vec();
     let source: SocketAddr = "127.0.0.1:55001".parse().expect("source address");
 
     assert!(initial.len() < 1200);
@@ -68,7 +57,7 @@ fn control_reuses_alloc() {
             .is_none()
     );
 
-    initial.resize(1200, 0);
+    initial = packet.clone();
 
     let sample = Tracker::begin();
     let received = Pin::new(&mut mux).observe(Instant::now(), |mut turn| {
@@ -87,6 +76,7 @@ fn control_reuses_alloc() {
     assert!(retry.dcid() == peer);
     let ptr = outgoing.payload().as_ptr();
     Pin::new(&mut mux).output().recycle(outgoing);
+    initial.copy_from_slice(&packet);
 
     let sample = Tracker::begin();
     let received = Pin::new(&mut mux).observe(Instant::now(), |mut turn| {

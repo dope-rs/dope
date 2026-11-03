@@ -26,6 +26,10 @@ pub(crate) fn deadline_with_retry<const DOMAIN: u8, B: stream::Recv, D: buffer::
         return Some(now);
     }
     let permit = permit::Permit::new(conn);
+    if conn.is_closing() {
+        let terminal = Some(conn.egress.lifecycle.close_deadline.unwrap_or(now));
+        return earliest(terminal, if send { permit.deadline(now) } else { None });
+    }
     let recovery = fit::timer_deadline(&permit);
     let path = conn.path.output().deadline();
     let output = if send { permit.deadline(now) } else { None };

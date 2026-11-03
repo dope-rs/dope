@@ -1,5 +1,6 @@
+use crate::proto::path::Peer;
 use o3::buffer::storage;
-use std::{net, num::NonZero};
+use std::num::NonZero;
 
 mod flight;
 pub(in crate::runtime) mod gate;
@@ -165,7 +166,7 @@ impl Reservation<'_> {
 }
 
 impl GsoFlight<'_> {
-    fn commit(self, addr: net::SocketAddr) -> usize {
+    fn commit(self, addr: Peer) -> usize {
         let Self { slot, batch } = self;
         let Some(ready) = batch.take() else {
             return 0;
@@ -243,10 +244,8 @@ impl Storage {
         &mut self,
         packet: usize,
         byte: usize,
-        fallback: net::SocketAddr,
-        emit: impl for<'batch> FnOnce(
-            &'batch mut packet::Gso,
-        ) -> (Option<net::SocketAddr>, Result<(), E>),
+        fallback: Peer,
+        emit: impl for<'batch> FnOnce(&'batch mut packet::Gso) -> (Option<Peer>, Result<(), E>),
     ) -> (usize, Result<(), E>) {
         let Some(flight) = self.gso_flight(packet, byte) else {
             return (0, Ok(()));
@@ -262,7 +261,7 @@ impl Storage {
         &mut self,
         packet: usize,
         byte: usize,
-        addr: net::SocketAddr,
+        addr: Peer,
         emit: impl for<'batch> FnOnce(&'batch mut packet::Gso) -> Result<(), E>,
     ) -> (usize, Result<(), E>) {
         self.emit_gso(packet, byte, addr, |batch| {
@@ -318,10 +317,8 @@ impl Storage {
         &mut self,
         limit: usize,
         max: usize,
-        fallback: net::SocketAddr,
-        mut emit: impl for<'packet> FnMut(
-            &'packet mut Vec<u8>,
-        ) -> (Option<net::SocketAddr>, Result<(), E>),
+        fallback: Peer,
+        mut emit: impl for<'packet> FnMut(&'packet mut Vec<u8>) -> (Option<Peer>, Result<(), E>),
     ) -> (usize, Result<(), E>) {
         let Self {
             pending,

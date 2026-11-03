@@ -64,6 +64,20 @@ impl Server {
         local: cid::Id,
         encoded: Vec<u8>,
     ) -> Result<Self, Error> {
+        Self::try_initial(
+            config,
+            local,
+            cid::Id::try_from(CID).map_err(Error::Id)?,
+            encoded,
+        )
+    }
+
+    pub fn try_initial(
+        config: Arc<ServerConfig>,
+        local: cid::Id,
+        original: cid::Id,
+        encoded: Vec<u8>,
+    ) -> Result<Self, Error> {
         let tls = quic::ServerConnection::new(config, quic::Version::V1, encoded)
             .map_err(dope_tls::Error::Tls)
             .map_err(Error::Tls)?;
@@ -71,13 +85,14 @@ impl Server {
             peer: Session {
                 tls: tls.into(),
                 wire: Wire::default(),
-                initial: Raw::initial(&CID, Side::Client, 0).map_err(Error::Key)?,
+                initial: Raw::initial(original.as_slice(), Side::Client, 0).map_err(Error::Key)?,
                 local,
-                target: cid::Id::try_from(CID).map_err(Error::Id)?,
+                target: original,
                 offsets: [0; 2],
                 number: 0,
+                phase: false,
             },
-            initial: Raw::initial(&CID, Side::Server, 0).map_err(Error::Key)?,
+            initial: Raw::initial(original.as_slice(), Side::Server, 0).map_err(Error::Key)?,
         })
     }
 

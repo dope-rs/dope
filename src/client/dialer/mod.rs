@@ -142,6 +142,12 @@ where
         self.inner.endpoint.handler().protocol()
     }
 
+    /// Returns the first permanent failure, if endpoint admission stopped.
+    /// Ordinary packet loss and temporary queue saturation do not set this state.
+    pub fn failure(&self) -> Option<protocol::Failure> {
+        self.inner.endpoint.handler().failure()
+    }
+
     pub(super) fn protocol_mut(self: pin::Pin<&mut Self>) -> pin::Pin<&mut P> {
         self.project()
             .inner
@@ -199,9 +205,8 @@ where
         self.inner.endpoint.handler().lifecycle().live()
     }
 
-    /// Closes every retained generation at one driver-branded observation.
-    /// This direct pinned-owner surface is used during forced shutdown, where
-    /// no generated coordination control exists.
+    /// Seals retry admission and requests closure of every retained generation
+    /// at one driver-branded observation.
     pub fn close_all(self: pin::Pin<&mut Self>, now: clock::Moment<'d>) {
         now.at(self)
             .apply(|dialer, now| dialer.project().inner.close_at(now));
@@ -243,18 +248,11 @@ where
             scope::Temporal<'scope, 'd, ID, P::Receive, resident::Shared<'d>>,
         ) -> T,
     ) -> Result<T, errors::Access> {
-        let life = self.as_ref().get_ref().inner.endpoint.handler().lifecycle();
+        let endpoint = &self.as_ref().get_ref().inner.endpoint;
+        let life = endpoint.handler().lifecycle();
         let handle = match target {
             Connection::Current(slot) => life.handle(slot).ok_or(errors::Access::Closed)?,
-            Connection::Attempt(attempt) => {
-                let Some((current, handle)) = life.current(attempt.slot()) else {
-                    return Err(errors::Access::Closed);
-                };
-                if current != attempt {
-                    return Err(errors::Access::InvalidHandle);
-                }
-                handle
-            }
+            Connection::Attempt(attempt) => life.resolve(endpoint.domain().identity(), attempt)?,
         };
         actions::with_connection(self.project().inner.project().endpoint, handle, now, op)
     }

@@ -29,6 +29,10 @@ const _: fn() = || {
     confined::<clients::Pool, _, _>();
     confined::<servers::Pool, _, _>();
     confined::<accept::Authority, _, _>();
+    confined::<dope_quic::client::AttemptId, _, _>();
+    confined::<dope_quic::security::relay::Key, _, _>();
+    confined::<dope_quic::security::crypto::sha256::Prk, _, _>();
+    confined::<dope_quic::runtime::mux::output::Flight, _, _>();
     use conn::stream::recv::{credit, hold};
     confined::<hold::Held<'static, Vec<u8>>, _, _>();
     confined::<hold::Detached<Vec<u8>>, _, _>();

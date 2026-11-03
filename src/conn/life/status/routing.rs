@@ -60,7 +60,16 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Path<'co
 
     /// Address currently authorized for app output.
     pub fn peer_address(&self) -> Option<net::SocketAddr> {
+        self.peer_route().map(crate::proto::path::Peer::addr)
+    }
+
+    /// Complete route currently authorized for app output.
+    pub fn peer_route(&self) -> Option<crate::proto::path::Peer> {
         self.connection.path.ingress().peer()
+    }
+
+    pub(crate) fn max_overhead(&self) -> usize {
+        self.connection.path.output().max_overhead()
     }
 
     pub fn is_valid(&self) -> bool {

@@ -1,3 +1,4 @@
+use aws_lc_rs::hmac;
 use common::suite::{
     mux::{Reject, dispatch},
     peers::Error,
@@ -232,18 +233,38 @@ fn forgery_never_validates() {
     Pin::new(&mut server).observe(now, |mut turn| {
         for mut packet in packets {
             for segment in packet.segments_mut() {
-                let (start, len) = {
+                let mut token = {
                     let prefix = initial::Prefix::decode(segment)
                         .expect("fixture client emits a decodable Initial prefix");
-                    (
-                        prefix.token.as_ptr() as usize - segment.as_ptr() as usize,
-                        prefix.token.len(),
-                    )
+                    let mut address = [0; 27];
+                    address[..5].copy_from_slice(&[4, 10, 0, 0, 1]);
+                    address[17..19].copy_from_slice(&tokens::CLIENT.port().to_be_bytes());
+                    let mut authenticated = b"qnewtoken".to_vec();
+                    authenticated.extend_from_slice(&address);
+                    authenticated.extend_from_slice(&prefix.token[..8]);
+                    let expected = hmac::sign(
+                        &hmac::Key::new(hmac::HMAC_SHA256, &[0x9a; 32]),
+                        &authenticated,
+                    );
+                    assert_eq!(
+                        &prefix.token[8..],
+                        &expected.as_ref()[..16],
+                        "direct NEW_TOKEN keeps its existing authenticated bytes"
+                    );
+                    prefix.token.to_vec()
                 };
-                assert_eq!(len, 24);
-                segment[start + len - 1] ^= 1;
+                assert_eq!(token.len(), 24);
+                token[23] ^= 1;
+                let mut forged = common::peer::Initial::new(&[0x53; 9], &[0x54; 8], 0)
+                    .token(&token)
+                    .seal(&[0x01])
+                    .expect("authenticated Initial carrying a forged token");
                 turn.protocol()
-                    .recv(tokens::CLIENT, segment, epoch::Sample::new(Civil(&civil)))
+                    .recv(
+                        tokens::CLIENT,
+                        &mut forged,
+                        epoch::Sample::new(Civil(&civil)),
+                    )
                     .expect("forged token is a valid packet with invalid authentication");
             }
         }

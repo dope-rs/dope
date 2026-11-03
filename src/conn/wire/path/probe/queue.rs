@@ -19,6 +19,16 @@ pub(in crate::conn) struct Challenges<'a> {
 }
 
 impl<'a> Queue<'a> {
+    pub(in crate::conn) fn cancel(&mut self, data: [u8; 8]) -> bool {
+        self.state
+            .challenges
+            .remove_all(
+                |probe| probe.path.is_none() && probe.data == data,
+                |mut probe| self.control.remove(&mut probe.control),
+            )
+            .is_some()
+    }
+
     pub(in crate::conn) fn try_respond(
         &mut self,
         token: [u8; 8],
@@ -26,7 +36,7 @@ impl<'a> Queue<'a> {
         let Some(entry) = self
             .state
             .challenges
-            .select(|probe| probe.data == token && probe.outstanding)
+            .select(|probe| probe.data == token && !matches!(probe.sent, probe::Sent::Pending))
         else {
             return Ok(Completion::Unmatched);
         };
@@ -38,7 +48,10 @@ impl<'a> Queue<'a> {
         }
         let mut probe = entry.take();
         self.control.remove(&mut probe.control);
-        Ok(Completion::Accepted(probe.path))
+        Ok(Completion::Accepted {
+            path: probe.path,
+            expanded: matches!(probe.sent, probe::Sent::Expanded),
+        })
     }
 
     /// Keeps an inclusive no-reuse cutoff, including after retirement ACK.
@@ -160,53 +173,56 @@ impl<'a> Queue<'a> {
             key,
             data,
             control: None,
-            outstanding: false,
+            sent: probe::Sent::Pending,
             path,
         });
         Ok(())
     }
 
-    pub(in crate::conn) fn try_replace(
+    pub(in crate::conn) fn try_pair(
         &mut self,
-        data: [u8; 8],
-        path: path::Key,
-        old: Option<path::Key>,
+        data: [[u8; 8]; 2],
+        paths: [path::Key; 2],
     ) -> Result<(), probe::Error> {
-        if self.state.challenges.len() != conn::MAX_PATH_TOKENS {
-            self.try_path(data, Some(path))?;
-            if let Some(old) = old {
-                self.state.challenges(self.control).abandon(old);
+        for (index, value) in data.iter().enumerate() {
+            if data[..index].contains(value)
+                || self
+                    .state
+                    .challenges
+                    .iter()
+                    .any(|probe| probe.data == *value)
+            {
+                return Err(probe::Error::Duplicate { data: *value });
             }
-            return Ok(());
         }
-        if self.state.challenges.iter().any(|probe| probe.data == data) {
-            return Err(probe::Error::Duplicate { data });
-        }
-        let Some(old) = old else {
-            return Err(probe::Error::Capacity {
-                data,
-                reason: capacity::Reason::Full,
-            });
-        };
         let next = self.state.next_control_key;
-        let Some((key, after)) = probe::State::key(next) else {
-            return Err(probe::Error::Keys { data, next });
-        };
-        let Some(vacant) = self.state.challenges.remove_all(
-            |probe| probe.path == Some(old),
-            |mut probe| self.control.remove(&mut probe.control),
-        ) else {
-            return Err(probe::Error::Capacity {
-                data,
-                reason: capacity::Reason::Full,
+        let Some((first, next)) = probe::State::key(next) else {
+            return Err(probe::Error::Keys {
+                data: data[0],
+                next,
             });
         };
+        let Some((second, after)) = probe::State::key(next) else {
+            return Err(probe::Error::Keys {
+                data: data[1],
+                next,
+            });
+        };
+        let entries = [(first, data[0], paths[0]), (second, data[1], paths[1])];
+        let growth = self
+            .state
+            .challenges
+            .try_extend(&entries)
+            .map_err(|reason| probe::Error::Capacity {
+                data: data[0],
+                reason,
+            })?;
         self.state.next_control_key = after;
-        vacant.push(probe::Challenge {
+        growth.commit(|&(key, data, path)| probe::Challenge {
             key,
             data,
             control: None,
-            outstanding: false,
+            sent: probe::Sent::Pending,
             path: Some(path),
         });
         Ok(())

@@ -1,4 +1,5 @@
-use std::{net, time};
+use crate::proto::path::Peer;
+use std::time;
 
 use crate::{conn, errors, proto::datagram, runtime::mux, stream};
 use conn::id;
@@ -23,10 +24,7 @@ pub(crate) trait Dgram<
         handle: id::Handle<A::Identity, DOMAIN>,
         packet: datagram::Packet<'pool>,
         now: time::Instant,
-    ) -> Result<
-        (net::SocketAddr, datagram::Sealed<'pool>),
-        errors::SendFailure<datagram::Packet<'pool>>,
-    >;
+    ) -> Result<(Peer, datagram::Sealed<'pool>), errors::SendFailure<datagram::Packet<'pool>>>;
 }
 
 impl<'a, 'tls, H, const DOMAIN: u8, B, A> Dgram<A, H, DOMAIN, B>
@@ -59,15 +57,12 @@ where
         handle: id::Handle<A::Identity, DOMAIN>,
         packet: datagram::Packet<'pool>,
         now: time::Instant,
-    ) -> Result<
-        (net::SocketAddr, datagram::Sealed<'pool>),
-        errors::SendFailure<datagram::Packet<'pool>>,
-    > {
+    ) -> Result<(Peer, datagram::Sealed<'pool>), errors::SendFailure<datagram::Packet<'pool>>> {
         let mut mux = router::Turn::new(self.mux.as_mut());
         let result = mux.external(handle, now, packet, |mut slot, packet| {
             let peer = *slot.peer_addr;
             let mtu = slot.max_packet_bytes.get() as usize;
-            let packet = slot.conn.output().try_packet(packet, now, mtu)?;
+            let packet = slot.conn.output().try_packet_to(packet, now, mtu, peer)?;
             Ok((peer, packet))
         });
         match result {

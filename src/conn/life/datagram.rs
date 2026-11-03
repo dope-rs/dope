@@ -49,12 +49,19 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer:
             return None;
         }
         let by_peer = usize::try_from(peer).ok()?.saturating_sub(1);
-        let bytes = usize::try_from(self.connection.egress.cc.metrics().current_mtu()).ok()?;
+        let bytes = usize::try_from(self.connection.egress.cc.metrics().current_mtu())
+            .ok()?
+            .min(usize::from(
+                self.connection.path.output().max_payload().get(),
+            ));
         let by_pmtu = datagram::Arena::payload_max(bytes, self.connection.path.peer.id().len())?;
         Some(by_peer.min(by_pmtu))
     }
 
     pub fn recv(&mut self) -> Option<B> {
+        if self.connection.is_closing() {
+            return None;
+        }
         let result = self.connection.receive.datagrams.pop_front();
         if result.is_some() {
             self.connection.record::<RECONCILE>(conn::Effects::NOTIFY);

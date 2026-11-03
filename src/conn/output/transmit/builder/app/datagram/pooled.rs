@@ -56,30 +56,39 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         'connection: 'records,
     {
         let (phase, number, max) = self.admitted.into_parts();
-        let builder = builder::Builder::new(self.connection, target, records);
+        let Some(destination) = target.resolve(None) else {
+            return Outcome::Rejected(packet);
+        };
+        let builder = builder::Builder::new(self.connection, destination, records);
         let max = max.get();
         let limit = max
             .saturating_sub(conn::TAG_LEN)
             .saturating_sub(1)
             .saturating_sub(packet.len());
 
+        let peer = destination.network();
+        let outer = peer
+            .as_ref()
+            .and_then(|peer| peer.ticket())
+            .map_or(&[][..], |ticket| &ticket.as_bytes()[..]);
         let prefix = &mut builder.connection.scratch.frames;
         let dcid = *builder.connection.path.peer.id();
-        let needed = 1 + dcid.len() + usize::from(number.encoded_len());
-        let mut encoded =
-            match short::Ref::new(dcid.as_ref_id(), number.encoding(), phase).prefix(prefix) {
-                Ok(encoded) => encoded,
-                Err(error) => {
-                    prefix.clear();
-                    return Outcome::Admission(
-                        packet,
-                        transmit::Admission::Payload {
-                            error,
-                            requested: needed,
-                        },
-                    );
-                }
-            };
+        let needed = outer.len() + 1 + dcid.len() + usize::from(number.encoded_len());
+        let mut encoded = match short::Ref::new(dcid.as_ref_id(), number.encoding(), phase)
+            .prefix(prefix, outer)
+        {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                prefix.clear();
+                return Outcome::Admission(
+                    packet,
+                    transmit::Admission::Payload {
+                        error,
+                        requested: needed,
+                    },
+                );
+            }
+        };
         let ack = match ack::append::<kind::OneRtt, false>(
             &builder.connection.receive.packet_numbers,
             now,
@@ -106,15 +115,12 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         commit.flags.set_elicit(true);
         commit.flags.set_flight(true);
         commit.flags.set_datagram(true);
-        let Some(target) = builder.target(commit.path.route) else {
-            return Outcome::Rejected(packet.reject());
-        };
         use builder::pending;
 
         let prepared = match pending::Packet::try_new(
             journal::Schedule::new(builder).finish(),
             commit,
-            target,
+            destination,
         ) {
             Ok(prepared) => prepared,
             Err((_, error)) => {

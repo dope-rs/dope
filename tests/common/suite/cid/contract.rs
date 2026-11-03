@@ -2,6 +2,7 @@ use crate::common::e2e::life::driver::Ticket;
 use crate::common::runtime;
 use crate::common::suite::cid::{Count, Error, INITIAL};
 use crate::common::suite::peers::tls;
+use dope_quic::conn::State;
 use dope_quic::conn::id::Handle;
 use dope_quic::conn::life::tls::clients;
 use dope_quic::runtime::mux::builder::Builder;
@@ -395,7 +396,7 @@ impl Wire {
         let old = self.client.handle;
         let mut retiring = replace(&mut self.client.router, client);
         self.client.handle = handle;
-        self.server.handle = inbound;
+        let old_inbound = replace(&mut self.server.handle, inbound);
 
         let now = self.now()?;
         Pin::new(&mut retiring)
@@ -405,26 +406,54 @@ impl Wire {
                 })
             })
             .map_err(Error::Retire)?;
-        for _ in 0..16 {
-            let now = self.now()?;
-            Count::relay_at(
-                &mut retiring,
-                &mut self.server.router,
-                self.client.address,
-                now,
-            )
-            .map_err(Error::Runtime)?;
-            Count::relay_at(
-                &mut self.server.router,
-                &mut retiring,
-                self.server.address,
-                now,
-            )
-            .map_err(Error::Runtime)?;
-            if retiring.active_conns() == 0 && self.server.router.active_conns() == 1 {
-                break;
-            }
+        Count::relay_at(
+            &mut retiring,
+            &mut self.server.router,
+            self.client.address,
+            now,
+        )
+        .map_err(Error::Runtime)?;
+        Count::relay_at(
+            &mut self.server.router,
+            &mut retiring,
+            self.server.address,
+            now,
+        )
+        .map_err(Error::Runtime)?;
+        if retiring
+            .conn(old)
+            .is_none_or(|conn| conn.view().lifecycle().state() != State::Closing)
+            || self
+                .server
+                .router
+                .conn(old_inbound)
+                .is_none_or(|conn| conn.view().lifecycle().state() != State::Draining)
+        {
+            return Err(Error::Drain {
+                retiring: retiring.active_conns(),
+                server: self.server.router.active_conns(),
+            });
         }
+        let client_deadline = retiring
+            .conn(old)
+            .and_then(|conn| conn.view().recovery().next_timer())
+            .ok_or(Error::Runtime(runtime::Error::Deadline(now)))?;
+        let server_deadline = self
+            .server
+            .router
+            .conn(old_inbound)
+            .and_then(|conn| conn.view().recovery().next_timer())
+            .ok_or(Error::Runtime(runtime::Error::Deadline(now)))?;
+        let deadline = client_deadline.max(server_deadline);
+        Pin::new(&mut retiring)
+            .observe(deadline, |mut turn| turn.output().drive())
+            .map_err(runtime::Error::Output)
+            .map_err(Error::Runtime)?;
+        Pin::new(&mut self.server.router)
+            .observe(deadline, |mut turn| turn.output().drive())
+            .map_err(runtime::Error::Output)
+            .map_err(Error::Runtime)?;
+        self.steps.now = deadline;
         if retiring.active_conns() != 0 || self.server.router.active_conns() != 1 {
             return Err(Error::Drain {
                 retiring: retiring.active_conns(),

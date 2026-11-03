@@ -4,8 +4,9 @@ use dope::core::driver::{route, schedule};
 use dope::manifold::app::dispatch;
 use dope::manifold::app::dispatch::event;
 
-// SAFETY: unit selection represents the client-owned event and retry work;
-// the inner plan is selected only after that work permits an inner query.
+// SAFETY: unit selection represents client lifecycle, pull readiness, and
+// retries. The inner plan is queried only after those
+// independently owned sources permit an inner query.
 unsafe impl<'pool, 'd, const ID: u8, P, B, A, C, R> dispatch::raw::Probe<'d, Self>
     for client::Dialer<'pool, 'd, ID, P, B, A, C, R>
 where
@@ -31,11 +32,16 @@ where
 
     fn run(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
         let owner = call.owner();
-        let core = owner.project_ref().inner.project_ref();
-        if core.endpoint.handler().lifecycle().has_events() {
+        let core = owner.project_ref().inner.get_ref();
+        let bridge = core.endpoint.handler();
+        if bridge.lifecycle().has_events()
+            || ((P::DATAGRAMS == protocol::Datagrams::Pull
+                || P::STREAMS == protocol::Streams::Pull)
+                && core.endpoint.has_ready())
+        {
             return schedule::Progress::Runnable;
         }
-        let retry = core.endpoint.handler().lifecycle().next_retry();
+        let retry = core.next_retry();
         let clock = call.clock();
         let progress =
             <<<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::Probe as dispatch::raw::Probe<

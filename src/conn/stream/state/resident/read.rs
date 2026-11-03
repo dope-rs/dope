@@ -61,11 +61,11 @@ impl<'a> Read<'a> {
         )
     }
 
-    pub(in crate::conn) fn try_slot(
+    pub(in crate::conn) fn try_slot<const SEND: bool>(
         &self,
         local: resident::Local,
     ) -> Result<Option<u32>, resident::Stale> {
-        Ok(Self::node_slot::<false>(self.try_node(local)?))
+        Ok(Self::node_slot::<SEND>(self.try_node(local)?))
     }
 
     pub(in crate::conn) fn find<const SEND: bool>(

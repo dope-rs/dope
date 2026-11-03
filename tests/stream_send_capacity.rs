@@ -2,7 +2,7 @@ pub mod common;
 
 use common::{
     peer::{Bind as _, Config, Pair, Receiver as _, Scope as _},
-    suite::commit::Retain,
+    suite::{commit::Retain, peers::config::try_budget},
 };
 use dope_quic::{
     conn::stream::{Error, SendOutcome, abandon},
@@ -14,6 +14,89 @@ use dope_quic::{
     wire::stream::Id,
 };
 use std::time::{Duration, Instant};
+
+#[test]
+fn terminal_send_preserves_cause_when_full() {
+    for cause in [
+        admit::Cause::Finished,
+        admit::Cause::Reset,
+        admit::Cause::Retired,
+    ] {
+        let mut pair = try_budget(64, 64, 2).expect("send budgets");
+        let terminal = pair.client.with_scope(|mut scope| {
+            let mut streams = scope.streams();
+            let stream = streams.send().open_bidi().expect("terminal stream");
+            if cause == admit::Cause::Retired {
+                let handle = streams.resident().handle(stream.id()).expect("binding");
+                streams
+                    .binding()
+                    .try_attach(handle)
+                    .expect("retain binding");
+            }
+            if cause == admit::Cause::Reset {
+                streams
+                    .send()
+                    .reset(stream.send(), Code::ZERO)
+                    .expect("reset");
+            } else {
+                streams.send().finish(stream.send()).expect("FIN");
+            }
+            stream.id()
+        });
+        if cause == admit::Cause::Retired {
+            let sent = Instant::now() + Duration::from_secs(1);
+            pair.server
+                .receive_from(&mut pair.work, &mut pair.client, sent)
+                .expect("FIN delivery");
+            let ack = pair
+                .server
+                .view()
+                .recovery()
+                .send_at(sent + Duration::from_millis(30));
+            pair.client
+                .receive_from(&mut pair.work, &mut pair.server, ack)
+                .expect("FIN acknowledgement");
+        }
+        let busy = pair.client.send_streams().open_bidi().expect("busy stream");
+        assert!(matches!(
+            pair.client
+                .send_streams()
+                .try_buffer(busy, send::Buffer::Owned(vec![1; 64])),
+            SendOutcome::Accepted
+        ));
+        pair.client.with_scope(|mut scope| {
+            let mut streams = scope.streams();
+            let terminal = streams.view().resolve_send(terminal).expect("send access");
+            assert_eq!(
+                streams.send().send(terminal, b"late"),
+                Err(Error::Discarded(cause))
+            );
+            assert!(matches!(
+                streams
+                    .send()
+                    .try_buffer(terminal, send::Buffer::Owned(vec![2; 4])),
+                SendOutcome::Accepted
+            ));
+            assert!(matches!(
+                streams
+                    .send()
+                    .try_admit(terminal, send::Buffer::Owned(vec![3; 4]), Retain),
+                admit::Outcome::Discarded(discarded)
+                    if discarded.source().id() == terminal.id() && discarded.cause() == cause
+            ));
+            let handle = streams
+                .resident()
+                .handle(terminal.id())
+                .expect("terminal resident");
+            assert!(matches!(
+                streams.try_write(handle, send::Buffer::Owned(vec![4; 4]), Retain),
+                admit::Outcome::Discarded(discarded)
+                    if discarded.source().id() == terminal.id() && discarded.cause() == cause
+            ));
+        });
+        assert_eq!(pair.client.stream_state().active_bytes(), 64);
+    }
+}
 
 #[test]
 fn implicit_send_capacity() {

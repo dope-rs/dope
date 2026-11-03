@@ -312,7 +312,124 @@ fn initial_frame_rejected() {
             ..
         }) if error_code.get() == 0x0a && frame_type == VarInt::ZERO
     ));
-    assert!(server.view().lifecycle().is_closed());
+    assert_eq!(
+        server.view().lifecycle().state(),
+        dope_quic::conn::State::Closing
+    );
+}
+
+#[test]
+fn coalesced_authentication_failure_keeps_suffix() {
+    let Server {
+        conn: mut server,
+        mut work,
+    } = Server::try_new().expect("server fixture");
+    let mut datagram = peer::Initial::new(&INITIAL_DCID, &CLIENT_SCID, 0)
+        .seal(&[frame::TYPE_PING])
+        .expect("Initial prefix");
+    *datagram.last_mut().expect("authentication tag") ^= 1;
+    let close = peer::Initial::new(&INITIAL_DCID, &CLIENT_SCID, 1)
+        .seal(&[frame::TYPE_CONNECTION_CLOSE, 0, 0, 0])
+        .expect("authenticated Initial suffix");
+    datagram.extend_from_slice(&close);
+    let result = server.with_scope(|mut scope| {
+        scope
+            .input(&mut work)
+            .recv_packet(&mut datagram, Instant::now(), |_| {})
+    });
+    assert!(matches!(
+        result,
+        Err(Error::Crypto(dope_quic::security::crypto::Error::Decrypt(
+            rustls::Error::DecryptError
+        )))
+    ));
+    assert_eq!(server.view().lifecycle().state(), conn::State::Draining);
+}
+
+#[test]
+fn coalesced_short_sample_keeps_suffix() {
+    let Server {
+        conn: mut server,
+        mut work,
+    } = Server::try_new().expect("server fixture");
+    let mut datagram = vec![0xc0, 0, 0, 0, 1, INITIAL_DCID.len() as u8];
+    datagram.extend_from_slice(&INITIAL_DCID);
+    datagram.push(CLIENT_SCID.len() as u8);
+    datagram.extend_from_slice(&CLIENT_SCID);
+    datagram.extend_from_slice(&[0, 0]);
+    let prefix = datagram.len();
+    let close = peer::Initial::new(&INITIAL_DCID, &CLIENT_SCID, 1)
+        .seal(&[frame::TYPE_CONNECTION_CLOSE, 0, 0, 0])
+        .expect("authenticated Initial suffix");
+    datagram.extend_from_slice(&close);
+    let result = server.with_scope(|mut scope| {
+        scope
+            .input(&mut work)
+            .recv_packet(&mut datagram, Instant::now(), |_| {})
+    });
+    assert!(matches!(
+        result,
+        Err(Error::Crypto(dope_quic::security::crypto::Error::Sample {
+            actual,
+            required,
+        })) if actual == prefix && required == prefix + 20
+    ));
+    assert_eq!(server.view().lifecycle().state(), conn::State::Draining);
+}
+
+#[test]
+fn discards_initial_with_changed_source_id() {
+    let Server {
+        conn: mut server,
+        mut work,
+    } = Server::try_new().expect("server fixture");
+    let mut scid = CLIENT_SCID;
+    scid[0] ^= 1;
+    let mut packet = peer::Initial::new(&INITIAL_DCID, &scid, 0)
+        .seal(&[frame::TYPE_CONNECTION_CLOSE, 0, 0, 0])
+        .expect("authenticated Initial with a different source CID");
+    server
+        .with_scope(|mut scope| {
+            scope
+                .input(&mut work)
+                .recv_packet(&mut packet, Instant::now(), |_| {})
+        })
+        .expect("discard the mismatched Initial");
+    assert!(server.view().lifecycle().is_opening());
+}
+
+#[test]
+fn coalesced_close_stops_before_next_epoch() {
+    let Server {
+        conn: mut server,
+        mut work,
+    } = Server::try_new().expect("server fixture");
+    let mut frames = vec![frame::TYPE_CONNECTION_CLOSE];
+    VarInt::ZERO.encode(&mut frames).expect("close error code");
+    VarInt::ZERO.encode(&mut frames).expect("close frame type");
+    VarInt::new(4)
+        .expect("bounded close reason")
+        .encode(&mut frames)
+        .expect("close reason length");
+    frames.extend_from_slice(b"done");
+    let mut datagram = peer::Initial::new(&INITIAL_DCID, &CLIENT_SCID, 0)
+        .seal(&frames)
+        .expect("authenticated Initial close");
+    // The following Handshake packet is deliberately incomplete. Draining
+    // must stop before parsing or touching the next packet's crypto state.
+    datagram.push(0xe0);
+    let now = Instant::now();
+    server
+        .with_scope(|mut scope| {
+            scope
+                .input(&mut work)
+                .recv_packet(&mut datagram, now, |_| {})
+        })
+        .expect("ignore every packet after the authenticated close");
+    assert_eq!(server.view().lifecycle().state(), conn::State::Draining);
+    let (packets, result) = server.with_scope(|mut scope| scope.output().send(now));
+    result.expect("draining output");
+    assert!(packets.is_empty());
 }
 
 #[test]

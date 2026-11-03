@@ -2,7 +2,7 @@ use crate::runtime::routing::registry;
 use o3::base::num::bounded;
 use o3::buffer;
 use o3::depot::{
-    self, capacity,
+    self,
     index::Initialized,
     queue::{indexed::planes::bound, links, tagged},
 };
@@ -36,6 +36,7 @@ pub(in crate::runtime) struct Directory<
     cids: &'storage mut registry::Table,
     tokens: &'storage reset::Reset,
     active: &'storage mut u32,
+    flush: &'storage mut super::Flush,
 }
 
 pub(in crate::runtime) struct Hit<
@@ -64,6 +65,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             cids,
             reset,
             active,
+            flush,
         } = set;
         bound::Scope::with(entries, |root| {
             let (entries, resets) = root.split();
@@ -73,6 +75,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
                 cids,
                 tokens: reset,
                 active,
+                flush,
             })
         })
     }
@@ -109,12 +112,10 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         domain: id::Domain<I, DOMAIN>,
         routes: cids::Routes<'id>,
     ) -> Option<Reservation<'storage, 'id, C, I, DOMAIN, B, D, T>> {
-        let (key, epoch) = loop {
-            let (key, front) = self.entries.front_entry::<{ mux::FREE_QUEUE }>()?;
-            let mut entry = front.pop();
-            if let Some(epoch) = entry.metadata_mut().claim() {
-                break (key, epoch);
-            }
+        let (key, front) = self.entries.front_entry::<{ mux::FREE_QUEUE }>()?;
+        let mut entry = front.pop();
+        let Some(epoch) = entry.metadata_mut().claim() else {
+            unreachable!("generation");
         };
         let handle = domain.handle(key.position(), epoch);
         Some(Reservation {
@@ -125,10 +126,8 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         })
     }
 
-    pub(in crate::runtime) fn capacity(
-        &self,
-    ) -> (usize, capacity::Limit<{ mux::MAX_CONNECTIONS }>) {
-        (*self.active as usize, self.entries.limit())
+    pub(in crate::runtime) fn is_full(&mut self) -> bool {
+        self.entries.front_entry::<{ mux::FREE_QUEUE }>().is_none()
     }
 }
 
@@ -148,6 +147,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             cids,
             tokens,
             active,
+            flush,
         } = self.owner;
         let index = parent(self.index);
         let source = unsafe {
@@ -163,6 +163,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
                 cids,
                 tokens,
                 active,
+                flush,
             },
             Key(key),
             self.local,

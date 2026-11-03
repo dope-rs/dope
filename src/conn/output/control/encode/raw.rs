@@ -20,6 +20,7 @@ impl Sent {
         control: &mut control::Pending,
         local: &mut local::State,
         rest: &mut [Written],
+        bytes: usize,
     ) {
         match self {
             Sent::None => {}
@@ -29,7 +30,7 @@ impl Sent {
             Sent::Challenge(index) => unsafe {
                 depot::raw::Proof::<_, Initialized<probe::raw::Challenge>>::new((
                     &mut control.probe,
-                    index,
+                    (index, bytes),
                 ))
             }
             .into(),

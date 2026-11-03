@@ -207,6 +207,10 @@ where
         self.storage.nodes.len() as u32
     }
 
+    pub(in crate::conn) fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
+        self.storage.nodes.iter_mut().map(|node| &mut node.value)
+    }
+
     pub(in crate::conn) fn front(&mut self) -> Option<Active<'_, Side, Value, Auxiliary, Policy>> {
         Some(keyed::Fifo::first(self)?.into())
     }

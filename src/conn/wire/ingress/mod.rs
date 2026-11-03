@@ -13,6 +13,9 @@ use std::time;
 use crate::conn;
 use crate::conn::wire::path;
 use crate::stream;
+use crate::wire::packet::long;
+
+pub(crate) type Received = (Result<(), conn::Error>, Option<path::reset::Token>);
 
 #[repr(transparent)]
 struct Context<const RECONCILE: bool>(u64);
@@ -121,6 +124,16 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::ra
         now: time::Instant,
         sink: &mut E,
     ) -> Result<(), conn::Error> {
+        self.receive_with(long::Datagram::protected(wire), now, sink)
+            .0
+    }
+
+    pub(crate) fn receive_with<E: events::Sink>(
+        &mut self,
+        wire: long::Datagram<&mut [u8]>,
+        now: time::Instant,
+        sink: &mut E,
+    ) -> Received {
         receiver::Receiver::new(self, now, sink).run(wire, bodies::Copied)
     }
 }

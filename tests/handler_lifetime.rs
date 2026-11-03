@@ -92,6 +92,10 @@ fn pin_keeps_address() {
             .observe(now, |mut turn| turn.protocol().try_close(handle)),
         Ok(())
     );
+    client
+        .as_mut()
+        .observe(now, |mut turn| turn.output().drive())
+        .expect("close notification");
     for (trace, expected) in [(&local.shutting, (1, 0)), (&local.retired, (2, 1))] {
         let values = trace.take();
         assert_eq!(values, [expected]);

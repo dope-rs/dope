@@ -170,7 +170,7 @@ impl SpaceMut<'_> {
             stack::raw::Drain<'_, revision::Key, controls::Tag>,
             stack::raw::Drain<'_, delivery::Handle<delivery::Stream>, streams::Tag>,
         ) -> Result<(), E>,
-    ) -> Result<(), E> {
+    ) -> (Result<(), E>, Option<u64>) {
         let Table {
             rings,
             pools,
@@ -207,17 +207,13 @@ impl SpaceMut<'_> {
                         return false;
                     }
                     largest.saturating_sub(pn) >= rtt::PACKET_THRESHOLD
-                        || (!journal.transmission.is_pto() && journal.sent_time <= cutoff)
+                        || journal.sent_time <= cutoff
                 },
                 emit,
             );
         } else if let Some(last) = largest.checked_sub(rtt::PACKET_THRESHOLD) {
             self.drain_where(|journal| journal.pn.get() <= last, emit);
         }
-    }
-
-    pub(in crate::conn::output) fn protect_pto(&mut self) {
-        self.epoch.bind_mut(&mut self.table.rings).protect_pto();
     }
 }
 
@@ -226,7 +222,6 @@ impl Space<'_> {
         let lowest = largest.saturating_sub(rtt::PACKET_THRESHOLD - 1);
         (lowest..=largest)
             .filter_map(|pn| self.epoch.bind(&self.table.rings).get(pn))
-            .filter(|journal| !journal.transmission.is_pto())
             .map(|journal| journal.sent_time)
             .min()
     }

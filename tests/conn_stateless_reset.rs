@@ -5,7 +5,7 @@ use common::peer::Pair;
 use common::suite::{mux::retry, retry::Capture};
 use dope_quic::conn::{self, life::options::Options};
 use dope_quic::runtime::mux::builder::Plan;
-use dope_quic::{security::crypto, wire::packet};
+use dope_quic::{security::crypto, wire::frame};
 use std::{net::SocketAddr, pin::Pin, time::Instant};
 
 #[test]
@@ -82,68 +82,70 @@ fn srt_is_stable() {
 
 #[test]
 fn matching_srt_closes() {
-    let secret = [0xC1u8; 32];
-    let (_, mut client, mut work) = Pair::try_new(
-        retry::try_config(Some(secret)).expect("reset options"),
-        retry::try_config(None).expect("reset options"),
-    )
-    .expect("connected peers")
-    .into_parts();
-
-    let token = client
-        .view()
-        .peer()
-        .params()
-        .and_then(|params| params.identity().reset())
-        .expect("peer stateless reset token");
-
-    let mut reset = retry::try_tail(0x40, 30, token).expect("reset fixture tail");
-    let now = Instant::now();
-
-    client
-        .with_scope(|mut scope| {
-            scope
-                .input(&mut work)
-                .recv_packet(&mut reset, now, |_: &rustls::Error| {})
-        })
-        .expect("reset must not surface as Error");
-    assert!(
-        client.view().path().is_reset(),
-        "client should mark stateless_reset_received",
-    );
-    assert!(client.view().lifecycle().is_closed());
+    for first in [0x40, 0x00, 0x80, 0xC0, 0xE0, 0xF0] {
+        let (_, mut client, mut work) = Pair::try_new(
+            retry::try_config(Some([0xC1; 32])).expect("reset options"),
+            retry::try_config(None).expect("reset options"),
+        )
+        .expect("connected peers")
+        .into_parts();
+        let token = client
+            .view()
+            .peer()
+            .params()
+            .and_then(|params| params.identity().reset())
+            .expect("peer reset token");
+        let mut reset = if first == 0xE0 {
+            let mut wire = retry::handshake();
+            wire.resize(48, 0);
+            wire[23] = 24;
+            *wire.last_chunk_mut::<16>().expect("reset tail") = token;
+            wire
+        } else {
+            retry::try_tail(first, 30, token).expect("reset tail")
+        };
+        client
+            .with_scope(|mut scope| {
+                scope.input(&mut work).recv_packet(
+                    &mut reset,
+                    Instant::now(),
+                    |_: &rustls::Error| {},
+                )
+            })
+            .expect("matching reset");
+        assert!(client.view().path().is_reset(), "header {first:#x}");
+        assert_eq!(client.view().lifecycle().state(), conn::State::Draining);
+    }
 }
 
 #[test]
-fn long_header_not_reset() {
-    let secret = [0xC3u8; 32];
-    let (_, mut client, mut work) = Pair::try_new(
-        retry::try_config(Some(secret)).expect("reset options"),
-        retry::try_config(None).expect("reset options"),
-    )
-    .expect("connected peers")
-    .into_parts();
-    let token = client
-        .view()
-        .peer()
-        .params()
-        .and_then(|params| params.identity().reset())
-        .expect("peer stateless reset token");
-    let mut reset = retry::try_tail(0xC0, 21, token).expect("reset fixture tail");
+fn authenticated_packet_with_reset_tail_keeps_its_outcome() {
+    use common::suite::peers::packet::{Pair, bytes};
 
-    let result = client.with_scope(|mut scope| {
-        scope
-            .input(&mut work)
-            .recv_packet(&mut reset, Instant::now(), |_: &rustls::Error| {})
-    });
-    assert!(matches!(
-        result,
-        Err(conn::Error::Long(packet::decode::Error::Version {
-            actual: 0xC0C0_C0C0
-        }))
-    ));
-    assert!(!client.view().path().is_reset());
-    assert!(client.view().lifecycle().is_ready());
+    for kind in [frame::TYPE_PING, 0x1f] {
+        let now = Instant::now();
+        let mut pair = Pair::try_new(1, now, |_| {}).expect("packet peer");
+        let mut packet = pair.peer.packet(&[kind]).expect("peer Ping");
+        let mut notice = bytes::notice(1, 1).expect("replacement CID");
+        *notice.last_chunk_mut::<16>().expect("notice token") =
+            *packet.last_chunk::<16>().expect("packet tag");
+        pair.receive(&notice, now).expect("install reset token");
+        assert_eq!(pair.retired(now).expect("use replacement CID"), [0]);
+
+        let result = pair.server.with_scope(|mut scope| {
+            scope
+                .input(&mut pair.work)
+                .recv_packet(&mut packet, now, |_| {})
+        });
+        if kind == frame::TYPE_PING {
+            result.expect("earlier authenticated Ping");
+            assert!(pair.server.view().lifecycle().is_ready());
+        } else {
+            assert!(matches!(result, Err(conn::Error::Frame(_))));
+            assert_eq!(pair.server.view().lifecycle().state(), conn::State::Closing);
+        }
+        assert!(!pair.server.view().path().is_reset());
+    }
 }
 
 #[test]
@@ -292,7 +294,7 @@ fn initial_no_reset() {
     );
 }
 
-/// v1 Handshake form, never eligible for stateless reset
+/// Unknown long headers do not cause an outgoing reset.
 #[test]
 fn long_header_no_reset() {
     let secret = [0xD5u8; 32];
@@ -358,7 +360,10 @@ fn restart_recovers() {
         client.view().path().is_reset(),
         "client should accept the reset"
     );
-    assert!(client.view().lifecycle().is_closed());
+    assert_eq!(
+        client.view().lifecycle().state(),
+        dope_quic::conn::State::Draining
+    );
 }
 
 #[test]

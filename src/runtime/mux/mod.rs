@@ -31,4 +31,6 @@ pub(in crate::runtime) const FLUSH_QUEUE: usize = 1;
 pub(in crate::runtime) const REAP_QUEUE: usize = 2;
 pub(in crate::runtime) const APPLICATION_QUEUE: usize = 3;
 pub(in crate::runtime) const FREE_QUEUE: usize = 4;
-pub(in crate::runtime) const QUEUE_PLANES: usize = 5;
+pub(crate) const STREAM_QUEUE: usize = 5;
+pub(crate) const DATAGRAM_QUEUE: usize = 6;
+pub(in crate::runtime) const QUEUE_PLANES: usize = 7;

@@ -76,14 +76,27 @@ impl Peer {
     pub(in crate::conn) fn has_spare(&self, token: reset::Token) -> bool {
         match self.spare.selected() {
             Selection::Used(cid) => cid.reset_token.is_some_and(|known| token.matches(known)),
-            Selection::Idle | Selection::Reserved(_) => false,
+            Selection::Idle
+            | Selection::Reserved(_)
+            | Selection::PreviousReserved(_)
+            | Selection::Previous(_) => false,
+        }
+    }
+
+    pub(in crate::conn) fn has_previous(&self, token: reset::Token) -> bool {
+        match self.spare.selected() {
+            Selection::Previous(cid) => cid.reset_token.is_some_and(|known| token.matches(known)),
+            Selection::Idle
+            | Selection::Reserved(_)
+            | Selection::Used(_)
+            | Selection::PreviousReserved(_) => false,
         }
     }
 
     pub(in crate::conn) fn reset_tokens(&self) -> impl Iterator<Item = reset::Token> + '_ {
         let spare = match self.spare.selected() {
-            Selection::Used(cid) => cid.reset_token,
-            Selection::Idle | Selection::Reserved(_) => None,
+            Selection::Used(cid) | Selection::Previous(cid) => cid.reset_token,
+            Selection::Idle | Selection::Reserved(_) | Selection::PreviousReserved(_) => None,
         };
         self.active.reset_token.into_iter().chain(spare)
     }
@@ -103,16 +116,47 @@ impl Peer {
     pub(in crate::conn) fn spare(&self) -> Option<&cid::Id> {
         match self.spare.selected() {
             Selection::Reserved(cid) | Selection::Used(cid) => Some(&cid.id),
-            Selection::Idle => None,
+            Selection::Idle | Selection::PreviousReserved(_) | Selection::Previous(_) => None,
         }
     }
 
+    pub(in crate::conn) fn previous(&self) -> Option<&cid::Id> {
+        match self.spare.selected() {
+            Selection::PreviousReserved(cid) | Selection::Previous(cid) => Some(&cid.id),
+            Selection::Idle | Selection::Reserved(_) | Selection::Used(_) => None,
+        }
+    }
+
+    pub(super) fn try_release_previous(
+        &mut self,
+        state: &mut control::Pending,
+    ) -> Result<(), capacity::Reason> {
+        if matches!(
+            self.spare.selection,
+            Selection::PreviousReserved(_) | Selection::Previous(_)
+        ) {
+            self.try_abandon(state)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::conn) fn reserve(&mut self) {
-        self.spare.reserve();
+        self.spare.reserve(false);
+    }
+
+    pub(super) fn reserve_previous(&mut self) {
+        self.spare.reserve(true);
     }
 
     pub(in crate::conn) fn use_spare(&mut self) {
         self.spare.mark_used(&mut self.reset_tokens_dirty);
+    }
+
+    pub(super) fn use_previous(&mut self) {
+        if let Selection::PreviousReserved(slot) = self.spare.selection {
+            self.spare.selection = Selection::Previous(slot);
+            self.reset_tokens_dirty = true;
+        }
     }
 
     pub(super) fn try_abandon(
@@ -121,7 +165,7 @@ impl Peer {
     ) -> Result<(), capacity::Reason> {
         if self
             .spare
-            .try_take(|cid, spare| {
+            .try_take::<false>(|cid, spare| {
                 state.queue().try_retire(
                     cid.sequence,
                     iter::once((self.active.sequence, true)).chain(
@@ -141,10 +185,15 @@ impl Peer {
     pub(super) fn try_activate(
         &mut self,
         state: &mut control::Pending,
-    ) -> Result<(), capacity::Reason> {
+        retain_previous: bool,
+    ) -> Result<path::Migration, capacity::Reason> {
+        if retain_previous && self.spare.activate(&mut self.active) {
+            self.reset_tokens_dirty = true;
+            return Ok(path::Migration::Committed);
+        }
         if self
             .spare
-            .try_take(|active, spare| {
+            .try_take::<true>(|active, spare| {
                 state.queue().try_retire(
                     self.active.sequence,
                     iter::once((self.active.sequence, false))
@@ -156,8 +205,10 @@ impl Peer {
             .is_some()
         {
             self.reset_tokens_dirty = true;
+            Ok(path::Migration::Committed)
+        } else {
+            Ok(path::Migration::Pending)
         }
-        Ok(())
     }
 
     pub(in crate::conn) fn set_token(&mut self, token: [u8; 16]) {
@@ -181,7 +232,8 @@ impl Peer {
         limit: u64,
         update: decode::Notice<cid::Id>,
         retire: decode::Retire,
-    ) -> Result<(), Error> {
+        candidate: bool,
+    ) -> Result<path::Migration, Error> {
         let (sequence, prior) = retire.into_parts();
         let (id, token) = update.into_parts();
         if self.active.id.is_empty() {
@@ -222,15 +274,32 @@ impl Peer {
             reset_token: Some(token),
         });
         let changed = self.active.sequence < prior;
+        let occupied = match self.spare.selected() {
+            Selection::Used(cid) | Selection::Previous(cid) => Some(cid.sequence),
+            Selection::Idle | Selection::Reserved(_) | Selection::PreviousReserved(_) => None,
+        };
+        // The path owner has retained this complete candidate's address. Move
+        // its CID with that address, never onto the retiring active path.
+        let promoted = match self.spare.selected() {
+            Selection::Reserved(cid) | Selection::Used(cid)
+                if changed && candidate && cid.sequence >= prior =>
+            {
+                Some(*cid)
+            }
+            _ => None,
+        };
         let next = if changed {
             Some(
-                self.spare
-                    .iter()
-                    .filter(|cid| cid.sequence >= prior)
-                    .copied()
-                    .chain(incoming)
-                    .min_by_key(|cid| cid.sequence)
-                    .ok_or(Error::Connection(conn::Error::ConnectionIdLimit))?,
+                promoted
+                    .or_else(|| {
+                        self.spare
+                            .iter()
+                            .filter(|cid| cid.sequence >= prior && Some(cid.sequence) != occupied)
+                            .copied()
+                            .chain(incoming)
+                            .min_by_key(|cid| cid.sequence)
+                    })
+                    .ok_or(Error::Connection(conn::Error::ConnectionIdUnavailable))?,
             )
         } else {
             None
@@ -260,7 +329,7 @@ impl Peer {
         self.retire_prior_to = prior;
         self.reset_tokens_dirty |= matches!(
             (&self.spare.selection, &spare.selection),
-            (Selection::Used(_), Selection::Idle)
+            (Selection::Used(_) | Selection::Previous(_), Selection::Idle)
         );
         self.spare.values.copy_from(&spare.values);
         self.spare.selection = spare.selection;
@@ -268,7 +337,11 @@ impl Peer {
             self.active = next;
         }
         self.reset_tokens_dirty |= changed;
-        Ok(())
+        Ok(if promoted.is_some() {
+            path::Migration::Committed
+        } else {
+            path::Migration::Pending
+        })
     }
 }
 
@@ -280,6 +353,8 @@ pub(in crate::conn::wire::path::peer) enum Selection<T> {
     Idle,
     Reserved(T),
     Used(T),
+    PreviousReserved(T),
+    Previous(T),
 }
 
 #[derive(Clone, Copy)]
@@ -306,10 +381,24 @@ impl Spares {
             Selection::Idle => Selection::Idle,
             Selection::Reserved(slot) => Selection::Reserved(get(slot)),
             Selection::Used(slot) => Selection::Used(get(slot)),
+            Selection::PreviousReserved(slot) => Selection::PreviousReserved(get(slot)),
+            Selection::Previous(slot) => Selection::Previous(get(slot)),
         }
     }
 
-    fn reserve(&mut self) {
+    fn activate(&mut self, active: &mut Cid) -> bool {
+        let (Selection::Reserved(slot) | Selection::Used(slot)) = self.selection else {
+            return false;
+        };
+        // SAFETY: the same retained selected slot admits both projections;
+        // swapping its initialized value preserves the bounded prefix.
+        let selected = unsafe { self.values.get_unchecked_mut(usize::from(slot.0.get()) - 1) };
+        mem::swap(active, selected);
+        self.selection = Selection::Previous(slot);
+        true
+    }
+
+    fn reserve(&mut self, previous: bool) {
         if !matches!(self.selection, Selection::Idle) {
             return;
         }
@@ -320,7 +409,11 @@ impl Spares {
             .min_by(|left, right| left.1.sequence.cmp(&right.1.sequence))
         {
             let slot = Slot(num::NonZero::<u8>::MIN.saturating_add(index as u8));
-            self.selection = Selection::Reserved(slot);
+            self.selection = if previous {
+                Selection::PreviousReserved(slot)
+            } else {
+                Selection::Reserved(slot)
+            };
         }
     }
 
@@ -331,13 +424,14 @@ impl Spares {
         }
     }
 
-    fn try_take(
+    fn try_take<const RESERVED: bool>(
         &mut self,
         retire: impl FnOnce(Cid, &[Cid]) -> Result<(), capacity::Reason>,
     ) -> Result<Option<Cid>, capacity::Reason> {
         let cid = match self.selected() {
-            Selection::Used(cid) => *cid,
-            Selection::Idle | Selection::Reserved(_) => {
+            Selection::Used(cid) | Selection::Previous(cid) => *cid,
+            Selection::Reserved(cid) if RESERVED => *cid,
+            Selection::Idle | Selection::Reserved(_) | Selection::PreviousReserved(_) => {
                 self.selection = Selection::Idle;
                 return Ok(None);
             }
@@ -357,7 +451,10 @@ impl Spares {
     ) -> Result<(), conn::Error> {
         let chosen = match &self.selection {
             Selection::Idle => None,
-            Selection::Reserved(slot) | Selection::Used(slot) => Some(slot),
+            Selection::Reserved(slot)
+            | Selection::Used(slot)
+            | Selection::PreviousReserved(slot)
+            | Selection::Previous(slot) => Some(slot),
         };
         let mut source = num::NonZero::<u8>::MIN;
         let mut position = num::NonZero::<u8>::MIN;
@@ -378,6 +475,10 @@ impl Spares {
             Selection::Idle => Selection::Idle,
             Selection::Reserved(_) => selected.map_or(Selection::Idle, Selection::Reserved),
             Selection::Used(_) => selected.map_or(Selection::Idle, Selection::Used),
+            Selection::PreviousReserved(_) => {
+                selected.map_or(Selection::Idle, Selection::PreviousReserved)
+            }
+            Selection::Previous(_) => selected.map_or(Selection::Idle, Selection::Previous),
         };
         if let Some(cid) = incoming
             && !next.is_some_and(|active| active.sequence == cid.sequence)

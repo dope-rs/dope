@@ -75,6 +75,7 @@ where
         finish: executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self>,
     ) -> executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self> {
         let (mut owner, install, proof) = finish.into_parts();
+        manage::Shutdown::new(owner.as_mut().project().mux).finish(proof);
         <<H::Events as set::Dispatch<H, ID, B, resident::Shared<'d>, id::Driver<'d>>>::Endpoint as endpoint::Mode<H, ID, B, resident::Shared<'d>, id::Driver<'d>>>::call(|| {
             let domain = owner.as_ref().project_ref().mux.domain();
             let handler = owner.as_mut().project().mux.handler_mut();

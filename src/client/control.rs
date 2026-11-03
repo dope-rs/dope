@@ -70,6 +70,11 @@ where
     A::Binding: owner::Binding<'d, ID>,
     R: routing::PeerRoute,
 {
+    /// Borrows protocol state while retaining this admitted output position.
+    pub fn protocol(&self) -> &P {
+        self.0.handler().protocol()
+    }
+
     pub fn try_send(
         self,
         slot: client::SlotId,
@@ -113,6 +118,11 @@ where
 
     pub fn protocol(&self) -> &P {
         self.inner.as_ref().get_ref().protocol()
+    }
+
+    /// Returns the first permanent failure retained by this installed client.
+    pub fn failure(&self) -> Option<protocol::Failure> {
+        self.inner.as_ref().get_ref().failure()
     }
 
     /// Consumes the coalesced retry hint without granting send capacity.
@@ -212,6 +222,28 @@ where
                 .as_mut()
                 .with_conn(dialer::Connection::Attempt(try_id), now, op)
         })
+    }
+
+    /// Consumes at most one native datagram for an admitted application turn.
+    /// Push mode, an empty ready queue, or a closing source returns `Ok(None)`.
+    /// A stale source returns `InvalidHandle`, loses its ready membership, and
+    /// retains its payloads until native connection cleanup. A live source with
+    /// more payloads rejoins the ready queue's tail under the same generation.
+    pub fn recv_datagram(
+        &mut self,
+    ) -> Result<Option<(client::AttemptId, P::Receive)>, errors::Access> {
+        self.0
+            .apply_mut(|ctl, now| ctl.inner.as_mut().project().inner.recv_datagram(now))
+    }
+
+    /// Consumes one native stream event after its connection's connect callback.
+    /// Readable events move at most one original receive fragment. Stream and
+    /// datagram pull modes retain their shared application readiness independently.
+    pub fn recv_stream(
+        &mut self,
+    ) -> Result<Option<(client::AttemptId, protocol::Stream<P::Receive>)>, errors::Access> {
+        self.0
+            .apply_mut(|ctl, now| ctl.inner.as_mut().project().inner.recv_stream(now))
     }
 
     /// Acquires one output position before selecting a logical client slot.

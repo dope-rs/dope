@@ -282,10 +282,41 @@ where
     B: stream::Recv,
     App: Driver<'d, H, DOMAIN, B, A::Send>,
 {
+    has_ready(mux.get_ref()) || app.has_work(mux.project_ref().handler)
+}
+
+pub(crate) fn has_ready<A, H, const DOMAIN: u8, B>(mux: &router::Router<H, DOMAIN, B, A>) -> bool
+where
+    A: auth::Mode<DOMAIN>,
+    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
+    B: stream::Recv,
+{
     !mux.state
         .registry
         .is_empty_in::<{ mux::APPLICATION_QUEUE }>()
-        || app.has_work(mux.project_ref().handler)
+}
+
+/// Consumes one ready source after its caller admits the application transition.
+pub(crate) fn next<A, H, const DOMAIN: u8, B, R, const PLANE: usize>(
+    mux: pin::Pin<&mut router::Router<H, DOMAIN, B, A>>,
+    now: time::Instant,
+    op: impl for<'handler, 'scope> FnOnce(
+        pin::Pin<&'handler mut H>,
+        Connection<'scope, H::Connection, DOMAIN, B, A::Send, A::Identity>,
+    ) -> R,
+) -> Option<R>
+where
+    A: auth::Mode<DOMAIN>,
+    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
+    B: stream::Recv,
+{
+    let mut turn = router::Turn::new(mux);
+    execute(&mut turn, now, |turn| {
+        let (handler, conns) = turn.into_parts();
+        conns
+            .next_in::<PLANE>()
+            .map(|selected| selected.run(|conn| op(handler, conn)))
+    })
 }
 
 pub(crate) fn drive<'turn, 'd, A, H, const DOMAIN: u8, B, App>(

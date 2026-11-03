@@ -49,6 +49,9 @@ impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::S
     Security<'_, DOMAIN, B, RECONCILE, D, T>
 {
     pub(super) fn rotate(&mut self, now: time::Instant) -> Result<(), conn::Error> {
+        if self.machine.is_closing() {
+            return Err(conn::Error::KeyUpdate);
+        }
         let (_, pto) = self.machine.try_pto()?;
         let ready = self.machine.egress.lifecycle.handshake_confirmed;
         self.machine
@@ -80,7 +83,7 @@ impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::S
         self.machine.handshake.peer.try_saved(route)
     }
 
-    /// Called only by the consuming closing event before transport retirement.
+    /// Called only by the closing event before application retirement.
     pub(crate) fn take_final(&mut self) -> Option<life::Reconnect> {
         let route = self.saved_route()?;
         let (token, auth, peer) = self.machine.handshake.peer.take_final()?;

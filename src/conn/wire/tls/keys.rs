@@ -188,6 +188,10 @@ impl WriteKeys {
             .is_some_and(|elapsed| elapsed / 3 >= pto)
     }
 
+    pub(super) fn remaining(&self) -> u64 {
+        self.encrypted.remaining()
+    }
+
     pub(super) fn begin(&self) -> Result<(), crypto::Error> {
         self.encrypted.record()?;
         Ok(())
@@ -225,7 +229,7 @@ impl Pending<'_> {
 }
 
 enum Rejection {
-    AeadLimitReached,
+    ConfidentialityLimit,
     KeyUpdate,
 }
 
@@ -281,7 +285,7 @@ impl Pair {
         fails: &mut ciphers::Failures,
     ) -> Result<(), Update> {
         if self.write.encrypted.is_near() {
-            self.advance(ready, now, pto, Rejection::AeadLimitReached)?;
+            self.advance(ready, now, pto, Rejection::ConfidentialityLimit)?;
         }
         self.try_fill(fails)?;
         if let ReadState::Active = self.state {
@@ -327,7 +331,7 @@ impl Pair {
     ) -> Result<(), Update> {
         if !self.write.can_update(ready, now, pto) {
             return Err(match reject {
-                Rejection::AeadLimitReached => Update::AeadLimitReached,
+                Rejection::ConfidentialityLimit => Update::ConfidentialityLimit,
                 Rejection::KeyUpdate => Update::Key,
             });
         }
