@@ -12,9 +12,6 @@ use std::iter;
 pub mod common;
 
 use dope::core::driver::route::{FrameworkTag, Tag, kind};
-use dope_test::reclaim::Reports;
-use std::io::Write;
-
 use dope::core::{
     driver::{route::table::conn::Capacity, storage},
     io::socket,
@@ -27,6 +24,7 @@ use dope::runtime::executor::Executor;
 use dope_fiber::BlockOn;
 use dope_fiber::net::server::{Config, Listener, Plan};
 use dope_test::harness::peer;
+use dope_test::reclaim::Reports;
 use o3::buffer::Source as _;
 
 use crate::common::{Read, state};

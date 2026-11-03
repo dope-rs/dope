@@ -200,7 +200,7 @@ impl<'a, 'd, R: roles::Protocol + 'd, ID: route::Identity + 'd> Sender<'a, 'd, R
         let Some(egress) = send.buffer_mut() else {
             return end.output(send::Transition::unchanged(send.buffered()));
         };
-        let cause = self.wire.drain(egress);
+        let cause = self.refill(egress);
         let close = self.wire.failed;
         let free = send.free_empty();
         let ready = self.finish(send.consume_none(), close);
@@ -279,10 +279,22 @@ impl<'a, 'd, R: roles::Protocol + 'd, ID: route::Identity + 'd> Sender<'a, 'd, R
         let Some(egress) = self.wire.try_buffer(send) else {
             return Poll::Pending;
         };
-        if let Some(cause) = self.wire.drain(egress) {
+        if let Some(cause) = self.refill(egress) {
             end.fail(cause);
         }
         Poll::Ready(())
+    }
+
+    /// A partial native send retains its ciphertext suffix in place until drained.
+    fn refill(
+        &mut self,
+        output: &mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>,
+    ) -> Option<crate::Error> {
+        if output.is_empty() {
+            self.wire.drain(output)
+        } else {
+            None
+        }
     }
 
     pub(crate) fn finish<'b>(

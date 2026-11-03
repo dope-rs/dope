@@ -34,7 +34,7 @@ pub mod common;
 use common::{
     Read,
     fiber::client::{ACK, Client, KEY_SEED, PING, PONG},
-    state,
+    native, state,
 };
 
 #[test]
@@ -54,8 +54,7 @@ fn reconnects() {
         AcceptScript::with(
             move |accept| {
                 for _ in 0..2 {
-                    let socket = accept.accept()?;
-                    let mut socket = &socket;
+                    let socket = accept.accept().map_err(native::Error::Peer)?;
                     let key = Identity::from_seed(&KEY_SEED).expect("server identity");
                     let config = match pin {
                         Some(pin) => key.server_auth(pin),
@@ -63,34 +62,32 @@ fn reconnects() {
                     }
                     .expect("server policy");
                     let mut tls = rustls::ServerConnection::new(Arc::new(config))
+                        .map(rustls::Connection::Server)
                         .expect("native server connection");
                     let mut got = Vec::new();
                     let mut replied = false;
                     for _ in 0..64 {
-                        while tls.wants_write() {
-                            assert_ne!(tls.write_tls(&mut socket)?, 0, "TLS output progress");
-                        }
+                        native::write(&mut tls, &socket)?;
                         match tls.reader().read_to_end(&mut got) {
                             Ok(_) => {}
                             Err(cause) if cause.kind() == io::ErrorKind::WouldBlock => {}
-                            Err(cause) => return Err(cause),
+                            Err(cause) => return Err(native::Error::Io(cause)),
                         }
                         if !replied && got.len() >= PING.len() {
                             assert_eq!(got, PING);
                             tls.refresh_traffic_keys().expect("request key update");
-                            tls.writer().write_all(PONG)?;
+                            tls.writer().write_all(PONG).map_err(native::Error::Io)?;
                             replied = true;
                             continue;
                         }
                         if got.len() == PING.len() + ACK.len() {
                             break;
                         }
-                        assert_ne!(tls.read_tls(&mut socket)?, 0, "client closed before reply");
-                        tls.process_new_packets().expect("process client TLS records");
+                        native::read(&mut tls, &socket)?;
                     }
                     assert_eq!(got, [PING, ACK].concat());
                 }
-                io::Result::Ok(())
+                Ok::<_, native::Error>(())
             },
             |server| {
                 let addr = server.addr();

@@ -1,48 +1,72 @@
 pub mod reentry;
 
 use std::{
-    io::{self, Read as _, Write as _},
+    io::{self, Read as _},
     num::NonZero,
-    os::unix::net::UnixStream,
     sync::Arc,
-    time::Duration,
 };
 
 use rustls::{
     ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig, ServerConnection,
-    StreamOwned,
-    crypto::aws_lc_rs,
-    pki_types::{CertificateDer, InvalidDnsNameError},
-    version,
+    crypto::aws_lc_rs, pki_types::CertificateDer, version,
 };
 
-use crate::common::Signer;
+use dope_test::harness::peer;
+
+use crate::common::{Signer, state::name};
 
 #[derive(Debug)]
 pub enum Error {
+    Peer(peer::Error),
     Io(io::Error),
+    Config(dope_tls::Error),
     Tls(rustls::Error),
     Certificate(rcgen::Error),
-    Name(InvalidDnsNameError),
     Handshake,
+    Closed,
+    ReadZero,
+    WriteZero,
+    FlightLimit,
+    DataAfterClose,
     Close(NonZero<usize>),
 }
 
-pub fn transfer(from: &mut Connection, to: &mut Connection) -> Result<(), Error> {
+pub fn output(tls: &mut Connection) -> Result<Vec<u8>, Error> {
     let mut wire = Vec::new();
-    while from.wants_write() {
-        if from.write_tls(&mut wire).map_err(Error::Io)? == 0 {
-            return Err(Error::Io(io::ErrorKind::WriteZero.into()));
+    while tls.wants_write() {
+        if tls.write_tls(&mut wire).map_err(Error::Io)? == 0 {
+            return Err(Error::WriteZero);
         }
     }
-    let mut input = wire.as_slice();
+    Ok(wire)
+}
+
+fn input(tls: &mut Connection, mut input: &[u8]) -> Result<(), Error> {
     while !input.is_empty() {
-        if to.read_tls(&mut input).map_err(Error::Io)? == 0 {
-            return Err(Error::Io(io::ErrorKind::UnexpectedEof.into()));
+        if tls.read_tls(&mut input).map_err(Error::Io)? == 0 {
+            return Err(Error::ReadZero);
         }
-        to.process_new_packets().map_err(Error::Tls)?;
+        tls.process_new_packets().map_err(Error::Tls)?;
     }
     Ok(())
+}
+
+pub fn write(tls: &mut Connection, socket: &peer::Stream<'_>) -> Result<(), Error> {
+    socket.write_all(&output(tls)?).map_err(Error::Peer)
+}
+
+pub fn read(tls: &mut Connection, socket: &peer::Stream<'_>) -> Result<(), Error> {
+    let mut bytes = [0; 16 * 1024];
+    let count = socket.read(&mut bytes).map_err(Error::Peer)?;
+    if count == 0 {
+        tls.read_tls(&mut &[][..]).map_err(Error::Io)?;
+        return Err(Error::Closed);
+    }
+    input(tls, &bytes[..count])
+}
+
+pub fn transfer(from: &mut Connection, to: &mut Connection) -> Result<(), Error> {
+    input(to, &output(from)?)
 }
 
 pub fn pump(client: &mut Connection, server: &mut Connection) -> Result<(), Error> {
@@ -53,15 +77,10 @@ pub fn pump(client: &mut Connection, server: &mut Connection) -> Result<(), Erro
         transfer(client, server)?;
         transfer(server, client)?;
     }
-    Err(Error::Io(io::Error::other("TLS flight limit")))
+    Err(Error::FlightLimit)
 }
 
-type Pair = (
-    StreamOwned<ClientConnection, UnixStream>,
-    StreamOwned<ServerConnection, UnixStream>,
-);
-
-pub fn try_half_closed() -> Result<Pair, Error> {
+pub fn try_half_closed() -> Result<(ClientConnection, ServerConnection), Error> {
     let signer = Signer::new([42; 32]);
     let cert = CertificateDer::from(
         signer
@@ -83,38 +102,21 @@ pub fn try_half_closed() -> Result<Pair, Error> {
         .with_single_cert(vec![cert], signer.key())
         .map_err(Error::Tls)?;
     server.send_tls13_tickets = 0;
-    let mut client = Connection::Client(
-        ClientConnection::new(
-            Arc::new(client),
-            "example.com".try_into().map_err(Error::Name)?,
-        )
-        .map_err(Error::Tls)?,
-    );
+    let mut client =
+        Connection::Client(ClientConnection::new(Arc::new(client), name()).map_err(Error::Tls)?);
     let mut server =
         Connection::Server(ServerConnection::new(Arc::new(server)).map_err(Error::Tls)?);
     pump(&mut client, &mut server)?;
     if client.is_handshaking() || server.is_handshaking() {
         return Err(Error::Handshake);
     }
-    let (client, server) = match (client, server) {
-        (Connection::Client(client), Connection::Server(server)) => (client, server),
-        _ => unreachable!("roles"),
-    };
-    let (left, right) = UnixStream::pair().map_err(Error::Io)?;
-    for socket in [&left, &right] {
-        socket
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .map_err(Error::Io)?;
-        socket
-            .set_write_timeout(Some(Duration::from_secs(3)))
-            .map_err(Error::Io)?;
-    }
-    let mut client = StreamOwned::new(client, left);
-    let mut server = StreamOwned::new(server, right);
-    client.conn.send_close_notify();
-    client.flush().map_err(Error::Io)?;
-    if let Some(count) = NonZero::new(server.read(&mut [0; 1]).map_err(Error::Io)?) {
+    client.send_close_notify();
+    transfer(&mut client, &mut server)?;
+    if let Some(count) = NonZero::new(server.reader().read(&mut [0; 1]).map_err(Error::Io)?) {
         return Err(Error::Close(count));
     }
-    Ok((client, server))
+    match (client, server) {
+        (Connection::Client(client), Connection::Server(server)) => Ok((client, server)),
+        _ => unreachable!("roles"),
+    }
 }

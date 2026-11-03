@@ -1,19 +1,12 @@
-use std::{io, sync::Arc};
+use std::sync::Arc;
 
 use dope_test::harness::peer;
 use dope_tls::config::{self, Ext as _};
 use rustls::pki_types::CertificateDer;
 use rustls::{CertificateError, ClientConfig, RootCertStore, ServerConfig, ServerConnection};
 
-use crate::common::Signer;
-
-#[derive(Debug)]
-pub enum Error {
-    Config(dope_tls::Error),
-    Tls(rustls::Error),
-    Certificate(rcgen::Error),
-    Io(io::Error),
-}
+use crate::common::{Signer, native};
+pub use native::Error;
 
 #[derive(Clone, Copy)]
 pub enum Kind {
@@ -67,18 +60,17 @@ impl Kind {
             Self::X509 => CertificateError::UnknownIssuer,
         })
     }
-    pub fn serve(self, mut stream: &peer::Stream<'_>) -> Result<rustls::Error, Error> {
+    pub fn serve(self, stream: &peer::Stream<'_>) -> Result<rustls::Error, Error> {
         let (_, config) = self.configs()?;
-        let mut server = ServerConnection::new(Arc::new(config)).map_err(Error::Tls)?;
+        let mut server = ServerConnection::new(Arc::new(config))
+            .map(rustls::Connection::Server)
+            .map_err(Error::Tls)?;
         loop {
-            while server.wants_write() {
-                server.write_tls(&mut stream).map_err(Error::Io)?;
-            }
-            if server.read_tls(&mut stream).map_err(Error::Io)? == 0 {
-                return Err(Error::Io(io::ErrorKind::UnexpectedEof.into()));
-            }
-            if let Err(cause) = server.process_new_packets() {
-                return Ok(cause);
+            native::write(&mut server, stream)?;
+            match native::read(&mut server, stream) {
+                Ok(()) => {}
+                Err(Error::Tls(cause)) => return Ok(cause),
+                Err(error) => return Err(error),
             }
         }
     }

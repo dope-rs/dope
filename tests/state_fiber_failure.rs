@@ -12,7 +12,7 @@ pub mod common;
 
 use dope::core::driver::route::{FrameworkTag, Tag, kind};
 use dope_test::reclaim::Reports;
-use std::io::{self, Write};
+use std::io;
 use std::net::Shutdown;
 
 use crate::common::Read;
@@ -118,15 +118,10 @@ fn assert_end(input: Input) {
                                             );
                                             if matches!(input, Input::CorruptRecord) {
                                                 loop {
-                                                    let read = peer.tls.read_tls(&mut peer.socket)
-                                                        .expect("read server fatal alert");
-                                                    assert_ne!(
-                                                        read, 0,
-                                                        "server closed before fatal alert"
-                                                    );
-                                                    match peer.tls.process_new_packets() {
-                                                        Ok(_) => {}
-                                                        Err(cause) => break Some(cause),
+                                                    match common::native::read(&mut peer.tls, peer.socket) {
+                                                        Ok(()) => {}
+                                                        Err(common::native::Error::Tls(cause)) => break Some(cause),
+                                                        Err(error) => panic!("read server fatal alert: {error:?}"),
                                                     }
                                                 }
                                             } else {

@@ -5,12 +5,14 @@ mod bound;
 pub use bound::Bound;
 pub mod credit;
 pub mod retain;
+use crate::common::native;
 use crate::common::state::{name, signing_key};
 use dope::core::driver::route::KeyTag;
 use dope::net::{tcp::Tcp, wire::open};
 use dope_fiber::net::server::Listener;
 use dope_test::harness::peer;
 use dope_tls::{config, tls::endpoint};
+pub use native::Error as Connect;
 use std::{
     io::{self, BufRead as _, Write},
     sync::Arc,
@@ -33,7 +35,7 @@ pub struct App<'n, 'p, 's, 'scope, 'w, 'd: 's + 'w, F: FnMut(open::Error<'w, Wir
 
 pub struct Peer<'socket> {
     pub socket: &'socket peer::Stream<'socket>,
-    pub tls: rustls::ClientConnection,
+    pub tls: rustls::Connection,
 }
 
 impl<'socket> Peer<'socket> {
@@ -48,71 +50,46 @@ impl<'socket> Peer<'socket> {
         socket: &'socket peer::Stream<'socket>,
         pubkey: [u8; 32],
     ) -> Result<Self, Connect> {
-        socket.set_nodelay(true).map_err(Connect::Io)?;
+        socket.set_nodelay(true).map_err(Connect::Peer)?;
         socket
             .read_wait(Some(Duration::from_secs(3)))
-            .map_err(Connect::Io)?;
+            .map_err(Connect::Peer)?;
         let mut peer = Self {
             socket,
             tls: rustls::ClientConnection::new(
                 Arc::new(config::raw::Identity::client(pubkey).map_err(Connect::Config)?),
                 name(),
             )
+            .map(rustls::Connection::Client)
             .map_err(Connect::Tls)?,
         };
 
         for _ in 0..64 {
-            peer.try_flush()?;
+            native::write(&mut peer.tls, peer.socket)?;
             if !peer.tls.is_handshaking() {
                 break;
             }
-            peer.try_read()?;
+            native::read(&mut peer.tls, peer.socket)?;
         }
         if peer.tls.is_handshaking() {
             return Err(Connect::Handshake);
         }
-        peer.try_flush()?;
+        native::write(&mut peer.tls, peer.socket)?;
         Ok(peer)
-    }
-
-    fn try_flush(&mut self) -> Result<(), Connect> {
-        while self.tls.wants_write() {
-            let used = self.tls.write_tls(&mut self.socket).map_err(Connect::Io)?;
-            if used == 0 {
-                return Err(Connect::Io(io::ErrorKind::WriteZero.into()));
-            }
-        }
-        Ok(())
-    }
-
-    fn try_read(&mut self) -> Result<(), Connect> {
-        let read = self.tls.read_tls(&mut self.socket).map_err(Connect::Io)?;
-        if read == 0 {
-            return Err(Connect::Closed);
-        }
-        self.tls.process_new_packets().map_err(Connect::Tls)?;
-        Ok(())
     }
 
     pub fn seal(&mut self, body: &[u8]) -> Result<Vec<u8>, Connect> {
         self.tls.writer().write_all(body).map_err(Connect::Io)?;
-        let mut wire = Vec::new();
-        while self.tls.wants_write() {
-            let used = self.tls.write_tls(&mut wire).map_err(Connect::Io)?;
-            if used == 0 {
-                return Err(Connect::Io(io::ErrorKind::WriteZero.into()));
-            }
-        }
-        Ok(wire)
+        native::output(&mut self.tls)
     }
 
     pub fn try_send(&mut self, body: &[u8]) -> Result<(), Connect> {
         let mut rest = body;
         while !rest.is_empty() {
             let used = self.tls.writer().write(rest).map_err(Connect::Io)?;
-            self.try_flush()?;
+            native::write(&mut self.tls, self.socket)?;
             if used == 0 {
-                return Err(Connect::Io(io::ErrorKind::WriteZero.into()));
+                return Err(Connect::WriteZero);
             }
             rest = &rest[used..];
         }
@@ -125,8 +102,8 @@ impl<'socket> Peer<'socket> {
                 Ok([]) => return Err(Connect::Closed),
                 Ok(data) => data.to_vec(),
                 Err(cause) if cause.kind() == io::ErrorKind::WouldBlock => {
-                    self.try_read()?;
-                    self.try_flush()?;
+                    native::read(&mut self.tls, self.socket)?;
+                    native::write(&mut self.tls, self.socket)?;
                     continue;
                 }
                 Err(cause) => return Err(Connect::Io(cause)),
@@ -135,15 +112,6 @@ impl<'socket> Peer<'socket> {
             return Ok(data);
         }
     }
-}
-
-#[derive(Debug)]
-pub enum Connect {
-    Io(io::Error),
-    Config(dope_tls::Error),
-    Tls(rustls::Error),
-    Closed,
-    Handshake,
 }
 
 pub mod client;

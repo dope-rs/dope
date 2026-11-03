@@ -123,16 +123,35 @@ fn ownership_contracts() -> Result<(), dope_test::checks::Error> {
     let _: <SendState<'static> as Local<_>>::Proof;
     let _: <Retained<'static, 'static> as Local<_>>::Proof;
 
-    let exe = std::env::current_exe()?;
+    let exe = std::env::current_exe().expect("current test executable");
     let suite = dope_test::checks::Suite::new(
         env!("CARGO_MANIFEST_DIR"),
         file!(),
         &["dope-tls", "dope", "o3"],
     );
-    let output = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let output = suite
+        .try_build(&exe, env!("CARGO_PKG_NAME"))?
+        .output()
+        .expect("run cargo");
     let artifacts = suite.try_collect(&exe, output)?;
-    assert_eq!(artifacts.try_errors(include_str!("contracts.rs"))?, 4);
-    let status = artifacts.try_rustdoc()?.status()?;
+    assert_eq!(
+        artifacts.try_errors(include_str!("contracts.rs"), compile)?,
+        4
+    );
+    let status = artifacts.try_rustdoc()?.status().expect("run rustdoc");
     assert!(status.success(), "TLS ownership contracts: {status}");
     Ok(())
+}
+
+fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
+    let mut child = command.spawn().expect("start compiler");
+    let written = child
+        .stdin
+        .take()
+        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
+    let output = child.wait_with_output().expect("reap compiler");
+    written
+        .expect("compiler stdin")
+        .expect("write compiler source");
+    output
 }

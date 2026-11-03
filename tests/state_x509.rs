@@ -1,8 +1,8 @@
 pub mod common;
 
-use std::{io, io::Write as _, sync::Arc, time::Duration};
+use std::{io::Write as _, sync::Arc, time::Duration};
 
-use common::{Read, Signer, fiber::client::Client, state, times::Fixed};
+use common::{Read, Signer, fiber::client::Client, native, state, times::Fixed};
 use dope::core::driver::{
     life::{creation::Attempt, recovery},
     route::{Id, table::conn::Capacity},
@@ -61,20 +61,21 @@ fn clones_resume() {
         move |accept| {
             let mut kinds = [None; 2];
             for kind in &mut kinds {
-                let socket = accept.accept()?;
-                let mut socket = &socket;
+                let socket = accept.accept().map_err(native::Error::Peer)?;
                 let mut tls = rustls::ServerConnection::new(Arc::clone(&server))
+                    .map(rustls::Connection::Server)
                     .expect("native server connection");
-                tls.complete_io(&mut socket)?;
+                while tls.is_handshaking() {
+                    native::write(&mut tls, &socket)?;
+                    native::read(&mut tls, &socket)?;
+                }
                 assert!(!tls.is_handshaking(), "authenticated handshake");
                 *kind = tls.handshake_kind();
-                tls.writer().write_all(b"x")?;
+                tls.writer().write_all(b"x").map_err(native::Error::Io)?;
                 tls.send_close_notify();
-                while tls.wants_write() {
-                    assert_ne!(tls.write_tls(&mut socket)?, 0, "TLS output progress");
-                }
+                native::write(&mut tls, &socket)?;
             }
-            io::Result::Ok(kinds)
+            Ok::<_, native::Error>(kinds)
         },
         |server| {
             let addr = server.addr();

@@ -2,11 +2,27 @@ pub mod common;
 
 use common::native;
 
-use std::io::{self, Read as _, Write as _};
+use rustls::StreamOwned;
+use std::{
+    io::{self, Read as _, Write as _},
+    os::unix::net::UnixStream,
+    time::Duration,
+};
 
 #[test]
 fn close_keeps_reads() {
-    let (mut client, mut server) = native::try_half_closed().expect("native half-close");
+    let (client, server) = native::try_half_closed().expect("native half-close");
+    let (left, right) = UnixStream::pair().expect("native socket pair");
+    for socket in [&left, &right] {
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("read timeout");
+        socket
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .expect("write timeout");
+    }
+    let mut client = StreamOwned::new(client, left);
+    let mut server = StreamOwned::new(server, right);
     server.write_all(b"after close").expect("peer response");
     server.flush().expect("response output");
     let mut response = [0; 11];
@@ -18,7 +34,18 @@ fn close_keeps_reads() {
 #[test]
 #[ignore = "Rustls 0.23.46 asserts !sent_fatal_alert after local close_notify; run with --release --include-ignored"]
 fn malformed_after_close() {
-    let (mut client, mut server) = native::try_half_closed().expect("native half-close");
+    let (client, server) = native::try_half_closed().expect("native half-close");
+    let (left, right) = UnixStream::pair().expect("native socket pair");
+    for socket in [&left, &right] {
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("read timeout");
+        socket
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .expect("write timeout");
+    }
+    let mut client = StreamOwned::new(client, left);
+    let mut server = StreamOwned::new(server, right);
     server
         .sock
         .write_all(&[0xff, 3, 3, 0, 0])

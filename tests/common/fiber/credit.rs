@@ -1,5 +1,3 @@
-use std::io::{self, Write as _};
-
 use dope_test::harness::peer;
 
 use crate::common::fiber::{Connect, FIRST, Peer};
@@ -23,7 +21,7 @@ pub fn exchange<E>(
         let mut wire = held.seal(FIRST).map_err(Error::Connect)?;
         held.tls.refresh_traffic_keys().map_err(Error::Keys)?;
         wire.extend_from_slice(&held.seal(body).map_err(Error::Connect)?);
-        held.socket.write_all(&wire).map_err(Error::Io)?;
+        held.socket.write_all(&wire).map_err(Error::Peer)?;
     } else {
         held.try_send(body).map_err(Error::Connect)?;
     }
@@ -41,6 +39,6 @@ pub fn exchange<E>(
 pub enum Error<E> {
     Connect(Connect),
     Keys(rustls::Error),
-    Io(io::Error),
+    Peer(peer::Error),
     Signal(E),
 }

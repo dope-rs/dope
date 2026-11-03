@@ -1,9 +1,4 @@
-use std::{
-    convert::Infallible,
-    io::{self, Read as _},
-    net::SocketAddr,
-    num::NonZero,
-};
+use std::{convert::Infallible, io::Read as _, net::SocketAddr, num::NonZero};
 
 use dope::{
     core::{
@@ -321,14 +316,14 @@ fn receive_close(peer: &mut Peer<'_>) -> Result<Vec<u8>, Connect> {
     match peer.try_recv() {
         Err(Connect::Closed) => {}
         Err(cause) => return Err(cause),
-        Ok(_) => return Err(Connect::Io(io::ErrorKind::InvalidData.into())),
+        Ok(_) => return Err(Connect::DataAfterClose),
     }
     let mut byte = [0];
     if peer.tls.reader().read(&mut byte).map_err(Connect::Io)? != 0 {
-        return Err(Connect::Io(io::ErrorKind::InvalidData.into()));
+        return Err(Connect::DataAfterClose);
     }
-    if peer.socket.read(&mut byte).map_err(Connect::Io)? != 0 {
-        return Err(Connect::Io(io::ErrorKind::InvalidData.into()));
+    if peer.socket.read(&mut byte).map_err(Connect::Peer)? != 0 {
+        return Err(Connect::DataAfterClose);
     }
     Ok(Vec::new())
 }

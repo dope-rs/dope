@@ -1,11 +1,11 @@
 pub mod common;
 
-use std::{io, sync::Arc};
+use std::sync::Arc;
 
 use common::{
     Read,
     fiber::client::Client,
-    state,
+    native, state,
     state::{name, signing_key},
 };
 use dope::core::driver::{
@@ -68,35 +68,34 @@ fn cloned_plan_policy() {
                 Some(HandshakeKind::Full),
                 None,
             ] {
-                let socket = accept.accept()?;
-                let mut socket = &socket;
+                let socket = accept.accept().map_err(native::Error::Peer)?;
                 let mut tls = rustls::ServerConnection::new(Arc::clone(&server))
+                    .map(rustls::Connection::Server)
                     .expect("native server");
                 let mut failure = None;
                 while tls.is_handshaking() {
-                    while tls.wants_write() {
-                        assert_ne!(tls.write_tls(&mut socket)?, 0, "handshake output");
-                    }
-                    assert_ne!(tls.read_tls(&mut socket)?, 0, "handshake input");
-                    if let Err(cause) = tls.process_new_packets() {
-                        failure = Some(cause);
-                        break;
+                    native::write(&mut tls, &socket)?;
+                    match native::read(&mut tls, &socket) {
+                        Ok(()) => {}
+                        Err(native::Error::Tls(cause)) => {
+                            failure = Some(cause);
+                            break;
+                        }
+                        Err(error) => return Err(error),
                     }
                 }
                 if let Some(expected) = expected {
                     assert!(failure.is_none(), "handshake failure: {failure:?}");
                     assert_eq!(tls.handshake_kind(), Some(expected));
                     assert_eq!(tls.alpn_protocol(), Some(b"h2".as_slice()));
-                    tls.writer().write_all(b"x")?;
+                    tls.writer().write_all(b"x").map_err(native::Error::Io)?;
                     tls.send_close_notify();
                 } else {
                     assert_eq!(failure, Some(rustls::Error::NoApplicationProtocol));
                 }
-                while tls.wants_write() {
-                    assert_ne!(tls.write_tls(&mut socket)?, 0, "terminal output");
-                }
+                native::write(&mut tls, &socket)?;
             }
-            io::Result::Ok(())
+            Ok::<_, native::Error>(())
         },
         |server| {
             for (plan, matched) in [

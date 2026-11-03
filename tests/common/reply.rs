@@ -38,6 +38,7 @@ use dope_tls::tls::{Tls, roles::Server};
 use o3::{
     base::Call,
     buffer::{
+        Residency as _,
         bytes::TryRetain,
         resident,
         storage::{self, Shared},
@@ -93,7 +94,16 @@ impl Reply<'_> {
                 return;
             }
         };
-        let body = egress::Load::new(resident::Shared::from(bytes));
+        self.send(conn, driver, resident::Shared::from(bytes));
+    }
+
+    fn send<'d, ID: Identity>(
+        &self,
+        conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
+        driver: &mut Context<'_, '_, 'd>,
+        bytes: resident::Shared<'d>,
+    ) {
+        let body = egress::Load::new(bytes);
         let result = conn.write().try_bounded(driver, move |_, prefix| {
             prefix[..PREFIX.len()].copy_from_slice(PREFIX);
             write::Draft::new(PREFIX.len(), Some(Value::Unchecked(body)), ())
@@ -203,6 +213,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Reply<'_> {
 
 pub struct Capacity<'r, 'd> {
     pub reply: Reply<'r>,
+    pub bodies: [Option<resident::Shared<'d>>; 2],
     pub targets: &'r Cell<[Option<ready::Target<'d>>; 2]>,
     pub armed: &'r Cell<bool>,
     pub ready: Gate,
@@ -215,6 +226,7 @@ pub enum Change<'a> {
     Released {
         index: usize,
         body: &'a [u8],
+        resident: usize,
         cause: handler::Disposition,
     },
 }
@@ -252,7 +264,10 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
         let this = self.get_mut();
         if this.armed.get() && !*conn.state() {
             *conn.state_mut() = true;
-            this.reply.reply(&mut conn, driver);
+            let body = this.bodies[conn.id().index().into_usize()]
+                .take()
+                .expect("one reply owner per connection");
+            this.reply.send(&mut conn, driver, body);
             (this.observe)(Change::Activated);
             conn.close_after();
         }
@@ -319,6 +334,7 @@ impl<'d> send::Report<'d, KeyTag<0>> for Capacity<'_, 'd> {
         (self.get_mut().observe)(Change::Released {
             index: id.index().into_usize(),
             body: body.as_ref(),
+            resident: body.resident(),
             cause,
         });
     }
@@ -359,13 +375,7 @@ impl Records {
 
 fn shut(peer: &mut Peer<'_>) -> Result<(), Connect> {
     peer.tls.send_close_notify();
-    while peer.tls.wants_write() {
-        let used = peer.tls.write_tls(&mut peer.socket).map_err(Connect::Io)?;
-        if used == 0 {
-            return Err(Connect::Io(io::ErrorKind::WriteZero.into()));
-        }
-    }
-    Ok(())
+    crate::common::native::write(&mut peer.tls, peer.socket)
 }
 
 pub fn run_client(
@@ -399,7 +409,7 @@ fn receive(mut peer: Peer<'_>, mode: Mode) -> Result<(bool, Vec<u8>, Records), C
     let mut input = [0u8; 16 * 1024];
     let mut closed = false;
     loop {
-        let read = peer.socket.read(&mut input).map_err(Connect::Io)?;
+        let read = peer.socket.read(&mut input).map_err(Connect::Peer)?;
         frames.push(&input[..read]);
         let mut bytes = &input[..read];
         loop {
@@ -427,7 +437,9 @@ fn receive(mut peer: Peer<'_>, mode: Mode) -> Result<(bool, Vec<u8>, Records), C
     if matches!(mode, Mode::Local) {
         peer.try_send(AFTER)?;
         shut(&mut peer)?;
-        peer.socket.shutdown(Shutdown::Write).map_err(Connect::Io)?;
+        peer.socket
+            .shutdown(Shutdown::Write)
+            .map_err(Connect::Peer)?;
     }
     Ok((closed, got, frames))
 }
