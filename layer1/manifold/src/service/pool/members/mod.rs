@@ -32,6 +32,7 @@ pub(super) enum Update {
 pub(super) enum Peer<'h, R> {
     Ready { target: Target<'h>, output: R },
     Missing,
+    Disabled,
     Exhausted,
 }
 
@@ -50,6 +51,7 @@ mod failure;
 mod queues;
 mod record;
 
+pub(super) use record::Demand;
 use record::{Exhausted, Idle, Ready, Record};
 
 type Records<'h, I, A> = round::Set<Record<I, A>, Member, { u32::MAX }, capacity::Domain<'h>>;
@@ -91,6 +93,16 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         self.records.contains(member.0)
     }
 
+    pub(in crate::service::pool) fn is_retained(
+        &mut self,
+        member: MemberKey<'h>,
+        retained: impl FnOnce(&I) -> bool,
+    ) -> bool {
+        self.records
+            .try_entry(member.0)
+            .is_ok_and(|entry| retained(&entry.get().id))
+    }
+
     pub(in crate::service::pool) fn is_empty(&self) -> bool {
         self.desired == 0
     }
@@ -99,22 +111,25 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         self.revision
     }
 
-    pub(in crate::service::pool) fn is_stale(&self, eligible: impl Fn(&I) -> bool) -> bool {
+    pub(in crate::service::pool) fn is_stale(&self, demand: impl Fn(&I) -> Demand) -> bool {
         self.records
             .values()
-            .any(|record| record.is_desired() && record.health.demand != Some(eligible(&record.id)))
+            .any(|record| record.is_desired() && record.health.demand != Some(demand(&record.id)))
     }
 
-    pub(in crate::service::pool) fn set_demand(&mut self, eligible: impl Fn(&I) -> bool) {
+    pub(in crate::service::pool) fn set_demand(&mut self, demand: impl Fn(&I) -> Demand) -> bool {
+        let mut withdrawn = false;
         for entry in self.records.entries() {
             if let set::Entry::Occupied(mut entry) = entry {
-                if !entry.get().is_desired() {
+                let Some(previous) = entry.get().health.demand else {
                     continue;
-                }
-                let eligible = eligible(&entry.get().id);
-                entry.get_mut().health.demand = Some(eligible);
+                };
+                let next = demand(&entry.get().id);
+                withdrawn |= previous.is_retained() && !next.is_retained();
+                entry.get_mut().health.demand = Some(next);
             }
         }
+        withdrawn
     }
 
     pub(in crate::service::pool) fn cancel_if(
@@ -134,11 +149,18 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         })
     }
 
-    pub(in crate::service::pool) fn recover(&mut self, target: Target<'h>) -> Peer<'h, &I> {
+    pub(in crate::service::pool) fn recover(
+        &mut self,
+        target: Target<'h>,
+        retained: impl FnOnce(&I) -> bool,
+    ) -> Peer<'h, &I> {
         let member = target.member;
         let Ok(entry) = self.records.try_entry(member.0) else {
             return Peer::Missing;
         };
+        if !retained(&entry.get().id) {
+            return Peer::Disabled;
+        }
         if !entry.get().is_desired() {
             return Peer::Ready {
                 target,

@@ -1,7 +1,6 @@
 use std::mem;
 
 use dope_core::driver::{route::Identity, schedule::ready};
-use dope_net::wire::terminal;
 
 mod accesses;
 pub(in crate::client) mod retire;
@@ -38,7 +37,7 @@ impl Packed {
         Self { phase, ..self }
     }
 
-    pub(super) const fn effective(self) -> close::Directive {
+    pub(super) const fn effective(&self) -> close::Directive {
         match self.deferred {
             Some(rule) => rule,
             None => self.rule,
@@ -73,7 +72,9 @@ impl Packed {
 
     fn restore(&mut self) -> drain::Resume {
         if self.deferred.is_some() {
-            *self = self.resolve().with_phase(ClosePhase::Requested);
+            // Claims follow completed retirement or an unattached opening.
+            // Reevaluate deferred policy without restarting retirement.
+            *self = self.resolve().with_phase(ClosePhase::Settled);
             drain::Resume::Pending
         } else {
             *self = self.with_phase(ClosePhase::Finalized);
@@ -160,6 +161,7 @@ impl Packed {
 pub(super) struct Closing {
     state: Option<Packed>,
     pub(super) transmit: Option<conn::Transmit>,
+    pub(super) transmit_pending: bool,
 }
 
 pub(super) enum Callback {
@@ -253,14 +255,6 @@ impl Closing {
             Some(state) => state.apply(rule),
             slot @ None => slot.insert(Packed::new(ClosePhase::Requested, rule)),
         }
-    }
-
-    pub(super) fn observe(&mut self, kind: terminal::Kind) {
-        if matches!(kind, terminal::Kind::Clean) {
-            self.apply(close::Directive::reconnect(close::Reason::Remote));
-            return;
-        }
-        self.failed(close::Reason::Transport)
     }
 
     pub(super) fn failed(&mut self, reason: close::Reason) {
@@ -417,6 +411,8 @@ const _: () = {
     assert!(mem::align_of::<Option<Packed>>() == mem::align_of::<Option<conn::Transmit>>());
     assert!(
         mem::size_of::<Closing>()
-            == mem::size_of::<Option<Packed>>() + mem::size_of::<Option<conn::Transmit>>()
+            == mem::size_of::<Option<Packed>>()
+                + mem::size_of::<Option<conn::Transmit>>()
+                + mem::align_of::<Closing>()
     );
 };

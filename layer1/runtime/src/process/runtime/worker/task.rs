@@ -131,9 +131,9 @@ impl Parent {
         Some(source)
     }
 
-    pub(super) fn handoff<M: bus::Mode>(&mut self) {
+    pub(super) fn handoff<M: bus::Mode>(&mut self, readiness: bus::Readiness) {
         if let Some(main) = self.main.take() {
-            self.handoff = main.handoff::<M>();
+            self.handoff = main.handoff::<M>(readiness);
         }
     }
 }

@@ -149,7 +149,7 @@ pub struct Retired<'d, ID: Identity, A> {
     source: marker::PhantomData<fn(A) -> A>,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Transmit {
     Io(event::SendFailure<dope_core::Errno>),
     Rejected(event::SendFailure<result::SubmitError>),
@@ -176,6 +176,11 @@ impl<'d, ID: Identity, A> Retired<'d, ID, A> {
 
     pub const fn transmit(&self) -> Option<&Transmit> {
         self.transmit.as_ref()
+    }
+
+    /// Moves the terminal diagnostic without consuming the retirement proof.
+    pub(in crate::client) fn take_transmit(&mut self) -> Option<Transmit> {
+        self.transmit.take()
     }
 }
 

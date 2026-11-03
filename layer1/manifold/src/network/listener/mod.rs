@@ -266,6 +266,8 @@ where
     }
 
     /// Monotonically stops new accepts while preserving every existing slot.
+    /// The listening descriptor retires after all pending accepts reach terminal
+    /// completion; sealing does not wait for native descriptor close.
     /// Existing slots are marked close-after in bounded maintenance steps, so
     /// the application close gate remains authoritative.
     pub fn seal(self: pin::Pin<&mut Self>, driver: &mut driver::Context<'_, 'd>) {

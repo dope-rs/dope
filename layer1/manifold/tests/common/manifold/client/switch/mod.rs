@@ -32,7 +32,6 @@ pub enum Error {
         limit: usize,
     },
     TerminalBytes(Vec<u8>),
-    RepeatedParse,
     UnparsedEof,
     RepeatedReject,
     RejectedEof,

@@ -241,7 +241,7 @@ where
         Ok(())
     }
 
-    pub(crate) fn is_retired(&self, key: attempt::Id<'d, ID>) -> bool {
+    pub(crate) fn is_retired(&mut self, key: attempt::Id<'d, ID>) -> bool {
         let Some(member) = self.dials.active(key) else {
             return false;
         };
@@ -360,9 +360,12 @@ where
 
         let source = self.feedback.source();
         self.feedback.is_enabled() != source.is_needed(token)
-            || self
-                .membership
-                .is_stale(|endpoint| source.is_eligible(endpoint, token))
+            || self.membership.is_stale(|endpoint| {
+                members::Demand::new(
+                    source.is_eligible(endpoint, token),
+                    source.is_retained(endpoint, token),
+                )
+            })
     }
 
     pub(crate) fn set_demand(
@@ -370,13 +373,38 @@ where
         token: &region::Token<region::Identity<'d, 1>>,
         cap: table::Capacity,
     ) {
+        use discover::Access as _;
+
         let enabled = self.feedback.source().is_needed(token);
+        let disabled = self.feedback.is_enabled() && !enabled;
         self.feedback.set(enabled);
-        self.membership
-            .set_demand(|endpoint| self.feedback.source().is_eligible(endpoint, token));
-        if !enabled && let Some(scan) = self.retirements.scan() {
+        let source = self.feedback.source();
+        let withdrawn = self.membership.set_demand(|endpoint| {
+            members::Demand::new(
+                source.is_eligible(endpoint, token),
+                source.is_retained(endpoint, token),
+            )
+        });
+        if (disabled || withdrawn)
+            && let Some(scan) = self.retirements.scan()
+        {
             scan.arm(cap);
         }
         self.refresh();
+    }
+
+    pub(crate) fn is_retired_at(
+        &mut self,
+        key: attempt::Id<'d, ID>,
+        token: &region::Token<region::Identity<'d, 1>>,
+    ) -> bool {
+        use discover::Eligibility as _;
+
+        let Some(member) = self.dials.active(key) else {
+            return false;
+        };
+        !self.membership.is_retained(member, |endpoint| {
+            self.feedback.is_retained(endpoint, token)
+        })
     }
 }

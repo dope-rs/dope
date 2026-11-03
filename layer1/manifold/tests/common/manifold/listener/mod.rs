@@ -19,6 +19,7 @@ use dope_test::harness::{
 };
 use o3::depot::capacity;
 
+pub mod accept_error;
 pub mod coupled;
 pub mod defer;
 pub mod egress;

@@ -10,10 +10,13 @@ use dope::{
         io::{Reclaimed, datagram::ReceiveError, event::batch::Flow},
     },
     manifold::timing::Balanced,
-    runtime::topology,
+    runtime::{
+        executor::session,
+        topology::{self, lending},
+    },
 };
 use dope_dns::{
-    config, storage,
+    Resolver, config, storage,
     topology::{Plan, Prepare},
 };
 
@@ -102,5 +105,60 @@ pub fn configure(servers: config::Servers, attempts: u8) -> config::Config {
             before: time::Duration::from_secs(5),
             stale: time::Duration::from_secs(5),
         },
+    }
+}
+
+pub struct QueryDeadline<'a>(pub &'a mut session::Completion);
+
+impl<'report, 'stage, 'q, 'h, 'p, 'scope, 'life: 'scope, 'e: 'life, 'd: 'e, R: dope_dns::Report>
+    lending::Next<
+        lending::Stage<'stage, 'scope, 'life, 'e, 'd, storage::Plan<1, 4>, ()>,
+        Resolver<'q, 'h, 'p, 'life, 'e, 'd, KeyTag<0>, KeyTag<1>, 1, 4, R>,
+    > for QueryDeadline<'report>
+{
+    type Output = ();
+
+    fn run(
+        self,
+        resolver: Resolver<'q, 'h, 'p, 'life, 'e, 'd, KeyTag<0>, KeyTag<1>, 1, 4, R>,
+        stage: &mut lending::Stage<'stage, 'scope, 'life, 'e, 'd, storage::Plan<1, 4>, ()>,
+    ) {
+        use dope::manifold::service::discover::{self, Action, PollAt as _, RefreshAt as _};
+        use dope_dns::{
+            Target,
+            lookup::{
+                error::{Error, Kind},
+                refresh::Transport,
+            },
+        };
+        use dope_test::harness::scenario::TIMEOUT;
+        use o3::base::time::Positive;
+
+        let now = stage.driver().driver_ref().clock().now();
+        let range = now
+            .try_add(Positive::try_new(time::Duration::MAX).expect("positive total"))
+            .expect_err("query exceeds the clock range");
+        stage
+            .with_quiesce(self.0, resolver, TIMEOUT, |mut app| {
+                let target = Target::parse("api.example:443").expect("named target");
+                let resolver = app.root_client();
+                let mut lookup = resolver
+                    .discovery::<Transport>(app.state_token(), target)
+                    .expect("query lane");
+                lookup.refresh_at(now, discover::Reason::Startup);
+                assert!(matches!(
+                    lookup.poll_at(app.state_token(), now),
+                    Action::Failed {
+                        error: Error::Query { kind: Kind::Deadline(source), .. },
+                        poll_at: None,
+                    } if source == range
+                ));
+                lookup.refresh_at(now, discover::Reason::Startup);
+                assert!(matches!(
+                    lookup.poll_at(app.state_token(), now),
+                    Action::Pending { poll_at: None }
+                ));
+            })
+            .expect("DNS shutdown");
     }
 }

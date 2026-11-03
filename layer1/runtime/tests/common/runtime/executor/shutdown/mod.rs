@@ -109,30 +109,33 @@ unsafe impl<'d> executor::raw::App<'d> for Storm {
 }
 
 #[pin_project::pin_project]
-pub struct DrainProbe<F> {
+pub struct DrainProbe<'d, F> {
     pub begun: Flag,
     pub forced: Flag,
     pub remaining: usize,
+    pub deadline: Option<clock::Deadline<'d>>,
     pub shutdown: Option<(shutdown::Trigger, time::Duration)>,
     pub fired: F,
 }
 
-impl<'d, F> executor::raw::Layout<'d> for DrainProbe<F> {
+impl<'d, F> executor::raw::Layout<'d> for DrainProbe<'d, F> {
     type ParkPlan = ();
 }
 
-unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::App<'d> for DrainProbe<F> {
+unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::App<'d>
+    for DrainProbe<'d, F>
+{
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
     const COORDS: usize = 1;
 
     fn progress(
         app: pin::Pin<&Self>,
-        _: executor::raw::Progress<'_, '_, 'd>,
+        view: executor::raw::Progress<'_, '_, 'd>,
     ) -> schedule::Progress<'d> {
         if app.remaining == 0 {
             schedule::Progress::Quiescent
         } else {
-            schedule::Progress::Runnable
+            schedule::Progress::waiting(&view.regions().0)
         }
     }
 
@@ -168,7 +171,9 @@ unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::App<'d> f
 }
 
 // SAFETY: the probe has no routed owners; drain changes only its progress flags.
-unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::Drain<'d> for DrainProbe<F> {
+unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::Drain<'d>
+    for DrainProbe<'d, F>
+{
     fn begin(
         self: pin::Pin<&mut Self>,
         _: schedule::Turn<'_, 'd>,
@@ -184,7 +189,8 @@ unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::Drain<'d>
         if self.remaining == 0 {
             schedule::Progress::Quiescent
         } else {
-            schedule::Progress::Runnable
+            self.deadline
+                .map_or(schedule::Progress::Runnable, schedule::Progress::until)
         }
     }
 

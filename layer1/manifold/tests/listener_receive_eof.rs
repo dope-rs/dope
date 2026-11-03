@@ -51,7 +51,7 @@ fn terminal(event: Observation<'_>) {
 }
 
 #[test]
-fn eof_holds_tail() {
+fn eof_holds_gated_tail() {
     let mut finish = Completion::new();
     let ready = Gate::new();
     let release = Gate::new();
@@ -61,7 +61,7 @@ fn eof_holds_tail() {
     let end = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
     let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
-    let prepared = Listener::<receive::Scoped>::new::<1>(Default::default())
+    let prepared = Listener::<receive::GatedScoped>::new::<1>(Default::default())
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<EofOnData>, Throughput>>((
             eof::Probe {
                 ready: ready.clone(),
@@ -94,6 +94,7 @@ fn eof_holds_tail() {
                 let mut before = [0; 6];
                 peer.read_exact(&mut before).expect("read before replay");
                 assert_eq!(&before, b"before");
+                assert_eq!(ready.hits(), 1, "application gate must hold the tail");
                 assert_eq!(eof.hits(), 0, "pending plaintext must precede EOF");
                 assert_eq!(close.hits(), 0);
 
@@ -106,6 +107,7 @@ fn eof_holds_tail() {
                     "late control must preserve the plaintext tail"
                 );
                 assert_eq!(wire.eof_count(), 0, "authenticated EOF owns classification");
+                assert_eq!(ready.hits(), 1, "late FIN must preserve the input gate");
                 assert_eq!(close.hits(), 0);
 
                 release.hit();
@@ -114,6 +116,7 @@ fn eof_holds_tail() {
                     Wait::Reached,
                     "EOF after tail replay"
                 );
+                assert_eq!(ready.hits(), 2, "one release must replay the tail once");
                 case.try_pause(Duration::from_millis(20))
                     .expect("settle live output");
                 let mut after = [0; 5];
@@ -187,7 +190,7 @@ fn eof_flushes_control() {
     let end = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
     let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
-    let prepared = Listener::<receive::Scoped>::new::<1>(Default::default())
+    let prepared = Listener::<receive::GatedScoped>::new::<1>(Default::default())
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<EofOnData<true>>, Throughput>>((
             eof::Probe::<_, true> {
                 ready: Gate::new(),

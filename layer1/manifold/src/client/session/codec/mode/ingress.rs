@@ -41,6 +41,12 @@ pub(in crate::client::session) enum Read<T> {
     Close,
 }
 
+/// The session admitted input before inspecting its retained source.
+pub(in crate::client::session) enum Active {
+    Framed,
+    Duplex,
+}
+
 impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
     Ingress<'w, 'd, ID, N, W>
 {
@@ -136,21 +142,19 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
 
     pub(in crate::client::session) fn decode(
         &mut self,
+        mode: Active,
         owner: &mut N,
         budget: &resident::Budget<'d>,
         ctx: &mut turns::Context<'_, '_, 'd, N::ConnState, N::Send, ID>,
     ) -> Read<<N::Response as response::Plan>::Delivery> {
         let (storage, state) = self.slot.parts_mut();
         let limit = N::Mode::source(storage).stage.limit();
-        let (next, source) = match owner.mode(ctx.conn_id, ctx.state) {
-            session::ReceiveMode::Framed => {
+        let (next, source) = match mode {
+            Active::Framed => {
                 let next = N::Mode::decode(owner, ctx.conn_id, storage, state, budget, limit, ctx);
                 (Read::Step(next), N::Mode::edit(storage))
             }
-            session::ReceiveMode::Paused => {
-                (Read::Step(codec::Step::blocked()), N::Mode::edit(storage))
-            }
-            session::ReceiveMode::Duplex => {
+            Active::Duplex => {
                 let source = N::Mode::edit(storage).0;
                 let next = codec::Input::consume(source, budget, limit, |input| {
                     match owner.duplex(input, ctx) {

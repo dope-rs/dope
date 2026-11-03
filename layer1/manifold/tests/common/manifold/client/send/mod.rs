@@ -5,6 +5,7 @@ use dope_manifold::client::close::Reason;
 mod flight;
 pub mod lane;
 mod payload;
+pub mod policy;
 pub mod profile;
 pub mod reject;
 pub mod requests;

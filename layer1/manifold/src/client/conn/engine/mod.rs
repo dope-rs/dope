@@ -218,13 +218,13 @@ where
         mut self: pin::Pin<&mut Self>,
         lane: indices::SlotIndex,
         permit: maint::Permit<'turn, 'd>,
-        retired: impl FnOnce(&S, attempt::Id<'d, ID>) -> bool,
+        retired: impl FnOnce(&mut S, attempt::Id<'d, ID>) -> bool,
     ) {
         permit.run(|| {
             let Some(owner) = self.as_ref().attempt_at(lane) else {
                 return;
             };
-            if !retired(self.as_ref().control(), owner) {
+            if !retired(self.as_mut().control_mut(), owner) {
                 return;
             }
             self.as_mut().close_at(lane, owner, Reason::EndpointRetired);

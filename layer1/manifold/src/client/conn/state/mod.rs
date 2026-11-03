@@ -12,7 +12,7 @@ use dope_net::{
         pool::change::close::Approval,
         slot::{transmit, types},
     },
-    wire::{self, terminal},
+    wire,
 };
 
 use crate::client::{
@@ -168,6 +168,7 @@ impl<'d, C, O> State<'d, C, O> {
                 }
             },
             app::CloseOutcome::Yield => app::CloseOutcome::Yield,
+            app::CloseOutcome::Blocked => app::CloseOutcome::Blocked,
         };
         Close::Ready(Flow::from_effect(output, Self::reconcile(slot)))
     }
@@ -263,17 +264,16 @@ impl<'d, C, O> State<'d, C, O> {
     }
 
     pub(super) fn fail(&mut self, failure: conn::Transmit) {
-        self.closing.transmit.get_or_insert(failure);
+        if self.closing.transmit.is_none() {
+            self.closing.transmit = Some(failure);
+            self.closing.transmit_pending = true;
+        }
     }
 
     pub(super) fn reconnect(&mut self, reason: close::Reason) -> close::Directive {
         self.closing
             .apply(close::Directive::reconnect(reason))
             .effective()
-    }
-
-    pub(super) fn observe(&mut self, kind: terminal::Kind) {
-        self.closing.observe(kind)
     }
 }
 

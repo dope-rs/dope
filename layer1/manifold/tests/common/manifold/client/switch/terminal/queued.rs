@@ -16,6 +16,8 @@ use dope_test::harness::{
     signals::{Gate, Progress as _},
 };
 
+use crate::common::manifold::client::finish::close::members::DemandState;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
     Input,
@@ -36,6 +38,7 @@ pub struct Host<'d, M> {
     #[pin]
     pub(crate) inner: M,
     pub(crate) state: Option<Rc<State>>,
+    pub(crate) renewal: Option<Rc<DemandState>>,
     /// Identifies the injected completion retained by the executor for replay.
     pub(crate) pending: Option<route::Erased<'d, kind::Recv>>,
 }
@@ -56,8 +59,9 @@ impl<'d, M: dispatch::raw::Manifold<'d>> dispatch::raw::Projection<'d> for Host<
 // injection keeps the actual native target, flow, and owning dispatch call.
 unsafe impl<'d, M> dispatch::raw::Manifold<'d> for Host<'d, M>
 where
-    M: dispatch::raw::Manifold<'d> + dispatch::raw::Projection<'d>,
-    M::Inner: event::Turn<'d>,
+    M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>
+        + dispatch::raw::Projection<'d>,
+    M::Inner: event::Turn<'d, Access = dispatch::raw::Retained>,
 {
     type Route = M::Route;
     type Dispatch = event::Timed<<M::Inner as event::Turn<'d>>::Access>;
@@ -98,8 +102,9 @@ where
 
 impl<'d, M> event::Turn<'d> for Host<'d, M>
 where
-    M: dispatch::raw::Manifold<'d> + dispatch::raw::Projection<'d>,
-    M::Inner: event::Turn<'d>,
+    M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>
+        + dispatch::raw::Projection<'d>,
+    M::Inner: event::Turn<'d, Access = dispatch::raw::Retained>,
 {
     type Access = <M::Inner as event::Turn<'d>>::Access;
 
@@ -118,10 +123,31 @@ where
     where
         'd: 'root,
     {
-        let (owner, (), (done, turn, driver)) = call.into_parts();
-        let this = owner.project();
+        let (owner, (), (done, turn, mut driver)) = call.into_parts();
+        let mut this = owner.project();
         let mut selected = false;
-        let kind = match (done.into_kind(), this.state.as_ref()) {
+        let kind = done.into_kind();
+        if matches!(&kind, Kind::Connect(_))
+            && let Some(demand) = this.renewal.take()
+        {
+            let pending = demand.pending.replace(None);
+            let live = demand.live.replace(None);
+            demand.needed.set(false);
+            demand.withdrawn.set(false);
+            assert_ne!(turn.maint().remaining(), 0, "native admission maintenance");
+            turn.reborrow().maint().share::<{ schedule::LIMIT }, _>(|| {
+                // SAFETY: the same pinned owner retains the undispatched native completion.
+                unsafe { M::pre_park(this.inner.as_mut(), turn.reborrow(), &mut driver) };
+            });
+            assert!(
+                demand.withdrawn.get(),
+                "withdrawal is reconciled before native admission"
+            );
+            demand.needed.set(true);
+            demand.pending.set(pending);
+            demand.live.set(live);
+        }
+        let kind = match (kind, this.state.as_ref()) {
             (Kind::Recv(done), Some(state)) if state.queued.hits() == 0 => {
                 let done = done.dispatch::<Infallible>(|token, flow, outcome| {
                     ControlFlow::Break(match outcome {

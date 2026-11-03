@@ -5,7 +5,7 @@ use dope_core::driver::{
     route::{Identity, KeyTag},
 };
 use dope_net::link::pool::{self, change::opening};
-use o3::depot::capacity;
+use o3::{base::cell::region, depot::capacity};
 
 use crate::client::attempt::{
     self, mode,
@@ -91,13 +91,6 @@ impl<'d, T: dope_net::Transport, ID: Identity> attempt::Control<'d, T, ID>
         self.table.heads[0].first().is_some()
     }
 
-    fn connected(&mut self, key: attempt::Id<'d, ID>) -> Result<attempt::Connection, Self::Error> {
-        Ok(match self.table.connected(key)? {
-            attempt::Transition::Applied => attempt::Connection::Applied(()),
-            attempt::Transition::Stale => attempt::Connection::Stale,
-        })
-    }
-
     fn rejected(
         &mut self,
         _: attempt::Id<'d, ID>,
@@ -112,5 +105,20 @@ impl<'d, T: dope_net::Transport, ID: Identity> attempt::Control<'d, T, ID>
         _: Option<opening::Exhaustion>,
     ) -> Result<(), Self::Error> {
         self.table.free(key)
+    }
+}
+
+impl<'d, T: dope_net::Transport, ID: Identity> attempt::Connected<'d, T, ID>
+    for Control<'_, 'd, T, ID>
+{
+    fn connected(
+        &mut self,
+        key: attempt::Id<'d, ID>,
+        _: &region::Token<region::Identity<'d, 1>>,
+    ) -> Result<attempt::Connection, Self::Error> {
+        Ok(match self.table.connected(key)? {
+            attempt::Transition::Applied => attempt::Connection::Applied(()),
+            attempt::Transition::Stale => attempt::Connection::Stale,
+        })
     }
 }

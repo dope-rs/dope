@@ -57,6 +57,11 @@ pub trait Demand<'d> {
         endpoint: &Self::Endpoint,
         token: &region::Token<region::Identity<'d, 1>>,
     ) -> bool;
+
+    /// Retains submitted epochs independently of demand for another dial.
+    fn is_retained(&self, _: &Self::Endpoint, _: &region::Token<region::Identity<'d, 1>>) -> bool {
+        true
+    }
 }
 
 pub trait RefreshAt<'d> {
@@ -109,6 +114,11 @@ pub(crate) trait Eligibility<'d, I>: Access {
     const WATCHED: bool;
 
     fn is_eligible(&self, endpoint: &I, token: &region::Token<region::Identity<'d, 1>>) -> bool;
+
+    /// Rechecks current retention at native admission and exact epoch retirement.
+    fn is_retained(&self, _: &I, _: &region::Token<region::Identity<'d, 1>>) -> bool {
+        self.is_enabled()
+    }
 }
 
 pub(crate) trait Feedback: Access {
@@ -245,5 +255,9 @@ impl<'d, I, D: Demand<'d, Endpoint = I>> Eligibility<'d, I> for Gate<D> {
 
     fn is_eligible(&self, endpoint: &I, token: &region::Token<region::Identity<'d, 1>>) -> bool {
         self.source.is_eligible(endpoint, token)
+    }
+
+    fn is_retained(&self, endpoint: &I, token: &region::Token<region::Identity<'d, 1>>) -> bool {
+        self.source.is_needed(token) && self.source.is_retained(endpoint, token)
     }
 }

@@ -27,6 +27,10 @@ where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
+    pub fn accept_error(&self) -> Option<listener::AcceptError> {
+        self.inner.as_ref().get_ref().accept_error()
+    }
+
     pub fn handler_mut(&mut self) -> <A as listener::raw::Control<'d, ID>>::View<'_>
     where
         A: listener::raw::Control<'d, ID>,

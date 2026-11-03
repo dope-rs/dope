@@ -3,6 +3,7 @@ pub mod common;
 use std::{
     cell::Cell,
     io::{Read as _, Write as _},
+    net::Shutdown,
     num::NonZero,
     ptr,
     rc::Rc,
@@ -62,19 +63,25 @@ use crate::common::{
 
 #[test]
 fn owner_survives_barrier() {
-    for behavior in [Mode::Duplex, Mode::Yield, Mode::Blocked] {
+    for (behavior, bytes) in [
+        (Mode::Duplex, b"RAW".as_slice()),
+        (Mode::Duplex, b"".as_slice()),
+        (Mode::Yield, b"RAW".as_slice()),
+        (Mode::Blocked, b"RAW".as_slice()),
+    ] {
         let mut finish = Completion::new();
 
         peer::TcpScript::with(|stream| {
                 assert!(
-                    stream.write_all(b"HRAW").is_ok(),
+                    stream.write_all(if bytes.is_empty() { b"H" } else { b"HRAW" }).is_ok(),
                     "write head and raw suffix"
                 );
+                if bytes.is_empty() {
+                    stream.shutdown(Shutdown::Write).expect("native EOF after head");
+                }
                 let mut closed = Vec::new();
-                assert!(
-                    stream.read_to_end(&mut closed).is_ok(),
-                    "wait for transition connection close"
-                );
+                let result = stream.read_to_end(&mut closed);
+                assert!(result.is_ok(), "{behavior:?} {bytes:?}: wait for transition connection close: {result:?}");
             }, |peer| {
             let address = peer.addr();
             let plan = (plan::Plan::<KeyTag<0>, 1>::new(
@@ -104,6 +111,7 @@ fn owner_survives_barrier() {
                 let bytes = Bytes {
                     suffix: Rc::new(Cell::new(ptr::null())),
                     raw: Rc::new(Cell::new(Vec::new())),
+                    expected: bytes,
                 };
                 let head = signals::Gate::new();
                 let duplex = signals::Gate::new();
@@ -161,11 +169,17 @@ fn owner_survives_barrier() {
                 assert!(bytes.snapshot().is_empty(), "barrier must retain the suffix");
                 match behavior {
                     Mode::Duplex => {
+                        if bytes.expected.is_empty() {
+                            fibers::TEST.try_pause(&mut running, Duration::from_millis(10))
+                                .expect("settle native EOF while paused");
+                            assert_eq!(retired.hits(), 0, "empty pause retains EOF");
+                        }
                         mode.set(ReceiveMode::Duplex);
                         let target = (target.get()).expect("generation readiness target");
                         target.wake();
-                        reached(fibers::TEST.try_wait(&mut running, &duplex, 1), &audit);
-                        assert_eq!(bytes.snapshot().as_slice(), b"RAW");
+                        let gate = if bytes.expected.is_empty() { &retired } else { &duplex };
+                        reached(fibers::TEST.try_wait(&mut running, gate, 1), &audit);
+                        assert_eq!(bytes.snapshot().as_slice(), bytes.expected);
                     }
                     Mode::Yield | Mode::Blocked => {
                         reached(fibers::TEST.try_wait(&mut running, &retired, 1), &audit);
@@ -176,7 +190,7 @@ fn owner_survives_barrier() {
             assert!(result.is_ok(), "application teardown");
             audit.checked((0, 0));
             match behavior {
-                Mode::Duplex => assert_eq!(bytes.snapshot().as_slice(), b"RAW"),
+                Mode::Duplex => assert_eq!(bytes.snapshot().as_slice(), bytes.expected),
                 Mode::Yield | Mode::Blocked => assert_eq!(retired.hits(), 1),
             }
             assert_eq!(prefix.hits(), 0);
@@ -380,6 +394,7 @@ fn run<W>(
                                     let host = Host::new(queued::Host {
                                         inner: host,
                                         state: terminal.clone(),
+                                        renewal: None,
                                         pending: None,
                                     });
                                     let result = runtime.with_quiesce(

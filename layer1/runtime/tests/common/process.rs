@@ -1,7 +1,150 @@
-use std::{cell, io, mem, ops};
+use std::{cell, convert::Infallible, io, mem, ops};
 
-use dope_core::platform::{affinity, affinity::Cpu};
-use o3::depot::array::init;
+use dope_core::{
+    Backend, Errno,
+    dope_sys::kernel,
+    driver::life::{creation::Attempt, recovery},
+    platform::{affinity, affinity::Cpu},
+};
+use dope_runtime::{
+    executor::{Build as _, session::Completion},
+    process::{self, failure::execute, watch},
+};
+use dope_test::alloc::Tracker;
+use o3::{alloc, base::time::Positive, depot::array::init, mem::slot};
+
+use crate::common::{runtime::topology::PROFILE_CONFIG, scenario::app::Empty};
+
+pub fn cancel_gated_startup() {
+    let [cpu] = <[Cpu; 1]>::try_current().expect("required available CPU");
+    for cancellation in [
+        Cancellation::BeforeInstall,
+        Cancellation::AfterInstall,
+        Cancellation::ObserverFailure,
+    ] {
+        let mut storage = mem::MaybeUninit::uninit();
+        let runtime = process::Layout::pinned([cpu])
+            .and_then(|layout| layout.try_assign([cancellation]))
+            .expect("one process worker");
+        let run = || {
+            runtime.watch_gated(
+                slot::Vacant::new(&mut storage),
+                |cancellation, context, gate| {
+                    if matches!(cancellation, Cancellation::BeforeInstall) {
+                        // Installed cannot be published before this signal. The control
+                        // set registers the signal first and selects the first ready
+                        // descriptor, leaving Installed unread for the handoff.
+                        try_terminate().expect("pre-install termination");
+                    }
+                    let mut create = Attempt::new();
+                    let executor = context.try_build(&mut create, PROFILE_CONFIG);
+                    executor
+                        .as_ref()
+                        .map_err(|error| error.kind())
+                        .expect("worker executor");
+                    let request = executor.ok().expect("validated executor").run(|executor| {
+                        let result = executor.enter_with(
+                            |mut scope| {
+                                let mut finish = Completion::new();
+                                let result = scope.with_app(&mut finish, Empty {}, |app| {
+                                    if matches!(cancellation, Cancellation::AfterInstall) {
+                                        try_terminate().expect("installed termination");
+                                    }
+                                    drop(gate);
+                                    app.run().expect("worker shutdown")
+                                });
+                                result
+                                    .as_ref()
+                                    .map_err(|error| error.cause())
+                                    .expect("worker application");
+                                result.ok().expect("validated application")
+                            },
+                            recovery::Policy::new(
+                                drop,
+                                |failure: recovery::Recovery<'_, '_>| -> Infallible {
+                                    panic!("native recovery: {:?}", failure.cause());
+                                },
+                            ),
+                        );
+                        result
+                            .as_ref()
+                            .map_err(|error| error.cause())
+                            .expect("worker teardown");
+                        result.ok().expect("validated teardown")
+                    });
+                    Ok::<_, Infallible>(request)
+                },
+                ClosedWatch,
+            )
+        };
+        match cancellation {
+            Cancellation::ObserverFailure => {
+                // Admit worker slots and failure storage, then reject the observer's
+                // poll set before it can consume the worker's Installed event.
+                let error = Tracker::fail_after(2, run).expect_err("observer allocation");
+                let failures = error.fold(0, |count, failure| {
+                    assert!(matches!(
+                        failure,
+                        execute::Fault::Control(execute::Cause::Allocation(
+                            alloc::Error::Exhausted
+                        ))
+                    ));
+                    count + 1
+                });
+                assert_eq!(failures, 1);
+            }
+            _ => {
+                let result = run();
+                assert!(
+                    result.is_ok(),
+                    "startup cancellation {cancellation:?}: {result:?}"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Cancellation {
+    BeforeInstall,
+    AfterInstall,
+    ObserverFailure,
+}
+
+pub struct ClosedWatch;
+
+impl watch::Notify for ClosedWatch {
+    type Error = Error;
+    type Heartbeat = Self;
+
+    fn ready(self) -> Result<Self::Heartbeat, Self::Error> {
+        Err(Error::Ready)
+    }
+}
+
+impl watch::Heartbeat<Error> for ClosedWatch {
+    fn period(&self) -> Positive {
+        Positive::from_secs::<1>()
+    }
+
+    fn pulse(&self) -> Result<(), Error> {
+        Err(Error::Pulse)
+    }
+
+    fn draining(&self) -> Result<(), Error> {
+        Err(Error::Drain)
+    }
+}
+
+pub fn try_terminate() -> Result<(), Errno> {
+    // SAFETY: the isolated test process owns its installed SIGTERM receiver.
+    let result = unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+    // SAFETY: kill returns zero or -1 with errno on this thread.
+    unsafe {
+        kernel::raw::Status::new(result)
+            .try_zero::<Errno>(|| kernel::raw::Code::last::<Backend>().into())
+    }
+}
 
 pub fn try_limit() -> io::Result<(libc::rlim_t, libc::rlim_t)> {
     let mut limit = mem::MaybeUninit::uninit();
@@ -43,6 +186,9 @@ impl<const N: usize> Cpus for [Cpu; N] {
 pub enum Error {
     Discovery(affinity::Error),
     Count { actual: usize, required: usize },
+    Ready,
+    Pulse,
+    Drain,
 }
 
 pub struct Resources {

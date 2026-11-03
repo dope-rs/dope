@@ -1,9 +1,13 @@
 pub mod common;
-use std::{cell, iter, mem};
+use std::{cell, env, iter, mem, process::Command};
 
 use dope_core::platform::affinity::Cpu;
 use dope_runtime::process;
-use dope_test::{alloc::Tracker, harness::scenario::process::Test};
+use dope_test::{
+    alloc::Tracker,
+    checks::{Error, Suite, try_compile},
+    harness::{scenario::process::Test, support::file::Directory},
+};
 use o3::alloc;
 use process::failure::{config, create};
 
@@ -159,4 +163,52 @@ fn maps_without_growth() {
         mem::size_of::<process::Runtime<u64>>(),
         5 * mem::size_of::<usize>()
     );
+}
+
+#[test]
+fn cancels_gated_startup() -> Result<(), Error> {
+    let suite = Suite::new(
+        env!("CARGO_MANIFEST_DIR"),
+        file!(),
+        &[
+            "dope-core",
+            "dope-gen",
+            "dope-manifold",
+            "dope-net",
+            "dope-runtime",
+            "dope-test",
+            "libc",
+            "o3",
+            "pin-project",
+        ],
+    );
+    let exe = env::current_exe()?;
+    let output = suite.try_build(&exe, env!("CARGO_PKG_NAME"))?.output()?;
+    let artifacts = suite.try_collect(&exe, output)?;
+    let directory = Directory::try_with(
+        exe.parent().expect("test executable directory"),
+        "startup-cancel",
+        |result| result.expect("remove startup cancellation executable"),
+    )
+    .expect("startup cancellation executable directory");
+    let binary = directory.path().join("startup_cancel");
+    let mut compiler = artifacts.compiler();
+    compiler.arg(format!("--emit=link={}", binary.display()));
+    let compiled = try_compile(
+        &mut compiler,
+        r#"pub mod common;
+#[global_allocator]
+static ALLOCATOR: dope_test::alloc::Tracker = dope_test::alloc::Tracker::new();
+fn main() { common::process::cancel_gated_startup(); }
+"#,
+    )?;
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let output = Command::new(&binary).output()?;
+    assert!(output.status.success(), "startup cancellation: {output:?}");
+    directory.try_close()?;
+    Ok(())
 }

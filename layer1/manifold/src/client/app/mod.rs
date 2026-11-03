@@ -140,7 +140,10 @@ const _: () = {
 
 pub enum CloseOutcome {
     Complete(close::Directive),
+    /// Cleanup can continue in another admitted turn.
     Yield,
+    /// Cleanup retains its owners until an external wake or cancellation.
+    Blocked,
 }
 
 /// Application admission for one transport-connected primary generation.

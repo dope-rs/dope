@@ -268,6 +268,14 @@ impl<'s, 'd, const LANES: usize, const N: usize> Queries<'s, 'd, LANES, N> {
             && token.borrow(&self.inner).reg.pending.has_server(server)
     }
 
+    pub(crate) fn has_live(
+        &self,
+        token: &region::Token<region::Identity<'d, 1>>,
+        server: index::Server,
+    ) -> bool {
+        token.borrow(&self.inner).reg.live.contains(server)
+    }
+
     pub(crate) fn bind_udp(&self, token: &mut region::Token<region::Identity<'d, 1>>) {
         self.get_mut(token).reg.ids.bind_udp();
     }

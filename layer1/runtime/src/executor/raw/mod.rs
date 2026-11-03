@@ -46,6 +46,11 @@ pub unsafe trait Drain<'d>: executor::raw::App<'d> {
         driver: &mut retained::Context<'_, '_, 'd>,
     );
 
+    /// Reports drain work after the application's pre-park traversal.
+    /// `Runnable` requires another turn for work that can proceed now;
+    /// `Waiting` retains the external wake or deadline needed to proceed.
+    /// `Quiescent` reports completed cooperative drain, not reclaimed owners.
+    /// The runtime combines this signal with application progress before waiting.
     fn progress(
         self: pin::Pin<&Self>,
         region: &region::Token<region::Identity<'d>>,

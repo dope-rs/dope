@@ -128,7 +128,7 @@ impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Phase<'d, ID, A, S, E, Full>
     for engine::Machine<'p, 'w, 'd, ID, A, S, E, X>
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID, Connect = Full> + app::Connected<'d, ID>,
-    S: attempt::Control<'d, E::Transport, ID>,
+    S: attempt::Connected<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
@@ -165,7 +165,7 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Disposition<S::Error> {
         let ctrl = &mut self.as_mut().project().controller;
-        match ctrl.connected(owner) {
+        match ctrl.connected(owner, driver.state_token()) {
             Err(cause) => return Disposition::Rejected(cause),
             Ok(attempt::Connection::Applied(())) => {}
             Ok(attempt::Connection::Stale) => {
@@ -298,7 +298,7 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Disposition<S::Error> {
         let ctrl = &mut self.as_mut().project().controller;
-        let peer = match ctrl.attach(owner, Clone::clone) {
+        let peer = match ctrl.attach(owner, driver.state_token(), Clone::clone) {
             attempt::Connection::Applied(peer) => peer,
             attempt::Connection::Stale => {
                 self.as_mut()

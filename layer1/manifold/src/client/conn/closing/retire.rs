@@ -38,6 +38,17 @@ impl<'a, 'd, ID: Identity> Retire<'a, 'd, ID> {
             Entry::Claimed => Stage::Claimed,
         }
     }
+
+    pub(in crate::client) fn transmit_failed(
+        &mut self,
+        report: impl FnOnce(conn::Transmit) -> Option<conn::Transmit>,
+    ) {
+        if mem::take(&mut self.closing.transmit_pending)
+            && let Some(failure) = self.closing.transmit.take()
+        {
+            self.closing.transmit = report(failure);
+        }
+    }
 }
 
 #[must_use = "restored close phase must be handled"]

@@ -52,6 +52,7 @@ pub struct Probe<F, const CONTROL: bool = false> {
 pub enum State {
     First,
     Pending,
+    Released,
     Consumed,
     Eof,
     Closed,
@@ -66,7 +67,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
     type WireFailure = Failure;
     type Retirement = Retirement;
     type Egress = Shared;
-    type Input = receive::Scoped;
+    type Input = receive::GatedScoped;
     type Send = send::Silent;
 
     fn connection(self: Pin<&Self>, _: &Seed) -> Result<Self::Conn, Self::Build> {
@@ -94,10 +95,18 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
             *conn.state_mut() = State::Closed;
             return handler::Timeout::CloseAfter;
         }
-        if self.release.hits() != 0 {
+        if matches!(*conn.state(), State::Pending) && self.release.hits() != 0 {
+            *conn.state_mut() = State::Released;
             conn.wake_target().wake();
         }
         handler::Timeout::Continue(handler::Deadline::Ensure(driver.driver_ref().clock().now()))
+    }
+
+    fn is_blocked(
+        self: Pin<&Self>,
+        conn: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+    ) -> bool {
+        matches!(*conn.state(), State::Pending)
     }
 
     fn eof(
@@ -148,6 +157,17 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
         this.events.push(Event::Close);
         this.close.hit();
         conn
+    }
+}
+
+impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bool>
+    handler::Gated<'d, ID> for Probe<F, CONTROL>
+{
+    fn send_drained(
+        self: Pin<&mut Self>,
+        _: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+    ) -> handler::PostDrain {
+        handler::PostDrain::Idle
     }
 }
 
@@ -213,6 +233,7 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
+        this.ready.hit();
         if matches!(*conn.state(), State::First) {
             *conn.state_mut() = State::Pending;
             (this.observe)(Observation::Deadline(
@@ -221,7 +242,6 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
             ));
             let (lane, epoch) = conn.id().parts();
             this.events.push(Event::Generation(lane, epoch));
-            this.ready.hit();
             if !CONTROL {
                 this.events.push(Event::Deferred(chunk.as_ref().to_vec()));
                 (this.observe)(Observation::Write(conn.write().try_bounded(

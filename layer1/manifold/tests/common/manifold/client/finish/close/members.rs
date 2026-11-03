@@ -140,3 +140,44 @@ impl Transport for Net {
         Set::EMPTY
     }
 }
+
+pub struct DemandState {
+    pub(crate) needed: Cell<bool>,
+    pub(crate) pending: Cell<Option<u32>>,
+    pub(crate) live: Cell<Option<u32>>,
+    pub(crate) withdrawn: Cell<bool>,
+}
+
+pub struct Demand(pub(crate) Rc<DemandState>);
+
+impl<'d> discover::Demand<'d> for Demand {
+    type Endpoint = u32;
+
+    fn is_needed(&self, _: &region::Token<region::Identity<'d, 1>>) -> bool {
+        let needed = self.0.needed.get();
+        if !needed {
+            self.0.withdrawn.set(true);
+        }
+        needed
+    }
+
+    fn is_eligible(
+        &self,
+        endpoint: &Self::Endpoint,
+        _: &region::Token<region::Identity<'d, 1>>,
+    ) -> bool {
+        self.0.pending.get() == Some(*endpoint)
+    }
+
+    fn is_retained(
+        &self,
+        endpoint: &Self::Endpoint,
+        _: &region::Token<region::Identity<'d, 1>>,
+    ) -> bool {
+        let retained = self.0.live.get() == Some(*endpoint);
+        if !retained {
+            self.0.withdrawn.set(true);
+        }
+        retained
+    }
+}

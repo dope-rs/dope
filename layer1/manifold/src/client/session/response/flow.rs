@@ -44,6 +44,7 @@ pub enum Record {
 pub trait Policy: Default {
     fn record(&mut self, eof: bool, record: Record);
     fn wake(&mut self) -> Wake;
+    fn cancel_eof(&mut self);
     fn reset(&mut self);
 }
 
@@ -135,6 +136,12 @@ impl Policy for State {
                 Wake::Ready
             }
             _ => Wake::Idle,
+        }
+    }
+
+    fn cancel_eof(&mut self) {
+        if matches!(self, Self::EofInputBlocked) {
+            *self = Self::EofInputReady;
         }
     }
 
@@ -306,6 +313,12 @@ impl<P> Policy for Pending<P> {
                 *self = state;
                 Wake::Idle
             }
+        }
+    }
+
+    fn cancel_eof(&mut self) {
+        if matches!(self, Self::EofInputBlocked) {
+            *self = Self::EofInputReady;
         }
     }
 

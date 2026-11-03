@@ -69,6 +69,24 @@ impl<'id, 'a, 'd, R: buffer::Cursor> Input<'id, 'a, 'd, R> {
         })
     }
 
+    /// Retains EOF-delimited input while keeping receive active at the staging limit.
+    /// Any further bytes at that limit exhaust the parser's capacity.
+    pub fn wait_eof<T>(
+        source: &'a R,
+        budget: &'a resident::Budget<'d>,
+        limit: staging::Limit,
+    ) -> Step<T> {
+        if let staging::Bound::Buffered(retained) = limit.0
+            && source.as_ref().len() == retained.get() as usize
+        {
+            Step(Progress::AwaitEof {
+                retained: Exact(retained),
+            })
+        } else {
+            Self::wait(source, budget, limit, None)
+        }
+    }
+
     pub(in crate::client::session) fn consume<T>(
         source: &mut R,
         budget: &resident::Budget<'d>,

@@ -65,11 +65,14 @@ pub enum Admission<F> {
 pub struct Step<T>(pub(crate) Progress<T>);
 
 /// Internal progress built by `Input` from a codec's `Need` and returned as `Step`.
-/// `More` retains the crate-sealed `Exact` reservation count.
+/// `More` and `AwaitEof` retain crate-sealed `Exact` reservation counts.
 pub(crate) enum Progress<T> {
     More {
         advanced: bool,
         target: Option<Exact>,
+    },
+    AwaitEof {
+        retained: Exact,
     },
     Blocked,
     CapacityExhausted,
@@ -92,7 +95,8 @@ impl<T> Step<T> {
         match self.0 {
             Progress::More { advanced, .. } => advanced,
             Progress::Item(_) => true,
-            Progress::Blocked
+            Progress::AwaitEof { .. }
+            | Progress::Blocked
             | Progress::CapacityExhausted
             | Progress::RetryInput
             | Progress::Rejected(_) => false,

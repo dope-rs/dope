@@ -122,6 +122,13 @@ where
         self.with(|state| serve::run(state, source, drive::timeout))
     }
 
+    pub(super) fn drive_until<R>(self, root: R) -> Result<ControlFlow<R::Output>, drive::Error>
+    where
+        R: root::Root<'d>,
+    {
+        self.with(|state| block::Block::new(state, clock::wall())?.run_until(root, drive::tick))
+    }
+
     pub(super) fn run_drain(mut self, timeout: Positive) -> Result<drain::Outcome, drive::Error>
     where
         D: executor::raw::Drain<'d>,
@@ -139,10 +146,7 @@ where
         D: executor::raw::Drain<'d>,
         R: root::Root<'d>,
     {
-        match self
-            .reborrow()
-            .with(|state| block::Block::new(state, clock::wall())?.run_drain(root, drive::tick))?
-        {
+        match self.reborrow().drive_until(root)? {
             ControlFlow::Break(output) => Ok(ControlFlow::Break(output)),
             ControlFlow::Continue(()) => self.drain(timeout).map(ControlFlow::Continue),
         }

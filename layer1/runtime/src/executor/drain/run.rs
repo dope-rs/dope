@@ -31,10 +31,11 @@ where
             };
             let parked = this.state.next_app(tick)?.skip().park();
             let quiesced = parked.resolve(this.source, |idle| {
-                if idle.is_quiet() && matches!(idle.drain(), schedule::Progress::Quiescent) {
+                let drain = idle.drain();
+                if idle.is_quiet() && matches!(drain, schedule::Progress::Quiescent) {
                     return Ok(turn::Resolved::Done);
                 }
-                let state = idle.progress();
+                let state = idle.progress().reduce(drain);
                 Ok(turn::Resolved::Wait(idle, state))
             })?;
             if quiesced {

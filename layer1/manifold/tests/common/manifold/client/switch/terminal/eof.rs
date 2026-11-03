@@ -8,7 +8,7 @@ use dope_manifold::client::{
         self, Output, Parser, Resume, Retirement, Scheduling, Session, Stored, Target,
         app::drain::Ready,
         codec::{
-            self, Codec, Parse, Stateful, mode,
+            self, Codec, Stateful, mode,
             staging::{Buffered, Limit},
             storage,
         },
@@ -41,7 +41,10 @@ use crate::common::{
     },
 };
 
-pub struct Decode;
+pub struct Decode {
+    pub(crate) partial: signals::Gate,
+    pub(crate) full: signals::Gate,
+}
 
 pub struct Head;
 
@@ -98,16 +101,20 @@ impl Stateful for Decode {
         state: &mut ParseState,
         budget: &resident::Budget<'d>,
         limit: Limit,
-        admit: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> codec::Admission<F>,
+        _: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> codec::Admission<F>,
     ) -> codec::Step<T>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
         T: response::Outcome,
         F: FnOnce(Result<Self::Outcome<'d>, Self::Error>, &mut ParseState) -> T::Accepted,
     {
-        codec::Input::commit(storage, budget, limit, |input| {
-            switch::parsed(self.parse_once(state, input), state, admit)
-        })
+        state.parsed = true;
+        match storage.as_ref().len() {
+            1 => self.partial.hit(),
+            2 => self.full.hit(),
+            _ => {}
+        }
+        codec::Input::wait_eof(storage, budget, limit)
     }
 
     fn finish<'slot, 'id, 'd, S, T, F>(
@@ -134,24 +141,6 @@ impl Stateful for Decode {
 }
 
 impl Decode {
-    fn parse_once<'id, 'input, 'd, R: buffer::Cursor>(
-        &self,
-        state: &mut ParseState,
-        input: codec::Input<'id, 'input, 'd, R>,
-    ) -> Result<Parse<'id, Head>, switch::Error>
-    where
-        'd: 'input,
-    {
-        if state.parsed {
-            return Err(switch::Error::RepeatedParse);
-        }
-        state.parsed = true;
-        Ok(match input.need_more(None) {
-            Some(need) => Parse::More(need),
-            None => Parse::CapacityExhausted,
-        })
-    }
-
     fn finish_once<'id, 'input, 'd, R: buffer::Cursor>(
         &self,
         state: &mut ParseState,
@@ -163,7 +152,7 @@ impl Decode {
         if !state.parsed {
             return Err(switch::Error::UnparsedEof);
         }
-        if input.as_slice() != b"T" {
+        if input.as_slice() != b"TT" {
             return Err(switch::Error::TerminalBytes(input.as_slice().to_vec()));
         }
         Ok(codec::Finish::Item(Head))
@@ -178,6 +167,7 @@ pub struct Eof {
     pub(crate) commit: signals::Gate,
     pub(crate) settled: signals::Gate,
     pub(crate) closed: signals::Gate,
+    pub(crate) reason: close::Reason,
 }
 
 impl Eof {
@@ -438,13 +428,22 @@ impl<'d> Retirement<'d> for Eof {
         egress::Cleared::Done
     }
 
-    fn disconnect(&mut self, _: turns::Retired<'_, 'd, Self::ConnState, KeyTag<0>, Self>) {
+    fn disconnect(&mut self, context: turns::Retired<'_, 'd, Self::ConnState, KeyTag<0>, Self>) {
+        if context.reason() != self.reason {
+            self.audit
+                .faults
+                .record(Switch(switch::Error::Close(context.reason())));
+        }
+        let expected = if self.reason == close::Reason::Remote {
+            3
+        } else {
+            0
+        };
         let actual = self.phase.get();
-        if actual != 3 {
-            self.audit.faults.record(Switch(switch::Error::Phase {
-                actual,
-                expected: 3,
-            }));
+        if actual != expected {
+            self.audit
+                .faults
+                .record(Switch(switch::Error::Phase { actual, expected }));
         }
         self.closed.hit();
     }

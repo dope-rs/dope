@@ -35,6 +35,21 @@ where
         Ok(shutdown::Requested::new())
     }
 
+    /// Returns a completed root or the shutdown request after dropping the pending root.
+    /// A root completed in the shutdown turn keeps its output.
+    pub fn drive_until<R>(
+        self,
+        root: R,
+    ) -> Result<ops::ControlFlow<R::Output, shutdown::Requested<Q>>, drive::Error>
+    where
+        R: root::Root<'d>,
+    {
+        Ok(self
+            .access
+            .drive_until(root)?
+            .map_continue(|()| shutdown::Requested::new()))
+    }
+
     /// Drives one root with a wall-clock deadline, checked between executor turns.
     /// Each root poll must return to the executor for the deadline to be observed.
     pub fn drive_for<R>(

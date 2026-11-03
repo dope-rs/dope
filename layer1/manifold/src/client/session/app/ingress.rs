@@ -26,8 +26,8 @@ impl<'d, P: Policy> Ingress<'d, P> {
         let warm = <P as Seal>::warm(plan);
         let shared = warm.map_or(ingress::Buffers::EMPTY, |warm| limits.shared(warm));
         let reserve = limits.reserve();
-        let layout = <P as Seal>::layout(plan, cap, shared, ingress::Bytes::EMPTY)
-            .map_err(creation::Error::Ingress)?;
+        let layout =
+            <P as Seal>::layout(plan, cap, shared, reserve).map_err(creation::Error::Ingress)?;
         let output = limits
             .acquire(reserve, driver)
             .map_err(creation::Error::Resident)?;

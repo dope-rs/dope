@@ -170,6 +170,115 @@ fn local_slots_reuse() {
 }
 
 #[test]
+fn installed_control_retains_accept_failure() {
+    use std::{
+        cell::Cell,
+        net::{SocketAddr, TcpListener},
+        os::fd::AsFd as _,
+    };
+
+    use common::manifold::listener::accept_error as fixture;
+    use dope_core::{
+        Backend, Errno,
+        dope_sys::io::socket::{How, Socket as _},
+    };
+    use dope_manifold::network::listener::AcceptError;
+    use dope_test::{
+        fibers,
+        harness::{GUARD, signals::LocalGate},
+    };
+
+    let fault = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("listener address");
+    let bound = fault.try_clone().expect("listener fault descriptor");
+    let observed = Cell::new(None);
+    let ready = LocalGate::new();
+    let settings = One::driver().expect("listener resources");
+    let mut creation = Attempt::new();
+    let executor = Executor::new(&mut creation, settings);
+    executor
+        .as_ref()
+        .map_err(|error| error.kind())
+        .expect("executor");
+    executor.ok().expect("executor").run(|executor| {
+        executor
+            .enter_with(
+                |mut session| {
+                    let hash = session.hash_state(listener::Domain::DEFAULT);
+                    listener::Install::<KeyTag<0>, fixture::Env, _>::new(
+                        listener::config::Prepared {
+                            connections: Capacity::fixed::<1>(),
+                            direct_flights: listener::config::Flights::Minimum,
+                            bind: fault.local_addr().expect("bound address"),
+                            backlog: Backlog::fixed::<1>(),
+                            stream: Default::default(),
+                            per_ip: None,
+                            transport: Default::default(),
+                            egress: Default::default(),
+                        },
+                        domain::Local::new(Identity),
+                    )
+                    .with_bound(Some(bound))
+                    .with_driver(
+                        App {
+                            trace: Rc::new(trace::Trace::default()),
+                            gate: Gate::new(),
+                            observe: trace::check,
+                        },
+                        hash,
+                        &mut session,
+                        session::Scope::driver,
+                        |listener, session| {
+                            let mut finish = Completion::new();
+                            session
+                                .with_quiesce(
+                                    &mut finish,
+                                    fixture::Host {
+                                        listener,
+                                        observed: &observed,
+                                        ready: ready.handle(),
+                                    },
+                                    GUARD,
+                                    |mut app| {
+                                        let shutdown =
+                                            Backend::shutdown::<Errno>(fault.as_fd(), How::READ);
+                                        if std::env::consts::OS == "macos" {
+                                            assert_eq!(
+                                                shutdown,
+                                                Err(Errno::try_from(libc::ENOTCONN)
+                                                    .expect("not connected errno"))
+                                            );
+                                            assert_eq!(observed.get(), None);
+                                            return;
+                                        }
+                                        shutdown.expect("stop native listener");
+                                        assert_eq!(
+                                            fibers::TEST
+                                                .try_wait(&mut app, &ready.handle(), 1)
+                                                .expect("observe terminal accept"),
+                                            Wait::Reached
+                                        );
+                                        assert_eq!(
+                                            observed.get(),
+                                            Some(AcceptError::Completion(
+                                                accept::Failure::Syscall(Errno::INVALID_ARGUMENT)
+                                            ))
+                                        );
+                                    },
+                                )
+                                .expect("listener retirement");
+                        },
+                    )
+                    .expect("install listener");
+                },
+                recovery::Policy::new(|_| {}, common::recover),
+            )
+            .as_ref()
+            .map_err(|error| error.cause())
+            .expect("finish executor");
+    });
+}
+
+#[test]
 fn burst_recovers() {
     let mut finish = Completion::new();
     let trace = Rc::new(trace::Trace::default());

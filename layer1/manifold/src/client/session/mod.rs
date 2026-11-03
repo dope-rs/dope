@@ -34,7 +34,7 @@ use crate::{
     client::{
         app::{Eof, Fence, Inbound, admit, connect, failure, request::Mode},
         attempt, close,
-        conn::Id,
+        conn::{self, Id},
         session::app::{admit::Register, drain},
     },
 };
@@ -147,6 +147,17 @@ pub trait Session<'d, ID: Identity = KeyTag<0>>: Sized {
     /// one exact connection generation. The default adds no connection state.
     fn mode(&self, _: Id<'d, ID>, _: &Self::ConnState) -> ReceiveMode {
         ReceiveMode::Framed
+    }
+
+    /// Registers a wake for recoverable staging pressure without consuming input.
+    /// Return `Registered` only when an independently releasable owner will wake
+    /// this exact connection generation. Other failures retain their exact cause.
+    fn stalled<'e>(
+        &mut self,
+        _: &crate::app::receive::Failure,
+        _: &mut turns::Context<'_, 'e, 'd, Self::ConnState, Self::Send, ID>,
+    ) -> Blocking {
+        Blocking::Unsupported
     }
 
     /// Receives bytes after this generation has committed to duplex mode.
@@ -309,6 +320,17 @@ pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
 /// This is a static capability: it adds no runtime object or session state.
 pub trait Retirement<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
     type Drain: drain::Mode<'d, ID, Self>;
+
+    /// Offers the exact send failure before retiring application responses.
+    /// Returning it preserves the diagnostic for the final retired context.
+    fn transmit_failed(
+        &self,
+        _: Id<'d, ID>,
+        failure: conn::Transmit,
+        _: &mut region::Token<region::Identity<'d>>,
+    ) -> Option<conn::Transmit> {
+        Some(failure)
+    }
 
     /// Disposes the exact transport receive failure before transport teardown.
     fn io_fail<'e>(

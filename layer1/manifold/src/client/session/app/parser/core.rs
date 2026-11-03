@@ -118,6 +118,14 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
             state.record(eof, flow::Record::Done);
             return ControlFlow::Break(Run::Complete);
         }
+        let mode = match self.owner.mode(self.context.conn_id, self.context.state) {
+            session::ReceiveMode::Framed => mode::Active::Framed,
+            session::ReceiveMode::Duplex => mode::Active::Duplex,
+            session::ReceiveMode::Paused => {
+                state.record(eof, flow::Record::Blocked);
+                return ControlFlow::Break(Run::Blocked);
+            }
+        };
         match self.ingress.prepare(self.budget) {
             Ok(true) => {}
             Ok(false) => {
@@ -125,11 +133,13 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
                 return ControlFlow::Break(Run::Complete);
             }
             Err(error) => {
-                state.record(eof, flow::Record::Done);
-                return ControlFlow::Break(Run::Failed(error));
+                return ControlFlow::Break(self.stalled(state, eof, error));
             }
         }
-        let step = match work.admit(|| self.ingress.decode(self.owner, self.budget, self.context)) {
+        let step = match work.admit(|| {
+            self.ingress
+                .decode(mode, self.owner, self.budget, self.context)
+        }) {
             work::Capacity::Available(step) => step,
             work::Capacity::Exhausted(()) => {
                 state.record(eof, flow::Record::Ready);
@@ -153,8 +163,17 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
                 match self.ingress.preserve(target, self.budget) {
                     Ok(more) if advanced || more => ControlFlow::Continue(()),
                     Ok(_) => ControlFlow::Break(Run::Complete),
-                    Err(error) => ControlFlow::Break(Run::Failed(error)),
+                    Err(error) => ControlFlow::Break(self.stalled(state, eof, error)),
                 }
+            }
+            codec::Progress::AwaitEof { retained } => {
+                state.record(eof, flow::Record::Done);
+                // Completion keeps the stage but discards any incoming tail.
+                ControlFlow::Break(match self.ingress.preserve(Some(retained), self.budget) {
+                    Ok(false) => Run::Complete,
+                    Ok(true) => Run::Failed(Failure::ParseCapacity),
+                    Err(error) => self.stalled(state, eof, error),
+                })
             }
             codec::Progress::CapacityExhausted => {
                 state.record(eof, flow::Record::Done);
@@ -182,6 +201,28 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
                 work,
                 flow::End::Continue,
             ),
+        }
+    }
+
+    fn stalled(
+        &mut self,
+        state: &mut <N::Response as response::Plan>::Flow,
+        eof: bool,
+        error: Failure,
+    ) -> Run {
+        if matches!(
+            self.owner.stalled(&error, self.context),
+            session::Blocking::Registered
+        ) {
+            state.record(eof, flow::Record::Blocked);
+            Run::Blocked
+        } else {
+            state.record(eof, flow::Record::Done);
+            if self.is_closing() {
+                Run::Close
+            } else {
+                Run::Failed(error)
+            }
         }
     }
 

@@ -116,6 +116,14 @@ where
         L::mode(&self.endpoint, conn, state)
     }
 
+    fn stalled<'e>(
+        &mut self,
+        cause: &crate::app::receive::Failure,
+        ctx: &mut Context<'_, 'e, 'd, Self, ID>,
+    ) -> session::Blocking {
+        L::stalled(&mut self.endpoint, cause, ctx)
+    }
+
     fn duplex<'id, 'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
         &mut self,
         input: codec::Input<'id, 'input, 'd, R>,
@@ -353,6 +361,14 @@ where
     L::Drain: drain::Mode<'d, ID, Self>,
 {
     type Drain = L::Drain;
+    fn transmit_failed(
+        &self,
+        conn: conn::Id<'d, ID>,
+        failure: conn::Transmit,
+        region: &mut Token<'d>,
+    ) -> Option<conn::Transmit> {
+        L::transmit_failed(&self.endpoint, conn, failure, region)
+    }
     fn io_fail<'e>(&mut self, error: dope_core::Errno, ctx: &mut Context<'_, 'e, 'd, Self, ID>) {
         L::io_fail(&mut self.endpoint, error, ctx);
     }

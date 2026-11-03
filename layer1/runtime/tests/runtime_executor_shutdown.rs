@@ -24,13 +24,28 @@ use crate::common::{
 
 #[test]
 fn installed_drain() {
-    drain(Positive::from_millis::<50>(), 3, drain::Outcome::Quiesced);
+    drain(
+        Positive::from_millis::<50>(),
+        3,
+        drain::Outcome::Quiesced,
+        false,
+    );
+}
+
+#[test]
+fn drain_deadline_resumes() {
+    drain(
+        Positive::from_millis::<50>(),
+        3,
+        drain::Outcome::Quiesced,
+        true,
+    );
 }
 
 #[test]
 fn deadline_forces_drain() {
     let config = Positive::from_millis::<1>();
-    drain(config, usize::MAX, drain::Outcome::Forced);
+    drain(config, usize::MAX, drain::Outcome::Forced, false);
 }
 
 #[test]
@@ -332,7 +347,7 @@ fn shutdown_ignores_timers() {
     assert_eq!(ends.get(), Some(1));
 }
 
-fn drain(config: Positive, count: usize, outcome: drain::Outcome) {
+fn drain(config: Positive, count: usize, outcome: drain::Outcome, deadline: bool) {
     let mut finish = Completion::new();
     let mut create = Attempt::new();
     let begun = Rc::new(Cell::new(false));
@@ -356,12 +371,15 @@ fn drain(config: Positive, count: usize, outcome: drain::Outcome) {
         executor
             .enter_with(
                 |mut sess| {
+                    let deadline =
+                        deadline.then(|| sess.driver().driver_ref().clock().now().into());
                     let result = sess.with_quiesce(
                         &mut finish,
                         DrainProbe {
                             begun: Rc::clone(&begun),
                             forced: Rc::clone(&forced),
                             remaining: count,
+                            deadline,
                             shutdown,
                             fired: |fired: Result<(), shutdown::FireError>| {
                                 fired.expect("shutdown after serving")

@@ -43,6 +43,14 @@ impl<'life, 's, 'd: 'life, const LANES: usize, const N: usize> discover::Demand<
     ) -> bool {
         self.store.queries.has_pending(token, *server)
     }
+
+    fn is_retained(
+        &self,
+        server: &Self::Endpoint,
+        token: &region::Token<region::Identity<'d, 1>>,
+    ) -> bool {
+        self.store.queries.has_live(token, *server)
+    }
 }
 
 const _: () = assert!(

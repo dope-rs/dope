@@ -34,6 +34,15 @@ pub trait Spec<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>: Siz
         session::ReceiveMode::Framed
     }
 
+    /// Registers release-driven retry of unchanged ingress for this generation.
+    fn stalled<'e>(
+        _: &mut State<'life, 'd, P, Self, ID, MAX>,
+        _: &crate::app::receive::Failure,
+        _: &mut session::Context<'_, 'e, 'life, 'd, P, Self, ID, MAX>,
+    ) -> session::Blocking {
+        session::Blocking::Unsupported
+    }
+
     fn duplex<'id, 'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
         _: &mut State<'life, 'd, P, Self, ID, MAX>,
         _: codec::Input<'id, 'input, 'd, R>,

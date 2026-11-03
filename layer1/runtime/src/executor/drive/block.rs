@@ -207,7 +207,7 @@ where
         Ok(output)
     }
 
-    pub(crate) fn run_drain<R>(
+    pub(crate) fn run_until<R>(
         self,
         root: R,
         tick: impl Fn(C) -> Result<Sample, drive::Error>,

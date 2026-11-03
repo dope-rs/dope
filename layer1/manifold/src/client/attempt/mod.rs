@@ -151,7 +151,6 @@ pub trait Control<'d, T: dope_net::Transport, ID: Identity = KeyTag<0>>: Contrac
 
     fn resize(&mut self, cap: capacity::Count) -> Result<(), ResizeError>;
     fn is_pending(&self) -> bool;
-    fn connected(&mut self, key: Id<'d, ID>) -> Result<Connection, Self::Error>;
     /// Records terminal admission for a live owner and returns its exact error.
     /// The owner remains active until its actual retirement.
     fn rejected(&mut self, key: Id<'d, ID>, error: result::SubmitError) -> result::SubmitError;
@@ -162,13 +161,28 @@ pub trait Control<'d, T: dope_net::Transport, ID: Identity = KeyTag<0>>: Contrac
     ) -> Result<(), Self::Error>;
 }
 
+/// Admits a completed native connection against the current driver-owned state.
+pub(crate) trait Connected<'d, T: dope_net::Transport, ID: Identity = KeyTag<0>>:
+    Control<'d, T, ID>
+{
+    fn connected(
+        &mut self,
+        key: Id<'d, ID>,
+        token: &region::Token<region::Identity<'d, 1>>,
+    ) -> Result<Connection, Self::Error>;
+}
+
 pub(crate) trait Peer<'d, T: dope_net::Transport, ID: Identity = KeyTag<0>>:
     Control<'d, T, ID>
 {
     type Target;
 
-    fn attach<R>(&mut self, key: Id<'d, ID>, map: impl FnOnce(&Self::Target) -> R)
-    -> Connection<R>;
+    fn attach<R>(
+        &mut self,
+        key: Id<'d, ID>,
+        token: &region::Token<region::Identity<'d, 1>>,
+        map: impl FnOnce(&Self::Target) -> R,
+    ) -> Connection<R>;
 }
 
 const _: () = {

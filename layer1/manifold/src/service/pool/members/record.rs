@@ -15,9 +15,9 @@ pub(super) struct Health {
     pub(super) failures: Failures,
     pub(super) idle: Idle,
     pub(super) ready: Ready,
-    /// Desired members retain an eligibility hint; retired members have no demand.
-    /// Every dial checks the current source under its region token.
-    pub(super) demand: Option<bool>,
+    /// Desired members retain scheduling hints; retired members have no demand.
+    /// Dial admission and retirement check the current source under its region token.
+    pub(super) demand: Option<Demand>,
     pub(super) owners: u32,
 }
 
@@ -31,7 +31,7 @@ impl Health {
             failures: Failures::new(),
             idle: Idle::Exhausted,
             ready: Ready::Healthy,
-            demand: Some(true),
+            demand: Some(Demand::Both),
             owners: 0,
         }
     }
@@ -62,6 +62,29 @@ impl Health {
                 Err(Exhausted)
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::service::pool) enum Demand {
+    Absent,
+    Eligible,
+    Retained,
+    Both,
+}
+
+impl Demand {
+    pub(in crate::service::pool) const fn new(eligible: bool, retained: bool) -> Self {
+        match (eligible, retained) {
+            (false, false) => Self::Absent,
+            (true, false) => Self::Eligible,
+            (false, true) => Self::Retained,
+            (true, true) => Self::Both,
+        }
+    }
+
+    pub(in crate::service::pool) const fn is_retained(self) -> bool {
+        matches!(self, Self::Retained | Self::Both)
     }
 }
 
@@ -127,7 +150,7 @@ const _: () = {
     assert!(size_of::<Health>() == size_of::<(Generation, [u8; 4])>());
     assert!(size_of::<Ready>() == 1);
     assert!(size_of::<Idle>() == 1);
-    assert!(size_of::<Option<bool>>() == size_of::<bool>());
+    assert!(size_of::<Option<Demand>>() == size_of::<bool>());
     assert!(size_of::<Record<u32, u32>>() == size_of::<Health>() + size_of::<[u32; 2]>());
     assert!(
         size_of::<queues::Retry<'static>>()

@@ -38,7 +38,9 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
 {
     let result = {
         let mut this = root.as_mut().project();
-        let (fd, peer) = match this.accept.as_mut().complete(done, driver) {
+        let incoming = this.accept.as_mut().complete(done, driver);
+        this.accept.as_mut().retire();
+        let (fd, peer) = match incoming {
             Incoming::Accepted(fd, ip) => (fd, ip),
             Incoming::Invalid(fd, cause) => {
                 if let Some(peer) = <A::WireFailure as failures::Policy<'w, 'd, A, ID>>::peer() {

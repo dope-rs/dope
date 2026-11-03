@@ -88,6 +88,17 @@ pub trait Lifecycle<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>
 {
     type Drain;
 
+    /// Offers the exact send failure before retiring application responses.
+    /// Returning it preserves the diagnostic for the final retired context.
+    fn transmit_failed(
+        _: &State<'life, 'd, P, Self, ID, MAX>,
+        _: conn::Id<'d, ID>,
+        failure: conn::Transmit,
+        _: &mut region::Token<region::Identity<'d>>,
+    ) -> Option<conn::Transmit> {
+        Some(failure)
+    }
+
     fn io_fail<'e>(
         owner: &mut State<'life, 'd, P, Self, ID, MAX>,
         error: dope_core::Errno,

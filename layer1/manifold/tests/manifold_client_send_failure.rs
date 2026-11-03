@@ -40,7 +40,7 @@ use o3::{
 use crate::common::{
     contract::Report,
     manifold::client::send::{
-        Flight, Payload, profile,
+        Flight, Payload, policy, profile,
         reject::{self, Reject},
         wait::{self, PAYLOAD_BYTES, Wait},
         wire::Wire,
@@ -331,6 +331,21 @@ fn recv_error_after_close() {
     );
 }
 
+#[test]
+fn bound_consumes_transmit_before_quarantine() {
+    policy::check_transmit::<true, true>();
+}
+
+#[test]
+fn bound_default_retains_transmit() {
+    policy::check_transmit::<false, false>();
+}
+
+#[test]
+fn bound_retains_transmit_once_before_quarantine() {
+    policy::check_transmit::<false, true>();
+}
+
 fn check_retirement(shutdown: bool, fault: Option<Errno>) {
     use dope_core::{
         driver::{
@@ -361,6 +376,8 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
             let mut finish = Completion::new();
             let ready = LocalGate::new();
             let ready = ready.handle();
+            let quarantined = LocalGate::new();
+            let quarantined = quarantined.handle();
             let canceled = LocalGate::new();
             let canceled = canceled.handle();
             let closed = LocalGate::new();
@@ -399,7 +416,7 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
                     |mut runtime| {
                         let payload = Shared::try_copy(b"x").expect("request payload");
                         let app = Flight::new(payload, canceled, closed, &reason, audit.clone())
-                            .closing(ready, shutdown);
+                            .closing(ready, quarantined, shutdown);
                         let setup = session::Setup::new(app, ingress::Plan::none());
                         let wire = wire::Wire::waiting(
                             writes.clone(),
@@ -424,6 +441,7 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
                                     Host::new(queued::Host {
                                         inner: host,
                                         state: fault.clone(),
+                                        renewal: None,
                                         pending: None,
                                     }),
                                     Duration::from_secs(2),
@@ -458,6 +476,7 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
                 assert!(result.is_ok(), "executor teardown");
             });
             assert_eq!(release.hits(), 0);
+            assert_eq!(quarantined.hits(), 1, "late close must preserve retirement");
             assert_eq!(closed.hits(), 1);
             assert_eq!(reason.get(), Some(Reason::Local(if shutdown {
                 LocalOrigin::RuntimeShutdown

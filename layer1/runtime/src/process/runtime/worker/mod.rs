@@ -11,7 +11,7 @@ use crate::process::{
     STACK,
     failure::{bus::Read, execute},
     layout,
-    runtime::worker,
+    runtime::{bus, worker},
 };
 
 pub(in crate::process::runtime) mod bound;
@@ -112,12 +112,15 @@ impl<'run, I, E, X> Stopping<'run, I, E, X> {
         apply(unsafe { bound::Bound::new(self.slots.values.entries()) })
     }
 
-    pub(in crate::process::runtime) fn clean<'r, S>(self) -> Result<(), execute::Error<'r, S, X>>
+    pub(in crate::process::runtime) fn clean<'r, S>(
+        self,
+        readiness: bus::Readiness,
+    ) -> Result<(), execute::Error<'r, S, X>>
     where
         E: worker::Entry<I, X>,
     {
         let Self { slots, stop } = self;
-        let (workers, missing) = slots.finish(None);
+        let (workers, missing) = slots.finish(None, readiness);
         execute::Error::finish(missing, stop, workers)
     }
 
@@ -137,7 +140,7 @@ impl<'run, I, E, X> Stopping<'run, I, E, X> {
             _ => None,
         };
         let Self { slots, stop } = self;
-        let (workers, missing) = slots.finish(target);
+        let (workers, missing) = slots.finish(target, bus::Readiness::Cancelled);
         execute::Error::failed(control, missing, stop, workers)
     }
 }
@@ -146,6 +149,7 @@ impl<'run, I, E, X> Slots<'run, I, E, X> {
     fn finish(
         self,
         target: Option<affinity::Cpu>,
+        readiness: bus::Readiness,
     ) -> (Vec<execute::Worker<X>>, Option<affinity::Cpu>)
     where
         E: worker::Entry<I, X>,
@@ -156,7 +160,7 @@ impl<'run, I, E, X> Slots<'run, I, E, X> {
         } = self;
         let mut missing = target;
         for parent in slots.parents_mut() {
-            parent.handoff::<E>();
+            parent.handoff::<E>(readiness);
         }
         for (parent, output) in slots.finish() {
             let cpu = parent.cpu;

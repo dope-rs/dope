@@ -232,4 +232,4 @@ where
 mod ingress;
 mod raw;
 pub use ingress::Ingress;
-pub(in crate::client::session) use ingress::Read;
+pub(in crate::client::session) use ingress::{Active, Read};

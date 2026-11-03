@@ -55,6 +55,7 @@ pub enum Mode {
 pub struct Bytes {
     pub(crate) suffix: Rc<Cell<*const u8>>,
     pub(crate) raw: Rc<Cell<Vec<u8>>>,
+    pub(crate) expected: &'static [u8],
 }
 
 impl Bytes {
@@ -402,7 +403,7 @@ impl<'d> Retirement<'d> for Barrier<'d> {
         let bytes = self.bytes.snapshot();
         let settled = self.gates.settlements.get();
         if match self.behavior {
-            Mode::Duplex => bytes.as_slice() != b"RAW",
+            Mode::Duplex => bytes.as_slice() != self.bytes.expected,
             Mode::Yield | Mode::Blocked => !bytes.is_empty() || settled != 2,
         } {
             self.audit.faults.record(Switch(Error::Retired {

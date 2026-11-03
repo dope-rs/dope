@@ -28,6 +28,13 @@ pub(in crate::process::runtime) trait Mode {
     const GATED: bool;
 }
 
+/// Retains whether shutdown was requested before application readiness.
+#[derive(Clone, Copy)]
+pub(in crate::process::runtime) enum Readiness {
+    Required,
+    Cancelled,
+}
+
 impl Main {
     pub(in crate::process) fn try_pair() -> Result<(Self, Bus), channel::Create> {
         let (left, right) = Channel::pair()?;
@@ -53,7 +60,10 @@ impl Main {
         }
     }
 
-    pub(in crate::process::runtime) fn handoff<M: Mode>(&self) -> Option<bus::Read> {
+    pub(in crate::process::runtime) fn handoff<M: Mode>(
+        &self,
+        readiness: Readiness,
+    ) -> Option<bus::Read> {
         use bus::Event;
 
         let mut failure = None;
@@ -68,7 +78,9 @@ impl Main {
                             (None, Event::Installed | Event::Done | Event::Failed) => true,
                             (None, Event::Ready | Event::Drain) => false,
                             (Some(Event::Installed), Event::Ready) => M::GATED,
-                            (Some(Event::Installed), Event::Done) => !M::GATED,
+                            (Some(Event::Installed), Event::Done) => {
+                                !M::GATED || matches!(readiness, Readiness::Cancelled)
+                            }
                             (Some(Event::Installed), Event::Failed) => true,
                             (Some(Event::Installed), Event::Installed | Event::Drain) => false,
                             (Some(Event::Ready), Event::Drain | Event::Failed) => M::GATED,

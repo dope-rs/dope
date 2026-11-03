@@ -156,10 +156,13 @@ fn terminal_drops_root() {
 #[test]
 fn drain_orders_completion() {
     let fatal = Poll::Ready(Err(19));
-    for (output, shutdown, left) in [
-        (Poll::Pending, true, 3),
-        (Poll::Pending, true, usize::MAX),
-        (fatal, false, 0),
+    for (output, shutdown, left, draining) in [
+        (Poll::Pending, true, 3, true),
+        (Poll::Pending, true, usize::MAX, true),
+        (fatal, false, 0, true),
+        (Poll::Pending, true, 3, false),
+        (fatal, false, 0, false),
+        (fatal, true, 0, false),
     ] {
         let mut finish = Completion::new();
         let mut create = Attempt::new();
@@ -193,6 +196,7 @@ fn drain_orders_completion() {
                                     begun: Rc::clone(&begun),
                                     forced: Rc::clone(&forced),
                                     remaining: left,
+                                    deadline: None,
                                     shutdown: None,
                                     fired: |fired: Result<(), shutdown::FireError>| {
                                         fired.expect("shutdown notification")
@@ -205,6 +209,19 @@ fn drain_orders_completion() {
                                         dropped: &dropped,
                                         begun: &begun,
                                     };
+                                    if !draining {
+                                        return match app
+                                            .drive_until(root)
+                                            .expect("root or shutdown")
+                                        {
+                                            ControlFlow::Break(output) => output,
+                                            ControlFlow::Continue(request) => {
+                                                let _: shutdown::Requested<shutdown::Source> =
+                                                    request;
+                                                Ok(())
+                                            }
+                                        };
+                                    }
                                     match app.drive_drain(config, root).expect("root or shutdown") {
                                         ControlFlow::Break(output) => output,
                                         ControlFlow::Continue(report) => {
@@ -234,7 +251,7 @@ fn drain_orders_completion() {
         );
         assert!(dropped.get(), "root drops before drain begins");
         assert_eq!(polls.get(), Some(1));
-        assert_eq!(begun.get(), output.is_pending());
+        assert_eq!(begun.get(), draining && output.is_pending());
         assert_eq!(forced.get(), left == usize::MAX);
     }
 }

@@ -51,7 +51,10 @@ fn coupled(event: Event<'_>) {
 
 fn gated(event: DynamicEvent<'_>) {
     assert!(match event {
-        DynamicEvent::Chunk(phase, completions) => phase == 0 || (phase == 2 && completions > 0),
+        DynamicEvent::Chunk(phase, completions) => {
+            phase == 0 || (matches!(phase, 2 | 3) && completions > 0)
+        }
+        DynamicEvent::Consumed(result) => matches!(result, Some(Ok(()))),
         DynamicEvent::Prefix(phase, capacity) => phase == 1 && capacity == write::Prefix::CAPACITY,
         DynamicEvent::Written(result) => matches!(result, Ok(write::Outcome::Committed(()))),
         DynamicEvent::Drained(phase) => phase == 1,
@@ -178,7 +181,7 @@ fn send_replays_receive() {
 }
 
 #[test]
-fn gate_drains() {
+fn gate_drains_before_tail() {
     let mut finish = Completion::new();
     let setting = option::Buffer::try_from(1024_usize);
     let setting = setting.expect("socket buffer size");
@@ -190,7 +193,7 @@ fn gate_drains() {
     let seen = Rc::new(Trace::new());
     let (wait, next) = wake::Ends::blocking().expect("input release pipe").split();
     let (start, read) = wake::Ends::blocking().expect("read release pipe").split();
-    let prepared = Listener::<receive::Gated>::new::<4>(Default::default())
+    let prepared = Listener::<receive::GatedScoped>::new::<4>(Default::default())
         .direct(0)
         .stream(tcp::StreamConfig {
             send_buffer_size: Some(setting),
@@ -222,7 +225,6 @@ fn gate_drains() {
                             socket.write_all(b"A")?;
                             assert!(wait.wait().is_ok(), "release second gated byte");
                             socket.write_all(b"B")?;
-                            socket.shutdown(Shutdown::Write)?;
                             assert!(start.wait().is_ok(), "release gated peer read");
                             let mut body = Vec::new();
                             socket.read_to_end(&mut body)?;
@@ -252,7 +254,7 @@ fn gate_drains() {
                             assert!(body.iter().all(|byte| *byte == 0x6b));
                             assert_eq!(
                                 &*seen.values().expect("gated observations"),
-                                &[b"A".to_vec(), b"B".to_vec()]
+                                &[b"A".to_vec(), b"A".to_vec(), b"B".to_vec()]
                             );
                         },
                     )

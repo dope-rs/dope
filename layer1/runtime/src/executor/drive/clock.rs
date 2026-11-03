@@ -199,12 +199,12 @@ where
     }
 
     fn limit(self, timeout: Option<time::Duration>) -> Option<time::Duration> {
+        let timeout = self.source.limit(timeout);
+        if timeout.is_some_and(|wait| wait.is_zero()) {
+            return timeout;
+        }
         let left = self.limit.left(time::Instant::now());
-        Some(
-            self.source
-                .limit(timeout)
-                .map_or(left, |wait| wait.min(left)),
-        )
+        Some(timeout.map_or(left, |wait| wait.min(left)))
     }
 }
 

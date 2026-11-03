@@ -2,7 +2,7 @@ use std::convert;
 
 use dope_core::driver::{result, route::Identity};
 use dope_net::link::pool::change::opening;
-use o3::depot::capacity;
+use o3::{base::cell::region, depot::capacity};
 
 use crate::{
     client::attempt::{self, mode},
@@ -32,10 +32,6 @@ where
         self.dials.needs_poll
     }
 
-    fn connected(&mut self, key: attempt::Id<'d, ID>) -> Result<attempt::Connection, Self::Error> {
-        Ok(attempt::Peer::attach(self, key, |_| ()))
-    }
-
     fn rejected(
         &mut self,
         key: attempt::Id<'d, ID>,
@@ -63,5 +59,22 @@ where
             self.refresh();
         }
         Ok(())
+    }
+}
+
+impl<'q, 'h, 'd, T, R, I, const N: usize, F, ID: Identity> attempt::Connected<'d, T, ID>
+    for service::Pool<'q, 'h, 'd, ID, T, R, I, N, F>
+where
+    T: dope_net::Transport,
+    R: sync::Policy,
+    I: Eq,
+    F: discover::Eligibility<'d, I>,
+{
+    fn connected(
+        &mut self,
+        key: attempt::Id<'d, ID>,
+        token: &region::Token<region::Identity<'d, 1>>,
+    ) -> Result<attempt::Connection, Self::Error> {
+        Ok(attempt::Peer::attach(self, key, token, |_| ()))
     }
 }

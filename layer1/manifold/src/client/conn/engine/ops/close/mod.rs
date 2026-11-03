@@ -95,28 +95,26 @@ where
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
-        let deferred = {
+        let rule = {
             let this = self.as_mut().project();
-            pending::Mut::of(this.links.pool_mut())
-                .get(key)
-                .is_some_and(|(slot, handle)| {
-                    slot.state.closing.apply(Directive::reconnect(reason));
-                    if slot.terminal.is_pending() {
-                        if slot.terminal.has_send() {
-                            handle.wake();
-                        }
-                        return true;
-                    }
-                    if !slot.is_discarded() && slot.state.work.has_next() {
-                        handle.wake();
-                        return true;
-                    }
-                    false
-                })
+            let Some((slot, handle)) = pending::Mut::of(this.links.pool_mut()).get(key) else {
+                return;
+            };
+            let pending = slot.terminal.is_pending();
+            let wake = if pending {
+                slot.terminal.has_send()
+            } else {
+                !slot.is_discarded() && slot.state.work.has_next()
+            };
+            let closing = slot.state.closing.apply(Directive::reconnect(reason));
+            if pending || wake {
+                if wake {
+                    handle.wake();
+                }
+                return;
+            }
+            closing.effective()
         };
-        if deferred {
-            return;
-        }
         {
             let this = self.as_mut().project();
             let Some(slot) = this.links.pool_mut().get_mut(key) else {
@@ -153,7 +151,6 @@ where
                 return;
             };
             egress.cancel_wait(driver.region_token());
-            let rule = slot.state.reconnect(reason);
             let outcome = match State::close(&mut slot, rule, |active| {
                 this.app.close(
                     conn::Ctx::new(active, turn.reborrow().app()),
@@ -177,6 +174,7 @@ where
         };
         match outcome {
             app::CloseOutcome::Complete(_) => {}
+            app::CloseOutcome::Blocked => return,
             app::CloseOutcome::Yield => {
                 let this = self.project();
                 if let Some((_, handle)) = pending::Mut::of(this.links.pool_mut()).get(key) {

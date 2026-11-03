@@ -97,10 +97,7 @@ where
 
     fn latch(mut self: pin::Pin<&mut Self>, key: pool::Key<'d, ID>) {
         let this = self.as_mut().project();
-        if let Some((slot, handle)) = pending::Mut::of(this.links.pool_mut()).get(key) {
-            if let Some(kind) = slot.terminal.kind() {
-                slot.state.observe(kind);
-            }
+        if let Some(handle) = pending::Pending::of(this.links.pool()).at(key) {
             handle.wake();
         }
     }
@@ -122,7 +119,7 @@ where
             else {
                 return ingress::Terminal::Idle;
             };
-            if slot.terminal.has_eof() && slot.is_app_held() {
+            if slot.terminal.is_pending() && slot.is_app_held() {
                 return ingress::Terminal::Pending;
             }
             let cause = match slot.terminal.finish_recv() {
@@ -136,7 +133,7 @@ where
                 }
                 terminal::Receive::Ready(terminal::Terminal::Failed(cause)) => cause,
             };
-            slot.state.observe(terminal::Kind::Failed);
+            slot.state.closing.failed(Reason::Transport);
             let flow = State::terminal(slot, |conn| {
                 this.app.wire_fail(conn, queue.reborrow(), cause, driver);
             });

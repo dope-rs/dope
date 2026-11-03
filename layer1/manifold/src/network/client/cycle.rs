@@ -70,8 +70,11 @@ where
     ) -> pin::Pin<&'a mut Self> {
         let this = self.as_ref().project_ref();
         let due = this.engine.control().is_stale(token);
-        self.as_mut()
-            .maintain(turn.reborrow(), due, |mut owner, permit| {
+        let token = &*token;
+        self.as_mut().maintain(
+            turn.reborrow(),
+            due,
+            |mut owner, permit| {
                 permit.run(|| {
                     let this = owner.as_mut().project();
                     let mut engine = this.engine;
@@ -79,7 +82,9 @@ where
                     engine.as_mut().control_mut().set_demand(token, cap);
                     engine.as_ref().wake_control();
                 });
-            });
+            },
+            |control, key| control.is_retired_at(key, token),
+        );
         self
     }
 }
@@ -169,8 +174,10 @@ where
         let due = this.discovery.poll_at().is_some_and(|at| at <= now)
             || this.engine.control().feedback.is_ready()
             || this.discovery.source().is_ready(token);
-        self.as_mut()
-            .maintain(turn.reborrow(), due, |mut owner, permit| {
+        self.as_mut().maintain(
+            turn.reborrow(),
+            due,
+            |mut owner, permit| {
                 permit.run(|| {
                     let cause = owner
                         .as_mut()
@@ -260,7 +267,9 @@ where
                         }
                     }
                 });
-            });
+            },
+            service::Pool::is_retired,
+        );
         self
     }
 }

@@ -1,4 +1,5 @@
 use dope_core::driver::route::Identity;
+use o3::base::cell::region;
 
 use crate::{
     client::attempt,
@@ -15,22 +16,22 @@ where
     T: dope_net::Transport,
     R: sync::Policy,
     I: Eq,
-    F: discover::Access,
+    F: discover::Eligibility<'d, I>,
 {
     type Target = I;
 
     fn attach<O>(
         &mut self,
         key: attempt::Id<'d, ID>,
+        token: &region::Token<region::Identity<'d, 1>>,
         map: impl FnOnce(&Self::Target) -> O,
     ) -> attempt::Connection<O> {
-        if !self.feedback.is_enabled() {
-            return attempt::Connection::Disabled;
-        }
         let dials::Connection::Pending(connect) = self.dials.connection(key) else {
             return attempt::Connection::Stale;
         };
-        let output = match self.membership.recover(connect.target()) {
+        let output = match self.membership.recover(connect.target(), |endpoint| {
+            self.feedback.is_retained(endpoint, token)
+        }) {
             members::Peer::Ready { target, output } => {
                 let output = map(output);
                 connect.commit(target);
@@ -39,6 +40,7 @@ where
             members::Peer::Missing => {
                 return attempt::Connection::Retired;
             }
+            members::Peer::Disabled => return attempt::Connection::Disabled,
             members::Peer::Exhausted => return attempt::Connection::Exhausted,
         };
         self.refresh();

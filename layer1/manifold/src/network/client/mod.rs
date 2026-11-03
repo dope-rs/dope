@@ -282,6 +282,10 @@ where
         turn: schedule::Turn<'turn, 'd>,
         mut due: bool,
         mut resolve: impl FnMut(pin::Pin<&mut Self>, maint::Permit<'turn, 'd>),
+        mut retired: impl FnMut(
+            &mut service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, ENDPOINTS, D::Feedback>,
+            crate::client::attempt::Id<'d, ID>,
+        ) -> bool,
     ) {
         let work = turn.maint();
         work.share::<2, _>(|| {
@@ -303,11 +307,10 @@ where
                         resolve(self.as_mut(), permit);
                     }
                     quota::Admission::Item((Task::Retirement(lane), permit)) => {
-                        self.as_mut().project().engine.retire(
-                            lane,
-                            permit,
-                            service::Pool::is_retired,
-                        );
+                        self.as_mut()
+                            .project()
+                            .engine
+                            .retire(lane, permit, &mut retired);
                     }
                     quota::Admission::Empty | quota::Admission::Exhausted => break,
                 }

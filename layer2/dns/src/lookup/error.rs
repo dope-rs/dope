@@ -157,6 +157,7 @@ impl Kind {
             } => matches!(cause.cause(), result::SubmitCause::IdentityExhausted),
             Self::Opening(_)
             | Self::Clock(_)
+            | Self::Deadline(_)
             | Self::Datagram(
                 Datagram::Rejected(RejectCause::Inactive | RejectCause::IdentityExhausted)
                 | Datagram::Shutdown,

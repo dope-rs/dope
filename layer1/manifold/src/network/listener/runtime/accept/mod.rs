@@ -98,7 +98,7 @@ pub(in crate::network::listener) struct Accept<
     F = flight::Slots<'d, <ID as route::Materialize<kind::Accept>>::With>,
 > {
     #[pin]
-    fd: handles::Descriptor<'d>,
+    fd: Option<handles::Descriptor<'d>>,
     flights: F,
     mode: mode::Mode<'d, ID>,
     capacity: Capacity,
@@ -153,7 +153,7 @@ impl<'d, ID: Identity> Prepared<'d, ID> {
             )
         };
         Ok(Accept {
-            fd,
+            fd: Some(fd),
             flights,
             mode,
             capacity,
@@ -245,6 +245,9 @@ impl<'d, ID: Identity> Accept<'d, ID> {
         &self,
         region: &region::Token<region::Identity<'d>>,
     ) -> schedule::Progress<'d> {
+        let Some(fd) = &self.fd else {
+            return schedule::Progress::Quiescent;
+        };
         match self.retry {
             Some(until) => {
                 let waiting = schedule::Progress::until(until);
@@ -255,17 +258,27 @@ impl<'d, ID: Identity> Accept<'d, ID> {
                     mode::Mode::Oneshot(_) => waiting,
                 }
             }
-            None => self.mode.progress(self.fd.driver(), region),
+            None => self.mode.progress(fd.driver(), region),
         }
     }
 
     pub(in crate::network::listener) fn stop_accept(
-        self: pin::Pin<&mut Self>,
+        mut self: pin::Pin<&mut Self>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        let this = self.project();
+        let this = self.as_mut().project();
         *this.retry = None;
         this.mode.stop(driver);
+        self.retire();
+    }
+
+    pub(in crate::network::listener) fn retire(self: pin::Pin<&mut Self>) {
+        if self.mode.is_stopped() && self.mode.in_flight() == 0 {
+            // Every exact accept borrow has ended; cancellation submission alone
+            // leaves a live flight and cannot release this pinned descriptor.
+            // Drop queues native close for the driver's bounded maintenance.
+            drop(self.project().fd.get_mut().take());
+        }
     }
 
     fn defer(
@@ -321,25 +334,25 @@ impl<'d, ID: Identity> Accept<'d, ID> {
 
 impl<'d, ID: Identity> Accept<'d, ID> {
     pub(in crate::network::listener) fn arm(
-        self: pin::Pin<&mut Self>,
+        mut self: pin::Pin<&mut Self>,
         driver: &mut retained::Context<'_, '_, 'd>,
         slots: capacity::Count,
         work: maint::Work<'_, 'd>,
     ) -> Result<(), result::SubmitError> {
-        let slots = slots.get();
-        let this = self.project();
-        if this.mode.is_stopped() {
+        if self.mode.is_stopped() {
             if matches!(
-                this.mode.progress(driver.driver_ref(), &driver.regions().0),
+                self.mode.progress(driver.driver_ref(), &driver.regions().0),
                 schedule::Progress::Runnable
             ) {
                 work.apply(|| {
-                    this.mode.stop(driver.driver());
+                    self.as_mut().stop_accept(driver.driver());
                     Acquire::Item
                 });
             }
             return Ok(());
         }
+        let slots = slots.get();
+        let this = self.project();
         let ready = match *this.retry {
             Some(until) if !until.is_due(driver.driver_ref().clock().now()) => false,
             Some(_) => {
@@ -348,7 +361,9 @@ impl<'d, ID: Identity> Accept<'d, ID> {
             }
             None => true,
         };
-        let fd = this.fd.as_ref().get_ref();
+        let Some(fd) = this.fd.as_ref().get_ref() else {
+            unreachable!("listener");
+        };
         match this.mode {
             mode::Mode::Multishot { arm, interest } => {
                 if slots == 0 {

@@ -126,7 +126,7 @@ where
         let outcome = control.ready(count, &running);
         let stopped = running.stop();
         match outcome {
-            Ok(()) => stopped.clean(),
+            Ok(()) => stopped.clean(bus::Readiness::Required),
             Err(error) => Err(stopped.fail(error)),
         }
     })
@@ -150,13 +150,13 @@ where
         let outcome = control.watch(count, notify, &running);
         let stopped = running.stop();
         let outcome = outcome.and_then(|clock| match clock {
-            Some(clock) => {
-                control::Finish::new(&stopped).map_or(Ok(()), |finish| finish.drain(count, clock))
-            }
-            None => Ok(()),
+            Some(clock) => control::Finish::new(&stopped)
+                .map_or(Ok(()), |finish| finish.drain(count, clock))
+                .map(|()| bus::Readiness::Required),
+            None => Ok(bus::Readiness::Cancelled),
         });
         match outcome {
-            Ok(()) => stopped.clean(),
+            Ok(readiness) => stopped.clean(readiness),
             Err(error) => Err(stopped.fail(error)),
         }
     })

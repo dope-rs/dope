@@ -1,4 +1,4 @@
-use std::{convert, mem, pin::Pin, rc::Rc};
+use std::{convert, mem, num, pin::Pin, rc::Rc};
 
 use conn::write::{self, error};
 use dope_core::{
@@ -7,7 +7,7 @@ use dope_core::{
     random::Seed,
 };
 use dope_manifold::{
-    app::receive::{self, Outcome},
+    app::receive::{self, Outcome, limits::Budget},
     network::listener::{
         conn,
         handler::{self, Application, failures, retire, send},
@@ -15,15 +15,17 @@ use dope_manifold::{
 };
 use dope_net::{
     link::egress::{self, load::Value},
-    wire::{self, Identity, domain, failure, open, receive as input, terminal},
+    wire::{self, Identity, domain, failure, open, receive as input, receive::scoped, terminal},
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
 use o3::{
     alloc,
     buffer::{
         bytes::TryRetain,
+        hold::{limits, scope},
         resident, segments,
         storage::{self, Shared},
+        write::consume,
     },
     depot::queue::tagged::entry,
 };
@@ -154,6 +156,7 @@ pub struct DynamicState {
 
 pub enum DynamicEvent<'d> {
     Chunk(u8, usize),
+    Consumed(Option<Result<(), consume::scope::Error>>),
     Prefix(u8, usize),
     Written(
         Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>,
@@ -180,7 +183,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> Applicati
     type WireFailure = failures::Close;
     type Retirement = retire::Close;
     type Egress = resident::Shared<'d>;
-    type Input = receive::Gated;
+    type Input = receive::GatedScoped;
     type Send = send::Ready;
 
     fn build_failed(self: Pin<&mut Self>, cause: Self::Build) {
@@ -241,13 +244,17 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> handler::
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> handler::Borrowed<'d, ID>
-    for DynamicApp<F>
+impl<'w, 'd: 'w, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin>
+    handler::Scoped<'w, 'd, ID> for DynamicApp<F>
 {
-    fn chunk<R: TryRetain>(
+    fn retention(&self) -> Budget {
+        Budget::new(limits::Bound::new(0), 4096)
+    }
+
+    fn scoped_chunk(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, DynamicState>,
-        chunk: R,
+        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, DynamicState>,
+        chunk: scoped::Input<'_, 'w, 'd, Identity>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
@@ -267,14 +274,29 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> handler::
                 });
                 (this.observe)(DynamicEvent::Written(done));
                 this.first.hit();
+                return Outcome::Continue;
             }
             2 => {
                 conn.state_mut().phase = 3;
+            }
+            3 => {
+                conn.state_mut().phase = 4;
                 conn.close_after();
                 this.second.hit();
             }
             _ => return Outcome::CloseAfter,
         }
+        let (chunk, budget) = chunk.into_parts();
+        let consumed = scope::Input::consume(chunk, budget, |input| {
+            let Some(len) = num::NonZero::new(input.as_slice().len()) else {
+                return (None, None);
+            };
+            match input.try_prefix::<{ u32::MAX }>(len) {
+                Ok((_, end)) => (Some(end), Some(Ok(()))),
+                Err(error) => (None, Some(Err(error))),
+            }
+        });
+        (this.observe)(DynamicEvent::Consumed(consumed));
         Outcome::Continue
     }
 }

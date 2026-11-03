@@ -39,7 +39,7 @@ pub struct Flight<'a> {
     pub(crate) canceled: LocalGateRef<'a>,
     pub(crate) closed: LocalGateRef<'a>,
     pub(crate) reason: &'a Cell<Option<Reason>>,
-    closing: Option<(LocalGateRef<'a>, bool)>,
+    closing: Option<(LocalGateRef<'a>, LocalGateRef<'a>, bool)>,
 }
 
 impl<'a> Flight<'a> {
@@ -60,8 +60,13 @@ impl<'a> Flight<'a> {
         }
     }
 
-    pub fn closing(mut self, ready: LocalGateRef<'a>, shutdown: bool) -> Self {
-        self.closing = Some((ready, shutdown));
+    pub fn closing(
+        mut self,
+        ready: LocalGateRef<'a>,
+        quarantined: LocalGateRef<'a>,
+        shutdown: bool,
+    ) -> Self {
+        self.closing = Some((ready, quarantined, shutdown));
         self
     }
 }
@@ -196,7 +201,7 @@ impl<'d> session::Connected<'d> for Flight<'_> {
                 self.audit.faults.record(error::Error::Enqueue(error))
             }
         }
-        if let Some((ready, shutdown)) = self.closing {
+        if let Some((ready, _, shutdown)) = self.closing {
             ready.hit();
             if !shutdown {
                 context
@@ -237,9 +242,19 @@ impl<'d> Retirement<'d> for Flight<'_> {
     fn io_fail(
         &mut self,
         error: dope_core::Errno,
-        _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
+        ctx: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
         self.audit.faults.record(error::Error::Receive(error));
+        if let Some((_, quarantined, _)) = self.closing {
+            assert_eq!(quarantined.hits(), 1, "receive failure follows retirement");
+            assert!(matches!(
+                ctx.close_status(),
+                conn::CloseStatus::Closing(conn::ClosePhase::Claimed, _)
+            ));
+            ctx.request(close::Directive::cut_final(Reason::Local(
+                close::LocalOrigin::ResourceFailure,
+            )));
+        }
     }
 
     fn quarantine(
@@ -252,7 +267,8 @@ impl<'d> Retirement<'d> for Flight<'_> {
             region::Token<region::Identity<'d, 1>>,
         ),
     ) {
-        let expected = self.closing.map(|(_, shutdown)| {
+        let expected = self.closing.map(|(_, quarantined, shutdown)| {
+            quarantined.hit();
             Reason::Local(if shutdown {
                 close::LocalOrigin::RuntimeShutdown
             } else {
@@ -272,9 +288,22 @@ impl<'d> Retirement<'d> for Flight<'_> {
         egress::Cleared::Done
     }
 
-    fn disconnect(&mut self, context: turns::Retired<'_, 'd, Self::ConnState, KeyTag<0>, Self>) {
+    fn disconnect(
+        &mut self,
+        mut context: turns::Retired<'_, 'd, Self::ConnState, KeyTag<0>, Self>,
+    ) {
+        let connection = context.connection();
+        let reason = context.reason();
+        let had_transmit = context.transmit().is_some();
+        let transmit = context.take_transmit();
+        assert_eq!(transmit.is_some(), had_transmit);
+        assert!(context.transmit().is_none());
+        assert!(context.take_transmit().is_none());
+        let drained = context.into_drained();
+        assert_eq!(drained.connection(), connection);
+        assert_eq!(drained.reason(), reason);
         if self.reason.get().is_none() {
-            self.reason.set(Some(context.reason()));
+            self.reason.set(Some(reason));
         }
         self.closed.hit();
     }

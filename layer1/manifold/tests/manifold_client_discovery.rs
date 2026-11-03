@@ -44,6 +44,7 @@ use dope_test::{
     },
     reclaim::Reports,
 };
+use o3::depot::array;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -54,9 +55,11 @@ use crate::common::{
         Configure as _,
         connect::resolve::deferred_revision,
         finish::close::{
-            members::{Notice, Source, Until, Watch},
+            members::{Address, Demand, DemandState, Net, Notice, Source, Until, Watch},
             observe::{Events, Session},
         },
+        side::limited::Limited,
+        switch::terminal::queued,
     },
     recover,
 };
@@ -72,6 +75,255 @@ fn withdrawn_epoch_connects() {
 fn updated_deferred_epoch_connects() {
     let prior = TcpListener::bind("127.0.0.1:0").expect("prior endpoint");
     deferred_revision::<Replace>(Some(prior.local_addr().expect("prior address")));
+}
+
+/// An installed endpoint may relinquish its submitted epoch while another remains needed.
+#[test]
+fn withdrawn_demand_releases_single_slot() {
+    let first = TcpListener::bind("127.0.0.1:0").expect("first endpoint");
+    let second = TcpListener::bind("127.0.0.1:0").expect("second endpoint");
+    let a = first.local_addr().expect("first address");
+    let b = second.local_addr().expect("second address");
+    let chosen = Rc::new(Trace::new());
+    let demand = Rc::new(DemandState {
+        needed: Cell::new(true),
+        pending: Cell::new(Some(0)),
+        live: Cell::new(Some(0)),
+        withdrawn: Cell::new(false),
+    });
+    let plan = Plan::<KeyTag<0>, 1>::new(
+        1,
+        Spec::new(Duration::from_secs(2), Duration::from_secs(2)).expect("retry bounds"),
+    )
+    .expect("one connection");
+    let config = plan.configured().expect("watched connector resources");
+    let mut create = dope_core::driver::life::creation::Attempt::new();
+    let executor = Executor::new(&mut create, config)
+        .ok()
+        .expect("executor construction");
+    let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let mut finish = Completion::new();
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut runtime| {
+                let events = Rc::new(Cell::new(Events::default()));
+                let audit = Rc::new(Report::default());
+                let errors = Rc::new(Trace::new());
+                let setup = Setup::new(
+                    Session {
+                        audit: audit.clone(),
+                        codec: codec::Outbound,
+                        errors: errors.clone(),
+                        events: events.clone(),
+                        gate: Gate::new(),
+                    },
+                    dope_manifold::client::session::ingress::Plan::none(),
+                );
+                let set = Snapshot::from_vec(
+                    Revision::new(1),
+                    array::Vec::from([(0, a), (1, b)].map(|(id, addr)| {
+                        Endpoint::new(
+                            id,
+                            Address {
+                                addr,
+                                chosen: chosen.clone(),
+                            },
+                        )
+                    })),
+                );
+                let hash = runtime.hash_state(Domain::DEFAULT);
+                let installed = plan
+                    .bind(Local::new(Identity), hash)
+                    .watch::<_, _, _, Replace, _, Bundle<Net, Identity, Balanced>, 2, _, _>(
+                        setup,
+                        set,
+                        Demand(demand.clone()),
+                        &mut runtime,
+                        Scope::driver,
+                        |host, runtime| {
+                            let now = runtime.driver().driver_ref().clock().now();
+                            runtime
+                                .with_at_for(
+                                    &mut finish,
+                                    Host::new(host),
+                                    now.into(),
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        app.drive_for(
+                                            now.into(),
+                                            Duration::from_secs(2),
+                                            Until(|| {
+                                                if chosen
+                                                    .values()
+                                                    .expect("selected endpoints")
+                                                    .is_empty()
+                                                {
+                                                    return false;
+                                                }
+                                                demand.pending.set(Some(1));
+                                                demand.live.set(Some(1));
+                                                true
+                                            }),
+                                        )
+                                        .expect("transfer submitted demand")
+                                        .into_output();
+                                        app.drive_for(
+                                            now.into(),
+                                            Duration::from_secs(2),
+                                            Until(|| {
+                                                Events::snapshot(&events).peers.iter().any(|peer| {
+                                                    peer.into_std().expect("TCP address") == b
+                                                })
+                                            }),
+                                        )
+                                        .expect("replacement uses the released slot")
+                                        .into_output();
+                                        assert_eq!(
+                                            &*chosen.values().expect("selected endpoints"),
+                                            &[a, b]
+                                        );
+                                    },
+                                )
+                                .expect("watched application teardown");
+                        },
+                    );
+                assert!(installed.is_ok(), "install watched connector");
+                audit.checked((0, 0));
+                assert!(errors.values().expect("codec observations").is_empty());
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(result.is_ok(), "watched executor teardown");
+    });
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+}
+
+/// Native admission and queued retirement recheck live demand after its cached withdrawal.
+#[test]
+fn renewed_demand_preserves_submitted_and_waiting_epochs() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("endpoint");
+    let address = listener.local_addr().expect("endpoint address");
+    let chosen = Rc::new(Trace::new());
+    let demand = Rc::new(DemandState {
+        needed: Cell::new(true),
+        pending: Cell::new(Some(0)),
+        live: Cell::new(Some(0)),
+        withdrawn: Cell::new(false),
+    });
+    let plan = Plan::<KeyTag<0>, 1>::new(
+        1,
+        Spec::new(Duration::from_secs(2), Duration::from_secs(2)).expect("retry bounds"),
+    )
+    .expect("one connection");
+    let config = plan.configured().expect("watched connector resources");
+    let mut create = dope_core::driver::life::creation::Attempt::new();
+    let executor = Executor::new(&mut create, config)
+        .ok()
+        .expect("executor construction");
+    let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let mut finish = Completion::new();
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut runtime| {
+                let events = Rc::new(Cell::new(Events::default()));
+                let audit = Rc::new(Report::default());
+                let errors = Rc::new(Trace::new());
+                let opened = Gate::new();
+                let setup = Setup::new(
+                    Session {
+                        audit: audit.clone(),
+                        codec: codec::Outbound,
+                        errors: errors.clone(),
+                        events: events.clone(),
+                        gate: opened.clone(),
+                    },
+                    dope_manifold::client::session::ingress::Plan::none(),
+                );
+                let set = Snapshot::<_, 1>::from_one(
+                    Revision::new(1),
+                    Endpoint::new(
+                        0,
+                        Address {
+                            addr: address,
+                            chosen: chosen.clone(),
+                        },
+                    ),
+                );
+                let hash = runtime.hash_state(Domain::DEFAULT);
+                let installed = plan
+                    .bind(Local::new(Identity), hash)
+                    .watch::<_, _, _, Replace, _, Bundle<Net, Identity, Balanced>, 1, _, _>(
+                        setup,
+                        set,
+                        Demand(demand.clone()),
+                        &mut runtime,
+                        Scope::driver,
+                        |host, runtime| {
+                            let now = runtime.driver().driver_ref().clock().now();
+                            runtime
+                                .with_at_for(
+                                    &mut finish,
+                                    Host::new(Limited {
+                                        inner: queued::Host {
+                                            inner: host,
+                                            state: None,
+                                            renewal: Some(demand.clone()),
+                                            pending: None,
+                                        },
+                                    }),
+                                    now.into(),
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        app.drive_for(
+                                            now.into(),
+                                            Duration::from_secs(2),
+                                            Until(|| opened.hits() == 1),
+                                        )
+                                        .expect("connect retained endpoint")
+                                        .into_output();
+                                        assert_eq!(
+                                            &*chosen.values().expect("selected endpoints"),
+                                            &[address]
+                                        );
+                                        demand.pending.set(None);
+                                        app.drive(now.into(), Until(|| true))
+                                            .expect("waiting demand becomes ineligible")
+                                            .into_output();
+                                        for needed in [true, false] {
+                                            demand.withdrawn.set(false);
+                                            demand.needed.set(needed);
+                                            demand.live.set(None);
+                                            app.drive_for(
+                                                now.into(),
+                                                Duration::from_secs(2),
+                                                Until(|| {
+                                                    if !demand.withdrawn.get() {
+                                                        return false;
+                                                    }
+                                                    demand.needed.set(true);
+                                                    demand.live.set(Some(0));
+                                                    true
+                                                }),
+                                            )
+                                            .expect("renew demand before its queued retirement")
+                                            .into_output();
+                                            assert_eq!(opened.hits(), 1);
+                                            assert!(Events::snapshot(&events).closed.is_empty());
+                                        }
+                                    },
+                                )
+                                .expect("watched application teardown");
+                        },
+                    );
+                assert!(installed.is_ok(), "install watched connector");
+                audit.checked((0, 0));
+                assert!(errors.values().expect("codec observations").is_empty());
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(result.is_ok(), "watched executor teardown");
+    });
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
 }
 
 /// Replacement and withdrawal remove pending retries before the same slot is reused.

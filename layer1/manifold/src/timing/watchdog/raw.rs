@@ -82,6 +82,12 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Activate<'d, ID> for Watchdog<'d, I
             return;
         }
         let next = now.clamp_add(*this.period);
+        if next <= now {
+            // The route is no longer armed; the kernel timer remains armed
+            // until exact-root finalization even when protocol time cannot advance.
+            *this.next = None;
+            return;
+        }
         *deadline = next;
         this.route.as_ref().arm(next);
     }

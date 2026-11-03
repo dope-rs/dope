@@ -115,6 +115,10 @@ impl<'a, 'd, ID: Identity, N: session::Parser<'d, ID>> Retired<'a, 'd, N::ConnSt
 }
 
 impl<'a, 'd, C, ID: Identity, S> Retired<'a, 'd, C, ID, S> {
+    pub fn now(&self) -> clock::Moment<'d> {
+        self.turn.driver_ref().clock().now()
+    }
+
     pub const fn connection(&self) -> conn::Id<'d, ID> {
         self.transport.connection()
     }
@@ -125,6 +129,11 @@ impl<'a, 'd, C, ID: Identity, S> Retired<'a, 'd, C, ID, S> {
 
     pub const fn transmit(&self) -> Option<&conn::Transmit> {
         self.transport.retired.transmit()
+    }
+
+    /// Moves the terminal diagnostic while retaining the exact drained owner.
+    pub fn take_transmit(&mut self) -> Option<conn::Transmit> {
+        self.transport.retired.take_transmit()
     }
 
     pub fn state_token(&mut self) -> &mut region::Token<region::Identity<'d, 1>> {

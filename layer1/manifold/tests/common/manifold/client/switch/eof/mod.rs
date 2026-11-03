@@ -4,14 +4,14 @@ use dope_core::{
     driver::{
         self,
         route::KeyTag,
-        schedule::ready,
+        schedule::{self, clock, ready},
         settings,
         settings::{claim, errors},
     },
     io::socket,
 };
 use dope_manifold::{
-    app::env::Bundle,
+    app::{Park, env::Bundle},
     client::{
         app,
         app::{admit::Registered, connect::Full, failure::Observed, request},
@@ -35,7 +35,7 @@ use dope_net::{
     tcp::Tcp,
     wire::{self, domain},
 };
-use dope_test::harness::signals;
+use dope_test::harness::signals::{self, Progress as _};
 use o3::{
     base::{Call, cell::region},
     buffer::{self, hold, resident, storage::Shared},
@@ -63,6 +63,12 @@ pub struct Stages {
     pub(crate) closed: signals::Gate,
 }
 
+pub struct Deferred {
+    pub(crate) waiting: signals::Gate,
+    pub(crate) release: signals::Gate,
+    pub(crate) cancel: Option<close::Reason>,
+}
+
 pub struct State<'d> {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
 
@@ -70,6 +76,7 @@ pub struct State<'d> {
     pub(crate) target: Cell<Option<ready::Target<'d>>>,
     pub(crate) phase: Rc<Cell<u8>>,
     pub(crate) stages: Stages,
+    deferred: Option<Deferred>,
 }
 
 impl<'d> Session<'d> for State<'d> {
@@ -158,7 +165,9 @@ impl<'d> State<'d> {
             self.phase.set(1);
             self.stages.blocked.hit();
             if let Some(target) = self.target.get() {
-                target.wake();
+                if self.deferred.is_none() {
+                    target.wake();
+                }
                 return codec::Admission::RetryInput;
             }
             self.audit.faults.record(Switch(Error::Unregistered));
@@ -355,19 +364,56 @@ impl<'d> Retirement<'d> for State<'d> {
         egress::Cleared::Done
     }
 
-    fn disconnect(&mut self, _: turns::Retired<'_, 'd, Self::ConnState, KeyTag<0>, Self>) {
+    fn disconnect(&mut self, ctx: turns::Retired<'_, 'd, Self::ConnState, KeyTag<0>, Self>) {
+        let cancel = self.deferred.as_ref().and_then(|wait| wait.cancel);
+        let expected = if let Some(reason) = cancel {
+            if ctx.reason() != reason {
+                self.audit.faults.record(Switch(Error::Close(ctx.reason())));
+            }
+            1
+        } else {
+            4
+        };
         let actual = self.phase.get();
-        if actual != 4 {
-            self.audit.faults.record(Switch(Error::Phase {
-                actual,
-                expected: 4,
-            }));
+        if actual != expected {
+            self.audit
+                .faults
+                .record(Switch(Error::Phase { actual, expected }));
         }
         self.stages.closed.hit();
     }
 }
 
-impl<'d> Scheduling<'d> for State<'d> {}
+impl<'d> Scheduling<'d> for State<'d> {
+    fn park() -> Option<impl for<'v, 'w, 'x, 'y> Call<(&'v mut Self, &'w mut Park<'x, 'y, 'd>)>> {
+        Some(|(owner, _): (&mut Self, &mut Park<'_, '_, 'd>)| {
+            if owner.phase.get() == 1
+                && owner
+                    .deferred
+                    .as_ref()
+                    .is_some_and(|wait| wait.release.hits() != 0)
+                && let Some(target) = owner.target.get()
+            {
+                target.wake();
+            }
+        })
+    }
+
+    fn progress(
+        &self,
+        _: &region::Token<region::Identity<'d>>,
+        _: clock::Clock<'_, 'd>,
+    ) -> schedule::Progress<'d> {
+        if self.phase.get() == 1
+            && let Some(wait) = &self.deferred
+            && wait.release.hits() == 0
+            && wait.waiting.hits() == 0
+        {
+            wait.waiting.hit();
+        }
+        schedule::Progress::Quiescent
+    }
+}
 impl<'d> Target<'d, KeyTag<0>, 1> for State<'d> {}
 
 pub struct Eof {
@@ -375,6 +421,7 @@ pub struct Eof {
     pub(crate) decode: Decode,
     pub(crate) phase: Rc<Cell<u8>>,
     pub(crate) stages: Stages,
+    pub(crate) deferred: Option<Deferred>,
 }
 
 impl settings::Resource for Eof {
@@ -439,6 +486,7 @@ impl disabled::Application<(), KeyTag<0>, 1, Bundle<Tcp, wire::Identity, Balance
             target: Cell::new(None),
             phase: self.phase,
             stages: self.stages,
+            deferred: self.deferred,
         };
         Ok((
             session::Setup::new(state, ingress::Plan::none()),

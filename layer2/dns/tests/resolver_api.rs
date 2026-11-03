@@ -415,6 +415,35 @@ fn clock_failure_stops_refresh() {
 }
 
 #[test]
+fn query_deadline_failure_stops_refresh() {
+    use dope::runtime::{executor::session::Completion, topology::lending};
+
+    let servers = config::Servers::try_new([fixture::SERVER]).expect("DNS server");
+    let mut config = fixture::configure(servers, 1);
+    config.query.total_timeout = time::Duration::MAX;
+    let mut received = Vec::new();
+    let prepared = fixture::try_prepare::<2, 1, 4>(config, &mut received).expect("DNS resources");
+    let mut finish = Completion::new();
+    prepared.try_scoped(
+        |scope| {
+            scope.lend(|install, stage| {
+                lending::Installer::install(install, stage, fixture::QueryDeadline(&mut finish))
+                    .expect("DNS install");
+            });
+        },
+        Policy::new(
+            |report| fixture::reclaim(report).expect("DNS reclaim"),
+            |failure: Recovery<'_, '_>| -> Infallible {
+                panic!("DNS recovery: {:?}", failure.cause())
+            },
+        ),
+        |entered| {
+            assert!(entered.is_ok(), "DNS scope");
+        },
+    );
+}
+
+#[test]
 fn refresh_is_nominal() {
     use dope::manifold::service::health;
     use dope_dns::lookup::{Discovery, Reason, refresh};
