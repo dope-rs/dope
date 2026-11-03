@@ -1,4 +1,4 @@
-use std::{mem, num};
+use std::{mem, net, num};
 
 use crate::io::{socket, transfer};
 
@@ -15,6 +15,44 @@ pub enum Error {
         actual: u64,
         maximum: u32,
     },
+}
+
+/// Failure to fit one nonempty payload and its prefix in an ordinary UDP datagram.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtentError {
+    Overflow {
+        payload: num::NonZero<usize>,
+        prefix: usize,
+    },
+    TooLarge {
+        actual: num::NonZero<usize>,
+        maximum: num::NonZero<u16>,
+    },
+}
+
+/// Maximum ordinary UDP payload for the physical destination's IP family.
+pub const fn maximum(peer: net::SocketAddr) -> num::NonZero<u16> {
+    let bytes = match peer {
+        net::SocketAddr::V6(address) if address.ip().to_ipv4_mapped().is_none() => 65_527,
+        _ => 65_507,
+    };
+    num::NonZero::<u16>::MIN.saturating_add(bytes - 1)
+}
+
+/// Admits a complete wire extent, including any prefix, for the actual peer.
+pub fn try_extent(
+    peer: net::SocketAddr,
+    payload: num::NonZero<usize>,
+    prefix: usize,
+) -> Result<num::NonZero<u16>, ExtentError> {
+    let actual = payload
+        .checked_add(prefix)
+        .ok_or(ExtentError::Overflow { payload, prefix })?;
+    let maximum = maximum(peer);
+    if actual.get() > usize::from(maximum.get()) {
+        return Err(ExtentError::TooLarge { actual, maximum });
+    }
+    Ok(num::NonZero::<u16>::MIN.saturating_add(actual.get() as u16 - 1))
 }
 
 /// Slot length that guarantees one payload byte on every backend.

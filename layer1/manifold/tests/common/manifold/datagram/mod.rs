@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod completion;
 pub mod expected;
 pub mod group;
 mod idle;

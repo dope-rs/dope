@@ -89,7 +89,7 @@ where
     {
         let (key, chunk, work) = {
             let mut recv = P::storage(policy.as_mut()).recv();
-            let Some((key, taken)) = recv.take_tail(item) else {
+            let Some((key, taken)) = recv.take_tail(item)? else {
                 return ControlFlow::Continue(false);
             };
             let replay = if first {

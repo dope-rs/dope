@@ -124,7 +124,7 @@ fn tail_precedes_route_admission() {
 }
 
 #[test]
-fn drains_reused_blocks() {
+fn drains_reused_blocks_after_truncation() {
     let base = env::temp_dir();
     let mut finish = Completion::new();
     let mut create = Attempt::new();
@@ -133,6 +133,7 @@ fn drains_reused_blocks() {
     })
     .expect("temporary path");
     let path = dir.path().join("journal");
+    fs::write(&path, b"keep\nrotated\n").expect("existing complete records");
     let pipepath = dir.path().join("fifo");
     let pipename = Box::try_copy(pipepath.as_path()).expect("fifo path");
     // SAFETY: pipename retains this terminated fixture path through creation.
@@ -190,8 +191,11 @@ fn drains_reused_blocks() {
             }
             assert!(matches!(storage.failure(), Some(appender::Failure::Cancelled)));
             let writer =
-                appender::Appender::<KeyTag<37>, 2, 64>::open(&path, None, &mut storage, &mut session.driver());
+                appender::Appender::<KeyTag<37>, 2, 64>::open(&path, Some(b'\n'), &mut storage, &mut session.driver());
             let mut writer = writer.expect("append file");
+            fs::OpenOptions::new().write(true).open(&path)
+                .expect("external truncation descriptor")
+                .set_len(5).expect("truncate after opening");
             let ((), activity) = Tracker::measure(|| {
                 Tracker::fail_after(0, || {
                     let mut empty = pin::Pin::new(&mut writer).record(0).expect("empty record");
@@ -247,7 +251,8 @@ fn drains_reused_blocks() {
 
     let bytes = fs::read(&path);
     let bytes = (bytes).expect("written file");
-    let mut expected = [b'a'; 64].to_vec();
+    let mut expected = b"keep\n".to_vec();
+    expected.extend_from_slice(&[b'a'; 64]);
     expected.extend_from_slice(&[b'b'; 64]);
     assert_eq!(bytes, expected);
 }

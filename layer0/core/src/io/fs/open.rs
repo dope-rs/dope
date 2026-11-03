@@ -81,6 +81,12 @@ impl Options {
         self
     }
 
+    /// Makes current-position writes append at the file's current end.
+    pub const fn append(mut self) -> Self {
+        self.flags = self.flags.union(Open::APPEND);
+        self
+    }
+
     pub const fn truncate(mut self) -> Self {
         self.flags = self.flags.union(Open::TRUNCATE);
         self

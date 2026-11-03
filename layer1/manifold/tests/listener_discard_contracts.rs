@@ -193,6 +193,11 @@ fn discard_requires_enabled() -> Result<(), Error> {
             include_str!("common/compile_datagram_substitute.rs"),
             &["lifetime may not live long enough"],
         ),
+        (include_str!("common/compile_datagram_range.rs"), &[]),
+        (
+            include_str!("common/compile_datagram_range_substitute.rs"),
+            &["lifetime may not live long enough"],
+        ),
     ] {
         let output = suite.try_compile(source)?;
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");

@@ -278,7 +278,15 @@ impl<'d> Receive<'d> {
         Some(Rearm::from_needed(self.is_armable(closing)))
     }
 
-    pub(super) fn observe(&mut self, flow: Flow, closing: bool) -> Option<Observation> {
+    pub(super) fn observe(
+        &mut self,
+        target: route::Erased<'d, kind::Recv>,
+        flow: Flow,
+        closing: bool,
+    ) -> Option<Observation> {
+        if !self.1.as_ref().is_some_and(|flight| flight.matches(target)) {
+            return None;
+        }
         match flow {
             Flow::More => {
                 return match self.0 {

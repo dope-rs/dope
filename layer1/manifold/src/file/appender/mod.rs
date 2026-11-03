@@ -68,7 +68,6 @@ pub enum Failure {
         observed: transfer::Len,
         remaining: transfer::Len,
     },
-    Extent(fs::Extent),
     Cancelled,
 }
 #[repr(transparent)]
@@ -82,7 +81,6 @@ where
 pub struct Appender<'p, 'd, ID: Identity, const N: usize, const B: usize> {
     file: lease::Owner<'d, ID, file::Locked>,
     pub(super) flights: flight::Slots<'d, <ID as route::Materialize<kind::Write>>::With>,
-    offset: fs::Offset,
     pub(super) queue: Queue<'p, 'd, N, B>,
 }
 impl<'p, 'd, ID: Identity, const N: usize, const B: usize> executor::raw::Finishes<'d, Self>
@@ -103,6 +101,8 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
     /// Opens an exclusively locked regular file for appending.
     ///
     /// A required tail admits empty files or a matching last byte before reserving a route.
+    /// External truncation cannot leave a stale write offset, but copy-and-truncate
+    /// rotation can still lose concurrent writes or split a partially written record.
     pub fn open(
         path: impl AsRef<path::Path>,
         required_tail: Option<u8>,
@@ -121,6 +121,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         };
         let file = open::Options::new(access)
             .creation(open::Creation::Create)
+            .append()
             .nofollow()
             .nonblock()
             .open(&path)
@@ -166,7 +167,6 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         Ok(Self {
             flights,
             file,
-            offset,
             queue: Queue {
                 storage,
                 current: None,
@@ -266,14 +266,6 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
             }
         }
     }
-    pub(super) fn complete(&mut self, pending: Pending<'p, N, B>) {
-        let offset = self.offset.checked_add(pending.length());
-        pending.release();
-        match offset {
-            Ok(offset) => self.offset = offset,
-            Err(extent) => self.fail(Failure::Extent(extent)),
-        }
-    }
     pub(super) fn fail_pending(&mut self, pending: Pending<'p, N, B>, error: Failure) {
         pending.release();
         self.fail(error);
@@ -318,26 +310,18 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         'd: 'scope,
         'scope: 'borrow,
     {
-        let written = pending.written();
-        let offset = match self.offset.checked_add(written) {
-            Ok(offset) => offset,
-            Err(extent) => {
-                self.fail_pending(pending, Failure::Extent(extent));
-                return;
-            }
-        };
         let target = driver
             .driver()
             .driver_ref()
             .targets::<<ID as route::Materialize<kind::Write>>::With>()
             .bind(indices::SlotIndex::ZERO, route::Epoch::INITIAL);
         let bytes = raw::bytes(&pending);
-        let op = fs::Submission::<<ID as route::Materialize<kind::Write>>::With>::write_prefix(
-            fd::AsFd::as_fd(&*self.file),
-            bytes,
-            offset,
-            target,
-        );
+        let op =
+            fs::Submission::<<ID as route::Materialize<kind::Write>>::With>::write_current_prefix(
+                fd::AsFd::as_fd(&*self.file),
+                bytes,
+                target,
+            );
         // SAFETY: pending owns the exact buffer lease, and self retains its file
         // and flight slots. install keeps pending through completion or native
         // quiescence of this exact installed appender.
@@ -402,7 +386,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> event::Drive<'d>
                     return ops::ControlFlow::Continue(());
                 }
                 if pending.is_complete() {
-                    this.complete(pending);
+                    pending.release();
                 } else {
                     this.submit(pending, &mut driver);
                 }

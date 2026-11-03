@@ -1,7 +1,10 @@
 use core::marker::PhantomData;
 use std::mem;
 
-use o3::mem::{Lease, Return};
+use o3::{
+    depot::arena::slab::Vacancy,
+    mem::{Lease, Return},
+};
 
 use crate::{
     driver,
@@ -36,9 +39,9 @@ impl<'d> Context<'d> {
         self,
         key: route::OutboundKey,
         local: indices::SlotIndex,
-    ) -> Option<handles::SocketSlot<'d>> {
+    ) -> Result<handles::SocketSlot<'d>, Vacancy> {
         let id = domain::Outbound::from(descriptors(self.0)).acquire(key, local)?;
-        Some(handles::SocketSlot::from_claim(id, self.0))
+        Ok(handles::SocketSlot::from_claim(id, self.0))
     }
 
     pub(crate) fn creation(
@@ -129,16 +132,17 @@ impl<'d, B: route::Tag> Reserved<'d, B> {
 
     /// Binds one local pool target to its physical descriptor slot.
     ///
-    /// A target from another route cannot acquire this reservation:
-    ///
+    /// A target from another route cannot acquire this reservation.
+    /// Unavailable slots report `Full`; permanently consumed descriptor generations
+    /// report `IdentityExhausted`.
     pub fn bind(
         &self,
         target: route::Target<'d, B>,
-    ) -> Option<route::Bound<'d, B, handles::SocketSlot<'d>>> {
+    ) -> Result<route::Bound<'d, B, handles::SocketSlot<'d>>, Vacancy> {
         let release = self.inner.sink();
         let key = route::OutboundKey::for_tag::<B>();
         let slot = release.driver.outbound().acquire(key, target.slot())?;
-        Some(target.bind(slot))
+        Ok(target.bind(slot))
     }
 }
 

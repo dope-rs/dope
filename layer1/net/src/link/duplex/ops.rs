@@ -62,10 +62,11 @@ impl<'d, P: reclaim::Policy> State<'d, P> {
     /// is consumed before delivery can defer or fail.
     pub(in crate::link) fn observe_recv(
         &mut self,
+        target: route::Erased<'d, kind::Recv>,
         flow: Flow,
         close: bool,
     ) -> Option<receive::Observation> {
-        self.recv.observe(flow, close)
+        self.recv.observe(target, flow, close)
     }
 
     pub(in crate::link) fn cancel_recv(&mut self) -> Cancel<'_, 'd, kind::Recv> {

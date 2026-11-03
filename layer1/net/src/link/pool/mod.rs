@@ -331,7 +331,13 @@ where
         key: Key<'d, ID>,
         bytes: egress::NonEmpty<R>,
     ) -> Result<(), send::Rejected<R>> {
-        if self.prepared.slab.view().get(key.parts()).is_none() {
+        if self
+            .prepared
+            .slab
+            .view()
+            .get(key.parts())
+            .is_none_or(|slot| slot.send_status().is_closed())
+        {
             return Err(send::Rejected::ConnectionUnavailable(bytes));
         }
         let Some(wake) = self.prepared.pending.handle(key) else {

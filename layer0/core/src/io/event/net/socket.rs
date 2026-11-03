@@ -84,7 +84,7 @@ impl<'d> Completion<'d> {
         creating: handles::Creation<'d, State>,
     ) -> Result<Finished<'d>, Mismatch<'d, State>> {
         let (target, outcome) = self.0.into_parts();
-        if !target.matches(creating.target()) {
+        if !target.matches_flight(creating.target()) {
             let done = Self(Entry::new(target, outcome));
             return Err(Mismatch::new(done, creating));
         }

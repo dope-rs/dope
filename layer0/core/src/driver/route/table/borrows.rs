@@ -29,7 +29,10 @@ impl<'a, T, Tag: route::Tag> View<'a, T, Tag> {
         self.inner.len()
     }
 
-    /// Returns the exact number of vacant slots in this table snapshot.
+    /// Returns capacity minus the number of initialized values.
+    ///
+    /// Forgotten reservations are included, so this is an upper bound on
+    /// reservable slots. Reservation still reports `Full` or `IdentityExhausted`.
     pub fn available(&self) -> capacity::Count {
         let total = self.inner.capacity();
         let occupied = self.inner.len();

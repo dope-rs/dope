@@ -75,7 +75,7 @@ where
         let close = slot.is_recv_done();
         let (arm, origin) = match timing {
             arrival::Timing::Fresh(more) => {
-                let seen = match slot.engine.operations.observe_recv(more, close) {
+                let seen = match slot.engine.operations.observe_recv(target, more, close) {
                     Some(seen) => seen,
                     None => return Err(event::Reservation::Drop),
                 };

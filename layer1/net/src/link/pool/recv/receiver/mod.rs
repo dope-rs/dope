@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use dope_core::driver::route::Identity;
 use o3::mem::quota;
 
@@ -204,19 +206,28 @@ where
         Deferral::Ready
     }
 
+    /// Stops at an application-held tail without removing its cursor.
     pub fn take_tail<'b>(
         &'b mut self,
         item: &delivery::Resumed<'d, ID>,
-    ) -> Option<(pool::Key<'d, ID>, tail::Taken<'b, 'w, 'd, W>)>
+    ) -> ControlFlow<(), Option<(pool::Key<'d, ID>, tail::Taken<'b, 'w, 'd, W>)>>
     where
         M::Kind: input::Replay<W>,
         'd: 'b,
         'w: 'b,
     {
         let key = item.key();
-        let slot = Slot::new(&mut self.pool.prepared.slab, key.parts())?;
-        let (_, chunks) = slot.queue::<W, M::Kind>().split();
-        Some((key, tail::Taken::new(chunks.front_entry()?.remove())))
+        let Some(slot) = Slot::new(&mut self.pool.prepared.slab, key.parts()) else {
+            return ControlFlow::Continue(None);
+        };
+        let (entry, chunks) = slot.queue::<W, M::Kind>().split();
+        let Some(front) = chunks.front_entry() else {
+            return ControlFlow::Continue(None);
+        };
+        if entry.get().is_app_held() {
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(Some((key, tail::Taken::new(front.remove()))))
     }
 
     pub fn finish_tail(&mut self, item: &delivery::Resumed<'d, ID>)

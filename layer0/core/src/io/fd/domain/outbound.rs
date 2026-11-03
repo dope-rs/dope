@@ -1,5 +1,7 @@
 use std::{cell, mem};
 
+use o3::depot::arena::slab::Vacancy;
+
 use crate::{
     driver,
     driver::{
@@ -317,22 +319,27 @@ impl<'a> Outbound<'a> {
         &self,
         owner: route::OutboundKey,
         local: indices::SlotIndex,
-    ) -> Option<identity::Identity<'a, handles::OutboundSlot>> {
+    ) -> Result<identity::Identity<'a, handles::OutboundSlot>, Vacancy> {
         let table = &self.0.outbound;
-        let lease = table.routes[owner.raw() as usize].get()?;
+        let lease = table.routes[owner.raw() as usize]
+            .get()
+            .ok_or(Vacancy::Full)?;
         if lease.state == State::Retired {
-            return None;
+            return Err(Vacancy::Full);
         }
-        let index = table.get(lease, local)?;
+        let index = table.get(lease, local).ok_or(Vacancy::Full)?;
         let state = state::get_index(self.0, index);
-        if state.is_exhausted() || !state.get().is_state(states::Phase::MAPPED, owner) {
-            return None;
+        if state.is_exhausted() {
+            return Err(Vacancy::IdentityExhausted);
+        }
+        if !state.get().is_state(states::Phase::MAPPED, owner) {
+            return Err(Vacancy::Full);
         }
         let version = self.0.resident.claim(
             index,
             states::SlotState::route(states::Phase::UNOPENED_ONE, owner),
         );
-        Some(identity::Identity::outbound(
+        Ok(identity::Identity::outbound(
             handles::OutboundSlot::new(index.0, owner),
             version,
         ))

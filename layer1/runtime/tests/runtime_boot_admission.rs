@@ -16,6 +16,7 @@ use dope_runtime::{
     topology::{InstallError, Worker},
 };
 use dope_test::reclaim::Reports;
+use o3::depot::arena::slab::Vacancy;
 use socket::Prepared as _;
 
 pub mod common;
@@ -79,7 +80,7 @@ fn native_rejects_boot() {
                     .run(scope);
                 assert!(rejected, "startup must reject the existing native flight");
                 assert!(
-                    slots.bind(target).is_none(),
+                    matches!(slots.bind(target), Err(Vacancy::Full)),
                     "original owner keeps its slot"
                 );
                 drop(creation);

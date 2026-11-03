@@ -152,7 +152,7 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
 
     pub(in crate::link) fn discard<E>(&mut self, end: &mut terminal::State<E>) {
         self.operations.lifecycle.discard();
-        if end.has_eof() && self.operations.recv.resume_app(true).is_some() {
+        if end.is_pending() && self.operations.recv.resume_app(true).is_some() {
             self.ready_handle().activate();
         }
         match end.finish_send() {

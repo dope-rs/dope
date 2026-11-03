@@ -8,6 +8,21 @@ unsafe impl<T: buffer::raw::Source> buffer::raw::Source for packet::Packet<'_, '
 // SAFETY: AsMut forwards the same mutable descriptor and performs no writes.
 unsafe impl<T: buffer::raw::Mutable> buffer::raw::Mutable for packet::Packet<'_, '_, T> {}
 
+// SAFETY: restriction changes only the original view; the packet retains its
+// driver lifetime, dispatch turn, and thread-bound owner through empty selections.
+unsafe impl<'turn, 'd, T: provided::Mutable<'d> + buffer::raw::Store> buffer::raw::Store
+    for packet::Packet<'turn, 'd, T>
+{
+    fn empty() -> Option<Self> {
+        None
+    }
+
+    fn restrict(slice: buffer::raw::Slice<'_, '_, Self>) {
+        // SAFETY: view is this packet's exact current extent and original owner.
+        T::project(unsafe { slice.map(|packet| &mut packet.view) });
+    }
+}
+
 // SAFETY: shared access forwards the unchanged source retained by this prefix.
 unsafe impl<T: buffer::raw::Source> buffer::raw::Source for packet::Head<'_, '_, '_, T> {}
 

@@ -9,6 +9,7 @@ use dope_core::{
     io::fd::outbound::{Error, Reserved},
 };
 use dope_test::scope;
+use o3::depot::arena::slab::Vacancy;
 
 use crate::common::driver::{Scoped as _, support::Targets as _};
 
@@ -38,7 +39,7 @@ fn assert_capacity<'d, ID: Identity>(
     for index in capacity.into_iter() {
         let owner = driver.tuned_target::<ID>(index);
         let slot = (held.bind(owner)).expect("reserved outbound slot");
-        assert!(held.bind(owner).is_none());
+        assert!(matches!(held.bind(owner), Err(Vacancy::Full)));
         bound.push(slot);
     }
     assert_eq!(bound.len(), capacity.count().get());
@@ -103,12 +104,12 @@ fn issues_owned_slots() {
             let driver = access.driver_ref();
             assert!(
                 held.bind(driver.tuned_target::<KeyTag<ROUTE>>(SlotIndex::ZERO))
-                    .is_some()
+                    .is_ok()
             );
-            assert!(
-                held.bind(driver.tuned_target::<KeyTag<ROUTE>>(SlotIndex::from(1_u16)))
-                    .is_none()
-            );
+            assert!(matches!(
+                held.bind(driver.tuned_target::<KeyTag<ROUTE>>(SlotIndex::from(1_u16))),
+                Err(Vacancy::Full)
+            ));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -173,7 +174,7 @@ fn waits_for_last_fd() {
                                 .expect("first reservation");
                             held.bind(owner)
                         };
-                        assert!(fd.is_some(), "bound descriptor");
+                        assert!(fd.is_ok(), "bound descriptor");
 
                         assert!(
                             matches!(
@@ -224,26 +225,23 @@ fn releases_unsubmitted() {
                         .driver_ref()
                         .tuned_target::<KeyTag<ROUTE>>(SlotIndex::from(local));
                     let slot = held.bind(owner);
-                    assert!(slot.is_some(), "bind outbound slot");
-                    assert!(held.bind(owner).is_none());
+                    assert!(slot.is_ok(), "bind outbound slot");
+                    assert!(matches!(held.bind(owner), Err(Vacancy::Full)));
                 }
                 let last = held.bind(
                     access
                         .driver_ref()
                         .tuned_target::<KeyTag<ROUTE>>(SlotIndex::from(299_u16)),
                 );
-                assert!(
-                    last.is_some(),
-                    "unsubmitted slot must release synchronously"
-                );
-                assert!(
+                assert!(last.is_ok(), "unsubmitted slot must release synchronously");
+                assert!(matches!(
                     held.bind(
                         access
                             .driver_ref()
                             .tuned_target::<KeyTag<ROUTE>>(SlotIndex::from(299_u16))
-                    )
-                    .is_none()
-                );
+                    ),
+                    Err(Vacancy::Full)
+                ));
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             finish,
@@ -270,15 +268,15 @@ fn enforces_slot_authority() {
                     .tuned_target::<KeyTag<ROUTE>>(SlotIndex::ZERO);
                 {
                     let first = held.bind(owner);
-                    assert!(first.is_some(), "first slot authority");
-                    assert!(held.bind(owner).is_none());
+                    assert!(first.is_ok(), "first slot authority");
+                    assert!(matches!(held.bind(owner), Err(Vacancy::Full)));
                 }
                 let second = held.bind(owner);
                 assert!(
-                    second.is_some(),
+                    second.is_ok(),
                     "slot must be reusable after authority release"
                 );
-                assert!(held.bind(owner).is_none());
+                assert!(matches!(held.bind(owner), Err(Vacancy::Full)));
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             finish,

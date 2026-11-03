@@ -12,6 +12,7 @@ const ALU64_MOV_X: u8 = 0xbf;
 const ALU64_MOV_K: u8 = 0xb7;
 const JMP_JGT_X: u8 = 0x2d;
 const JMP_JGE_K: u8 = 0x35;
+const JMP_JEQ_K: u8 = 0x15;
 const JMP_JNE_K: u8 = 0x55;
 const JMP_JSET_K: u8 = 0x45;
 const JMP_JA: u8 = 0x05;
@@ -33,6 +34,10 @@ const SELECT: usize = 15;
 const DROP: usize = 26;
 /// Slot of the map handle the kernel program load replaces with the live route map.
 const MAP_HANDLE: usize = 17;
+/// Additional instructions before the shared selector body in a prefixed plan.
+const PREFIX_LEN: usize = 14;
+const PREFIX_BODY: usize = PREFIX_LEN + 2;
+const PREFIX_DROP: usize = PREFIX_LEN + DROP;
 
 /// The displacement of the instruction at slot `at` to the label at slot `target`.
 const fn link(at: usize, target: usize) -> i16 {
@@ -49,23 +54,65 @@ pub(super) struct Instruction {
 }
 
 pub(super) struct Program<'a> {
-    instructions: [Instruction; Program::LEN],
+    instructions: Instructions,
     map: marker::PhantomData<&'a Map>,
+}
+
+enum Instructions {
+    Direct([Instruction; Program::LEN]),
+    Prefixed([Instruction; Program::LEN + PREFIX_LEN]),
 }
 
 impl<'a> Program<'a> {
     const LEN: usize = 28;
 
     pub(super) fn compile(map: &'a Map, plan: Plan) -> Self {
+        let body = shape(plan.selector(), plan.count(), map);
+        let instructions = match plan.prefix() {
+            Some(prefix) => Instructions::Prefixed(prefixed(prefix, body)),
+            None => Instructions::Direct(body),
+        };
         Self {
-            instructions: shape(plan.selector(), plan.count(), map),
+            instructions,
             map: marker::PhantomData,
         }
     }
 
     pub(super) const fn instructions(&self) -> &[Instruction] {
-        &self.instructions
+        match &self.instructions {
+            Instructions::Direct(instructions) => instructions,
+            Instructions::Prefixed(instructions) => instructions,
+        }
     }
+}
+
+/// Selects the payload base before entering the unchanged selector body.
+/// All of that body's relative branches retain their displacement when moved together.
+fn prefixed(
+    prefix: selector::PrefixPlan,
+    body: [Instruction; Program::LEN],
+) -> [Instruction; Program::LEN + PREFIX_LEN] {
+    let mut program = [EMPTY; Program::LEN + PREFIX_LEN];
+    program[..2].copy_from_slice(&body[..2]);
+    program[PREFIX_BODY..].copy_from_slice(&body[2..]);
+    let [first, second] = prefix.tags();
+    let extent = i32::from(prefix.extent().get());
+    let raw_mask = i32::from(prefix.raw_mask().get().get());
+    program[2] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+    program[3] = instruction(ALU64_ADD_K, 4, 0, 0, UDP_HEADER_LEN + 1);
+    program[4] = instruction(JMP_JGT_X, 4, 3, link(4, PREFIX_DROP), 0);
+    program[5] = instruction(LDX_B_MEM, 7, 2, UDP_HEADER_LEN as i16, 0);
+    program[6] = instruction(JMP_JSET_K, 7, 0, link(6, PREFIX_BODY), raw_mask);
+    program[7] = instruction(JMP_JEQ_K, 7, 0, link(7, 9), i32::from(first));
+    program[8] = instruction(JMP_JNE_K, 7, 0, link(8, PREFIX_DROP), i32::from(second));
+    program[9] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+    program[10] = instruction(ALU64_ADD_K, 4, 0, 0, UDP_HEADER_LEN + extent + 1);
+    program[11] = instruction(JMP_JGT_X, 4, 3, link(11, PREFIX_DROP), 0);
+    program[12] = instruction(ALU64_ADD_K, 2, 0, 0, extent);
+    program[13] = instruction(LDX_B_MEM, 7, 2, UDP_HEADER_LEN as i16, 0);
+    program[14] = instruction(JMP_JSET_K, 7, 0, link(14, PREFIX_BODY), raw_mask);
+    program[15] = instruction(JMP_JA, 0, 0, link(15, PREFIX_DROP), 0);
+    program
 }
 
 /// The exact 28-slot reuseport selection program one `plan` compiles to.
@@ -148,6 +195,6 @@ const _: () = {
     assert!(SET < SELECT && SELECT < DROP);
     assert!(DROP + 2 == Program::LEN);
     assert!(mem::size_of::<Instruction>() == 8);
-    assert!(mem::size_of::<Program<'static>>() == 28 * mem::size_of::<Instruction>());
+    assert!(PREFIX_BODY + Program::LEN - 2 == Program::LEN + PREFIX_LEN);
     assert!(mem::align_of::<Program<'static>>() == mem::align_of::<Instruction>());
 };

@@ -15,12 +15,12 @@ proc-macro = true
 test = false
 
 [dependencies]
-proc-macro2 = "1"
-syn = { version = "3", features = ["full", "visit-mut"] }
-quote = "1"
+proc-macro2.workspace = true
+syn.workspace = true
+quote.workspace = true
 
 [dev-dependencies]
 dope-test.workspace = true
-engine = { package = "dope", path = "../dope" }
-fibers = { package = "dope-fiber", path = "../../layer2/fiber" }
+engine.workspace = true
+fibers.workspace = true
 pin-project.workspace = true

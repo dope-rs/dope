@@ -2,10 +2,15 @@ pub mod common;
 
 use std::{cell::Cell, convert::Infallible, net, rc::Rc, time::Duration};
 
-use dope_core::driver::{
-    life::{creation::Attempt, recovery},
-    route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
+use dope_core::{
+    driver::{
+        life::{creation::Attempt, recovery},
+        retained::flight,
+        route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
+    },
+    io::socket::install::Install,
 };
+use dope_manifold::app::Host;
 use dope_manifold::network::{
     datagram,
     datagram::{
@@ -42,6 +47,7 @@ fn settles_exact_owner() {
     let settled = Gate::new();
     let received = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
+    let rejected = Cell::new(None);
     let runtime = Runtime::quic::<64, 2048>();
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
@@ -95,11 +101,34 @@ fn settles_exact_owner() {
                         outcome.expect("IPv4 sender bind failed")
                     }
                 };
+                let (socket, flights) = {
+                    let mut driver = session.driver();
+                    let source = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0))
+                        .expect("shutdown socket");
+                    let (socket, _) = Install::adopt_udp(driver.reborrow(), source.into())
+                        .expect("shutdown descriptor");
+                    let flights = driver
+                        .storage
+                        .reborrow()
+                        .try_flights(flight::Need::<KeyTag<0>>::new(
+                            flight::Capacity::fixed::<1>(),
+                        ))
+                        .expect("shutdown flights")
+                        .slots();
+                    (socket, flights)
+                };
 
                 ({
                     let outcome = session.with_quiesce(
                         &mut finish,
-                        App { endpoint },
+                        Host::new(completion::Observed {
+                            endpoint,
+                            socket,
+                            flights,
+                            shutdown: None,
+                            completed: None,
+                            rejected: &rejected,
+                        }),
                         Duration::from_secs(2),
                         |mut app| {
                             assert_eq!(
@@ -126,6 +155,11 @@ fn settles_exact_owner() {
             .expect("native retirement");
         result.ok().expect("native retirement")
     });
+    assert_eq!(
+        rejected.get(),
+        Some(true),
+        "unrelated native send was accepted"
+    );
     assert!(
         reports
             .matches_one(&Receive::<KeyTag<0>>(Parts::new(

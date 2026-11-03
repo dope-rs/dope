@@ -1,8 +1,8 @@
-use std::{marker, mem, num};
+use std::{marker, mem};
 
 use dope_core::driver::{
     result,
-    route::{Identity, KeyTag, table},
+    route::{Epoch, Identity, KeyTag, table},
 };
 use o3::{
     alloc,
@@ -43,7 +43,7 @@ pub(in crate::network::datagram) enum Commit<T> {
     Deferred(result::SubmitError),
 }
 
-struct Series(Option<num::NonZero<u64>>);
+struct Series(Option<Epoch>);
 
 impl<'d, ID: Identity, B, M: send::Mode> Pending<'d, ID, B, M> {
     pub(in crate::network::datagram) fn try_new(
@@ -51,7 +51,7 @@ impl<'d, ID: Identity, B, M: send::Mode> Pending<'d, ID, B, M> {
     ) -> Result<Self, alloc::Error> {
         Ok(Self {
             queue: ring::Fifo::try_new(capacity.count())?,
-            series: Series(Some(num::NonZero::<u64>::MIN)),
+            series: Series(Some(Epoch::INITIAL)),
             route: marker::PhantomData,
         })
     }
@@ -93,6 +93,19 @@ impl<'d, ID: Identity, B, M: send::Mode> Pending<'d, ID, B, M> {
     pub(in crate::network::datagram) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
+
+    pub(in crate::network::datagram) fn advance_to(&mut self, floor: Option<Epoch>) {
+        self.series.0 = self
+            .series
+            .0
+            .zip(floor)
+            .map(|(current, floor)| current.max(floor));
+    }
+
+    pub(in crate::network::datagram) fn next_generation(&self) -> Option<Epoch> {
+        // Queued entries already own identities even before their first submission.
+        self.series.after(self.queue.count().raw())
+    }
 }
 
 impl<'d, ID: Identity, B, M: send::Mode> Back<'_, 'd, ID, B, M> {
@@ -133,18 +146,19 @@ impl<'d, ID: Identity, B, M: send::Mode> Front<'_, 'd, ID, B, M> {
 
 impl Series {
     fn front<'d, ID: Identity>(&self) -> Option<owners::Queued<'d, ID>> {
-        Some(owners::Queued::new(self.0?))
+        Some(owners::Queued::new(self.0?.get()))
     }
 
     fn back<'d, ID: Identity>(&self, queued: capacity::Count) -> Option<owners::Queued<'d, ID>> {
-        let serial = self.0?.checked_add(u64::from(queued.raw()))?;
-        Some(owners::Queued::new(serial))
+        Some(owners::Queued::new(self.after(queued.raw())?.get()))
     }
 
     fn advance_by(&mut self, count: u32) {
-        self.0 = self
-            .0
-            .and_then(|serial| serial.checked_add(u64::from(count)));
+        self.0 = self.after(count);
+    }
+
+    fn after(&self, count: u32) -> Option<Epoch> {
+        self.0?.checked_add(u64::from(count))
     }
 }
 

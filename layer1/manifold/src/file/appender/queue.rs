@@ -21,7 +21,6 @@ pub(in crate::file) enum InFlight<'p, 'd, const N: usize, const B: usize> {
 }
 pub(in crate::file) struct Pending<'p, const N: usize, const B: usize> {
     block: inline::Lease<'p, Block<B>, N>,
-    length: transfer::Len,
     remaining: transfer::Len,
 }
 pub(in crate::file) struct Queue<'p, 'd, const N: usize, const B: usize> {
@@ -100,12 +99,8 @@ impl<'p, 'd, const N: usize, const B: usize> InFlight<'p, 'd, N, B> {
 }
 impl<'p, const N: usize, const B: usize> Pending<'p, N, B> {
     pub(super) fn new(block: inline::Lease<'p, Block<B>, N>) -> Self {
-        let length = transfer::Len::prefix(block.get().bytes.len(), transfer::Len::MAX);
-        Self {
-            block,
-            length,
-            remaining: length,
-        }
+        let remaining = transfer::Len::prefix(block.get().bytes.len(), transfer::Len::MAX);
+        Self { block, remaining }
     }
     pub(super) fn block(&self) -> &Block<B> {
         self.block.get()
@@ -113,11 +108,8 @@ impl<'p, const N: usize, const B: usize> Pending<'p, N, B> {
     pub(super) fn release(self) {
         release(self.block);
     }
-    pub(in crate::file) const fn length(&self) -> transfer::Len {
-        self.length
-    }
-    pub(in crate::file) const fn written(&self) -> transfer::Len {
-        self.length.abs_diff(self.remaining)
+    pub(super) const fn remaining(&self) -> transfer::Len {
+        self.remaining
     }
     pub(in crate::file) const fn is_complete(&self) -> bool {
         self.remaining.is_zero()

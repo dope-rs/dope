@@ -190,17 +190,75 @@ impl Segments {
 pub struct GsoBatch<P> {
     payload: Value<P>,
     size: num::NonZero<u16>,
+    packets: Segments,
 }
 
 /// A validated payload paired with the capability for its exact segment shape.
 pub struct GsoPayload<P> {
     payload: Value<P>,
     segment: GsoSegment,
+    packets: Segments,
+}
+
+/// Exact admission failure before an owner acquires a native GSO proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GsoError {
+    Unavailable,
+    Shape(Shape),
+}
+
+impl<P: buffer::raw::Source> GsoPayload<P> {
+    pub fn try_new(payload: P, size: num::NonZero<u16>) -> Result<Self, Rejected<P, GsoError>> {
+        let (Some(limits), Some(gso)) = (GSO_LIMITS, Gso::acquire()) else {
+            return Err(Rejected::new(payload, GsoError::Unavailable));
+        };
+        let payload = Value::try_new(payload).map_err(|rejected| {
+            let (payload, cause) = rejected.into_parts();
+            Rejected::new(payload, GsoError::Shape(Shape::Transfer(cause)))
+        })?;
+        let batch = limits.payload(payload, size).map_err(|rejected| {
+            let (payload, cause) = rejected.into_parts();
+            Rejected::new(payload.into_inner(), GsoError::Shape(cause))
+        })?;
+        Ok(gso.payload(batch))
+    }
 }
 
 impl<P> GsoPayload<P> {
+    pub const fn segment_size(&self) -> num::NonZero<u16> {
+        self.segment.size
+    }
+
+    pub const fn packet_count(&self) -> num::NonZero<u16> {
+        self.packets.0.saturating_add(1)
+    }
+
+    /// Converts the exact owner while retaining its admitted extent and shape.
+    pub fn into_storage<T>(self) -> GsoPayload<T>
+    where
+        P: buffer::raw::Convert<T>,
+    {
+        GsoPayload {
+            payload: self.payload.into_storage(),
+            segment: self.segment,
+            packets: self.packets,
+        }
+    }
+
     pub fn into_payload(self) -> Value<P> {
         self.payload
+    }
+}
+
+impl<P: AsRef<[u8]>> AsRef<[u8]> for GsoPayload<P> {
+    fn as_ref(&self) -> &[u8] {
+        self.payload.as_ref()
+    }
+}
+
+impl<P: buffer::raw::Mutable> AsMut<[u8]> for GsoPayload<P> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.payload.as_mut()
     }
 }
 
@@ -263,7 +321,12 @@ impl GsoLimits {
                 },
             ));
         }
-        Ok(GsoBatch { payload, size })
+        Ok(GsoBatch {
+            payload,
+            size,
+            // The backend capacity above bounds this count within u16.
+            packets: Segments::from_count(count as u16),
+        })
     }
 }
 
@@ -298,10 +361,15 @@ impl Gso {
     }
 
     pub fn payload<P>(self, batch: GsoBatch<P>) -> GsoPayload<P> {
-        let GsoBatch { payload, size } = batch;
+        let GsoBatch {
+            payload,
+            size,
+            packets,
+        } = batch;
         GsoPayload {
             payload,
             segment: GsoSegment { size, gso: self },
+            packets,
         }
     }
 }
@@ -333,6 +401,7 @@ impl GsoControl {
 const _: () = assert!(mem::size_of::<Gso>() == 0);
 const _: () = assert!(mem::align_of::<Gso>() == 1);
 const _: () = assert!(mem::size_of::<GsoLimits>() == 2 * mem::size_of::<u32>());
+const _: () = assert!(mem::size_of::<GsoPayload<Vec<u8>>>() == 4 * mem::size_of::<usize>());
 const _: () = assert!(mem::size_of::<Option<GsoSegment>>() == mem::size_of::<u16>());
 const _: () = assert!(mem::align_of::<Option<GsoSegment>>() == mem::align_of::<u16>());
 

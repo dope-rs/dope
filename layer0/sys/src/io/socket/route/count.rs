@@ -42,7 +42,8 @@ impl Count {
 
     /// Iterates every index proved to belong to this dense domain.
     pub fn indices(self) -> impl ExactSizeIterator<Item = Index> + DoubleEndedIterator {
-        (0..=u8::MAX).map(Index).take(usize::from(self.encode()))
+        // The admitted exclusive end is at most 256, so every index fits one byte.
+        (0..self.encode()).map(|index| Index(index as u8))
     }
 }
 

@@ -94,11 +94,13 @@ impl<ID: Identity> Plan<ID> {
             let receive = Receive::new(target, &fd, prepared.retention);
             storage.push(group::Member { receive, fd, addr });
         }
+        let claim = owner.into_claim();
+        let floor = claim.next_generation();
         Ok(group::raw::Endpoint {
             members: storage.into_boxed_slice(),
-            sender: prepared.sender.commit(send),
+            sender: prepared.sender.commit(send, floor),
             flights,
-            owner: owner.commit(),
+            owner: claim.into_owner(),
             handler,
             ready,
             deferred: false,

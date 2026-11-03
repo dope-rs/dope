@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-#[pin_project::pin_project(!Unpin)]
+#[pin_project::pin_project(!Unpin, PinnedDrop)]
 pub struct Endpoint<'d, ID: Identity, H> {
     pub(super) members: Box<[Member<'d, ID>]>,
     pub(super) sender: Sender<'d, ID, pool::Cursor, send::Routed>,
@@ -39,6 +39,14 @@ pub struct Endpoint<'d, ID: Identity, H> {
     pub(super) send_first: bool,
     #[pin]
     pub(super) handler: H,
+}
+
+#[pin_project::pinned_drop]
+impl<ID: Identity, H> PinnedDrop for Endpoint<'_, ID, H> {
+    fn drop(self: pin::Pin<&mut Self>) {
+        let this = self.as_ref().get_ref();
+        this.owner.advance_to(this.sender.next_generation());
+    }
 }
 
 enum Failure {
@@ -174,6 +182,11 @@ unsafe impl<'d, ID: Identity, H: Handler<'d, ID>> dispatch::raw::Manifold<'d>
 impl<'d, ID: Identity, H> Endpoint<'d, ID, H> {
     pub fn handler(&self) -> &H {
         &self.handler
+    }
+
+    /// Whether no queued or native in-flight sends retain a payload.
+    pub fn is_empty(&self) -> bool {
+        self.sender.is_empty()
     }
 
     pub fn local_addr(&self, slot: SlotIndex) -> Option<net::SocketAddr> {

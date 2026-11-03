@@ -2,28 +2,37 @@ pub mod common;
 
 use std::{
     net::{Ipv4Addr, UdpSocket},
+    num::NonZero,
     time::Duration,
 };
 
 use dope_core::{
     driver::{
         life::{creation::Attempt, recovery},
-        route::{FrameworkTag, Tag, kind},
+        route::{Epoch, FrameworkTag, KeyTag, Tag, kind, lease},
         settings,
     },
     io::socket::install,
 };
-use dope_manifold::app::{Host, creation};
+use dope_manifold::{
+    app::{Host, creation},
+    network::datagram::{RejectCause, plan, send},
+};
 use dope_runtime::executor::{Executor, drive, session::Completion};
 use dope_test::{
+    fibers,
     harness::signals::{Gate, Progress as _},
     reclaim::Reports,
 };
+use o3::base::marker::ThreadBound;
 
 use crate::common::{
-    manifold::datagram::{Idle, handler},
+    manifold::datagram::{
+        Idle, handler,
+        owners::{Owners, Reinstallation},
+    },
     recover,
-    scenario::Runtime,
+    scenario::{Runtime, app::Empty},
 };
 
 #[test]
@@ -206,6 +215,180 @@ fn finish_reuses_slot() {
 }
 
 #[test]
+fn reinstallation_preserves_payload_identity() {
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("peer socket");
+    let addr = peer.local_addr().expect("peer address");
+    let config = Runtime::quic::<64, 2048>()
+        .config()
+        .with_files(settings::FileSlots::fixed::<0, 1>())
+        .with_domains(settings::Domain::fixed::<3>());
+    let mut create = Attempt::new();
+    let executor = Executor::new(&mut create, config)
+        .ok()
+        .expect("native creation");
+    let mut finish = Completion::new();
+    let mut reports = Reports::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut session| {
+                let send = plan::Config::new(2, 2, 1).expect("send bounds");
+                let mut queued = Vec::new();
+                let mut flights = Vec::new();
+                {
+                    let mut driver = session.driver();
+                    let prepared = plan::Plan::<KeyTag<0>>::new(send)
+                        .prepare(&mut driver)
+                        .expect("endpoint preparation");
+                    let endpoint = prepared
+                        .bind(
+                            (Ipv4Addr::LOCALHOST, 0).into(),
+                            handler::Handler::new(Idle(Gate::new()), check_idle),
+                            &mut driver,
+                        )
+                        .expect("endpoint bind");
+                    let mut endpoint = Box::pin(endpoint);
+                    for byte in [1, 2] {
+                        let (_, socket) = endpoint.as_mut().split();
+                        queued.push(
+                            socket
+                                .queue_vec(vec![byte], addr)
+                                .ok()
+                                .expect("unsubmitted payload"),
+                        );
+                    }
+                }
+                assert!(
+                    session
+                        .with_quiesce(&mut finish, Empty {}, Duration::from_secs(2), |_| {})
+                        .is_ok(),
+                    "uninstalled endpoint retirement"
+                );
+
+                for _ in 0..2 {
+                    let settled = Gate::new();
+                    let endpoint = {
+                        let mut driver = session.driver();
+                        plan::Plan::<KeyTag<0>>::new(send)
+                            .prepare(&mut driver)
+                            .expect("endpoint preparation")
+                            .bind(
+                                (Ipv4Addr::LOCALHOST, 0).into(),
+                                handler::Handler::new(
+                                    Reinstallation {
+                                        addr,
+                                        queued: &mut queued,
+                                        flights: &mut flights,
+                                        current: Owners {
+                                            queued: None,
+                                            flight: None,
+                                        },
+                                        settled: settled.clone(),
+                                    },
+                                    check_reinstallation,
+                                ),
+                                &mut driver,
+                            )
+                            .expect("reinstalled endpoint")
+                    };
+                    assert!(
+                        session
+                            .with_quiesce(
+                                &mut finish,
+                                Host::new(endpoint),
+                                Duration::from_secs(2),
+                                |mut app| {
+                                    assert_eq!(
+                                        fibers::TEST
+                                            .try_wait(&mut app, &settled, 1)
+                                            .expect("send completion"),
+                                        fibers::Wait::Reached
+                                    );
+                                },
+                            )
+                            .is_ok(),
+                        "endpoint retirement"
+                    );
+                }
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(result.is_ok(), "executor retirement");
+    });
+    reports.events().expect("reclaim validation");
+}
+
+#[test]
+fn reinstallation_preserves_exhaustion() {
+    let config = Runtime::quic::<64, 2048>()
+        .config()
+        .with_files(settings::FileSlots::fixed::<0, 1>());
+    let mut create = Attempt::new();
+    let executor = Executor::new(&mut create, config)
+        .ok()
+        .expect("native creation");
+    let mut finish = Completion::new();
+    let mut reports = Reports::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut session| {
+                {
+                    let mut driver = session.driver();
+                    let owner = lease::Owner::<KeyTag<0>>::try_reserve(&mut driver)
+                        .expect("route reservation")
+                        .commit();
+                    owner.advance_to(Some(Epoch::new(NonZero::<u64>::MAX, ThreadBound::NEW)));
+                    owner.release(&mut driver);
+                }
+                for last in [true, false] {
+                    {
+                        let mut driver = session.driver();
+                        let send = plan::Config::new(2, 2, 1).expect("send bounds");
+                        let endpoint = plan::Plan::<KeyTag<0>>::new(send)
+                            .prepare(&mut driver)
+                            .expect("endpoint preparation")
+                            .bind(
+                                (Ipv4Addr::LOCALHOST, 0).into(),
+                                handler::Handler::new(Idle(Gate::new()), check_idle),
+                                &mut driver,
+                            )
+                            .expect("endpoint bind");
+                        let mut endpoint = Box::pin(endpoint);
+                        let (_, mut socket) = endpoint.as_mut().split();
+                        let addr = (Ipv4Addr::LOCALHOST, 9).into();
+                        let first = socket.as_mut().queue_vec(vec![1], addr);
+                        if last {
+                            assert!(first.is_ok(), "last identity must remain usable");
+                        } else {
+                            assert!(matches!(
+                                first.map_err(|rejected| rejected.into_parts().1),
+                                Err(RejectCause::IdentityExhausted)
+                            ));
+                        }
+                        assert!(matches!(
+                            socket
+                                .queue_vec(vec![2], addr)
+                                .map_err(|rejected| rejected.into_parts().1),
+                            Err(RejectCause::IdentityExhausted)
+                        ));
+                    }
+                    assert!(
+                        session
+                            .with_quiesce(&mut finish, Empty {}, Duration::from_secs(2), |_| {})
+                            .is_ok(),
+                        "uninstalled endpoint retirement"
+                    );
+                }
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(result.is_ok(), "executor retirement");
+    });
+    assert!(reports.events().expect("reclaim validation").is_empty());
+}
+
+#[test]
 fn shutdown_reaps_slot() {
     let mut finish = Completion::new();
     let config = Runtime::quic::<64, 2048>()
@@ -281,5 +464,38 @@ fn check_idle<'d>(this: &mut Idle, event: handler::Event<'_, '_, '_, '_, 'd>) {
             matches!(event, handler::Event::Access(..)),
             "unexpected datagram callback"
         ),
+    }
+}
+
+fn check_reinstallation<'d>(
+    this: &mut Reinstallation<'_, 'd>,
+    event: handler::Event<'_, '_, '_, '_, 'd>,
+) {
+    match event {
+        handler::Event::Park(socket, _, _) => {
+            if handler::Progress::is_runnable(this) {
+                let owner = socket
+                    .queue_vec(vec![3], this.addr)
+                    .ok()
+                    .expect("queued payload");
+                assert!(!this.queued.contains(&owner), "queued identity reused");
+                this.queued.push(owner);
+                this.current.queued = Some(owner);
+            }
+        }
+        handler::Event::Transfer(transfer) => {
+            assert!(this.current.queued.take() == Some(transfer.queued()));
+            let owner = transfer.flight();
+            assert!(!this.flights.contains(&owner), "flight identity reused");
+            this.flights.push(owner);
+            this.current.flight = Some(owner);
+        }
+        handler::Event::Settle(event) => {
+            let owner = this.current.flight.expect("submitted payload");
+            assert!(event.owner() == send::Owner::Flight(owner));
+            assert!(matches!(event.outcome(), send::Outcome::Sent(_)));
+            this.settled.hit();
+        }
+        _ => panic!("unexpected datagram callback"),
     }
 }

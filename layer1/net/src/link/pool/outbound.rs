@@ -16,7 +16,7 @@ use dope_core::{
 use o3::{
     alloc::{self, array},
     buffer::storage,
-    depot::{self, capacity, index::Initialized},
+    depot::{self, arena::slab, capacity, index::Initialized},
 };
 use table::conn;
 
@@ -158,11 +158,19 @@ where
         };
         let lease = Grant::reserve(grant);
         let key = lease.key();
-        let Some(fd) = self.outbound.bind(lease.key().target()) else {
-            return opening::Attempt::Deferred {
-                cause: opening::Deferred::Capacity,
-                input,
-            };
+        let fd = match self.outbound.bind(lease.key().target()) {
+            Ok(fd) => fd,
+            Err(slab::Vacancy::Full) => {
+                return opening::Attempt::Deferred {
+                    cause: opening::Deferred::Capacity,
+                    input,
+                };
+            }
+            Err(slab::Vacancy::IdentityExhausted) => {
+                return opening::Attempt::Failed {
+                    error: opening::Failure::IdentityExhausted,
+                };
+            }
         };
         let address = self.addresses.vacancy(&lease);
         let opened = self.storage.prepared.runtime.open((), |(), wire, send| {

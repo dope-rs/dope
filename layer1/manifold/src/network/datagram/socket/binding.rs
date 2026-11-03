@@ -31,6 +31,7 @@ impl<'d, ID: Identity> Binding<'d, ID> {
         (
             Self,
             route::Target<'d, <ID as route::Materialize<Recv>>::With>,
+            Option<route::Epoch>,
         ),
         creation::Error,
     > {
@@ -48,6 +49,7 @@ impl<'d, ID: Identity> Binding<'d, ID> {
         (
             Self,
             route::Target<'d, <ID as route::Materialize<Recv>>::With>,
+            Option<route::Epoch>,
         ),
         creation::Error,
     > {
@@ -66,6 +68,7 @@ impl<'d, ID: Identity> Binding<'d, ID> {
         (
             Self,
             route::Target<'d, <ID as route::Materialize<Recv>>::With>,
+            Option<route::Epoch>,
         ),
         creation::Error,
     > {
@@ -78,14 +81,21 @@ impl<'d, ID: Identity> Binding<'d, ID> {
             .driver()
             .targets()
             .bind(datagram::RECV_ARM_TAG, route::Epoch::INITIAL);
-        let fixed_fd = route.into_claim().store(fixed_fd);
+        let claim = route.into_claim();
+        let floor = claim.next_generation();
+        let fixed_fd = claim.store(fixed_fd);
         Ok((
             Self {
                 fixed_fd,
                 bound_addr: addr,
             },
             target,
+            floor,
         ))
+    }
+
+    pub(in crate::network::datagram) fn advance_to(&self, floor: Option<route::Epoch>) {
+        self.fixed_fd.advance_to(floor);
     }
 
     pub(in crate::network::datagram) fn descriptor(&self) -> &handles::Datagram<'d> {

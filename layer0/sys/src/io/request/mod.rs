@@ -26,6 +26,8 @@ pub trait Request<'a>: Sized {
     fn options(flags: file::Open, mode: file::Mode) -> Self::Options;
     fn open(dir: fd::BorrowedFd<'a>, path: &'a std::ffi::CStr, options: &'a Self::Options) -> Self;
     fn write(file: fd::BorrowedFd<'a>, input: Self::Buffer, offset: file::Offset) -> Self;
+    /// Writes at the owned descriptor's current position, honoring `O_APPEND`.
+    fn write_current(file: fd::BorrowedFd<'a>, input: Self::Buffer) -> Self;
     fn sync(file: fd::BorrowedFd<'a>, mode: file::Sync) -> Self;
     fn rename(dir: fd::BorrowedFd<'a>, old: &'a std::ffi::CStr, new: &'a std::ffi::CStr) -> Self;
     fn unlink(dir: fd::BorrowedFd<'a>, name: &'a std::ffi::CStr) -> Self;

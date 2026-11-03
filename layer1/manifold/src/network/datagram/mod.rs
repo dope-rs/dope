@@ -97,6 +97,15 @@ pub enum RejectCause {
     GsoShape(datagram::Shape),
 }
 
+impl From<datagram::GsoError> for RejectCause {
+    fn from(cause: datagram::GsoError) -> Self {
+        match cause {
+            datagram::GsoError::Unavailable => Self::GsoUnavailable,
+            datagram::GsoError::Shape(cause) => Self::GsoShape(cause),
+        }
+    }
+}
+
 #[must_use = "a rejected datagram owner must be recovered or handled"]
 #[repr(transparent)]
 pub struct Rejected<T>(mem::Rejected<T, RejectCause>);

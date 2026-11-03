@@ -1,24 +1,18 @@
-[workspace]
-resolver = "2"
-
 [package]
 name = "dope-uring"
-version = "0.21.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Owned io_uring backend for dope"
-repository = "https://github.com/dope-rs/dope"
-readme = "../../README.md"
-license = "MIT"
-authors = ["inq <gofiri@gmail.com>"]
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [package.metadata.xan]
 platform-owner = "../core"
 
 [dependencies]
-dope-sys = { path = "../sys", version = "0.21.0" }
-libc = "0.2"
-o3 = "0.20"
-
-[profile.release]
-panic = "abort"
+dope-sys.workspace = true
+libc.workspace = true
+o3.workspace = true

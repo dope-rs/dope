@@ -4,6 +4,7 @@ use dope_core::driver::{
     route::{self, Identity, kind},
     schedule,
 };
+use o3::buffer::bytes::{Prefix, bounded};
 
 use crate::{
     app::{dispatch, dispatch::event},
@@ -12,14 +13,15 @@ use crate::{
 
 pub(super) fn bytes<'a, const N: usize, const B: usize>(
     pending: &'a appender::Pending<'_, N, B>,
-) -> &'a [u8] {
-    // SAFETY: new binds length to this unchanged exclusive lease.
-    // advance preserves remaining <= length; release consumes the owner.
+) -> Prefix<'a, { bounded::MAX }> {
+    let bytes = &pending.block().bytes;
+    // SAFETY: new bounds remaining by this unchanged exclusive lease's length.
+    // advance only reduces remaining, whose Len bound also proves bounded::MAX.
+    // release consumes the owner, so the admitted extent stays unchanged.
     unsafe {
-        pending
-            .block()
-            .bytes
-            .get_unchecked(pending.written().into_raw()..)
+        Prefix::from_raw(bounded::raw::Input::new(
+            bytes.get_unchecked(bytes.len() - pending.remaining().into_raw()..),
+        ))
     }
 }
 

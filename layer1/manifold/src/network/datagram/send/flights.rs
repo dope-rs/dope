@@ -2,6 +2,7 @@ use std::net;
 
 use dope_core::{
     dope_sys::io::socket::msg::{Header, Iovec},
+    driver::{retained::flight, route, route::kind::Send},
     io::socket::{self, msg},
 };
 
@@ -14,10 +15,11 @@ pub(in crate::network::datagram) struct Backing<'d, B, M: send::Mode = send::Pla
     iovs: [Iovec; 1],
     msg: Header,
     control: M::Flight,
+    flight: Option<flight::Flight<'d, Send>>,
 }
 
 impl<'d, B: AsRef<[u8]>, M: send::Mode> Backing<'d, B, M> {
-    pub(in crate::network::datagram::send) fn new(queued: send::Queued<'d, B, M>) -> Self {
+    pub(in crate::network::datagram) fn new(queued: send::Queued<'d, B, M>) -> Self {
         let target = queued.addr;
         let control = M::prepare(queued.control);
         Self {
@@ -27,30 +29,41 @@ impl<'d, B: AsRef<[u8]>, M: send::Mode> Backing<'d, B, M> {
             iovs: [Iovec::empty()],
             msg: Header::new(),
             control,
+            flight: None,
         }
     }
 
-    pub(in crate::network::datagram::send) fn fill_message<'a>(&'a mut self) -> msg::Message<'a> {
+    pub(in crate::network::datagram) fn matches(&self, target: route::Erased<'d, Send>) -> bool {
+        self.flight
+            .as_ref()
+            .is_some_and(|flight| flight.matches(target))
+    }
+
+    pub(in crate::network::datagram) fn fill_message<'a>(
+        &'a mut self,
+    ) -> (msg::Message<'a>, &'a mut Option<flight::Flight<'d, Send>>) {
         let Self {
             retained,
             addr,
             iovs,
             msg,
             control,
+            flight,
             ..
         } = self;
         let mut builder = msg::Builder::new(msg);
         builder.name(addr);
         let builder = M::attach(control, builder);
         let payload: &'a mut kernel::Payload<'d, B> = &mut retained.value;
-        match payload {
+        let message = match payload {
             kernel::Payload::Owned(payload) => builder.finish(iovs, payload),
             kernel::Payload::Buffer(payload) => builder.finish(iovs, payload),
             kernel::Payload::Packet(payload) => builder.finish(iovs, payload),
-        }
+        };
+        (message, flight)
     }
 
-    pub(in crate::network::datagram::send) fn into_queued(self) -> send::Queued<'d, B, M> {
+    pub(in crate::network::datagram) fn into_queued(self) -> send::Queued<'d, B, M> {
         send::Queued {
             addr: self.target,
             retained: self.retained,

@@ -2,7 +2,7 @@ pub mod common;
 
 use std::{
     convert::Infallible,
-    io::{self, Write},
+    io::{self, Read, Write},
     net::Shutdown,
 };
 
@@ -27,10 +27,12 @@ use dope_core::{
 };
 use dope_net::{
     link::{
+        egress,
         event::{ControlRecv, Dispatch, DispatchRecv, ParkRecv, Reservation, SendOutcome},
         pool::{
             pending::Pending,
             recv::{self, input},
+            send::Rejected,
         },
         slot::{
             transmit::{Attempt, Finalize},
@@ -40,6 +42,7 @@ use dope_net::{
     wire::terminal::{Receive, Terminal},
 };
 use dope_test::scope;
+use o3::buffer::storage::Shared;
 
 fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
     panic!("driver recovery: {:?}", failure.cause())
@@ -116,6 +119,8 @@ fn tail_keeps_cancel() {
             let mut receiver = pool.recv();
             let (seen, tail) = receiver
                 .take_tail(&resumed)
+                .continue_value()
+                .expect("receive gate open")
                 .expect("retained plaintext tail");
             assert_eq!(seen, key);
             let tail = tail.commit();
@@ -276,6 +281,55 @@ fn closing_settles_eof() {
 }
 
 #[test]
+fn close_after_keeps_pending_reply() {
+    let (reports, input) = eof::run::<input::Borrowed>(
+        |pool, key, scope, mut peer| {
+            pool.get_mut(key).expect("live connection").close_after();
+            let bytes = Shared::try_copy(b"reply").expect("pending response owner");
+            let bytes = egress::NonEmpty::try_new(bytes).expect("nonempty response");
+            {
+                let mut driver = scope.context();
+                assert!(pool.try_right(driver.region_token(), key, bytes).is_ok());
+                let owner = retained::raw::Owner::from_driver(driver.driver_ref());
+                let mut driver = retained::Context::new(driver.reborrow(), owner);
+                assert!(matches!(
+                    pool.sender(key).expect("send owner").submit(&mut driver),
+                    Attempt::Waiting
+                ));
+            }
+            let output = match discard::next(scope).expect("native response").into_kind() {
+                event::Kind::Send(done) => Some(done),
+                _ => None,
+            }
+            .expect("response completion");
+            {
+                let mut driver = scope.context();
+                let owner = retained::raw::Owner::from_driver(driver.driver_ref());
+                let mut driver = retained::Context::new(driver.reborrow(), owner);
+                assert!(matches!(
+                    pool.settle(output).settle_owned(&mut driver, |_, _| {}),
+                    SendOutcome::Queued { key: seen, acknowledged }
+                        if seen == key && acknowledged.into_raw() == 5
+                ));
+            }
+            let mut response = [0; 5];
+            peer.read_exact(&mut response).expect("drained response");
+            assert_eq!(&response, b"reply");
+            let entry = pool.egress_mut(key).expect("drained owner");
+            assert!(entry.queue.is_empty());
+            assert!(matches!(
+                entry.connection.close_due(CloseGate::Immediate),
+                Readiness::Due
+            ));
+        },
+        recover,
+        finish,
+    );
+    assert_eq!(input, Input::Empty);
+    settled(reports);
+}
+
+#[test]
 fn shutdown_wakes_terminal() {
     let (reports, input) = eof::run::<input::Scoped>(
         |pool, key, scope, peer| {
@@ -288,16 +342,25 @@ fn shutdown_wakes_terminal() {
                 _ => None,
             }
             .expect("EOF completion");
-            {
+            let bytes = Shared::try_copy(b"after-shutdown").expect("retained response owner");
+            let original = bytes.as_slice().as_ptr();
+            let bytes = egress::NonEmpty::try_new(bytes).expect("nonempty response");
+            let bytes = {
                 pool.get_mut(key).expect("live connection").shutdown();
                 let mut driver = scope.context();
+                let bytes = match pool.try_right(driver.region_token(), key, bytes) {
+                    Err(Rejected::ConnectionUnavailable(bytes)) => Some(bytes),
+                    _ => None,
+                }
+                .expect("shutdown request rejects deferred output");
                 let owner = retained::raw::Owner::from_driver(driver.driver_ref());
                 let mut driver = retained::Context::new(driver.reborrow(), owner);
                 assert!(matches!(
                     pool.sender(key).expect("send owner").submit(&mut driver),
                     Attempt::Waiting
                 ));
-            }
+                bytes
+            };
             let output = match discard::next(scope).expect("native shutdown").into_kind() {
                 event::Kind::Send(done) => Some(done),
                 _ => None,
@@ -352,6 +415,20 @@ fn shutdown_wakes_terminal() {
             .expect("original terminal failure");
             assert_eq!(error.into_parts(), (7, None));
             assert!(matches!(slot.terminal.finish_recv(), Receive::Idle));
+            let bytes = match pool.try_right(scope.context().region_token(), key, bytes) {
+                Err(Rejected::ConnectionUnavailable(bytes)) => Some(bytes),
+                _ => None,
+            }
+            .expect("completed shutdown rejects deferred output");
+            let bytes = bytes.into_inner();
+            assert_eq!(bytes.as_slice().as_ptr(), original);
+            assert_eq!(bytes.as_slice(), b"after-shutdown");
+            assert!(
+                pool.egress_mut(key)
+                    .expect("shutdown owner")
+                    .queue
+                    .is_empty()
+            );
         },
         recover,
         finish,

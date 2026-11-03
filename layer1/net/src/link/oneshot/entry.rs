@@ -80,11 +80,17 @@ where
         };
         let local = self.routes.bind(self.index, vacant.key().generation());
         let target = local.physical();
-        let Some(fd) = fds.bind(target) else {
-            return Dispatch::Unsent(Unsent::Busy {
-                request: req,
-                cause: Busy::Descriptor,
-            });
+        let fd = match fds.bind(target) {
+            Ok(fd) => fd,
+            Err(slab::Vacancy::Full) => {
+                return Dispatch::Unsent(Unsent::Busy {
+                    request: req,
+                    cause: Busy::Descriptor,
+                });
+            }
+            Err(slab::Vacancy::IdentityExhausted) => {
+                return Dispatch::Unsent(Unsent::Exhausted(req, errors::Exhausted));
+            }
         };
         let socket = req.address.stream_spec();
         let open = match Open::try_new(driver, self.flights, fd, socket) {

@@ -21,7 +21,7 @@ use dope_core::{
 };
 use dope_net::{
     link::{
-        egress::{self, reserve::demand},
+        egress::{self, data::compose, reserve::demand},
         event::Dispatch,
         pool::{
             self,
@@ -34,6 +34,7 @@ use dope_net::{
     wire::domain::{Local, Resident, Retained},
 };
 use dope_test::scope::{self, Driver};
+use o3::buffer::storage::Shared;
 
 use crate::common::{
     discard::{Error, Peer, next},
@@ -41,7 +42,8 @@ use crate::common::{
 };
 
 pub type Route = KeyTag<24>;
-type Pool<'p, 'd, M> = pool::Pool<'p, 'd, 'd, Route, Tcp, Eof, (), M, &'d [u8]>;
+type Pool<'p, 'd, M> =
+    pool::Pool<'p, 'd, 'd, Route, Tcp, Eof, (), M, compose::Either<&'d [u8], Shared>>;
 type Opened<'d> = (pool::Key<'d, Route>, TcpStream);
 
 pub fn run<M: input::Mode<Eof>>(
@@ -135,7 +137,7 @@ fn prepare<'d, M: input::Mode<Eof>>(
     ) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let (peer, fd) = Peer::new(scope)?;
-    change::try_prepare::<Route, Tcp, Eof, (), M, &[u8], 32, _, _, _, _>(
+    change::try_prepare::<Route, Tcp, Eof, (), M, compose::Either<&[u8], Shared>, 32, _, _, _, _>(
         Retained::ZERO,
         Resident::ZERO,
         demand::Fallible::prepare(egress::Config::DEFAULT, cap),

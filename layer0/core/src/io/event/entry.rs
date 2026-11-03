@@ -26,7 +26,7 @@ impl<'d, C: kind::Class, T> Entry<'d, C, T> {
 
     pub(super) fn resolve(self, expected: route::Erased<'d, C>) -> Result<T, Self> {
         let Self { target, value } = self;
-        if target.matches(expected) {
+        if target.matches_flight(expected) {
             Ok(value)
         } else {
             Err(Self { target, value })

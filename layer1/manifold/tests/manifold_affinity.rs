@@ -7,7 +7,7 @@ use dope_manifold::{
         conn,
         side::Primary,
     },
-    network::datagram::{Socket, group, packet},
+    network::datagram::{Socket, group, packet, send::owners},
 };
 use dope_net::wire::Identity;
 
@@ -27,6 +27,7 @@ const _: fn() = || {
     confined::<packet::Packet<'static, 'static, ()>, _, _>();
     confined::<packet::Frozen<'static, 'static, ()>, _, _>();
     confined::<packet::Retainer<'static>, _, _>();
+    confined::<owners::Queued<'static, KeyTag<0>>, _, _>();
     confined::<Socket<'static, KeyTag<0>>, _, _>();
     confined::<group::Access<'static, 'static, KeyTag<0>>, _, _>();
 };

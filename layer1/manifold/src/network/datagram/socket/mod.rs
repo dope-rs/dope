@@ -4,7 +4,6 @@ use dope_core::{
     driver,
     driver::{
         life::finish,
-        result, retained,
         retained::flight,
         route,
         route::{Identity, kind},
@@ -12,15 +11,15 @@ use dope_core::{
         schedule::{clock, maint, ready},
     },
     io,
-    io::{datagram, datagram::source, event, fd::handles},
+    io::{datagram, datagram::source, event},
 };
 use o3::{
     base::cell::region,
-    buffer::{self, bytes::bounded, pool},
+    buffer::{self, pool},
 };
 use send::{kernel, owners};
 
-use crate::network::datagram::{RejectCause, Rejected, hook, packet, send};
+use crate::network::datagram::{Rejected, hook, packet, send};
 
 pub(in crate::network::datagram) mod binding;
 pub(in crate::network::datagram) mod priority;
@@ -28,7 +27,7 @@ pub(in crate::network::datagram) mod receive;
 mod retire;
 pub(in crate::network::datagram) mod sender;
 
-#[pin_project::pin_project(!Unpin)]
+#[pin_project::pin_project(!Unpin, PinnedDrop)]
 pub struct Socket<'d, ID: Identity, B = pool::Cursor, M: send::Mode = send::Plain> {
     #[pin]
     pub(in crate::network::datagram) receive: receive::Receive<'d, ID>,
@@ -37,6 +36,14 @@ pub struct Socket<'d, ID: Identity, B = pool::Cursor, M: send::Mode = send::Plai
     pub(in crate::network::datagram) sender: sender::Sender<'d, ID, B, M>,
     pub(in crate::network::datagram) binding: binding::Binding<'d, ID>,
     pub(in crate::network::datagram) priority: priority::Priority,
+}
+
+#[pin_project::pinned_drop]
+impl<ID: Identity, B, M: send::Mode> PinnedDrop for Socket<'_, ID, B, M> {
+    fn drop(self: pin::Pin<&mut Self>) {
+        let this = self.as_ref().get_ref();
+        this.binding.advance_to(this.sender.next_generation());
+    }
 }
 
 impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Segmented>
@@ -90,36 +97,26 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Segm
     where
         P: buffer::Residency + buffer::raw::Source + buffer::raw::Convert<Vec<u8>>,
     {
-        let Some(limits) = datagram::GSO_LIMITS else {
-            return Err(Rejected::new(data, RejectCause::GsoUnavailable));
-        };
-        let data = match bounded::Value::try_new(data) {
-            Ok(data) => data,
-            Err(rejected) => {
-                let (data, cause) = rejected.into_parts();
-                return Err(Rejected::new(
-                    data,
-                    RejectCause::GsoShape(datagram::Shape::Transfer(cause)),
-                ));
-            }
-        };
-        let plan = match limits.payload(data, size) {
-            Ok(plan) => plan,
-            Err(rejected) => {
-                let (data, cause) = rejected.into_parts();
-                return Err(Rejected::new(
-                    data.into_inner(),
-                    RejectCause::GsoShape(cause),
-                ));
-            }
-        };
-        let Some(gso) = datagram::Gso::acquire() else {
-            return Err(Rejected::new(
-                plan.into_payload().into_inner(),
-                RejectCause::GsoUnavailable,
-            ));
-        };
-        self.project().sender.gso(gso.payload(plan), addr)
+        let data = datagram::GsoPayload::try_new(data, size).map_err(|rejected| {
+            let (data, cause) = rejected.into_parts();
+            Rejected::new(data, cause.into())
+        })?;
+        self.queue_gso_payload(data, addr)
+            .map_err(|rejected| rejected.map(|data| data.into_payload().into_inner()))
+    }
+
+    /// Queues an admitted GSO owner, returning the same proof on rejection.
+    /// The conversion only removes an ownership wrapper after queue admission.
+    pub fn queue_gso_payload<P, T>(
+        self: pin::Pin<&mut Self>,
+        data: P,
+        addr: M::Address,
+    ) -> Result<owners::Queued<'d, ID>, Rejected<P>>
+    where
+        P: buffer::Residency + buffer::raw::Convert<datagram::GsoPayload<T>>,
+        T: buffer::raw::Convert<Vec<u8>>,
+    {
+        self.project().sender.gso(data, addr)
     }
 }
 
@@ -257,21 +254,4 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         }
         this.receive.as_mut().finish(ctx);
     }
-}
-
-fn try_submit<'a, 'owner, 'd, ID: Identity, B: AsRef<[u8]>, M: send::Mode>(
-    fd: &'a handles::Datagram<'d>,
-    send: &'a mut send::Draft<'_, 'd, ID, B, M>,
-    target: route::Target<'d, <ID as route::Materialize<kind::Send>>::With>,
-    driver: retained::Context<'_, 'owner, 'd>,
-    slots: &flight::Slots<'d, <ID as route::Materialize<kind::Send>>::With>,
-) -> Result<flight::Flight<'d, kind::Send>, result::SubmitError>
-where
-    'd: 'owner,
-    'owner: 'a,
-{
-    let op = retained::raw::Submission::send_msg(fd, send.fill_message(), target);
-    // SAFETY: the reserved slab slot makes the draft's complete pointer
-    // graph stable; publication follows only a successful submission.
-    unsafe { op.try_submit(driver, slots) }
 }

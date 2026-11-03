@@ -9,6 +9,7 @@ use dope_core::{
     },
 };
 use dope_test::scope::Error;
+use o3::depot::arena::slab::Vacancy;
 
 use crate::common::driver::{Native as _, Scoped as _};
 
@@ -266,7 +267,7 @@ fn drop_waits_for_result() {
                                 .map(|open| open.commit())
                                 .expect("submit socket creation");
 
-                            assert!(slots.bind(owner).is_none());
+                            assert!(matches!(slots.bind(owner), Err(Vacancy::Full)));
                         }
                         let done =
                             (wait_socket(&mut driver, turn, owner)).expect("socket completion");
@@ -413,7 +414,7 @@ fn stale_creator_pins_slot() {
                                     .expect("operation completion");
                             }
                             assert!(
-                                slots.bind(owner).is_none(),
+                                matches!(slots.bind(owner), Err(Vacancy::Full)),
                                 "a stale creation proof must pin its exact slot"
                             );
                             drop(created);
@@ -429,10 +430,10 @@ fn stale_creator_pins_slot() {
                     );
                     let rebound = slots.bind(owner);
                     assert!(
-                        rebound.is_some(),
+                        rebound.is_ok(),
                         "releasing both affine halves must release the slot"
                     );
-                    assert!(slots.bind(owner).is_none());
+                    assert!(matches!(slots.bind(owner), Err(Vacancy::Full)));
                 })
                 .expect("flight fixture");
         },

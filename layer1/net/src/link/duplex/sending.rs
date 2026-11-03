@@ -286,6 +286,12 @@ impl<'d, P: reclaim::Policy> Sending<'d, P> {
         self.active.is_some()
     }
 
+    pub(in crate::link) fn matches(&self, target: route::Erased<'d, kind::Send>) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.flight.matches(target))
+    }
+
     pub(in crate::link) fn origin(&self) -> Option<SendSource> {
         self.active.as_ref().map(|active| active.inflight.origin())
     }

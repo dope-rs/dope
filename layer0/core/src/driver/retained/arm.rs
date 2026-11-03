@@ -163,7 +163,11 @@ impl<'d, Tag: route::Tag> Base<'d, Tag> {
     }
 
     pub(super) fn retire(&mut self, token: route::Erased<'d, Tag::Class>) -> End {
-        if !self.operation().matches(token) {
+        if !self
+            .flight
+            .as_ref()
+            .is_some_and(|flight| flight.matches(token))
+        {
             return End::Stale;
         }
         let (phase, end) = match self.phase {
@@ -296,7 +300,12 @@ impl<'d, Tag: route::Tag> State<'d, Tag> {
     }
 
     pub fn complete(&mut self, token: route::Erased<'d, Tag::Class>, flow: Flow) -> Disposition {
-        if !self.0.operation().matches(token) {
+        if !self
+            .0
+            .flight
+            .as_ref()
+            .is_some_and(|flight| flight.matches(token))
+        {
             return Disposition::Discard;
         }
         let (phase, result) = match self.0.phase {

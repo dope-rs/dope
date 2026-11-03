@@ -176,12 +176,18 @@ where
         let stop = slot.is_recv_done();
         let (mut arm, probe, origin) = match timing {
             arrival::Timing::Fresh(more) => {
-                let seen = match slot.control.engine.operations.observe_recv(more, stop) {
-                    Some(seen) => seen,
-                    None => {
-                        return Observation::Complete(event::Dispatch::Retired(item.retire()));
-                    }
-                };
+                let seen =
+                    match slot
+                        .control
+                        .engine
+                        .operations
+                        .observe_recv(item.token(), more, stop)
+                    {
+                        Some(seen) => seen,
+                        None => {
+                            return Observation::Complete(event::Dispatch::Retired(item.retire()));
+                        }
+                    };
                 (
                     seen.rearm().is_needed(),
                     seen.is_probe(),

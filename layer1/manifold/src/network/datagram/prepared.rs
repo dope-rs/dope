@@ -54,8 +54,8 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         H: datagram::Ingress<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B, Send = M>,
     {
-        let (binding, target) = binding::Binding::bind(addr, driver)?;
-        self.finish(binding, target, handler, driver)
+        let (binding, target, floor) = binding::Binding::bind(addr, driver)?;
+        self.finish(binding, target, floor, handler, driver)
     }
 
     pub fn adopt<H>(
@@ -68,14 +68,15 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         H: datagram::Ingress<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B, Send = M>,
     {
-        let (binding, target) = binding::Binding::adopt(lease, driver)?;
-        self.finish(binding, target, handler, driver)
+        let (binding, target, floor) = binding::Binding::adopt(lease, driver)?;
+        self.finish(binding, target, floor, handler, driver)
     }
 
     fn finish<H>(
         self,
         binding: binding::Binding<'d, ID>,
         target: route::Target<'d, <ID as route::Materialize<Recv>>::With>,
+        floor: Option<route::Epoch>,
         handler: H,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<datagram::Endpoint<'d, ID, H, B, M>, creation::Error>
@@ -93,7 +94,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         let socket = datagram::Socket {
             receive,
             recv_flights: recv,
-            sender: self.sender.commit(send),
+            sender: self.sender.commit(send, floor),
             binding,
             priority: priority::Priority::Application,
         };

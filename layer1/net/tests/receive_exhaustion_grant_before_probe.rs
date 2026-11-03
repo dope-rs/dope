@@ -101,7 +101,10 @@ fn grant_before_probe() {
                         Some(probe)
                     };
 
-                    drop(first);
+                    assert!(matches!(
+                        pool.reserve().data(first),
+                        event::Reservation::Drop
+                    ));
                     scope.with_driver(|mut driver, mut control| {
                         let mut turn = control.begin();
                         assert!(matches!(

@@ -75,6 +75,84 @@ fn completed_connect_cancel() {
     );
 }
 
+#[test]
+fn connect_completion_matches_native_flight() {
+    let sources = [
+        UdpSocket::bind(common::LOCALHOST).expect("first source"),
+        UdpSocket::bind(common::LOCALHOST).expect("second source"),
+    ];
+    let dest = UdpSocket::bind(common::LOCALHOST).expect("dest");
+    let address = Inet::from_std(dest.local_addr().expect("dest address"));
+    let options = option::Set::default();
+    let runtime = Runtime::quic::<2, 8>();
+    let mut reports =
+        Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    let mut rejected = false;
+    let mut completed = false;
+
+    runtime.with_scope(
+        |scope| {
+            scope
+                .with_flights::<KeyTag<1>, 2>(|driver, turn, flights| {
+                    let target = driver
+                        .driver_ref()
+                        .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
+                    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
+                    let mut driver = retained::Context::new(driver, owner);
+                    let [(first, first_done), (second, second_done)] = sources.map(|source| {
+                        let (socket, _) =
+                            Install::adopt_udp(driver.driver().reborrow(), source.into())
+                                .expect("source descriptor");
+                        // SAFETY: address remains fixed outside the driver scope,
+                        // through both completions and final native quiescence.
+                        let pending = unsafe {
+                            Connect::new(socket.into(), &address, target).try_connect(
+                                driver.reborrow(),
+                                &flights,
+                                &options,
+                            )
+                        }
+                        .map_err(|rejected| rejected.into_parts().1)
+                        .expect("connect submission");
+                        let done = driver.wait_connect(turn).ok().expect("connect completion");
+                        (pending, done)
+                    });
+                    // Both native operations are terminal before testing the mismatch,
+                    // so even the defective acceptance path can settle safely.
+                    let (first, second) = match second.complete(first_done) {
+                        Err(mismatch) => {
+                            rejected = true;
+                            let (second, first_done) = mismatch.into_parts();
+                            (
+                                first.complete(first_done).ok().expect("first connect"),
+                                second.complete(second_done).ok().expect("second connect"),
+                            )
+                        }
+                        Ok(second) => (
+                            first.complete(second_done).ok().expect("crossed connect"),
+                            second,
+                        ),
+                    };
+                    completed = first.1.is_ok() && second.1.is_ok();
+                    first.0.close(driver.driver());
+                    second.0.close(driver.driver());
+                })
+                .expect("connect flights");
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        finish,
+    );
+    assert!(
+        reports.events().expect("valid reclamation").is_empty(),
+        "unexpected reclaimed operations: {reports:?}"
+    );
+    assert!(completed, "both connects must complete successfully");
+    assert!(
+        rejected,
+        "same-target completion from another native flight was accepted"
+    );
+}
+
 fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
     panic!("native retirement: {:?}", failure.cause())
 }

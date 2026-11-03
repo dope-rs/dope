@@ -2,11 +2,88 @@ use std::{
     cell::Cell,
     mem,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    num::NonZero,
     ptr,
 };
 
 use addr::{Error, Internet, Storage};
-use dope_sys::{Errno, io, io::socket::addr};
+use dope_sys::{
+    Errno, io,
+    io::socket::{
+        addr,
+        route::selector::{Frame, PrefixError, PrefixPlan},
+    },
+};
+use o3::buffer::bytes::scope;
+
+#[test]
+fn prefix_admission_retains_packet_borrows() {
+    let plan = PrefixPlan::fixed::<31, 0xc0, 0x14, 0x16>();
+    for first in [0x40, 0x80, 0xc0] {
+        let packet = [first];
+        scope::Owner::with(packet.as_slice(), |owner| {
+            assert!(matches!(plan.try_parse(owner.view()), Ok(Frame::Direct)));
+        });
+        for tag in plan.tags() {
+            let mut packet = [0xa5; 32];
+            packet[0] = tag;
+            packet[31] = first;
+            let pointer = packet.as_ptr();
+            let body = scope::Owner::with(packet.as_mut_slice(), |owner| {
+                let Frame::Prefixed { prefix, remaining } =
+                    plan.try_parse(owner.view()).expect("valid prefix rejected")
+                else {
+                    panic!("prefix classified as direct");
+                };
+                assert_eq!(prefix.as_ptr(), pointer);
+                assert_eq!(prefix.len(), 31);
+                owner.project(remaining)
+            });
+            assert_eq!(body.as_ptr(), pointer.wrapping_add(31));
+            assert_eq!(body, &[first]);
+        }
+    }
+    assert_eq!(
+        scope::Owner::with(&[][..], |owner| plan.try_parse(owner.view()).err()),
+        Some(PrefixError::Truncated {
+            actual: 0,
+            required: NonZero::<usize>::MIN,
+        })
+    );
+    for actual in [1, 30, 31] {
+        let packet = [0x14; 31];
+        assert_eq!(
+            scope::Owner::with(&packet[..actual], |owner| plan
+                .try_parse(owner.view())
+                .err()),
+            Some(PrefixError::Truncated {
+                actual,
+                required: NonZero::new(32).expect("nonzero extent"),
+            })
+        );
+    }
+    assert_eq!(
+        scope::Owner::with(&[0x15][..], |owner| plan.try_parse(owner.view()).err()),
+        Some(PrefixError::Unknown(0x15))
+    );
+    let mut packet = [0x14; 32];
+    for tag in plan.tags() {
+        packet[31] = tag;
+        assert_eq!(
+            scope::Owner::with(packet.as_slice(), |owner| plan
+                .try_parse(owner.view())
+                .err()),
+            Some(PrefixError::Nested(tag))
+        );
+    }
+    packet[31] = 0x15;
+    assert_eq!(
+        scope::Owner::with(packet.as_slice(), |owner| plan
+            .try_parse(owner.view())
+            .err()),
+        Some(PrefixError::Inner(0x15))
+    );
+}
 
 #[test]
 fn empty_skips_errno() {

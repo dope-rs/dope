@@ -1,6 +1,7 @@
 use std::{mem, os::fd};
 
 use dope_sys::io::{
+    fd::Fd as _,
     file::{self, File as _, Mode, Open},
     request,
 };
@@ -25,6 +26,10 @@ enum State<'a> {
         file: fd::BorrowedFd<'a>,
         input: bytes::Prefix<'a, MAX>,
         offset: file::Offset,
+    },
+    WriteCurrent {
+        file: fd::BorrowedFd<'a>,
+        input: bytes::Prefix<'a, MAX>,
     },
     Sync {
         file: fd::BorrowedFd<'a>,
@@ -64,6 +69,10 @@ impl<'a> request::Request<'a> for Request<'a> {
         )
     }
 
+    fn write_current(file: fd::BorrowedFd<'a>, input: Self::Buffer) -> Self {
+        Self(State::WriteCurrent { file, input }, ThreadBound::NEW)
+    }
+
     fn sync(file: fd::BorrowedFd<'a>, mode: file::Sync) -> Self {
         Self(State::Sync { file, mode }, ThreadBound::NEW)
     }
@@ -89,6 +98,11 @@ impl request::Execute for Request<'_> {
                 offset,
             } => {
                 let result = Kqueue::write_at(file, input, offset);
+                return done.write(result);
+            }
+            State::WriteCurrent { file, input } => {
+                let result = Kqueue::write(file, input.into_slice())
+                    .map(|written| bytes::Prefix::<MAX>::new(written).len());
                 return done.write(result);
             }
             State::Sync { file, mode } => super::sync(file, mode),

@@ -27,6 +27,21 @@ impl<'a> Borrowed<'a> {
     pub(crate) fn user_data<T: complete::raw::Token>(self, token: T) -> sq::Submit<'a, T> {
         self.0.bind(token)
     }
+
+    fn file_write(
+        file: fd::BorrowedFd<'a>,
+        input: bytes::Prefix<'a, { i32::MAX as usize }>,
+        offset: u64,
+    ) -> Self {
+        let input = input.into_slice();
+        let raw = fd::AsRawFd::as_raw_fd(&file);
+        let mut entry = sq::Entry::new(files::WRITE, sq::Descriptor::File(raw));
+        let mut fields = entry.fields();
+        fields.address(input.as_ptr() as u64);
+        fields.length(input.len() as u32);
+        fields.offset(offset);
+        Self::new(entry.flags(sq::Flags::ASYNC))
+    }
 }
 
 impl<'a> request::Borrow<'a> for Borrowed<'a> {
@@ -104,14 +119,12 @@ impl<'a> request::Request<'a> for Borrowed<'a> {
     }
 
     fn write(file: fd::BorrowedFd<'a>, input: Self::Buffer, offset: Offset) -> Self {
-        let input = input.into_slice();
-        let raw = fd::AsRawFd::as_raw_fd(&file);
-        let mut entry = sq::Entry::new(files::WRITE, sq::Descriptor::File(raw));
-        let mut fields = entry.fields();
-        fields.address(input.as_ptr() as u64);
-        fields.length(input.len() as u32);
-        fields.offset(offset.get());
-        Self::new(entry.flags(sq::Flags::ASYNC))
+        Self::file_write(file, input, offset.get())
+    }
+
+    fn write_current(file: fd::BorrowedFd<'a>, input: Self::Buffer) -> Self {
+        // io_uring's -1 offset selects the descriptor's current position.
+        Self::file_write(file, input, u64::MAX)
     }
 
     fn sync(file: fd::BorrowedFd<'a>, mode: Sync) -> Self {

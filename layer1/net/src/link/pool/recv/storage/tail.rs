@@ -179,6 +179,11 @@ where
 pub trait Store: Seal + Sized {
     fn try_new<T, Tag: route::Tag>(cap: conn::Capacity) -> crate::Result<Table<T, Tag, Self>>;
 
+    /// Keeps the admitted resident while observing its deferred tail.
+    fn pending<T, Tag: route::Tag>(
+        slot: Slot<'_, T, Tag, Self>,
+    ) -> (occupied::Entry<'_, T, Tag>, bool);
+
     fn clear<'a, 'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, T>(
         slot: Slot<'a, types::Connection<'w, 'd, ID, W, T>, ID, Self>,
     ) -> Cleared<'a, types::Connection<'w, 'd, ID, W, T>, ID>;
@@ -191,6 +196,12 @@ impl Store for () {
             tail: (),
             storage: (),
         })
+    }
+
+    fn pending<T, Tag: route::Tag>(
+        slot: Slot<'_, T, Tag, Self>,
+    ) -> (occupied::Entry<'_, T, Tag>, bool) {
+        (slot.entry, false)
     }
 
     fn clear<'a, 'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, T>(
@@ -231,6 +242,13 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w> Store for Queued<'w, 'd, W> {
             tail: Self::try_new(cap)?,
             storage: (),
         })
+    }
+
+    fn pending<T, Tag: route::Tag>(
+        slot: Slot<'_, T, Tag, Self>,
+    ) -> (occupied::Entry<'_, T, Tag>, bool) {
+        let (entry, chunks) = slot.split();
+        (entry, !chunks.is_empty())
     }
 
     fn clear<'a, 'v, 'owner: 'v, ID: Identity + 'v, V: wire::Spec + 'v + 'owner, T>(

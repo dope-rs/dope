@@ -23,7 +23,7 @@ use dope_core::{
         life::{creation::Attempt, recovery},
         route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
     },
-    io::datagram::Gso,
+    io::datagram::{Gso, GsoPayload},
 };
 use dope_manifold::network::datagram::{self, plan, plan::Config, send};
 use dope_runtime::executor::session::Completion;
@@ -217,12 +217,30 @@ fn check_gso<'d, M: send::Segmented>(
             let original = retry.as_ptr();
             match State::<M>::queue(socket.as_mut(), (payload, size, address)) {
                 Ok(_) => {
-                    let rejected = State::<M>::queue(socket, (retry, size, address))
+                    let rejected = State::<M>::queue(socket.as_mut(), (retry, size, address))
                         .err()
                         .expect("one pending send fills the queue");
                     let (retry, cause) = rejected.into_parts();
                     assert_eq!(cause, datagram::RejectCause::QueueFull);
                     assert_eq!(retry.as_ptr(), original, "rejection preserves its owner");
+                    if let Some(size) = size {
+                        let mut retry = GsoPayload::try_new(retry, size)
+                            .unwrap_or_else(|_| panic!("admitted GSO shape"));
+                        let count = retry.packet_count();
+                        for _ in 0..2 {
+                            let rejected = socket
+                                .as_mut()
+                                .queue_gso_payload(retry, address)
+                                .err()
+                                .expect("full queue returns the admitted proof");
+                            let (returned, cause) = rejected.into_parts();
+                            assert_eq!(cause, datagram::RejectCause::QueueFull);
+                            assert_eq!(returned.as_ref().as_ptr(), original);
+                            assert_eq!(returned.segment_size(), size);
+                            assert_eq!(returned.packet_count(), count);
+                            retry = returned;
+                        }
+                    }
                     this.queued.hit();
                 }
                 Err(rejected) => {

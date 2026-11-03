@@ -2,7 +2,6 @@ use std::{cell::Cell, collections::VecDeque, net, rc::Rc};
 
 use dope_core::driver::{route::KeyTag, schedule::clock};
 use dope_manifold::network::datagram::{
-    Endpoint,
     hook::{self, app::Schedule, ingress},
     send::{Outcome, owners},
 };
@@ -44,13 +43,23 @@ impl handler::State for FailingSend<'_> {
     type Mode = ingress::Time;
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Application)]
-#[dispatcher(core = ::dope_core, manifold = ::dope_manifold, runtime = ::dope_runtime)]
-pub struct App<'d, H> {
-    #[pin]
-    #[manifold]
-    pub(crate) endpoint: Endpoint<'d, KeyTag<0>, H>,
+pub struct Reinstallation<'a, 'd> {
+    pub addr: net::SocketAddr,
+    pub queued: &'a mut Vec<owners::Queued<'d, KeyTag<0>>>,
+    pub flights: &'a mut Vec<owners::Flight<'d, KeyTag<0>>>,
+    pub current: Owners<'d>,
+    pub settled: Gate,
+}
+
+impl<'d> handler::State for Reinstallation<'_, 'd> {
+    type Hooks = <FailingSend<'d> as handler::State>::Hooks;
+    type Mode = ingress::Time;
+}
+
+impl handler::Progress for Reinstallation<'_, '_> {
+    fn is_runnable(&self) -> bool {
+        self.current.queued.is_none() && self.current.flight.is_none()
+    }
 }
 
 impl handler::Progress for FailingSend<'_> {

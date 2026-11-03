@@ -1,18 +1,14 @@
-use std::{
-    convert::Infallible, env::consts::OS, mem, net::TcpStream, ops::ControlFlow, time::Duration,
-};
+use std::{convert::Infallible, env::consts::OS, mem};
 
 use dope_core::{
     driver::{
         life::recovery,
-        result::poll,
         retained::{self, accept, arm, flight},
         route::{Epoch, KeyTag, indices::SlotIndex, kind},
         settings,
     },
     io::{
         event::{
-            Kind,
             batch::Flow,
             net::accept::{Failure, Outcome},
         },
@@ -75,7 +71,7 @@ fn pending_accept_identity() {
                     .driver_ref()
                     .targets::<KeyTag<0, kind::Accept>>()
                     .bind(SlotIndex::ZERO, Epoch::INITIAL);
-                let token = target.dispatch().erase_route();
+                let logical = target.dispatch().erase_route();
                 {
                     let mut state = arm::State::new(target);
                     assert!(state.begin().is_some());
@@ -168,19 +164,19 @@ fn pending_accept_identity() {
                         arm::Submission::Armed
                     ));
                     assert!(matches!(
-                        lanes.get_mut(0).expect("accept lane").retire(token),
+                        lanes.get_mut(0).expect("accept lane").retire(logical),
                         accept::Retire::Stale
                     ));
                     assert_eq!(lanes.active(), 1);
 
                     scope.quiesce();
-                    let terminal = match lanes.get_mut(0).expect("accept lane").retire(token) {
-                        accept::Retire::Done(accept::Retired::Terminal(terminal)) => Some(terminal),
+                    assert!(matches!(
+                        lanes.get_mut(0).expect("accept lane").retire(logical),
                         accept::Retire::Stale
-                        | accept::Retire::Done(accept::Retired::Cancelled) => None,
-                    }
-                    .expect("native terminal must release the lane");
-                    terminal.discard();
+                    ));
+                    scope.finish(false, |_, proof| lanes.finish(proof));
+                    assert_eq!(lanes.active(), 0);
+                    lanes = accept::Slots::new(vec![accept::Lane::new(target)].into_boxed_slice());
                     {
                         let pending = flights
                             .accept(
@@ -189,7 +185,8 @@ fn pending_accept_identity() {
                                 target.operation::<kind::Accept>(),
                             )
                             .expect("detached accept");
-                        assert!(pending.matches(token));
+                        assert!(!pending.matches(logical));
+                        assert!(pending.matches(pending.target()));
                     }
                     assert!(scope.try_boot().is_err());
                     scope.quiesce();
@@ -199,7 +196,6 @@ fn pending_accept_identity() {
 
                 let failure =
                     Failure::Syscall(dope_core::Errno::try_from(libc::ENFILE).expect("errno"));
-                let mut fd = None;
                 {
                     let driver = scope.context();
                     let owner = retained::raw::Owner::from_driver(driver.driver_ref());
@@ -211,34 +207,15 @@ fn pending_accept_identity() {
                         arm::Submission::Armed
                     ));
                 }
-                let peer = TcpStream::connect(address).expect("peer");
-                scope.with_driver(|mut driver, mut schedule| {
-                    let mut turn = schedule.begin();
-                    driver
-                        .wait(turn.reactor(), Some(Duration::from_secs(1)))
-                        .expect("accept");
-                    let dispatch = driver.dispatch(turn.reactor(), |event, _| {
-                        let done = match event.into_kind() {
-                            Kind::Accept(done) => Some(done),
-                            _ => None,
-                        }
-                        .expect("accept event");
-                        let (_, flow, outcome) = done.into_parts();
-                        assert_eq!(flow, Flow::Last);
-                        let slot = match outcome {
-                            Outcome::Accepted(slot) => Ok(slot),
-                            Outcome::Failed(error) => Err(error),
-                        }
-                        .expect("accepted slot");
-                        fd = Some(slot.bind());
-                        ControlFlow::Continue(())
-                    });
-                    assert!(matches!(
-                        dispatch,
-                        poll::Dispatch::Ready { retained: None, .. }
-                    ));
-                });
-                assert!(fd.is_some());
+                let (peer, completed) = common::driver::accept::connect(scope, address);
+                let (mut retired, flow, outcome) = completed.into_parts();
+                assert_eq!(flow, Flow::Last);
+                let accepted = match outcome {
+                    Outcome::Accepted(slot) => Ok(slot),
+                    Outcome::Failed(error) => Err(error),
+                }
+                .expect("accepted slot");
+                let mut fd = Some(accepted.bind());
                 let capacity = Failure::Capacity { close: Ok(()) };
                 assert!(!capacity.can_defer(&mut scope.context()));
                 let spare = Listener::bind(common::LOCALHOST).expect("outbound listener");
@@ -247,7 +224,7 @@ fn pending_accept_identity() {
                 drop(spare);
                 assert!(!capacity.can_defer(&mut scope.context()));
                 scope.quiesce();
-                let done = match lanes.get_mut(0).expect("lane").retire(token) {
+                let done = match lanes.get_mut(0).expect("lane").retire(retired) {
                     accept::Retire::Done(accept::Retired::Terminal(done)) => Some(done),
                     _ => None,
                 }
@@ -265,6 +242,11 @@ fn pending_accept_identity() {
                             arm::Submission::Armed
                         ));
                     }
+                    assert!(matches!(
+                        lanes.get_mut(0).expect("lane").retire(retired),
+                        accept::Retire::Stale
+                    ));
+                    assert_eq!(lanes.active(), 1);
                     let changed = match fd.take() {
                         Some(fd) => {
                             assert_eq!(fd.index(), SlotIndex::ZERO);
@@ -287,6 +269,14 @@ fn pending_accept_identity() {
                             false
                         }
                     };
+                    let (next_peer, completed) = common::driver::accept::connect(scope, address);
+                    let (token, flow, outcome) = completed.into_parts();
+                    assert_eq!(flow, Flow::Last);
+                    let accepted = match outcome {
+                        Outcome::Accepted(slot) => Ok(slot),
+                        Outcome::Failed(error) => Err(error),
+                    }
+                    .expect("accepted slot");
                     scope.quiesce();
                     assert!(!failure.can_defer(&mut scope.context()));
                     let done = match lanes.get_mut(0).expect("lane").retire(token) {
@@ -298,12 +288,16 @@ fn pending_accept_identity() {
                         done.can_defer(&failure, &mut scope.context()),
                         changed && OS == "linux"
                     );
+                    drop(accepted);
                     // A completed close does not replace the backend's local-slot proof.
                     assert_eq!(
                         done.can_defer(&capacity, &mut scope.context()),
                         OS == "macos"
                     );
                     done.discard();
+                    retired = token;
+                    drop(next_peer);
+                    scope.quiesce();
                 }
                 drop(peer);
 
@@ -317,16 +311,19 @@ fn pending_accept_identity() {
                 ));
                 state.stop(&mut scope.context());
                 assert!(matches!(
-                    state.complete(token, Flow::Last),
+                    state.complete(logical, Flow::Last),
                     arm::Disposition::Discard
                 ));
                 state.restart();
                 assert!(state.begin().is_none());
                 scope.quiesce();
                 assert!(matches!(
-                    state.complete(token, Flow::Last),
+                    state.complete(logical, Flow::Last),
                     arm::Disposition::Discard
                 ));
+                state.restart();
+                assert!(state.begin().is_none());
+                scope.finish(false, |_, proof| state.finish(proof));
                 state.restart();
                 assert!(state.begin().is_some());
                 listener.close(&mut scope.context());

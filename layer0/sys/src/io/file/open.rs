@@ -13,6 +13,7 @@ impl Open {
     pub const DIRECTORY: Self = Self(libc::O_RDONLY | libc::O_DIRECTORY);
     pub const CREATE: Self = Self(libc::O_CREAT);
     pub const EXCLUSIVE: Self = Self(libc::O_EXCL);
+    pub const APPEND: Self = Self(libc::O_APPEND);
     pub const TRUNCATE: Self = Self(libc::O_TRUNC);
     pub const NO_FOLLOW: Self = Self(libc::O_NOFOLLOW);
     pub const NONBLOCK: Self = Self(libc::O_NONBLOCK);

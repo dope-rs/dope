@@ -56,9 +56,14 @@ impl Target {
         route::Token::from_flight(self.epoch, [a, b, c, d, e, f], self.kind, self.route)
     }
 
-    fn bind<'d, C: kind::Class>(self, driver: driver::Invariant<'d>) -> route::Erased<'d, C> {
+    fn bind<'d, C: kind::Class>(
+        self,
+        driver: driver::Invariant<'d>,
+        flight: raw::Echo,
+    ) -> route::Erased<'d, C> {
         route::Erased {
             token: self.token(),
+            flight: Some(flight),
             driver,
             class: marker::PhantomData,
         }
@@ -372,11 +377,11 @@ impl<'d, C: kind::Class> Flight<'d, C> {
     }
 
     pub fn target(&self) -> route::Erased<'d, C> {
-        self.flight.value().bind(self.driver.0)
+        self.flight.value().bind(self.driver.0, self.key())
     }
 
     pub fn matches(&self, target: route::Erased<'d, C>) -> bool {
-        self.target().matches(target)
+        self.target().matches_flight(target)
     }
 
     pub(in crate::driver) fn finish(mut self, proof: &mut finish::Finish<'_, 'd>) {

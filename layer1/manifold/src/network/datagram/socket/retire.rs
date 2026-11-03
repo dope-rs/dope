@@ -36,6 +36,9 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
         let Some(entry) = self.in_flight.access().occupied(target.parts()) else {
             return Ok(None);
         };
+        if !entry.get().matches(done.token()) {
+            return Err(done);
+        }
         entry.discard();
         Ok(Some(done.outcome().into()))
     }
@@ -57,6 +60,9 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
         let Some(entry) = self.in_flight.access().occupied(target.parts()) else {
             return Ok(());
         };
+        if !entry.get().matches(done.token()) {
+            return Err(done);
+        }
         let result = done.outcome().into();
         let send = entry.remove();
         let owner = owners::Flight::new(target);

@@ -237,11 +237,14 @@ impl<T: Tag, C: kind::Class> hash::Hash for Operation<'_, T, C> {
     }
 }
 
-/// Operation identity after deliberately erasing only its route tag.
+/// Logical operation target with its native flight identity when submitted.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
+#[repr(C)]
 pub struct Erased<'d, C: kind::Class> {
     pub(in crate::driver) token: Token,
+    // Completion delivery preserves the already-admitted native identity even
+    // after its arena slot is released. Logical routing remains independent.
+    pub(in crate::driver) flight: Option<super::retained::flight::raw::Echo>,
     pub(in crate::driver) driver: super::Invariant<'d>,
     pub(in crate::driver) class: marker::PhantomData<C>,
 }
@@ -250,6 +253,7 @@ impl<'d> Erased<'d, kind::Any> {
     pub(in crate::driver) const fn new(token: Token, driver: super::Invariant<'d>) -> Self {
         Self {
             token,
+            flight: None,
             driver,
             class: marker::PhantomData,
         }
@@ -259,6 +263,7 @@ impl<'d> Erased<'d, kind::Any> {
         let kind::Witness(class) = proof;
         Erased {
             token: self.token,
+            flight: self.flight,
             driver: self.driver,
             class,
         }
@@ -268,6 +273,12 @@ impl<'d> Erased<'d, kind::Any> {
 impl<'d, C: kind::Class> Erased<'d, C> {
     pub fn matches(self, target: Self) -> bool {
         self.token == target.token
+    }
+
+    pub(crate) fn matches_flight(self, target: Self) -> bool {
+        // The shared driver brand fixes the arena; an echo is never reused and
+        // identifies one immutable target.
+        self.flight.is_some() && self.flight == target.flight
     }
 
     pub const fn route(self) -> Route {
@@ -311,9 +322,15 @@ pub mod kind;
 pub const SHUTDOWN: Control = Control::new(<kind::Shutdown as kind::Class>::CODE, SlotIndex::ZERO);
 
 const _: () = {
-    assert!(mem::size_of::<Erased<'static, kind::Send>>() == mem::size_of::<Token>());
+    assert!(
+        mem::size_of::<Erased<'static, kind::Send>>()
+            == mem::size_of::<Token>() + mem::size_of::<usize>()
+    );
     assert!(mem::align_of::<Erased<'static, kind::Send>>() == mem::align_of::<Token>());
-    assert!(mem::size_of::<Mismatch<'static, KeyTag<1>, kind::Send>>() == mem::size_of::<Token>());
+    assert!(
+        mem::size_of::<Mismatch<'static, KeyTag<1>, kind::Send>>()
+            == mem::size_of::<Erased<'static, kind::Send>>()
+    );
 };
 const _: () = assert!(mem::size_of::<Id>() == mem::size_of::<u8>());
 const _: () = assert!(mem::size_of::<Route>() == mem::size_of::<u8>());

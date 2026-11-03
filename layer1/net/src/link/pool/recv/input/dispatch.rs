@@ -14,7 +14,7 @@ use crate::{
                     observed::{self, Delivery as _, Observation, Observed},
                     resume::Resume,
                 },
-                storage::{self, queue::Ops as _},
+                storage::{self, queue::Ops as _, tail},
             },
             send,
         },
@@ -99,16 +99,21 @@ pub trait Dispatch<W: wire::Spec>: storage::raw::Mode + drain::Policy<W> + send:
         M: input::Mode<W, Ingress = Self>,
         D: demand::Mode,
     {
-        let Some((slot, mut recv)) = pool.prepared.slab.get(key.parts()) else {
+        let Some((slot, mut recv)) =
+            tail::Slot::receive::<M::Ingress>(&mut pool.prepared.slab, key.parts())
+        else {
             return;
         };
+        let (mut entry, tail) = tail::Store::pending(slot);
+        let slot = entry.get_mut();
         let queued = recv.storage.has_queued();
         let close = slot.engine.operations.lifecycle.is_closing();
         let ended = slot.terminal.is_read_done();
         let next = slot.engine.operations.recv.resume_app(close || ended);
         let wake = !close
             && ((queued && (ended || next.is_some() && !slot.engine.operations.recv.is_paused()))
-                || (slot.terminal.has_eof() && next.is_some()));
+                || (tail && next.is_some())
+                || (slot.terminal.is_pending() && next.is_some()));
         let ready = wake.then(|| slot.io().ready_handle());
         if next.is_some_and(duplex::Rearm::is_needed) && !queued {
             recv.rearm.queue();

@@ -1,6 +1,7 @@
 use std::{marker, mem, num};
 
 use dope_core::driver::route::{Identity, KeyTag};
+use o3::base::marker::ThreadBound;
 
 /// Driver- and route-bound identity of one queued payload.
 ///
@@ -17,6 +18,7 @@ use dope_core::driver::route::{Identity, KeyTag};
 pub struct Queued<'d, ID: Identity> {
     serial: num::NonZero<u64>,
     driver: marker::PhantomData<fn(o3::base::cell::region::Identity<'d>) -> ID>,
+    thread: ThreadBound,
 }
 
 impl<'d, ID: Identity> Queued<'d, ID> {
@@ -24,6 +26,7 @@ impl<'d, ID: Identity> Queued<'d, ID> {
         Self {
             serial,
             driver: marker::PhantomData,
+            thread: ThreadBound::NEW,
         }
     }
 }

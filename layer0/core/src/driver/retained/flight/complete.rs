@@ -50,7 +50,10 @@ impl<'q, 'd, C: kind::Flight> TryFrom<Complete<'q, 'd>> for Complete<'q, 'd, C> 
 
 impl<'d, C: kind::Class> From<&Complete<'_, 'd, C>> for route::Erased<'d, C> {
     fn from(bound: &Complete<'_, 'd, C>) -> Self {
-        bound.completion.value().bind(bound.driver.brand)
+        bound.completion.value().bind(
+            bound.driver.brand,
+            super::raw::Echo::from_inner(bound.completion.echo()),
+        )
     }
 }
 
@@ -60,11 +63,13 @@ impl<'d, C: kind::Class> Complete<'_, 'd, C> {
     }
 
     pub(crate) fn complete(self) -> route::Erased<'d, C> {
-        self.completion.complete().bind(self.driver.brand)
+        let echo = super::raw::Echo::from_inner(self.completion.echo());
+        self.completion.complete().bind(self.driver.brand, echo)
     }
 
     pub(crate) fn settle(self, flow: Flow) -> route::Erased<'d, C> {
-        self.completion.settle(flow).bind(self.driver.brand)
+        let echo = super::raw::Echo::from_inner(self.completion.echo());
+        self.completion.settle(flow).bind(self.driver.brand, echo)
     }
 }
 

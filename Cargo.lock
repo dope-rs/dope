@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "dope"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "dope-core"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-kqueue",
  "dope-sys",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "dope-dns"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "dope-fiber"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope",
  "dope-core",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "dope-gen"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -60,12 +60,12 @@ dependencies = [
  "pin-project",
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "dope-kqueue"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-sys",
  "libc",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "dope-manifold"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "dope-net"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-core",
  "dope-test",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "dope-runtime"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "dope-sys"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "libc",
  "o3",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "dope-test"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "dope-uring"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dope-sys",
  "libc",
@@ -141,15 +141,15 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "o3"
-version = "0.20.1"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d27c530babfba7ce3073cb1933b3fd60a890fa0a582e5c104ea88369ec8706f"
+checksum = "7d6a416560383663535fc40b6e8e325f01ad46c562e6f98fcbde706f0c498457"
 
 [[package]]
 name = "pin-project"
@@ -202,9 +202,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.5"
+version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
+checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -213,6 +213,6 @@ dependencies = [
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.24"
+version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"

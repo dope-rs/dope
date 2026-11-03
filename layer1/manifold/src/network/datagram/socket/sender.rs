@@ -48,6 +48,15 @@ pub(in crate::network::datagram) struct Sender<
     phase: send::Phase,
 }
 
+impl<ID: Identity, B, M: send::Mode, F> Sender<'_, ID, B, M, F> {
+    pub(in crate::network::datagram) fn next_generation(&self) -> Option<route::Epoch> {
+        self.pending
+            .next_generation()
+            .zip(self.in_flight.view().next_generation())
+            .map(|(queued, flight)| queued.max(flight))
+    }
+}
+
 impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode>
     Sender<'d, ID, B, M>
 {
@@ -84,22 +93,38 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         P: buffer::Residency + buffer::raw::Source,
         F: FnOnce(bounded::Value<P>) -> kernel::Payload<'d, B>,
     {
-        self.enqueue(value, M::address(&addr), resident, |value| {
+        self.try_queue(value, M::address(&addr), M::control(addr, None), build)
+    }
+
+    pub(in crate::network::datagram) fn try_queue<P, F>(
+        &mut self,
+        value: P,
+        addr: net::SocketAddr,
+        control: M::Queued,
+        build: F,
+    ) -> Result<owners::Queued<'d, ID>, Rejected<P>>
+    where
+        P: buffer::Residency + buffer::raw::Source,
+        F: FnOnce(bounded::Value<P>) -> kernel::Payload<'d, B>,
+    {
+        self.enqueue(value, addr, resident, |value| {
             let value = try_bound(value)?;
-            Ok((build(value), M::control(addr, None)))
+            Ok((build(value), control))
         })
     }
 
-    pub(super) fn gso<P>(
+    pub(super) fn gso<P, T>(
         &mut self,
-        value: datagram::GsoPayload<P>,
+        value: P,
         addr: M::Address,
     ) -> Result<owners::Queued<'d, ID>, Rejected<P>>
     where
         M: send::Segmented,
-        P: buffer::Residency + buffer::raw::Convert<Vec<u8>>,
+        P: buffer::Residency + buffer::raw::Convert<datagram::GsoPayload<T>>,
+        T: buffer::raw::Convert<Vec<u8>>,
     {
         self.enqueue(value, M::address(&addr), resident, |value| {
+            let value = buffer::raw::Convert::into(value);
             // SAFETY: conversion preserves the admitted extent, and the queued
             // owner retains its exact payload and segment together through retirement.
             let (payload, segment) = unsafe { datagram::raw::Payload::from(value).into_parts() };
@@ -108,17 +133,18 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
                 M::control(addr, Some(segment)),
             ))
         })
-        .map_err(|rejected| rejected.map(|value| value.into_payload().into_inner()))
     }
 
     pub(super) fn sourced(&mut self, value: B, source: source::Source) -> Result<(), Rejected<B>>
     where
         M: send::Mode<Queued = source::Control>,
     {
-        self.enqueue(value, source.peer(), resident, |value| {
-            let value = try_bound(value)?;
-            Ok((kernel::Payload::Buffer(value), source.control()))
-        })?;
+        self.try_queue(
+            value,
+            source.peer(),
+            source.control(),
+            kernel::Payload::Buffer,
+        )?;
         Ok(())
     }
 
@@ -193,81 +219,6 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         }
     }
 
-    pub(in crate::network::datagram) fn flush_with<'fd, 'turn, 'owner>(
-        &mut self,
-        mut select: impl FnMut(&M::Queued) -> &'fd handles::Datagram<'d>,
-        work: app::Work<'turn, 'd>,
-        driver: &mut Context<'_, 'owner, 'd>,
-        mut transfer: Option<impl FnMut(send::Transfer<'d, ID>)>,
-    ) -> Result<(), result::SubmitError>
-    where
-        'd: 'fd + 'owner,
-    {
-        let Self {
-            pending: queue,
-            in_flight: slots,
-            flights: ops,
-            space,
-            phase,
-            ..
-        } = self;
-        match phase.begin() {
-            send::Pass::Run => {}
-            send::Pass::Stop => return Ok(()),
-        }
-        loop {
-            let step = work.run(|| {
-                let front = queue.front()?;
-                let slot = match slots.vacancy().try_reserve() {
-                    Ok(slot) => slot,
-                    Err(Vacancy::Full) => return None,
-                    Err(Vacancy::IdentityExhausted) => {
-                        let error = result::SubmitError::from(Vacancy::IdentityExhausted);
-                        *phase = send::Phase::Failed(error);
-                        return Some(Err(error));
-                    }
-                };
-                let key = slot.key();
-                let target = (*space).bind(key.slot(), key.epoch());
-                let moved = front.submit(|queued| {
-                    let fd = select(&queued.control);
-                    send::Stage::<ID, B, M>::new(slot, queued)
-                        .submit(|draft| {
-                            super::try_submit(fd, draft, target, driver.reborrow(), ops)
-                        })
-                        .map(|()| owners::Flight::new(target.operation::<Send>()))
-                });
-                Some(match moved {
-                    pending::Commit::Submitted((queued, flight)) => {
-                        if let Some(transfer) = &mut transfer {
-                            transfer(send::Transfer::new(queued, flight));
-                        }
-                        Ok(true)
-                    }
-                    pending::Commit::Deferred(error) => match error.cause() {
-                        result::SubmitCause::Full => {
-                            *phase = send::Phase::Deferred;
-                            Ok(false)
-                        }
-                        result::SubmitCause::IdentityExhausted => {
-                            *phase = send::Phase::Failed(error);
-                            Err(error)
-                        }
-                    },
-                })
-            });
-            match step {
-                quota::Admission::Item(result) => {
-                    if !result? {
-                        break;
-                    }
-                }
-                quota::Admission::Empty | quota::Admission::Exhausted => break,
-            }
-        }
-        Ok(())
-    }
-
     pub(in crate::network::datagram) fn retire(&mut self) -> Retire<'_, 'd, ID, B, M> {
         let Self {
             pending,
@@ -303,9 +254,12 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
     Sender<'d, ID, B, M, ()>
 {
     pub(in crate::network::datagram) fn commit(
-        self,
+        mut self,
         flights: flight::Slots<'d, <ID as route::Materialize<Send>>::With>,
+        floor: Option<route::Epoch>,
     ) -> Sender<'d, ID, B, M> {
+        self.pending.advance_to(floor);
+        self.in_flight.access().advance_to(floor);
         let Self {
             pending,
             in_flight: active,
@@ -349,4 +303,102 @@ fn try_charge(budget: Option<Budget<'_>>, size: NonZero<usize>) -> Result<Charge
             available: free,
         }
     })
+}
+
+mod raw {
+    use dope_core::driver::retained::raw::Submission;
+
+    use super::{
+        Context, Identity, Send, Sender, Vacancy, app, buffer, flights, handles, owners, pending,
+        quota, result, send,
+    };
+
+    impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode>
+        Sender<'d, ID, B, M>
+    {
+        pub(in crate::network::datagram) fn flush_with<'fd, 'turn, 'owner>(
+            &mut self,
+            mut select: impl FnMut(&M::Queued) -> &'fd handles::Datagram<'d>,
+            work: app::Work<'turn, 'd>,
+            driver: &mut Context<'_, 'owner, 'd>,
+            mut transfer: Option<impl FnMut(send::Transfer<'d, ID>)>,
+        ) -> Result<(), result::SubmitError>
+        where
+            'd: 'fd + 'owner,
+        {
+            let Self {
+                pending: queue,
+                in_flight: slots,
+                flights: ops,
+                space,
+                phase,
+                ..
+            } = self;
+            match phase.begin() {
+                send::Pass::Run => {}
+                send::Pass::Stop => return Ok(()),
+            }
+            loop {
+                let step = work.run(|| {
+                    let front = queue.front()?;
+                    let slot = match slots.vacancy().try_reserve() {
+                        Ok(slot) => slot,
+                        Err(Vacancy::Full) => return None,
+                        Err(Vacancy::IdentityExhausted) => {
+                            let error = result::SubmitError::from(Vacancy::IdentityExhausted);
+                            *phase = send::Phase::Failed(error);
+                            return Some(Err(error));
+                        }
+                    };
+                    let key = slot.key();
+                    let target = (*space).bind(key.slot(), key.epoch());
+                    let moved = front.submit(|queued| {
+                        let fd = select(&queued.control);
+                        let mut slot = slot.stage(flights::Backing::new(queued));
+                        let (message, flight) = slot.get_mut().fill_message();
+                        let op = Submission::send_msg(fd, message, target);
+                        // SAFETY: the reserved slab retains the complete message graph
+                        // at stable addresses through completion or quiescent finish.
+                        match unsafe { op.try_submit(driver.reborrow(), ops) } {
+                            Ok(op) => {
+                                // This field was split before submission; writing it
+                                // cannot reborrow the graph now retained by the driver.
+                                *flight = Some(op);
+                                slot.publish();
+                                Ok(owners::Flight::new(target.operation::<Send>()))
+                            }
+                            Err(error) => Err((error, slot.reject().into_queued())),
+                        }
+                    });
+                    Some(match moved {
+                        pending::Commit::Submitted((queued, flight)) => {
+                            if let Some(transfer) = &mut transfer {
+                                transfer(send::Transfer::new(queued, flight));
+                            }
+                            Ok(true)
+                        }
+                        pending::Commit::Deferred(error) => match error.cause() {
+                            result::SubmitCause::Full => {
+                                *phase = send::Phase::Deferred;
+                                Ok(false)
+                            }
+                            result::SubmitCause::IdentityExhausted => {
+                                *phase = send::Phase::Failed(error);
+                                Err(error)
+                            }
+                        },
+                    })
+                });
+                match step {
+                    quota::Admission::Item(result) => {
+                        if !result? {
+                            break;
+                        }
+                    }
+                    quota::Admission::Empty | quota::Admission::Exhausted => break,
+                }
+            }
+            Ok(())
+        }
+    }
 }

@@ -320,19 +320,27 @@ const _: () = {
     );
     assert!(
         std::mem::size_of::<Data<'static>>()
-            == std::mem::size_of::<(route::Token, Lease<'static>)>()
+            == std::mem::size_of::<(route::Erased<'static, kind::Recv>, Lease<'static>)>()
     );
     assert!(
         std::mem::align_of::<Data<'static>>()
-            == std::mem::align_of::<(route::Token, Lease<'static>)>()
+            == std::mem::align_of::<(route::Erased<'static, kind::Recv>, Lease<'static>)>()
     );
     assert!(
         std::mem::size_of::<Control<'static>>()
-            == std::mem::size_of::<(route::Token, recv::Status, recv::ControlKind<'static>,)>()
+            == std::mem::size_of::<(
+                route::Erased<'static, kind::Recv>,
+                recv::Status,
+                recv::ControlKind<'static>,
+            )>()
     );
     assert!(
         std::mem::align_of::<Control<'static>>()
-            == std::mem::align_of::<(route::Token, recv::Status, recv::ControlKind<'static>,)>()
+            == std::mem::align_of::<(
+                route::Erased<'static, kind::Recv>,
+                recv::Status,
+                recv::ControlKind<'static>,
+            )>()
     );
     assert!(std::mem::size_of::<Kind<'static>>() <= std::mem::size_of::<Completion<'static>>());
     assert!(std::mem::size_of::<SendFailure<dope_core::Errno>>() == std::mem::size_of::<usize>());

@@ -1,39 +1,23 @@
 use std::{io, mem, net, os::fd, time};
 
 use dope_core::io::datagram;
-use dope_sys::io::socket::route::{Plan, count};
+use dope_sys::io::socket::route::{Plan, count, selector::PrefixPlan};
 
 pub mod common;
-use common::rt::route::SELECTOR;
+use common::rt::route::{self, SELECTOR};
 use dope_test::alloc::Tracker;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
-
-/// BPF map creation needs `CAP_BPF`; sandboxes without it answer `EPERM`.
-fn is_bpf_denied(error: &datagram::Error) -> bool {
-    let denied = matches!(
-        error,
-        datagram::Error::Syscall {
-            operation: datagram::Operation::MapCreate,
-            errno,
-        } if errno.code().get() == libc::EPERM
-    );
-    if denied {
-        eprintln!("skip: BPF map creation denied (EPERM)");
-    }
-    denied
-}
 
 #[test]
 fn selector_routes_packets() {
     let count = { (count::Count::try_from(2)).expect("count rejected: {error:?}") };
     let selector = SELECTOR;
     let addr = { ("127.0.0.1:0".parse()).expect("loopback address rejected: {error}") };
-    let group = datagram::Group::bind(addr, Plan::new(count, selector));
-    if let Err(error) = &group
-        && is_bpf_denied(error)
-    {
+    let plan = Plan::new(count, selector);
+    let group = datagram::Group::bind(addr, plan);
+    if !route::is_available(&group, addr, plan) {
         return;
     }
     let group = group.expect("required fixture outcome");
@@ -113,15 +97,96 @@ fn selector_routes_packets() {
 }
 
 #[test]
+fn dual_framing_routes_packets() {
+    let count = count::Count::try_from(2).expect("valid route count");
+    let prefix = PrefixPlan::fixed::<31, 0xc0, 0x14, 0x16>();
+    let plan = Plan::new(count, SELECTOR).with_prefix(prefix);
+    let address = net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let group = datagram::Group::bind(address, plan);
+    if !route::is_available(&group, address, plan) {
+        return;
+    }
+    let mut entries = group.expect("dual selector rejected").into_entries();
+    let receivers: [net::UdpSocket; 2] = std::array::from_fn(|_| {
+        net::UdpSocket::from(entries.next().expect("admitted route missing").1.into_fd())
+    });
+    let address = receivers[0]
+        .local_addr()
+        .expect("route address unavailable");
+    let sender = net::UdpSocket::bind("127.0.0.1:0").expect("sender unavailable");
+    for (key, receiver) in receivers.iter().enumerate() {
+        receiver
+            .set_read_timeout(Some(time::Duration::from_millis(100)))
+            .expect("route timeout rejected");
+        // A long header with its fixed bit clear includes version negotiation.
+        for (first, length, key_at) in [(0x40, 10, 1), (0x80, 16, 6)] {
+            let mut packet = [0; 47];
+            packet[31] = first;
+            packet[36] = 9;
+            packet[31 + key_at] = key as u8;
+            let mut received = [0; 47];
+            sender
+                .send_to(&packet[31..31 + length], address)
+                .expect("send direct failed");
+            let (len, _) = receiver
+                .recv_from(&mut received)
+                .expect("receive direct failed");
+            assert_eq!(&received[..len], &packet[31..31 + length]);
+            for tag in prefix.tags() {
+                packet[0] = tag;
+                sender
+                    .send_to(&packet[..31 + length], address)
+                    .expect("send prefixed failed");
+                let (len, _) = receiver
+                    .recv_from(&mut received)
+                    .expect("receive prefixed failed");
+                assert_eq!(&received[..len], &packet[..31 + length]);
+            }
+        }
+    }
+    let mut invalid = [0; 47];
+    invalid[0] = 0x14;
+    for (inner, length, declared, key) in [
+        (0x40, 31, 9, 0),
+        (0x14, 47, 9, 0),
+        (0x16, 47, 9, 0),
+        (0x15, 47, 9, 0),
+        (0x80, 46, 9, 0),
+        (0x80, 47, 8, 0),
+        (0x40, 41, 9, 2),
+    ] {
+        invalid[31] = inner;
+        invalid[32] = key;
+        invalid[36] = declared;
+        invalid[37] = key;
+        sender
+            .send_to(&invalid[..length], address)
+            .expect("send invalid failed");
+    }
+    // The explicit dual format rejects unknown tags in the non-QUIC domain.
+    invalid[0] = 0x15;
+    invalid[31] = 0x40;
+    invalid[32] = 0;
+    sender
+        .send_to(&invalid, address)
+        .expect("send unknown failed");
+    for receiver in &receivers {
+        let mut received = [0; 47];
+        assert!(matches!(
+            receiver.recv_from(&mut received),
+            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+        ));
+    }
+}
+
+#[test]
 fn preserves_dense_routes() {
     for raw in [1, 3, 256] {
         let count = (count::Count::try_from(raw)).expect("valid route count rejected");
         let address = net::SocketAddr::from(([127, 0, 0, 1], 0));
         let plan = Plan::new(count, SELECTOR);
         let (group, activity) = Tracker::measure(|| datagram::Group::bind(address, plan));
-        if let Err(error) = &group
-            && is_bpf_denied(error)
-        {
+        if !route::is_available(&group, address, plan) {
             return;
         }
         let group = group.expect("required fixture outcome");
@@ -161,10 +226,10 @@ fn rejects_bound_address() {
     let count = count::Count::try_from(256).expect("valid dense route count");
     let plan = Plan::new(count, SELECTOR);
     let (failed, activity) = Tracker::measure(|| datagram::Group::bind(address, plan));
-    let error = failed.err().expect("occupied address admitted");
-    if is_bpf_denied(&error) {
+    if !route::is_available(&failed, address, plan) {
         return;
     }
+    let error = failed.err().expect("occupied address admitted");
     assert!(
         matches!(
             error,

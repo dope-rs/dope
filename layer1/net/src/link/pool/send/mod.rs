@@ -213,6 +213,16 @@ where
             let Some(mut egress) = pool.sender(key.connection()) else {
                 return SendOutcome::Drop;
             };
+            if !egress
+                .connection
+                .control
+                .engine
+                .operations
+                .sending
+                .matches(token)
+            {
+                return SendOutcome::Drop;
+            }
             let (end, space) = {
                 use crate::wire::send::Availability;
 

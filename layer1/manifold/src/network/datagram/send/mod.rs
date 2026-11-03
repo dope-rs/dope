@@ -19,10 +19,6 @@ pub(super) mod pending;
 pub(super) mod retained;
 mod sealed;
 pub(super) use sealed::Sealed;
-mod stage;
-
-pub(super) use stage::{Draft, Stage};
-
 pub enum Outcome {
     Sent(transfer::Len),
     Failed(dope_core::Errno),

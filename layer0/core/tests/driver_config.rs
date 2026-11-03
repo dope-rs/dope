@@ -232,6 +232,40 @@ fn invalid_receive() {
 }
 
 #[test]
+fn datagram_wire_extent_uses_physical_family() {
+    use std::num::NonZero;
+
+    for (address, bytes) in [
+        ("192.0.2.1:443", 65_507),
+        ("[::ffff:192.0.2.1]:443", 65_507),
+        ("[2001:db8::1]:443", 65_527),
+        ("[::192.0.2.1]:443", 65_527),
+    ] {
+        let peer = address.parse().expect("valid peer address");
+        let maximum = NonZero::<u16>::new(bytes).expect("nonzero UDP maximum");
+        assert_eq!(payload::maximum(peer), maximum);
+        assert_eq!(payload::try_extent(peer, maximum.into(), 0), Ok(maximum));
+        let inner = NonZero::<usize>::new(usize::from(bytes) - 31).expect("nonempty inner");
+        assert_eq!(payload::try_extent(peer, inner, 31), Ok(maximum));
+        assert_eq!(
+            payload::try_extent(peer, inner, 32),
+            Err(payload::ExtentError::TooLarge {
+                actual: NonZero::<usize>::from(maximum).saturating_add(1),
+                maximum,
+            })
+        );
+    }
+    let peer = SocketAddr::from(([192, 0, 2, 1], 443));
+    assert_eq!(
+        payload::try_extent(peer, NonZero::<usize>::MAX, 1),
+        Err(payload::ExtentError::Overflow {
+            payload: NonZero::<usize>::MAX,
+            prefix: 1,
+        })
+    );
+}
+
+#[test]
 fn datagram_layout() {
     use std::num::NonZero;
 

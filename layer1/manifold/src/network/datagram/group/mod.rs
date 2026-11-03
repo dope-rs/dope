@@ -38,7 +38,7 @@ pub(super) struct Member<'d, ID: Identity> {
     pub(super) addr: net::SocketAddr,
 }
 
-/// Read-only handler access retaining the installed group and driver brand.
+/// Read-only access retaining the installed group and driver brand.
 #[repr(transparent)]
 pub struct View<'step, 'd: 'step, ID: Identity, H> {
     owner: dispatch::raw::Installed<'step, 'd, raw::Endpoint<'d, ID, H>>,
@@ -64,18 +64,45 @@ impl<'d, ID: Identity> Access<'_, 'd, ID> {
         slot: SlotIndex,
         address: net::SocketAddr,
     ) -> Result<(), Rejected<packet::Packet<'turn, 'd>>> {
+        self.queue(packet, slot, |sender, packet| {
+            sender
+                .try_receive(packet.into_lease(), address, slot)
+                .map_err(|rejected| rejected.map(packet::Packet::new))
+        })
+    }
+
+    /// Queues an owned pool slot through a member, returning it unchanged on rejection.
+    pub fn queue_pooled(
+        &mut self,
+        cursor: pool::Cursor,
+        slot: SlotIndex,
+        address: net::SocketAddr,
+    ) -> Result<(), Rejected<pool::Cursor>> {
+        self.queue(cursor, slot, |sender, cursor| {
+            sender.try_queue(cursor, address, slot, send::kernel::Payload::Buffer)?;
+            Ok(())
+        })
+    }
+
+    fn queue<P>(
+        &mut self,
+        value: P,
+        slot: SlotIndex,
+        enqueue: impl FnOnce(
+            &mut Sender<'d, ID, pool::Cursor, send::Routed>,
+            P,
+        ) -> Result<(), Rejected<P>>,
+    ) -> Result<(), Rejected<P>> {
         let Some(member) = self.members.get(slot.index().get() as usize) else {
             return Err(Rejected::new(
-                packet,
+                value,
                 RejectCause::Slot {
                     requested: slot,
                     capacity: self.members.len(),
                 },
             ));
         };
-        self.sender
-            .try_receive(packet.into_lease(), address, slot)
-            .map_err(|rejected| rejected.map(packet::Packet::new))?;
+        enqueue(self.sender, value)?;
         if !member.receive.is_live() {
             mark(self.ready, slot);
         }

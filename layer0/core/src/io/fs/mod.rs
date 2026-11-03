@@ -187,6 +187,23 @@ where
             target.operation::<Write>(),
         )
     }
+
+    /// Writes at the descriptor's current position, honoring its append flag.
+    /// The descriptor's owner must serialize writes that share this position.
+    #[doc(hidden)]
+    pub fn write_current_prefix(
+        fd: fd::BorrowedFd<'a>,
+        buffer: bytes::Prefix<'a, { transfer::MAX_BYTES }>,
+        target: route::Target<'d, Tag>,
+    ) -> Self
+    where
+        Tag: route::Select<Write>,
+    {
+        Self::bind(
+            Request::write_current(fd, buffer),
+            target.operation::<Write>(),
+        )
+    }
 }
 
 impl<'a, 'd, Tag> Submission<'a, 'd, Tag, kind::Sync>
