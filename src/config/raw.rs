@@ -2,7 +2,7 @@
 
 use std::{ptr, sync::Arc};
 
-use o3::alloc::{BoxExt, BoxSliceExt as _};
+use o3::alloc::BoxExt;
 use o3::base::marker::ThreadBound;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::{AlwaysResolvesClientRawPublicKeys, Resumption};
@@ -14,7 +14,7 @@ use rustls::pki_types::{
 };
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::server::{AlwaysResolvesServerRawPublicKeys, NoClientAuth, NoServerSessionStorage};
-use rustls::sign::CertifiedKey;
+use rustls::sign::{CertifiedKey, SigningKey};
 use rustls::{
     CertificateError, ClientConfig, DigitallySignedStruct, DistinguishedName, Error,
     InconsistentKeys, PeerIncompatible, ServerConfig, SignatureScheme,
@@ -42,6 +42,27 @@ pub struct Identity {
 impl Identity {
     /// Loads an Ed25519 seed through AWS-LC.
     pub fn from_seed(seed: &[u8; 32]) -> Result<Self, crate::Error> {
+        let (key, public) = Self::try_load(seed)?;
+        let mut cert: Box<[u8]> = <Box<_> as BoxExt<_>>::try_new([0; SPKI.len() + 32])?;
+        cert[..SPKI.len()].copy_from_slice(&SPKI);
+        cert[SPKI.len()..].copy_from_slice(&public);
+        let cert = CertificateDer::from(cert.into_vec());
+        let certs: Box<[CertificateDer<'static>]> = <Box<_> as BoxExt<_>>::try_new([cert])?;
+        let key = Arc::new(CertifiedKey::new(certs.into_vec(), key));
+        Ok(Self {
+            key,
+            public_key: public,
+            _thread: ThreadBound::NEW,
+        })
+    }
+
+    /// Derives the public key without constructing a TLS certificate owner.
+    pub fn try_public_key_from_seed(seed: &[u8; 32]) -> Result<[u8; 32], crate::Error> {
+        let (_, public) = Self::try_load(seed)?;
+        Ok(public)
+    }
+
+    fn try_load(seed: &[u8; 32]) -> Result<(Arc<dyn SigningKey>, [u8; 32]), crate::Error> {
         let mut encoded = [0; PKCS8.len() + 32];
         encoded[..PKCS8.len()].copy_from_slice(&PKCS8);
         encoded[PKCS8.len()..].copy_from_slice(seed);
@@ -59,14 +80,8 @@ impl Identity {
             .strip_prefix(&SPKI)
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| Error::InvalidCertificate(CertificateError::BadEncoding))?;
-        let cert = CertificateDer::from(Box::<[u8]>::try_copy(spki.as_ref())?.into_vec());
-        let certs: Box<[CertificateDer<'static>]> = <Box<_> as BoxExt<_>>::try_new([cert])?;
-        let key = Arc::new(CertifiedKey::new(certs.into_vec(), key));
-        Ok(Self {
-            key,
-            public_key: public,
-            _thread: ThreadBound::NEW,
-        })
+        drop(spki);
+        Ok((key, public))
     }
 
     pub fn public_key(&self) -> [u8; 32] {

@@ -16,6 +16,9 @@ fn identity_alloc_fails() {
     let first = count
         .checked_sub(3)
         .expect("three final ownership allocations");
+    let (public_only, public_count) = Tracker::count(|| Identity::try_public_key_from_seed(&seed));
+    assert_eq!(public_only.expect("public key derivation"), public);
+    assert_eq!(public_count, first);
     for allows in [first, first + 1] {
         let (result, activity) =
             Tracker::activity(|| Tracker::fail_after(allows, || Identity::from_seed(&seed)));
