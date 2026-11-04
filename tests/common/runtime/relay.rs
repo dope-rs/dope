@@ -107,8 +107,8 @@ pub fn frame(
     Ok(wire)
 }
 
-pub fn negotiation() -> [u8; 32] {
-    let mut packet = [0; 32];
+pub fn negotiation() -> [u8; 1200] {
+    let mut packet = [0; 1200];
     packet[0] = 0x80;
     packet[1..5].copy_from_slice(&0xfafa_fafa_u32.to_be_bytes());
     packet[5] = 8;

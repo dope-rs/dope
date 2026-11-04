@@ -22,7 +22,7 @@ use crate::{
     runtime::{brand, mux},
     security::relay::Ticket,
     stream,
-    wire::packet::version,
+    wire::packet::{long, version},
 };
 use inputs::Input;
 use mux::{app, auth, handler, output, protocol, router};
@@ -94,8 +94,9 @@ where
             if routing::reset::receive(&mut mux, from, input.as_ref(), now)? {
                 return Ok(());
             }
-            let len = req.encoded_len();
-            if len <= input.as_ref().len() {
+            if long::is_initial_size(input.as_ref().len()) {
+                // Two byte-length CIDs and one version fit within this minimum.
+                let len = req.encoded_len();
                 let wire_len = len + from.overhead();
                 let emission = mux.outgoing.emit_owned(wire_len, wire_len, |mut out| {
                     if let Some(ticket) = from.ticket()

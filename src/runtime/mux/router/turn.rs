@@ -132,7 +132,12 @@ impl<
                         )
                     }
                     cids::Lookup::Vacant(mut alias) => {
-                        if state.lifecycle.admission_closed || alias.is_full() {
+                        // Existing CIDs were matched above; this endpoint's Initial
+                        // and Retry CIDs are always at least eight bytes long.
+                        if init.dcid().len() < 8
+                            || state.lifecycle.admission_closed
+                            || alias.is_full()
+                        {
                             return Ok(());
                         }
                         let server = state

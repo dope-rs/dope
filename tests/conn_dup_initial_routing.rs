@@ -1,7 +1,34 @@
 pub mod common;
 
-use common::suite::mux::install;
+use common::{
+    peer::Initial,
+    suite::{
+        mux::{install, retry},
+        retry::Capture,
+    },
+};
+use dope_quic::conn::life::options::Options;
+use dope_quic::runtime::mux::builder::Plan;
 use std::{net::SocketAddr, time::Instant};
+
+#[test]
+fn short_new_dcid_is_discarded() {
+    let retry = Options::builder()
+        .security(|security| security.retry([0xa1; 32]))
+        .try_build()
+        .expect("Retry policy");
+    for options in [Options::default(), retry] {
+        let mut mux = retry::try_server(options, Plan::standard()).expect("server");
+        let from = SocketAddr::from(([127, 0, 0, 1], 55_001));
+        let now = Instant::now();
+        let mut packet = Initial::new(&[0x31; 7], &[0x42; 4], 0)
+            .seal(&[0])
+            .expect("authenticated Initial");
+        Capture::receive(&mut mux, from, &mut packet, now).expect("discard short original DCID");
+        assert_eq!(mux.active_conns(), 0);
+        assert!(Capture::take(&mut mux, now).expect("output").is_none());
+    }
+}
 
 #[test]
 fn same_dcid_reuses_conn() {

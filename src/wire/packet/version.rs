@@ -15,8 +15,9 @@ pub enum Error {
 
 /// Fields from a long header advertising an unsupported version.
 pub(crate) struct Unsupported<'wire> {
-    dcid: cid::Ref<'wire>,
-    scid: cid::Ref<'wire>,
+    // Each borrow includes its one-byte length and exactly that many CID bytes.
+    dcid: &'wire [u8],
+    scid: &'wire [u8],
 }
 
 impl<'wire> Unsupported<'wire> {
@@ -29,15 +30,16 @@ impl<'wire> Unsupported<'wire> {
         if version == 0 || version == super::QUIC_V1 {
             return None;
         }
-        let ids = super::Ids::decode(wire).ok()?;
-        Some(Self {
-            dcid: ids.dcid(),
-            scid: ids.scid(),
-        })
+        let ids = wire.get(5..)?;
+        let dcid_len = 1 + usize::from(*ids.first()?);
+        let (dcid, rest) = ids.split_at_checked(dcid_len)?;
+        let scid_len = 1 + usize::from(*rest.first()?);
+        let scid = rest.get(..scid_len)?;
+        Some(Self { dcid, scid })
     }
 
     pub(crate) fn encoded_len(&self) -> usize {
-        11 + self.dcid.len() + self.scid.len()
+        9 + self.dcid.len() + self.scid.len()
     }
 
     /// Encodes a response with request CIDs swapped.
@@ -50,10 +52,8 @@ impl<'wire> Unsupported<'wire> {
             .map_err(Rejected::into_parts)?;
         if let Err(error) = packet.append().write_slices([
             &0_u32.to_be_bytes(),
-            &[self.scid.length().get()],
-            self.scid.as_ref(),
-            &[self.dcid.length().get()],
-            self.dcid.as_ref(),
+            self.scid,
+            self.dcid,
             &super::QUIC_V1.to_be_bytes(),
         ]) {
             return Err((packet.into_storage(), error));

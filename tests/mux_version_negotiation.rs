@@ -7,7 +7,7 @@ use common::suite::{
 };
 use dope_quic::proto::epoch;
 use dope_quic::runtime::mux::builder::Plan;
-use dope_quic::wire::packet::{QUIC_V1, version};
+use dope_quic::wire::packet::QUIC_V1;
 use std::{net::SocketAddr, pin::Pin, time::Instant};
 
 #[test]
@@ -26,37 +26,38 @@ fn server_negotiates() {
     let peer: SocketAddr = "192.0.2.10:44321"
         .parse()
         .expect("test peer address must be valid");
-    let dcid = [0x31; 8];
-    let scid = [0x42; 12];
-    let mut request = install::unsupported(&dcid, &scid, 1200);
+    for (dcid_len, scid_len, first) in [(8, 12, 0xc0), (0, 255, 0xb0), (255, 0, 0x80)] {
+        let dcid = vec![0x31; dcid_len];
+        let scid = vec![0x42; scid_len];
+        let mut request = install::unsupported(&dcid, &scid, 1200);
+        request[0] = first;
 
-    Pin::new(&mut server)
-        .observe(Instant::now(), |mut turn| {
-            turn.protocol().recv(peer, &mut request, epoch::WALL_CLOCK)
-        })
-        .expect("server must process the unsupported-version probe");
+        Pin::new(&mut server)
+            .observe(Instant::now(), |mut turn| {
+                turn.protocol().recv(peer, &mut request, epoch::WALL_CLOCK)
+            })
+            .expect("server must process the unsupported-version probe");
 
-    assert_eq!(server.active_conns(), 0);
-    let output = Pin::new(&mut server).observe(Instant::now(), |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "version-negotiation mux connections must admit output"
-        );
-        turn.output().drain().collect::<Vec<_>>()
-    });
-    assert_eq!(output.len(), 1);
-    assert_eq!(output[0].addr(), peer);
-    assert!(output[0].payload().len() <= request.len());
-    let response = version::Negotiation::decode(output[0].payload())
-        .expect("server output must be a valid Version Negotiation packet");
-    assert_eq!(response.dcid().as_ref(), scid);
-    assert_eq!(response.scid().as_ref(), dcid);
-    assert!(response.contains(QUIC_V1));
+        assert_eq!(server.active_conns(), 0);
+        let output = Pin::new(&mut server).observe(Instant::now(), |mut turn| {
+            assert!(
+                turn.output().drive().is_ok(),
+                "version-negotiation mux connections must admit output"
+            );
+            turn.output().drain().collect::<Vec<_>>()
+        });
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].addr(), peer);
+        assert!(output[0].payload().len() <= request.len());
+        let mut expected = install::negotiation(&scid, &dcid, &[QUIC_V1]);
+        expected[0] = 0xc0;
+        assert_eq!(output[0].payload(), expected);
+    }
     assert_eq!(server.handler().certificates, 0);
 }
 
 #[test]
-fn tiny_probe_not_amplified() {
+fn undersized_probe_is_discarded() {
     let mut server = dispatch::Capture::server(
         Capture { certificates: 0 },
         peer::raw(0x73)
@@ -71,13 +72,13 @@ fn tiny_probe_not_amplified() {
     let peer: SocketAddr = "192.0.2.11:44321"
         .parse()
         .expect("test peer address must be valid");
-    let mut request = install::unsupported(&[1], &[2], 9);
+    let mut request = install::unsupported(&[1], &[2], 1199);
 
     Pin::new(&mut server)
         .observe(Instant::now(), |mut turn| {
             turn.protocol().recv(peer, &mut request, epoch::WALL_CLOCK)
         })
-        .expect("server must process the tiny unsupported-version probe");
+        .expect("server must discard the undersized unsupported-version probe");
     assert!(
         Capture::take(&mut server, Instant::now())
             .expect("retry take")
