@@ -1,14 +1,6 @@
-use std::convert::Infallible;
-
 use dope_test::harness::scenario::TIMEOUT;
 use engine::{
-    core::{
-        driver::life::{
-            creation::Attempt,
-            recovery::{Policy, Recovery},
-        },
-        io::Reclaimed,
-    },
+    core::driver::life::{creation::Attempt, recovery::Policy},
     runtime::executor::session::Completion,
 };
 
@@ -147,7 +139,7 @@ fn block_ticks_every_field() {
                 assert!(result.is_ok(), "application teardown");
                 assert!(ticks.into_iter().all(|ticks| ticks.get() >= 1));
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -204,7 +196,7 @@ fn lifecycle_counts() {
                 assert_eq!(shutdown.get(), 1);
                 assert_eq!(finish.get(), 1);
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -254,7 +246,7 @@ fn shared_budgets() {
                     [Some((86, 85)), Some((85, 85)), Some((85, 85))]
                 );
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -333,19 +325,8 @@ fn routes_active_owners() {
                 ));
                 assert_eq!(lifecycle.map(|count| count.get()), [1, 1, 1, 0]);
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
-}
-
-fn shutdown(event: Reclaimed) {
-    assert!(
-        matches!(event, Reclaimed::Shutdown),
-        "unexpected operation: {event:?}"
-    );
-}
-
-fn recover(failure: Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
 }

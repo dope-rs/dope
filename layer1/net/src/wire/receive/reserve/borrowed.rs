@@ -29,7 +29,7 @@ impl<W: wire::Spec> Immediate<W> for Borrowed {
         'd: 'w,
         'w: 'a,
     {
-        Transaction::new(wire)
+        Transaction { wire }
     }
 }
 

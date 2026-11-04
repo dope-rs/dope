@@ -20,6 +20,7 @@ pub trait Event<C: Context, B>:
     + Sized
 {
     fn opened(key: Key<C>, result: Result<fd::OwnedFd, Errno>) -> Self;
+    fn read(key: Key<C>, result: <C::Writer as retry::Context>::Outcome) -> Self;
     fn written(key: Key<C>, result: <C::Writer as retry::Context>::Outcome) -> Self;
     fn synced(key: Key<C>, result: <C::Writer as retry::Context>::Unit) -> Self;
     const SHUTDOWN: Self;

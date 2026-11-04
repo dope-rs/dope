@@ -35,7 +35,7 @@ impl<'d, Tag, const N: usize> Domain<'d, Tag, N> {
 
     pub(in crate::driver::schedule::ready::task) fn reclaim(
         &mut self,
-        hold: ready::Reclaimed<'d>,
+        hold: ready::Renewal<'d>,
     ) -> task::Reclaim {
         self.pool.reclaim(
             self.root,

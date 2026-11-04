@@ -63,9 +63,7 @@ where
                     next,
                     turn,
                     driver,
-                    |policy, key, input, turn, driver| {
-                        P::receive(policy, key, M::from_value(input), turn, driver)
-                    },
+                    |policy, key, input, turn, driver| P::receive(policy, key, input, turn, driver),
                 )
             },
         )

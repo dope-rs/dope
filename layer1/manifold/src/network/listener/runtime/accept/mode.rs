@@ -39,22 +39,9 @@ impl LaneId {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-struct Target(u16);
-
-impl Target {
-    const ZERO: Self = Self(0);
-
-    fn bounded(want: usize, limit: u16) -> Self {
-        Self(want.min(limit as usize) as u16)
-    }
-}
-
 pub(super) struct Lanes<'d, ID: Identity> {
     pub(super) entries: Slots<'d, <ID as route::Materialize<Accept>>::With>,
-    limit: u16,
-    target: Target,
+    target: u16,
     pub(super) cursor: LaneId,
     pub(super) accepting: bool,
 }
@@ -67,8 +54,8 @@ pub(super) struct Turn<'a, 'd, ID: Identity> {
 
 impl<'d, ID: Identity> Lanes<'d, ID> {
     pub(super) fn demand(&mut self, want: usize) -> usize {
-        self.target = Target::bounded(want, self.limit);
-        usize::from(self.target.0).saturating_sub(self.entries.active())
+        self.target = want.min(self.entries.len()) as u16;
+        usize::from(self.target).saturating_sub(self.entries.active())
     }
 
     pub(super) fn resolve(&mut self, epoch: route::Epoch) -> Option<Turn<'_, 'd, ID>> {
@@ -145,8 +132,7 @@ impl<'d, ID: Identity> Mode<'d, ID> {
         })?;
         Ok(Self::Oneshot(Lanes {
             entries: Slots::new(lanes),
-            limit: cap,
-            target: Target(cap),
+            target: cap,
             cursor: LaneId::FIRST,
             accepting: true,
         }))
@@ -170,7 +156,7 @@ impl<'d, ID: Identity> Mode<'d, ID> {
                 if !lanes.accepting {
                     return lanes.entries.progress(region);
                 }
-                if lanes.entries.active() >= usize::from(lanes.target.0) {
+                if lanes.entries.active() >= usize::from(lanes.target) {
                     return if lanes.entries.active() != 0 {
                         schedule::Progress::waiting(region)
                     } else {
@@ -204,7 +190,6 @@ impl<'d, ID: Identity> Mode<'d, ID> {
             }
             Self::Oneshot(lanes) => {
                 lanes.accepting = false;
-                lanes.target = Target::ZERO;
                 lanes.entries.stop(driver);
             }
         }
@@ -218,7 +203,6 @@ impl<'d, ID: Identity> Mode<'d, ID> {
             }
             Self::Oneshot(lanes) => {
                 lanes.entries.finish(proof);
-                lanes.target = Target::ZERO;
                 lanes.accepting = false;
             }
         }
@@ -230,4 +214,3 @@ const _: () = {
     assert!(std::mem::size_of::<LaneId>() == std::mem::size_of::<route::Epoch>());
     assert!(std::mem::size_of::<Option<LaneId>>() == std::mem::size_of::<route::Epoch>());
 };
-const _: () = assert!(std::mem::size_of::<Target>() == std::mem::size_of::<u16>());

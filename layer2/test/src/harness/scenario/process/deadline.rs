@@ -11,10 +11,6 @@ pub enum Error {
     },
     Create(wake::CreateError),
     Start(run::Start),
-    Join {
-        cancel: Option<wake::NotifyError>,
-        cause: run::Join,
-    },
     Cancel(wake::NotifyError),
     Wait(wake::WaitError),
     Both {

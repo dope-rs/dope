@@ -12,7 +12,7 @@ use dope_core::{
     },
 };
 
-use crate::common::driver::polling::{Deadline, Error, Source};
+use crate::common::driver::polling::{self, Error};
 
 pub enum Failure<'d> {
     Wait(poll::Error),
@@ -20,19 +20,13 @@ pub enum Failure<'d> {
     Event(Kind<'d>),
 }
 
-struct Pending<'a, 'context, 'turn, 'd> {
-    driver: &'a mut driver::Context<'context, 'd>,
-    turn: &'a mut scope::Guard<'turn, 'd>,
-}
-
-impl<'d> Source for Pending<'_, '_, '_, 'd> {
-    type Output = Kind<'d>;
-    type Error = Failure<'d>;
-
-    fn try_poll(&mut self, left: Duration) -> Result<task::Poll<Self::Output>, Self::Error> {
-        driver::Context::wait(self.driver, self.turn.reactor(), Some(left))
-            .map_err(Failure::Wait)?;
-        match driver::Context::dispatch(self.driver, self.turn.reactor(), |event, _driver| {
+fn wait<'d>(
+    driver: &mut driver::Context<'_, 'd>,
+    turn: &mut scope::Guard<'_, 'd>,
+) -> Result<Kind<'d>, Error<Failure<'d>>> {
+    polling::try_run(Duration::from_secs(1), |left| {
+        driver::Context::wait(driver, turn.reactor(), Some(left)).map_err(Failure::Wait)?;
+        match driver::Context::dispatch(driver, turn.reactor(), |event, _driver| {
             ControlFlow::Break(event)
         }) {
             Dispatch::Ready { retained: None, .. } => Ok(task::Poll::Pending),
@@ -42,7 +36,7 @@ impl<'d> Source for Pending<'_, '_, '_, 'd> {
             } => Ok(task::Poll::Ready(event.into_kind())),
             Dispatch::Fault(error) => Err(Failure::Dispatch(error)),
         }
-    }
+    })
 }
 
 pub trait Tuned<'d> {
@@ -62,7 +56,7 @@ impl<'d> Tuned<'d> for driver::Context<'_, 'd> {
         &mut self,
         turn: &mut scope::Guard<'_, 'd>,
     ) -> Result<tuning::Completion<'d>, Error<Failure<'d>>> {
-        match Deadline::new(Duration::from_secs(1)).try_run(Pending { driver: self, turn })? {
+        match wait(self, turn)? {
             Kind::Tuning(done) => Ok(done),
             other => Err(Error::Source(Failure::Event(other))),
         }
@@ -72,7 +66,7 @@ impl<'d> Tuned<'d> for driver::Context<'_, 'd> {
         &mut self,
         turn: &mut scope::Guard<'_, 'd>,
     ) -> Result<connect::Completion<'d>, Error<Failure<'d>>> {
-        match Deadline::new(Duration::from_secs(1)).try_run(Pending { driver: self, turn })? {
+        match wait(self, turn)? {
             Kind::Connect(done) => Ok(done),
             other => Err(Error::Source(Failure::Event(other))),
         }

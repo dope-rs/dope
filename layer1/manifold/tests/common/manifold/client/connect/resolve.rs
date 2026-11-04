@@ -385,15 +385,16 @@ where
 }
 
 pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Option<SocketAddr>) {
-    use crate::common::manifold::client::{
-        Configure as _,
-        finish::close::members::{Notice, Source, Until, Watch},
+    use crate::common::{
+        manifold::client::{
+            Configure as _,
+            finish::close::members::{Notice, Source, Until, Watch},
+        },
+        recover,
+        scenario::Runtime,
     };
     use dope_core::{
-        driver::{
-            life::{creation::Attempt, recovery},
-            route::Id,
-        },
+        driver::{life::recovery, route::Id},
         platform::wake,
     };
     use dope_manifold::{
@@ -404,7 +405,7 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
         timing::Balanced,
     };
     use dope_net::{tcp::Tcp, wire::domain::Local};
-    use dope_runtime::executor::{Executor, session::Scope};
+    use dope_runtime::executor::session::Scope;
     use dope_test::{
         alloc::Tracker,
         harness::{
@@ -439,13 +440,8 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
         )
         .expect("one connection");
         let config = plan.configured().expect("deferred connector resources");
-        let mut create = Attempt::new();
-        let result = Executor::new(&mut create, config);
-        result.as_ref().map_err(|error| error.kind()).expect("executor construction");
-        let executor = result.ok().expect("executor construction");
         let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
-        executor.run(|executor| {
-            let result = executor.enter_with(
+        Runtime::new(config).with_scope(
                 |mut runtime| {
                     let setup = Setup::new(
                         State {
@@ -504,15 +500,8 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
                     );
                     assert!(result.is_ok(), "install deferred connector");
                 },
-                recovery::Policy::new(
-                    |event| reports.push(event),
-                    |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                        panic!("native recovery: {:?}", failure.cause())
-                    },
-                ),
+                recovery::Policy::new(|event| reports.push(event), recover),
             );
-            assert!(result.is_ok(), "deferred executor teardown");
-        });
         audit.checked((0,0));
         assert_eq!(ready.handle().hits(), 1);
         assert!(

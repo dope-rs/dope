@@ -1,6 +1,5 @@
 use std::{mem, pin};
 
-use data::{compose, exec};
 use dope_core::{
     dope_sys::io::socket::msg,
     driver::{
@@ -20,7 +19,7 @@ use o3::{
 };
 use reserve::{demand, exact};
 
-use crate::network::listener;
+use crate::network::listener::{self, writer};
 
 pub(in crate::network::listener) mod access;
 pub(in crate::network::listener) mod geometry;
@@ -135,7 +134,7 @@ impl<'d, ID: Identity, B: data::raw::Payload<'d>> Arena<'_, 'd, ID, B> {
         driver: driver::Reference<'d>,
         build: impl for<'p, 's> FnOnce(
             &'p Arena<'s, 'd, ID, B>,
-            demand::Setup<<B::Mode as exec::Mode>::Reserve<WRITE_BUF_CAP>>,
+            demand::Setup<writer::Reserve<'d, B>>,
         ) -> R,
     ) -> Result<R, alloc::Error> {
         let (setup, direct, headers) = shape.into_parts();
@@ -203,10 +202,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
         if let Some(header) = release::Source::from(&self.arena.headers, self.lane) {
             header.cancel(target);
         }
-        match source.claim(target) {
-            Claim::Acquired(flight) => Claim::Acquired(DirectSlot(flight)),
-            Claim::Waiting => Claim::Waiting,
-        }
+        source.claim(target)
     }
 
     pub(in crate::network::listener) fn cancel_wait(&self, target: ready::Target<'d>) {
@@ -227,10 +223,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
         if let Some(direct) = release::Source::from(&self.arena.direct, self.lane) {
             direct.cancel(target);
         }
-        match source.claim(target) {
-            Claim::Acquired(slot) => Claim::Acquired(HeaderSlot(slot)),
-            Claim::Waiting => Claim::Waiting,
-        }
+        source.claim(target)
     }
 
     pub(in crate::network::listener) fn cancel<'e>(
@@ -241,8 +234,8 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
             'e,
             'd,
             { listener::IOV_CAP },
-            compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>,
-            <B::Mode as exec::Mode>::Reserve<WRITE_BUF_CAP>,
+            writer::Payload<'p, 's, 'd, ID, B>,
+            writer::Reserve<'d, B>,
         >,
         target: ready::Target<'d>,
     ) {
@@ -251,17 +244,11 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
     }
 }
 
-pub(in crate::network::listener) struct HeaderSlot<'p, 's, 'd, ID: Identity>(
-    release::Lease<'p, 's, 'd, Header, ID>,
-);
+pub(in crate::network::listener) type HeaderSlot<'p, 's, 'd, ID> =
+    release::Lease<'p, 's, 'd, Header, ID>;
 
-pub(in crate::network::listener) struct DirectSlot<
-    'p,
-    's,
-    'd,
-    ID: Identity,
-    B = resident::Shared<'d>,
->(release::Lease<'p, 's, 'd, Flight<B>, ID>);
+pub(in crate::network::listener) type DirectSlot<'p, 's, 'd, ID, B = resident::Shared<'d>> =
+    release::Lease<'p, 's, 'd, Flight<B>, ID>;
 
 pub(in crate::network::listener) enum Buffer<
     'a,
@@ -271,6 +258,7 @@ pub(in crate::network::listener) enum Buffer<
     'd,
     ID: Identity,
     B = resident::Shared<'d>,
+    P = reserve::Plan<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>>,
 > where
     B: data::raw::Payload<'d>,
 {
@@ -282,16 +270,10 @@ pub(in crate::network::listener) enum Buffer<
             'e,
             'd,
             { listener::IOV_CAP },
-            compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>,
-            <B::Mode as exec::Mode>::Reserve<WRITE_BUF_CAP>,
+            writer::Payload<'p, 's, 'd, ID, B>,
+            writer::Reserve<'d, B>,
         >,
-        plan: reserve::Plan<
-            'a,
-            'e,
-            'd,
-            compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>,
-            <B::Mode as exec::Mode>::Reserve<WRITE_BUF_CAP>,
-        >,
+        plan: P,
     },
 }
 
@@ -304,45 +286,17 @@ where
         value: egress::NonEmpty<S>,
     },
     Queued {
-        offer: exact::Offer<
-            'a,
-            'e,
-            'd,
-            compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>,
-            <B::Mode as exec::Mode>::Reserve<WRITE_BUF_CAP>,
-            S,
-        >,
+        offer:
+            exact::Offer<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>, S>,
     },
 }
 
-pub(in crate::network::listener) enum Bounded<
-    'a,
-    'p,
-    's,
-    'e,
-    'd,
-    ID: Identity,
-    B = resident::Shared<'d>,
-> where
-    B: data::raw::Payload<'d>,
-{
-    Direct(DirectSlot<'p, 's, 'd, ID, B>),
-    Queued {
-        slot: HeaderSlot<'p, 's, 'd, ID>,
-        queue: egress::Queue<
-            'a,
-            'e,
-            'd,
-            { listener::IOV_CAP },
-            compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>,
-            <B::Mode as exec::Mode>::Reserve<WRITE_BUF_CAP>,
-        >,
-    },
-}
+pub(in crate::network::listener) type Bounded<'a, 'p, 's, 'e, 'd, ID, B = resident::Shared<'d>> =
+    Buffer<'a, 'p, 's, 'e, 'd, ID, B, ()>;
 
 impl<ID: Identity> AsMut<[u8; WRITE_BUF_CAP]> for HeaderSlot<'_, '_, '_, ID> {
     fn as_mut(&mut self) -> &mut [u8; WRITE_BUF_CAP] {
-        self.0.get_mut().as_mut_slice()
+        self.get_mut().as_mut_slice()
     }
 }
 
@@ -351,13 +305,13 @@ impl<'p, 's, 'd, ID: Identity> HeaderSlot<'p, 's, 'd, ID> {
         self,
         len: Option<NonZero>,
     ) -> Option<listener::raw::Owned<'p, 's, 'd, ID>> {
-        len.map(|len| listener::raw::Owned::new(self.0, len))
+        len.map(|len| listener::raw::Owned::new(self, len))
     }
 }
 
 impl<ID: Identity, B> AsMut<[u8; WRITE_BUF_CAP]> for DirectSlot<'_, '_, '_, ID, B> {
     fn as_mut(&mut self) -> &mut [u8; WRITE_BUF_CAP] {
-        self.0.get_mut().project().header.as_mut_slice()
+        self.get_mut().project().header.as_mut_slice()
     }
 }
 

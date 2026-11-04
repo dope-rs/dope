@@ -143,11 +143,6 @@ pub(super) enum Phase {
     Stopped,
 }
 
-pub(super) enum Pass {
-    Run,
-    Stop,
-}
-
 impl Phase {
     pub(super) fn can_accept(self) -> bool {
         self.rejection().is_none()
@@ -158,21 +153,6 @@ impl Phase {
             Self::Ready | Self::Deferred => None,
             Self::Failed(error) => Some(RejectCause::Submit(error)),
             Self::Stopped => Some(RejectCause::Inactive),
-        }
-    }
-
-    pub(super) fn can_submit(self) -> bool {
-        self == Self::Ready
-    }
-
-    pub(super) fn begin(&mut self) -> Pass {
-        match self {
-            Self::Ready => Pass::Run,
-            Self::Deferred => {
-                *self = Self::Ready;
-                Pass::Run
-            }
-            Self::Failed(_) | Self::Stopped => Pass::Stop,
         }
     }
 

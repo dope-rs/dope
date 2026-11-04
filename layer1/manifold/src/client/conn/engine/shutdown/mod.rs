@@ -68,8 +68,7 @@ where
             let step = turn.reborrow().maint().run(|| {
                 let this = self.as_mut().project();
                 let capacity = this.links.pool().inspect().capacity();
-                let plan = this.shutdown.plan_lane(capacity)?;
-                Some(plan.complete())
+                this.shutdown.next_lane(capacity)
             });
             let lane = match step {
                 quota::Admission::Item(state::Primary::Lane(lane)) => lane,

@@ -2,10 +2,7 @@ pub mod common;
 
 use std::time::Duration;
 
-use crate::common::refresh::{
-    BOTH, FIRST, NEXT,
-    server::{self, Stub},
-};
+use crate::common::refresh::{BOTH, FIRST, NEXT, server::Stub};
 
 #[test]
 fn pending_datagram_stops_without_refresh() {
@@ -73,13 +70,16 @@ fn pending_datagram_stops_without_refresh() {
 }
 
 #[test]
-fn datagram_atomic() {
-    basic(false).expect("DNS refresh server");
-}
-
-#[test]
-fn stream_retry() {
-    basic(true).expect("DNS refresh server");
+fn datagram_and_stream_publish() {
+    for truncate in [false, true] {
+        let mut values = Stub::new(truncate, false, 0, &[30], None)
+            .run(60_000, 60_000, 1, None)
+            .expect("DNS refresh server")
+            .resolved
+            .take();
+        values[0].sort();
+        assert_eq!(values[0], BOTH);
+    }
 }
 
 #[test]
@@ -128,53 +128,21 @@ fn zero_ttl_keeps() {
 }
 
 #[test]
-fn ttl_high_bit_zero() {
-    let meta = Stub::new(false, true, 0, &[0x8000_0000], None)
-        .run(60_000, 50, 1, None)
-        .expect("DNS refresh server")
-        .published
-        .take();
-    assert_eq!(meta[0].ttl(), Duration::ZERO);
-}
-
-#[test]
-fn ttl_duplicate_min() {
-    let meta = Stub::new(false, true, 0, &[30, 1], None)
-        .run(60_000, 50, 1, None)
-        .expect("DNS refresh server")
-        .published
-        .take();
-    assert_eq!(meta[0].ttl(), Duration::from_secs(1));
-}
-
-#[test]
-fn alias_ttl_ages() {
-    let meta = Stub::new(false, true, 0, &[30], Some(&[30, 1]))
-        .run(60_000, 50, 1, Some(Duration::from_millis(500)))
-        .expect("DNS refresh server")
-        .published
-        .take();
-    assert_eq!(meta[0].ttl(), Duration::from_millis(500));
-}
-
-#[test]
-fn alias_expired_completes() {
-    let meta = Stub::new(false, true, 0, &[30], Some(&[1]))
-        .run(60_000, 50, 1, Some(Duration::from_millis(1500)))
-        .expect("DNS refresh server")
-        .published
-        .take();
-    assert_eq!(meta[0].ttl(), Duration::ZERO);
-}
-
-#[test]
-fn family_ttl_ages() {
-    let meta = Stub::new(false, false, 0, &[1], Some(&[30]))
-        .run(60_000, 50, 1, Some(Duration::from_millis(500)))
-        .expect("DNS refresh server")
-        .published
-        .take();
-    assert_eq!(meta[0].ttl(), Duration::from_millis(500));
+fn ttl_minimum_and_elapsed_time() {
+    for (rotate, ttls, aliases, delay, millis) in [
+        (true, &[0x8000_0000][..], None, None, 0),
+        (true, &[30, 1], None, None, 1000),
+        (true, &[30], Some(&[30, 1][..]), Some(500), 500),
+        (true, &[30], Some(&[1]), Some(1500), 0),
+        (false, &[1], Some(&[30]), Some(500), 500),
+    ] {
+        let meta = Stub::new(false, rotate, 0, ttls, aliases)
+            .run(60_000, 50, 1, delay.map(Duration::from_millis))
+            .expect("DNS refresh server")
+            .published
+            .take();
+        assert_eq!(meta[0].ttl(), Duration::from_millis(millis));
+    }
 }
 
 #[test]
@@ -199,15 +167,4 @@ fn stale_expires() {
     assert!(run.failures.get() > 0);
     assert_eq!(sets[0], FIRST);
     assert!(sets[1].is_empty());
-}
-
-fn basic(truncate: bool) -> Result<(), server::Failure> {
-    let mut values = Stub::new(truncate, false, 0, &[30], None)
-        .run(60_000, 60_000, 1, None)?
-        .resolved
-        .take()[0]
-        .clone();
-    values.sort();
-    assert_eq!(values, BOTH);
-    Ok(())
 }

@@ -14,10 +14,7 @@ use o3::mem::Rejected;
 use crate::{
     driver,
     driver::{
-        life::{
-            native,
-            native::host::{Files, Trace, poll::files},
-        },
+        life::native::host::{Files, Trace, poll::files},
         receive::tokens,
         result::poll::fault,
         retained::flight,
@@ -56,9 +53,9 @@ impl<N: Prepare> entry::Context for Context<N> {
     const MORE: Flow = Flow::More;
 }
 
-impl<N: Prepare> From<entry::Retired<Context<N>>> for native::Report {
+impl<N: Prepare> From<entry::Retired<Context<N>>> for io::Reclaimed {
     fn from(retired: entry::Retired<Context<N>>) -> Self {
-        Self(match retired {
+        match retired {
             entry::Retired::Accept { key, result, flow } => io::Reclaimed::Accept {
                 echo: fault::Echo::new(key),
                 result,
@@ -102,12 +99,16 @@ impl<N: Prepare> From<entry::Retired<Context<N>>> for native::Report {
                 echo: fault::Echo::new(key),
                 result,
             },
+            entry::Retired::Read { key, result } => io::Reclaimed::Read {
+                echo: fault::Echo::new(key),
+                result,
+            },
             entry::Retired::Sync { key, result } => io::Reclaimed::Sync {
                 echo: fault::Echo::new(key),
                 result,
             },
             entry::Retired::Shutdown => io::Reclaimed::Shutdown,
-        })
+        }
     }
 }
 
@@ -133,6 +134,7 @@ where
     type Send = flight::Complete<'q, 'd, kind::Send>;
     type Connect = flight::Complete<'q, 'd, kind::Connect>;
     type Write = flight::Complete<'q, 'd, kind::Write>;
+    type Read = flight::Complete<'q, 'd, kind::Read>;
     type Sync = flight::Complete<'q, 'd, kind::Sync>;
     type Target = route::Erased<'d, kind::Socket>;
     type Creation = domain::Creation;
@@ -178,7 +180,7 @@ where
                 ));
             }
         };
-        let vacant = match tokens::Vacant::try_new(driver) {
+        let vacant = match driver.receive().owners().try_vacant() {
             Ok(vacant) => vacant,
             Err(full) => {
                 let len = buffer.len();
@@ -229,6 +231,11 @@ where
     fn written(bound: Self::Write, result: Result<transfer::Len, Errno>) -> Self::Output {
         let token = bound.complete();
         outputs::written(token, result)
+    }
+
+    fn read(bound: Self::Read, result: Result<transfer::Len, Errno>) -> Self::Output {
+        let token = bound.complete();
+        outputs::read(token, result)
     }
 
     fn synced(bound: Self::Sync, result: Result<(), Errno>) -> Self::Output {
@@ -295,7 +302,7 @@ where
                 Trace::<N>::creation(fault::Echo::new(key), slot, Some(slot)).into(),
             ),
             subject: fault::Subject::Target(target.into_token()),
-            violation: fault::Violation::Install(fault::Install::from_native(cause)),
+            violation: fault::Violation::Install(cause),
         }
     }
 
@@ -322,18 +329,6 @@ where
 
     fn fail_create(driver: Self::Driver, creation: Self::Creation) {
         driver.outbound().fail_create(creation);
-    }
-
-    fn complete(driver: Self::Driver, creation: Self::Creation) -> Option<OutboundSlot> {
-        let slot = *creation.as_ref();
-        match driver.outbound().complete(creation) {
-            domain::Create::Deliver => Some(slot),
-            domain::Create::Retired => None,
-        }
-    }
-
-    fn discard(driver: Self::Driver, slot: OutboundSlot) {
-        driver.descriptors().discard(slot);
     }
 }
 

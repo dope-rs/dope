@@ -211,9 +211,7 @@ impl<'ledger, 's, const N: usize> Candidate<'ledger, 's, N> {
         }
         let prev = mem::replace(&mut slot.value, state::Branch::Empty);
         let state::Branch::Pending(probe) = prev else {
-            slot.value = prev;
-            claim.commit();
-            return None;
+            unreachable!("pending");
         };
         Some(Ready {
             claim,

@@ -6,7 +6,7 @@ use o3::depot::{
     map::{self, flat},
 };
 
-use crate::network::listener::runtime::accept::{self, peers};
+use crate::{app::creation, network::listener::runtime::accept::peers};
 
 struct Peer {
     ip: net::IpAddr,
@@ -18,10 +18,12 @@ pub(super) struct Table {
 }
 
 impl Table {
-    pub(super) fn try_new(capacity: Capacity) -> Result<Self, accept::Prepare> {
-        let plan = map::Plan::new(capacity.count().get()).map_err(accept::Prepare::Capacity)?;
+    pub(super) fn try_new(capacity: Capacity) -> Result<Self, creation::Error> {
+        let plan = map::Plan::new(capacity.count().get()).map_err(|cause| {
+            creation::Error::Config(crate::ConfigError::ListenerPeerCapacity(cause))
+        })?;
         Ok(Self {
-            inner: flat::Table::try_new(plan).map_err(accept::Prepare::Allocation)?,
+            inner: flat::Table::try_new(plan).map_err(creation::Error::Allocation)?,
         })
     }
 

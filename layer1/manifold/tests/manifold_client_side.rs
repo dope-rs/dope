@@ -6,7 +6,6 @@ use dope_core::{
     driver::{
         life::recovery,
         route::{Id, KeyTag, table::conn::Capacity},
-        schedule::ready,
         settings,
     },
     platform::wake,
@@ -15,7 +14,7 @@ use dope_manifold::{
     app::{self, env},
     client::{
         session::{self, ingress},
-        side::{Enabled, Error, registry},
+        side::{Enabled, Error},
     },
     network::client::topology::plan,
     service::{self, health, sync},
@@ -34,21 +33,17 @@ use dope_test::{
         GUARD,
         observe::Trace,
         peer,
-        signals::{LocalGate, LocalGateRef, Progress as _},
+        signals::{LocalGate, Progress as _},
     },
     reclaim::Reports,
 };
-use o3::{buffer::storage::Shared, depot::map::direct};
+use o3::buffer::storage::Shared;
 
 use crate::common::{
     contract::Report,
     manifold::client::{
         finish::lifetime::{self, Lifetime},
-        side::{
-            Reservation, Storage,
-            app::{App, Wait},
-            limited::Limited,
-        },
+        side::{Session, Storage, limited::Limited},
     },
     recover,
 };
@@ -72,14 +67,8 @@ fn fresh_uses_peer() {
         |server| {
             let addr = server.addr();
 
-            let joining = LocalGate::new();
-            let conn = joining.handle();
-            let sending = LocalGate::new();
-            let done = sending.handle();
-            let stopping = LocalGate::new();
-            let closed = stopping.handle();
             let events = Trace::new();
-            run(addr, false, conn, done, closed, &events);
+            run(addr, false, &events);
 
             assert!(*events.values().expect("recorded observations") == [Ok(())]);
             assert!(end_tx.notify().is_ok(), "release server");
@@ -101,14 +90,8 @@ fn abandon_drains_lane() {
         |server| {
             let addr = server.addr();
 
-            let joining = LocalGate::new();
-            let conn = joining.handle();
-            let sending = LocalGate::new();
-            let done = sending.handle();
-            let stopping = LocalGate::new();
-            let closed = stopping.handle();
             let events = Trace::new();
-            run(addr, true, conn, done, closed, &events);
+            run(addr, true, &events);
 
             assert!(events.values().expect("recorded observations").is_empty());
             assert!(end_tx.notify().is_ok(), "release server");
@@ -131,24 +114,13 @@ fn startup_hides_target() {
     )
     .expect("valid side connector plan");
     let audit = Rc::new(Report::default());
-    let app = App {
-        audit: Rc::clone(&audit),
-        create: || Shared::try_copy(b"cancel").expect("allocate side payload"),
-        ready: side_ready,
-        conn: joining.handle(),
-        done: sending.handle(),
-        closed: closing.handle(),
-        events: &events,
-        eager: false,
-    };
-    let prepared = Plan::new(Storage(Capacity::fixed::<1>()), (plan, app))
+    let prepared = Plan::new(Storage(Capacity::fixed::<1>()), plan)
         .with_install(settings::Config::for_profile::<Balanced>())
         .expect("prepare side connector topology");
     let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
     prepared.try_scoped(
         |scope| {
-            scope.lend(|(plan, app), stage| {
-                let claims = Rc::new(Trace::new());
+            scope.lend(|plan, stage| {
                 let timer = stage.driver().driver_ref().timer();
                 let mut alarms = Vec::new();
                 while let Ok(alarm) = timer.try_alarm() {
@@ -156,7 +128,20 @@ fn startup_hides_target() {
                 }
                 assert!(alarms.pop().is_some());
                 assert!(alarms.pop().is_some());
-                let setup = session::Setup::new(app.build(stage.storage(), Rc::clone(&claims)), ingress::Plan::none());
+                let setup = session::Setup::new(
+                    Session {
+                        audit: Rc::clone(&audit),
+                        registry: stage.storage(),
+                        conn: joining.handle(),
+                        pending: None,
+                        eager: false,
+                        armed: false,
+                        done: sending.handle(),
+                        closed: closing.handle(),
+                        events: &events,
+                    },
+                    ingress::Plan::none(),
+                );
                 let mode = Enabled::new(stage.storage());
                 let hash = stage.hash_state(health::Domain::for_id(0));
                 let plan = plan.bind(domain::Local::new(wire::Identity), hash);
@@ -171,7 +156,7 @@ fn startup_hides_target() {
                 );
                 assert!(matches!(result, Err(app::creation::Error::Timer(_))));
                 assert!(stage.storage().ready_target().is_none());
-                assert!(claims.values().expect("startup claims").is_empty());
+                assert_eq!(joining.handle().hits(), 0);
                 drop(alarms);
             });
         },
@@ -457,14 +442,13 @@ fn cancelled_native_slots_bound_retry_promotion() {
     ).expect("spawn peers");
 }
 
-fn run(
-    addr: SocketAddr,
-    eager: bool,
-    conn: LocalGateRef<'_>,
-    done: LocalGateRef<'_>,
-    closed: LocalGateRef<'_>,
-    events: &Trace<Result<(), Error>, 4>,
-) {
+fn run(addr: SocketAddr, eager: bool, events: &Trace<Result<(), Error>, 4>) {
+    let joining = LocalGate::new();
+    let conn = joining.handle();
+    let sending = LocalGate::new();
+    let done = sending.handle();
+    let stopping = LocalGate::new();
+    let closed = stopping.handle();
     let mut finish = Completion::new();
     let snapshot = service::Snapshot::from_one(
         service::Revision::new(1),
@@ -477,54 +461,54 @@ fn run(
     )
     .expect("valid side connector plan");
     let audit = Rc::new(Report::default());
-    let app = App {
-        audit: Rc::clone(&audit),
-        create: || Shared::try_copy(b"cancel").expect("allocate side payload"),
-        ready: side_ready,
-        conn,
-        done,
-        closed,
-        events,
-        eager,
-    };
     let baseline = settings::Config::for_profile::<Balanced>();
-    let prepared = Plan::new(Storage(Capacity::fixed::<1>()), (plan, app)).with_install(baseline);
+    let prepared = Plan::new(Storage(Capacity::fixed::<1>()), plan).with_install(baseline);
     let prepared = (prepared).expect("prepare side connector topology");
     let mut reclaim1 = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
 
     prepared.try_scoped(
         |scope| {
-            let result = scope.lend(|(plan, app), stage| {
-                let claims = Rc::new(Trace::new());
-                let source = app.build(stage.storage(), Rc::clone(&claims));
+            let result = scope.lend(|plan, stage| {
+                let source = Session {
+                    audit: Rc::clone(&audit),
+                    registry: stage.storage(),
+                    conn,
+                    pending: None,
+                    eager,
+                    armed: false,
+                    done,
+                    closed,
+                    events,
+                };
                 let setup = session::Setup::new(source, ingress::Plan::none());
                 let mode = Enabled::new(stage.storage());
                 let wire = domain::Local::new(wire::Identity);
                 let hash = stage.hash_state(health::Domain::for_id(0));
                 let plan = plan.bind(wire, hash);
-                let result = plan.install::<_, _, _, sync::Preserve, _, env::Bundle<tcp::Tcp, wire::Identity, Balanced>, 16, _, _>(
+                plan.install::<_, _, _, sync::Preserve, _, env::Bundle<tcp::Tcp, wire::Identity, Balanced>, 16, _, _>(
                     setup, mode, snapshot, stage, lending::Stage::driver,
-                    |pool, stage| lending::Next::<_, _>::run(
-                        Wait { conn, done, finish: &mut finish },
-                        app::Host::new(pool), stage,
+                    |pool, stage| stage.with_quiesce(
+                        &mut finish,
+                        app::Host::new(pool),
+                        Duration::from_secs(2),
+                        |mut app| {
+                            assert_eq!(
+                                dope_test::fibers::TEST.try_wait(&mut app, &conn, 1)
+                                    .expect("primary connection"),
+                                dope_test::fibers::Wait::Reached,
+                            );
+                            assert_eq!(
+                                dope_test::fibers::TEST.try_wait(&mut app, &done, 1)
+                                    .expect("side request"),
+                                dope_test::fibers::Wait::Reached,
+                            );
+                        },
                     ),
-                );
-                let observed = claims.values().expect("reservation observations");
-                assert!(matches!(&*observed, [
-                    Reservation { target: first, result: Ok(()), .. },
-                    Reservation { target, address, result: Err((registry::Cause::Slot(direct::Error::Occupied { key, stored }), returned, actual)) }
-                ] if first == target && key == stored && key.into_key().index() == target.index()
-                    && returned == target && actual == address), "{observed:?}");
-                result
+                )
             });
-            audit.checked((0, 0));
-            let result = (result).expect("install prepared side connector topology");
-            assert_eq!(
-                result
-                    .expect("side connector application teardown")
-                    .expect("side connector progress"),
-                (dope_test::fibers::Wait::Reached, Some(dope_test::fibers::Wait::Reached))
-            );
+            result
+                .expect("install prepared side connector topology")
+                .expect("side connector application teardown");
         },
         recovery::Policy::new(|event| reclaim1.push(event), recover),
         |entered| {
@@ -542,8 +526,4 @@ fn run(
 
     audit.checked((0, 0));
     assert_eq!((conn.hits(), done.hits(), closed.hits()), (1, 1, 1));
-}
-
-fn side_ready<'d>(target: Option<ready::Target<'d>>) -> ready::Target<'d> {
-    target.expect("side registry is running")
 }

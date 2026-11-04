@@ -32,10 +32,7 @@ use dope_net::{
         domain::{self, Local},
     },
 };
-use dope_runtime::executor::{
-    self, Executor,
-    session::{Completion, Scope},
-};
+use dope_runtime::executor::session::{Completion, Scope};
 use dope_test::{
     fibers,
     harness::{
@@ -62,7 +59,10 @@ use crate::common::{
         },
     },
     recover,
-    scenario::case::{Connector, Value},
+    scenario::{
+        Runtime,
+        case::{Connector, Value},
+    },
 };
 
 #[test]
@@ -261,7 +261,6 @@ fn next_endpoint_connects() {
     };
     TcpScript::with_many::<1, _>(|_| {}, |server| {
         let good = server.addr();
-        let gate = Gate::new();
         let plan = (plan::Plan::<KeyTag<0>, 1>::new(
             1,
             plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
@@ -270,87 +269,66 @@ fn next_endpoint_connects() {
         .expect("connector capacity");
 
         let config = (plan.configured()).expect("configure executor");
-        use dope_core::driver::life::creation::Attempt;
-        let mut create = Attempt::new();
-        let result = Executor::new(&mut create, config);
-        result
-            .as_ref()
-            .map_err(|error| error.kind())
-            .expect("create executor");
-        let Ok(executor) = result else {
-            return;
-        };
         let mut reclaim1 = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-        executor.with_storage(()).run(|executor| {
-            let result = executor.enter_with(
-                |mut runtime| {
-                    use executor::session::Scope;
+        Runtime::new(config).with_scope(
+            |mut runtime| {
+                let target = Session::new(codec::Outbound);
+                let events = target.events.clone();
+                let errors = target.errors.clone();
+                let audit = target.audit.clone();
+                let gate = target.gate.clone();
+                let backoff = runtime.hash_state(Domain::DEFAULT);
+                let set = Snapshot::from_vec(
+                    Revision::new(1),
+                    array::Vec::from_fn(Len::exact::<2>(), |slot| {
+                        let addr = if slot.index() == 0 { bad } else { good };
+                        Endpoint::new(addr, addr)
+                    }),
+                );
+                let setup = session::Setup::new(target, ingress::Plan::none());
+                let result =
+                    plan.bind(domain::Local::new(Identity), backoff)
+                        .install::<_, _, sync::Preserve, _, Bundle<Tcp, Identity, Balanced>, 16, _, _>(
+                    setup,
+                    set,
+                    &mut runtime,
+                    Scope::driver,
+                    |host, runtime| {
+                        let result = runtime.with_quiesce(&mut finish,
+                            Host::new(host),
+                            Duration::from_secs(2),
+                            |mut app| {
+                                assert_eq!(fibers::TEST.try_wait(&mut app, &gate, 1).expect("driver wait"), fibers::Wait::Reached);
+                            },
+                        );
+                        assert!(result.is_ok(), "application teardown");
+                    },
+                );
+                assert!(result.is_ok(), "create connector");
+                audit.checked((0, 0));
+                let observed = Events::snapshot(&events);
+                assert_eq!(gate.hits() as usize, observed.conn.len());
+                assert!(observed.replies.is_some(), "reply count overflowed");
+                assert!(observed.is_ordered(), "{:?}", (&observed.conn, &observed.closed, &observed.quarantined));
+                assert!(
+                    observed.peers
+                        .iter()
+                        .copied()
+                        .map(|peer| peer.into_std().expect("TCP peer address"))
+                        .eq([good])
+                );
+                assert!(errors.values().expect("codec observations").is_empty());
+            },
+            recovery::Policy::new(|event| reclaim1.push(event), recover),
+        );
+        assert!(
+            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+            "unexpected reclaimed operations: {reclaim1:?}"
+        );
 
-                    let events = Rc::new(Cell::new(Events::default()));
-                    let errors = Rc::new(Trace::new());
-                    let backoff = runtime.hash_state(Domain::DEFAULT);
-                    let set = Snapshot::from_vec(
-                        Revision::new(1),
-                        array::Vec::from_fn(Len::exact::<2>(), |slot| {
-                            let addr = if slot.index() == 0 { bad } else { good };
-                            Endpoint::new(addr, addr)
-                        }),
-                    );
-                    let audit = Rc::new(Report::default());
-                    let target = Session {
-                        audit: audit.clone(),
 
-                        codec: codec::Outbound,
-                        errors: errors.clone(),
-                        events: events.clone(),
-                        gate: gate.clone(),
-                    };
-                    let setup = session::Setup::new(target, ingress::Plan::none());
-                    let result =
-                        plan.bind(domain::Local::new(Identity), backoff)
-                            .install::<_, _, sync::Preserve, _, Bundle<Tcp, Identity, Balanced>, 16, _, _>(
-                        setup,
-                        set,
-                        &mut runtime,
-                        Scope::driver,
-                        |host, runtime| {
-                            let result = runtime.with_quiesce(&mut finish,
-                                Host::new(host),
-                                Duration::from_secs(2),
-                                |mut app| {
-                                    assert_eq!(fibers::TEST.try_wait(&mut app, &gate, 1).expect("driver wait"), fibers::Wait::Reached);
-                                },
-                            );
-                            assert!(result.is_ok(), "application teardown");
-                        },
-                    );
-                    assert!(result.is_ok(), "create connector");
-                    audit.checked((0, 0));
-                    let observed = Events::snapshot(&events);
-                    assert_eq!(gate.hits() as usize, observed.conn.len());
-                    assert!(observed.replies.is_some(), "reply count overflowed");
-                    assert!(observed.is_ordered(), "{:?}", (&observed.conn, &observed.closed, &observed.quarantined));
-                    assert!(
-                        observed.peers
-                            .iter()
-                            .copied()
-                            .map(|peer| peer.into_std().expect("TCP peer address"))
-                            .eq([good])
-                    );
-                    assert!(errors.values().expect("codec observations").is_empty());
-                },
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-            );
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
-
-            assert!(result.is_ok(), "executor teardown");
-
-            assert!(server.finish().is_ok(), "finish held peer");
-        });
+        assert!(server.finish().is_ok(), "finish held peer");
     }).expect("spawn held peer");
 }
 
@@ -380,7 +358,6 @@ fn recovery_keeps_turn() {
                 |second| {
                     let addrs = [first.addr(), second.addr()];
                     let chosen = Rc::new(Trace::new());
-                    let opened = Gate::new();
                     let plan = Plan::<KeyTag<0>, 2>::new(
                         2,
                         Spec::new(Duration::from_secs(2), Duration::from_secs(2))
@@ -389,106 +366,90 @@ fn recovery_keeps_turn() {
                     .expect("two connections")
                     .with_ttl(Positive::from_millis::<100>());
                     let config = plan.configured().expect("round robin resources");
-                    use dope_core::driver::life::creation::Attempt;
-                    let mut create = Attempt::new();
-                    let result = Executor::new(&mut create, config);
-                    result
-                        .as_ref()
-                        .map_err(|error| error.kind())
-                        .expect("executor construction");
-                    let executor = result.ok().expect("executor construction");
                     let mut reclaim1 = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-                    executor.with_storage(()).run(|executor| {
-                        let result = executor.enter_with(
-                            |mut runtime| {
-                                use dope_manifold::client::session::ingress::Plan;
+                    Runtime::new(config).with_scope(
+                        |mut runtime| {
+                            use dope_manifold::client::session::ingress::Plan;
 
-                                let events = Rc::new(Cell::new(Events::default()));
-                                let errors = Rc::new(Trace::new());
-                                let audit = Rc::new(Report::default());
-                                let target = Session {
-                                    audit: audit.clone(),
-                                    codec: codec::Outbound,
-                                    errors: errors.clone(),
-                                    events: events.clone(),
-                                    gate: opened.clone(),
-                                };
-                                let set = Snapshot::from_vec(
-                                    Revision::new(1),
-                                    addrs
-                                        .map(|addr| {
-                                            Endpoint::new(
+                            let target = Session::new(codec::Outbound);
+                            let events = target.events.clone();
+                            let errors = target.errors.clone();
+                            let audit = target.audit.clone();
+                            let opened = target.gate.clone();
+                            let set = Snapshot::from_vec(
+                                Revision::new(1),
+                                addrs
+                                    .map(|addr| {
+                                        Endpoint::new(
+                                            addr,
+                                            Address {
                                                 addr,
-                                                Address {
-                                                    addr,
-                                                    chosen: chosen.clone(),
-                                                },
-                                            )
-                                        })
-                                        .into(),
-                                );
-                                let hash = runtime.hash_state(Domain::DEFAULT);
-                                let result = plan
-                        .bind(Local::new(Identity), hash)
-                        .install::<_, _, Preserve, _, Bundle<Net, Identity, Balanced>, 2, _, _>(
-                            Setup::new(target, Plan::none()),
-                            set,
-                            &mut runtime,
-                            Scope::driver,
-                            |host, runtime| {
-                                let now = runtime.driver().driver_ref().clock().now();
-                                let result = runtime.with_at_for(
-                                    &mut finish,
-                                    Host::new(host),
-                                    now.into(),
-                                    Duration::from_secs(2),
-                                    |mut app| {
-                                        app.drive(now.into(), Until(|| opened.hits() == 2))
-                                            .expect("both endpoints recover")
-                                            .into_output();
-                                        assert_eq!(*chosen.values().expect("chosen endpoints"), addrs);
-                                        app.drive(
-                                            now.clamp_add(Duration::from_millis(100)),
-                                            Until(|| opened.hits() == 4),
+                                                chosen: chosen.clone(),
+                                            },
                                         )
-                                        .expect("both endpoints rotate without backoff")
+                                    })
+                                    .into(),
+                            );
+                            let hash = runtime.hash_state(Domain::DEFAULT);
+                            let result = plan
+                    .bind(Local::new(Identity), hash)
+                    .install::<_, _, Preserve, _, Bundle<Net, Identity, Balanced>, 2, _, _>(
+                        Setup::new(target, Plan::none()),
+                        set,
+                        &mut runtime,
+                        Scope::driver,
+                        |host, runtime| {
+                            let now = runtime.driver().driver_ref().clock().now();
+                            let result = runtime.with_at_for(
+                                &mut finish,
+                                Host::new(host),
+                                now.into(),
+                                Duration::from_secs(2),
+                                |mut app| {
+                                    app.drive(now.into(), Until(|| opened.hits() == 2))
+                                        .expect("both endpoints recover")
                                         .into_output();
-                                        assert_eq!(Events::snapshot(&events).closed.len(), 2);
-                                    },
-                                );
-                                assert!(result.is_ok(), "round robin application teardown");
-                            },
-                        );
-                                assert!(result.is_ok(), "install round robin connector");
-                                audit.checked((0, 0));
-                                assert_eq!(
-                                    *chosen.values().expect("chosen endpoints"),
-                                    [addrs[0], addrs[1], addrs[0], addrs[1]]
-                                );
-                                assert!(errors.values().expect("codec observations").is_empty());
-                                let observed = Events::snapshot(&events);
-                                assert_eq!(opened.hits() as usize, observed.conn.len());
-                                assert!(observed.replies.is_some(), "reply count overflowed");
-                                assert!(
-                                    observed.is_ordered(),
-                                    "{:?}",
-                                    (&observed.conn, &observed.closed, &observed.quarantined)
-                                );
-                            },
-                            recovery::Policy::new(|event| reclaim1.push(event), recover),
-                        );
-                        assert!(
-                            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                            "unexpected reclaimed operations: {reclaim1:?}"
-                        );
+                                    assert_eq!(*chosen.values().expect("chosen endpoints"), addrs);
+                                    app.drive(
+                                        now.clamp_add(Duration::from_millis(100)),
+                                        Until(|| opened.hits() == 4),
+                                    )
+                                    .expect("both endpoints rotate without backoff")
+                                    .into_output();
+                                    assert_eq!(Events::snapshot(&events).closed.len(), 2);
+                                },
+                            );
+                            assert!(result.is_ok(), "round robin application teardown");
+                        },
+                    );
+                            assert!(result.is_ok(), "install round robin connector");
+                            audit.checked((0, 0));
+                            assert_eq!(
+                                *chosen.values().expect("chosen endpoints"),
+                                [addrs[0], addrs[1], addrs[0], addrs[1]]
+                            );
+                            assert!(errors.values().expect("codec observations").is_empty());
+                            let observed = Events::snapshot(&events);
+                            assert_eq!(opened.hits() as usize, observed.conn.len());
+                            assert!(observed.replies.is_some(), "reply count overflowed");
+                            assert!(
+                                observed.is_ordered(),
+                                "{:?}",
+                                (&observed.conn, &observed.closed, &observed.quarantined)
+                            );
+                        },
+                        recovery::Policy::new(|event| reclaim1.push(event), recover),
+                    );
+                    assert!(
+                        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+                        "unexpected reclaimed operations: {reclaim1:?}"
+                    );
 
-                        assert!(result.is_ok(), "round robin executor teardown");
-                        first_tx.notify().expect("finish first endpoint");
-                        last_tx.notify().expect("finish second endpoint");
-                        assert!(first.finish().is_ok());
-                        assert!(second.finish().is_ok());
-                    });
+                    first_tx.notify().expect("finish first endpoint");
+                    last_tx.notify().expect("finish second endpoint");
+                    assert!(first.finish().is_ok());
+                    assert!(second.finish().is_ok());
                 },
             )
             .expect("second endpoint");

@@ -33,11 +33,6 @@ const _: fn() = || {
 };
 
 #[test]
-fn attempt_layout() {
-    assert_eq!(size_of::<Id<'static>>(), 2 * size_of::<u32>());
-}
-
-#[test]
 fn disabled_layout() {
     type Owner = Primary<'static, KeyTag<0>>;
     type Ctx = conn::Ctx<'static, 'static, KeyTag<0>, Identity, (), Owner>;

@@ -1,6 +1,6 @@
 use std::{marker, pin, task};
 
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 
 use crate::{
     abi, context,
@@ -34,7 +34,19 @@ impl<'d, R: tree::Tree<'d>> Plan<'d, R> {
 
 impl<'d, R: tree::Build<'d>> Plan<'d, R> {
     pub fn try_prepare(self) -> Result<Plane<'d, R, quota::Bounded>, alloc::Error> {
-        Ok(Plane::bounded(R::try_build()?, self.limit))
+        self.try_prepare_with_capacity(capacity::Count::MAX)
+    }
+
+    /// Caps each route's physical slots independently of the global admission limit.
+    /// Retired slots are not replaced from the unallocated declared suffix.
+    pub fn try_prepare_with_capacity(
+        self,
+        physical: capacity::Count,
+    ) -> Result<Plane<'d, R, quota::Bounded>, alloc::Error> {
+        Ok(Plane::bounded(
+            R::try_build_with_capacity(physical)?,
+            self.limit,
+        ))
     }
 }
 

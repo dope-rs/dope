@@ -77,7 +77,7 @@ impl<P: Ord, R> Core<P, R> {
 
     pub(super) fn release(&mut self, live: Live) -> R {
         let priority = match self.phase(live) {
-            Phase::Armed(position) => Some(order::Entry::new(self, position).remove()),
+            Phase::Armed(position) => Some(self.remove_at(position)),
             Phase::Idle | Phase::Fired => None,
         };
         let slot = live.slot();
@@ -103,7 +103,7 @@ impl<P: Ord, R> Core<P, R> {
 
     pub(super) fn priority(&self, live: Live) -> Option<&P> {
         match self.phase(live) {
-            Phase::Armed(position) => Some(order::Order::new(self).priority(position)),
+            Phase::Armed(position) => Some(self.priority_at(position)),
             Phase::Idle | Phase::Fired => None,
         }
     }
@@ -123,14 +123,14 @@ impl<P: Ord, R> Core<P, R> {
 
     pub(super) fn set(&mut self, live: Live, prio: P) {
         match self.phase(live) {
-            Phase::Armed(position) => order::Entry::new(self, position).set(live.slot(), prio),
+            Phase::Armed(position) => self.set_at(position, live.slot(), prio),
             Phase::Idle | Phase::Fired => order::insert(self, live.slot(), prio),
         }
     }
 
     pub(super) fn clear(&mut self, live: Live) {
         let priority = match self.phase(live) {
-            Phase::Armed(position) => Some(order::Entry::new(self, position).remove()),
+            Phase::Armed(position) => Some(self.remove_at(position)),
             Phase::Idle | Phase::Fired => None,
         };
         self.write_state(live.slot(), IDLE);
@@ -138,8 +138,8 @@ impl<P: Ord, R> Core<P, R> {
     }
 
     pub(super) fn fire(&mut self, root: order::Root) -> Live {
-        let slot = order::Order::new(self).min_slot(root);
-        let priority = order::Entry::new(self, order::Position::ROOT).remove();
+        let slot = self.min_slot(root);
+        let priority = self.remove_at(order::Position::ROOT);
         self.write_state(slot, FIRED);
         drop(priority);
         Live::from_slot(slot)

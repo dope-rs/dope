@@ -44,7 +44,7 @@ impl<'turn, 'd> Work<'turn, 'd> {
     }
 
     pub fn share<const N: usize, T>(self, run: impl FnOnce() -> T) -> T {
-        let _held = lanes::Quota::share::<N, _>(&self.state.lanes.maint, 0);
+        let _held = lanes::share::<N, _>(&self.state.lanes.maint, 0);
         run()
     }
 }

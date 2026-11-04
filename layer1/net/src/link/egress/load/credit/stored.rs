@@ -17,10 +17,7 @@ pub(in crate::link::egress) struct Stored<'p>(
 
 /// One checked partition holding its source grant and immutable payload.
 pub(in crate::link::egress) struct Split<'a, 'p, T> {
-    grant: mem::raw::Bound<
-        &'a mut mem::raw::Grant<mem::raw::Lane<'p, 'p, 2, credit::Tag, u32>, 2, credit::Amount>,
-        Parts,
-    >,
+    grant: mem::raw::Bound<&'a mut credit::Grant<'p>, Parts>,
     load: egress::NonEmpty<T>,
 }
 
@@ -75,7 +72,7 @@ impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
         let (queue, mut grant) = claim.into_parts();
         let parts = Parts { rest };
         // SAFETY: Part owns the unchanged grant and payload checked by try_new.
-        let stored = Stored(unsafe { grant.0.bind_mut(parts) }.split(load.geometry().wire()));
+        let stored = Stored(unsafe { grant.bind_mut(parts) }.split(load.geometry().wire()));
         (credit::Reserve::new(queue, grant), stored, load)
     }
 }
@@ -99,7 +96,7 @@ impl<'a, 'p, T> Split<'a, 'p, T> {
             }
         };
         // SAFETY: subtraction proved this partition of the exclusively borrowed grant.
-        let grant = unsafe { grant.0.bind_mut(Parts { rest }) };
+        let grant = unsafe { grant.bind_mut(Parts { rest }) };
         Ok(Self { grant, load })
     }
 
@@ -231,7 +228,7 @@ impl<'p> Stored<'p> {
     }
 
     pub(in crate::link::egress) fn into_grant(self) -> credit::Grant<'p> {
-        credit::Grant(self.0.map(Release))
+        self.0.map(Release)
     }
 }
 
@@ -242,7 +239,7 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> Bound<'queue
     ) -> Self {
         let (queue, grant) = claim.into_parts();
         // SAFETY: Claim is constructed only from an exact one-entry acquisition.
-        let stored = Stored(unsafe { grant.0.bind(Hold { bytes }) }.map());
+        let stored = Stored(unsafe { grant.bind(Hold { bytes }) }.map());
         Self { queue, stored }
     }
 

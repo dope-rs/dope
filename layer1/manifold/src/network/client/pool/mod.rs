@@ -1,9 +1,8 @@
 use std::{net, pin};
 
-use dope_core::driver::{self, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity};
 use dope_net::{link::pool::change, tcp, wire};
 use dope_runtime::{client, topology::lending};
-use o3::mem::quota;
 
 use crate::{
     app::{creation, dispatch, env},
@@ -149,26 +148,6 @@ where
 
     pub fn wake(self: pin::Pin<&mut Self>, conn: conn::Id<'d, ID>) -> Wake {
         self.project().engine.wake_conn(conn)
-    }
-
-    pub(super) fn maintain<'turn>(mut self: pin::Pin<&mut Self>, turn: schedule::Turn<'turn, 'd>) {
-        let work = turn.maint();
-        loop {
-            let step = work.claim(|| {
-                let mut engine = self.as_mut().project().engine;
-                let ctl = engine.as_mut().control_mut();
-                ctl.next_retirement()
-            });
-            match step {
-                quota::Admission::Item((lane, permit)) => {
-                    self.as_mut()
-                        .project()
-                        .engine
-                        .retire(lane, permit, service::Pool::is_retired)
-                }
-                quota::Admission::Empty | quota::Admission::Exhausted => break,
-            }
-        }
     }
 }
 

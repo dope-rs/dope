@@ -90,15 +90,6 @@ fn joins_ordered_outputs() {
 }
 
 #[test]
-fn builder_drops_input() {
-    let mut drops = 0;
-    let mut builder = Builder::<_, Owned<'_>, _>::try_new(1).expect("worker storage");
-    builder.try_push(Owned(&mut drops), ()).expect("task");
-    drop(builder);
-    assert_eq!(drops, 1);
-}
-
-#[test]
 fn drops_unstarted_in_order() {
     let order = Cell::new(0);
     let mut builder = Builder::<_, (), _>::try_new(2).expect("worker storage");
@@ -157,27 +148,24 @@ fn early_return_joins() {
 }
 
 #[test]
-fn scope_drops_output() {
-    let mut drops = 0;
-    let mut builder = Builder::try_new(1).expect("worker storage");
-    builder.try_push(Owned(&mut drops), ()).expect("task");
-    builder.scope(|mut workers| workers.start(STACK).expect("start worker"));
-    assert_eq!(drops, 1);
-}
-
-#[test]
-fn partial_drops_remainder() {
-    let mut first = 0;
-    let mut second = 0;
-    let mut builder = Builder::try_new(2).expect("worker storage");
-    builder.try_push(Owned(&mut first), ()).expect("first task");
-    builder
-        .try_push(Owned(&mut second), ())
-        .expect("second task");
-    builder.scope(|mut workers| {
-        workers.start(STACK).expect("start workers");
-        let mut finished = workers.finish();
-        finished.next().expect("first output")
-    });
-    assert_eq!((first, second), (1, 1));
+fn drops_uncollected_outputs() {
+    for take_first in [false, true] {
+        let mut first = 0;
+        let mut second = 0;
+        let mut builder = Builder::try_new(2).expect("worker storage");
+        builder.try_push(Owned(&mut first), ()).expect("first task");
+        builder
+            .try_push(Owned(&mut second), ())
+            .expect("second task");
+        let output = builder.scope(|mut workers| {
+            workers.start(STACK).expect("start workers");
+            if take_first {
+                Some(workers.finish().next().expect("first output"))
+            } else {
+                None
+            }
+        });
+        drop(output);
+        assert_eq!((first, second), (1, 1), "yield first: {take_first}");
+    }
 }

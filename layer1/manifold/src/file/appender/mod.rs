@@ -3,7 +3,7 @@ use std::{marker, ops, os::fd, path, pin};
 use dope_core::{
     driver::{
         self,
-        result::SubmitError,
+        result::{SubmitCause, SubmitError},
         retained::flight,
         route::{self, Identity, indices, kind, lease},
     },
@@ -243,24 +243,16 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
             .pop_front()
             .map(|(block, ())| Pending::new(block))
     }
-    pub(super) fn install(
-        &mut self,
-        pending: Pending<'p, N, B>,
-        result: Result<flight::Flight<'d, kind::Write>, SubmitError>,
-    ) {
-        match InFlight::try_new(pending, result) {
-            Ok(active) => self.queue.in_flight = Some(active),
-            Err((pending, error)) => self.fail_pending(pending, error),
-        }
-    }
     pub(super) fn settle(
         &mut self,
         target: route::Erased<'d, kind::Write>,
     ) -> Option<Pending<'p, N, B>> {
-        let active = self.queue.in_flight.take()?;
-        match active.complete(target) {
-            Ok(pending) => Some(pending),
-            Err(active) => {
+        match self.queue.in_flight.take()? {
+            InFlight::Submitted { pending, flight } if flight.matches(target) => {
+                drop(flight);
+                Some(pending)
+            }
+            active => {
                 self.queue.in_flight = Some(active);
                 None
             }
@@ -323,10 +315,18 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
                 target,
             );
         // SAFETY: pending owns the exact buffer lease, and self retains its file
-        // and flight slots. install keeps pending through completion or native
-        // quiescence of this exact installed appender.
+        // and flight slots. The queue keeps pending through completion or
+        // native quiescence of this exact installed appender.
         let result = unsafe { driver.reborrow().submit_file(&self.flights, op) };
-        self.install(pending, result);
+        match result {
+            Ok(flight) => self.queue.in_flight = Some(InFlight::Submitted { pending, flight }),
+            Err(error) => match error.cause() {
+                SubmitCause::Full => self.queue.in_flight = Some(InFlight::Rejected { pending }),
+                SubmitCause::IdentityExhausted => {
+                    self.fail_pending(pending, Failure::Submission(error));
+                }
+            },
+        }
     }
 }
 impl<'step, 'p, 'd, ID: Identity, const N: usize, const B: usize> Control<'step, 'p, 'd, ID, N, B>

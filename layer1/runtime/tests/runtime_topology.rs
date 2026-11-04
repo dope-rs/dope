@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible};
+use std::cell::Cell;
 
 use dope_core::driver::{life::recovery, route::KeyTag};
 use dope_runtime::executor::session::Completion;
@@ -111,7 +111,7 @@ fn keeps_outer_authority() {
             app.with_quiesce(&mut finish, TIMEOUT, |_| {})
                 .expect("finalize borrowed topology");
         },
-        recovery::Policy::new(|event| reports.push(event), recover),
+        recovery::Policy::new(|event| reports.push(event), common::recover),
         |entered| {
             entered
                 .as_ref()
@@ -160,7 +160,7 @@ fn lends_application() {
                     })
                 })
             },
-            recovery::Policy::new(drop, recover),
+            recovery::Policy::new(drop, common::recover),
             |outcome| {
                 outcome
                     .as_ref()
@@ -205,7 +205,7 @@ fn yields_before_publish() {
             app.with_quiesce(&mut finish, TIMEOUT, |_| {})
                 .expect("finalize yielded application");
         },
-        recovery::Policy::new(|event| reports.push(event), recover),
+        recovery::Policy::new(|event| reports.push(event), common::recover),
         |entered| {
             entered
                 .as_ref()
@@ -259,8 +259,4 @@ fn diagnostic_keeps_owner() {
         assert!(Rc::ptr_eq(&owner, &value));
     }
     assert_eq!(Rc::strong_count(&owner), 1);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

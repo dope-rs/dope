@@ -1,7 +1,4 @@
-use std::convert::Infallible;
-
 use dope_core::driver::life::recovery;
-use dope_test::scope::Error;
 
 use crate::common::wake::Ready as _;
 pub mod common;
@@ -14,7 +11,7 @@ use dope_core::driver::{
     },
 };
 
-use crate::common::rt::Runtime;
+use crate::common::rt::{Runtime, finish, recover};
 
 #[test]
 fn reuse_is_bounded() {
@@ -80,15 +77,4 @@ fn reuse_is_bounded() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

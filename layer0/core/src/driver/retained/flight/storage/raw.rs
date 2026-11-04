@@ -1,4 +1,4 @@
-use std::{cell, marker, mem::MaybeUninit, ops, ptr};
+use std::{marker, mem::MaybeUninit, ops, ptr};
 
 use o3::{
     alloc::{self, array::Plan, tail},
@@ -9,63 +9,29 @@ use crate::driver::retained::flight::storage::{
     Flights, Preparation, Prepared, Slots, index_limit, is_layout_valid, state,
 };
 
-/// Directory topology changes only under the sole preparation capability.
-#[repr(transparent)]
-pub(super) struct Directory<T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>(
-    cell::UnsafeCell<Vec<ptr::NonNull<state::State<T, INDEX_BITS, GENERATION_BITS>>>>,
-);
-
 impl<T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
-    Directory<T, INDEX_BITS, GENERATION_BITS>
+    Flights<T, INDEX_BITS, GENERATION_BITS>
 {
-    pub(super) const fn new() -> Self {
-        Self(cell::UnsafeCell::new(Vec::new()))
-    }
-
-    pub(super) fn read(&self) -> &Vec<ptr::NonNull<state::State<T, INDEX_BITS, GENERATION_BITS>>> {
+    pub(super) fn directory(
+        &self,
+    ) -> &Vec<ptr::NonNull<state::State<T, INDEX_BITS, GENERATION_BITS>>> {
         // SAFETY: each private read ends before the callback-free commit leaf;
         // external completions borrow stable entries, never the directory itself.
-        unsafe { &*self.0.get() }
+        unsafe { &*self.directory.get() }
     }
-}
 
-/// Exact arena identity plus the affine right to stage and publish one batch.
-#[repr(transparent)]
-pub(in crate::driver::retained::flight) struct Access<
-    'a,
-    'owner,
-    T: Copy,
-    const INDEX_BITS: u32,
-    const GENERATION_BITS: u32,
-> {
-    arena: &'owner Flights<T, INDEX_BITS, GENERATION_BITS>,
-    preparation: marker::PhantomData<&'a mut ()>,
-}
-
-impl<'a, 'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
-    Access<'a, 'owner, T, INDEX_BITS, GENERATION_BITS>
-{
     /// # Safety
-    /// The exact arena stays alive and immovable for `'owner`; this capability
+    /// The exact arena stays alive and immovable for `'owner`; the caller
     /// exclusively owns preparation for `'a` until it is committed or dropped.
-    pub(in crate::driver::retained::flight) unsafe fn new(
-        arena: &'owner Flights<T, INDEX_BITS, GENERATION_BITS>,
-    ) -> Self {
-        Self {
-            arena,
-            preparation: marker::PhantomData,
-        }
-    }
-
-    pub(in crate::driver::retained::flight) fn try_batch<const GROUPS: usize>(
-        self,
+    pub(in crate::driver::retained::flight) unsafe fn try_batch<'a, 'owner, const GROUPS: usize>(
+        &'owner self,
         caps: [usize; GROUPS],
     ) -> Result<Prepared<'a, 'owner, T, INDEX_BITS, GENERATION_BITS, GROUPS>, alloc::Error> {
         const { assert!(GROUPS > 0) };
         if !is_layout_valid::<INDEX_BITS, GENERATION_BITS>() {
             return Err(alloc::Error::Overflow);
         }
-        let base = self.arena.directory.read().len();
+        let base = self.directory().len();
         let mut end = base;
         let mut rest = caps
             .iter()
@@ -79,7 +45,7 @@ impl<'a, 'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
             };
             let capacity = *vacant.get(&caps);
             rest = rest.map(|rest| rest - capacity);
-            let state = match state::Header::select(&self.arena.groups, capacity) {
+            let state = match state::Header::select(&self.groups, capacity) {
                 Some(slots) => Preparation::Reuse(slots),
                 None => {
                     let (seed, extent, next) = Self::seed(end, capacity, rest)?;
@@ -91,7 +57,7 @@ impl<'a, 'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
             guard = vacant.insert(state);
         };
         let added = end - base;
-        let dir = self.arena.directory.read();
+        let dir = self.directory();
         let spare = dir.capacity() - dir.len();
         let next = if added > spare {
             Some(self.try_plan(end)?)
@@ -99,29 +65,10 @@ impl<'a, 'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
             None
         };
         Ok(Prepared {
-            access: self,
+            arena: self,
+            preparation: marker::PhantomData,
             states,
             directory: next,
-        })
-    }
-
-    pub(super) fn commit<const GROUPS: usize>(
-        self,
-        states: [Preparation<'owner, T, INDEX_BITS, GENERATION_BITS>; GROUPS],
-        next: Option<Vec<ptr::NonNull<state::State<T, INDEX_BITS, GENERATION_BITS>>>>,
-    ) -> [Slots<'owner, T, INDEX_BITS, GENERATION_BITS>; GROUPS] {
-        // SAFETY: this consumed capability owns the only outstanding plan for
-        // this exact directory. No directory references escape its short reads,
-        // and this leaf invokes no completion or user callbacks while mutating it.
-        let dir = unsafe { &mut *self.arena.directory.0.get() };
-        if let Some(next) = next {
-            *dir = next;
-        }
-        states.map(|state| match state {
-            Preparation::Reuse(slots) => slots,
-            Preparation::New { block, capacity } => {
-                Self::publish(&self.arena.groups, dir, block, capacity)
-            }
         })
     }
 
@@ -129,7 +76,7 @@ impl<'a, 'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
         &self,
         required: usize,
     ) -> Result<Vec<ptr::NonNull<state::State<T, INDEX_BITS, GENERATION_BITS>>>, alloc::Error> {
-        let dir = self.arena.directory.read();
+        let dir = self.directory();
         let source = dir.as_slice();
         let mut next: Vec<ptr::NonNull<state::State<T, INDEX_BITS, GENERATION_BITS>>> =
             Plan::try_reserve(dir.capacity(), required)?.try_vec()?;
@@ -142,7 +89,7 @@ impl<'a, 'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
         Ok(next)
     }
 
-    fn publish(
+    fn publish<'owner>(
         groups: &'owner chain::List<
             state::Header<T, INDEX_BITS, GENERATION_BITS>,
             state::State<T, INDEX_BITS, GENERATION_BITS>,
@@ -189,5 +136,32 @@ impl<'a, 'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
             Some(_) | None => capacity,
         };
         Ok((len as u32, extent, len + extent))
+    }
+}
+
+impl<'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32, const GROUPS: usize>
+    Prepared<'_, 'owner, T, INDEX_BITS, GENERATION_BITS, GROUPS>
+{
+    /// Publishes into the arena used to prepare this batch, without allocation.
+    pub fn groups(self) -> [Slots<'owner, T, INDEX_BITS, GENERATION_BITS>; GROUPS] {
+        let Self {
+            arena,
+            preparation: marker::PhantomData,
+            states,
+            directory: next,
+        } = self;
+        // SAFETY: this consumed preparation owns the only outstanding plan for
+        // this exact directory. No directory references escape its short reads,
+        // and this leaf invokes no completion or user callbacks while mutating it.
+        let dir = unsafe { &mut *arena.directory.get() };
+        if let Some(next) = next {
+            *dir = next;
+        }
+        states.map(|state| match state {
+            Preparation::Reuse(slots) => slots,
+            Preparation::New { block, capacity } => {
+                Flights::publish(&arena.groups, dir, block, capacity)
+            }
+        })
     }
 }

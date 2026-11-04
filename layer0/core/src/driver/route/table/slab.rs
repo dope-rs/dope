@@ -17,14 +17,14 @@ impl<T, Tag: route::Tag> Slab<T, Tag> {
     }
 
     pub fn view(&self) -> borrows::View<'_, T, Tag> {
-        borrows::View::new(&self.inner)
+        borrows::View { inner: &self.inner }
     }
 
     pub fn access(&mut self) -> borrows::Access<'_, T, Tag> {
-        borrows::Access::new(&mut self.inner)
+        borrows::Access(&mut self.inner)
     }
 
     pub fn vacancy(&mut self) -> borrows::Vacancy<'_, T, Tag> {
-        borrows::Vacancy::new(&mut self.inner)
+        borrows::Vacancy(&mut self.inner)
     }
 }

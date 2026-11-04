@@ -171,11 +171,7 @@ impl Executor<(), ()> {
 
 impl<S, Q> Executor<S, Q> {
     pub fn with_storage<T>(self, value: T) -> Executor<storage::Value<T>, Q> {
-        Executor {
-            storage: storage::Value::new(value),
-            generation: self.generation,
-            teardown: self.teardown,
-        }
+        self.with_plan(storage::Value::new(value))
     }
 
     pub fn with_plan<T: storage::Plan>(self, plan: T) -> Executor<T, Q> {

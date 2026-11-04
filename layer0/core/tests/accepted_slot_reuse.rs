@@ -1,11 +1,14 @@
 use std::{
-    convert::Infallible,
     io::Read as _,
     net::TcpStream,
     ops::ControlFlow,
     time::{Duration, Instant},
 };
 
+use crate::common::{
+    rt::{Runtime, finish, recover},
+    wake::Ready as _,
+};
 use dope_core::{
     driver::{
         life::recovery,
@@ -20,9 +23,6 @@ use dope_core::{
         socket::{Listener, install::Install},
     },
 };
-use dope_test::scope::Error;
-
-use crate::common::{rt::Runtime, wake::Ready as _};
 
 pub mod common;
 
@@ -130,17 +130,7 @@ fn multishot_slot_reuse() {
                 drop(accept);
                 listener.close(&mut scope.context());
             },
-            recovery::Policy::new(
-                |_| {},
-                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("native retirement: {:?}", failure.cause())
-                },
-            ),
-            |result| {
-                result
-                    .as_ref()
-                    .map_err(Error::cause)
-                    .expect("driver lifecycle");
-            },
+            recovery::Policy::new(|_| {}, recover),
+            finish,
         );
 }

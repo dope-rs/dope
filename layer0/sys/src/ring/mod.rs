@@ -46,8 +46,7 @@ pub trait Source: kernel::Source + Sized {
         Self: provided::Source;
     type Poll: Copy + Eq;
     type Entry<T>: complete::Entry<Token = T, Outcome: complete::Outcome<Returned = Self::Returned>>;
-    type Packet<T: Copy, B>: Packet<
-            Native = Self,
+    type Packet<T: Copy, B>: complete::Packet<
             Parts = complete::Parts<
                 T,
                 <Self::Entry<T> as complete::Entry>::Outcome,
@@ -62,11 +61,6 @@ pub trait Source: kernel::Source + Sized {
         + Prepare
         + Inspect<Code = Self::Code>
         + Complete<Entry = Self::Entry<T>>;
-}
-
-/// Retains the native provider of an owned ring completion without runtime storage.
-pub trait Packet: complete::Packet {
-    type Native: Source;
 }
 
 /// Exclusive queue and registration views borrow the same native owner.

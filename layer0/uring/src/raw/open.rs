@@ -11,26 +11,26 @@ use dope_sys::{
 use o3::base::num::bounded;
 
 use crate::{
-    Opened, Uring,
+    Uring,
     reactor::cq::{Invalid, Outcome},
 };
 
 // SAFETY: nonnegative native open results uniquely transfer their descriptor;
-// the private owner delivers or closes it exactly once.
-unsafe impl file::raw::Completion for Opened {
+// the returned OwnedFd delivers or closes it exactly once.
+unsafe impl file::raw::Completion for Uring {
     type Outcome = Outcome;
     type Invalid = Invalid;
 
-    unsafe fn open(raw: Self::Outcome) -> Result<Self, Self::Invalid> {
+    unsafe fn open(raw: Self::Outcome) -> Result<file::Opened, Self::Invalid> {
         match raw.decode() {
             Decode::Value(value) => {
                 let value: bounded::U32<0, { i32::MAX as u32 }> = value.into();
                 // SAFETY: the caller owns this successful open completion exactly once.
                 let owned =
                     unsafe { <fd::OwnedFd as fd::FromRawFd>::from_raw_fd(value.get() as i32) };
-                Ok(Self(Ok(owned)))
+                Ok(Ok(owned))
             }
-            Decode::Error(code) => Ok(Self(Err(code))),
+            Decode::Error(code) => Ok(Err(code)),
             Decode::Invalid(invalid) => Err(invalid),
         }
     }

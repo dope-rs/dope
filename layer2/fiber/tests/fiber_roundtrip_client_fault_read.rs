@@ -1,8 +1,5 @@
 use dope::{core::driver::life::recovery, runtime::executor::session::Completion};
-use dope_test::harness::{
-    peer::{AcceptScript, TcpScript},
-    scenario,
-};
+use dope_test::harness::{peer::TcpScript, scenario};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
@@ -12,7 +9,7 @@ use std::net::Shutdown;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::tcp::Tcp,
     runtime::executor::drive,
 };
@@ -26,16 +23,15 @@ use dope_fiber::{
 use dope_test::reclaim::Reports;
 
 use crate::common::network::rounds::client::{
-    Collect,
     fault::{Error, read::*},
-    try_reply,
+    try_into_vec,
 };
 
 #[test]
 fn emits_plain_first() {
     let mut finish = Completion::new();
-    AcceptScript::with(
-        |peer| try_reply(peer, b"x", 1),
+    TcpScript::with(
+        |peer| peer.write_all(b"x").expect("plain input"),
         |server| {
             let addr = server.addr();
 
@@ -55,7 +51,7 @@ fn emits_plain_first() {
                         |sess| sess.driver(),
                         |port, sess| {
                             let conn = store.handle();
-                            let app = App { connector: port };
+                            let app = Host::new(port);
                             let driven = sess
                                 .with_quiesce(
                                     &mut finish,
@@ -66,11 +62,6 @@ fn emits_plain_first() {
                                         let mut io = (opened)
                                             .ok()
                                             .expect("the plain-first connection must open");
-                                        let sent = app.block_on(io.write_all(b"ping"))?;
-                                        assert!(
-                                            sent.is_ok(),
-                                            "the plain-first connection must write its ping"
-                                        );
                                         {
                                             let read = app.block_on(io.read())?;
                                             let lease = (read)
@@ -80,7 +71,7 @@ fn emits_plain_first() {
                                             "the wire must emit its plain bytes before failure",
                                         );
                                             assert_eq!(
-                                                Collect::try_into_vec(lease)
+                                                try_into_vec(lease)
                                                     .expect("consume received bytes"),
                                                 b"x"
                                             );
@@ -111,15 +102,10 @@ fn emits_plain_first() {
                         "the plain-first connector must build from its storage"
                     );
 
-                    let result = server.finish();
-                    let result = (result).expect("the plain-first reply-server thread must join");
-                    assert!(
-                        result.is_ok(),
-                        "the plain-first reply server must complete its accept"
-                    );
+                    server.finish().expect("plain-input peer completion");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -162,7 +148,7 @@ fn keeps_eof_error() {
                         |sess| sess.driver(),
                         |port, sess| {
                             let conn = store.handle();
-                            let app = App { connector: port };
+                            let app = Host::new(port);
                             let driven = sess
                                 .with_quiesce(
                                     &mut finish,
@@ -201,7 +187,7 @@ fn keeps_eof_error() {
                     assert!(server.finish().is_ok(), "the EOF peer thread must join");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -238,8 +224,4 @@ fn typed_capacities() {
         Read::ChunkCountTooLarge { actual, maximum }
             if actual.get() == 5 && maximum.get() == 4
     ));
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

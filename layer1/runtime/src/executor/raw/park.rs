@@ -20,7 +20,7 @@ impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
         driver: retained::Context<'driver, 'root, 'd>,
     ) -> Self {
         Self {
-            drive: executor::raw::Drive::new(turn, driver),
+            drive: executor::raw::Drive { turn, driver },
         }
     }
 
@@ -34,12 +34,12 @@ impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
         self,
         map: impl FnOnce(schedule::Turn<'turn, 'd>, retained::Context<'driver, 'root, 'd>) -> R,
     ) -> R {
-        let (turn, driver) = self.drive.into_parts();
+        let executor::raw::Drive { turn, driver } = self.drive;
         map(turn, driver)
     }
 
     pub fn into_driver(self) -> retained::Context<'driver, 'root, 'd> {
-        self.drive.into_driver()
+        self.drive.driver
     }
 
     pub(crate) fn run<R>(self, app: pin::Pin<&mut R>, plan: &mut Option<R::ParkPlan>)
@@ -85,7 +85,10 @@ impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
         run: impl FnOnce(Park<'_, '_, 'root, 'd>) -> R,
     ) -> R {
         self.drive.turn.share::<N, _>(ranks, weights, |turn| {
-            let drive = executor::raw::Drive::new(turn, self.drive.driver());
+            let drive = executor::raw::Drive {
+                turn,
+                driver: self.drive.driver.reborrow(),
+            };
             run(Park { drive })
         })
     }
@@ -104,16 +107,16 @@ impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
 
     /// Monotonic time captured once at the beginning of this driver turn.
     pub fn now(&mut self) -> clock::Moment<'d> {
-        self.drive.driver().driver_ref().clock().now()
+        self.drive.driver.reborrow().driver_ref().clock().now()
     }
 
     /// Admits one step whose clock and region authorities share this borrow.
     pub fn next_step(&mut self) -> Option<control::Step<'_, 'd>> {
-        match self.drive.turn().coord().take() {
+        match self.drive.turn.reborrow().coord().take() {
             quota::Take::Taken => {}
             quota::Take::Exhausted => return None,
         }
-        let driver = self.drive.driver().into_driver();
+        let driver = self.drive.driver.reborrow().into_driver();
         Some(control::Step::new(driver))
     }
 }

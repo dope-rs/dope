@@ -1,11 +1,8 @@
-use std::convert::Infallible;
-
 use dope_core::{
     driver,
     driver::life::recovery,
     io::{event::Kind, fd::handles::Descriptor, socket::install::Install},
 };
-use dope_test::scope::Error;
 
 use crate::common::driver::{Scoped as _, support::Drain as _};
 
@@ -30,7 +27,7 @@ use dope_core::driver::{
 };
 use dope_test::reclaim::Reports;
 
-use crate::common::rt::Runtime;
+use crate::common::rt::{Runtime, finish, recover};
 
 const TWO: num::NonZero<usize> = num::NonZero::<usize>::MIN.saturating_add(1);
 const FOUR: num::NonZero<usize> = num::NonZero::<usize>::MIN.saturating_add(3);
@@ -324,15 +321,4 @@ fn app_share_returns_unused() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

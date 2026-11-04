@@ -111,9 +111,7 @@ where
         };
         let (fd, addr) = bound.map_err(creation::Error::Binding)?;
         let opts = <E::Transport as Transport>::options(config.stream);
-        let accept = accept
-            .bind(fd, conns, opts)
-            .map_err(creation::Error::Allocation)?;
+        let accept = accept.bind(fd, opts).map_err(creation::Error::Allocation)?;
         let (pool, pool_req) = pool;
         let (accept, acc_req) = accept.into_parts();
         let flights = route

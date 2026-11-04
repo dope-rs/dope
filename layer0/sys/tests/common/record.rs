@@ -1,11 +1,11 @@
-use std::num;
+use std::{num, slice};
 
 use dope_sys::Errno;
 
 #[derive(Debug)]
 pub struct Transfer<'a> {
     input: &'a [u8],
-    steps: &'a [Result<usize, Errno>],
+    steps: slice::Iter<'a, Result<usize, Errno>>,
     pub sent: Vec<u8>,
 }
 
@@ -13,19 +13,13 @@ impl<'a> Transfer<'a> {
     pub fn new(input: &'a [u8], steps: &'a [Result<usize, Errno>]) -> Self {
         Self {
             input,
-            steps,
+            steps: steps.iter(),
             sent: Vec::new(),
         }
     }
 
     fn step(&mut self) -> Result<usize, Errno> {
-        match self.steps.split_first() {
-            Some((step, rest)) => {
-                self.steps = rest;
-                *step
-            }
-            None => Ok(usize::MAX),
-        }
+        self.steps.next().copied().unwrap_or(Ok(usize::MAX))
     }
 
     pub fn send<'b>(&mut self, input: &'b [u8]) -> Result<&'b [u8], Errno> {

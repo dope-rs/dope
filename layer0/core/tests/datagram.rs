@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use crate::common::rt::{finish, recover};
 
 use dope_core::{
     driver,
@@ -8,7 +8,6 @@ use dope_core::{
     },
     io::{fd::handles::Descriptor, socket::install::Install},
 };
-use dope_test::scope::Error;
 pub mod common;
 
 #[global_allocator]
@@ -256,15 +255,4 @@ fn retires_routed() {
     assert!(target.epoch() == Epoch::INITIAL);
     assert_eq!(*result, Err(dope_core::Errno::CANCELED));
     assert!(matches!(flow, batch::Flow::Last));
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

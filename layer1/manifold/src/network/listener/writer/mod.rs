@@ -43,9 +43,10 @@ pub(in crate::network::listener) mod phase;
 pub(in crate::network::listener) mod state;
 
 /// Header loans and application egress share the same writer residency.
-type Payload<'p, 's, 'd, ID, B> = compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>;
+pub(in crate::network::listener) type Payload<'p, 's, 'd, ID, B> =
+    compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>;
 /// Payload mode selects the fixed writer reservation contract.
-type Reserve<'d, B> =
+pub(in crate::network::listener) type Reserve<'d, B> =
     <<B as data::raw::Payload<'d>>::Mode as exec::Mode>::Reserve<{ memory::WRITE_BUF_CAP }>;
 /// The installed application fixes connection state and payload residency together.
 type Record<'p, 's, 'd, ID, A> = conn::State<

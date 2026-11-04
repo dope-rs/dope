@@ -68,7 +68,7 @@ where
         Self: 'root,
     {
         if self.as_ref().project_ref().engine.is_open() {
-            self = Cycle::prepare(self, turn.reborrow(), driver.state_token());
+            Cycle::prepare(self.as_mut(), turn.reborrow(), driver.state_token());
         }
         // SAFETY: the pinned connector keeps its engine installed through this dispatch.
         unsafe { dispatch::raw::Manifold::pre_park(self.as_mut().project().engine, turn, driver) };

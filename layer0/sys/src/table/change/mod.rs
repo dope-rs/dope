@@ -19,9 +19,6 @@ pub trait Delete {
 
 #[must_use = "a successful readiness submission must commit its changelist"]
 pub trait Tail: raw::Batch {
-    fn is_empty(&self) -> bool;
-    fn len(&self) -> usize;
     fn as_mut_slice(&mut self) -> &mut [Self::Event];
     fn commit(self);
-    fn retry(self);
 }

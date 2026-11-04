@@ -63,7 +63,7 @@ pub(super) enum Cancellation<'d> {
 
 pub(super) enum Phase<'d> {
     Creating(Creating<'d>),
-    CreatingCancelled(Creating<'d, pending::Cancelled>),
+    CreatingCancelled(handles::Creation<'d, pending::Cancelled>),
     ConnectRetry(ConnectRetry<'d>),
     Connecting(Connecting<'d>),
     ConnectingCancelled(pending::Connection<'d, pending::Cancelled>),
@@ -96,12 +96,7 @@ impl<'d> Phase<'d> {
     ) -> (Self, Socket<'d>) {
         let build = match self {
             Self::Creating(build) => build,
-            Self::CreatingCancelled(build) => {
-                let Creating {
-                    socket,
-                    options,
-                    send_window: window,
-                } = build;
+            Self::CreatingCancelled(socket) => {
                 return match done.try_finish(socket) {
                     Ok(Finished::Created(fd)) => (Self::Retired, Socket::Cancelled(fd)),
                     Ok(Finished::Failed(Failure::Create(error))) => {
@@ -112,14 +107,7 @@ impl<'d> Phase<'d> {
                     }
                     Err(mismatch) => {
                         let socket = mismatch.reclaim();
-                        (
-                            Self::CreatingCancelled(Creating {
-                                socket,
-                                options,
-                                send_window: window,
-                            }),
-                            Socket::Stale,
-                        )
+                        (Self::CreatingCancelled(socket), Socket::Stale)
                     }
                 };
             }
@@ -178,14 +166,7 @@ impl<'d> Phase<'d> {
                     Ok((
                         socket,
                         Cancelled::Submitted | Cancelled::Queued | Cancelled::Completed,
-                    )) => (
-                        Self::CreatingCancelled(Creating {
-                            socket,
-                            options,
-                            send_window: window,
-                        }),
-                        Cancellation::Pending,
-                    ),
+                    )) => (Self::CreatingCancelled(socket), Cancellation::Pending),
                     Err((socket, cause)) => {
                         let restored = Self::Creating(Creating {
                             socket,

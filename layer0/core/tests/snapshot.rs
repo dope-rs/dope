@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope_core::driver::life::{creation, recovery};
 pub mod common;
 
@@ -15,7 +13,7 @@ use o3::buffer::{
     write::{Sink as _, consume::Consume as _},
 };
 
-use crate::common::rt::Runtime;
+use crate::common::rt::{Runtime, recover};
 
 #[test]
 fn layout() {
@@ -94,8 +92,4 @@ fn layout() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
 }

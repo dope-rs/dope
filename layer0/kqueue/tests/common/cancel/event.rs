@@ -8,7 +8,7 @@ use dope_sys::{
     },
 };
 
-use crate::common::cancel::buffer::Buffer;
+use crate::common::cancel::Context;
 
 #[derive(Debug)]
 pub struct Event {
@@ -29,7 +29,7 @@ impl complete::Event for Event {
 
 impl read::Complete for Event {
     type Accepted = Infallible;
-    type Buffer = Buffer;
+    type Buffer = Context;
     type Flow = bool;
 
     const LAST: bool = false;
@@ -38,7 +38,7 @@ impl read::Complete for Event {
     fn accepted(_: NonZeroUsize, accepted: Infallible, _: bool) -> Self {
         match accepted {}
     }
-    fn received(_: NonZeroUsize, buffer: Buffer, _: bool) -> Self {
+    fn received(_: NonZeroUsize, buffer: Context, _: bool) -> Self {
         match buffer {}
     }
     fn rejected(key: NonZeroUsize, cause: accept::Error, more: bool) -> Self {

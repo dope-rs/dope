@@ -165,18 +165,17 @@ impl<'packet, 'id, M: Mode> Cursor<'packet, 'id, M> {
 
     pub(in crate::wire) fn name(&mut self) -> Result<Name<'id>, M::Error> {
         let offset = self.position;
-        let mut position = self.position;
         let mut prefix = 0usize;
         loop {
             // SAFETY: unchecked cursors are retained only by a validated Records traversal.
             let part = unsafe {
                 Label {
                     packet: self.packet.packet,
-                    position,
+                    position: self.position,
                 }
                 .decode::<M>()?
             };
-            position = part.end();
+            self.position = part.end();
             let Part::Label(label) = part else {
                 break;
             };
@@ -194,7 +193,6 @@ impl<'packet, 'id, M: Mode> Cursor<'packet, 'id, M> {
                 Ok(())
             })?;
         }
-        self.position = position;
         Ok(Name {
             offset,
             packet: self.packet.proof,
@@ -218,21 +216,20 @@ impl<'packet, 'id, M: Mode> Cursor<'packet, 'id, M> {
 
     /// Normalizes ordinary TTLs while preserving OPT's extended response metadata.
     pub(in crate::wire) fn record(&mut self) -> Result<Record<'id>, M::Error> {
-        let mut next = *self;
-        let owner = next.name()?;
-        let kind = records::Kind::from_wire(next.u16()?);
-        let class = records::Class::from_wire(next.u16()?);
-        let ttl = next.u32()?;
+        let owner = self.name()?;
+        let kind = records::Kind::from_wire(self.u16()?);
+        let class = records::Class::from_wire(self.u16()?);
+        let ttl = self.u32()?;
         let ttl = if kind != records::Kind::OPT && ttl & 0x8000_0000 != 0 {
             0
         } else {
             ttl
         };
-        let length = next.u16()?;
-        let start = next.position;
-        next.bytes(length)?;
-        let end = next.position;
-        let record = Record {
+        let length = self.u16()?;
+        let start = self.position;
+        self.bytes(length)?;
+        let end = self.position;
+        Ok(Record {
             owner,
             kind,
             class,
@@ -242,9 +239,7 @@ impl<'packet, 'id, M: Mode> Cursor<'packet, 'id, M> {
                 end,
                 packet: self.packet.proof,
             },
-        };
-        *self = next;
-        Ok(record)
+        })
     }
 
     pub(in crate::wire) fn bytes(&mut self, length: u16) -> Result<&'packet [u8], M::Error> {
@@ -255,6 +250,7 @@ impl<'packet, 'id, M: Mode> Cursor<'packet, 'id, M> {
     }
 }
 
+/// An error ends the current packet traversal; callers do not resume this cursor.
 #[derive(Clone, Copy)]
 pub(in crate::wire) struct Cursor<'packet, 'id, M = Checked> {
     pub(super) packet: Bound<'packet, 'id>,

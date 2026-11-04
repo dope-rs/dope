@@ -1,6 +1,8 @@
 pub mod common;
 
-use std::{convert::Infallible, fmt::Debug, net::Shutdown, rc::Rc, time::Duration};
+use common::manifold::listener::{native, reached};
+
+use std::{net::Shutdown, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::coupled::{
@@ -23,9 +25,8 @@ use dope_manifold::{
     timing::Throughput,
 };
 use dope_net::{link::egress, tcp, wire::Identity};
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
-    fibers::{Run, Wait},
     harness::{
         observe::Trace,
         peer::{self, Peer},
@@ -52,18 +53,6 @@ fn gated(event: DynamicEvent<'_>) {
         DynamicEvent::Written(result) => matches!(result, Ok(write::Outcome::Committed(()))),
         DynamicEvent::Drained(phase) => phase == 1,
     });
-}
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
 }
 
 #[test]

@@ -235,27 +235,15 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
         token: &mut region::Token<region::Identity<'d>>,
         target: route::Erased<'d, kind::Send>,
         bytes: transfer::Len,
-        release: impl FnMut(B),
+        mut release: impl FnMut(B),
     ) -> queue::Change {
-        let released = match self.release(target, bytes) {
-            Ok(released) => released,
-            Err(change) => return change,
-        };
-        released.consume(token, release);
-        queue::Change::Applied
-    }
-
-    fn release(
-        &mut self,
-        target: route::Erased<'d, kind::Send>,
-        bytes: transfer::Len,
-    ) -> Result<queue::Released<'_, 'a, 'p, 'd, IOV, B, D>, queue::Change> {
         let released = match self.flight.complete(target, bytes) {
-            Completion::Stale => return Err(queue::Change::Stale),
-            Completion::Invalid(error) => return Err(queue::Change::Invalid(error)),
+            Completion::Stale => return queue::Change::Stale,
+            Completion::Invalid(error) => return queue::Change::Invalid(error),
             Completion::Ready(released) => released,
         };
-        Ok(queue::Released::new(self.queue.entries, released))
+        released.consume(self.queue.entries, token, &mut release);
+        queue::Change::Applied
     }
 }
 
@@ -282,7 +270,7 @@ impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
         self,
         entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
         token: &mut region::Token<region::Identity<'d>>,
-        mut release: impl FnMut(front::Consumed<B>) -> credit::Prefix,
+        release: &mut impl FnMut(B),
     ) {
         let Some(mut bytes) = self.bytes.nonzero() else {
             return;
@@ -290,7 +278,7 @@ impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
         let mut prefix = self.active.lease.into_prefix();
         loop {
             let (front, next) = front::advance(entries, prefix, token, bytes);
-            match release(front) {
+            match front.complete(release) {
                 credit::Prefix::Whole { remaining: rest } => {
                     let Some(next) = next else {
                         return;

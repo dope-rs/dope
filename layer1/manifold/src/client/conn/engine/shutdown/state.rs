@@ -50,16 +50,6 @@ pub(super) enum Plan<'a> {
     Cancel(&'a mut u32),
 }
 
-#[must_use = "a primary shutdown plan must be completed only after work is admitted"]
-pub(super) enum PrimaryPlan<'a> {
-    Done(&'a mut State),
-    Lane(
-        &'a mut Cursor,
-        indices::SlotIndex,
-        Option<indices::SlotIndex>,
-    ),
-}
-
 impl Cursor {
     pub(super) fn intake(&mut self) {
         self.next = Next::Lane;
@@ -68,21 +58,6 @@ impl Cursor {
     pub(super) fn advance(&mut self, next: Option<indices::SlotIndex>) {
         self.lane = next;
         self.next = Next::Intake;
-    }
-}
-
-impl PrimaryPlan<'_> {
-    pub(super) fn complete(self) -> Primary {
-        match self {
-            Self::Done(state) => {
-                *state = State::Done;
-                Primary::Done
-            }
-            Self::Lane(cursor, lane, next) => {
-                cursor.lane = next;
-                Primary::Lane(lane)
-            }
-        }
     }
 }
 
@@ -144,20 +119,19 @@ impl State {
         }
     }
 
-    pub(super) fn plan_lane(&mut self, capacity: table::Capacity) -> Option<PrimaryPlan<'_>> {
-        let step = match self {
-            Self::Draining(cursor) => cursor
-                .lane
-                .filter(|lane| capacity.contains(*lane))
-                .map_or(Primary::Done, Primary::Lane),
-            Self::Open | Self::Cancelling(_) | Self::Done => return None,
+    pub(super) fn next_lane(&mut self, capacity: table::Capacity) -> Option<Primary> {
+        let Self::Draining(cursor) = self else {
+            return None;
         };
-        match (self, step) {
-            (state, Primary::Done) => Some(PrimaryPlan::Done(state)),
-            (Self::Draining(cursor), Primary::Lane(lane)) => {
-                Some(PrimaryPlan::Lane(cursor, lane, capacity.next(lane)))
+        match cursor.lane.filter(|lane| capacity.contains(*lane)) {
+            Some(lane) => {
+                cursor.lane = capacity.next(lane);
+                Some(Primary::Lane(lane))
             }
-            (Self::Open | Self::Cancelling(_) | Self::Done, Primary::Lane(_)) => None,
+            None => {
+                *self = Self::Done;
+                Some(Primary::Done)
+            }
         }
     }
 }

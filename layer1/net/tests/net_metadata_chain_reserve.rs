@@ -25,44 +25,35 @@ fn commit_reenters() {
         let mut stored = (stored).expect("required fixture outcome");
         let arena = Arena::<pool::Cursor>::try_new(&token, &mut stored);
         let arena = (arena).expect("required fixture outcome");
-        let lane = LANE;
-        let lane = arena.get(lane);
-        assert!(lane.is_some());
-        let Some(lane) = lane else { return };
+        let lane = arena.get(LANE).expect("lane");
         let queue = lane.queue();
 
         let (done, alloc) = Tracker::usage(|| {
-            let mut done = None;
             let value = bufs.try_cursor(B).expect("buffer fixture");
-            let load = egress::Load::new(value).try_nonempty();
-            assert!(load.is_ok());
-            if let Ok(load) = load {
-                let reserve = queue.try_reserve(&mut token, load);
-                assert!(matches!(reserve, metadata::Reservation::Ready(_)));
-                if let metadata::Reservation::Ready(reserve) = reserve {
-                    let result = reserve.try_with::<_, Infallible>(|token, value| {
-                        assert_eq!(value.as_ref(), B);
-                        let value = bufs.try_cursor(A).expect("buffer fixture");
-                        assert!(matches!(
-                            queue.admit(token, egress::Load::new(value)),
-                            metadata::Admission::Committed
-                        ));
-                        Ok(7)
-                    });
-                    assert!(result.is_ok());
-                    if let Ok(value) = result {
-                        done = Some(value);
-                    }
-                }
-            }
-            done
+            let load = egress::Load::new(value)
+                .try_nonempty()
+                .ok()
+                .expect("nonempty");
+            let metadata::Reservation::Ready(reserve) = queue.try_reserve(&mut token, load) else {
+                panic!("reservation must be admitted");
+            };
+            reserve
+                .try_with::<_, Infallible>(|token, value| {
+                    assert_eq!(value.as_ref(), B);
+                    let value = bufs.try_cursor(A).expect("buffer fixture");
+                    assert!(matches!(
+                        queue.admit(token, egress::Load::new(value)),
+                        metadata::Admission::Committed
+                    ));
+                    Ok(7)
+                })
+                .ok()
+                .expect("commit callback")
         });
-        assert_eq!(done, Some(7));
+        assert_eq!(done, 7);
         assert_eq!(alloc, (0, 0));
         for want in [A, B] {
-            let front = queue.take_front(&mut token);
-            assert!(front.is_some());
-            let Some(front) = front else { return };
+            let front = queue.take_front(&mut token).expect("published owner");
             assert_eq!(front.into_inner().as_ref(), want);
         }
         assert!(queue.is_empty());
@@ -124,83 +115,69 @@ fn reservation_returns_all() {
         let mut stored = (stored).expect("required fixture outcome");
         let arena = Arena::<pool::Cursor>::try_new(&token, &mut stored);
         let arena = (arena).expect("required fixture outcome");
-        let lane = LANE;
-        let lane = arena.get(lane);
-        assert!(lane.is_some());
-        let Some(lane) = lane else { return };
+        let lane = arena.get(LANE).expect("lane");
         let queue = lane.queue();
 
         let ((), alloc) = Tracker::usage(|| {
             let value = bufs.try_cursor(b"").expect("buffer fixture");
-            let empty = egress::Load::new(value).try_nonempty();
-            assert!(empty.is_err());
-            if let Err(rejected) = empty {
-                let empty = egress::Empty::try_from(rejected);
-                assert!(empty.is_ok());
-                if let Ok(empty) = empty {
-                    let (empty, storage::Zero) = empty.into_parts();
-                    assert!((empty.charge().bytes()) == (egress::WireBytes::ZERO));
-                    assert!(empty.into_inner().as_ref().is_empty());
-                }
-            }
+            let rejected = egress::Load::new(value)
+                .try_nonempty()
+                .err()
+                .expect("empty rejected");
+            let empty = egress::Empty::try_from(rejected).ok().expect("empty proof");
+            let (empty, storage::Zero) = empty.into_parts();
+            assert!((empty.charge().bytes()) == (egress::WireBytes::ZERO));
+            assert!(empty.into_inner().as_ref().is_empty());
 
             let value = bufs.try_cursor(B).expect("buffer fixture");
-            let load = egress::Load::new(value).try_nonempty();
-            assert!(load.is_ok());
-            if let Ok(load) = load {
-                let result = {
-                    let reserve = queue.try_reserve(&mut token, load);
-                    assert!(matches!(reserve, metadata::Reservation::Ready(_)));
-                    let metadata::Reservation::Ready(reserve) = reserve else {
-                        return;
-                    };
-                    reserve.try_with(|token, value| {
-                        assert_eq!(value.as_ref(), B);
-                        let value = bufs.try_cursor(A).expect("buffer fixture");
-                        let charge = egress::Charge::of(&value);
-                        let rejected = queue.admit(token, egress::Load::new(value));
-                        assert!(matches!(rejected, metadata::Admission::Rejected(_)));
-                        if let metadata::Admission::Rejected(rejected) = rejected {
-                            assert!(*rejected.error() == LANE.capacity::<1, 4>(charge));
-                            let expected = *rejected.error();
-                            let (load, reason) = rejected.into_parts();
-                            assert!(reason == expected);
-                            assert_eq!(load.into_inner().as_ref(), A);
-                        }
-                        Err::<(), _>(7)
-                    })
+            let load = egress::Load::new(value)
+                .try_nonempty()
+                .ok()
+                .expect("nonempty");
+            let result = {
+                let reserve = queue.try_reserve(&mut token, load);
+                let metadata::Reservation::Ready(reserve) = reserve else {
+                    panic!("reservation must be admitted");
                 };
-                assert!(result.is_err());
-                if let Err(failure) = result {
-                    let (value, cause) = failure.into_parts();
-                    let pointer = value.as_inner().as_ref().as_ptr();
-                    assert_eq!(value.as_inner().as_ref(), B);
-                    assert_eq!(value.geometry().wire().widen().get(), B.len());
-                    assert_eq!(cause, 7);
-                    {
-                        let retry = queue.try_reserve(&mut token, value);
-                        assert!(matches!(retry, metadata::Reservation::Ready(_)));
-                        let metadata::Reservation::Ready(retry) = retry else {
-                            return;
-                        };
-                        retry.commit(|_| ());
-                    }
-                    let front = queue.take_front(&mut token);
-                    assert!(front.is_some());
-                    let Some(front) = front else { return };
-                    assert_eq!(front.get().as_ref().as_ptr(), pointer);
-                    assert_eq!(front.into_inner().as_ref(), B);
-                }
+                reserve.try_with(|token, value| {
+                    assert_eq!(value.as_ref(), B);
+                    let value = bufs.try_cursor(A).expect("buffer fixture");
+                    let charge = egress::Charge::of(&value);
+                    let rejected = queue.admit(token, egress::Load::new(value));
+                    let metadata::Admission::Rejected(rejected) = rejected else {
+                        panic!("occupied reservation must reject admission");
+                    };
+                    assert!(*rejected.error() == LANE.capacity::<1, 4>(charge));
+                    let expected = *rejected.error();
+                    let (load, reason) = rejected.into_parts();
+                    assert!(reason == expected);
+                    assert_eq!(load.into_inner().as_ref(), A);
+                    Err::<(), _>(7)
+                })
+            };
+            let failure = result.err().expect("callback rejection");
+            let (value, cause) = failure.into_parts();
+            let pointer = value.as_inner().as_ref().as_ptr();
+            assert_eq!(value.as_inner().as_ref(), B);
+            assert_eq!(value.geometry().wire().widen().get(), B.len());
+            assert_eq!(cause, 7);
+            {
+                let retry = queue.try_reserve(&mut token, value);
+                let metadata::Reservation::Ready(retry) = retry else {
+                    panic!("returned reservation must be reusable");
+                };
+                retry.commit(|_| ());
             }
+            let front = queue.take_front(&mut token).expect("retried owner");
+            assert_eq!(front.get().as_ref().as_ptr(), pointer);
+            assert_eq!(front.into_inner().as_ref(), B);
 
             let value = bufs.try_cursor(A).expect("buffer fixture");
             assert!(matches!(
                 queue.admit(&mut token, egress::Load::new(value)),
                 metadata::Admission::Committed
             ));
-            let front = queue.take_front(&mut token);
-            assert!(front.is_some());
-            let Some(front) = front else { return };
+            let front = queue.take_front(&mut token).expect("published owner");
             assert_eq!(front.into_inner().as_ref(), A);
         });
         assert_eq!(alloc, (0, 0));

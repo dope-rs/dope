@@ -171,6 +171,25 @@ fn maps_without_growth() {
 
 #[test]
 fn cancels_gated_startup() -> Result<(), Error> {
+    isolated("cancel_gated_startup")
+}
+
+#[test]
+fn repeats_installation() -> Result<(), Error> {
+    isolated("repeated_install")
+}
+
+#[test]
+fn orders_shutdown() -> Result<(), Error> {
+    isolated("ordered_shutdown")
+}
+
+#[test]
+fn reports_terminal_failure() -> Result<(), Error> {
+    isolated("terminal_failure")
+}
+
+fn isolated(case: &str) -> Result<(), Error> {
     let suite = Suite::new(
         env!("CARGO_MANIFEST_DIR"),
         file!(),
@@ -194,20 +213,25 @@ fn cancels_gated_startup() -> Result<(), Error> {
     let artifacts = suite.try_collect(&exe, output)?;
     let directory = Directory::try_with(
         exe.parent().expect("test executable directory"),
-        "startup-cancel",
-        |result| result.expect("remove startup cancellation executable"),
+        case,
+        |result| result.expect("remove process executable"),
     )
-    .expect("startup cancellation executable directory");
-    let binary = directory.path().join("startup_cancel");
+    .expect("process executable directory");
+    let binary = directory.path().join("process");
     let mut compiler = artifacts.compiler();
-    compiler.arg(format!("--emit=link={}", binary.display()));
+    compiler
+        .arg("--out-dir")
+        .arg(directory.path())
+        .arg(format!("--emit=link={}", binary.display()));
     let compiled = compile(
         &mut compiler,
-        r#"pub mod common;
+        &format!(
+            r#"pub mod common;
 #[global_allocator]
 static ALLOCATOR: dope_test::alloc::Tracker = dope_test::alloc::Tracker::new();
-fn main() { common::process::cancel_gated_startup(); }
-"#,
+fn main() {{ common::process::{case}(); }}
+"#
+        ),
     );
     assert!(
         compiled.status.success(),
@@ -215,7 +239,7 @@ fn main() { common::process::cancel_gated_startup(); }
         String::from_utf8_lossy(&compiled.stderr)
     );
     let output = Command::new(&binary).output().expect("run process");
-    assert!(output.status.success(), "startup cancellation: {output:?}");
+    assert!(output.status.success(), "{case}: {output:?}");
     directory.try_close().expect("remove compiler output");
     Ok(())
 }

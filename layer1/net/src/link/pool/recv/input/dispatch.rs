@@ -185,7 +185,7 @@ where
         D: demand::Mode,
     {
         match Resume::try_new(pool, target) {
-            Ok(resume) => Resumption::Ready(resume.credit()),
+            Ok(resume) => Resumption::Ready(resume.credit(|_| {})),
             Err(missing) => Resumption::Unavailable(missing),
         }
     }
@@ -212,7 +212,7 @@ where
         D: demand::Mode,
     {
         match Resume::try_new(pool, target) {
-            Ok(resume) => Resumption::Ready(resume.waiting::<R>()),
+            Ok(resume) => Resumption::Ready(resume.credit(R::release_recv)),
             Err(missing) => Resumption::Unavailable(missing),
         }
     }

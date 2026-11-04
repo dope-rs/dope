@@ -1,8 +1,4 @@
-use std::{
-    cell::{Cell, RefCell},
-    convert::Infallible,
-    rc::Rc,
-};
+use std::{cell::Cell, convert::Infallible, rc::Rc};
 
 use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
@@ -33,35 +29,33 @@ use crate::common::{
     contract::{Report, codec, codec::errors},
     manifold::client::{
         error::{self, Error::Send},
-        flush,
         send::{Error, wire::Wire},
     },
 };
 
 type Request = egress::NonEmpty<Shared>;
 
-pub struct Requests<F> {
-    pub(crate) create: F,
-    pub(crate) pending: RefCell<[(Option<usize>, Option<Request>); 4]>,
+pub struct Requests {
+    pub(crate) pending: [(Cell<Option<usize>>, Cell<Option<Request>>); 4],
     pub(crate) next: Rc<Cell<usize>>,
     pub(crate) order: Rc<Trace<usize, 4>>,
     pub(crate) admitted: Rc<Trace<usize, 4>>,
 }
 
-pub struct Lane<F> {
+pub struct Lane {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
 
-    pub(crate) requests: Requests<F>,
+    pub(crate) requests: Requests,
     pub(crate) conn: Gate,
     pub(crate) moved: Gate,
     pub(crate) sent: Gate,
 }
 
-impl<F> Lane<F> {
+impl Lane {
     const REQUESTS: [usize; 4] = [5, 5, 8, 5];
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Session<'d> for Lane<F> {
+impl<'d> Session<'d> for Lane {
     type Codec = codec::Pending<5>;
     type Connect = Full;
     type ConnState = ();
@@ -73,9 +67,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Session<'d> for Lane<F> {
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> policy::Compatible<'d, 'd, Wire, KeyTag<0>>
-    for Lane<F>
-{
+impl<'d> policy::Compatible<'d, 'd, Wire, KeyTag<0>> for Lane {
     type Open = Self;
     type Terminal = Self;
 
@@ -88,12 +80,12 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> policy::Compatible<'d, 'd, Wi
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Parser<'d> for Lane<F> {
+impl<'d> Parser<'d> for Lane {
     type Mode = mode::Plain;
     type Response = response::Immediate;
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Plain<'d> for Lane<F> {
+impl<'d> Plain<'d> for Lane {
     type Delivery = response::Direct;
 
     fn reject(
@@ -119,26 +111,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Plain<'d> for Lane<F> {
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Output<'d> for Lane<F> {
-    fn flush() -> Option<
-        impl for<'a, 'c, 't, 'e> Call<(
-            &'a mut Self,
-            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-            dope_manifold::client::session::Input,
-        )>,
-    > {
-        flush(|owner: &mut Self, context| {
-            let actual = context.conn_id.index().into_usize();
-            let capacity = owner.requests.pending.get_mut().len();
-            if actual >= capacity {
-                owner
-                    .audit
-                    .faults
-                    .record(Send(Error::Index { actual, capacity }));
-            }
-        })
-    }
-
+impl<'d> Output<'d> for Lane {
     fn sent() -> impl for<'a, 't> Call<(
         &'a mut Self,
         conn::Id<'d, KeyTag<0>>,
@@ -146,15 +119,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Output<'d> for Lane<F> {
         &'t mut region::Token<region::Identity<'d, 1>>,
     )> {
         output::Sent::<Infallible, Infallible, Infallible, _>::Queue(
-            |(owner, conn, pending): (&mut Self, conn::Id<'d, KeyTag<0>>, egress::Pending)| {
-                let actual = conn.index().into_usize();
-                let capacity = owner.requests.pending.get_mut().len();
-                if actual >= capacity {
-                    owner
-                        .audit
-                        .faults
-                        .record(Send(Error::Index { actual, capacity }));
-                }
+            |(owner, _, pending): (&mut Self, conn::Id<'d, KeyTag<0>>, egress::Pending)| {
                 match pending {
                     egress::Pending::Absent => owner.sent.hit(),
                     egress::Pending::Present => {}
@@ -177,7 +142,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Output<'d> for Lane<F> {
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Source<'d> for Lane<F> {
+impl<'d> Source<'d> for Lane {
     fn drain<'w, 'e, 'turn, W: wire::Spec + 'd>(
         &self,
         turn: &mut request::Turn<
@@ -192,29 +157,21 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Source<'d> for Lane<F> {
     {
         let (mut requests, _) = turn.requests();
         let index = requests.connection().index().into_usize();
-        let mut slots = match self.requests.pending.try_borrow_mut() {
-            Ok(slots) => slots,
-            Err(error) => {
-                self.audit.faults.record(Send(Error::BorrowMut(error)));
-                return;
-            }
-        };
-        let capacity = slots.len();
-        let Some((assigned, pending)) = slots.get_mut(index) else {
-            self.audit.faults.record(Send(Error::Index {
-                actual: index,
-                capacity,
-            }));
-            return;
-        };
-        let length = if let Some(length) = *assigned {
+        let (assigned, pending) = &self.requests.pending[index];
+        let length = if let Some(length) = assigned.get() {
             length
         } else {
             let position = self.requests.next.get();
-            let (length, value) = (self.requests.create)(Self::REQUESTS.get(position).copied());
+            let length = Self::REQUESTS[position];
+            let marker = if length == 5 { b'5' } else { b'8' };
+            let value =
+                Shared::try_from(&mut vec![marker; length]).expect("request storage freeze");
+            let value = egress::Load::new(value)
+                .try_nonempty()
+                .expect("assigned request is nonempty");
             self.requests.next.set(position + 1);
-            *pending = Some(value);
-            *assigned = Some(length);
+            pending.set(Some(value));
+            assigned.set(Some(length));
             length
         };
         let Some(value) = pending.take() else {
@@ -228,10 +185,10 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Source<'d> for Lane<F> {
                 self.moved.hit();
             }
             request::Admission::Saturated(load) => {
-                *pending = Some(load);
+                pending.set(Some(load));
             }
             request::Admission::Exhausted(value) => {
-                *pending = Some(value);
+                pending.set(Some(value));
             }
             request::Admission::Rejected(rejected) => {
                 self.audit.faults.record(error::Error::Admit(rejected));
@@ -240,7 +197,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Source<'d> for Lane<F> {
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> session::Connected<'d> for Lane<F> {
+impl<'d> session::Connected<'d> for Lane {
     type Activation = Automatic;
 
     fn connect(
@@ -253,7 +210,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> session::Connected<'d> for La
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> session::Failed<'d> for Lane<F> {
+impl<'d> session::Failed<'d> for Lane {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -264,7 +221,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> session::Failed<'d> for Lane<
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> session::Exhausted<'d> for Lane<F> {
+impl<'d> session::Exhausted<'d> for Lane {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -275,7 +232,7 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> session::Exhausted<'d> for La
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Retirement<'d> for Lane<F> {
+impl<'d> Retirement<'d> for Lane {
     type Drain = Ready;
 
     fn io_fail(
@@ -297,22 +254,9 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Retirement<'d> for Lane<F> {
         ),
     ) {
         let actual = conn.index().into_usize();
-        let slots = match self.requests.pending.try_borrow() {
-            Ok(slots) => slots,
-            Err(error) => {
-                self.audit.faults.record(Send(Error::Borrow(error)));
-                return;
-            }
-        };
-        let cause = match slots.get(actual) {
-            Some((Some(_), _)) => return,
-            Some((None, _)) => Error::Unassigned(actual),
-            None => Error::Index {
-                actual,
-                capacity: slots.len(),
-            },
-        };
-        self.audit.faults.record(Send(cause));
+        if self.requests.pending[actual].0.get().is_none() {
+            self.audit.faults.record(Send(Error::Unassigned(actual)));
+        }
     }
 
     fn clear_send<'turn>(
@@ -325,18 +269,11 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Retirement<'d> for Lane<F> {
 
     fn disconnect(&mut self, context: turns::Retired<'_, 'd, (), KeyTag<0>, Self>) {
         let index = context.connection().index().into_usize();
-        let slots = self.requests.pending.get_mut();
-        let Some((assigned, pending)) = slots.get(index) else {
-            self.audit.faults.record(Send(Error::Index {
-                actual: index,
-                capacity: slots.len(),
-            }));
-            return;
-        };
-        if assigned.is_none() {
+        let (assigned, pending) = &mut self.requests.pending[index];
+        if assigned.get().is_none() {
             self.audit.faults.record(Send(Error::Unassigned(index)));
         }
-        if let Some(value) = pending {
+        if let Some(value) = pending.get_mut().as_ref() {
             self.audit.faults.record(Send(Error::Pending {
                 index,
                 bytes: value.as_inner().len(),
@@ -345,6 +282,6 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Retirement<'d> for Lane<F> {
     }
 }
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Scheduling<'d> for Lane<F> {}
+impl<'d> Scheduling<'d> for Lane {}
 
-impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Target<'d, KeyTag<0>, 4> for Lane<F> {}
+impl<'d> Target<'d, KeyTag<0>, 4> for Lane {}

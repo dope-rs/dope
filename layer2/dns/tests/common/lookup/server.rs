@@ -227,7 +227,7 @@ pub enum Mode<'a> {
     Reply(Reply<'a>),
     Stream(Reply<'a>),
     Follow(&'a [u8]),
-    Oversized,
+    Oversized(&'a [u8]),
     Refused,
     Reject(Reject),
     Delay(Duration),
@@ -312,12 +312,12 @@ impl Mode<'_> {
                 }
             }
             let reply = match self {
-                Self::Oversized => {
-                    let actual = udp.send_to(&[0; 65_507], peer).map_err(Server::Io)?;
-                    if actual != 65_507 {
+                Self::Oversized(payload) => {
+                    let actual = udp.send_to(payload, peer).map_err(Server::Io)?;
+                    if actual != payload.len() {
                         return Err(Server::Size {
                             actual,
-                            expected: 65_507,
+                            expected: payload.len(),
                         });
                     }
                     if query.kind == A {
@@ -442,7 +442,7 @@ impl Mode<'_> {
             Self::Reply(_)
             | Self::Cookie(Cookie::Renew)
             | Self::Follow(_)
-            | Self::Oversized
+            | Self::Oversized(_)
             | Self::Refused
             | Self::Reject(_)
             | Self::ExtendedCode(_)

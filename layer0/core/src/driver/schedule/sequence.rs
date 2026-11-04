@@ -1,4 +1,4 @@
-use std::{cell, hash, mem, num};
+use std::{cell, mem, num};
 
 use o3::base::marker::ThreadBound;
 
@@ -36,7 +36,7 @@ pub struct Exhausted;
 ///
 /// The invariant lifetime brand prevents identities from independent driver
 /// instances from being retained or compared after their issuing driver ends.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct Id<'d> {
     raw: num::NonZero<u64>,
@@ -51,12 +51,6 @@ impl<'d> Id<'d> {
             driver: driver.brand,
             thread: ThreadBound::NEW,
         }
-    }
-}
-
-impl hash::Hash for Id<'_> {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.raw.hash(state);
     }
 }
 

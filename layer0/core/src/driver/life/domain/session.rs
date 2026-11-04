@@ -1,4 +1,4 @@
-use std::{convert, pin};
+use std::convert;
 
 use o3::buffer;
 
@@ -6,6 +6,7 @@ use crate::driver::{
     self, life,
     life::{
         domain::{Closing, Error, Rejected, Source, Teardown},
+        plans::{Build, Create, Direct},
         recovery,
     },
     storage,
@@ -57,7 +58,7 @@ impl<'a, Q> Session<'a, Q> {
         A: buffer::raw::Arenas,
         O: life::Operation<storage::Scope<A>, Q>,
     {
-        self.run(|lease, source| Ok(lease.run_scope(plan.into_inner(), source, op, &mut report)))
+        self.run(|driver, source| Ok(driver.run_scope(plan.into_inner(), source, op, &mut report)))
     }
 
     /// Enters a generation and quiesces it before releasing storage or source.
@@ -71,7 +72,16 @@ impl<'a, Q> Session<'a, Q> {
         S: storage::Direct,
         O: life::Operation<S, Q>,
     {
-        self.run(|lease, source| Ok(lease.run_with(plan, source, op, &mut report)))
+        self.run(|driver, source| {
+            Ok(driver.scope(
+                source,
+                Direct {
+                    plan,
+                    operation: op,
+                },
+                &mut report,
+            ))
+        })
     }
 
     /// Runs a closure within the same generation and finalization as `enter`.
@@ -97,7 +107,16 @@ impl<'a, Q> Session<'a, Q> {
         S: storage::Build,
         O: life::Operation<S, Q>,
     {
-        self.run(|lease, source| lease.try_run_with(plan, source, op, &mut report))
+        self.run(|driver, source| {
+            driver.scope(
+                source,
+                Build {
+                    plan,
+                    operation: op,
+                },
+                &mut report,
+            )
+        })
     }
 }
 
@@ -112,19 +131,28 @@ impl<'a, Q> Session<'a, Q> {
         S: storage::Create,
         O: life::Operation<S, Q>,
     {
-        self.run(|lease, source| lease.try_create(plan, source, op, &mut report))
+        self.run(|driver, source| {
+            driver.scope(
+                source,
+                Create {
+                    plan,
+                    operation: op,
+                },
+                &mut report,
+            )
+        })
     }
 
     fn run<E, T>(
         self,
-        run: impl FnOnce(life::Lease<'_>, &Source<Q>) -> Result<T, E>,
+        run: impl FnOnce(&mut driver::Driver, &Source<Q>) -> Result<T, E>,
     ) -> Result<T, Error<'a, E, T, Q>> {
         let Self {
             mut driver,
             source,
             teardown,
         } = self;
-        let result = run(life::Lease::take(pin::Pin::new(&mut driver)), &source);
+        let result = run(&mut driver, &source);
         Closing::close(result, driver.runtime, teardown, source)
     }
 }

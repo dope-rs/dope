@@ -46,10 +46,6 @@ impl<C: read::Context> registry::Entry for Slot<C> {
         self.0
     }
 
-    fn into_call(self) -> Call<C> {
-        self.0
-    }
-
     fn key(id: Id) -> usize {
         id.key
     }

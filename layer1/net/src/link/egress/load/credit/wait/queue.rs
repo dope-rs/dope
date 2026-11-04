@@ -7,10 +7,7 @@ use crate::link::egress::{
     load::credit::{
         self,
         wait::{
-            store::{
-                Bypass, Bypassable, Core, Idle, Nodes, Queued, Ready, Records, Selected, State,
-                Waiting,
-            },
+            store::{Core, Idle, Nodes, Queued, Ready, Records, Selected, State, Waiting},
             tree,
         },
     },
@@ -26,13 +23,6 @@ pub(in crate::link::egress::load::credit) enum Resume<'p> {
 pub(in crate::link::egress::load::credit) enum Cancelled {
     Idle,
     Busy,
-}
-
-pub(in crate::link::egress::load::credit) enum Selection<'a, 'pool, 'p, 'd> {
-    Selected(Selected<'a, 'pool, 'p, 'd>),
-    NoWaiting,
-    Insufficient,
-    BypassExhausted,
 }
 
 struct Vacant<'a, 'b, 'p, 'd> {
@@ -60,8 +50,7 @@ impl<'p, 'd> Vacant<'_, '_, 'p, 'd> {
         if self.tree.is_empty() {
             *self.ticket = tree::Ticket::FIRST;
         }
-        let issued = self.ticket.issue()?;
-        *self.ticket = issued.next();
+        let ticket = self.ticket.issue()?;
         let record = self.record.wait(
             self.index,
             Waiting {
@@ -71,7 +60,7 @@ impl<'p, 'd> Vacant<'_, '_, 'p, 'd> {
             },
         );
         let proof = record.proof();
-        self.tree.insert(self.nodes, proof, demand, issued.ticket());
+        self.tree.insert(self.nodes, proof, demand, ticket);
         Ok(Resume::Queued)
     }
 }
@@ -137,30 +126,17 @@ impl<'p, 'd> Queue<'p, 'd> {
         &mut self,
         scope: &'pool credit::Pool<'p, 'd, credit::Ready<'p, 'd>>,
         shared: credit::Amount,
-    ) -> Selection<'_, 'pool, 'p, 'd> {
+    ) -> Option<Selected<'_, 'pool, 'p, 'd>> {
         let nodes = self.store.nodes();
-        let Some(oldest) = self.tree.oldest(&nodes) else {
-            return Selection::NoWaiting;
-        };
-        let Some(selected) = self.tree.eligible(&nodes, shared) else {
-            return Selection::Insufficient;
-        };
-        let bypass: Option<Bypassable> = if selected != oldest {
-            let limit = nodes.len() - 1;
-            match self.store.bypass(oldest, limit) {
-                Bypass::Admitted(proof) => Some(proof),
-                Bypass::Exhausted => return Selection::BypassExhausted,
-            }
-        } else {
-            None
-        };
-        let (mut records, mut nodes) = self.store.parts();
-        if let Some(proof) = bypass {
-            Records::admit(&mut records, proof);
+        let oldest = self.tree.oldest(&nodes)?;
+        let selected = self.tree.eligible(&nodes, shared)?;
+        if selected != oldest && !self.store.try_bypass(oldest) {
+            return None;
         }
+        let (records, mut nodes) = self.store.parts();
         let (selected, proof) = Records::selected(records, selected, scope);
         self.tree.remove(&mut nodes, proof);
-        Selection::Selected(selected)
+        Some(selected)
     }
 
     pub(in crate::link::egress::load::credit) fn resume(

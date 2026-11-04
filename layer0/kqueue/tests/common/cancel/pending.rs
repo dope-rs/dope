@@ -21,10 +21,9 @@ use o3::{alloc, depot::map::Plan};
 use crate::common::{
     Files, Poll,
     cancel::{Context, Event},
-    event::Capacity,
     slots::{
         Slots,
-        inputs::{Layout, Missing, Owned, Physical},
+        inputs::{Layout, Missing, Physical},
     },
     socket,
 };
@@ -32,7 +31,7 @@ use crate::common::{
 type Entry = <Kqueue as read::Source>::Entry<Context>;
 type Registry = <Kqueue as read::Source>::Registry<Context>;
 type Arm<'a> = <Kqueue as read::Source>::Arm<'a, Context, Event, Poll>;
-type Queue = <Kqueue as complete::Source>::Queue<Event, Capacity>;
+type Queue = <Kqueue as complete::Source>::Queue<Event, NonZero<u32>>;
 type Id = <Entry as registry::Entry>::File;
 
 type Index = <Slots as change::raw::Slots>::Index;
@@ -73,7 +72,7 @@ impl Pending {
         let mut reads = Registry::try_new(Plan::fixed::<2>()).map_err(Error::Allocation)?;
         let (socket, peer) = socket::try_pair().map_err(Error::Socket)?;
         files
-            .install(Owned::from(Physical::at::<1>()), socket)
+            .install(Physical::at::<1>(), socket)
             .map_err(Error::Install)?;
         let interest = files
             .try_read(Physical::at::<1>())
@@ -90,7 +89,7 @@ impl Pending {
             reads,
             peer,
             poll: Poll::try_new().map_err(Error::Poll)?,
-            queue: Queue::try_new(Capacity(NonZero::<u32>::MIN)).map_err(Error::Allocation)?,
+            queue: Queue::try_new(NonZero::<u32>::MIN).map_err(Error::Allocation)?,
         })
     }
 

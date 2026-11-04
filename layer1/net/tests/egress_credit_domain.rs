@@ -85,19 +85,6 @@ fn send_wait_reuse() {
             assert_eq!(wakes, 1);
             assert!(Pending::of(pool).is_empty());
         },
-        recovery::Policy::new(
-            reclaimed,
-            |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                panic!("driver recovery: {:?}", failure.cause())
-            },
-        ),
-        |result| {
-            result
-                .as_ref()
-                .map_err(scope::Error::cause)
-                .expect("native lifecycle");
-            result.ok().expect("driver output").expect("credit fixture");
-        },
     );
 }
 

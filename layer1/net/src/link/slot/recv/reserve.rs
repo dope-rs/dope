@@ -4,13 +4,10 @@ use dope_core::driver::{
 };
 
 use crate::{
-    link::{
-        pool::recv::Resident,
-        slot::{
-            self,
-            recv::{Blocked, Prepared},
-            types,
-        },
+    link::slot::{
+        self,
+        recv::{Blocked, Prepared},
+        types,
     },
     wire::{
         self,
@@ -49,7 +46,7 @@ where
         credit: credit::Control<'d>,
         mut arm: bool,
     ) -> Self {
-        let resident = Resident::new(&conn.key);
+        let key = &conn.key;
         let end = match conn.control.engine.both(&mut conn.control.terminal) {
             terminal::Admission::Open(end) => end,
             terminal::Admission::Closed => {
@@ -67,7 +64,7 @@ where
         let txn = match R::try_reserve(&mut conn.wire, send, rt) {
             reserve::Outcome::Ready(txn) => txn,
             reserve::Outcome::Blocked(block) => {
-                let bind = credit.bind(resident.key().target().dispatch());
+                let bind = credit.bind(key.target().dispatch());
                 let credit = match <mode::Waiting<R> as mode::Stored>::arm(
                     bind,
                     conn.control.engine.ready_handle().target(),
@@ -81,7 +78,7 @@ where
                 return Reserve::Blocked(Blocked {
                     block,
                     credit,
-                    resident,
+                    key,
                     needs_cancel: conn.control.engine.operations.recv.has_cancel(),
                 });
             }
@@ -97,7 +94,7 @@ where
                 return Reserve::Control(slot::Control::NoChunk { needs_rearm: arm });
             }
         };
-        let credit = credit.bind(resident.key().target().dispatch());
+        let credit = credit.bind(key.target().dispatch());
         Reserve::Ready(Prepared {
             engine: &mut conn.control.engine,
             end,

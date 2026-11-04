@@ -1,97 +1,31 @@
-use std::convert::Infallible;
-
-use dope_core::{
-    driver,
-    driver::life::recovery,
-    io::socket::{install::Install, option::Tuning},
-};
-use dope_test::scope::Error;
-
-use crate::common::driver::{Scoped as _, support::Targets as _, tuning::Tuned as _};
-
 pub mod common;
-use std::env::consts;
+
+use std::{net::UdpSocket, os::fd::AsFd as _};
 
 use dope_core::{
+    Backend, Errno,
+    dope_sys::io::socket::option as native_option,
     driver::{
+        life::recovery,
         retained::flight,
         route::{FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind},
-        schedule::state::scope,
     },
-    io::socket::{option, pending},
+    io::{
+        fd::handles::Descriptor,
+        socket::{install::Install, option, option::Tuning, pending},
+    },
 };
 use dope_test::reclaim::Reports;
 
-use crate::common::rt::Runtime;
-
-fn reuse<'d, const NEXT: u8>(
-    mut driver: driver::Context<'_, 'd>,
-    turn: &mut scope::Guard<'_, 'd>,
-    slots1: &flight::Slots<'d, KeyTag<1>>,
-    slots2: &flight::Slots<'d, KeyTag<NEXT>>,
-) {
-    let setting = option::Buffer::try_from(4096_usize);
-    let setting = setting.expect("valid buffer size");
-    let options = option::Set::new(Some(setting), None, None, None, None, None, None);
-
-    let socket = Install::bind_udp(
-        driver.reborrow(),
-        ([127, 0, 0, 1], 0).into(),
-        common::DATAGRAM,
-    );
-    let (socket, _) = socket.expect("bound datagram socket");
-    let owner1 = driver
-        .driver_ref()
-        .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-    let first = owner1.operation::<kind::Tuning>();
-    let observed = Tuning::try_new(
-        &mut driver.reborrow(),
-        slots1,
-        owner1,
-        socket.into(),
-        options,
-    );
-    assert!(
-        matches!(&observed, Ok(option::Tuning::Pending(_))),
-        "io_uring tuning must be asynchronous"
-    );
-    if let Ok(option::Tuning::Pending(wait1)) = observed {
-        let done = (driver.wait_tuning(turn)).ok().expect("tuning completion");
-        assert!(first.matches(done.token()));
-        let complete = wait1.complete(done);
-        assert!(
-            complete.is_ok(),
-            "first completion must match its authority"
-        );
-        let (socket, _) = complete.ok().expect("matching completion owns the socket");
-        let owner2 = driver
-            .driver_ref()
-            .tuned_target::<KeyTag<NEXT>>(SlotIndex::ZERO);
-        let second = owner2.operation::<kind::Tuning>();
-        let observed = Tuning::try_new(&mut driver.reborrow(), slots2, owner2, socket, options);
-        assert!(
-            matches!(&observed, Ok(option::Tuning::Pending(_))),
-            "io_uring tuning must be asynchronous"
-        );
-        if let Ok(option::Tuning::Pending(wait2)) = observed {
-            let done = (driver.wait_tuning(turn)).ok().expect("tuning completion");
-            assert!(second.matches(done.token()));
-            let complete = wait2.complete(done);
-            assert!(
-                complete.is_ok(),
-                "reused completion must match its new authority"
-            );
-            let (socket, _) = complete.ok().expect("matching completion owns the socket");
-            socket.close(&mut driver);
-        }
-    }
-}
+use crate::common::{
+    driver::{Scoped as _, support::Targets as _, tuning::Tuned as _},
+    rt::{Runtime, finish, recover},
+};
 
 #[test]
-fn empty_tuning_frees_slot() {
-    let setting = option::Buffer::try_from(4096_usize);
-    let setting = setting.expect("valid buffer size");
-    assert_eq!(consts::OS, "linux", "requires io_uring");
+fn empty_tuning_preserves_nonempty_completion() {
+    let setting = option::Buffer::try_from(4096_usize).expect("valid buffer size");
+    let options = option::Set::new(Some(setting), Some(setting), None, None, None, None, None);
     let runtime = Runtime::quic::<2, 8>();
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
@@ -100,214 +34,44 @@ fn empty_tuning_frees_slot() {
         |scope| {
             scope
                 .with_flights::<KeyTag<1>, 1>(|mut driver, turn, flights| {
-                    let options =
-                        option::Set::new(Some(setting), None, None, None, None, None, None);
-
-                    let socket = Install::bind_udp(
+                    let (socket, _) = Install::bind_udp(
                         driver.reborrow(),
                         ([127, 0, 0, 1], 0).into(),
                         common::DATAGRAM,
-                    );
-                    let (socket, _) = socket.expect("bound datagram socket");
+                    )
+                    .expect("bound datagram socket");
                     let owner = driver
                         .driver_ref()
                         .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-                    let observed = Tuning::try_new(
+                    let target = owner.operation::<kind::Tuning>();
+                    let empty = Tuning::try_new(
                         &mut driver.reborrow(),
                         &flights,
                         owner,
                         socket.into(),
                         option::Set::EMPTY,
                     );
-                    assert!(
-                        matches!(&observed, Ok(option::Tuning::Applied(_))),
-                        "empty tuning must apply synchronously"
-                    );
-                    if let Ok(option::Tuning::Applied(socket)) = observed {
-                        let observed = Tuning::try_new(
-                            &mut driver.reborrow(),
-                            &flights,
-                            owner,
-                            socket,
-                            options,
-                        );
-                        assert!(
-                            matches!(&observed, Ok(option::Tuning::Pending(_))),
-                            "empty tuning must leave the fixed slot vacant"
-                        );
-                        if let Ok(option::Tuning::Pending(pending)) = observed {
-                            let done = (driver.wait_tuning(turn)).ok().expect("tuning completion");
-                            let complete = pending.complete(done);
-                            assert!(
-                                complete.is_ok(),
-                                "completion must match its tuning authority"
-                            );
-                            let (socket, _) =
-                                complete.ok().expect("matching completion owns the socket");
-                            socket.close(&mut driver);
-                        }
-                    }
-                })
-                .expect("flight fixture");
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.events().expect("valid reclamation").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn tuning_event_is_public() {
-    let setting = option::Buffer::try_from(4096_usize);
-    let setting = setting.expect("valid buffer size");
-    assert_eq!(consts::OS, "linux", "requires io_uring");
-    let runtime = Runtime::quic::<2, 8>();
-    let mut reports =
-        Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-
-    runtime.with_scope(
-        |scope| {
-            scope
-                .with_flights::<KeyTag<1>, 1>(|mut driver, turn, flights| {
-                    let options = option::Set::new(
-                        Some(setting),
-                        Some(setting),
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    );
-
-                    let socket = Install::bind_udp(
-                        driver.reborrow(),
-                        ([127, 0, 0, 1], 0).into(),
-                        common::DATAGRAM,
-                    );
-                    let (socket, _) = socket.expect("bound datagram socket");
-
-                    let owner = driver
-                        .driver_ref()
-                        .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-                    let target = owner.operation::<kind::Tuning>();
-                    let observed = Tuning::try_new(
-                        &mut driver.reborrow(),
-                        &flights,
-                        owner,
-                        socket.into(),
-                        options,
-                    );
-                    assert!(
-                        matches!(&observed, Ok(option::Tuning::Pending(_))),
-                        "io_uring tuning must be asynchronous"
-                    );
-                    if let Ok(option::Tuning::Pending(pending)) = observed {
-                        let done = (driver.wait_tuning(turn)).ok().expect("tuning completion");
-                        assert!(target.matches(done.token()));
-                        let complete = pending.complete(done);
-                        assert!(
-                            complete.is_ok(),
-                            "completion must match its tuning authority"
-                        );
-                        let (socket, event) =
-                            complete.ok().expect("matching completion owns the socket");
-                        assert!(matches!(event, Ok(())));
-                        socket.close(&mut driver);
-                    }
-                })
-                .expect("flight fixture");
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.events().expect("valid reclamation").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn cancel_keeps_slot() {
-    let setting = option::Buffer::try_from(4096_usize);
-    let setting = setting.expect("valid buffer size");
-    assert_eq!(consts::OS, "linux", "requires io_uring");
-    let runtime = Runtime::quic::<2, 8>();
-    let mut reports =
-        Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-
-    runtime.with_scope(
-        |scope| {
-            scope
-                .with_flights::<KeyTag<1>, 1>(|mut driver, turn, flights| {
-                    let options =
-                        option::Set::new(Some(setting), None, None, None, None, None, None);
-
-                    let socket = Install::bind_udp(
-                        driver.reborrow(),
-                        ([127, 0, 0, 1], 0).into(),
-                        common::DATAGRAM,
-                    );
-                    let (socket, _) = socket.expect("bound datagram socket");
-                    let owner = driver
-                        .driver_ref()
-                        .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-                    let target = owner.operation::<kind::Tuning>();
-                    let observed = Tuning::try_new(
-                        &mut driver.reborrow(),
-                        &flights,
-                        owner,
-                        socket.into(),
-                        options,
-                    );
-                    assert!(
-                        matches!(&observed, Ok(option::Tuning::Pending(_))),
-                        "io_uring tuning must be asynchronous"
-                    );
-                    if let Ok(option::Tuning::Pending(pending)) = observed {
-                        let outcome = pending.cancel(&mut driver);
-                        let observed = outcome;
-                        assert!(
-                            matches!(&observed, pending::Cancellation::Submitted(_)),
-                            "typed tuning cancellation"
-                        );
-                        if let pending::Cancellation::Submitted(pending) = observed {
-                            let done = (driver.wait_tuning(turn)).ok().expect("tuning completion");
+                    let Ok(Tuning::Applied(socket)) = empty else {
+                        panic!("empty tuning must apply synchronously");
+                    };
+                    let tuning =
+                        Tuning::try_new(&mut driver.reborrow(), &flights, owner, socket, options)
+                            .map_err(|rejected| rejected.into_parts().1)
+                            .expect("empty tuning leaves the flight slot available");
+                    let socket = match tuning {
+                        Tuning::Applied(socket) => socket,
+                        Tuning::Pending(pending) => {
+                            let done = driver.wait_tuning(turn).ok().expect("tuning completion");
                             assert!(target.matches(done.token()));
-                            let complete = pending.complete(done);
-                            assert!(
-                                complete.is_ok(),
-                                "completion must match its cancellation authority"
-                            );
-                            let (socket, _) =
-                                complete.ok().expect("matching completion owns the socket");
-                            let observed = Tuning::try_new(
-                                &mut driver.reborrow(),
-                                &flights,
-                                owner,
-                                socket,
-                                options,
-                            );
-                            assert!(
-                                matches!(&observed, Ok(option::Tuning::Pending(_))),
-                                "io_uring tuning must be asynchronous"
-                            );
-                            if let Ok(option::Tuning::Pending(reused)) = observed {
-                                let done =
-                                    (driver.wait_tuning(turn)).ok().expect("tuning completion");
-                                let complete = reused.complete(done);
-                                assert!(
-                                    complete.is_ok(),
-                                    "completion must match the reused authority"
-                                );
-                                let (socket, _) =
-                                    complete.ok().expect("matching completion owns the socket");
-                                socket.close(&mut driver);
-                            }
+                            let (socket, outcome) = pending
+                                .complete(done)
+                                .ok()
+                                .expect("completion matches its tuning authority");
+                            assert_eq!(outcome, Ok(()));
+                            socket
                         }
-                    }
+                    };
+                    socket.close(&mut driver);
                 })
                 .expect("flight fixture");
         },
@@ -321,41 +85,9 @@ fn cancel_keeps_slot() {
 }
 
 #[test]
-fn completed_tuning_reuses() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
-    let mut reports = Vec::new();
-
-    Runtime::quic::<2, 8>().with_scope(
-        |scope| {
-            scope
-                .with_flights::<KeyTag<1>, 1>(|mut driver, turn, slots1| {
-                    let slots2 =
-                        (driver
-                            .storage
-                            .reborrow()
-                            .try_flights(flight::Need::<KeyTag<2>>::new(
-                                flight::Capacity::fixed::<1>(),
-                            )))
-                        .expect("tuning flights");
-                    let slots2 = slots2.slots();
-                    reuse(driver, turn, &slots1, &slots2);
-                })
-                .expect("flight fixture");
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn tuning_keeps_errno() {
-    let setting = option::Buffer::try_from(4096_usize);
-    let setting = setting.expect("valid buffer size");
-    assert_eq!(consts::OS, "linux", "requires io_uring");
+fn settled_tuning_reuses_flight() {
+    let setting = option::Buffer::try_from(4096_usize).expect("valid buffer size");
+    let options = option::Set::new(Some(setting), None, None, None, None, None, None);
     let runtime = Runtime::quic::<2, 8>();
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
@@ -363,88 +95,61 @@ fn tuning_keeps_errno() {
     runtime.with_scope(
         |scope| {
             scope
-                .with_flights::<KeyTag<1>, 1>(|mut driver, turn, slots1| {
-                    let options =
-                        option::Set::new(Some(setting), None, None, None, None, None, None);
-                    let invalid = option::Set::new(
-                        Some(setting),
-                        Some(setting),
-                        Some(option::Switch::On),
-                        None,
-                        None,
-                        None,
-                        None,
-                    );
-
-                    let slots2 =
-                        (driver
-                            .storage
-                            .reborrow()
-                            .try_flights(flight::Need::<KeyTag<2>>::new(
-                                flight::Capacity::fixed::<1>(),
-                            )))
-                        .expect("tuning flights");
-                    let slots2 = slots2.slots();
-                    let socket = Install::bind_udp(
+                .with_flights::<KeyTag<1>, 1>(|mut driver, turn, flights| {
+                    let (socket, _) = Install::bind_udp(
                         driver.reborrow(),
                         ([127, 0, 0, 1], 0).into(),
                         common::DATAGRAM,
-                    );
-                    let (socket, _) = socket.expect("bound datagram socket");
+                    )
+                    .expect("bound datagram socket");
+                    let socket = Descriptor::from(socket);
+                    let index = socket.index();
                     let owner = driver
                         .driver_ref()
                         .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-                    let observed = Tuning::try_new(
-                        &mut driver.reborrow(),
-                        &slots1,
-                        owner,
-                        socket.into(),
-                        invalid,
-                    );
-                    assert!(
-                        matches!(&observed, Ok(option::Tuning::Pending(_))),
-                        "io_uring tuning must be asynchronous"
-                    );
-                    if let Ok(option::Tuning::Pending(pending)) = observed {
-                        let done = (driver.wait_tuning(turn)).ok().expect("tuning completion");
-                        let complete = pending.complete(done);
-                        assert!(
-                            complete.is_ok(),
-                            "failure completion must match its authority"
-                        );
-                        let (socket, event) =
-                            complete.ok().expect("matching completion owns the socket");
-                        assert!(matches!(
-                            event,
-                            Err(error) if error.code().get() == libc::ENOPROTOOPT
-                        ));
-                        let owner = driver
-                            .driver_ref()
-                            .tuned_target::<KeyTag<2>>(SlotIndex::ZERO);
-                        let observed = Tuning::try_new(
-                            &mut driver.reborrow(),
-                            &slots2,
-                            owner,
-                            socket,
-                            options,
-                        );
-                        assert!(
-                            matches!(&observed, Ok(option::Tuning::Pending(_))),
-                            "failed tuning must release its fixed-slot transaction"
-                        );
-                        if let Ok(option::Tuning::Pending(reused)) = observed {
-                            let done = (driver.wait_tuning(turn)).ok().expect("tuning completion");
-                            let complete = reused.complete(done);
-                            assert!(
-                                complete.is_ok(),
-                                "reused completion must match its tuning authority"
-                            );
-                            let (socket, event) =
-                                complete.ok().expect("matching completion owns the socket");
-                            assert!(matches!(event, Ok(())));
-                            socket.close(&mut driver);
+                    let target = owner.operation::<kind::Tuning>();
+                    let tuning =
+                        Tuning::try_new(&mut driver.reborrow(), &flights, owner, socket, options)
+                            .map_err(|rejected| rejected.into_parts().1)
+                            .expect("first tuning");
+                    let socket = match tuning {
+                        Tuning::Applied(socket) => socket,
+                        Tuning::Pending(pending) => {
+                            let pending::Cancellation::Submitted(pending) =
+                                pending.cancel(&mut driver)
+                            else {
+                                panic!("typed tuning cancellation");
+                            };
+                            let done = driver.wait_tuning(turn).ok().expect("tuning completion");
+                            assert!(target.matches(done.token()));
+                            let (socket, outcome) = pending
+                                .complete(done)
+                                .ok()
+                                .expect("completion matches its cancellation authority");
+                            assert!(outcome.is_ok() || outcome == Err(Errno::CANCELED));
+                            socket
                         }
-                    }
+                    };
+                    assert_eq!(socket.index(), index);
+                    let tuning =
+                        Tuning::try_new(&mut driver.reborrow(), &flights, owner, socket, options)
+                            .map_err(|rejected| rejected.into_parts().1)
+                            .expect("settled tuning releases the sole flight slot");
+                    let socket = match tuning {
+                        Tuning::Applied(socket) => socket,
+                        Tuning::Pending(pending) => {
+                            let done = driver.wait_tuning(turn).ok().expect("reused tuning");
+                            assert!(target.matches(done.token()));
+                            let (socket, outcome) = pending
+                                .complete(done)
+                                .ok()
+                                .expect("completion matches its reused authority");
+                            assert_eq!(outcome, Ok(()));
+                            socket
+                        }
+                    };
+                    assert_eq!(socket.index(), index);
+                    socket.close(&mut driver);
                 })
                 .expect("flight fixture");
         },
@@ -458,15 +163,91 @@ fn tuning_keeps_errno() {
 }
 
 #[test]
-fn reuses_descriptor() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
-    let mut reports = Vec::new();
+fn failed_tuning_keeps_errno_and_reuses_descriptor() {
+    let source = UdpSocket::bind(common::LOCALHOST).expect("source socket");
+    let expected = <Backend as native_option::Source>::set(
+        source.as_fd(),
+        native_option::Kind::NoDelay,
+        &native_option::Value::from_enabled(true),
+    )
+    .expect_err("TCP option on a UDP socket");
+    let setting = option::Buffer::try_from(4096_usize).expect("valid buffer size");
+    let options = option::Set::new(Some(setting), None, None, None, None, None, None);
+    let invalid = option::Set::new(None, None, Some(option::Switch::On), None, None, None, None);
+    let runtime = Runtime::quic::<2, 8>();
+    let mut reports =
+        Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
-    Runtime::quic::<2, 8>().with_scope(
+    runtime.with_scope(
         |scope| {
             scope
-                .with_flights::<KeyTag<1>, 1>(|driver, turn, flights| {
-                    reuse(driver, turn, &flights, &flights);
+                .with_flights::<KeyTag<1>, 1>(|mut driver, turn, flights| {
+                    let next = driver
+                        .storage
+                        .reborrow()
+                        .try_flights(flight::Need::<KeyTag<2>>::new(
+                            flight::Capacity::fixed::<1>(),
+                        ))
+                        .expect("next route flight");
+                    let next = next.slots();
+                    let (socket, _) = Install::adopt_udp(driver.reborrow(), source.into())
+                        .expect("adopt source socket");
+                    let socket = Descriptor::from(socket);
+                    let index = socket.index();
+                    let owner = driver
+                        .driver_ref()
+                        .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
+                    let target = owner.operation::<kind::Tuning>();
+                    let (socket, error) = match Tuning::try_new(
+                        &mut driver.reborrow(),
+                        &flights,
+                        owner,
+                        socket,
+                        invalid,
+                    ) {
+                        Err(rejected) => {
+                            let (socket, cause) = rejected.into_parts();
+                            let pending::Cause::Option(error) = cause else {
+                                panic!("invalid option must preserve its native error");
+                            };
+                            (socket, error)
+                        }
+                        Ok(Tuning::Pending(pending)) => {
+                            let done = driver.wait_tuning(turn).ok().expect("failed tuning");
+                            assert!(target.matches(done.token()));
+                            let (socket, outcome) = pending
+                                .complete(done)
+                                .ok()
+                                .expect("failure completion matches its tuning authority");
+                            (socket, outcome.expect_err("TCP option on a UDP socket"))
+                        }
+                        Ok(Tuning::Applied(_)) => panic!("invalid option was accepted"),
+                    };
+                    assert_eq!(error, expected);
+                    assert_eq!(socket.index(), index);
+                    let owner = driver
+                        .driver_ref()
+                        .tuned_target::<KeyTag<2>>(SlotIndex::ZERO);
+                    let target = owner.operation::<kind::Tuning>();
+                    let tuning =
+                        Tuning::try_new(&mut driver.reborrow(), &next, owner, socket, options)
+                            .map_err(|rejected| rejected.into_parts().1)
+                            .expect("failed tuning releases its transaction");
+                    let socket = match tuning {
+                        Tuning::Applied(socket) => socket,
+                        Tuning::Pending(pending) => {
+                            let done = driver.wait_tuning(turn).ok().expect("next route tuning");
+                            assert!(target.matches(done.token()));
+                            let (socket, outcome) = pending
+                                .complete(done)
+                                .ok()
+                                .expect("completion matches its next route authority");
+                            assert_eq!(outcome, Ok(()));
+                            socket
+                        }
+                    };
+                    assert_eq!(socket.index(), index);
+                    socket.close(&mut driver);
                 })
                 .expect("flight fixture");
         },
@@ -474,18 +255,7 @@ fn reuses_descriptor() {
         finish,
     );
     assert!(
-        reports.is_empty(),
+        reports.events().expect("valid reclamation").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

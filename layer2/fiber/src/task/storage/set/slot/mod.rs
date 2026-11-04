@@ -404,7 +404,6 @@ impl<F, M> Token<'_, F, M> {
     where
         F: abi::Fiber<'d>,
     {
-        value.get_ref().state.set(State::Retiring);
         let fields = value.fields.get().cast::<Fields<'d, F, M, D, G>>();
         // SAFETY: completed ownership and the unique token consume both fields once.
         let data = unsafe { ptr::addr_of!((*fields).data).cast::<M>().read() };

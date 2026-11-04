@@ -13,21 +13,11 @@ pub mod watchdog;
 
 pub use range::Range;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 struct Point<'d> {
     at: time::Instant,
     driver: (driver::Invariant<'d>, ThreadBound),
-}
-impl PartialOrd for Point<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for Point<'_> {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.at.cmp(&other.at)
-    }
 }
 /// Read-only access to the monotonic sample installed for one driver turn.
 #[derive(Clone, Copy)]

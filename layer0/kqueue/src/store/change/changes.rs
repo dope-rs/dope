@@ -79,7 +79,6 @@ impl<S: change::raw::Slots> change::Changes for Changes<S> {
         entries: impl Iterator<Item = Result<Option<(Self::Id, Filter)>, change::Index<S::Index>>>,
     ) -> Result<Self::Deletion<'_>, change::Index<S::Index>> {
         self.clear_plan();
-        self.staged_len = 0;
         let plan = Delete { owner: self };
         for entry in entries {
             let Some((id, filter)) = entry? else {
@@ -192,7 +191,7 @@ impl<S: change::raw::Slots> Changes<S> {
         }
     }
 
-    pub(super) fn clear_plan(&self) {
+    fn clear_plan(&self) {
         while self
             .pending
             .get::<1>()

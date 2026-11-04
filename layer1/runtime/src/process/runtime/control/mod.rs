@@ -104,27 +104,20 @@ impl<'process> Control<'process> {
     where
         H: watch::Heartbeat<S>,
     {
-        let mut poll = poll;
-        let mut clock = clock;
-        loop {
-            let (next, polled, ready) = clock.wait(poll, |ready| (ready, false))?;
-            clock = next;
-            poll = polled;
-            let index = match ready {
-                None => continue,
-                Some(set::Ready::Signal(source)) => {
-                    source.wait().map_err(execute::Cause::TerminationWait)?;
-                    return Ok(clock);
-                }
-                Some(set::Ready::Worker(index)) => index,
-            };
-            let event =
-                execute::Cause::<S>::received(running.main(index).recv(), running.cpu(index))?;
-            return Err(execute::Cause::BusState(State::RuntimeEvent {
-                cpu: running.cpu(index),
-                event,
-            }));
-        }
+        let (next, _poll, ready) = clock.wait(poll, |ready| (ready, false))?;
+        let clock = next;
+        let index = match ready {
+            set::Ready::Signal(source) => {
+                source.wait().map_err(execute::Cause::TerminationWait)?;
+                return Ok(clock);
+            }
+            set::Ready::Worker(index) => index,
+        };
+        let event = execute::Cause::<S>::received(running.main(index).recv(), running.cpu(index))?;
+        Err(execute::Cause::BusState(State::RuntimeEvent {
+            cpu: running.cpu(index),
+            event,
+        }))
     }
 
     pub(super) fn ready<I, E, W>(
@@ -227,12 +220,11 @@ impl<'a, 'run, I, E, W> Finish<'a, 'run, I, E, W> {
                 let mut poll = set::Set::bus(&running)?;
                 let mut count = Counts::default();
                 while E::GATED && count.drained != workers {
-                    let (next, polled, (index, event)) =
-                        Self::next_watched(clock, poll, |index| {
-                            let event = running.main(index).recv();
-                            let retire = matches!(event, Ok(Event::Done));
-                            ((index, event), retire)
-                        })?;
+                    let (next, polled, (index, event)) = clock.wait(poll, |index| {
+                        let event = running.main(index).recv();
+                        let retire = matches!(event, Ok(Event::Done));
+                        ((index, event), retire)
+                    })?;
                     clock = next;
                     poll = polled;
                     let cpu = running.cpu(index);
@@ -240,12 +232,11 @@ impl<'a, 'run, I, E, W> Finish<'a, 'run, I, E, W> {
                 }
                 clock = clock.draining()?;
                 while count.done != workers {
-                    let (next, polled, (index, event)) =
-                        Self::next_watched(clock, poll, |index| {
-                            let event = running.main(index).recv();
-                            let retire = matches!(event, Ok(Event::Done));
-                            ((index, event), retire)
-                        })?;
+                    let (next, polled, (index, event)) = clock.wait(poll, |index| {
+                        let event = running.main(index).recv();
+                        let retire = matches!(event, Ok(Event::Done));
+                        ((index, event), retire)
+                    })?;
                     clock = next;
                     poll = polled;
                     match execute::Cause::<S>::received(event, running.cpu(index))? {
@@ -262,27 +253,6 @@ impl<'a, 'run, I, E, W> Finish<'a, 'run, I, E, W> {
                 }
                 Ok(())
             })
-        }
-    }
-
-    fn next_watched<'id, S, H, R>(
-        clock: Clock<H>,
-        poll: set::Set<'id, 'id, set::Workers>,
-        mut receive: impl FnMut(set::Index<'id>) -> (R, bool),
-    ) -> Result<(Clock<H>, set::Set<'id, 'id, set::Workers>, R), execute::Cause<S>>
-    where
-        H: watch::Heartbeat<S>,
-    {
-        let mut clock = clock;
-        let mut poll = poll;
-        loop {
-            let (next, polled, ready) = clock.wait(poll, &mut receive)?;
-            clock = next;
-            poll = polled;
-            match ready {
-                None => {}
-                Some(index) => return Ok((clock, poll, index)),
-            }
         }
     }
 }

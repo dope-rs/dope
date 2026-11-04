@@ -44,7 +44,7 @@ pub(crate) fn resolve<'d, S>(
                     return Ok(Some(done));
                 }
                 entry::Resolved::Rejected(done) => {
-                    return reclaimed(root, done.map_report(native::Report::from)).map(|()| None);
+                    return reclaimed(root, done.map_report(io::Reclaimed::from)).map(|()| None);
                 }
                 entry::Resolved::Reclaim(done) => done,
             }
@@ -52,7 +52,7 @@ pub(crate) fn resolve<'d, S>(
         complete::Dequeued::Reclaim(done) => done,
     };
     let done = entry::Event::<events::Context<Backend>, _>::reclaim(done, &drain);
-    reclaimed(root, done.map_report(native::Report::from)).map(|()| None)
+    reclaimed(root, done.map_report(io::Reclaimed::from)).map(|()| None)
 }
 
 pub(crate) fn reclaim<'d, S>(
@@ -63,12 +63,12 @@ pub(crate) fn reclaim<'d, S>(
     let (complete::Dequeued::Emit(done) | complete::Dequeued::Reclaim(done)) =
         entry.decode::<Events, _>();
     let done = entry::Event::<events::Context<Backend>, _>::reclaim(done, &drain);
-    reclaimed(root, done.map_report(native::Report::from))
+    reclaimed(root, done.map_report(io::Reclaimed::from))
 }
 
 fn reclaimed<'d, S>(
     root: &mut Resolver<'_, 'd, S>,
-    done: Reclaimed<Buffer<'d>, native::Report, fault::Fault>,
+    done: Reclaimed<Buffer<'d>, io::Reclaimed, fault::Fault>,
 ) -> Result<(), Rejected<'d>> {
     let Reclaimed {
         buffer,
@@ -82,7 +82,7 @@ fn reclaimed<'d, S>(
     });
     root.retire();
     if let Some(report) = report {
-        root.local.lifecycle.report(report.0);
+        root.local.lifecycle.report(report);
     }
     result
 }

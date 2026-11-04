@@ -41,9 +41,11 @@ impl<T, const N: usize, Tag> Store<T, N, Tag> {
 impl<T, const N: usize, Tag> Store<T, N, Tag, storage::Heap> {
     pub(in crate::task::storage::fixed) fn try_new(
         capacity: caps::Tasks<N>,
+        physical: capacity::Count,
     ) -> Result<Self, alloc::Error> {
+        let count = physical.min(capacity::Count::new(capacity.nonzero().get()));
         Ok(Self {
-            inner: Inner::try_new(capacity::Count::new(capacity.nonzero().get()))?,
+            inner: Inner::try_new(count)?,
             local: marker::PhantomData,
         })
     }

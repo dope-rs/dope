@@ -12,7 +12,7 @@ use crate::driver::{
             arena::{
                 layout::{Layout, TILE_SLOTS},
                 payload::{Bound, Payload, Task},
-                pool, set,
+                set,
             },
             key::{
                 DispatchKey, FreeIndex, Index, Local, ReservedKey, Staged, TaskIndex, TaskKey,
@@ -27,7 +27,7 @@ use crate::driver::{
 
 pub(in crate::driver::schedule::ready) enum Renewal<'d> {
     Reusable(ReservedKey<'d>),
-    Retired(pool::Retirement<'d>),
+    Retired,
 }
 
 #[derive(Clone, Copy)]
@@ -148,12 +148,6 @@ pub(in crate::driver::schedule::ready) struct Slots {
     pub(in crate::driver::schedule::ready) block: tail::Block<Header, Tile>,
 }
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(in crate::driver::schedule::ready) struct Mutation<'a>(
-    pub(in crate::driver::schedule::ready) &'a Slots,
-);
-
 pub(in crate::driver::schedule::ready) struct Table {
     pub(in crate::driver::schedule::ready) slots: Slots,
     pub(in crate::driver::schedule::ready) pool: ready::Pool,
@@ -244,76 +238,76 @@ impl Slots {
         }
     }
 
-    pub(in crate::driver::schedule::ready) fn mutation(&self) -> Mutation<'_> {
-        Mutation(self)
-    }
-}
-
-impl<'a> Mutation<'a> {
-    pub(in crate::driver::schedule::ready) fn next(self, index: FreeIndex) -> FreeIndex {
-        self.0.resident(index).payload().reserve()
+    pub(in crate::driver::schedule::ready) fn next(&self, index: FreeIndex) -> FreeIndex {
+        self.resident(index).payload().reserve()
     }
 
-    pub(in crate::driver::schedule::ready) fn link(self, index: FreeIndex, next: FreeIndex) {
-        self.0.resident(index).set_free(next);
+    pub(in crate::driver::schedule::ready) fn link(&self, index: FreeIndex, next: FreeIndex) {
+        self.resident(index).set_free(next);
     }
 
-    pub(in crate::driver::schedule::ready) fn reserve(self, index: FreeIndex) -> ReservedKey<'a> {
-        let resident = self.0.resident(index);
+    pub(in crate::driver::schedule::ready) fn reserve(&self, index: FreeIndex) -> ReservedKey<'_> {
+        let resident = self.resident(index);
         let epoch = resident.generation();
         resident.set_kind(Kind::Reserved);
         ReservedKey::new(index, epoch)
     }
 
-    pub(in crate::driver::schedule::ready) fn dispatch(
-        self,
+    pub(in crate::driver::schedule::ready) fn dispatch<'a>(
+        &'a self,
         key: ReservedKey<'a>,
         target: route::Token,
     ) -> DispatchKey<'a> {
-        let resident = self.0.resident(&key);
+        let resident = self.resident(&key);
         resident.set_dispatch(target);
         resident.set_kind(Kind::Dispatch);
         key.dispatch()
     }
 
-    pub(in crate::driver::schedule::ready) fn task(
-        self,
+    pub(in crate::driver::schedule::ready) fn task<'a>(
+        &'a self,
         key: ReservedKey<'a>,
         task: Task<'a>,
     ) -> Staged<'a> {
-        let resident = self.0.resident(&key);
+        let resident = self.resident(&key);
         resident.overwrite(task.into_payload());
         resident.set_kind(Kind::Task);
         key.stage()
     }
 
-    pub(in crate::driver::schedule::ready) fn topology(
-        self,
+    pub(in crate::driver::schedule::ready) fn topology<'a>(
+        &'a self,
         key: ReservedKey<'a>,
     ) -> TopologyKey<'a> {
-        let resident = self.0.resident(&key);
+        let resident = self.resident(&key);
         resident.overwrite(Payload::retired());
         resident.set_kind(Kind::Topology);
         key.topology()
     }
 
-    pub(in crate::driver::schedule::ready) fn unroute(
-        self,
+    pub(in crate::driver::schedule::ready) fn unroute<'a>(
+        &'a self,
         key: DispatchKey<'a>,
     ) -> ReservedKey<'a> {
-        let resident = self.0.resident(&key);
+        let resident = self.resident(&key);
         resident.set_kind(Kind::Reserved);
         key.reserve()
     }
 
-    pub(in crate::driver::schedule::ready) fn untask(self, key: TaskKey<'a>) -> ReservedKey<'a> {
-        let resident = self.0.resident(&key);
+    pub(in crate::driver::schedule::ready) fn untask<'a>(
+        &'a self,
+        key: TaskKey<'a>,
+    ) -> ReservedKey<'a> {
+        let resident = self.resident(&key);
         resident.set_kind(Kind::Reserved);
         key.reserve()
     }
 
-    pub(in crate::driver::schedule::ready) fn renew(self, key: ReservedKey<'a>) -> Renewal<'a> {
-        let resident = self.0.resident(&key);
+    pub(in crate::driver::schedule::ready) fn renew<'a>(
+        &'a self,
+        key: ReservedKey<'a>,
+    ) -> Renewal<'a> {
+        let resident = self.resident(&key);
         let index = FreeIndex::from_code(resident.index);
         match resident.generation().next() {
             Some(next) => {
@@ -322,13 +316,17 @@ impl<'a> Mutation<'a> {
             }
             None => {
                 resident.set_kind(Kind::Retired);
-                Renewal::Retired(pool::Retirement::new())
+                Renewal::Retired
             }
         }
     }
 
-    pub(in crate::driver::schedule::ready) fn publish(self, key: ReservedKey<'a>, next: FreeIndex) {
-        let resident = self.0.resident(&key);
+    pub(in crate::driver::schedule::ready) fn publish<'a>(
+        &'a self,
+        key: ReservedKey<'a>,
+        next: FreeIndex,
+    ) {
+        let resident = self.resident(&key);
         resident.set_free(next);
         resident.set_kind(Kind::Free);
     }

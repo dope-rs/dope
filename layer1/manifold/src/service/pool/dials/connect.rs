@@ -7,11 +7,6 @@ use crate::{
     service::pool::{self, dials},
 };
 
-pub(in crate::service::pool) enum Connection<'a, 'q, 'h, 'd, ID: Identity> {
-    Pending(Connect<'a, 'q, 'h, 'd, ID>),
-    Stale,
-}
-
 /// Dropping admission leaves the submitted dial owned by its transport finalizer.
 pub(in crate::service::pool) struct Connect<'a, 'q, 'h, 'd, ID: Identity> {
     pub(super) dial: &'a dials::Dial<'q, 'h, 'd, ID>,

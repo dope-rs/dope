@@ -1,14 +1,7 @@
 use crate::common::manifold::client::error;
 pub mod common;
 
-use std::{
-    cell::{Cell, RefCell},
-    convert::Infallible,
-    fmt::Debug,
-    mem,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, convert::Infallible, fmt::Debug, mem, rc::Rc, time::Duration};
 
 use dope_core::{
     Errno,
@@ -84,12 +77,6 @@ fn impossible_send() {
             )
             .egress(egress::Config::shared(egress::Credit::fixed::<1, 1>()))
             .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, profile::Slow>>(Value::new(Reject {
-                create: || {
-                    let value = Shared::try_copy(b"xx").expect("shared request payload");
-                    egress::Load::new(value)
-                        .try_nonempty()
-                        .expect("nonempty request payload")
-                },
                 audit: audit.clone(),
 
                 pending: Cell::new(false),
@@ -283,15 +270,9 @@ fn starts_on_capacity_wait() {
                 Connector::<2>::new(address, Duration::from_secs(1), Duration::from_secs(1))
                     .egress(egress::Config::shared(egress::Credit::fixed::<1, 1>()))
                     .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, profile::Fast>>(Value::new(Wait {
-                        create: || {
-                            let value = Shared::try_copy(b"x").expect("shared request payload");
-                            egress::Load::new(value)
-                                .try_nonempty()
-                                .expect("nonempty request payload")
-                        },
                         audit: audit.clone(),
 
-                        pending: RefCell::new([None, None]),
+                        pending: [const { Cell::new(None) }; 2],
                         index: index.clone(),
                         reasons: reasons.clone(),
                         seen: seen.clone(),
@@ -367,13 +348,7 @@ fn bound_retains_transmit_once_before_quarantine() {
 }
 
 fn check_retirement(shutdown: bool, fault: Option<Errno>) {
-    use dope_core::{
-        driver::{
-            life::creation::Attempt,
-            settings::{self, claim::Needs},
-        },
-        io::event::batch,
-    };
+    use dope_core::io::event::batch;
     use dope_manifold::{
         app::Host,
         client::{
@@ -384,10 +359,11 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
         service::{Endpoint, Revision, Snapshot, health, sync},
     };
     use dope_net::wire::domain;
-    use dope_runtime::executor::{Executor, session::Scope};
+    use dope_runtime::executor::session::Scope;
 
-    use crate::common::manifold::{
-        client::switch::terminal::queued, listener::finish::close::wire,
+    use crate::common::{
+        manifold::{client::switch::terminal::queued, listener::finish::close::wire},
+        scenario::Runtime,
     };
 
     peer::TcpScript::try_gated::<1>(
@@ -404,7 +380,6 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
             let closed = closed.handle();
             let entered = Gate::new();
             let release = Gate::new();
-            let writes = Rc::new(Trace::new());
             let reason = Cell::new(None);
             let audit = Rc::new(Report::default());
             let fault = fault.map(|error| {
@@ -421,80 +396,66 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
                     .expect("retry bounds"),
             )
             .expect("client layout");
-            let settings = Needs::from_tree(&plan)
-                .and_then(|needs| {
-                    needs.apply_to(settings::Config::for_profile::<profile::Fast>())
-                })
+            let runtime = Runtime::try_for_plan::<profile::Fast, _>(&plan)
                 .expect("client settings");
-            let mut create = Attempt::new();
-            let executor = Executor::new(&mut create, settings);
-            executor.as_ref().map_err(|error| error.kind()).expect("executor");
-            let executor = executor.ok().expect("created executor");
-            let mut reports = Reports::<_>::new(settings, [Id::fixed::<0>()]);
-            executor.run(|executor| {
-                let result = executor.enter_with(
-                    |mut runtime| {
-                        let payload = Shared::try_copy(b"x").expect("request payload");
-                        let app = Flight::new(payload, canceled, closed, &reason, audit.clone())
-                            .closing(ready, quarantined, shutdown);
-                        let setup = session::Setup::new(app, ingress::Plan::none());
-                        let wire = wire::Wire::waiting(
-                            writes.clone(),
-                            entered.clone(),
-                            release.clone(),
-                        );
-                        let hash = runtime.hash_state(health::Domain::DEFAULT);
-                        let peers = Snapshot::from_one(
-                            Revision::new(1),
-                            Endpoint::new(address, address),
-                        );
-                        let result = plan.bind(domain::Local::new(wire), hash).install::<
-                            _, _, sync::Preserve, _, Bundle<Tcp, wire::Wire, profile::Fast>, 1, _, _,
-                        >(
-                            setup,
-                            peers,
-                            &mut runtime,
-                            Scope::driver,
-                            |host, runtime| {
-                                let result = runtime.with_quiesce(
-                                    &mut finish,
-                                    Host::new(queued::Host {
-                                        inner: host,
-                                        state: fault.clone(),
-                                        renewal: None,
-                                        pending: None,
-                                    }),
-                                    Duration::from_secs(2),
-                                    |mut app| {
-                                        let bounded = fibers::Harness::new(Duration::from_millis(500));
+            let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
+            runtime.with_scope(
+                |mut runtime| {
+                    let payload = Shared::try_copy(b"x").expect("request payload");
+                    let app = Flight::new(payload, canceled, closed, &reason, audit.clone())
+                        .closing(ready, quarantined, shutdown);
+                    let setup = session::Setup::new(app, ingress::Plan::none());
+                    let wire = wire::Wire::waiting(entered.clone(), release.clone());
+                    let hash = runtime.hash_state(health::Domain::DEFAULT);
+                    let peers = Snapshot::from_one(
+                        Revision::new(1),
+                        Endpoint::new(address, address),
+                    );
+                    let result = plan.bind(domain::Local::new(wire), hash).install::<
+                        _, _, sync::Preserve, _, Bundle<Tcp, wire::Wire, profile::Fast>, 1, _, _,
+                    >(
+                        setup,
+                        peers,
+                        &mut runtime,
+                        Scope::driver,
+                        |host, runtime| {
+                            let result = runtime.with_quiesce(
+                                &mut finish,
+                                Host::new(queued::Host {
+                                    inner: host,
+                                    state: fault.clone(),
+                                    renewal: None,
+                                    pending: None,
+                                }),
+                                Duration::from_secs(2),
+                                |mut app| {
+                                    let bounded = fibers::Harness::new(Duration::from_millis(500));
+                                    assert_eq!(
+                                        bounded.try_wait(&mut app, &ready, 1).expect("connect"),
+                                        fibers::Wait::Reached,
+                                    );
+                                    if !shutdown {
                                         assert_eq!(
-                                            bounded.try_wait(&mut app, &ready, 1).expect("connect"),
+                                            bounded.try_wait(&mut app, &closed, 1).expect("close"),
                                             fibers::Wait::Reached,
+                                            "client retirement lost its send deadline",
                                         );
-                                        if !shutdown {
-                                            assert_eq!(
-                                                bounded.try_wait(&mut app, &closed, 1).expect("close"),
-                                                fibers::Wait::Reached,
-                                                "client retirement lost its send deadline",
-                                            );
-                                        }
-                                    },
-                                );
-                                assert!(
-                                    result.is_ok(),
-                                    "client shutdown lost its send deadline: {result:?}, closed={}, entered={}, reason={:?}",
-                                    closed.hits(),
-                                    entered.hits(),
-                                    reason.get(),
-                                );
-                            },
-                        );
-                        assert!(result.is_ok(), "client installation");
-                    },
-                    recovery::Policy::new(|event| reports.push(event), recover),
-                );
-                assert!(result.is_ok(), "executor teardown");
-            });
+                                    }
+                                },
+                            );
+                            assert!(
+                                result.is_ok(),
+                                "client shutdown lost its send deadline: {result:?}, closed={}, entered={}, reason={:?}",
+                                closed.hits(),
+                                entered.hits(),
+                                reason.get(),
+                            );
+                        },
+                    );
+                    assert!(result.is_ok(), "client installation");
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+            );
             assert_eq!(release.hits(), 0);
             assert_eq!(quarantined.hits(), 1, "late close must preserve retirement");
             assert_eq!(closed.hits(), 1);
@@ -516,7 +477,6 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
                 checked(&audit);
             }
             assert!(reports.events().expect("reclaimed events").is_empty());
-            assert!(writes.values().expect("wire writes").is_empty());
             peer.try_fire().expect("release peer");
         },
     )

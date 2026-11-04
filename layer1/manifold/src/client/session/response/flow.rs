@@ -1,4 +1,4 @@
-use std::mem;
+use std::{convert::Infallible, mem};
 
 use dope_core::driver::route::Identity;
 use response::{Item, Settlement, work};
@@ -66,16 +66,7 @@ where
 }
 
 /// Payload-free response continuation state.
-#[derive(Clone, Copy, Default)]
-pub enum State {
-    #[default]
-    Idle,
-    InputReady,
-    InputBlocked,
-    EofInputReady,
-    EofInputBlocked,
-    EofFinished,
-}
+pub type State = Pending<Infallible>;
 
 impl<'d, ID: Identity, N, R> Begin<'d, ID, N, R> for State
 where
@@ -111,57 +102,21 @@ where
             }
             (Entry::Retire | Entry::Paused, Self::EofFinished) => Start::Finished,
             (Entry::Retire | Entry::Paused, Self::EofInputBlocked) => Start::Blocked,
+            (
+                _,
+                Self::Ready(never)
+                | Self::Blocked(never)
+                | Self::CloseReady(never)
+                | Self::CloseBlocked(never)
+                | Self::EofReady(never)
+                | Self::EofBlocked(never),
+            ) => match never {},
         }
-    }
-}
-
-impl Policy for State {
-    fn settlement(&self) -> session::Settlement {
-        match self {
-            Self::Idle | Self::EofFinished => session::Settlement::Ready,
-            Self::InputReady | Self::EofInputReady => session::Settlement::Yield,
-            Self::InputBlocked | Self::EofInputBlocked => session::Settlement::Blocked,
-        }
-    }
-
-    fn record(&mut self, eof: bool, record: Record) {
-        *self = match (eof, record) {
-            (false, Record::Done) => Self::Idle,
-            (false, Record::Ready) => Self::InputReady,
-            (false, Record::Blocked) => Self::InputBlocked,
-            (true, Record::Done) => Self::EofFinished,
-            (true, Record::Ready) => Self::EofInputReady,
-            (true, Record::Blocked) => Self::EofInputBlocked,
-        };
-    }
-
-    fn wake(&mut self) -> Wake {
-        match self {
-            Self::InputBlocked => {
-                *self = Self::InputReady;
-                Wake::Ready
-            }
-            Self::EofInputBlocked => {
-                *self = Self::EofInputReady;
-                Wake::Ready
-            }
-            _ => Wake::Idle,
-        }
-    }
-
-    fn cancel_eof(&mut self) {
-        if matches!(self, Self::EofInputBlocked) {
-            *self = Self::EofInputReady;
-        }
-    }
-
-    fn reset(&mut self) {
-        *self = Self::Idle;
     }
 }
 
 /// Response continuation state that owns resumable application work.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub enum Pending<P> {
     #[default]
     Idle,

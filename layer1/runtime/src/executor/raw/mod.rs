@@ -282,39 +282,11 @@ struct Drive<'driver, 'turn, 'root, 'd: 'root> {
 }
 
 impl<'driver, 'turn, 'root, 'd: 'root> Drive<'driver, 'turn, 'root, 'd> {
-    const fn new(
-        turn: schedule::Turn<'turn, 'd>,
-        driver: retained::Context<'driver, 'root, 'd>,
-    ) -> Self {
-        Self { turn, driver }
-    }
-
     fn reborrow(&mut self) -> Drive<'_, '_, 'root, 'd> {
         Drive {
             turn: self.turn.reborrow(),
             driver: self.driver.reborrow(),
         }
-    }
-
-    fn turn(&self) -> schedule::Turn<'_, 'd> {
-        self.turn.reborrow()
-    }
-
-    fn driver(&mut self) -> retained::Context<'_, 'root, 'd> {
-        self.driver.reborrow()
-    }
-
-    fn into_parts(
-        self,
-    ) -> (
-        schedule::Turn<'turn, 'd>,
-        retained::Context<'driver, 'root, 'd>,
-    ) {
-        (self.turn, self.driver)
-    }
-
-    fn into_driver(self) -> retained::Context<'driver, 'root, 'd> {
-        self.driver
     }
 }
 

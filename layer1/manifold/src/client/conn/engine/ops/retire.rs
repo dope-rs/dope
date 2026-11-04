@@ -31,12 +31,6 @@ use crate::{
 /// Retirement retains separate application and attempt-controller loans.
 type Participants<'app, 'ctrl, A, S> = (&'app mut A, &'ctrl mut S);
 
-pub(super) trait Output {
-    type Value;
-
-    fn retired(rule: Directive) -> (Reason, Self::Value);
-}
-
 pub(super) enum Outcome<'d, ID: Identity, V> {
     Retired(V),
     Pending,
@@ -99,22 +93,6 @@ impl<'d, ID: Identity, V> drain::BindOwner<'d, ID> for Outcome<'d, ID, V> {
     }
 }
 
-impl Output for () {
-    type Value = ();
-
-    fn retired(rule: Directive) -> (Reason, Self::Value) {
-        (rule.reason(), ())
-    }
-}
-
-impl Output for Directive {
-    type Value = Self;
-
-    fn retired(rule: Directive) -> (Reason, Self::Value) {
-        (rule.reason(), rule)
-    }
-}
-
 pub(super) trait RetirePhase<'w, 'd: 'w, ID: Identity, A, S, E>
 where
     A: app::Application<'d, ID>,
@@ -129,12 +107,13 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     );
 
-    fn drain_close<O: Output>(
+    fn drain_close<V>(
         self: pin::Pin<&mut Self>,
         drain: drain::Drain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> Outcome<'d, ID, O::Value>;
+        output: impl FnOnce(Directive) -> V,
+    ) -> Outcome<'d, ID, V>;
 }
 
 impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> RetirePhase<'w, 'd, ID, A, S, E>
@@ -154,7 +133,7 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
         let target = self.as_ref().backoff();
-        let close = {
+        let drain = {
             let this = self.as_mut().project();
             let Some(mut slot) = this.links.get(key, target) else {
                 return;
@@ -169,20 +148,20 @@ where
             slot.clear();
             close
         };
-        let drain = close.into_drain();
-        match self.drain_close::<()>(drain, turn, driver) {
+        match self.drain_close(drain, turn, driver, |_| ()) {
             Outcome::Retired(()) | Outcome::Pending => {}
             Outcome::Missing(proof) => proof.resolve(),
             Outcome::Obsolete(proof) => proof.resolve(),
         }
     }
 
-    fn drain_close<O: Output>(
+    fn drain_close<V>(
         self: pin::Pin<&mut Self>,
         drain: drain::Drain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> Outcome<'d, ID, O::Value> {
+        output: impl FnOnce(Directive) -> V,
+    ) -> Outcome<'d, ID, V> {
         let target = self.as_ref().backoff();
         let this = self.project();
         let (pool, liveness) = this.links.parts();
@@ -346,9 +325,10 @@ where
             ),
             |pool, ctx, driver, outcome| match outcome {
                 close::Outcome::Retired(retired) => {
-                    let output = retired.resolve(O::retired, |retired, state| {
-                        ctx.0.drained(retired, state, driver);
-                    });
+                    let output = retired.resolve(
+                        |rule| (rule.reason(), output(rule)),
+                        |retired, state| ctx.0.drained(retired, state, driver),
+                    );
                     Outcome::Retired(output)
                 }
                 close::Outcome::Pending(drain, deferred) => {

@@ -26,31 +26,18 @@ fn pair_preserves_records() {
 }
 
 #[test]
-fn rejects_truncated_record() {
-    let (left, right) = Channel::pair().expect("record socket pair");
-    Socket::new(left.as_fd())
-        .send(b"x")
-        .expect("short native record");
-    left.send(19).expect("following record");
-    let size = match right.recv() {
-        Record::Failed(Fault::Record(size)) => Some((size.expected, size.actual)),
-        _ => None,
-    };
-    assert_eq!(size, Some((4, 1)));
-    assert!(matches!(right.recv(), Record::Value(19)));
-}
-
-#[test]
-fn rejects_oversized_record() {
-    let (left, right) = Channel::pair().expect("record socket pair");
-    Socket::new(left.as_fd())
-        .send(&[0u8; 8])
-        .expect("long native record");
-    left.send(19).expect("following record");
-    let size = match right.recv() {
-        Record::Failed(Fault::Record(size)) => Some((size.expected, size.actual)),
-        _ => None,
-    };
-    assert_eq!(size, Some((4, 5)));
-    assert!(matches!(right.recv(), Record::Value(19)));
+fn rejects_malformed_record() {
+    for (bytes, actual) in [(b"x".as_slice(), 1), ([0_u8; 8].as_slice(), 5)] {
+        let (left, right) = Channel::pair().expect("record socket pair");
+        Socket::new(left.as_fd())
+            .send(bytes)
+            .expect("malformed native record");
+        left.send(19).expect("following record");
+        let size = match right.recv() {
+            Record::Failed(Fault::Record(size)) => Some((size.expected, size.actual)),
+            _ => None,
+        };
+        assert_eq!(size, Some((4, actual)));
+        assert!(matches!(right.recv(), Record::Value(19)));
+    }
 }

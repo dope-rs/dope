@@ -17,81 +17,91 @@ fn ownership_contracts() -> Result<(), Error> {
     let suite = suite.try_collect(&exe, output)?;
 
     for (source, expected) in [
-        (include_str!("common/ownership/admitted.rs"), ""),
+        ("common/ownership/admitted.rs", ""),
         (
-            include_str!("common/ownership/arena_escape.rs"),
+            "common/ownership/arena_escape.rs",
             "error[E0515]: cannot return value referencing local variable `store`",
         ),
         (
-            include_str!("common/ownership/arena_alias.rs"),
+            "common/ownership/arena_alias.rs",
             "error[E0499]: cannot borrow `*store` as mutable more than once at a time",
         ),
         (
-            include_str!("common/ownership/lease_detach.rs"),
+            "common/ownership/lease_detach.rs",
             "error[E0624]: method `into_parts` is private",
         ),
         (
-            include_str!("common/ownership/lease_substitute.rs"),
+            "common/ownership/lease_substitute.rs",
             "error[E0624]: associated function `new` is private",
         ),
         (
-            include_str!("common/ownership/lease_escape.rs"),
+            "common/ownership/lease_escape.rs",
             "error[E0309]: the parameter type `R` may not live long enough",
         ),
         (
-            include_str!("common/ownership/pair_geometry.rs"),
+            "common/ownership/pair_geometry.rs",
             "error[E0277]: the trait bound `C: Segment` is not satisfied",
         ),
         (
-            include_str!("common/ownership/produced_escape.rs"),
+            "common/ownership/produced_escape.rs",
             "error: lifetime may not live long enough",
         ),
         (
-            include_str!("common/ownership/produced_replay.rs"),
+            "common/ownership/produced_replay.rs",
             "error[E0382]: use of moved value: `output`",
         ),
         (
-            include_str!("common/ownership/input_consume.rs"),
+            "common/ownership/input_consume.rs",
             "error[E0502]: cannot borrow `*input` as mutable because it is also borrowed as immutable",
         ),
         (
-            include_str!("common/ownership/chunk_escape.rs"),
+            "common/ownership/chunk_escape.rs",
             "error: lifetime may not live long enough",
         ),
         (
-            include_str!("common/ownership/chunk_credit.rs"),
+            "common/ownership/chunk_credit.rs",
             "error[E0308]: mismatched types",
         ),
         (
-            include_str!("common/ownership/completion_forge.rs"),
+            "common/ownership/completion_forge.rs",
             "error[E0423]: cannot initialize a tuple struct which contains private fields",
         ),
         (
-            include_str!("common/ownership/prepared_forge.rs"),
+            "common/ownership/prepared_forge.rs",
             "error[E0624]: associated function `new` is private",
         ),
         (
-            include_str!("common/ownership/prepared_alias.rs"),
+            "common/ownership/prepared_alias.rs",
             "error[E0382]: use of moved value: `storage`\nerror[E0505]: cannot move out of `storage` because it is borrowed",
         ),
         (
-            include_str!("common/ownership/round_escape.rs"),
+            "common/ownership/round_escape.rs",
             "error: lifetime may not live long enough",
         ),
         (
-            include_str!("common/ownership/front_escape.rs"),
+            "common/ownership/front_escape.rs",
             "error[E0597]: `arena` does not live long enough",
         ),
         (
-            include_str!("common/ownership/batch_rejected_escape.rs"),
+            "common/ownership/batch_rejected_escape.rs",
             "error: lifetime may not live long enough",
         ),
         (
-            include_str!("common/ownership/front_reenter.rs"),
+            "common/ownership/front_reenter.rs",
             "error[E0499]: cannot borrow `*token` as mutable more than once at a time",
         ),
     ] {
-        let output = compile(&mut suite.compiler(), source);
+        let source_file = std::fs::File::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join(source),
+        )
+        .expect("open compiler fixture");
+        let output = suite
+            .compiler()
+            .stdin(source_file)
+            .output()
+            .expect("run compiler");
         let diag = String::from_utf8(output.stderr).expect("diagnostic UTF-8");
         assert!(
             output.status.success() == expected.is_empty()
@@ -100,17 +110,4 @@ fn ownership_contracts() -> Result<(), Error> {
         );
     }
     Ok(())
-}
-
-fn compile(command: &mut std::process::Command, source: &str) -> std::process::Output {
-    let mut child = command.spawn().expect("start compiler");
-    let written = child
-        .stdin
-        .take()
-        .map(|mut input| std::io::Write::write_all(&mut input, source.as_bytes()));
-    let output = child.wait_with_output().expect("reap compiler");
-    written
-        .expect("compiler stdin")
-        .expect("write compiler source");
-    output
 }

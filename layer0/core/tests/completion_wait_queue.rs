@@ -1,7 +1,4 @@
-use std::convert::Infallible;
-
 use dope_core::driver::life::recovery;
-use dope_test::scope::Error;
 use o3::depot::queue::resident;
 
 use crate::common::wake::Ready as _;
@@ -12,16 +9,13 @@ static ALLOCATOR: Tracker = Tracker::new();
 
 use dope_core::driver::{
     route::{Epoch, KeyTag, indices::SlotIndex},
-    schedule::ready::{
-        wake,
-        wake::{Drain, queue},
-    },
+    schedule::ready::{wake, wake::queue},
 };
 use dope_test::alloc::Tracker;
 
 use crate::common::{
-    rt::Runtime,
-    wake::{FOUR_LANES, ONE_LANE, THREE_LANES, TWO_LANES},
+    rt::{Runtime, finish, recover},
+    wake::{ONE_LANE, THREE_LANES, TWO_LANES},
 };
 
 #[test]
@@ -115,14 +109,13 @@ fn lanes_keep_fifo() {
         |turn, driver| {
             let driver = driver.driver_ref();
             let targets = driver.targets::<KeyTag<0>>();
-            let mut ready = Vec::new();
-            for index in 0_u16..3 {
+            let ready = [0_u16, 1, 2].map(|index| {
                 let target = targets
                     .bind(SlotIndex::from(index), Epoch::INITIAL)
                     .dispatch();
                 let slot = (driver.ready().make_slot(target)).expect("ready slot");
-                ready.push((target, slot));
-            }
+                (target, slot)
+            });
             let registry = (queue::Queue::try_new(driver, 3, TWO_LANES)).expect("queue registry");
             let mut first = queue::Registration::new();
             let mut second = queue::Registration::new();
@@ -141,16 +134,18 @@ fn lanes_keep_fifo() {
             ));
 
             assert!(matches!(registry.wake_first(), wake::Once::Woke));
-            let mut wakes = Vec::new();
-            assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-            assert!(ready[2].0.matches(wakes[0]));
+            assert_eq!(
+                turn.ready_round(|token| assert!(ready[2].0.matches(token))),
+                1
+            );
             assert!(matches!(registry.wake_first(), wake::Once::Empty));
 
             for index in [0, 1] {
                 assert!(matches!(registry.try_wake_one(1), Ok(wake::Once::Woke)));
-                let mut wakes = Vec::new();
-                assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-                assert!(ready[index].0.matches(wakes[0]));
+                assert_eq!(
+                    turn.ready_round(|token| assert!(ready[index].0.matches(token))),
+                    1
+                );
             }
         },
         recovery::Policy::new(|event| reports.push(event), recover),
@@ -170,14 +165,13 @@ fn next_is_round_robin() {
         |turn, driver| {
             let driver = driver.driver_ref();
             let targets = driver.targets::<KeyTag<0>>();
-            let mut bound = Vec::new();
-            for index in 0_u16..3 {
+            let bound = [0_u16, 1, 2].map(|index| {
                 let target = targets
                     .bind(SlotIndex::from(index), Epoch::INITIAL)
                     .dispatch();
                 let slot = (driver.ready().make_slot(target)).expect("ready slot");
-                bound.push((target, slot));
-            }
+                (target, slot)
+            });
 
             let registry = (queue::Queue::try_new(driver, 3, THREE_LANES)).expect("queue registry");
             let mut first = queue::Registration::new();
@@ -196,27 +190,19 @@ fn next_is_round_robin() {
                 Ok(())
             ));
 
-            let mut wakes = Vec::with_capacity(3);
             let ((), alloc) = Tracker::usage(|| {
                 assert!(registry.has_waiters());
-                assert!(matches!(registry.wake_next(), wake::Once::Woke));
-                assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-                assert!(matches!(registry.wake_next(), wake::Once::Woke));
-                assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-                assert!(matches!(registry.wake_next(), wake::Once::Woke));
-                assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
+                for index in [0, 2, 1] {
+                    assert!(matches!(registry.wake_next(), wake::Once::Woke));
+                    assert_eq!(
+                        turn.ready_round(|token| assert!(bound[index].0.matches(token))),
+                        1
+                    );
+                }
                 assert!(matches!(registry.wake_next(), wake::Once::Empty));
                 assert!(!registry.has_waiters());
             });
             assert_eq!(alloc, (0, 0));
-
-            let mut order = Vec::new();
-            for token in &wakes {
-                let index = (bound.iter().position(|pair| pair.0.matches(*token)))
-                    .expect("known ready target");
-                order.push(index);
-            }
-            assert_eq!(order, [0, 2, 1]);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -264,18 +250,20 @@ fn wake_reserves_rearm() {
                 Err(queue::Error::Full { .. })
             ));
 
-            let mut wakes = Vec::new();
-            assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-            assert!(target_a.matches(wakes[0]));
+            assert_eq!(
+                turn.ready_round(|token| assert!(target_a.matches(token))),
+                1
+            );
 
             assert!(matches!(
                 registry.try_register(1, &mut wait, &wake::Waker::from(slot_b.target())),
                 Ok(())
             ));
             assert!(matches!(registry.try_wake_one(1), Ok(wake::Once::Woke)));
-            let mut wakes = Vec::new();
-            assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-            assert!(target_b.matches(wakes[0]));
+            assert_eq!(
+                turn.ready_round(|token| assert!(target_b.matches(token))),
+                1
+            );
 
             wait.clear();
             assert!(matches!(
@@ -328,9 +316,10 @@ fn failed_move_keeps_owner() {
             ));
             assert!(matches!(original.try_wake_one(0), Ok(wake::Once::Woke)));
 
-            let mut wakes = Vec::new();
-            assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-            assert!(target_a.matches(wakes[0]));
+            assert_eq!(
+                turn.ready_round(|token| assert!(target_a.matches(token))),
+                1
+            );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -366,9 +355,7 @@ fn hot_path_has_no_alloc() {
             });
             assert_eq!(alloc, (0, 0));
 
-            let mut wakes = Vec::new();
-            assert_eq!(turn.ready_round(|token| wakes.push(token)), 1,);
-            assert!(target.matches(wakes[0]));
+            assert_eq!(turn.ready_round(|token| assert!(target.matches(token))), 1);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -377,59 +364,4 @@ fn hot_path_has_no_alloc() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-#[test]
-fn drain_is_resumable() {
-    let mut reports = Vec::new();
-
-    Runtime::throughput().with_turn(
-        |turn, driver| {
-            let driver = driver.driver_ref();
-            let targets = driver.targets::<KeyTag<0>>();
-            let target_a = targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch();
-            let target_b = targets
-                .bind(SlotIndex::from(1_u16), Epoch::INITIAL)
-                .dispatch();
-            let slot_a = (driver.ready().make_slot(target_a)).expect("first ready slot");
-            let slot_b = (driver.ready().make_slot(target_b)).expect("second ready slot");
-            let registry = (queue::Queue::try_new(driver, 2, FOUR_LANES)).expect("queue registry");
-            let mut first = queue::Registration::new();
-            let mut second = queue::Registration::new();
-            assert!(matches!(
-                registry.try_register(3, &mut first, &wake::Waker::from(slot_a.target())),
-                Ok(())
-            ));
-            assert!(matches!(
-                registry.try_register(3, &mut second, &wake::Waker::from(slot_b.target())),
-                Ok(())
-            ));
-            registry.begin_drain();
-
-            let work = turn.turn().app();
-            while work.permit().is_some() {}
-            assert!((registry.drain_one(work)) == (Drain::Exhausted));
-            assert!(registry.is_draining());
-            assert!(first.is_active());
-            assert!(second.is_active());
-            let mut wakes = Vec::new();
-            assert_eq!(turn.ready_round(|token| wakes.push(token)), 0,);
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

@@ -78,11 +78,12 @@ fn polls_coalesced() {
 }
 
 #[test]
+#[deny(unsafe_code)]
 fn reuse_clears_ready() {
     let mut reports = Vec::new();
 
-    Setup::throughput().with_driver(
-        |driver| {
+    Setup::throughput().with_turn(
+        |turn, mut driver| {
             let core = driver.driver_ref();
             let parent = core.ready().make_slot(
                 core.targets::<KeyTag<0>>()
@@ -95,17 +96,22 @@ fn reuse_clears_ready() {
             let tasks = (tasks).expect("task set allocation");
             let mut tasks = pin!(tasks);
             Scope::with(tasks.as_mut(), |mut tasks| {
-                let first = tasks.try_insert(PendingCount(Rc::new(Cell::new(0))), (), parent);
-                let first = (first).expect("first task");
-                assert!(tasks.remove(first).is_ok());
-                assert!(tasks.len() == Length::ZERO);
-                assert!(tasks.work() == Work::Idle);
-
-                let live = tasks.try_insert(PendingCount(Rc::new(Cell::new(0))), (), parent);
-                let live = (live).expect("reused task");
-                assert!(tasks.work() == Work::Pending);
-                assert!(tasks.try_wake(&live).is_ok());
-                assert!(tasks.remove(live).is_ok());
+                for poll in [false, true] {
+                    for _ in 0..2 {
+                        let task = tasks
+                            .try_insert(PendingCount(Rc::new(Cell::new(0))), (), parent)
+                            .expect("reused task");
+                        assert!(tasks.work() == Work::Pending);
+                        assert!(tasks.try_wake(&task).is_ok());
+                        if poll {
+                            assert_eq!(tasks.poll_ready(turn.turn().app(), &mut driver).get(), 0);
+                            assert!(tasks.work() == Work::Idle);
+                        }
+                        assert!(tasks.remove(task).is_ok());
+                        assert!(tasks.len() == Length::ZERO);
+                        assert!(tasks.work() == Work::Idle);
+                    }
+                }
             });
         },
         Policy::new(|event| reports.push(event), recover),
@@ -377,13 +383,16 @@ fn hot_path_allocates_none() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
             let parent = (parent).expect("ready slot");
             let parent = RootWaker::from(parent.target());
-            let tasks: Result<Set<'_, Ready<()>, usize, Domain>, _> = Set::try_new(Count::new(1));
+            let expected = WideTarget(u128::MAX - 17);
+            let tasks: Result<Set<'_, Ready<()>, WideTarget, Domain>, _> =
+                Set::try_new(Count::new(1));
             let tasks = (tasks).expect("task set allocation");
             let mut tasks = pin!(tasks);
             Scope::with(tasks.as_mut(), |mut tasks| {
                 let mut task = None;
                 let (ins_n, ins_b) = Tracker::during(|| {
-                    task = Some((tasks.try_insert(Ready::new(()), 17, parent)).expect("task"));
+                    task =
+                        Some((tasks.try_insert(Ready::new(()), expected, parent)).expect("task"));
                 });
                 assert_eq!((ins_n, ins_b), (0, 0));
                 let task = (task).expect("task");
@@ -392,7 +401,7 @@ fn hot_path_allocates_none() {
                     assert_eq!(tasks.poll_ready(turn.turn().app(), &mut driver).get(), 1);
                     let done = tasks.take_done();
                     let (target, ()) = (done).expect("completed task must retain its output");
-                    assert_eq!(target, 17);
+                    assert!(target == expected);
                 });
                 assert_eq!((run_n, run_b), (0, 0));
                 assert!(tasks.try_wake(&task).is_err());

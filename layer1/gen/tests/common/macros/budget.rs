@@ -1,18 +1,13 @@
 use std::{
     cell::Cell,
     marker::{PhantomData, PhantomPinned},
-    ops,
     pin::Pin,
     rc::Rc,
 };
 
 use engine::{
-    core::{
-        driver::{route::Identity, schedule},
-        io,
-    },
-    manifold::app::dispatch::{self, event},
-    runtime::executor,
+    core::driver::{route::Identity, schedule},
+    manifold::app::dispatch,
 };
 
 pub struct Budget<ID: Identity> {
@@ -21,34 +16,13 @@ pub struct Budget<ID: Identity> {
     pub _pinned: PhantomPinned,
 }
 
-impl<'d, ID: Identity> event::Drive<'d> for Budget<ID> {
-    type Access = dispatch::raw::Plain;
-
-    fn dispatch<'app, 'driver, 'root>(
-        _: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
-        ops::ControlFlow::Continue(())
-    }
-}
-
 // SAFETY: Budget retains no driver-visible pointer and remains pinned within
 // Metered for the complete run.
 unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Budget<ID> {
     const COORDS: usize = 0;
 
     type Route = ID;
-    type Dispatch = event::Driven<dispatch::raw::Plain>;
+    type Dispatch = dispatch::raw::Omit;
     type Install = dispatch::raw::Omit;
     type Finish = dispatch::raw::Omit;
     type Activate = dispatch::raw::Omit;

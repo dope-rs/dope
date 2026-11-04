@@ -2,7 +2,10 @@ use std::{marker, pin, task};
 
 use o3::{
     alloc,
-    depot::arena::slab::{Anchored, storage},
+    depot::{
+        arena::slab::{Anchored, storage},
+        capacity,
+    },
 };
 
 use crate::{
@@ -82,8 +85,12 @@ where
 impl<'d, F: abi::Fiber<'d>, const N: usize, D> Slab<'d, F, N, D, storage::Heap> {
     /// Allocates the exact slot extent before constructing its entries.
     pub fn try_new() -> Result<Self, alloc::Error> {
+        Self::try_new_with_capacity(capacity::Count::MAX)
+    }
+
+    fn try_new_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
         Ok(Self {
-            inner: store::Store::try_new(caps::Tasks::new())?,
+            inner: store::Store::try_new(caps::Tasks::new(), physical)?,
             driver: marker::PhantomData,
         })
     }
@@ -222,8 +229,8 @@ where
 impl<'d, F: abi::Fiber<'d>, const N: usize, D> tree::Build<'d>
     for tree::Leaf<Slab<'d, F, N, D, storage::Heap>>
 {
-    fn try_build() -> Result<Self, alloc::Error> {
-        Ok(Self::new(Slab::try_new()?))
+    fn try_build_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
+        Ok(Self::new(Slab::try_new_with_capacity(physical)?))
     }
 }
 

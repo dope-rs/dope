@@ -66,6 +66,7 @@ impl<'id> Iterator for Records<'_, 'id> {
     }
 }
 
+/// Callers discard this traversal on its first error.
 #[derive(Clone)]
 struct Labels<'packet> {
     packet: Packet<'packet>,
@@ -282,37 +283,30 @@ impl<'id> Record<'id> {
     }
 }
 
-impl<'packet> Labels<'packet> {
-    fn fail(error: error::Packet) -> Option<Result<&'packet [u8], error::Packet>> {
-        Some(Err(error))
-    }
-}
-
 impl<'packet> Iterator for Labels<'packet> {
     type Item = Result<&'packet [u8], error::Packet>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut next = self.clone();
         loop {
             let part = match (raw::Label {
-                packet: next.packet,
-                position: next.position,
+                packet: self.packet,
+                position: self.position,
             })
             .try_read()
             {
                 Ok(part) => part,
-                Err(error) => return Self::fail(error),
+                Err(error) => return Some(Err(error)),
             };
             let label = match part {
                 Part::Pointer { target, .. } => {
-                    next.pointer_hops += 1;
-                    if next.pointer_hops > MAX_POINTER_HOPS {
-                        return Self::fail(error::Packet::PointerHops {
-                            actual: next.pointer_hops,
+                    self.pointer_hops += 1;
+                    if self.pointer_hops > MAX_POINTER_HOPS {
+                        return Some(Err(error::Packet::PointerHops {
+                            actual: self.pointer_hops,
                             maximum: MAX_POINTER_HOPS,
-                        });
+                        }));
                     }
-                    next.position = target;
+                    self.position = target;
                     continue;
                 }
                 Part::Label(label) => label,
@@ -320,16 +314,15 @@ impl<'packet> Iterator for Labels<'packet> {
             if label.bytes.is_empty() {
                 return None;
             }
-            next.position = label.end;
-            let total = next.expanded_len + label.bytes.len() + 1;
+            self.position = label.end;
+            let total = self.expanded_len + label.bytes.len() + 1;
             if total + 1 > crate::host::Name::MAX_WIRE_LEN {
-                return Self::fail(error::Packet::NameLength {
+                return Some(Err(error::Packet::NameLength {
                     actual: total + 1,
                     maximum: crate::host::Name::MAX_WIRE_LEN,
-                });
+                }));
             }
-            next.expanded_len = total;
-            *self = next;
+            self.expanded_len = total;
             return Some(Ok(label.bytes));
         }
     }

@@ -19,10 +19,8 @@ pub(super) mod batch;
 pub(in crate::link) mod flight;
 pub(super) mod load;
 mod prepared;
-mod released;
 
 pub(in crate::link) use prepared::{Preparation, Reservation};
-pub(in crate::link) use released::Released;
 pub(in crate::link) enum Change {
     Applied,
     Stale,

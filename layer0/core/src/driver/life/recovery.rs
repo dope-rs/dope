@@ -44,13 +44,6 @@ pub struct Recovery<'a, 'd> {
     cause: Cause,
 }
 
-/// One native transition retaining its exact driver borrow.
-#[must_use]
-pub(super) struct Attempt<'a, 'd> {
-    context: driver::Context<'a, 'd>,
-    phase: Phase,
-}
-
 /// Successful native retirement retaining its exact driver borrow.
 ///
 /// An unsuccessful attempt cannot supply retirement authority.
@@ -84,72 +77,56 @@ impl<'a, 'd> Recovery<'a, 'd> {
     }
 }
 
-impl<'a, 'd> Attempt<'a, 'd> {
-    pub(super) fn new(context: driver::Context<'a, 'd>, phase: Phase) -> Self {
-        Self { context, phase }
-    }
+pub(super) fn try_rearm<'a, 'd>(last: Final<'a, 'd>) -> Result<(), Recovery<'a, 'd>> {
+    let resolver = Resolver::from(last);
+    // SAFETY: the immutable generation source retains this exact descriptor
+    // through the next native quiescence and teardown. Failed transitions
+    // retain the same owner throughout the diverging recovery policy.
+    let done = unsafe { <Backend as engine::raw::Resume<'_, _>>::try_resume(resolver) }
+        .map_err(stopped)?;
+    done.local.lifecycle.resuming = false;
+    Ok(())
+}
 
-    pub(super) fn resume(self) -> Recovered<'a, 'd> {
-        match self.try_resume() {
-            Ok(done) => done,
-            Err(failure) => failure.terminate(),
+/// Performs one native transition. Every failed attempt retains its owner.
+pub(super) fn retire<'a, 'd>(context: driver::Context<'a, 'd>, phase: Phase) -> Recovered<'a, 'd> {
+    let result = match phase {
+        Phase::Quiesce => <Backend as life::Quiesce<'_, _>>::try_quiesce(Resolver::from(context))
+            .map(life::Quiesced::into_inner),
+        Phase::Finish => {
+            <Backend as life::Finish<'_, _>>::try_finish(Resolver::from(context).into_closing())
+                .map(life::Quiesced::into_inner)
         }
+    };
+    match result {
+        Ok(resolver) => Recovered {
+            context: resolver.into_context(),
+        },
+        Err(failure) => stopped(failure).terminate(),
     }
+}
 
-    pub(super) fn try_rearm(last: Final<'a, 'd>) -> Result<(), Recovery<'a, 'd>> {
-        let resolver = Resolver::from(last);
-        // SAFETY: the immutable generation source retains this exact descriptor
-        // through the next native quiescence and teardown. Failed transitions
-        // retain the same owner throughout the diverging recovery policy.
-        let done = unsafe { <Backend as engine::raw::Resume<'_, _>>::try_resume(resolver) }
-            .map_err(Self::stopped)?;
-        done.local.lifecycle.resuming = false;
-        Ok(())
-    }
-
-    /// Performs one native transition. Every failed attempt retains its owner.
-    fn try_resume(self) -> Result<Recovered<'a, 'd>, Recovery<'a, 'd>> {
-        let Self { context, phase } = self;
-        let result = match phase {
-            Phase::Quiesce => {
-                <Backend as life::Quiesce<'_, _>>::try_quiesce(Resolver::from(context))
-                    .map(life::Quiesced::into_inner)
-            }
-            Phase::Finish => {
-                <Backend as life::Finish<'_, _>>::try_finish(Resolver::from(context).into_closing())
-                    .map(life::Quiesced::into_inner)
-            }
-        };
-        match result {
-            Ok(resolver) => Ok(Recovered {
-                context: resolver.into_context(),
-            }),
-            Err(failure) => Err(Self::stopped(failure)),
-        }
-    }
-
-    fn stopped<State, E>(
-        failure: Stopped<Resolver<'a, 'd, State>, life::Error<E, Fault>>,
-    ) -> Recovery<'a, 'd>
-    where
-        poll::Cause: From<E>,
-    {
-        let Stopped { state, cause } = failure;
-        let context = state.into_context();
-        let cause: Cause = match cause {
-            life::Error::Completion(fault) => Cause::Completion(fault),
-            life::Error::Reactor {
-                cause,
-                completion: done,
-            } => Cause::Reactor {
-                cause: poll::Cause::from(cause),
-                completion: done,
-            },
-            life::Error::File(cause) => Cause::File(poll::Cause::from(cause)),
-            life::Error::Tuning => Cause::Tuning,
-        };
-        Recovery::new(context, cause)
-    }
+fn stopped<'a, 'd, State, E>(
+    failure: Stopped<Resolver<'a, 'd, State>, life::Error<E, Fault>>,
+) -> Recovery<'a, 'd>
+where
+    poll::Cause: From<E>,
+{
+    let Stopped { state, cause } = failure;
+    let context = state.into_context();
+    let cause: Cause = match cause {
+        life::Error::Completion(fault) => Cause::Completion(fault),
+        life::Error::Reactor {
+            cause,
+            completion: done,
+        } => Cause::Reactor {
+            cause: poll::Cause::from(cause),
+            completion: done,
+        },
+        life::Error::File(cause) => Cause::File(poll::Cause::from(cause)),
+        life::Error::Tuning => Cause::Tuning,
+    };
+    Recovery::new(context, cause)
 }
 
 impl<'a, 'd> Recovered<'a, 'd> {

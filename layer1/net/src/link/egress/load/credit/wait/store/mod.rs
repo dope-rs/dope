@@ -15,18 +15,6 @@ use crate::link::egress::{
 
 mod bound;
 
-pub(in crate::link::egress::load::credit) enum Activation<'p> {
-    Ready,
-    Stale(credit::Grant<'p>),
-}
-
-pub(super) struct Bypassable(pub(super) tree::Candidate);
-
-pub(super) enum Bypass {
-    Admitted(Bypassable),
-    Exhausted,
-}
-
 mod nodes;
 
 #[derive(Clone, Copy)]
@@ -79,17 +67,11 @@ pub(super) enum State<'a, 'p, 'd> {
 pub(super) struct Idle<'a, 'p, 'd>(&'a mut Record<'p, 'd>);
 
 pub(super) struct Queued<'a, 'p, 'd> {
-    record: ptr::NonNull<Record<'p, 'd>>,
-    waiting: ptr::NonNull<Waiting<'d>>,
-    borrow: marker::PhantomData<&'a mut Record<'p, 'd>>,
+    record: &'a mut Record<'p, 'd>,
     index: tree::Index,
 }
 
-pub(super) struct Ready<'a, 'p, 'd> {
-    record: ptr::NonNull<Record<'p, 'd>>,
-    granted: ptr::NonNull<Granted<'p, 'd>>,
-    borrow: marker::PhantomData<&'a mut Record<'p, 'd>>,
-}
+pub(super) struct Ready<'a, 'p, 'd>(&'a mut Record<'p, 'd>);
 
 #[must_use]
 pub(in crate::link::egress::load::credit) struct Selected<'a, 'pool, 'p, 'd> {
@@ -127,9 +109,7 @@ impl<'a, 'p, 'd> Idle<'a, 'p, 'd> {
         self.0.payload.waiting = mem::ManuallyDrop::new(waiting);
         self.0.kind = Kind::Waiting;
         Queued {
-            record: ptr::NonNull::from(&mut *self.0),
-            waiting: unsafe { ptr::NonNull::from(&mut *self.0.payload.waiting) },
-            borrow: marker::PhantomData,
+            record: self.0,
             index,
         }
     }
@@ -137,15 +117,15 @@ impl<'a, 'p, 'd> Idle<'a, 'p, 'd> {
 
 impl<'p, 'd> Queued<'_, 'p, 'd> {
     pub(in crate::link::egress::load::credit::wait) fn value(&self) -> Waiting<'d> {
-        unsafe { *self.waiting.as_ptr() }
+        // SAFETY: construction proves Waiting; the exclusive record loan keeps it unchanged.
+        unsafe { *self.record.payload.waiting }
     }
 
     pub(in crate::link::egress::load::credit::wait) fn replace(
-        mut self,
+        self,
         waiting: Waiting<'d>,
     ) -> tree::Waiting {
-        let current = unsafe { self.waiting.as_mut() };
-        *current = waiting;
+        self.record.payload.waiting = mem::ManuallyDrop::new(waiting);
         tree::Waiting::new(self.index)
     }
 
@@ -153,8 +133,8 @@ impl<'p, 'd> Queued<'_, 'p, 'd> {
         tree::Waiting::new(self.index)
     }
 
-    pub(in crate::link::egress::load::credit::wait) fn clear(mut self) -> tree::Waiting {
-        unsafe { self.record.as_mut().kind = Kind::Idle };
+    pub(in crate::link::egress::load::credit::wait) fn clear(self) -> tree::Waiting {
+        self.record.kind = Kind::Idle;
         tree::Waiting::new(self.index)
     }
 }
@@ -164,7 +144,8 @@ impl<'a, 'p, 'd> Ready<'a, 'p, 'd> {
         key: ready::Retained<'d>,
         amount: credit::Queued,
     ) -> bool {
-        let granted = unsafe { self.granted.as_ref() };
+        // SAFETY: Ready exclusively borrows the initialized Granted variant.
+        let granted = unsafe { &*self.0.payload.granted };
         granted.key == key && granted.grant.amount() == amount.amount()
     }
 
@@ -173,11 +154,13 @@ impl<'a, 'p, 'd> Ready<'a, 'p, 'd> {
     }
 
     pub(in crate::link::egress::load::credit::wait) fn vacate(
-        mut self,
+        self,
     ) -> (Idle<'a, 'p, 'd>, credit::Grant<'p>) {
-        let granted = unsafe { self.granted.as_ptr().read() };
-        unsafe { self.record.as_mut().kind = Kind::Idle };
-        (Idle(unsafe { self.record.as_mut() }), granted.grant)
+        // SAFETY: Ready owns this initialized acquisition; clearing the kind
+        // prevents Record::drop from releasing the transferred grant.
+        let granted = unsafe { mem::ManuallyDrop::take(&mut self.0.payload.granted) };
+        self.0.kind = Kind::Idle;
+        (Idle(self.0), granted.grant)
     }
 }
 impl<'pool, 'p, 'd> Selected<'_, 'pool, 'p, 'd> {
@@ -188,24 +171,21 @@ impl<'pool, 'p, 'd> Selected<'_, 'pool, 'p, 'd> {
         }
     }
 
-    pub(in crate::link::egress::load::credit) fn activate(
-        self,
-        owner: driver::Reference<'d>,
-    ) -> Activation<'p> {
+    pub(in crate::link::egress::load::credit) fn activate(self, owner: driver::Reference<'d>) {
         let lane = self.lane();
-        let grant = lane.account().acquire(self.amount.amount());
+        // Activation only inserts the current key into the driver's ready set;
+        // it cannot run application code or change this selected credit.
         match owner.ready().try_activate(self.key) {
             Ok(()) => {
+                let grant = lane.account().acquire(self.amount.amount());
                 self.record.payload.granted = mem::ManuallyDrop::new(Granted {
                     key: self.key,
                     grant,
                 });
                 self.record.kind = Kind::Granted;
-                Activation::Ready
             }
             Err(ready::Stale) => {
                 self.record.kind = Kind::Idle;
-                Activation::Stale(grant)
             }
         }
     }
@@ -257,22 +237,24 @@ impl<'p, 'd> Core<'p, 'd> {
     pub(in crate::link::egress::load::credit::wait) fn nodes(&self) -> NodeView<'_> {
         NodeView {
             pointer: ptr::NonNull::from(self.memory.tail()).cast(),
-            len: self.memory.extent().len,
             borrow: marker::PhantomData,
         }
     }
 
-    pub(in crate::link::egress::load::credit::wait) fn bypass(
-        &self,
+    pub(in crate::link::egress::load::credit::wait) fn try_bypass(
+        &mut self,
         index: tree::Candidate,
-        limit: usize,
-    ) -> Bypass {
-        let record = unsafe { self.memory.as_ref().get_unchecked(index.offset()) };
-        let waiting = unsafe { &*record.payload.waiting };
+    ) -> bool {
+        let limit = self.memory.extent().len.get() as usize - 1;
+        // SAFETY: Candidate names a Waiting record in this unchanged tree;
+        // the exclusive store loan covers both admission and increment.
+        let record = unsafe { self.memory.as_mut().get_unchecked_mut(index.offset()) };
+        let waiting = unsafe { &mut *record.payload.waiting };
         if waiting.bypasses >= limit {
-            return Bypass::Exhausted;
+            return false;
         }
-        Bypass::Admitted(Bypassable(index))
+        waiting.bypasses += 1;
+        true
     }
 }
 
@@ -282,26 +264,14 @@ impl<'a, 'p, 'd> Records<'a, 'p, 'd> {
         index: tree::Index,
     ) -> State<'_, 'p, 'd> {
         let state = unsafe { &mut *self.pointer.as_ptr().add(index.offset()) };
-        let record = ptr::NonNull::from(&mut *state);
         match state.kind {
             Kind::Idle => State::Idle(Idle(state)),
             Kind::Waiting => State::Waiting(Queued {
-                record,
-                waiting: unsafe { ptr::NonNull::from(&mut *state.payload.waiting) },
-                borrow: marker::PhantomData,
+                record: state,
                 index,
             }),
-            Kind::Granted => State::Granted(Ready {
-                record,
-                granted: unsafe { ptr::NonNull::from(&mut *state.payload.granted) },
-                borrow: marker::PhantomData,
-            }),
+            Kind::Granted => State::Granted(Ready(state)),
         }
-    }
-
-    pub(in crate::link::egress::load::credit::wait) fn admit(&mut self, proof: Bypassable) {
-        let record = unsafe { &mut *self.pointer.as_ptr().add(proof.0.offset()) };
-        unsafe { &mut *record.payload.waiting }.bypasses += 1;
     }
 
     pub(in crate::link::egress::load::credit::wait) fn selected<'pool>(
@@ -327,6 +297,9 @@ impl<'a, 'p, 'd> Records<'a, 'p, 'd> {
 
 const _: () = {
     assert!(mem::size_of::<Core<'static, 'static>>() == 3 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Queued<'static, 'static, 'static>>() == 2 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Ready<'static, 'static, 'static>>() == mem::size_of::<usize>());
+    assert!(mem::size_of::<NodeView<'static>>() == mem::size_of::<usize>());
     assert!(
         mem::size_of::<Record<'static, 'static>>().is_multiple_of(mem::align_of::<tree::Node>())
     );

@@ -20,7 +20,7 @@ use crate::{
     },
 };
 
-pub(super) struct Core<
+pub(in crate::client::session::app) struct Parser<
     'a,
     'connection,
     'e,
@@ -37,12 +37,12 @@ pub(super) struct Core<
 }
 
 impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
-    Core<'a, 'connection, 'e, 'w, 'd, ID, N, W>
+    Parser<'a, 'connection, 'e, 'w, 'd, ID, N, W>
 {
-    pub(super) const fn new(
+    pub(in crate::client::session::app) const fn new(
         owner: &'a mut N,
-        budget: &'a resident::Budget<'d>,
         ingress: &'a mut session::Ingress<'w, 'd, ID, N, W>,
+        budget: &'a resident::Budget<'d>,
         context: &'a mut turns::Context<'connection, 'e, 'd, N::ConnState, N::Send, ID>,
     ) -> Self {
         Self {
@@ -61,8 +61,8 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
         self.ingress.discard(self.owner.codec());
     }
 
-    pub(super) fn finish<'turn>(
-        &mut self,
+    pub(in crate::client::session::app) fn finish<'turn>(
+        mut self,
         state: &mut <N::Response as response::Plan>::Flow,
         mut work: app::Work<'turn, 'd>,
     ) -> Run {
@@ -71,7 +71,7 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
             budget,
             ingress,
             context,
-        } = self;
+        } = &mut self;
         ingress.with(|input| {
             let (mut input, ended) = match work::Admission::admit_with(&mut work, input, |input| {
                 session::Ingress::<'w, 'd, ID, N, W>::finish(input, owner, budget, context)
@@ -108,7 +108,7 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
         })
     }
 
-    pub(super) fn run_ready<A: work::Admission>(
+    pub(super) fn step<A: work::Admission>(
         &mut self,
         state: &mut <N::Response as response::Plan>::Flow,
         eof: bool,

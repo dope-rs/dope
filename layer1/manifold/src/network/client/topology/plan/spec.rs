@@ -41,8 +41,13 @@ impl Spec {
         hash: random::HashState<'d>,
         wire: W,
     ) -> client::Config<'d, W> {
-        client::Config::new(caps, self.retry.bind(hash), wire)
-            .with_egress(self.egress)
-            .with_ttl(self.connection_lifetime)
+        client::Config {
+            caps,
+            backoff: self.retry.bind(hash),
+            wire,
+            egress: self.egress,
+            connection_lifetime: self.connection_lifetime,
+            _domain: std::marker::PhantomData,
+        }
     }
 }

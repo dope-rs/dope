@@ -186,7 +186,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
             Wake::Ingress | Wake::Send => {}
         }
         let result = if slot.is_closing() {
-            flow::Handoff::Clear
+            Ok(flow::Handoff::Clear)
         } else {
             let pending = egress.pending();
             let flow = flow::SlotFlow::flow(&*slot, pending);
@@ -198,11 +198,11 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
                 (flow, _) => flow,
             };
             match flow {
-                flow::Flow::Inflight => flow::Handoff::Armed,
+                flow::Flow::Inflight => Ok(flow::Handoff::Armed),
                 flow::Flow::Plain => {
                     flow::SlotFlow::advance_send(&mut *slot, slots, handle, driver);
                     let pending = egress.pending();
-                    flow::SlotFlow::after_send(&mut *slot, pending)
+                    Ok(flow::SlotFlow::after_send(&mut *slot, pending))
                 }
                 flow::Flow::Stalled | flow::Flow::Held | flow::Flow::Clear => {
                     use transmit::outcome;
@@ -216,7 +216,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
                     match progress {
                         outcome::Progress::Submitted | outcome::Progress::Idle => {
                             let pending = egress.pending();
-                            flow::SlotFlow::after_send(&mut *slot, pending)
+                            Ok(flow::SlotFlow::after_send(&mut *slot, pending))
                         }
                         outcome::Progress::Rejected(error) => {
                             slot.sending().discard();
@@ -224,68 +224,54 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
                                 state::Mode::Queued => event::SendFailure::Queued(error),
                                 state::Mode::Direct => event::SendFailure::Direct(error),
                             };
-                            let closed = slot.state.send.fail(conn::Transmit::Rejected(failure));
-                            if let Some(egress) = closed {
-                                writer::release_egress(
-                                    this.app.as_mut(),
-                                    key,
-                                    egress,
-                                    handler::Disposition::Closed,
-                                );
-                            }
-                            flow::Handoff::Clear
+                            Err(conn::Transmit::Rejected(failure))
                         }
                     }
                 }
                 flow::Flow::Deferred => {
                     let done = sender.submit(driver);
                     let writer::Egress {
-                        connection: mut slot,
-                        ..
+                        connection: slot, ..
                     } = sender.view();
                     match done {
                         transmit::Attempt::Runnable(
                             reclaim::Advance::Idle | reclaim::Advance::Ready,
-                        ) => flow::Handoff::Restage,
+                        ) => Ok(flow::Handoff::Restage),
                         transmit::Attempt::Waiting => {
                             if slot.send_status().is_inflight() {
-                                flow::Handoff::Armed
+                                Ok(flow::Handoff::Armed)
                             } else {
-                                flow::Handoff::Clear
+                                Ok(flow::Handoff::Clear)
                             }
                         }
                         transmit::Attempt::Quiescent(
                             reclaim::Advance::Idle | reclaim::Advance::Ready,
-                        ) => flow::Handoff::Clear,
-                        transmit::Attempt::Invalid(error) => {
-                            let closed = slot.state.send.fail(conn::Transmit::Invalid(error));
-                            if let Some(egress) = closed {
-                                writer::release_egress(
-                                    this.app.as_mut(),
-                                    key,
-                                    egress,
-                                    handler::Disposition::Closed,
-                                );
-                            }
-                            flow::Handoff::Clear
-                        }
+                        ) => Ok(flow::Handoff::Clear),
+                        transmit::Attempt::Invalid(error) => Err(conn::Transmit::Invalid(error)),
                         transmit::Attempt::Rejected(
                             failure,
                             reclaim::Advance::Idle | reclaim::Advance::Ready,
-                        ) => {
-                            let closed = slot.state.send.fail(conn::Transmit::Rejected(failure));
-                            if let Some(egress) = closed {
-                                writer::release_egress(
-                                    this.app.as_mut(),
-                                    key,
-                                    egress,
-                                    handler::Disposition::Closed,
-                                );
-                            }
-                            flow::Handoff::Clear
-                        }
+                        ) => Err(conn::Transmit::Rejected(failure)),
                     }
                 }
+            }
+        };
+        let result = match result {
+            Ok(result) => result,
+            Err(failure) => {
+                let writer::Egress {
+                    connection: mut slot,
+                    ..
+                } = sender.view();
+                if let Some(egress) = slot.state.send.fail(failure) {
+                    writer::release_egress(
+                        this.app.as_mut(),
+                        key,
+                        egress,
+                        handler::Disposition::Closed,
+                    );
+                }
+                flow::Handoff::Clear
             }
         };
         if matches!(result, flow::Handoff::Armed) && !matches!(wake, Wake::Pending | Wake::Capacity)

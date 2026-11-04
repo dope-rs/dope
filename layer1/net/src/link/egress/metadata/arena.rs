@@ -113,7 +113,7 @@ impl<'p, 'd, T, S, M, O, D: demand::Mode> Arena<'p, 'd, T, S, M, O, D> {
     }
 
     pub fn get(&self, lane: metadata::Lane) -> Option<Slot<'_, 'p, 'd, T, S, M, D>> {
-        let state = View::new(&self.slots).get(lane)?;
+        let state = self.slots.get(lane.index().into_usize())?;
         Some(Slot {
             pool: &self.pool,
             state,
@@ -127,9 +127,13 @@ impl<'p, 'd, T, S, M, D: demand::Mode, ID: Identity> Arena<'p, 'd, T, S, M, ID, 
         &self,
         key: pool::Key<'d, ID>,
     ) -> Slot<'_, 'p, 'd, T, S, M, D> {
+        // SAFETY: the tagged arena and route slab are allocated together from
+        // one connection capacity. `Key` is minted only by a successful slab
+        // reservation and retains the affine route-owner brand.
+        let state = unsafe { self.slots.get_unchecked(key.index().into_usize()) };
         Slot {
             pool: &self.pool,
-            state: View::new(&self.slots).bind(key),
+            state,
             lane: metadata::Lane::from_slot(key.lane()),
         }
     }
@@ -139,7 +143,10 @@ impl<'p, 'd, T, S, M, D: demand::Mode, ID: Identity> Arena<'p, 'd, T, S, M, ID, 
         key: pool::Key<'d, ID>,
     ) -> MutableSlot<'_, 'p, 'd, T, S, M, D> {
         let lane = metadata::Lane::from_slot(key.lane());
-        let state = Slots::new(&mut self.slots).bind(key);
+        // SAFETY: the tagged arena and route slab are allocated together from
+        // one connection capacity. `Key` is minted only by a successful slab
+        // reservation and retains the affine route-owner brand.
+        let state = unsafe { self.slots.get_unchecked_mut(key.index().into_usize()) };
         MutableSlot {
             pool: &self.pool,
             state,
@@ -276,41 +283,5 @@ impl<'d> Store<'d> {
             count: lanes,
             lanes: states,
         })
-    }
-}
-
-#[repr(transparent)]
-pub(super) struct Slots<'a, S>(&'a mut [S]);
-
-#[repr(transparent)]
-pub(super) struct View<'a, S>(&'a [S]);
-
-impl<'a, S> Slots<'a, S> {
-    const fn new(slots: &'a mut [S]) -> Self {
-        Self(slots)
-    }
-
-    fn bind<ID: Identity>(self, key: pool::Key<'_, ID>) -> &'a mut S {
-        // SAFETY: the tagged arena and route slab are allocated together from
-        // one connection capacity. `Key` is minted only by a successful slab
-        // reservation and retains the affine route-owner brand.
-        unsafe { self.0.get_unchecked_mut(key.index().into_usize()) }
-    }
-}
-
-impl<'a, S> View<'a, S> {
-    const fn new(slots: &'a [S]) -> Self {
-        Self(slots)
-    }
-
-    fn get(self, lane: metadata::Lane) -> Option<&'a S> {
-        self.0.get(lane.index().into_usize())
-    }
-
-    fn bind<ID: Identity>(self, key: pool::Key<'_, ID>) -> &'a S {
-        // SAFETY: the tagged arena and route slab are allocated together from
-        // one connection capacity. `Key` is minted only by a successful slab
-        // reservation and retains the affine route-owner brand.
-        unsafe { self.0.get_unchecked(key.index().into_usize()) }
     }
 }

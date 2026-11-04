@@ -54,58 +54,41 @@ fn cpu_bounds() {
 fn mapping_layouts() {
     use dope_sys::memory::Error;
 
-    assert!(matches!(
-        Uring::layout::<u8>(0),
-        Err(Error::Length {
-            element: 1,
-            count: 0
-        })
-    ));
-    assert!(matches!(
+    for count in [0, isize::MAX as usize + 1] {
+        assert_eq!(
+            Uring::layout::<u8>(count),
+            Err(Error::Length { element: 1, count })
+        );
+    }
+    assert_eq!(
         Uring::layout::<()>(usize::MAX),
         Err(Error::Length {
             element: 0,
             count: usize::MAX
         })
-    ));
-    let count = isize::MAX as usize + 1;
-    assert!(matches!(
-        Uring::layout::<u8>(count),
-        Err(Error::Length { element: 1, count: actual }) if actual == count
-    ));
-    let count = isize::MAX as usize / mem::size_of::<u64>() + 1;
-    assert!(matches!(
-        Uring::layout::<u64>(count),
-        Err(Error::Length { element: 8, count: actual }) if actual == count
-    ));
-    assert!(matches!(
-        Uring::layout::<u64>(usize::MAX),
-        Err(Error::Length {
-            element: 8,
-            count: usize::MAX
-        })
-    ));
-    assert!(matches!(
-        Uring::layout::<Aligned>(0),
-        Err(Error::Length {
-            element: 8192,
-            count: 0
-        })
-    ));
-    assert!(matches!(
-        Uring::layout::<Aligned>(usize::MAX),
-        Err(Error::Length {
-            element: 8192,
-            count: usize::MAX
-        })
-    ));
-    assert!(matches!(
+    );
+    for count in [isize::MAX as usize / mem::size_of::<u64>() + 1, usize::MAX] {
+        assert_eq!(
+            Uring::layout::<u64>(count),
+            Err(Error::Length { element: 8, count })
+        );
+    }
+    for count in [0, usize::MAX] {
+        assert_eq!(
+            Uring::layout::<Aligned>(count),
+            Err(Error::Length {
+                element: 8192,
+                count
+            })
+        );
+    }
+    assert_eq!(
         Uring::layout::<Aligned>(1),
         Err(Error::Alignment {
             element: 8192,
             supported: 4096
         })
-    ));
+    );
 }
 
 #[test]
@@ -209,6 +192,7 @@ fn offset_keeps_position() {
 
     let file = File::open(env!("CARGO_MANIFEST_DIR")).expect("package directory");
     let input = bytes::Prefix::try_new(b"data".as_slice()).expect("bounded input");
+    let mut output = [0_u8; 4];
     for offset in [0, i64::MAX as u64] {
         let entry = Borrowed::write(
             fd::AsFd::as_fd(&file),
@@ -219,6 +203,22 @@ fn offset_keeps_position() {
         assert_eq!(data[0], 23, "IORING_OP_WRITE");
         assert_eq!(data[1], 1 << 4, "IOSQE_ASYNC");
         assert_eq!(&data[8..16], &offset.to_ne_bytes());
+        assert_eq!(&data[24..28], &4_u32.to_ne_bytes());
+
+        let address = output.as_mut_ptr() as u64;
+        let entry = Borrowed::read(
+            fd::AsFd::as_fd(&file),
+            bytes::bounded::Value::try_new(output.as_mut_slice())
+                .map_err(|e| e.into_parts().1)
+                .expect("bounded output"),
+            Offset::new(offset).expect("absolute position"),
+        );
+        let data = encoded(&entry);
+        assert_eq!(data[0], 22, "IORING_OP_READ");
+        assert_eq!(data[1], 1 << 4, "IOSQE_ASYNC");
+        assert_eq!(&data[4..8], &fd::AsRawFd::as_raw_fd(&file).to_ne_bytes());
+        assert_eq!(&data[8..16], &offset.to_ne_bytes());
+        assert_eq!(&data[16..24], &address.to_ne_bytes());
         assert_eq!(&data[24..28], &4_u32.to_ne_bytes());
     }
 }
@@ -296,12 +296,7 @@ fn unix_abstract_extent() {
 fn mkdir_keeps_failure() {
     use dope_sys::io::file::File as _;
 
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("fixture clock")
-        .as_nanos();
-    let temp =
-        Directory::try_new(&std::env::temp_dir(), "mkdir", nonce).expect("isolated directory");
+    let temp = Directory::try_new("mkdir").expect("isolated directory");
     let mut path = temp.c_path().to_bytes().to_vec();
     path.extend_from_slice(b"/child");
     let path = std::ffi::CString::new(path).expect("child path");
@@ -322,12 +317,7 @@ fn mkdir_keeps_failure() {
 fn keeps_buffered_entries() {
     use dope_sys::io::file::Dir;
 
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("fixture clock")
-        .as_nanos();
-    let temp = Directory::try_new(&std::env::temp_dir(), "directory_entries", nonce)
-        .expect("isolated directory");
+    let temp = Directory::try_new("directory_entries").expect("isolated directory");
     fs::write(temp.path().join("data"), b"").expect("entry fixture");
     let mut dir = Dir::<Uring>::open::<Errno>(temp.c_path()).expect("open directory");
     let first = {

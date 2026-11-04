@@ -85,6 +85,11 @@ impl From<conn::Capacity> for Accept {
 
 impl Outbound {
     pub const ZERO: Self = Self(0);
+
+    pub const fn new(count: capacity::Count) -> Self {
+        Self(count.raw())
+    }
+
     pub const fn fixed<const VALUE: u32>() -> Self {
         Self(VALUE)
     }
@@ -107,7 +112,7 @@ impl TryFrom<usize> for Accept {
 impl TryFrom<usize> for Outbound {
     type Error = Overflow;
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        Ok(Self(capacity::Count::try_from(value)?.raw()))
+        Ok(Self::new(capacity::Count::try_from(value)?))
     }
 }
 
@@ -135,7 +140,7 @@ pub struct Overflow {
 #[repr(transparent)]
 pub struct Submit(u32);
 
-/// Additive scheduler demand for ready and timer slots.
+/// Ready and timer slot counts, added for claims and resolved against a baseline.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 #[repr(C)]
 pub struct Schedule {
@@ -247,6 +252,7 @@ impl From<u32> for Submit {
 
 impl Schedule {
     pub const ZERO: Self = Self::new(slots::Slots::ZERO, slots::Slots::ZERO);
+    pub const DEFAULT: Self = Self::fixed::<1024, 1024>();
 
     pub const fn new(ready: slots::Slots, timers: slots::Slots) -> Self {
         Self { ready, timers }
@@ -259,10 +265,20 @@ impl Schedule {
         )
     }
 
+    #[must_use]
+    pub const fn resolve(self, need: Self) -> Self {
+        Self {
+            ready: self.ready.max(need.ready),
+            timers: self.timers.max(need.timers),
+        }
+    }
+
+    #[must_use]
     pub const fn ready(self) -> slots::Slots {
         self.ready
     }
 
+    #[must_use]
     pub const fn timers(self) -> slots::Slots {
         self.timers
     }

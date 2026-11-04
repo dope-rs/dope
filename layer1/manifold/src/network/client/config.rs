@@ -18,35 +18,12 @@ pub(super) struct Seed<F, I, A, const N: usize> {
 
 /// Bound client construction settings retained through installation.
 pub struct Config<'d, W> {
-    caps: side::Capacities,
-    backoff: health::Backoff,
-    wire: W,
-    egress: egress::Config,
-    connection_lifetime: Option<Positive>,
-    _domain: PhantomData<fn(&'d ()) -> &'d ()>,
-}
-
-impl<'d, W> Config<'d, W> {
-    pub(super) const fn new(caps: side::Capacities, retry: health::Backoff, wire: W) -> Self {
-        Self {
-            caps,
-            backoff: retry,
-            wire,
-            egress: egress::Config::DEFAULT,
-            connection_lifetime: None,
-            _domain: PhantomData,
-        }
-    }
-
-    pub(super) const fn with_egress(mut self, config: egress::Config) -> Self {
-        self.egress = config;
-        self
-    }
-
-    pub(super) const fn with_ttl(mut self, ttl: Option<Positive>) -> Self {
-        self.connection_lifetime = ttl;
-        self
-    }
+    pub(super) caps: side::Capacities,
+    pub(super) backoff: health::Backoff,
+    pub(super) wire: W,
+    pub(super) egress: egress::Config,
+    pub(super) connection_lifetime: Option<Positive>,
+    pub(super) _domain: PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
 impl<'d, W> Config<'d, W> {

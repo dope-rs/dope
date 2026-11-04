@@ -137,13 +137,13 @@ where
             receive::Mode::Data => result::IoOperation::RemoveReceiveFile,
             receive::Mode::Message => result::IoOperation::RemoveReceiveMessageFile,
         };
-        (op, create::Kernel::from(error).0)
+        (op, create::Kernel::from(error))
     }
 
     fn release(probe: Self::Probe, error: E) -> Self::Removed {
         (
             result::IoOperation::Probe(probe),
-            create::Kernel::from(error).0,
+            create::Kernel::from(error),
         )
     }
 }

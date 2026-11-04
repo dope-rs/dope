@@ -86,6 +86,8 @@ fn generate(mut input: syn::DeriveInput) -> Result<TokenStream, Failure> {
     projection.params.insert(0, syn::parse_quote!(#owner));
     let (projection_head, _, projection_clause) = projection.split_for_impl();
 
+    // Live helper names keep caller constants from becoming parameter patterns;
+    // mixed-site spans alone do not isolate item names.
     Ok(quote::quote! {
         const _: () = {
             fn #vturn #projection_head(

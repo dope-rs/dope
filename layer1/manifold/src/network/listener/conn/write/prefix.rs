@@ -18,26 +18,14 @@ pub struct Prefix<'a, 'id> {
 impl<'a, 'id> Prefix<'a, 'id> {
     pub const CAPACITY: usize = memory::WRITE_BUF_CAP;
 
-    pub(in crate::network::listener) fn try_with<H, B, R, E>(
-        header: H,
-        call: impl for<'b, 'scope> FnOnce(
-            Prefix<'b, 'scope>,
-        ) -> Result<
-            write::Commit<region::Proof<region::Identity<'scope>>, B, R>,
-            E,
-        >,
-    ) -> Result<write::Commit<H, B, R>, E>
-    where
-        H: AsMut<[u8; memory::WRITE_BUF_CAP]>,
-    {
-        region::Token::scope(|token| {
-            let mut header = token.bind(header);
-            let prefix = Prefix {
-                bytes: Array::new(header.get_mut().as_mut()),
-                owner: token.proof(),
-            };
-            Ok(call(prefix)?.bind(header))
-        })
+    pub(in crate::network::listener::conn::write) fn new(
+        bytes: &'a mut [u8; memory::WRITE_BUF_CAP],
+        owner: region::Proof<region::Identity<'id>>,
+    ) -> Self {
+        Self {
+            bytes: Array::new(bytes),
+            owner,
+        }
     }
 
     pub fn commit<B, R>(

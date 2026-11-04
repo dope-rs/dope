@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope_core::{
     driver::{
         life::{creation::Attempt, recovery},
@@ -86,7 +84,7 @@ fn run_stops_once() {
                         .expect("validated application")
                         .expect("application drive");
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -130,7 +128,7 @@ fn quiescent_precedes_park() {
                     .expect("application teardown")
                     .expect("application drive");
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -148,7 +146,7 @@ fn quiescent_precedes_park() {
 fn ready_install_shutdown() {
     let pair = (shutdown::ReadyPair::new()).expect("ready shutdown pair");
     let (source, trig, ready) = pair.split();
-    let ((ready, fired), worker) = run::Entry(move || {
+    let ((ready, fired), ()) = run::Entry(move || {
         let mut finish = Completion::new();
         let mut create = Attempt::new();
         let mut reports = Vec::new();
@@ -166,7 +164,7 @@ fn ready_install_shutdown() {
                             .expect("application teardown")
                             .expect("application drive");
                     },
-                    recovery::Policy::new(|event| reports.push(event), recover),
+                    recovery::Policy::new(|event| reports.push(event), common::recover),
                 )
                 .as_ref()
                 .map_err(|error| error.cause())
@@ -183,7 +181,6 @@ fn ready_install_shutdown() {
     })
     .expect("runtime shutdown worker");
 
-    worker.expect("runtime shutdown join");
     assert!(ready.is_ok(), "runtime readiness");
     assert!(fired.is_ok(), "eventfd shutdown wake");
 }
@@ -214,7 +211,7 @@ fn cancelled_ready() {
                         .expect("application teardown")
                         .expect("application drive");
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -262,7 +259,7 @@ fn drop_finishes_once() {
                         .expect("application cleanup");
                     assert_eq!(result, Err(19));
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -332,7 +329,7 @@ fn shutdown_ignores_timers() {
                     assert!(alarm.is_armed());
                     alarm.clear();
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -394,7 +391,7 @@ fn drain(config: Positive, count: usize, outcome: drain::Outcome, deadline: bool
                     let Some(report) = result.ok() else { return };
                     assert!(report.outcome() == outcome, "unexpected drain outcome");
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -407,8 +404,4 @@ fn drain(config: Positive, count: usize, outcome: drain::Outcome, deadline: bool
 
     assert!(begun.get());
     assert_eq!(forced.get(), outcome == drain::Outcome::Forced);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

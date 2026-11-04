@@ -19,23 +19,22 @@ use o3::{alloc, buffer::bytes, depot::map::Plan};
 
 use crate::common::{
     Files, Poll,
-    cancel::{Context, Extent},
-    event::Capacity,
+    cancel::Context,
     slots::{
         Slots,
-        inputs::{Layout, Owned, Physical},
+        inputs::{Layout, Physical},
     },
     socket,
 };
 
-type Length = <Extent as memory::raw::Extent>::Length;
+type Length = <Context as memory::raw::Extent>::Length;
 type Index = <Slots as change::raw::Slots>::Index;
 
 type Pending = <Kqueue as retry::Source>::Pending<Context>;
 type State = <Kqueue as retry::Source>::State<Pending>;
 type Retry<'a> = <Kqueue as retry::Source>::Retry<'a, Context, Write, Poll>;
 type Data = <Kqueue as retry::Source>::Send<Context>;
-type Queue = <Kqueue as complete::Source>::Queue<Write, Capacity>;
+type Queue = <Kqueue as complete::Source>::Queue<Write, NonZero<u32>>;
 
 static PAYLOAD: [u8; 4096] = [43; 4096];
 
@@ -65,11 +64,11 @@ impl Blocked {
         let mut files = Files::try_new(Layout).map_err(Error::Allocation)?;
         let mut state = State::try_new(Plan::fixed::<2>()).map_err(Error::Allocation)?;
         let mut poll = Poll::try_new().map_err(Error::Poll)?;
-        let mut queue = Queue::try_new(Capacity(NonZero::<u32>::MIN)).map_err(Error::Allocation)?;
+        let mut queue = Queue::try_new(NonZero::<u32>::MIN).map_err(Error::Allocation)?;
         let (socket, peer, buffered) = socket::try_blocked().map_err(Error::Socket)?;
         let raw = socket.as_fd().as_raw_fd();
         files
-            .install(Owned::from(Physical::at::<1>()), socket)
+            .install(Physical::at::<1>(), socket)
             .map_err(Error::Install)?;
         let vacant = queue.vacant().ok_or(Error::Vacancy)?;
         // SAFETY: the retained pending write points to immutable static storage.

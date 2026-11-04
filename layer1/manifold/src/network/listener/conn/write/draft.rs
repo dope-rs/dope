@@ -12,6 +12,17 @@ pub struct Draft<B, R> {
     end: write::End,
 }
 
+impl<H, B, R> write::Commit<H, B, R> {
+    pub(in crate::network::listener::conn::write) fn into_draft(self) -> Draft<B, R> {
+        Draft {
+            written: self.written.transfer().into_raw(),
+            body: self.body,
+            receipt: self.receipt,
+            end: self.end,
+        }
+    }
+}
+
 impl<R> Draft<Infallible, R> {
     pub(in crate::network::listener::conn::write) fn into_empty<B>(self) -> Draft<B, R> {
         if let Some(body) = self.body {

@@ -7,13 +7,13 @@ use common::recover;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::{tcp::Tcp, wire::Identity},
 };
 use dope_fiber::{BlockOn as _, net::client::Plan};
 use dope_test::{fibers, reclaim::Reports};
 
-use crate::common::network::rounds::client::{App, Ping, try_reply};
+use crate::common::network::rounds::client::{try_ping, try_reply};
 
 #[test]
 fn reuses_cancelled_slot() {
@@ -40,7 +40,7 @@ fn reuses_cancelled_slot() {
                         |port, sess| {
                             let conn = store.handle();
 
-                            let app = App { connector: port };
+                            let app = Host::new(port);
                             let driven = (sess.with_quiesce(
                                 &mut finish,
                                 app,
@@ -57,7 +57,7 @@ fn reuses_cancelled_slot() {
                                     let io = (opened).ok().expect(
                                         "the second connection must open after cancellation",
                                     );
-                                    Ping::try_ping(&mut app, io).map(|result| {
+                                    try_ping(&mut app, io).map(|result| {
                                         assert_eq!(
                                             result.ok().expect("complete ping roundtrip"),
                                             reply
@@ -79,7 +79,7 @@ fn reuses_cancelled_slot() {
                         .expect("the reply server must complete both accepts");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -91,8 +91,4 @@ fn reuses_cancelled_slot() {
         },
     )
     .expect("reply server");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

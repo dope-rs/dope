@@ -3,7 +3,7 @@ use std::{marker, mem};
 use o3::base::marker::ThreadBound;
 use vacancy::Vacancy;
 
-use crate::driver::schedule::clock::timer::heap::{Lease, Minimum, State, core, order};
+use crate::driver::schedule::clock::timer::heap::{Lease, Minimum, State, core};
 
 pub(in crate::driver::schedule::clock::timer::heap) mod vacancy;
 
@@ -60,12 +60,12 @@ impl<'a, 'id, P: Ord, R, Tag> Min<'a, 'id, P, R, Tag> {
     }
 
     pub fn minimum(&mut self) -> Option<Minimum<'_, 'id, P, R, Tag>> {
-        let root = order::Order::new(self.core).root()?;
+        let root = self.core.root()?;
         Some(Minimum::new(&mut *self.core, self.brand, root))
     }
 
     pub fn peek(&self) -> Option<&P> {
-        order::Order::new(self.core).peek()
+        self.core.peek()
     }
 }
 

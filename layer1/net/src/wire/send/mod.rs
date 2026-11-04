@@ -260,12 +260,8 @@ impl<'a> Transition<'a, reclaim::OnComplete, Empty> {
 }
 
 impl<'a, P: reclaim::Policy, B: Payload<'a>> Transition<'a, P, B> {
-    pub const fn availability(&self) -> Availability {
-        self.0.control.availability()
-    }
-
     pub fn into_parts(self) -> (Prepared<'a, P, B>, Availability) {
-        let free = self.availability();
+        let free = self.0.control.availability();
         (self.0, free)
     }
 }

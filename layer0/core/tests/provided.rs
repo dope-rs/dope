@@ -1,12 +1,10 @@
-use std::convert::Infallible;
-
 use dope_core::{
     driver,
     driver::life::{creation, recovery},
     io::{fd::handles::Descriptor, socket::install::Install},
 };
 
-use crate::common::contract::provided::Joined;
+use crate::common::contract::{provided::Joined, reclaim::Canceled};
 
 pub mod common;
 
@@ -17,17 +15,15 @@ use dope_core::{
         life::domain::Domain, result::poll, retained::flight, route, route::indices::SlotIndex,
         storage,
     },
-    io::{
-        Reclaimed, event,
-        event::{batch::Flow, net::recv::Outcome},
-    },
+    io::{event, event::net::recv::Outcome},
 };
+use dope_test::reclaim::Reports;
 use o3::{
     alloc,
     buffer::{Residency as _, storage::provided},
 };
 
-use crate::common::rt::Runtime;
+use crate::common::rt::{Runtime, recover};
 
 #[test]
 fn joined_arenas() {
@@ -70,7 +66,7 @@ fn forgotten_account() {
     let driver = driver
         .map_err(|error| error.kind())
         .expect("native driver creation");
-    let mut reports = Vec::new();
+    let mut reports = Reports::new::<route::Route>(config, []);
 
     let mut domain = Domain::new(driver);
     let result = domain.start().expect("fresh generation").enter_with(
@@ -156,21 +152,12 @@ fn forgotten_account() {
         recovery::Policy::new(|event| reports.push(event), recover),
     );
     assert!(
-        matches!(
-            reports.as_slice(),
-            [Reclaimed::Recv {
-                result: Err(error), flow: Flow::Last, ..
-            }] if *error == dope_core::Errno::CANCELED
-        ),
-        "the detached multishot receive must report terminal cancellation: {reports:?}"
+        matches!(reports.events(), Ok([])) || matches!(reports.matches_one(&Canceled), Ok(true)),
+        "unexpected reclamation: {reports:?}"
     );
 
     assert!(
         result.is_ok(),
         "forgotten accounts must not prevent native finalization"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
 }

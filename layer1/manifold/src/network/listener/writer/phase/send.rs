@@ -27,12 +27,6 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
     use dope_net::link::event::{SendFailure, SendOutcome};
     use writer::state::Settled;
 
-    enum Direct<B> {
-        More,
-        Done(Option<B>),
-        Close,
-    }
-
     let mut this = listener.as_mut().project();
     let mut closed = None;
     let result = this.owner.settle(
@@ -47,23 +41,19 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
                     closed = state
                         .send
                         .fail(conn::Transmit::Rejected(SendFailure::Direct(error)));
-                    Direct::Close
+                    Settled::Closed
                 }
                 DirectStatus::Failed(error) => {
                     closed = state
                         .send
                         .fail(conn::Transmit::Io(SendFailure::Direct(error)));
-                    Direct::Close
+                    Settled::Closed
                 }
                 DirectStatus::Closed => {
                     closed = state.send.release();
-                    Direct::Close
+                    Settled::Closed
                 }
-                DirectStatus::Sent(sent) => match state.send.settle(sent) {
-                    Settled::More => Direct::More,
-                    Settled::Done(source) => Direct::Done(source),
-                    Settled::Invalid => Direct::Close,
-                },
+                DirectStatus::Sent(sent) => state.send.settle(sent),
             }
         },
         |key, body| {
@@ -101,11 +91,11 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
         SendOutcome::Rejected { failure, .. } => Some(conn::Transmit::Rejected(failure)),
         SendOutcome::Failed { failure, .. } => Some(conn::Transmit::Io(failure)),
         SendOutcome::Direct {
-            settled: Direct::More,
+            settled: Settled::More,
             ..
         } => return phase::commit_chunk(listener.as_mut(), key, phase::Wake::Send, turn, driver),
         SendOutcome::Direct {
-            settled: Direct::Done(source),
+            settled: Settled::Done(source),
             ..
         } => {
             if let Some(egress) = source {
@@ -123,7 +113,7 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
         SendOutcome::Close(_)
         | SendOutcome::CloseSent { .. }
         | SendOutcome::Direct {
-            settled: Direct::Close,
+            settled: Settled::Closed,
             ..
         } => None,
         SendOutcome::Drop => return,

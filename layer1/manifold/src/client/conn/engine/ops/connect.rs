@@ -5,7 +5,7 @@ use dope_core::{
     driver::{retained, route::Identity, schedule},
     io::event::net::{connect, socket},
 };
-use dope_net::{link::event, wire};
+use dope_net::link::event;
 use engine::ops::{close::ClosePhase as _, phase::Phase as _};
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
 
 /// Executes socket-open and connection-completion transitions for one engine shape.
 pub(in crate::client) trait Connect<'d, ID: Identity, A, S, E>:
-    opens::Phase<'d, ID, A, S, E, A::Deferred, <A::Wire as wire::Spec>::OpenFailure>
+    opens::Phase<'d, ID, A, S, E>
 where
     A: app::Receive<'d, ID> + app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
@@ -61,7 +61,7 @@ where
     A::Continuation: liveness::Inspection<'d, ID, A>,
     Self: phase::Phase<'d, ID, A, S, E, A::Connect>
         + close::ClosePhase<'d, ID, A, S, E>
-        + opens::Phase<'d, ID, A, S, E, A::Deferred, <A::Wire as wire::Spec>::OpenFailure>,
+        + opens::Phase<'d, ID, A, S, E>,
 {
     fn socket(
         mut self: pin::Pin<&mut Self>,

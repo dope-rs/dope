@@ -98,7 +98,7 @@ impl request::Lower for Entry {
     }
 
     fn shutdown(slot: Self::Target) -> Self {
-        sockets::shutdown(slot, sockets::Direction::Write)
+        sockets::shutdown(slot, dope_sys::io::socket::How::WRITE)
     }
 }
 

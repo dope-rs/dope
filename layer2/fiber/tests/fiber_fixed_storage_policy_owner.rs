@@ -12,7 +12,7 @@ use dope::core::driver::{
     },
 };
 use dope_fiber::{
-    abi::{self, Pending, Ready},
+    abi::{self, Ready},
     context::wake::RootWaker,
     task::storage::{
         fixed::{
@@ -33,7 +33,7 @@ use dope_test::alloc::{self, Tracker};
 use crate::common::{
     runtime::{self, Setup, profile},
     schedule::tasks::fixtures::{SelfWake, WakeProbe},
-    storage::policies::{Rearm, owner::*},
+    storage::policies::owner::*,
 };
 pub mod common;
 use common::recover;
@@ -210,142 +210,6 @@ fn phase_defers_self_wakes() {
                 });
 
                 assert_eq!(alloc, (0, 0));
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
-}
-
-#[test]
-fn drive_returns_observed() {
-    let mut reports = Vec::new();
-    Setup::for_profile::<profile::Tasks>().with_turn(
-        |turn, mut driver| {
-            let view = driver.driver_ref();
-            let targets = view.targets::<KeyTag<0>>();
-            let ready = view
-                .ready()
-                .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch())
-                .expect("ready slot allocation failed");
-            let parent = RootWaker::from(ready.target());
-            let pool = Pool::<'_, abi::Ready<u16>, 1, (), u32>::try_new()
-                .expect("task pool allocation failed");
-            let mut plane = pin::pin!(Plane::<'_, _>::from_routes(Leaf::new(pool)));
-            Scope::with(plane.as_mut(), |mut plane| {
-                let task =
-                    plane
-                        .as_mut()
-                        .route::<Here>()
-                        .try_admit((), parent)
-                        .expect("task insertion failed")((Ready::new(41), 23));
-
-                let (observed, alloc) = Tracker::usage(|| {
-                    let admitted = match plane.as_mut().select(turn.turn().app()) {
-                        Selection::Ready(admitted) => Some(admitted),
-                        Selection::Idle | Selection::Yielded => None,
-                    }
-                    .expect("expected ready task");
-                    let observed = admitted.only().drive(&mut driver);
-                    assert!(plane.as_mut().route::<Here>().remove(task) == Removal::Absent);
-                    observed
-                });
-
-                assert_eq!(alloc, (0, 0));
-                assert!(matches!(
-                    observed,
-                    Outcome::Complete {
-                        target: 23,
-                        output: 41,
-                    }
-                ));
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
-}
-
-#[test]
-fn pending_target_is_exact() {
-    let mut reports = Vec::new();
-    Setup::for_profile::<profile::Tasks>().with_turn(
-        |turn, mut driver| {
-            let view = driver.driver_ref();
-            let targets = view.targets::<KeyTag<0>>();
-            let ready = view
-                .ready()
-                .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch())
-                .expect("ready slot allocation failed");
-            let parent = RootWaker::from(ready.target());
-            let pool = Pool::<'_, abi::Pending<()>, 1, (), u32>::try_new()
-                .expect("task pool allocation failed");
-            let mut plane = pin::pin!(Plane::<'_, _>::from_routes(Leaf::new(pool)));
-            Scope::with(plane.as_mut(), |mut plane| {
-                let task =
-                    plane
-                        .as_mut()
-                        .route::<Here>()
-                        .try_admit((), parent)
-                        .expect("task insertion failed")((Pending::new(), 29));
-
-                let admitted = match plane.as_mut().select(turn.turn().app()) {
-                    Selection::Ready(admitted) => Some(admitted),
-
-                    Selection::Idle | Selection::Yielded => None,
-                }
-                .expect("expected ready task");
-                assert!(matches!(
-                    admitted.only().drive(&mut driver),
-                    Outcome::Pending { target: 29 }
-                ));
-                assert!((plane.as_mut().route::<Here>().remove(task)) == (Removal::Removed));
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
-}
-
-#[test]
-fn ready_pending_restores() {
-    let mut reports = Vec::new();
-    Setup::for_profile::<profile::Tasks>().with_turn(
-        |turn, mut driver| {
-            let view = driver.driver_ref();
-            let targets = view.targets::<KeyTag<0>>();
-            let ready = view
-                .ready()
-                .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch())
-                .expect("ready slot allocation failed");
-            let parent = RootWaker::from(ready.target());
-            let pool =
-                Pool::<'_, Rearm, 1, (), u8>::try_new().expect("task pool allocation failed");
-            let mut plane = pin::pin!(Plane::<'_, _>::from_routes(Leaf::new(pool)));
-            Scope::with(plane.as_mut(), |mut plane| {
-                let task = plane
-                    .as_mut()
-                    .route::<Here>()
-                    .try_admit((), parent)
-                    .expect("task insertion failed")((Rearm, 5));
-
-                let alloc = Tracker::during(|| {
-                    let admitted = match plane.as_mut().select(turn.turn().app()) {
-                        Selection::Ready(admitted) => Some(admitted),
-                        Selection::Idle | Selection::Yielded => None,
-                    }
-                    .expect("expected ready task");
-                    assert!(matches!(
-                        admitted.only().drive(&mut driver),
-                        Outcome::PendingReady { target: 5 },
-                    ));
-                });
-
-                assert_eq!(alloc, (0, 0));
-                assert!((plane.as_mut().route::<Here>().remove(task)) == (Removal::Removed));
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),

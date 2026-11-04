@@ -89,11 +89,7 @@ where
     else {
         return Disposition::Missing;
     };
-    let slot = if let Some(at) = this
-        .configuration
-        .connection_lifetime
-        .map(|ttl| now.clamp_add(ttl))
-    {
+    let slot = if let Some(at) = this.connection_lifetime.map(|ttl| now.clamp_add(ttl)) {
         slot.arm_at(deadline::Fixed::Lifetime, at)
     } else {
         slot.into_source()
@@ -191,11 +187,7 @@ where
         if self.as_ref().project_ref().controller.is_pending() {
             self.as_ref().wake_control();
         }
-        let ttl = self
-            .as_ref()
-            .project_ref()
-            .configuration
-            .connection_lifetime;
+        let ttl = self.as_ref().project_ref().connection_lifetime;
         let expiry = ttl.map(|ttl| now.clamp_add(ttl));
         let target = self.as_ref().backoff();
         let this = self.as_mut().project();

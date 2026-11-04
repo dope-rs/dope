@@ -48,9 +48,13 @@ pub(in crate::task::storage::fixed::schedule) struct Slab<
 }
 
 impl<T, Tag, const N: usize, const MAX: u32> Slab<T, Tag, N, MAX> {
-    pub(super) fn try_new(capacity: caps::Tasks<N>) -> Result<Self, alloc::Error> {
+    pub(super) fn try_new(
+        capacity: caps::Tasks<N>,
+        physical: capacity::Count,
+    ) -> Result<Self, alloc::Error> {
+        let count = physical.min(capacity::Count::new(capacity.nonzero().get()));
         Ok(Self {
-            inner: Inner::try_new(capacity::Count::new(capacity.nonzero().get()))?,
+            inner: Inner::try_new(count)?,
             local: marker::PhantomData,
         })
     }
@@ -70,7 +74,7 @@ impl<T, Tag, const N: usize, const MAX: u32> Slab<T, Tag, N, MAX> {
     ) -> Option<R> {
         let parts = key::Parts::<MAX>::from_raw(parts.into_raw())?;
         self.project().inner.remove_with(parts, |index, value| {
-            // SAFETY: this extent holds exactly `N` slots, so the arena's index
+            // SAFETY: this extent holds at most `N` slots, so the arena's index
             // is inside the schedule's local domain.
             f(unsafe { ready::raw::Local::from_raw(index) }, value)
         })
@@ -91,6 +95,19 @@ impl<'d, F: abi::Fiber<'d>, D, const N: usize, T: Copy, const MAX: u32>
         unsafe { depot::raw::Proof::<_, Initialized<()>>::new((&member.inner.inner, index.raw())) }
             .into()
     }
+
+    /// Claims the admitted index until this occupied loan is consumed.
+    pub(super) fn selected_mut<'a>(
+        entry: selected::Entry<'a, Pool<'d, F, N, D, T, MAX>>,
+    ) -> Anchored<'a, Entry<'d, F, T>, D, MAX> {
+        let (member, index) = entry.into_parts();
+        let index = index.local(caps::Tasks::<N>::new());
+        let owner = member.project().inner.project().inner;
+        // SAFETY: selection owns this pool's live entry and its exclusive
+        // pinned plane loan; the native anchor keeps both through consumption.
+        let live = unsafe { depot::raw::Proof::<_, Initialized<()>>::new((owner, index.raw())) };
+        live.into()
+    }
 }
 
 /// One reserved task slot reported before its value is installed.
@@ -108,7 +125,7 @@ pub(in crate::task::storage::fixed::schedule) struct Vacant<
 
 impl<'a, T, Tag, const N: usize, const MAX: u32> Vacant<'a, T, Tag, N, MAX> {
     pub(super) fn index(&self) -> ready::raw::Local<N> {
-        // SAFETY: the anchor names one slot of this pool's exact `N`-slot extent.
+        // SAFETY: the anchor names a slot in this extent, which never exceeds `N`.
         unsafe { ready::raw::Local::from_raw(self.anchor.index()) }
     }
 
@@ -123,59 +140,10 @@ impl<'a, T, Tag, const N: usize, const MAX: u32> Vacant<'a, T, Tag, N, MAX> {
     }
 }
 
-/// One occupied task slot retaining its exclusive pinned store loan.
-/// The wrapper keeps the schedule's `Local<N>` vocabulary over o3's slot.
-pub(in crate::task::storage::fixed::schedule) struct Occupied<
-    'a,
-    T,
-    Tag,
-    const N: usize,
-    const MAX: u32 = { u32::MAX },
-> {
-    anchor: Anchored<'a, T, Tag, MAX>,
-    local: marker::PhantomData<ThreadBound>,
-}
-
-impl<'a, T, Tag, const N: usize, const MAX: u32> Occupied<'a, T, Tag, N, MAX> {
-    pub(super) fn get_mut(self) -> pin::Pin<&'a mut T> {
-        self.anchor.into_value()
-    }
-
-    pub(super) fn as_mut(&mut self) -> pin::Pin<&mut T> {
-        self.anchor.value()
-    }
-
-    pub(super) fn discard(self) {
-        self.anchor.discard();
-    }
-}
-
-impl<'a, 'd, F: abi::Fiber<'d>, D, const N: usize, T: Copy, const MAX: u32>
-    Occupied<'a, Entry<'d, F, T>, D, N, MAX>
-{
-    /// Claims the admitted index until this occupied loan is consumed.
-    pub(super) fn selected(entry: selected::Entry<'a, Pool<'d, F, N, D, T, MAX>>) -> Self {
-        let (member, index) = entry.into_parts();
-        let index = index.local(caps::Tasks::<N>::new());
-        let owner = member.project().inner.project().inner;
-        // SAFETY: selection owns this pool's live entry and its exclusive
-        // pinned plane loan; the native anchor keeps both through consumption.
-        let live = unsafe { depot::raw::Proof::<_, Initialized<()>>::new((owner, index.raw())) };
-        Self {
-            anchor: live.into(),
-            local: marker::PhantomData,
-        }
-    }
-}
-
 const _: () = {
     assert!(mem::size_of::<Slab<u8, (), 1>>() == mem::size_of::<Inner<u8, (), { u32::MAX }>>());
     assert!(
         mem::size_of::<Vacant<'_, u8, (), 1>>()
             == mem::size_of::<Anchor<'_, u8, (), { u32::MAX }>>()
-    );
-    assert!(
-        mem::size_of::<Occupied<'_, u8, (), 1>>()
-            == mem::size_of::<Anchored<'_, u8, (), { u32::MAX }>>()
     );
 };

@@ -6,7 +6,10 @@ use dope::{
     runtime::civil,
 };
 use o3::{base::cell::region, depot::array};
-use storage::queries::{self, state};
+use storage::queries::{
+    self,
+    state::{self, poll},
+};
 
 use crate::{
     config,
@@ -17,7 +20,6 @@ use crate::{
 pub mod create;
 pub mod error;
 mod metadata;
-mod query;
 mod reason;
 pub mod refresh;
 mod schedule;
@@ -81,12 +83,7 @@ where
         cfg: &'storage config::Refresh,
         clock: civil::Anchor<'d>,
     ) -> Self {
-        Self::new(
-            source::Source::Query(query::Query::new(name, lane)),
-            port,
-            cfg,
-            clock,
-        )
+        Self::new(source::Source::Query { name, lane }, port, cfg, clock)
     }
 
     fn new(
@@ -116,7 +113,7 @@ where
     pub fn target(&self) -> crate::TargetRef<'_> {
         match &self.source {
             source::Source::Literal(address) => crate::TargetRef::literal(*address, self.port),
-            source::Source::Query(query) => crate::TargetRef::named(query.name(), self.port),
+            source::Source::Query { name, .. } => crate::TargetRef::named(name, self.port),
         }
     }
 
@@ -128,7 +125,7 @@ where
     /// Reserves a withdrawal revision; expiry may advance it during a lookup.
     fn publication(&self) -> Result<service::Revision, service::Exhausted> {
         let next = self.revision.try_next()?;
-        if matches!(self.source, source::Source::Query(_)) {
+        if matches!(self.source, source::Source::Query { .. }) {
             next.try_next()?;
         }
         Ok(next)
@@ -191,7 +188,7 @@ where
             completed_at: done,
             valid_until: until,
         } = answer;
-        let query = matches!(self.source, source::Source::Query(_));
+        let query = matches!(self.source, source::Source::Query { .. });
         let start = now.moment_at(start);
         let done = now.moment_at(done);
         let until = now.deadline_at(until);
@@ -213,7 +210,7 @@ where
             source::Source::Literal(address) => {
                 array::Vec::from_one(service::Endpoint::new(*address, *address))
             }
-            source::Source::Query(_) => addrs.bind(self.port.get()),
+            source::Source::Query { .. } => addrs.bind(self.port.get()),
         };
         let view = service::Snapshot::from_vec(rev, addrs);
         let timing = (|| -> Result<_, clock::Range> {
@@ -369,7 +366,7 @@ where
     fn is_ready(&self, token: &region::Token<region::Identity<'d, 1>>) -> bool {
         match &self.source {
             source::Source::Literal(_) => false,
-            source::Source::Query(query) => query.is_ready(token),
+            source::Source::Query { lane, .. } => lane.is_ready(token),
         }
     }
 
@@ -385,20 +382,22 @@ where
         Self::Error,
         ADDRESSES,
     > {
-        let polled = match &mut self.source {
-            source::Source::Literal(_) => query::QueryPoll::Idle,
-            source::Source::Query(query) => query.poll(token, now),
+        let polled = match &self.source {
+            source::Source::Literal(_) => poll::State::Idle,
+            source::Source::Query { lane, .. } => {
+                now.at(lane).apply(|lane, raw| lane.poll(token, raw))
+            }
         };
         let (busy, due) = match polled {
-            query::QueryPoll::Idle => (false, None),
-            query::QueryPoll::Pending(at) => (true, at),
-            query::QueryPoll::Complete {
+            poll::State::Idle => (false, None),
+            poll::State::Pending(at) => (true, at.map(|at| now.deadline_at(at))),
+            poll::State::Complete(poll::Ready {
                 reason,
                 completed_at: done,
                 started_unix_ns: start,
                 result,
-            } => {
-                let done = match self.clock.observe(&done) {
+            }) => {
+                let done = match self.clock.observe(&now.moment_at(done)) {
                     Ok(stamp) => stamp,
                     Err(source) => {
                         let error = match result {
@@ -469,12 +468,15 @@ where
                 let address = *address;
                 return self.resolve(now, reason, address);
             }
-            source::Source::Query(query) => {
+            source::Source::Query { name, lane } => {
                 let stamp = match self.clock.observe(&now) {
                     Ok(stamp) => stamp,
                     Err(source) => return self.failed(now, reason, error::Error::Clock { source }),
                 };
-                (query.start(token, reason, now, stamp), stamp)
+                let start = lane
+                    .start(token, reason, stamp, name, now)
+                    .map_err(error::Kind::Deadline);
+                (start, stamp)
             }
         };
         if let Err(kind) = start {

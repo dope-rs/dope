@@ -1,3 +1,5 @@
+use crate::common::file::cleanup;
+
 use std::{
     env, fs,
     os::{fd::AsFd as _, unix::ffi::OsStrExt as _},
@@ -8,7 +10,6 @@ use dope_core::Backend;
 use dope_sys::{io::file::Mode, kernel::errno::Source as _};
 
 pub mod common;
-use common::file::Failure;
 use dope_core::{
     Errno,
     io::fs::{File, Len, Offset, open},
@@ -108,16 +109,10 @@ fn open_keeps_failure() {
     let path = std::ffi::CString::new(path).expect("child path");
     let failure = open::Options::new(open::Access::Read)
         .open(&path)
-        .map_err(Failure::from)
         .err()
         .expect("missing child must fail");
     Backend::clear();
-    assert_eq!(
-        failure,
-        Failure {
-            errno: Errno::try_from(libc::ENOENT).expect("errno")
-        }
-    );
+    assert_eq!(failure, Errno::try_from(libc::ENOENT).expect("errno"));
 }
 
 #[test]
@@ -211,8 +206,4 @@ fn wake_precedes_timeout() {
             ..
         })
     ));
-}
-
-fn cleanup(result: Result<(), dope_test::harness::support::file::Error>) {
-    result.expect("fixture directory cleanup");
 }

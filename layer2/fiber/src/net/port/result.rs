@@ -1,5 +1,3 @@
-use o3::buffer::resident;
-
 use crate::net::error::{self, read::Read};
 
 pub(crate) enum Recv<R, E> {
@@ -17,6 +15,6 @@ pub(crate) enum SendStatus<'d> {
 
 pub(crate) enum StageSend<'d> {
     Staged,
-    Busy(resident::Shared<'d>),
+    Busy,
     Failed(error::Write<'d>),
 }

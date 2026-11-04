@@ -9,7 +9,7 @@ use std::num::NonZero;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::{tcp::Tcp, wire::domain},
     runtime::executor::drive,
 };
@@ -27,7 +27,7 @@ use o3::buffer::Source as _;
 use crate::common::network::rounds::client::fault::{
     Error,
     capacity::*,
-    read::{App, Context, Wire},
+    read::{Context, Wire},
 };
 
 #[test]
@@ -69,7 +69,7 @@ fn retains_both_failures() {
                         |sess| sess.driver(),
                         |port, sess| {
                             let conn = store.handle();
-                            let app = App { connector: port };
+                            let app = Host::new(port);
                             let driven = (sess.with_quiesce(
                                 &mut finish,
                                 app,
@@ -127,7 +127,7 @@ fn retains_both_failures() {
                     server.finish().expect("capacity server must finish");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -139,8 +139,4 @@ fn retains_both_failures() {
         },
     )
     .expect("capacity server must start");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

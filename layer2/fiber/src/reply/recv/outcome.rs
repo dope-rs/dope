@@ -2,19 +2,13 @@
 
 use o3::mem::rc;
 
-use crate::{
-    reply,
-    reply::{Slot, retain},
-};
+use crate::reply::{Slot, retain};
+
+pub use crate::reply::slot::Fault;
 
 /// A reply slot proven to have completed without a failure value.
 pub struct Completion<'a, 's, 'arena, 'credits, 'region, D, E = D> {
     pub(in crate::reply) slot: Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
-}
-
-/// A reply slot proven to own one terminal failure value.
-pub struct Fault<'a, 's, 'arena, 'credits, 'region, D, E = D> {
-    pub(in crate::reply) slot: reply::Fault<'a, 's, 'arena, 'credits, 'region, D, E>,
 }
 
 /// The exact terminal state observed for one reply slot.
@@ -53,17 +47,5 @@ impl<'s, 'arena, 'credits, 'region, D, E> Completion<'_, 's, 'arena, 'credits, '
         let held = unsafe { retain::raw::Remove::remove(&mut owners.payload, front.get().amount) }
             .try_retain()?;
         Ok(Some(retain::Retained::new(front.pop().value, held)))
-    }
-}
-
-impl<D, E> Fault<'_, '_, '_, '_, '_, D, E> {
-    pub fn pop(&mut self) -> Option<D> {
-        self.slot.pop()
-    }
-}
-
-impl<'s, 'arena, 'credits, 'region, D, E> Fault<'_, 's, 'arena, 'credits, 'region, D, E> {
-    pub fn into_error(self) -> E {
-        self.slot.into_error()
     }
 }

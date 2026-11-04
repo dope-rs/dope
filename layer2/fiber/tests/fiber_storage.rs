@@ -40,57 +40,6 @@ use crate::common::{
 static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
-fn staged_take_once() {
-    let mut reports = Vec::new();
-    Setup::for_profile::<profile::Tasks>().with_turn(
-        |turn, mut driver| {
-            let core = driver.driver_ref();
-            let root = core
-                .ready()
-                .make_slot(
-                    core.targets::<KeyTag<0>>()
-                        .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                        .dispatch(),
-                )
-                .expect("ready slot");
-            let polls = Rc::new(Cell::new(0));
-            let mut slab = pin!(staged::Slab::<'_, CompleteOnce, 1, Domain>::new());
-            Scope::with(slab.as_mut(), |mut slab| {
-                let id = slab
-                    .as_mut()
-                    .insert(CompleteOnce {
-                        polls: Rc::clone(&polls),
-                    })
-                    .expect("staged task slot");
-                let first = Context::with_target(
-                    root.target(),
-                    turn.turn().app(),
-                    driver.reborrow(),
-                    |mut context| slab.as_mut().poll_staged(&id, context.as_mut()),
-                );
-                assert!(matches!(first, Some(Poll::NewlyReady)));
-                assert_eq!(slab.as_mut().take_output(&id), Some(41));
-                assert!(slab.state(&id) == Some(State::Vacant));
-                assert!(slab.capacity() == Capacity::Full);
-                let second = Context::with_target(
-                    root.target(),
-                    turn.turn().app(),
-                    driver.reborrow(),
-                    |mut context| slab.as_mut().poll_staged(&id, context.as_mut()),
-                );
-                assert!(second.is_none());
-                assert_eq!(polls.get(), 1);
-                assert_eq!(slab.as_mut().take_output(&id), None);
-                assert!(slab.as_mut().remove(id) == Removal::Removed);
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
-}
-
-#[test]
 fn keeps_pinned_on_drop() {
     let mut reports = Vec::new();
 
@@ -282,7 +231,6 @@ fn staging_keeps_output() {
                         },
                     );
                     assert!((second) == (Some(Poll::Staged)));
-                    assert_eq!(polls.get(), 1);
                     assert_eq!(
                         stores
                             .as_mut()
@@ -291,10 +239,20 @@ fn staging_keeps_output() {
                             .take_output(&task),
                         Some(41)
                     );
+                    let mut route = stores.as_mut().route::<Left<Here>>();
+                    assert!(route.state(&task) == Some(State::Vacant));
+                    assert!(route.capacity() == Capacity::Full);
                     assert!(
-                        (stores.as_mut().route::<Left<Here>>().state(&task))
-                            == (Some(State::Vacant))
+                        Context::with_target(
+                            root.target(),
+                            turn.turn().app(),
+                            driver.reborrow(),
+                            |mut context| route.as_mut().poll_staged(&task, context.as_mut()),
+                        )
+                        .is_none()
                     );
+                    assert_eq!(route.as_mut().take_output(&task), None);
+                    assert_eq!(polls.get(), 1);
                 });
                 assert_eq!(allocs, (0, 0));
                 let result = stores

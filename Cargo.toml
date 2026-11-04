@@ -30,7 +30,7 @@ default-members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.98"
-version = "0.23.0"
+version = "0.24.0"
 description = "The manifold runtime"
 repository = "https://github.com/dope-rs/dope"
 readme = "README.md"
@@ -39,16 +39,16 @@ authors = ["inq <gofiri@gmail.com>"]
 
 [workspace.dependencies]
 dope-test = { path = "layer2/test" }
-dope = { path = "layer1/dope", version = "0.23.0" }
-dope-core = { path = "layer0/core", version = "0.23.0" }
-dope-net = { path = "layer1/net", version = "0.23.0" }
-dope-runtime = { path = "layer1/runtime", version = "0.23.0" }
-dope-manifold = { path = "layer1/manifold", version = "0.23.0" }
-dope-fiber = { path = "layer2/fiber", version = "0.23.0" }
-dope-uring = { path = "layer0/uring", version = "0.23.0" }
-dope-sys = { path = "layer0/sys", version = "0.23.0" }
-dope-kqueue = { path = "layer0/kqueue", version = "0.23.0" }
-dope-gen = { path = "layer1/gen", version = "0.23.0" }
+dope = { path = "layer1/dope", version = "0.24.0" }
+dope-core = { path = "layer0/core", version = "0.24.0" }
+dope-net = { path = "layer1/net", version = "0.24.0" }
+dope-runtime = { path = "layer1/runtime", version = "0.24.0" }
+dope-manifold = { path = "layer1/manifold", version = "0.24.0" }
+dope-fiber = { path = "layer2/fiber", version = "0.24.0" }
+dope-uring = { path = "layer0/uring", version = "0.24.0" }
+dope-sys = { path = "layer0/sys", version = "0.24.0" }
+dope-kqueue = { path = "layer0/kqueue", version = "0.24.0" }
+dope-gen = { path = "layer1/gen", version = "0.24.0" }
 engine = { package = "dope", path = "layer1/dope" }
 fibers = { package = "dope-fiber", path = "layer2/fiber" }
 o3 = "0.21"

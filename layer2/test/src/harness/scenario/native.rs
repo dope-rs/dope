@@ -1,7 +1,8 @@
 pub(super) fn terminate() -> ! {
-    // SAFETY: the watchdog terminates its own process with SIGKILL; _exit is the fallback.
+    // SAFETY: SIGKILL targets this watchdog thread and terminates its process;
+    // _exit is the fallback if raising the signal fails.
     unsafe {
-        libc::kill(libc::getpid(), libc::SIGKILL);
+        libc::raise(libc::SIGKILL);
         libc::_exit(1)
     }
 }

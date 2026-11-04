@@ -37,12 +37,6 @@ pub enum State {
     Done,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum Step {
-    Open,
-    Close,
-}
-
 impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
     pub(crate) fn fill<'d, ID: Identity>(
         &self,
@@ -50,26 +44,17 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
         loop {
-            let step = match conn.state() {
-                State::First => Step::Open,
-                State::Last => Step::Close,
+            let (next, byte, close) = match conn.state() {
+                State::First => (State::Last, b'A', false),
+                State::Last => (State::Done, b'B', true),
                 State::Done => return,
             };
             let load = egress::NonEmpty::from_array(BODY);
             let result = conn.write().try_bounded(driver, move |state, prefix| {
+                *state = next;
+                prefix[0] = byte;
                 let draft = write::Draft::new(1, Some(Value::Checked(load)), ());
-                match step {
-                    Step::Open => {
-                        *state = State::Last;
-                        prefix[0] = b'A';
-                        draft
-                    }
-                    Step::Close => {
-                        *state = State::Done;
-                        prefix[0] = b'B';
-                        draft.close_after()
-                    }
-                }
+                if close { draft.close_after() } else { draft }
             });
             (self.observe)(Event::Write(&result));
             if matches!(result, Ok(write::Outcome::Committed(()))) {

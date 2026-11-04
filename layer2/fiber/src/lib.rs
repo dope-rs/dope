@@ -10,6 +10,7 @@ use runtime::{
 
 pub mod abi;
 pub mod context;
+pub mod file;
 pub mod net;
 pub mod reply;
 pub mod task;

@@ -7,7 +7,7 @@ use dope_core::{
     },
     io::event::net::recv::{ControlKind, Status},
 };
-use storage::queue::{Ops, Push, Write};
+use storage::queue::{Ops, Write};
 
 use crate::{
     link::{
@@ -128,16 +128,16 @@ where
                 && matches!(next.status.origin, arrival::Origin::Fresh)
                 && store.has_queued())
         {
-            return match store.prepare_push(next.item) {
-                Push::Ready { vacant, done } => {
-                    vacant.append(done.complete());
+            return match store.prepare_push() {
+                Some(vacant) => {
+                    vacant.append(next.item.complete());
                     if next.slot.control.engine.operations.recv.has_cancel() {
                         next.rearm.queue();
                     }
                     event::Dispatch::Parked(event::ParkRecv::Deferred)
                 }
-                Push::Full(done) => event::Dispatch::Rejected {
-                    completion: done.retire(),
+                None => event::Dispatch::Rejected {
+                    completion: next.item.retire(),
                     key: next.key.connection(),
                     error: event::ParkError::Full,
                 },

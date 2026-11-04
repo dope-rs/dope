@@ -46,6 +46,10 @@ pub enum Retired<C: Context> {
         key: Key<C>,
         result: Bytes<C>,
     },
+    Read {
+        key: Key<C>,
+        result: Bytes<C>,
+    },
     Sync {
         key: Key<C>,
         result: Unit<C>,

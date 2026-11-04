@@ -61,7 +61,7 @@ where
         if let Some(interest) = interest {
             interest.delete();
         }
-        let call = owner.remove().into_call();
+        let call = owner.remove().operation();
         fail(call.key(), call.family(), Errno::CANCELED, vacant);
         Submitted
     }

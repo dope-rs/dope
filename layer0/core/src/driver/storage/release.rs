@@ -23,9 +23,8 @@ impl Release {
         &mut self,
         report: impl FnMut(storage::Mapping),
     ) -> Result<storage::Removal, storage::Mapping> {
-        self.0.try_close(report, storage::Removal::native, |error| {
-            create::Mapping::from(error).0
-        })
+        self.0
+            .try_close(report, storage::Removal::native, create::Mapping::from)
     }
 
     pub fn primary(&self) -> storage::Removal {
@@ -34,6 +33,6 @@ impl Release {
 
     /// No pending mapping failure remains after terminal cleanup.
     pub fn cleanup(&self) -> Option<storage::Mapping> {
-        self.0.failure(|error| create::Mapping::from(error).0)
+        self.0.failure(create::Mapping::from)
     }
 }

@@ -4,11 +4,7 @@ use attempt::Report as _;
 use dope_core::driver::{retained, route::Identity, schedule::clock};
 use dope_net::{
     link::pool::{change::opening, pending},
-    wire::{
-        self,
-        failure::{Class, Open},
-        open,
-    },
+    wire::open,
 };
 
 use crate::{
@@ -98,9 +94,9 @@ where
     }
 }
 
-pub(crate) trait Phase<'d, ID: Identity, A, S, E, D, F>
+pub(crate) trait Phase<'d, ID: Identity, A, S, E>
 where
-    A: app::Application<'d, ID, Deferred = D>,
+    A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
@@ -112,17 +108,15 @@ where
     ) -> Step<'d>;
 }
 
-impl<'p, 'source, 'w, 'd: 'w, ID: Identity + 'd, A, E, X, D, F>
-    Phase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E, D, F>
+impl<'p, 'source, 'w, 'd: 'w, ID: Identity + 'd, A, E, X>
+    Phase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>
     for engine::Machine<'p, 'w, 'd, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E, X>
 where
-    A: app::Lifecycle<'w, 'd, ID, Deferred = D> + app::Opened<'w, 'd, ID> + app::Failed<'d, ID>,
-    A::Wire: wire::Spec<OpenFailure = F>,
-    F: Class<A::Wire, Open>,
+    A: app::Lifecycle<'w, 'd, ID> + app::Opened<'w, 'd, ID> + app::Failed<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    D: Deferred<'d, ID, A>,
+    A::Deferred: Deferred<'d, ID, A>,
 {
     fn poll(
         mut self: pin::Pin<&mut Self>,
@@ -189,7 +183,7 @@ where
                         );
                     }
                 }
-                D::report(self.as_mut().project().app, key, cause, driver)
+                A::Deferred::report(self.as_mut().project().app, key, cause, driver)
             }
             opening::Attempt::Failed { error } => {
                 {
@@ -214,8 +208,8 @@ where
     }
 }
 
-impl<'q, 'h, 'p, 'w, 'd: 'w, ID: Identity + 'd, A, E, X, R, I, const N: usize, F, D, W>
-    Phase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E, D, W>
+impl<'q, 'h, 'p, 'w, 'd: 'w, ID: Identity + 'd, A, E, X, R, I, const N: usize, F>
+    Phase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E>
     for engine::Machine<
         'p,
         'w,
@@ -227,16 +221,14 @@ impl<'q, 'h, 'p, 'w, 'd: 'w, ID: Identity + 'd, A, E, X, R, I, const N: usize, F
         X,
     >
 where
-    A: app::Lifecycle<'w, 'd, ID, Deferred = D> + app::Opened<'w, 'd, ID> + app::Exhausted<'d, ID>,
-    A::Wire: wire::Spec<OpenFailure = W>,
-    W: Class<A::Wire, Open>,
+    A: app::Lifecycle<'w, 'd, ID> + app::Opened<'w, 'd, ID> + app::Exhausted<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
     R: sync::Policy,
     I: Eq,
     F: discover::Eligibility<'d, I>,
-    D: Deferred<'d, ID, A>,
+    A::Deferred: Deferred<'d, ID, A>,
 {
     fn poll(
         mut self: pin::Pin<&mut Self>,
@@ -273,7 +265,7 @@ where
                 Step::Continue
             }
             service::Opening::Deferred { attempt, cause } => {
-                D::report(self.as_mut().project().app, attempt, cause, driver)
+                A::Deferred::report(self.as_mut().project().app, attempt, cause, driver)
             }
             service::Opening::Failed { attempt, error } => {
                 let fields = self.as_mut().project();

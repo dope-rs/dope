@@ -4,7 +4,7 @@ use crate::driver::{route, route::table};
 
 #[repr(transparent)]
 pub struct Entry<'a, T, Tag: route::Tag>(
-    external::Occupied<
+    pub(in crate::driver::route::table)  external::Occupied<
         entries::Busy<
             'a,
             external::Stamped<T, route::Epoch>,
@@ -18,22 +18,6 @@ pub struct Entry<'a, T, Tag: route::Tag>(
 );
 
 impl<'a, T, Tag: route::Tag> Entry<'a, T, Tag> {
-    pub(in crate::driver::route::table) fn new(
-        inner: external::Occupied<
-            entries::Busy<
-                'a,
-                external::Stamped<T, route::Epoch>,
-                { u32::MAX },
-                entries::Exclusive<true>,
-                { table::PARTITIONS },
-            >,
-            Tag,
-            true,
-        >,
-    ) -> Self {
-        Self(inner)
-    }
-
     pub fn key(&self) -> table::Key<Tag> {
         table::Key::new(self.0.key())
     }

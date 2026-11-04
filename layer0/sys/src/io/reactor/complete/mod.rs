@@ -1,4 +1,4 @@
-use o3::{alloc, base::num::bounded};
+use o3::{alloc, base::num::bounded, depot};
 
 use crate::{Errno, engine::admit::Submitted, probe};
 
@@ -162,7 +162,7 @@ pub struct Parts<T, O, F> {
 
 pub trait Queue: Sized {
     type Event: Event;
-    type Capacity: raw::Capacity;
+    type Capacity: depot::raw::Count;
     type Vacancy<'a>: Vacancy<Event = Self::Event>
     where
         Self: 'a;
@@ -190,8 +190,21 @@ pub trait Record<T>: Sized {
     fn new(token: T, outcome: Self::Outcome, flags: Self::Flags) -> Self;
 }
 
+impl<T, O, F> Record<T> for Parts<T, O, F> {
+    type Outcome = O;
+    type Flags = F;
+
+    fn new(token: T, outcome: O, flags: F) -> Self {
+        Self {
+            token,
+            outcome,
+            flags,
+        }
+    }
+}
+
 pub trait Source {
-    type Queue<E: Event, C: raw::Capacity>: Queue<Event = E, Capacity = C>;
+    type Queue<E: Event, C: depot::raw::Count>: Queue<Event = E, Capacity = C>;
 }
 
 pub trait Vacancy: Sized {
@@ -210,6 +223,12 @@ pub trait Cancellation: Sized {
 /// A successful kernel result preserving its nonnegative signed range.
 pub trait Value: Copy + Eq + Into<bounded::U32<0, { i32::MAX as u32 }>> {
     fn is_zero(self) -> bool;
+}
+
+impl Value for bounded::U32<0, { i32::MAX as u32 }> {
+    fn is_zero(self) -> bool {
+        self.get() == 0
+    }
 }
 
 /// Retains both decoded metadata and the exact rejected native flags.

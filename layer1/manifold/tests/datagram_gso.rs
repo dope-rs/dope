@@ -1,7 +1,6 @@
 pub mod common;
 
 use std::{
-    convert::Infallible,
     net::{Ipv4Addr, SocketAddr},
     num::NonZero,
     time::Duration,
@@ -12,20 +11,24 @@ use common::{
         Pattern,
         datagram::{
             Receive, handler,
-            senders::{self, App, State},
+            senders::{self, State},
         },
     },
+    recover,
     scenario::Runtime,
 };
 use dope_core::{
     dope_sys::io::socket::msg::source,
     driver::{
-        life::{creation::Attempt, recovery},
+        life::recovery,
         route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
     },
     io::datagram::{Gso, GsoPayload},
 };
-use dope_manifold::network::datagram::{self, plan, plan::Config, send};
+use dope_manifold::{
+    app::Host,
+    network::datagram::{self, plan, plan::Config, send},
+};
 use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers,
@@ -37,30 +40,32 @@ use dope_test::{
 };
 
 #[test]
-fn gso_is_one_owned_send() {
-    assert!(
-        datagram::GSO_LIMITS.is_some(),
-        "this test requires UDP GSO support"
-    );
+fn gso_admission_preserves_owner() {
+    let available = datagram::GSO_LIMITS.is_some();
+    let mut lens = vec![1000usize; if available { 63 } else { 1 }];
+    lens.push(500);
     run_case::<send::Plain>(
-        &[1000, 1000, 1000, 500],
+        &lens,
         Ipv4Addr::LOCALHOST,
         Ipv4Addr::LOCALHOST,
         Ok,
+        available,
     );
-    let mut lens = vec![1000usize; 63];
-    lens.push(500);
-    run_case::<send::Plain>(&lens, Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST, Ok);
 }
 
 #[test]
 fn keeps_selected_source() {
+    let available = datagram::GSO_LIMITS.is_some();
     for lens in [&[777][..], &[1000, 1000, 500][..]] {
+        if lens.len() > 1 && !available {
+            break;
+        }
         run_case::<send::Sourced<Gso>>(
             lens,
             Ipv4Addr::UNSPECIFIED,
-            Ipv4Addr::new(127, 0, 0, 2),
+            Ipv4Addr::LOCALHOST,
             senders::selected_source,
+            available,
         );
     }
 }
@@ -70,13 +75,14 @@ fn run_case<M: send::Segmented>(
     bind: Ipv4Addr,
     source: Ipv4Addr,
     address: impl FnOnce(SocketAddr) -> Result<M::Address, source::Error>,
+    available: bool,
 ) where
     M::Address: Copy + Unpin,
 {
     let mut finish = Completion::new();
-    let mut create = Attempt::new();
     let total: usize = lens.iter().sum();
-    let count = (NonZero::<usize>::new(lens.len())).expect("GSO case has no segments");
+    let count = NonZero::<usize>::new(if available { lens.len() } else { 1 })
+        .expect("GSO case has no segments");
     udp::Script::with(
         |socket| senders::collect(socket, count),
         |peer| {
@@ -89,96 +95,58 @@ fn run_case<M: send::Segmented>(
             let mut reports =
                 Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
-            {
-                let result = runtime.try_executor(&mut create);
-                result
-                    .as_ref()
-                    .map_err(|error| error.kind())
-                    .expect("native creation");
-                result.ok().expect("native creation")
-            }
-            .run(|executor| {
-                let result = executor.enter_with(
-                    |mut sess| {
-                        let want = Pattern(total).bytes();
-                        let size = if lens.len() > 1 {
-                            let size = u16::try_from(lens[0]).expect("GSO segment exceeds u16");
-                            Some(NonZero::<u16>::new(size).expect("GSO segment is empty"))
-                        } else {
-                            None
-                        };
-                        let config = {
-                            let outcome = Config::new(1, total, 1);
-                            outcome.expect("GSO send bounds rejected")
-                        };
-                        let sender = {
-                            let mut driver = sess.driver();
-                            let plan = {
-                                let outcome =
-                                    plan::Plan::<KeyTag<0>, M>::new(config).prepare(&mut driver);
-                                outcome.expect("sender preparation failed")
-                            };
-                            {
-                                let outcome = plan.bind(
-                                    (bind, 0).into(),
-                                    handler::Handler::new(
-                                        State::<M> {
-                                            queued: queued.clone(),
-                                            received: received.clone(),
-                                            pending: Some((want.clone(), size, address)),
-                                        },
-                                        check_gso::<M>,
-                                    ),
-                                    &mut driver,
-                                );
-                                outcome.expect("sender bind failed")
-                            }
-                        };
-                        let origin = SocketAddr::from((source, sender.local_addr().port()));
-                        let app = App { sender };
-
-                        ({
-                            let outcome = sess.with_quiesce(
-                                &mut finish,
-                                app,
-                                Duration::from_secs(2),
-                                |mut app| {
-                                    assert_eq!(
-                                        fibers::TEST
-                                            .try_wait(&mut app, &queued, 1)
-                                            .expect("progress wait"),
-                                        fibers::Wait::Reached
-                                    );
-                                    let result =
-                                        (peer.finish()).expect("UDP collector worker failed");
-                                    let capture =
-                                        result.expect("collect GSO packets from one source");
-                                    assert_eq!(
-                                        capture.source, origin,
-                                        "GSO must originate from sender"
-                                    );
-                                    assert_eq!(
-                                        capture.bytes, want,
-                                        "reassembled GSO payload differs from source"
-                                    );
+            runtime.with_scope(
+                |mut sess| {
+                    let want = Pattern(total).bytes();
+                    let size = if lens.len() > 1 {
+                        let size = u16::try_from(lens[0]).expect("GSO segment exceeds u16");
+                        Some(NonZero::<u16>::new(size).expect("GSO segment is empty"))
+                    } else {
+                        None
+                    };
+                    let config = Config::new(1, total, 1).expect("GSO send bounds rejected");
+                    let sender = {
+                        let mut driver = sess.driver();
+                        let plan = plan::Plan::<KeyTag<0>, M>::new(config)
+                            .prepare(&mut driver)
+                            .expect("sender preparation failed");
+                        plan.bind(
+                            (bind, 0).into(),
+                            handler::Handler::new(
+                                State::<M> {
+                                    queued: queued.clone(),
+                                    received: received.clone(),
+                                    pending: Some((want.clone(), size, address)),
                                 },
+                                check_gso::<M>,
+                            ),
+                            &mut driver,
+                        )
+                        .expect("sender bind failed")
+                    };
+                    let origin = SocketAddr::from((source, sender.local_addr().port()));
+                    let app = Host::new(sender);
+
+                    let outcome =
+                        sess.with_quiesce(&mut finish, app, Duration::from_secs(2), |mut app| {
+                            assert_eq!(
+                                fibers::TEST
+                                    .try_wait(&mut app, &queued, 1)
+                                    .expect("progress wait"),
+                                fibers::Wait::Reached
                             );
-                            outcome.expect("application teardown")
+                            let result = peer.finish().expect("UDP collector worker failed");
+                            let capture = result.expect("collect GSO packets from one source");
+                            assert_eq!(capture.source, origin, "GSO must originate from sender");
+                            assert_eq!(
+                                capture.bytes, want,
+                                "reassembled GSO payload differs from source"
+                            );
                         });
-                    },
-                    recovery::Policy::new(
-                        |event| reports.push(event),
-                        |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                            panic!("native recovery: {:?}", failure.cause())
-                        },
-                    ),
-                );
-                result
-                    .as_ref()
-                    .map_err(|error| error.cause())
-                    .expect("native retirement");
-                result.ok().expect("native retirement")
-            });
+                    outcome.expect("application teardown")
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+            );
             assert!(
                 reports
                     .matches_one(&Receive::<KeyTag<0>>(Parts::new(
@@ -215,6 +183,22 @@ fn check_gso<'d, M: send::Segmented>(
             };
             let retry = payload.clone();
             let original = retry.as_ptr();
+            let (payload, size) = match size {
+                Some(size) if datagram::GSO_LIMITS.is_none() => {
+                    let owner = payload.as_ptr();
+                    let rejected = socket
+                        .as_mut()
+                        .queue_gso(payload, size, address)
+                        .err()
+                        .expect("GSO is unavailable");
+                    let (payload, cause) = rejected.into_parts();
+                    assert_eq!(cause, datagram::RejectCause::GsoUnavailable);
+                    assert_eq!(payload.as_ptr(), owner);
+                    assert_eq!(payload, retry);
+                    (payload, None)
+                }
+                _ => (payload, size),
+            };
             match State::<M>::queue(socket.as_mut(), (payload, size, address)) {
                 Ok(_) => {
                     let rejected = State::<M>::queue(socket.as_mut(), (retry, size, address))
@@ -250,9 +234,6 @@ fn check_gso<'d, M: send::Segmented>(
                 }
             }
         }
-        event => assert!(
-            matches!(event, handler::Event::Access(..) | handler::Event::Park(..)),
-            "unexpected datagram callback"
-        ),
+        _ => panic!("unexpected datagram callback"),
     }
 }

@@ -63,9 +63,10 @@ pub(crate) enum CloseCause {
     Receive(event::ParkError),
 }
 
-enum ControlEnd {
+enum Control {
     Eof,
     Cancelled,
+    Empty(Empty),
 }
 
 pub(crate) enum Progress<P> {
@@ -146,28 +147,21 @@ fn finish_chunk<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID
     driver: &mut retained::Context<'_, '_, 'd>,
 ) {
     match done {
-        Outcome::Continue => match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
-            Terminal::Ended(end) => {
-                finish_eof(policy, key, end, turn, driver);
+        done @ (Outcome::Continue | Outcome::CloseAfter) => {
+            match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
+                Terminal::Ended(end) => {
+                    finish_eof(policy, key, end, turn, driver);
+                }
+                Terminal::Closed => {}
+                Terminal::Idle if matches!(done, Outcome::CloseAfter) => {
+                    P::storage(policy.as_mut()).recv().close_after(key);
+                    P::finish(policy, key, Finish::CloseAfter, turn, driver);
+                }
+                Terminal::Pending | Terminal::Idle => {
+                    P::finish(policy, key, Finish::Chunk, turn, driver);
+                }
             }
-            Terminal::Closed => {}
-            Terminal::Pending | Terminal::Idle => {
-                P::finish(policy, key, Finish::Chunk, turn, driver);
-            }
-        },
-        Outcome::CloseAfter => match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
-            Terminal::Ended(end) => {
-                finish_eof(policy, key, end, turn, driver);
-            }
-            Terminal::Closed => {}
-            Terminal::Pending => {
-                P::finish(policy, key, Finish::Chunk, turn, driver);
-            }
-            Terminal::Idle => {
-                P::storage(policy.as_mut()).recv().close_after(key);
-                P::finish(policy, key, Finish::CloseAfter, turn, driver);
-            }
-        },
+        }
         Outcome::Failed(err) => {
             discard_with_cause(policy, key, CloseCause::Application(err), turn, driver);
         }
@@ -195,7 +189,11 @@ fn drive_control<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
             driver.driver().reclaim(done);
             next
         }
-        event::Dispatch::Retired(done) => {
+        event::Dispatch::Retired(done)
+        | event::Dispatch::Stale {
+            completion: done,
+            cause: Stale,
+        } => {
             driver.driver().reclaim(done);
             return;
         }
@@ -210,13 +208,6 @@ fn drive_control<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
         }
         event::Dispatch::Parked(parked) => {
             apply_parked(policy, parked, turn, driver);
-            return;
-        }
-        event::Dispatch::Stale {
-            completion: done,
-            cause: Stale,
-        } => {
-            driver.driver().reclaim(done);
             return;
         }
     };
@@ -239,25 +230,21 @@ fn discard_pending<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
 }
 
 fn apply_control<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
-    policy: pin::Pin<&mut P>,
+    mut policy: pin::Pin<&mut P>,
     next: event::ControlRecv<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut retained::Context<'_, '_, 'd>,
 ) where
     P: Policy<'p, 'w, 'd, ID>,
 {
-    match next {
-        event::ControlRecv::Eof(key) => {
-            finish_control(policy, key, ControlEnd::Eof, turn, driver);
-        }
-        event::ControlRecv::Cancelled(key) => {
-            finish_control(policy, key, ControlEnd::Cancelled, turn, driver);
-        }
+    let (key, end) = match next {
+        event::ControlRecv::Eof(key) => (key, Control::Eof),
+        event::ControlRecv::Cancelled(key) => (key, Control::Cancelled),
         event::ControlRecv::Failed { key, error } => {
-            P::close(policy, key, CloseCause::Io(error), turn, driver);
+            return P::close(policy, key, CloseCause::Io(error), turn, driver);
         }
         event::ControlRecv::Credit { key, cause } => {
-            P::close(
+            return P::close(
                 policy,
                 key,
                 CloseCause::Receive(event::ParkError::Credit(cause)),
@@ -265,24 +252,11 @@ fn apply_control<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
                 driver,
             );
         }
-        event::ControlRecv::NoChunk(key) => {
-            finish_empty(policy, key, Empty::NoChunk, turn, driver);
-        }
+        event::ControlRecv::NoChunk(key) => (key, Control::Empty(Empty::NoChunk)),
         event::ControlRecv::Discarded { key, finished } => {
-            finish_empty(policy, key, Empty::Discarded { finished }, turn, driver);
+            (key, Control::Empty(Empty::Discarded { finished }))
         }
-    }
-}
-
-fn finish_control<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
-    mut policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
-    end: ControlEnd,
-    turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
-) where
-    P: Policy<'p, 'w, 'd, ID>,
-{
+    };
     prepare_terminal(policy.as_mut(), key);
     match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
         Terminal::Ended(end) => {
@@ -290,7 +264,7 @@ fn finish_control<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
         }
         Terminal::Closed | Terminal::Pending => {}
         Terminal::Idle => match end {
-            ControlEnd::Eof => {
+            Control::Eof => {
                 let notify = P::storage(policy.as_mut())
                     .get_mut(key)
                     .is_some_and(|slot| !slot.is_discarded() && !slot.terminal.is_done());
@@ -300,31 +274,13 @@ fn finish_control<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
                     P::close(policy, key, CloseCause::Transport, turn.reborrow(), driver);
                 }
             }
-            ControlEnd::Cancelled => {
+            Control::Cancelled => {
                 P::close(policy, key, CloseCause::Local, turn.reborrow(), driver);
             }
+            Control::Empty(empty) => {
+                P::finish(policy, key, Finish::Empty(empty), turn.reborrow(), driver);
+            }
         },
-    }
-}
-
-fn finish_empty<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
-    mut policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
-    empty: Empty,
-    turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
-) where
-    P: Policy<'p, 'w, 'd, ID>,
-{
-    prepare_terminal(policy.as_mut(), key);
-    match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
-        Terminal::Ended(end) => {
-            finish_eof(policy, key, end, turn.reborrow(), driver);
-        }
-        Terminal::Closed | Terminal::Pending => {}
-        Terminal::Idle => {
-            P::finish(policy, key, Finish::Empty(empty), turn.reborrow(), driver);
-        }
     }
 }
 

@@ -17,7 +17,7 @@ use dope_sys::{
 };
 
 use crate::{
-    Observed, Opened, Ring, Uring, error,
+    Observed, Ring, Uring, error,
     reactor::{
         op::sockets,
         register,
@@ -80,7 +80,7 @@ where
             .map_err(|error| probe::Syscall { probe, error })?;
         let entry = sockets::accept(self.range.fixed()).user_data(T::probe(probe));
         let done = self.submit(&entry, probe)?;
-        <Opened as file::raw::Completion>::close(client)
+        <Uring as file::raw::Completion>::close(client)
             .map_err(|error| probe::Syscall { probe, error })?;
         let result = done.success().map_err(Cause::<T>::Check)?;
         let slot = self
@@ -114,7 +114,7 @@ where
             Ok(done) => done,
             Err(stopped) => return Err(Recover::accept(stopped.state, stopped.cause.into(), file)),
         };
-        let closed = <Opened as file::raw::Completion>::close(client)
+        let closed = <Uring as file::raw::Completion>::close(client)
             .map_err(|error| probe::Syscall { probe, error });
         let active = match Stopped::attach(active, closed) {
             Ok((active, ())) => active,

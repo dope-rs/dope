@@ -1,7 +1,4 @@
-use std::convert::Infallible;
-
 use dope_core::driver::life::recovery;
-use dope_test::scope::Error;
 
 use crate::common::wake::{Completion, Ready as _};
 pub mod common;
@@ -15,7 +12,7 @@ use dope_core::driver::{
 };
 use dope_test::alloc::Tracker;
 
-use crate::common::rt::Runtime;
+use crate::common::rt::{Runtime, finish, recover};
 
 #[test]
 fn rearm_is_affine() {
@@ -154,15 +151,4 @@ fn foreign_keeps_owner() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

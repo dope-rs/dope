@@ -1,9 +1,8 @@
 use std::{mem, ops::ControlFlow, pin, task};
 
-use dope_core::driver::{result::poll, route, route::indices, schedule, schedule::ready};
+use dope_core::driver::{self, result::poll, route, route::indices, schedule, schedule::ready};
 use drive::{clock, turn};
 use schedule::clock::{Moment, Sample};
-use scope::Roots as _;
 use turn::{modes, routes, scope};
 
 use crate::executor::{self, boot, drive, root};
@@ -105,7 +104,7 @@ where
             let mut cause = boot::Cause::Start;
             loop {
                 let tick = self.source.tick();
-                let ready = match scope::Roots::next_root(&mut self.state, &self.slot, tick) {
+                let ready = match self.state.next_root(&self.slot, tick) {
                     Ok(ready) => ready,
                     Err(source) => return Attempt::Cancel(root, source),
                 };
@@ -167,12 +166,12 @@ where
     }
 }
 
-impl<'d, T, C> Block<'d, T, C>
-where
-    T: scope::Roots<'d>,
-{
-    pub(crate) fn new(state: T, source: C) -> Result<Self, drive::Error> {
-        let driver = state.driver_ref();
+impl<'d, T, C> Block<'d, T, C> {
+    pub(crate) fn new(
+        driver: driver::Reference<'d>,
+        state: T,
+        source: C,
+    ) -> Result<Self, drive::Error> {
         let target = driver
             .targets::<routes::Wake>()
             .bind(indices::SlotIndex::ZERO, route::Epoch::INITIAL);
@@ -293,7 +292,7 @@ where
                 turn::Status::Active => {}
                 turn::Status::Shutdown => return Ok(Outcome::Shutdown(Some(output))),
             }
-            if let turn::Sync::Idle(idle) = parked.sync()?
+            if let Some(idle) = parked.sync()?
                 && let Some(proof) = complete(idle)?
             {
                 return Ok(Outcome::Complete(output, proof));

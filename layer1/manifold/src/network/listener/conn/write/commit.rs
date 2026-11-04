@@ -57,6 +57,26 @@ impl<'id, B, R> Commit<region::Proof<region::Identity<'id>>, B, R> {
 }
 
 impl<H, B, R> Commit<H, B, R> {
+    pub(in crate::network::listener::conn::write) fn try_with<C, E>(
+        state: &mut C,
+        header: H,
+        call: impl for<'b, 'id> FnOnce(
+            &mut C,
+            &'b mut [u8; memory::WRITE_BUF_CAP],
+            region::Proof<region::Identity<'id>>,
+        )
+            -> Result<Commit<region::Proof<region::Identity<'id>>, B, R>, E>,
+    ) -> Result<Self, E>
+    where
+        H: AsMut<[u8; memory::WRITE_BUF_CAP]>,
+    {
+        region::Token::scope(|token| {
+            let mut header = token.bind(header);
+            let commit = call(state, header.get_mut().as_mut(), token.proof())?;
+            Ok(commit.bind(header))
+        })
+    }
+
     pub fn close_after(mut self) -> Self {
         self.end = write::End::Close;
         self

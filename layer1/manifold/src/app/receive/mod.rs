@@ -1,14 +1,7 @@
 use dope_core::driver::{self, settings::Domain, storage};
-use dope_net::{
-    link::pool::recv::input,
-    wire,
-    wire::receive::{Chunk, mode::Disabled},
-};
+use dope_net::{link::pool::recv::input, wire};
 use o3::buffer::resident;
-use wire::{
-    domain,
-    receive::{self, batch},
-};
+use wire::{domain, receive};
 
 use crate::app::creation;
 
@@ -122,13 +115,7 @@ impl Resources for GatedScoped {
     }
 }
 
-pub trait Mode<W: wire::Spec>: input::Mode<W> + Policy + Resources + Sized {
-    type Value<'input, 'w, 'd>
-    where
-        'd: 'w,
-        'w: 'input,
-        W: 'w + 'd;
-}
+pub trait Mode<W: wire::Spec>: input::Mode<W> + Policy + Resources + Sized {}
 
 impl Policy for Borrowed {}
 impl Policy for Coupled {
@@ -209,12 +196,6 @@ where
     W: wire::Spec,
     I: Batch + input::Mode<W>,
 {
-    type Value<'input, 'w, 'd>
-        = batch::Items<'input, W>
-    where
-        'd: 'w,
-        'w: 'input,
-        W: 'w + 'd;
 }
 
 impl<W> Mode<W> for Scoped
@@ -223,12 +204,6 @@ where
     Scoped: input::Mode<W>,
     <Scoped as input::Mode<W>>::Kind: input::Replay<W>,
 {
-    type Value<'input, 'w, 'd>
-        = Chunk<'w, 'd, W, Disabled>
-    where
-        'd: 'w,
-        'w: 'input,
-        W: 'w + 'd;
 }
 
 impl<W> Mode<W> for GatedScoped
@@ -237,12 +212,6 @@ where
     GatedScoped: input::Mode<W>,
     <GatedScoped as input::Mode<W>>::Kind: input::Replay<W>,
 {
-    type Value<'input, 'w, 'd>
-        = Chunk<'w, 'd, W, Disabled>
-    where
-        'd: 'w,
-        'w: 'input,
-        W: 'w + 'd;
 }
 
 impl<W> Mode<W> for Owned
@@ -250,10 +219,4 @@ where
     W: wire::Spec,
     Owned: input::Mode<W>,
 {
-    type Value<'input, 'w, 'd>
-        = Chunk<'w, 'd, W>
-    where
-        'd: 'w,
-        'w: 'input,
-        W: 'w + 'd;
 }

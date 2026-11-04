@@ -9,7 +9,7 @@ use crate::{
         Event, event,
         event::{
             batch::Flow,
-            file::{open, sync, write},
+            file::{open, read, sync, write},
             net::{accept, connect, recv, send, socket},
         },
         fd::handles::{self, Accepted, Created},
@@ -122,6 +122,13 @@ pub(crate) fn written<'d>(
     outcome: Result<transfer::Len, Errno>,
 ) -> Event<'d> {
     Event(event::Kind::Write(write::Completion::new(token, outcome)))
+}
+
+pub(crate) fn read<'d>(
+    token: route::Erased<'d, kind::Read>,
+    outcome: Result<transfer::Len, Errno>,
+) -> Event<'d> {
+    Event(event::Kind::Read(read::Completion::new(token, outcome)))
 }
 
 pub(crate) fn synced<'d>(

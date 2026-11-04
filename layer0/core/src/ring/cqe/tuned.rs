@@ -1,27 +1,29 @@
 use dope_sys::{
-    io::socket::option::tuning,
+    io::socket::option::{
+        tuning,
+        tuning::{Occupied as _, Table as _},
+    },
     probe::Stopped,
-    table::token::{self, host::Flight as _},
+    table::token::{Tuning as _, host::Flight as _},
 };
 
 use crate::{
     Errno,
     driver::{
-        life::native,
         result::poll::fault,
         retained::flight,
-        route::{indices, kind, kind::Shape},
+        route::{self, kind, kind::Shape},
     },
     io,
     io::{
         event::{Kind, batch::Flow, net::connect},
         outputs,
-        socket::option,
     },
+    ring::cqe::{Envelope, Occupied, Rejected, Tune, Tuning},
 };
 
-pub(crate) struct Tuned<'q, 'd, S> {
-    state: S,
+pub(crate) struct Tuned<'state, 'q, 'd> {
+    state: Occupied<'state>,
     flight: Terminal<'q, 'd>,
 }
 
@@ -30,13 +32,7 @@ enum Terminal<'q, 'd> {
     Tuning(flight::Complete<'q, 'd, kind::Tuning>),
 }
 
-pub(crate) enum Failure<'q, 'd, S> {
-    Lookup(tuning::Missing),
-    Stale(Stopped<S, flight::raw::Echo>),
-    Class(Stopped<(S, flight::Complete<'q, 'd>), kind::Native>),
-}
-
-impl<'q, 'd, S: tuning::Occupied<flight::raw::Echo>> Tuned<'q, 'd, S> {
+impl<'state, 'q, 'd> Tuned<'state, 'q, 'd> {
     pub(super) fn complete(self, outcome: Result<(), Errno>) -> io::Event<'d> {
         let Self { state, flight } = self;
         let option_failed = state.option_failed();
@@ -50,11 +46,11 @@ impl<'q, 'd, S: tuning::Occupied<flight::raw::Echo>> Tuned<'q, 'd, S> {
         }
     }
 
-    pub(super) fn reclaim(self, result: Result<(), Errno>) -> native::Report {
+    pub(super) fn reclaim(self, result: Result<(), Errno>) -> io::Reclaimed {
         let Self { state, flight } = self;
         let option_failed = state.option_failed();
         state.clear();
-        native::Report(match flight {
+        match flight {
             Terminal::Connect(bound) => io::Reclaimed::Connect {
                 echo: fault::Echo::new(bound.end(Flow::Last)),
                 result: result.map_err(|errno| classify(errno, option_failed)),
@@ -63,35 +59,52 @@ impl<'q, 'd, S: tuning::Occupied<flight::raw::Echo>> Tuned<'q, 'd, S> {
                 echo: fault::Echo::new(bound.end(Flow::Last)),
                 result,
             },
-        })
+        }
     }
-    pub(super) fn bind<'state, T, C>(
-        states: &'state mut T,
+    pub(super) fn bind(
+        states: &'state mut Tuning,
         drain: &'q flight::Drain<'q, 'd>,
-        txn: C,
-    ) -> Result<Self, Failure<'q, 'd, S>>
-    where
-        T: tuning::Table<flight::raw::Echo, { option::MAX_STREAM_OPTIONS }, Occupied<'state> = S>
-            + 'state,
-        C: token::Tuning<Slot = indices::SlotIndex>,
-    {
-        let state = states.bind(txn.slot().raw()).map_err(Failure::Lookup)?;
-        let target = state.target();
+        txn: Tune,
+        packet: Envelope<'d>,
+        control: route::Control,
+    ) -> Result<(Self, Result<(), Errno>), Rejected<'d>> {
         use dope_sys::table::token::host::Drain as _;
-        let (state, flight) =
-            Stopped::attach(state, drain.bind(target).ok_or(target)).map_err(Failure::Stale)?;
+        let outcome = packet.unit();
+        let ((packet, _), outcome) =
+            Stopped::attach((packet, fault::Subject::Control(control)), outcome)?;
+        let state = match states.bind(txn.slot().raw()) {
+            Ok(state) => state,
+            Err(missing) => {
+                let cause = match missing {
+                    tuning::Missing::Slot => fault::Violation::Slot,
+                    tuning::Missing::Vacant => fault::Violation::Control,
+                };
+                return Err(packet.reject(fault::Subject::Control(control), cause));
+            }
+        };
+        let target = state.target();
+        let Some(flight) = drain.bind(target) else {
+            state.clear();
+            let echo = fault::Echo::new(target);
+            return Err(packet.reject(
+                fault::Subject::Tuning { echo, control },
+                fault::Violation::Stale(echo),
+            ));
+        };
         let observed = flight.kind();
         let flight = match observed.into() {
             Shape::Connect(proof) => Terminal::Connect(flight.bind(proof)),
             Shape::Tuning(proof) => Terminal::Tuning(flight.bind(proof)),
             _ => {
-                return Err(Failure::Class(Stopped {
-                    state: (state, flight),
-                    cause: observed,
-                }));
+                state.clear();
+                let echo = fault::Echo::new(flight.end(Flow::Last));
+                return Err(packet.reject(
+                    fault::Subject::Tuning { echo, control },
+                    fault::Violation::Tuning(observed),
+                ));
             }
         };
-        Ok(Tuned { state, flight })
+        Ok((Tuned { state, flight }, outcome))
     }
 }
 

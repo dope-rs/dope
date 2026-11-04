@@ -86,51 +86,6 @@ fn self_wake_waits_for_turn() {
 }
 
 #[test]
-fn insert_wakes_parent() {
-    let mut reports = Vec::new();
-
-    Setup::throughput().with_turn(
-        |turn, driver| {
-            let core = driver.driver_ref();
-            let targets = core.targets::<KeyTag<0>>();
-            let root = core
-                .ready()
-                .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
-            let root = (root).expect("ready slot");
-            let polls = Rc::new(Cell::new(0));
-            let group = Group::<PendingCount, 1>::try_new(RootWaker::from(root.target()));
-            let group = (group).expect("group allocation");
-            let mut group = pin!(group);
-
-            let (allocs, bytes) = Tracker::during(|| {
-                let vacant = group.as_mut().vacant();
-                let vacant = (vacant).expect("pending group vacancy");
-                vacant.insert(PendingCount(Rc::clone(&polls)));
-            });
-            assert_eq!((allocs, bytes), (0, 0));
-            assert_eq!(polls.get(), 0);
-
-            let woken = Cell::new(None);
-            assert_eq!(
-                turn.ready_round(|target| {
-                    assert!(woken.replace(Some(target)).is_none());
-                }),
-                1
-            );
-            assert!(woken.get().is_some_and(|target| {
-                targets
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                    .dispatch()
-                    .matches(target)
-            }));
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    runtime::check_reports(&reports);
-}
-
-#[test]
 fn polls_ready_members() {
     let mut reports = Vec::new();
 
@@ -151,18 +106,31 @@ fn polls_ready_members() {
             let group = Group::<WakeProbe<'_>, 2>::try_new(parent);
             let group = (group).expect("group allocation");
             let mut group = pin!(group);
-            let vacant = group.as_mut().vacant();
-            let vacant = (vacant).expect("first group vacancy");
-            vacant.insert(WakeProbe {
-                polls: Rc::clone(&polls1),
-                wake: Rc::clone(&wake1),
+            let (allocs, bytes) = Tracker::during(|| {
+                for (polls, wake) in [(&polls1, &wake1), (&polls2, &wake2)] {
+                    group
+                        .as_mut()
+                        .vacant()
+                        .expect("group vacancy")
+                        .insert(WakeProbe {
+                            polls: Rc::clone(polls),
+                            wake: Rc::clone(wake),
+                        });
+                }
             });
-            let vacant = group.as_mut().vacant();
-            let vacant = (vacant).expect("second group vacancy");
-            vacant.insert(WakeProbe {
-                polls: Rc::clone(&polls2),
-                wake: Rc::clone(&wake2),
-            });
+            assert_eq!((allocs, bytes), (0, 0));
+            assert_eq!((polls1.get(), polls2.get()), (0, 0));
+            assert_eq!(
+                turn.ready_round(|target| {
+                    assert!(
+                        targets
+                            .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                            .dispatch()
+                            .matches(target)
+                    );
+                }),
+                1
+            );
 
             Context::with_target(
                 target,

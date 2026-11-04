@@ -3,7 +3,6 @@ use std::{cell::Cell, net::SocketAddr, ops, rc::Rc};
 use dope::{
     core::io::{recv, recv::Lease, transfer, transfer::Length},
     net::{
-        tcp::Tcp,
         wire,
         wire::{
             domain,
@@ -22,11 +21,7 @@ use dope::{
         },
     },
 };
-use dope_core::{
-    driver::route::{Identity, KeyTag},
-    platform::wake,
-};
-use dope_fiber::net::client::Machine;
+use dope_core::{driver::route::Identity, platform::wake};
 use dope_test::harness::{peer, peer::TcpScript, signals};
 use o3::{
     buffer,
@@ -350,15 +345,6 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Rc<Probe
         };
         Outcome::Opened(output)
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-pub struct App<'p, 'scope, 'd> {
-    #[pin]
-    #[manifold]
-    pub(crate) connector: Machine<'p, 'scope, 'd, 'd, KeyTag<0>, Tcp, Wire>,
 }
 
 impl Probe {

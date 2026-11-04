@@ -42,14 +42,7 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Failing, ID> for Faili
         context: C,
         consume: impl FnOnce(C, Failing, ()) -> open::Disposition<T, Failing, ()>,
     ) -> open::Outcome<C, T, open::Error<'w, Failing>> {
-        let output = match consume(context, *self, ()) {
-            open::Disposition::Commit(output) => output,
-            open::Disposition::Retry { output, wire, send } => {
-                *self = wire;
-                let () = send;
-                output
-            }
-        };
+        let output = consume(context, *self, ()).into_output(|wire, ()| *self = wire);
         open::Outcome::Opened(output)
     }
 }
@@ -201,7 +194,7 @@ pub mod contract {
         driver::{
             life::{self, recovery},
             retained,
-            route::{KeyTag, table::conn},
+            route::{KeyTag, Tag, table::conn},
             settings::{Config, FileSlots},
         },
         io::{
@@ -226,6 +219,7 @@ pub mod contract {
     };
     use dope_test::{
         alloc::Tracker,
+        reclaim::Reports,
         scope::{self, Driver},
     };
     use o3::buffer::write::Sink as _;
@@ -277,11 +271,7 @@ pub mod contract {
                     .write_slice(b"retained")
                     .expect("fixed send storage");
             }
-            let output = match consume(context, *self, store) {
-                open::Disposition::Commit(output) | open::Disposition::Retry { output, .. } => {
-                    output
-                }
-            };
+            let output = consume(context, *self, store).into_output(|_, _| {});
             open::Outcome::Opened(output)
         }
     }
@@ -372,9 +362,7 @@ pub mod contract {
         where
             'd: 'a,
         {
-            end.output(send::Transition::unchanged(
-                context.into_state().consume_max().buffered(),
-            ))
+            end.output(Self::settle(context, None))
         }
 
         fn settle<'a, 'd, ID: Identity + 'd>(
@@ -418,6 +406,7 @@ pub mod contract {
         pub fn run(self) -> (Vec<u8>, bool, bool) {
             type Route = KeyTag<24>;
             let config = Config::default().with_files(FileSlots::fixed::<1, 1>());
+            let mut reports = Reports::new(config, [Route::ROUTE]);
             let ((queued, closing, sent, buffered), returned, stream) = Driver::new(config)
                 .with_scope(
                     |scope| {
@@ -494,17 +483,15 @@ pub mod contract {
                                         let mut driver = scope.context();
                                         let queue =
                                             pool.egress_mut(key).ok_or(Error::Connection)?.queue;
-                                        let input: [&[u8]; 2] = match self {
-                                            Self::Buffered => [b"keep", b""],
-                                            Self::Vectored => [b"ab", b"cdef"],
+                                        let input: &[&[u8]] = match self {
+                                            Self::Buffered => &[b"keep"],
+                                            Self::Vectored => &[b"ab", b"cdef"],
                                         };
-                                        for bytes in input {
-                                            if !bytes.is_empty()
-                                                && !matches!(
-                                                    queue.try_enqueue(driver.region_token(), bytes),
-                                                    egress::Enqueue::Committed
-                                                )
-                                            {
+                                        for &bytes in input {
+                                            if !matches!(
+                                                queue.try_enqueue(driver.region_token(), bytes),
+                                                egress::Enqueue::Committed
+                                            ) {
                                                 return Err(Error::Unavailable);
                                             }
                                         }
@@ -576,14 +563,7 @@ pub mod contract {
                         .map_err(Error::Resource)?
                     },
                     recovery::Policy::new(
-                        |event| {
-                            assert!(
-                                matches!(event, Reclaimed::Accept {
-                        result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
-                    } if error.is_canceled()),
-                                "unexpected reclamation: {event:?}"
-                            )
-                        },
+                        |event| reports.push(event),
                         |failure: recovery::Recovery<'_, '_>| -> Infallible {
                             panic!("driver recovery: {:?}", failure.cause())
                         },
@@ -596,6 +576,14 @@ pub mod contract {
                         result.ok().expect("driver output").expect("send fixture")
                     },
                 );
+            for event in reports.events().expect("reclaimed operations") {
+                assert!(
+                    matches!(event, Reclaimed::Accept {
+                        result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
+                    } if error.is_canceled()),
+                    "unexpected reclamation: {event:?}"
+                );
+            }
             let len = match self {
                 Self::Buffered => 8,
                 Self::Vectored => 6,

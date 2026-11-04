@@ -87,9 +87,14 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy + From<Primary> + From<mem
     }
 
     fn open<F: provided::Failure<Cleanup = Cleanup<L>>>(ring: Ring<T>, fault: F) -> Self::Build {
-        match BufferBuild::open(fault, P::from) {
-            Ok(primary) => Pending::close_raw(ring, primary),
-            Err(buffers) => Build(Err(Pending::Open(Open { ring, buffers }))),
+        let (error, cleanup) = fault.into_parts();
+        let primary = P::from(error);
+        match cleanup {
+            Some(cleanup) => Build(Err(Pending::Open(Open {
+                ring,
+                buffers: BufferBuild::new(cleanup, primary),
+            }))),
+            None => Pending::close_raw(ring, primary),
         }
     }
 
@@ -104,7 +109,7 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy + From<Primary> + From<mem
     fn unmap(ring: Ring<T>, primary: P, cleanup: Cleanup<L>) -> Self {
         Self(State::Unbound(Pending::Open(Open {
             ring,
-            buffers: BufferBuild::new(primary, cleanup),
+            buffers: BufferBuild::new(cleanup, primary),
         })))
     }
 
@@ -245,8 +250,8 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy + From<Primary> + From<mem
 
     fn primary(&self) -> P {
         match self {
-            Self::Buffers(state) => state.primary(),
-            Self::Open(Open { buffers, .. }) => buffers.primary(),
+            Self::Buffers(state) => *state.error(),
+            Self::Open(Open { buffers, .. }) => *buffers.error(),
             Self::Raw(Closed { primary, .. }) | Self::Provided(Provided { primary, .. }) => {
                 *primary
             }
@@ -258,8 +263,8 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy + From<Primary> + From<mem
 
     fn failure(&self) -> Fault<T> {
         match self {
-            Self::Buffers(state) => create::Failure::Memory(state.failure()),
-            Self::Open(Open { buffers, .. }) => create::Failure::Memory(buffers.failure()),
+            Self::Buffers(state) => create::Failure::Memory(state.value().failure()),
+            Self::Open(Open { buffers, .. }) => create::Failure::Memory(buffers.value().failure()),
             Self::Raw(Closed { current, .. }) => create::Failure::Storage(current.failure()),
             Self::Provided(Provided { current, .. }) => create::Failure::Storage(current.failure()),
             Self::Registration(Registration { current, .. }) => {
@@ -276,14 +281,14 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy + From<Primary> + From<mem
         state: BufferBuild<L, P>,
         report: &mut impl FnMut(Fault<T>),
     ) -> Result<P, BufferBuild<L, P>> {
-        let (primary, cleanup) = state.recover();
+        let (cleanup, primary) = state.into_parts();
         let (owner, cause) = cleanup.recover().into_parts();
         report(create::Failure::Memory(cause));
         let cleanup = match owner.try_close() {
             Ok(()) => return Ok(primary),
             Err(cleanup) => cleanup,
         };
-        Err(BufferBuild::new(primary, cleanup))
+        Err(BufferBuild::new(cleanup, primary))
     }
 
     fn close_raw(ring: Ring<T>, primary: P) -> Build<T, L, P> {
@@ -306,7 +311,7 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy + From<Primary> + From<mem
             Ok(()) => return Ok(primary),
             Err(cleanup) => cleanup,
         };
-        Err(BufferBuild::new(primary, cleanup))
+        Err(BufferBuild::new(cleanup, primary))
     }
 }
 

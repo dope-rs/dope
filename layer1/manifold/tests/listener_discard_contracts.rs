@@ -149,13 +149,18 @@ fn discard_requires_enabled() -> Result<(), Error> {
         11
     );
 
+    let unproven = include_str!("common/compile_listener_discard_enabled.rs").replace(
+        "    W::Receive: receive::Policy<W, Discard = mode::Enabled>,\n",
+        "",
+    );
+
     for (source, expected) in [
         (
             include_str!("common/compile_listener_discard_enabled.rs"),
             &[] as &[&str],
         ),
         (
-            include_str!("common/compile_listener_discard_unproven.rs"),
+            unproven.as_str(),
             &["error[E0271]: type mismatch resolving"],
         ),
         (include_str!("common/compile_codec_accepted.rs"), &[]),

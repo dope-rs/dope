@@ -19,12 +19,6 @@ const _: () = {
     assert!(mem::align_of::<Option<Event<'static>>>() == mem::align_of::<Event<'static>>());
 };
 
-#[must_use]
-pub(crate) enum Sync<T> {
-    Again,
-    Idle(T),
-}
-
 /// Resolution of one idle turn supplied to [`Parked::resolve`].
 pub(crate) enum Resolved<'turn, 'd, M> {
     /// Re-poll the current turn without blocking.

@@ -10,25 +10,24 @@ use crate::{
 
 pub(in crate::task::storage::fixed::schedule) struct Drain<'a, 'd> {
     queue: pin::Pin<&'a Queue<'d>>,
-    side: Option<Side>,
+    side: Side,
 }
 
 impl<'a, 'd> Drain<'a, 'd> {
-    pub(super) const fn new(queue: pin::Pin<&'a Queue<'d>>, side: Option<Side>) -> Self {
+    pub(super) const fn new(queue: pin::Pin<&'a Queue<'d>>, side: Side) -> Self {
         Self { queue, side }
     }
 
     pub(in crate::task::storage::fixed::schedule) fn peek(&self) -> Option<Global> {
-        self.side
-            .and_then(|side| self.state().store.peek(side))
+        self.state()
+            .store
+            .peek(self.side)
             .or_else(|| self.queue.get_ref().slot().peek())
     }
 
     pub(in crate::task::storage::fixed::schedule) fn pause(self) {
         let this = mem::ManuallyDrop::new(self);
-        if let Some(side) = this.side {
-            this.state().pause(side);
-        }
+        this.state().pause(this.side);
     }
 
     fn state(&self) -> &State {
@@ -50,9 +49,7 @@ impl<'a, 'd> app::Drain for Drain<'a, 'd> {
         &mut self,
         take: impl FnOnce() -> Option<P>,
     ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
-        if let Some(side) = self.side
-            && let Some(front) = self.state().store.front(side)
-        {
+        if let Some(front) = self.state().store.front(self.side) {
             let Some(permit) = take() else {
                 return Some(Err(front.index()));
             };
@@ -70,8 +67,6 @@ impl<'a, 'd> app::Drain for Drain<'a, 'd> {
 
 impl Drop for Drain<'_, '_> {
     fn drop(&mut self) {
-        if let Some(side) = self.side {
-            self.state().seal(side);
-        }
+        self.state().seal(self.side);
     }
 }

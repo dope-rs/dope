@@ -388,7 +388,7 @@ impl<T, L: memory::raw::Canary, F> Close for Session<T, L, F> {
         let Self { owner, file } = self;
         match owner.try_close() {
             Ok(()) => Ok(()),
-            Err(state) => Err(Closing::new(file, state)),
+            Err(state) => Err(Closing::new(state, file)),
         }
     }
 }

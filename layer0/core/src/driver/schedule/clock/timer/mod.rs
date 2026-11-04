@@ -6,7 +6,6 @@ use crate::{
     driver,
     driver::schedule::{
         clock,
-        clock::timer,
         ready::{wake, wake::resident::slot},
     },
 };
@@ -14,11 +13,6 @@ use crate::{
 pub mod heap;
 
 pub(in crate::driver) struct Tag;
-
-pub(in crate::driver) enum Expiry {
-    Fired,
-    Pending,
-}
 
 /// The driver's fixed timer capacity has no unleased resident slot.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -39,22 +33,18 @@ impl<'d> Timer<'d> {
     }
 
     pub fn earliest(self) -> Option<clock::Deadline<'d>> {
-        self.access()
-            .earliest()
+        self.command(|cmd| cmd.peek().copied())
             .map(|at| self.driver.clock().deadline_at(at))
     }
 
     pub fn try_alarm(self) -> Result<Alarm<'d>, Exhausted> {
-        let slot = self.access().lease().ok_or(Exhausted::Slots)?;
-        Ok(Alarm::new(self.access(), slot))
-    }
-
-    pub(in crate::driver) fn expire_one(self, now: clock::Moment<'d>) -> Expiry {
-        self.access().expire_one(now.into_raw())
-    }
-
-    fn access(self) -> Access<'d> {
-        Access::new(self.driver)
+        let slot = self
+            .command(|mut cmd| {
+                let vacancy = cmd.vacancy()?;
+                Some(vacancy.lease(slot::Slot::default()))
+            })
+            .ok_or(Exhausted::Slots)?;
+        Ok(Alarm::new(Access(self), slot))
     }
 }
 
@@ -65,15 +55,10 @@ const _: () = {
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(super) struct Access<'d> {
-    driver: driver::Reference<'d>,
-}
+pub(super) struct Access<'d>(Timer<'d>);
 
 /// Linear access to one timer store for the duration of one sealed command.
-struct Command<'turn, 'd> {
-    heap: heap::Min<'turn, 'd, time::Instant, slot::Slot, Tag>,
-    driver: driver::Reference<'d>,
-}
+type Command<'turn, 'd> = heap::Min<'turn, 'd, time::Instant, slot::Slot, Tag>;
 
 /// A resident alarm tied to one exact driver generation.
 ///
@@ -96,43 +81,33 @@ pub enum Poll<'a, 'd> {
 }
 
 impl<'d> Command<'_, 'd> {
-    fn set(&mut self, slot: &heap::Lease<'d, Tag>, wake: &wake::Waker<'d>) {
-        self.heap.resident(slot).set(*wake.key());
+    fn set_target(&mut self, slot: &heap::Lease<'d, Tag>, wake: &wake::Waker<'d>) {
+        self.resident(slot).set(*wake.key());
     }
 
-    fn arm(&mut self, slot: &heap::Lease<'d, Tag>, due: time::Instant, wake: &wake::Waker<'d>) {
-        self.set(slot, wake);
-        self.heap.set(slot, due);
+    fn arm_alarm(
+        &mut self,
+        slot: &heap::Lease<'d, Tag>,
+        due: time::Instant,
+        wake: &wake::Waker<'d>,
+    ) {
+        self.set_target(slot, wake);
+        self.set(slot, due);
     }
 
-    fn clear(&mut self, slot: &heap::Lease<'d, Tag>) {
-        self.heap.clear(slot);
-        self.heap.resident(slot).clear();
+    fn clear_alarm(&mut self, slot: &heap::Lease<'d, Tag>) {
+        self.clear(slot);
+        self.resident(slot).clear();
     }
 }
 
-impl<'d> Access<'d> {
-    const fn new(driver: driver::Reference<'d>) -> Self {
-        Self { driver }
-    }
-
-    fn earliest(self) -> Option<time::Instant> {
-        self.command(|cmd| cmd.heap.peek().copied())
-    }
-
-    fn lease(self) -> Option<heap::Lease<'d, Tag>> {
-        self.command(|mut cmd| {
-            let vacancy = cmd.heap.vacancy()?;
-            Some(vacancy.lease(slot::Slot::default()))
-        })
-    }
-
+impl<'d> Timer<'d> {
     fn has_alarm(self, slot: &heap::Lease<'d, Tag>) -> bool {
-        self.command(|cmd| cmd.heap.state(slot) != heap::State::Idle)
+        self.command(|cmd| cmd.state(slot) != heap::State::Idle)
     }
 
     fn arm(self, slot: &heap::Lease<'d, Tag>, due: time::Instant, target: wake::Waker<'d>) {
-        self.command(|mut cmd| cmd.arm(slot, due, &target));
+        self.command(|mut cmd| cmd.arm_alarm(slot, due, &target));
     }
 
     fn arm_and_poll(
@@ -144,10 +119,10 @@ impl<'d> Access<'d> {
     ) -> task::Poll<()> {
         self.command(|mut cmd| {
             if due <= now {
-                cmd.clear(slot);
+                cmd.clear_alarm(slot);
                 task::Poll::Ready(())
             } else {
-                cmd.arm(slot, due, &target);
+                cmd.arm_alarm(slot, due, &target);
                 task::Poll::Pending
             }
         })
@@ -160,14 +135,14 @@ impl<'d> Access<'d> {
         target: wake::Waker<'d>,
     ) -> task::Poll<()> {
         self.command(|mut cmd| {
-            let state = cmd.heap.state(slot);
-            let due = state == heap::State::Fired
-                || cmd.heap.priority(slot).is_some_and(|due| *due <= now);
+            let state = cmd.state(slot);
+            let due =
+                state == heap::State::Fired || cmd.priority(slot).is_some_and(|due| *due <= now);
             if due {
-                cmd.clear(slot);
+                cmd.clear_alarm(slot);
                 task::Poll::Ready(())
             } else if state == heap::State::Armed {
-                cmd.set(slot, &target);
+                cmd.set_target(slot, &target);
                 task::Poll::Pending
             } else {
                 task::Poll::Pending
@@ -176,37 +151,26 @@ impl<'d> Access<'d> {
     }
 
     fn clear(self, slot: &heap::Lease<'d, Tag>) {
-        self.command(|mut cmd| cmd.clear(slot));
+        self.command(|mut cmd| cmd.clear_alarm(slot));
     }
 
-    fn expire_one(self, now: time::Instant) -> timer::Expiry {
-        let ready = self.command(|mut cmd| {
-            let min = cmd.heap.minimum()?;
-            if *min.priority() > now {
+    pub(in crate::driver) fn expire_one(self, now: clock::Moment<'d>) -> Option<()> {
+        self.command(|mut cmd| {
+            let min = cmd.minimum()?;
+            if *min.priority() > now.into_raw() {
                 return None;
             }
             let fired = min.fire();
-            fired.resident().wake_once(cmd.driver);
+            fired.resident().wake_once(self.driver);
             Some(())
-        });
-        let Some(()) = ready else {
-            return timer::Expiry::Pending;
-        };
-        timer::Expiry::Fired
+        })
     }
 
     fn command<T>(self, op: impl for<'turn> FnOnce(Command<'turn, 'd>) -> T) -> T {
         let shared = self.driver.shared;
         // SAFETY: this fixed owner cell supplies every `'d` lease; Command's
         // higher-ranked exclusive loan is linear, sealed, and non-reentrant.
-        unsafe {
-            shared.context().timer().loan(|heap| {
-                op(Command {
-                    heap,
-                    driver: self.driver,
-                })
-            })
-        }
+        unsafe { shared.context().timer().loan(op) }
     }
 }
 
@@ -218,11 +182,11 @@ impl<'d> Alarm<'d> {
     }
 
     pub fn is_armed(&self) -> bool {
-        self.lease.sink().has_alarm(self.slot())
+        self.lease.sink().0.has_alarm(self.slot())
     }
 
     pub fn arm(&self, due: clock::Deadline<'d>, target: wake::Waker<'d>) {
-        self.lease.sink().arm(self.slot(), due.into_raw(), target);
+        self.lease.sink().0.arm(self.slot(), due.into_raw(), target);
     }
 
     /// Replaces this deadline and polls it in one command, retaining the slot.
@@ -234,6 +198,7 @@ impl<'d> Alarm<'d> {
     ) -> task::Poll<()> {
         self.lease
             .sink()
+            .0
             .arm_and_poll(self.slot(), due.into_raw(), now.into_raw(), target)
     }
 
@@ -252,11 +217,14 @@ impl<'d> Alarm<'d> {
     }
 
     pub fn poll(&self, now: clock::Moment<'d>, target: wake::Waker<'d>) -> task::Poll<()> {
-        self.lease.sink().poll(self.slot(), now.into_raw(), target)
+        self.lease
+            .sink()
+            .0
+            .poll(self.slot(), now.into_raw(), target)
     }
 
     pub fn clear(&self) {
-        self.lease.sink().clear(self.slot());
+        self.lease.sink().0.clear(self.slot());
     }
 
     fn slot(&self) -> &heap::Lease<'d, Tag> {
@@ -284,9 +252,7 @@ impl<'d> Return for Access<'d> {
     type Item = heap::Lease<'d, Tag>;
 
     fn return_item(self, slot: Self::Item) {
-        self.command(|mut cmd| {
-            cmd.heap.release(slot).clear();
-        });
+        self.0.command(|mut cmd| drop(cmd.release(slot)));
     }
 }
 
@@ -294,7 +260,7 @@ const _: () = {
     assert!(mem::size_of::<heap::Lease<'static, Tag>>() == mem::size_of::<u32>());
     assert!(mem::align_of::<heap::Lease<'static, Tag>>() == mem::align_of::<u32>());
     assert!(mem::size_of::<Access<'static>>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Command<'static, 'static>>() == 2 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Command<'static, 'static>>() == mem::size_of::<usize>());
     assert!(mem::size_of::<Alarm<'static>>() == 2 * mem::size_of::<usize>());
     assert!(mem::align_of::<Alarm<'static>>() == mem::align_of::<usize>());
     assert!(mem::size_of::<Armed<'static, 'static>>() == mem::size_of::<usize>());

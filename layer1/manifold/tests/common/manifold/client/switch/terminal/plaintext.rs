@@ -27,11 +27,9 @@ use dope_test::harness::{
     signals::{Gate, Progress as _},
 };
 use o3::{
-    base::{Call, cell::region},
+    base::cell::region,
     buffer::{self, hold, resident::staging, storage::Shared, write::consume::scope},
 };
-
-use crate::common::manifold::client::flush;
 
 use super::failure::{Cause, Fault};
 
@@ -230,17 +228,7 @@ impl<'d> Resume<'d, u8, u8> for Plaintext {
     }
 }
 
-impl<'d> Output<'d> for Plaintext {
-    fn flush() -> Option<
-        impl for<'a, 'c, 't, 'e> Call<(
-            &'a mut Self,
-            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-            dope_manifold::client::session::Input,
-        )>,
-    > {
-        flush(|_: &mut Self, _| {})
-    }
-}
+impl<'d> Output<'d> for Plaintext {}
 
 impl<'d> policy::Compatible<'d, 'd, Fault, KeyTag<0>> for Plaintext {
     type Open = Self;

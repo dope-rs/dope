@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use crate::common::rt::{finish, recover};
 
 use dope_core::{
     driver,
@@ -11,13 +11,12 @@ use dope_core::{
         socket::{install::Install, option::Tuning},
     },
 };
-use dope_test::scope::Error;
 
 use crate::common::driver::{Scoped as _, support::Targets as _, tuning::Tuned as _};
 
 pub mod common;
 
-use std::{env::consts, io::Write as _, os::unix::net::UnixStream, time::Duration};
+use std::{io::Write as _, os::unix::net::UnixStream, time::Duration};
 
 use dope_core::{
     driver::{
@@ -33,9 +32,6 @@ use crate::common::rt::Runtime;
 
 #[test]
 fn keeps_unrelated_event() {
-    if consts::OS != "linux" {
-        return;
-    }
     let (source, mut notify) = (UnixStream::pair()).expect("shutdown wake pair");
     assert!(source.set_nonblocking(true).is_ok());
     assert!(notify.set_nonblocking(true).is_ok());
@@ -142,8 +138,8 @@ fn dropped_tuning_reuses() {
                     let owner = driver
                         .driver_ref()
                         .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-                    {
-                        let pending = Tuning::try_new(
+                    let expected = {
+                        let tuning = Tuning::try_new(
                             &mut driver.reborrow(),
                             &flights,
                             owner,
@@ -155,15 +151,22 @@ fn dropped_tuning_reuses() {
                             (socket.index(), cause)
                         })
                         .expect("first tuning submission");
-                        assert!(matches!(&pending, option::Tuning::Pending(_)));
-                    }
+                        let terminals = usize::from(matches!(&tuning, Tuning::Pending(_)));
+                        drop(tuning);
+                        terminals
+                    };
 
                     let first = Install::bind_udp(
                         driver.reborrow(),
                         ([127, 0, 0, 1], 0).into(),
                         common::DATAGRAM,
                     );
-                    assert!(matches!(first, Err(install::Error::Slot(_))));
+                    assert!(matches!(
+                        first,
+                        Err(install::Error::Slot(install::slot::Error::Retiring {
+                            available: 0
+                        }))
+                    ));
                     let deadline = Instant::now() + Duration::from_secs(1);
                     let mut retired = 0;
                     let socket = loop {
@@ -191,57 +194,63 @@ fn dropped_tuning_reuses() {
                             Err(error) => assert!(matches!(error, install::Error::Slot(_))),
                         }
                     };
-                    assert_eq!(retired, 1, "the old tuning terminal precedes slot reuse");
+                    assert_eq!(
+                        retired, expected,
+                        "pending tuning settles before slot reuse"
+                    );
                     assert_eq!(socket.index(), index);
-                    let pending =
+                    let tuning =
                         Tuning::try_new(&mut driver.reborrow(), &flights, owner, socket, options)
                             .map_err(|error| {
                                 let (socket, cause) = error.into_parts();
                                 (socket.index(), cause)
                             })
                             .expect("fresh tuning submission");
-                    assert!(matches!(&pending, option::Tuning::Pending(_)));
-                    if let option::Tuning::Pending(pending) = pending {
-                        use common::driver::{polling::Error, tuning::Failure};
+                    let socket = match tuning {
+                        Tuning::Applied(socket) => socket,
+                        Tuning::Pending(pending) => {
+                            use common::driver::{polling::Error, tuning::Failure};
 
-                        let done = driver
-                            .wait_tuning(turn)
-                            .map_err(|error| match error {
-                                Error::Timeout(waited) => {
-                                    format!("tuning timed out after {waited:?}")
-                                }
-                                Error::Overflow(duration) => {
-                                    format!("tuning deadline overflow: {duration:?}")
-                                }
-                                Error::Source(Failure::Wait(error)) => {
-                                    format!("tuning wait: {error:?}")
-                                }
-                                Error::Source(Failure::Dispatch(error)) => {
-                                    format!("tuning dispatch: {error:?}")
-                                }
-                                Error::Source(Failure::Event(event)) => format!(
-                                    "unexpected tuning event: {:?}, route: {:?}",
-                                    std::mem::discriminant(&event),
-                                    dope_core::io::Event::from(event).route()
-                                ),
-                            })
-                            .expect("fresh tuning");
-                        let (socket, outcome) = pending
-                            .complete(done)
-                            .map_err(|error| {
-                                let (pending, done) = error.into_parts();
-                                let token = done.token();
-                                (
-                                    pending.fd().index(),
-                                    token.route(),
-                                    token.slot(),
-                                    token.epoch(),
-                                )
-                            })
-                            .expect("fresh completion matches the reused owner");
-                        assert!(matches!(outcome, Ok(())));
-                        socket.close(&mut driver);
-                    }
+                            let done = driver
+                                .wait_tuning(turn)
+                                .map_err(|error| match error {
+                                    Error::Timeout(waited) => {
+                                        format!("tuning timed out after {waited:?}")
+                                    }
+                                    Error::Overflow(duration) => {
+                                        format!("tuning deadline overflow: {duration:?}")
+                                    }
+                                    Error::Source(Failure::Wait(error)) => {
+                                        format!("tuning wait: {error:?}")
+                                    }
+                                    Error::Source(Failure::Dispatch(error)) => {
+                                        format!("tuning dispatch: {error:?}")
+                                    }
+                                    Error::Source(Failure::Event(event)) => format!(
+                                        "unexpected tuning event: {:?}, route: {:?}",
+                                        std::mem::discriminant(&event),
+                                        dope_core::io::Event::from(event).route()
+                                    ),
+                                })
+                                .expect("fresh tuning");
+                            let (socket, outcome) = pending
+                                .complete(done)
+                                .map_err(|error| {
+                                    let (pending, done) = error.into_parts();
+                                    let token = done.token();
+                                    (
+                                        pending.fd().index(),
+                                        token.route(),
+                                        token.slot(),
+                                        token.epoch(),
+                                    )
+                                })
+                                .expect("fresh completion matches the reused owner");
+                            assert!(matches!(outcome, Ok(())));
+                            socket
+                        }
+                    };
+                    socket.close(&mut driver);
                 })
                 .expect("flight fixture");
         },
@@ -251,17 +260,6 @@ fn dropped_tuning_reuses() {
     for event in reports.events().expect("valid reclamation") {
         assert!(matches!(event, io::Reclaimed::Shutdown));
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }
 
 const _: fn() = || {

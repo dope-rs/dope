@@ -111,7 +111,7 @@ impl<T, Tag: route::Tag> CellSlab<T, Tag> {
     }
 
     pub fn raw(&self) -> route::raw::Cell<'_, T, Tag> {
-        route::raw::Cell::new(&self.inner)
+        route::raw::Cell { inner: &self.inner }
     }
 }
 

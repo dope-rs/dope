@@ -12,7 +12,7 @@ use crate::client::attempt::{
     self,
     queue::{
         self, Held, entry,
-        storage::{self, Access, Linked, Occupied},
+        storage::{self, Access, Borrow, Linked, Occupied},
     },
 };
 
@@ -122,15 +122,16 @@ impl<'d, T: dope_net::Transport, ID: Identity> Table<'d, T, ID> {
             Ok(slot) => slot,
             Err(cause) => return Err((cause, plan)),
         };
-        let slot = match slot.access() {
-            Access::Owned(_) => return Err((queue::Lookup::Finished(key), plan)),
-            Access::Borrowed(slot) => slot,
-        };
-        slot.defer(plan, &self.deferred);
+        // The sole opening caller retains the polled key with its returned plan.
+        // Callback cancellation removes that generation, so a successful lookup
+        // still proves Opening while its sole lease retains removal authority.
+        Borrow::new(slot).defer(plan, &self.deferred);
         Ok(())
     }
 
     pub(super) fn reject(&self, key: attempt::Id<'d, ID>) -> Result<(), queue::Lookup<'d, ID>> {
+        // The failed open still names Opening unless callback cancellation
+        // removed its generation, which this lookup reports unchanged.
         self.try_slot(key)?.reject();
         Ok(())
     }
@@ -140,6 +141,8 @@ impl<'d, T: dope_net::Transport, ID: Identity> Table<'d, T, ID> {
         key: attempt::Id<'d, ID>,
         link: pool::Key<'d, ID>,
     ) -> Result<(), queue::Lookup<'d, ID>> {
+        // The submit callback names the polled Opening generation; cancellation
+        // removes it rather than leaving another phase for this lookup.
         self.try_slot(key)?.bind(link);
         Ok(())
     }

@@ -8,7 +8,7 @@ use dope_manifold::{
     app::{receive, receive::Outcome},
     network::listener::{
         conn,
-        conn::write::{self, error},
+        conn::write,
         handler,
         handler::{Application, failures, retire, send},
     },
@@ -21,18 +21,8 @@ use crate::common::manifold::listener::finish::close::wire::Wire;
 
 pub const REPLY: &[u8] = b"<<EOF-REPLY>>";
 
-pub enum Event<'d> {
-    Eof(Phase<'d>),
-    Prefix(Phase<'d>),
-    Write(Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>),
-    Close(Phase<'d>),
-    Chunk(usize, Phase<'d>),
-    Sent(Phase<'d>, clock::Moment<'d>),
-}
-
-pub struct Fence<F> {
+pub struct Fence {
     pub(crate) close: Gate,
-    pub(crate) observe: F,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -42,7 +32,7 @@ pub enum Phase<'d> {
     Held(clock::Moment<'d>),
 }
 
-impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> Application<'d, ID> for Fence<F> {
+impl<'d, ID: Identity> Application<'d, ID> for Fence {
     type Conn = Phase<'d>;
     type Build = convert::Infallible;
     type Wire = Wire;
@@ -70,17 +60,16 @@ impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> Application<'d, ID> for Fence<F
         _: receive::End,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> handler::Eof {
-        let phase = *conn.state();
-        (self.observe)(Event::Eof(phase));
-        if let Phase::Seen(input) = phase {
-            *conn.state_mut() = Phase::Held(input);
-        }
+        let Phase::Seen(input) = *conn.state() else {
+            panic!("EOF before input");
+        };
+        *conn.state_mut() = Phase::Held(input);
         let outcome = conn.write().try_bounded(driver, |state, prefix| {
-            (self.observe)(Event::Prefix(*state));
+            assert!(matches!(state, Phase::Held(_)));
             prefix[..REPLY.len()].copy_from_slice(REPLY);
             write::Draft::new(REPLY.len(), None, ())
         });
-        (self.observe)(Event::Write(outcome));
+        assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
         handler::Eof::Hold
     }
 
@@ -101,51 +90,43 @@ impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> Application<'d, ID> for Fence<F
     where
         'd: 'w,
     {
-        (self.observe)(Event::Close(*conn.state()));
+        assert!(matches!(conn.state(), Phase::Seen(_)));
         self.as_ref().get_ref().close.hit();
         conn
     }
 }
 
-impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> handler::Borrowed<'d, ID> for Fence<F> {
+impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Fence {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Phase<'d>>,
         chunk: R,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
-        (self.observe)(Event::Chunk(chunk.as_ref().len(), *conn.state()));
+        assert!(
+            !chunk.as_ref().is_empty() && matches!(conn.state(), Phase::Fresh | Phase::Seen(_))
+        );
         *conn.state_mut() = Phase::Seen(driver.driver_ref().clock().now());
         Outcome::Continue
     }
 }
 
-impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> send::Drive<'d, ID> for Fence<F> {
+impl<'d, ID: Identity> send::Drive<'d, ID> for Fence {
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Phase<'d>>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
-        let phase = *conn.state();
-        (self.observe)(Event::Sent(phase, driver.driver_ref().clock().now()));
-        if let Phase::Held(input) = phase {
-            *conn.state_mut() = Phase::Seen(input);
-        }
+        let Phase::Held(input) = *conn.state() else {
+            panic!("send before EOF");
+        };
+        assert!(input <= driver.driver_ref().clock().now());
+        *conn.state_mut() = Phase::Seen(input);
     }
 }
 
-pub enum Half<'d> {
-    Close(Stage),
-    Chunk(usize),
-    Prefix(Stage),
-    Write(Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>),
-    SealedPrefix(Stage, usize),
-    Sealed(Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>),
-}
-
-pub struct Duplex<F> {
+pub struct Duplex {
     pub(crate) close: Gate,
-    pub(crate) observe: F,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -162,7 +143,7 @@ pub enum Flow {
     Shutdown(peer::Error),
 }
 
-impl<'d, ID: Identity, F: for<'a> Fn(Half<'a>)> Application<'d, ID> for Duplex<F> {
+impl<'d, ID: Identity> Application<'d, ID> for Duplex {
     type Conn = Stage;
     type Build = convert::Infallible;
     type Wire = Wire;
@@ -191,35 +172,35 @@ impl<'d, ID: Identity, F: for<'a> Fn(Half<'a>)> Application<'d, ID> for Duplex<F
     where
         'd: 'w,
     {
-        (self.observe)(Half::Close(*conn.state()));
+        assert!(matches!(conn.state(), Stage::Seen));
         self.as_ref().get_ref().close.hit();
         conn
     }
 }
 
-impl<'d, ID: Identity, F: for<'a> Fn(Half<'a>)> handler::Borrowed<'d, ID> for Duplex<F> {
+impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Duplex {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Stage>,
         chunk: R,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
-        (self.observe)(Half::Chunk(chunk.as_ref().len()));
+        assert!(!chunk.as_ref().is_empty());
         match *conn.state() {
             Stage::Fresh => {
                 *conn.state_mut() = Stage::Seen;
                 let first = conn.write().try_bounded(driver, |state, prefix| {
-                    (self.observe)(Half::Prefix(*state));
+                    assert!(matches!(state, Stage::Seen));
                     prefix[..REPLY.len()].copy_from_slice(REPLY);
                     write::Draft::new(REPLY.len(), None, ())
                 });
-                (self.observe)(Half::Write(first));
+                assert!(matches!(first, Ok(write::Outcome::Committed(()))));
                 conn.shutdown();
                 let sealed = conn.write().try_bounded(driver, |state, prefix| {
-                    (self.observe)(Half::SealedPrefix(*state, prefix.len()));
+                    assert!(matches!(state, Stage::Seen) && !prefix.is_empty());
                     write::Draft::new(0, None, ())
                 });
-                (self.observe)(Half::Sealed(sealed));
+                assert!(matches!(sealed, Ok(write::Outcome::Closed)));
             }
             Stage::Seen => conn.close_after(),
         }

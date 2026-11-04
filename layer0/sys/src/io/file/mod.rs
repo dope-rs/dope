@@ -8,7 +8,6 @@ use o3::{
     base::num::bounded::{U32, U64},
     buffer::bytes::{self, bounded},
 };
-pub use opened::Opened;
 pub use sync::Sync;
 
 use crate::{
@@ -21,7 +20,6 @@ mod kind;
 mod metadata;
 mod mode;
 mod open;
-mod opened;
 pub mod raw;
 mod sync;
 
@@ -60,10 +58,8 @@ impl Offset {
     }
 }
 
-/// Transfers ownership from a native file completion exactly once.
-pub trait Completion {
-    type Opened: raw::Completion;
-}
+/// A decoded file completion retaining any descriptor it owns.
+pub type Opened = Result<OwnedFd, Errno>;
 
 /// A native directory stream whose descriptor and buffered entries have one owner.
 #[repr(transparent)]

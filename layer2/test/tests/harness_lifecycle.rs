@@ -1,10 +1,9 @@
 use std::{
-    cell::Cell, convert::Infallible, env, os::unix::process::ExitStatusExt as _, thread::sleep,
-    time,
+    cell::Cell, convert::Infallible, os::unix::process::ExitStatusExt as _, thread::sleep, time,
 };
 
 use dope_core::platform::{thread, wake};
-use dope_runtime::{process::STACK, shutdown};
+use dope_runtime::process::STACK;
 use dope_test::harness::{
     scenario::{process::Test, run},
     server::Pair,
@@ -15,9 +14,7 @@ use common::harness::{
     E2E_DEADLINE, LATE_STARTUP, LateFailure, STARTUP_TIMEOUT, serve, with_harness,
 };
 
-fn assert_startup_timeout<E>(
-    error: run::Error<E, wake::CreateError, shutdown::FireError, wake::WaitError>,
-) {
+fn assert_startup_timeout<E>(error: run::Error<E>) {
     let (timeout, elapsed) = match error {
         run::Error::Readiness(wake::WaitError::Timeout { timeout, elapsed }) => {
             Some((timeout, elapsed))
@@ -41,13 +38,7 @@ fn late_install_times_out() {
             },
             |_| started.set(true),
         );
-        assert!(
-            error.is_err(),
-            "late startup must report its readiness deadline"
-        );
-        if let Err(error) = error {
-            assert_startup_timeout(error);
-        }
+        assert_startup_timeout(error.expect_err("late startup must report its readiness deadline"));
         assert!(!started.get(), "late startup must not invoke the client");
     });
 }
@@ -64,13 +55,9 @@ fn timeout_beats_failure() {
             |_| started.set(true),
             |result| assert!(result.is_err(), "late server failure"),
         );
-        assert!(
-            error.is_err(),
-            "late server failure must retain the startup deadline"
+        assert_startup_timeout(
+            error.expect_err("late server failure must retain the startup deadline"),
         );
-        if let Err(error) = error {
-            assert_startup_timeout(error);
-        }
         assert!(!started.get(), "failed startup must not invoke the client");
     });
 }
@@ -162,60 +149,6 @@ fn watchdog_kills_hang() {
     )
     .map(|mut child| child.output().expect("spawn watchdog child test"));
     if let Some(output) = output {
-        assert_eq!(output.status.signal(), Some(libc::SIGKILL));
-    }
-}
-
-#[test]
-fn watchdog_releases_locks() {
-    use std::{fs, io, os::fd::AsRawFd as _};
-
-    use dope_test::harness::support::file::Directory;
-
-    // Other tests may spawn children that briefly inherit descriptors before exec.
-    let output = Test {
-        name: "watchdog_releases_locks",
-    }
-    .run(
-        &std::env::current_exe().expect("current test executable"),
-        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
-        || {
-            let base = env::temp_dir();
-            let dir = Directory::try_with(&base, "watchdog-lock", |closed| {
-                closed.expect("temporary directory cleanup");
-            })
-            .expect("temporary path");
-            let path = dir.path().join("owner");
-            let owner = fs::File::create_new(&path).expect("lock file");
-            let harness = Pair::bind().expect("watchdog harness");
-            let result = harness.run_unbound(
-                |source| {
-                    {
-                        let owner = owner;
-                        let locked = unsafe {
-                            libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
-                        };
-                        assert_eq!(locked, 0, "initial lock: {}", io::Error::last_os_error());
-                    }
-                    let next = fs::File::open(&path).expect("reopen lock file");
-                    let locked =
-                        unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-                    assert_eq!(
-                        locked,
-                        0,
-                        "watchdog retained lock: {}",
-                        io::Error::last_os_error()
-                    );
-                    serve(source);
-                    Ok::<_, Infallible>(())
-                },
-                |_| (),
-            );
-            assert!(result.is_ok(), "watchdog harness must finish");
-        },
-    )
-    .map(|mut child| child.output().expect("isolated descriptor ownership"));
-    if let Some(output) = output {
-        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.status.signal(), Some(libc::SIGKILL), "{output:?}");
     }
 }

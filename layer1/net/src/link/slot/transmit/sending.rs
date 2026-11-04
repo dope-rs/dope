@@ -261,9 +261,6 @@ where
     ) -> (Terminal, send::Availability) {
         let target = key.target();
         let conn = &mut *self.slot;
-        if !conn.control.engine.operations.sending.is_inflight() {
-            return (Terminal::Drop, send::Availability::Unchanged);
-        }
         let Some(fd) = conn.control.engine.establish.fd() else {
             let origin = match conn.control.engine.operations.finish_send() {
                 sending::Done::Active(origin) => origin,

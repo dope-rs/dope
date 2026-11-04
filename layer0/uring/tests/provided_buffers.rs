@@ -158,11 +158,7 @@ fn metadata_population() {
         },
     };
 
-    use crate::common::{
-        cleanup::schedule::{self, Schedule},
-        receive::Layout,
-        ring::seccomp,
-    };
+    use crate::common::{cleanup::schedule, receive::Layout, ring::seccomp};
 
     type Context = <Uring as provided::Source>::Context<Layout>;
     type Producer = <Uring as provided::Source>::Producer<Layout>;
@@ -170,23 +166,22 @@ fn metadata_population() {
     thread::spawn(|| {
         let context = Context::new(Layout::fixed::<2, 16>()).expect("payload population");
         seccomp::deny_populate().expect("thread-local population filter");
-        let failures = Schedule::new(schedule::ERRORS)
-            .try_run(|| {
-                let error = Producer::new(&context).expect_err("metadata population failure");
-                let (primary, cleanup) = error.close(context).into_parts();
-                assert!(matches!(primary, Error::Populate { bytes, cause }
-                    if bytes.get() == 32 && cause.code().get() == libc::ENOMEM));
-                let state = cleanup.expect("metadata and context retained");
-                let (owner, first) = state.recover().into_parts();
-                assert!(matches!(first, Error::Unmap { cause, .. }
-                    if cause.code().get() == libc::ENOMEM));
-                let state = owner.try_close().expect_err("second unmap failure");
-                let (owner, second) = state.recover().into_parts();
-                assert!(matches!(second, Error::Unmap { cause, .. }
-                    if cause.code().get() == libc::EAGAIN));
-                assert!(owner.try_close().is_ok());
-            })
-            .expect("two metadata cleanup failures");
+        let failures = schedule::try_run(|| {
+            let error = Producer::new(&context).expect_err("metadata population failure");
+            let (primary, cleanup) = error.close(context).into_parts();
+            assert!(matches!(primary, Error::Populate { bytes, cause }
+                if bytes.get() == 32 && cause.code().get() == libc::ENOMEM));
+            let state = cleanup.expect("metadata and context retained");
+            let (owner, first) = state.recover().into_parts();
+            assert!(matches!(first, Error::Unmap { cause, .. }
+                if cause.code().get() == libc::ENOMEM));
+            let state = owner.try_close().expect_err("second unmap failure");
+            let (owner, second) = state.recover().into_parts();
+            assert!(matches!(second, Error::Unmap { cause, .. }
+                if cause.code().get() == libc::EAGAIN));
+            assert!(owner.try_close().is_ok());
+        })
+        .expect("two metadata cleanup failures");
         assert_eq!(failures[0].address, failures[1].address);
         assert_eq!(failures[0].length, 32);
         assert_eq!(failures[0].length, failures[1].length);

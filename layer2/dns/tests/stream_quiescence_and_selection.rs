@@ -52,9 +52,7 @@ fn tcp_quiet_selection() {
         received.is_empty(),
         "unexpected datagram failure: {received:?}"
     );
-    worker
-        .expect("DNS worker joined")
-        .expect("stream fixture completed");
+    worker.expect("stream fixture completed");
     outcome
         .expect("DNS scope ran")
         .expect("install DNS")

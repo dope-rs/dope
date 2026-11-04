@@ -31,12 +31,6 @@ impl<W: wire::Spec> Immediate<W> for Direct {
         'd: 'w,
         'w: 'a,
     {
-        Direct::reserve::<ID, W>()
-    }
-}
-
-impl Direct {
-    pub(crate) const fn reserve<ID: Identity, W: wire::Spec>() -> Guard<ID, W> {
         Guard(marker::PhantomData)
     }
 }

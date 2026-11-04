@@ -50,15 +50,21 @@ pub trait Source<'d>: Copy + origin::Seal {
     /// Computes shared retained capacity for the current warm allocation.
     fn shared(self, retained: Bytes, warm: num::NonZero<u32>) -> Buffers;
     /// Reserves source-specific retained capacity.
-    fn reserve(self, retained: Bytes) -> Bytes;
+    fn reserve(self, retained: Bytes) -> Bytes {
+        retained
+    }
     /// Returns whether retained bytes are charged to external authority.
-    fn is_accounted(self) -> bool;
+    fn is_accounted(self) -> bool {
+        true
+    }
     /// Acquires exact resident authority for one retained capacity.
     fn acquire(
         self,
         capacity: Bytes,
         driver: &driver::Context<'_, 'd>,
-    ) -> Result<resident::Budget<'d>, Exhausted>;
+    ) -> Result<resident::Budget<'d>, Exhausted> {
+        driver.storage.budget(storage::Resident::bytes(capacity.0))
+    }
 }
 
 /// Retained-output bytes coupled to their statically proven source.
@@ -86,20 +92,8 @@ impl<'d> Source<'d> for None {
         Buffers::EMPTY
     }
 
-    fn reserve(self, retained: Bytes) -> Bytes {
-        retained
-    }
-
     fn is_accounted(self) -> bool {
         false
-    }
-
-    fn acquire(
-        self,
-        capacity: Bytes,
-        driver: &driver::Context<'_, 'd>,
-    ) -> Result<resident::Budget<'d>, Exhausted> {
-        driver.storage.budget(storage::Resident::bytes(capacity.0))
     }
 }
 
@@ -121,22 +115,6 @@ impl<'d> Source<'d> for Local {
         }
         Buffers(capacity::Count::new(count as u32))
     }
-
-    fn reserve(self, retained: Bytes) -> Bytes {
-        retained
-    }
-
-    fn is_accounted(self) -> bool {
-        true
-    }
-
-    fn acquire(
-        self,
-        capacity: Bytes,
-        driver: &driver::Context<'_, 'd>,
-    ) -> Result<resident::Budget<'d>, Exhausted> {
-        driver.storage.budget(storage::Resident::bytes(capacity.0))
-    }
 }
 
 impl origin::Seal for Local {}
@@ -156,10 +134,6 @@ impl<'d> Source<'d> for In<'d> {
 
     fn reserve(self, _: Bytes) -> Bytes {
         self.admit.capacity()
-    }
-
-    fn is_accounted(self) -> bool {
-        true
     }
 
     fn acquire(

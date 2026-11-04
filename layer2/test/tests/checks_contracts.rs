@@ -54,11 +54,11 @@ fn rejects_ambiguous_missing_and_invalid_artifacts() -> Result<(), Error> {
         suite().try_collect(&exe, checks::output(NATIVE_PATH)),
         Err(Error::Missing(_))
     ));
-    for source in INVALID {
+    for (source, expected) in INVALID {
         assert!(
             matches!(
                 suite().try_collect(&exe, checks::output(source)),
-                Err(Error::Message { .. })
+                Err(Error::Message { offset }) if offset == *expected
             ),
             "{source}"
         );

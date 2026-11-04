@@ -1,13 +1,14 @@
 pub mod common;
 
-use std::{convert::Infallible, fmt::Debug, net::Shutdown, rc::Rc};
+use std::{net::Shutdown, rc::Rc};
 
+use common::manifold::listener::{native, reached};
 use common::{
     manifold::{
         Pattern,
         listener::finish::close::{
             control,
-            duplex::{self, Duplex, Fence, Flow, REPLY},
+            duplex::{Duplex, Fence, Flow, REPLY},
             script,
             wire::{BYE, Wire},
         },
@@ -23,17 +24,13 @@ use dope_core::{
     },
     platform::channel::Channel,
 };
-use dope_manifold::{app::env::Bundle, network::listener::conn::write, timing::Throughput};
+use dope_manifold::{app::env::Bundle, timing::Throughput};
 use dope_net::{
     tcp::Tcp,
     wire::receive::batch::{self, Spare},
 };
-use dope_runtime::{
-    executor::session::{self, Completion},
-    topology::error::Kind,
-};
+use dope_runtime::executor::session::{self, Completion};
 use dope_test::{
-    fibers::{Run, Wait},
     harness::{
         observe::Trace,
         peer::{self, Peer},
@@ -42,62 +39,6 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
-}
-
-fn control(event: control::Event<'_, '_>) {
-    match event {
-        control::Event::Close(state) => assert!(matches!(state, control::State::Seen(_))),
-        control::Event::Send(state, now) => {
-            assert!(matches!(state, control::State::Seen(input) if *input <= now));
-        }
-    }
-}
-
-fn fence(event: duplex::Event<'_>) {
-    use duplex::{Event, Phase};
-    match event {
-        Event::Eof(state) | Event::Close(state) => assert!(matches!(state, Phase::Seen(_))),
-        Event::Prefix(state) => assert!(matches!(state, Phase::Held(_))),
-        Event::Write(result) => assert!(matches!(result, Ok(write::Outcome::Committed(())))),
-        Event::Chunk(len, state) => {
-            assert!(len != 0 && matches!(state, Phase::Fresh | Phase::Seen(_)));
-        }
-        Event::Sent(state, now) => assert!(matches!(state, Phase::Held(input) if input <= now)),
-    }
-}
-
-fn duplex(event: duplex::Half<'_>) {
-    use duplex::{Half, Stage};
-    match event {
-        Half::Close(state) | Half::Prefix(state) => assert!(matches!(state, Stage::Seen)),
-        Half::Chunk(len) => assert_ne!(len, 0),
-        Half::Write(result) => assert!(matches!(result, Ok(write::Outcome::Committed(())))),
-        Half::SealedPrefix(state, len) => assert!(matches!(state, Stage::Seen) && len != 0),
-        Half::Sealed(result) => assert!(matches!(result, Ok(write::Outcome::Closed))),
-    }
-}
-
-fn script(event: script::Event<'_>) {
-    match event {
-        script::Event::Close(state) => assert!(state <= 1),
-        script::Event::Chunk(len) => assert_ne!(len, 0),
-        script::Event::Prefix(state) => assert_eq!(state, 0),
-        script::Event::Write(result) => {
-            assert!(matches!(result, Ok(write::Outcome::Committed(()))))
-        }
-    }
-}
 
 #[test]
 fn flushes_after_plaintext() {
@@ -108,15 +49,13 @@ fn flushes_after_plaintext() {
     assert_eq!(capacity.items().get(), 2);
     let gate = Gate::new();
     let seen = Rc::new(Trace::new());
-    let writes = Rc::new(Trace::new());
     let prepared = Listener::new::<64>(Default::default())
         .prepare::<KeyTag<0>, _, Bundle<Tcp, control::Control, Throughput>>((
             control::App {
                 close: gate.clone(),
                 received: seen.clone(),
-                observe: control,
             },
-            Rc::clone(&writes),
+            (),
         ))
         .expect("listener layout");
     let mut reports =
@@ -147,22 +86,18 @@ fn flushes_after_plaintext() {
         reports.events().expect("reclaimed events").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-    let writes = writes.values().expect("wire writes");
-    assert!(writes.is_empty(), "wire write failures: {writes:?}");
 }
 
 #[test]
 fn fence_drains_first() {
     let mut finish = Completion::new();
     let gate = Gate::new();
-    let writes = Rc::new(Trace::new());
     let prepared = Listener::new::<64>(Default::default())
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
             Fence {
                 close: gate.clone(),
-                observe: fence,
             },
-            Rc::clone(&writes),
+            Wire::default(),
         ))
         .expect("listener layout");
     let mut reports =
@@ -196,22 +131,18 @@ fn fence_drains_first() {
         reports.events().expect("reclaimed events").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-    let writes = writes.values().expect("wire writes");
-    assert!(writes.is_empty(), "wire write failures: {writes:?}");
 }
 
 #[test]
 fn write_half_keeps_receive() {
     let mut finish = Completion::new();
     let gate = Gate::new();
-    let writes = Rc::new(Trace::new());
     let prepared = Listener::new::<64>(Default::default())
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
             Duplex {
                 close: gate.clone(),
-                observe: duplex,
             },
-            Rc::clone(&writes),
+            Wire::default(),
         ))
         .expect("listener layout");
     let mut reports =
@@ -249,116 +180,64 @@ fn write_half_keeps_receive() {
         reports.events().expect("reclaimed events").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-    let writes = writes.values().expect("wire writes");
-    assert!(writes.is_empty(), "wire write failures: {writes:?}");
 }
 
 #[test]
-fn trails_drain_reply() {
-    let mut finish = Completion::new();
-    let want = Pattern(12_000).bytes();
-    let gate = Gate::new();
-    let writes = Rc::new(Trace::new());
-    let prepared = Listener::new::<64>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
-            script::App {
-                payload: Some(want.clone()),
-                close: gate.clone(),
-                chunk: None,
-                observe: script,
-            },
-            Rc::clone(&writes),
-        ))
-        .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .with(
-                        |stream| {
-                            stream.write_all(b"GET\n")?;
-                            Peer::try_read_all(stream)
-                        },
-                        |peer| {
-                            reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                            let got = peer
-                                .finish()
-                                .expect("reply peer finish")
-                                .expect("reply peer I/O");
-                            let mut expected = want;
-                            expected.extend_from_slice(BYE);
-                            assert_eq!(got, expected);
-                            assert_eq!(gate.hits(), 1);
-                        },
-                    )
-                    .expect("spawn reply peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-    let writes = writes.values().expect("wire writes");
-    assert!(writes.is_empty(), "wire write failures: {writes:?}");
-}
-
-#[test]
-fn survives_peer_eof() {
-    let mut finish = Completion::new();
-    let gate = Gate::new();
-    let writes = Rc::new(Trace::new());
-    let prepared = Listener::new::<64>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
-            script::App {
-                payload: None,
-                close: gate.clone(),
-                chunk: None,
-                observe: script,
-            },
-            Rc::clone(&writes),
-        ))
-        .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .with(
-                        |stream| -> Result<Vec<u8>, peer::Error> {
-                            stream.write_all(b"REQ")?;
-                            stream.shutdown(Shutdown::Write)?;
-                            Peer::try_read_all(stream)
-                        },
-                        |peer| {
-                            reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                            let got = peer
-                                .finish()
-                                .expect("EOF peer finish")
-                                .expect("EOF peer I/O");
-                            assert_eq!(got, BYE);
-                            assert_eq!(gate.hits(), 1);
-                        },
-                    )
-                    .expect("spawn EOF peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-    let writes = writes.values().expect("wire writes");
-    assert!(writes.is_empty(), "wire write failures: {writes:?}");
+fn drains_reply_and_peer_eof() {
+    for (payload, request, eof) in [
+        (Some(Pattern(12_000).bytes()), b"GET\n".as_slice(), false),
+        (None, b"REQ".as_slice(), true),
+    ] {
+        let mut finish = Completion::new();
+        let gate = Gate::new();
+        let prepared = Listener::new::<64>(Default::default())
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
+                script::App {
+                    payload: payload.clone(),
+                    close: gate.clone(),
+                    chunk: None,
+                },
+                Wire::default(),
+            ))
+            .expect("listener layout");
+        let mut reports =
+            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+        prepared
+            .with_run(
+                &mut finish,
+                |case| {
+                    Peer::at(case.addr())
+                        .with(
+                            |stream| -> Result<Vec<u8>, peer::Error> {
+                                stream.write_all(request)?;
+                                if eof {
+                                    stream.shutdown(Shutdown::Write)?;
+                                }
+                                Peer::try_read_all(stream)
+                            },
+                            |peer| {
+                                reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                                let got = peer
+                                    .finish()
+                                    .expect("drain peer finish")
+                                    .expect("drain peer I/O");
+                                let mut expected = payload.unwrap_or_default();
+                                expected.extend_from_slice(BYE);
+                                assert_eq!(got, expected);
+                                assert_eq!(gate.hits(), 1);
+                            },
+                        )
+                        .expect("spawn drain peer");
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                native,
+            )
+            .expect("listener run");
+        assert!(
+            reports.events().expect("reclaimed events").is_empty(),
+            "unexpected reclaimed operations: {reports:?}"
+        );
+    }
 }
 
 #[test]
@@ -366,16 +245,14 @@ fn quiesces_buffered_send() {
     let mut finish = Completion::new();
     let chunk = Gate::new();
     let close = Gate::new();
-    let writes = Rc::new(Trace::new());
     let prepared = Listener::new::<64>(Default::default())
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
             script::App {
                 payload: None,
                 close: close.clone(),
                 chunk: Some(chunk.clone()),
-                observe: script,
             },
-            Rc::clone(&writes),
+            Wire::default(),
         ))
         .expect("listener layout");
     let mut reports =
@@ -411,12 +288,7 @@ fn quiesces_buffered_send() {
         "unexpected reclaimed operations: {reports:?}"
     );
 
-    let got = got
-        .expect("buffered peer join")
-        .expect("peer address")
-        .expect("buffered peer read");
+    let got = got.expect("peer address").expect("buffered peer read");
     assert_eq!(got, BYE);
     assert_eq!(close.hits(), 1);
-    let writes = writes.values().expect("wire writes");
-    assert!(writes.is_empty(), "wire write failures: {writes:?}");
 }

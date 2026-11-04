@@ -1,6 +1,6 @@
 use std::pin;
 
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 use tree::Member as _;
 
 use crate::task::storage::fixed::tree;
@@ -47,8 +47,11 @@ where
     L: tree::Build<'d>,
     R: tree::Build<'d>,
 {
-    fn try_build() -> Result<Self, alloc::Error> {
-        Ok(Self::new(L::try_build()?, R::try_build()?))
+    fn try_build_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
+        Ok(Self::new(
+            L::try_build_with_capacity(physical)?,
+            R::try_build_with_capacity(physical)?,
+        ))
     }
 }
 

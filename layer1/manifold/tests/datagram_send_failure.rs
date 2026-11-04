@@ -1,10 +1,10 @@
 pub mod common;
 
-use std::{cell::Cell, convert::Infallible, net, rc::Rc, time::Duration};
+use std::{cell::Cell, net, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
-        life::{creation::Attempt, recovery},
+        life::recovery,
         retained::flight,
         route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
     },
@@ -32,18 +32,24 @@ use dope_test::{
 
 use crate::common::{
     manifold::datagram::{handler, owners::*, *},
+    recover,
     scenario::Runtime,
 };
 
 #[test]
 fn settles_exact_owner() {
     let mut finish = Completion::new();
-    let mut create = Attempt::new();
     let addr = net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 9));
     let expected = vec![
         b"send-correlation-owner-1".to_vec(),
         b"send-correlation-owner-2".to_vec(),
     ];
+    let source = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("shutdown socket");
+    let error = source
+        .send_to(&expected[0], addr)
+        .expect_err("incompatible native destination");
+    let error = dope_core::Errno::try_from(error.raw_os_error().expect("native send error"))
+        .expect("errno");
     let settled = Gate::new();
     let received = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -52,109 +58,79 @@ fn settles_exact_owner() {
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
-    {
-        let result = runtime.try_executor(&mut create);
-        result
-            .as_ref()
-            .map_err(|error| error.kind())
-            .expect("native creation");
-        result.ok().expect("native creation")
-    }
-    .run(|executor| {
-        let result = executor.enter_with(
-            |mut session| {
-                let config = {
-                    let outcome = Config::new(1, 4096, 1);
-                    outcome.expect("single-slot send bounds rejected")
-                };
-                let endpoint = {
-                    let mut driver = session.driver();
-                    let plan = {
-                        let outcome = plan::Plan::<KeyTag<0>>::new(config).prepare(&mut driver);
-                        outcome.expect("IPv4 sender preparation failed")
-                    };
+    runtime.with_scope(
+        |mut session| {
+            let config = Config::new(1, 4096, 1).expect("single-slot send bounds rejected");
+            let endpoint = {
+                let mut driver = session.driver();
+                let plan = plan::Plan::<KeyTag<0>>::new(config)
+                    .prepare(&mut driver)
+                    .expect("IPv4 sender preparation failed");
 
-                    {
-                        let outcome = plan.bind(
-                            (net::Ipv4Addr::LOCALHOST, 0).into(),
-                            handler::Handler::new(
-                                FailingSend {
-                                    addr,
-                                    pending: expected.clone().into(),
-                                    active: Owners {
-                                        queued: None,
-                                        flight: None,
-                                    },
-                                    prior: Owners {
-                                        queued: None,
-                                        flight: None,
-                                    },
-                                    accepted: None,
-                                    settled: settled.clone(),
-                                    received: received.clone(),
-                                    events: Rc::clone(&events),
-                                },
-                                check_failingsend,
-                            ),
-                            &mut driver,
-                        );
-                        outcome.expect("IPv4 sender bind failed")
-                    }
-                };
-                let (socket, flights) = {
-                    let mut driver = session.driver();
-                    let source = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0))
-                        .expect("shutdown socket");
-                    let (socket, _) = Install::adopt_udp(driver.reborrow(), source.into())
-                        .expect("shutdown descriptor");
-                    let flights = driver
-                        .storage
-                        .reborrow()
-                        .try_flights(flight::Need::<KeyTag<0>>::new(
-                            flight::Capacity::fixed::<1>(),
-                        ))
-                        .expect("shutdown flights")
-                        .slots();
-                    (socket, flights)
-                };
-
-                ({
-                    let outcome = session.with_quiesce(
-                        &mut finish,
-                        Host::new(completion::Observed {
-                            endpoint,
-                            socket,
-                            flights,
-                            shutdown: None,
-                            completed: None,
-                            rejected: &rejected,
-                        }),
-                        Duration::from_secs(2),
-                        |mut app| {
-                            assert_eq!(
-                                fibers::TEST
-                                    .try_wait(&mut app, &settled, 2)
-                                    .expect("progress wait"),
-                                fibers::Wait::Reached
-                            );
+                plan.bind(
+                    (net::Ipv4Addr::LOCALHOST, 0).into(),
+                    handler::Handler::new(
+                        FailingSend {
+                            addr,
+                            pending: expected.clone().into(),
+                            active: Owners {
+                                queued: None,
+                                flight: None,
+                            },
+                            prior: Owners {
+                                queued: None,
+                                flight: None,
+                            },
+                            accepted: None,
+                            settled: settled.clone(),
+                            received: received.clone(),
+                            events: Rc::clone(&events),
                         },
+                        check_failingsend,
+                    ),
+                    &mut driver,
+                )
+                .expect("IPv4 sender bind failed")
+            };
+            let (socket, flights) = {
+                let mut driver = session.driver();
+                let (socket, _) = Install::adopt_udp(driver.reborrow(), source.into())
+                    .expect("shutdown descriptor");
+                let flights = driver
+                    .storage
+                    .reborrow()
+                    .try_flights(flight::Need::<KeyTag<0>>::new(
+                        flight::Capacity::fixed::<1>(),
+                    ))
+                    .expect("shutdown flights")
+                    .slots();
+                (socket, flights)
+            };
+
+            let outcome = session.with_quiesce(
+                &mut finish,
+                Host::new(completion::Observed {
+                    endpoint,
+                    socket,
+                    flights,
+                    shutdown: None,
+                    completed: None,
+                    rejected: &rejected,
+                }),
+                Duration::from_secs(2),
+                |mut app| {
+                    assert_eq!(
+                        fibers::TEST
+                            .try_wait(&mut app, &settled, 2)
+                            .expect("progress wait"),
+                        fibers::Wait::Reached
                     );
-                    assert!(outcome.is_ok(), "application teardown");
-                });
-            },
-            recovery::Policy::new(
-                |event| reports.push(event),
-                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("native recovery: {:?}", failure.cause())
                 },
-            ),
-        );
-        result
-            .as_ref()
-            .map_err(|error| error.cause())
-            .expect("native retirement");
-        result.ok().expect("native retirement")
-    });
+            );
+            assert!(outcome.is_ok(), "application teardown");
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+    );
     assert_eq!(
         rejected.get(),
         Some(true),
@@ -175,8 +151,10 @@ fn settles_exact_owner() {
     for (event, expected) in events.iter().zip(&expected) {
         assert_eq!(event.addr, addr);
         assert_eq!(event.payload.as_ref(), expected);
-        let expected = dope_core::Errno::try_from(libc::EAFNOSUPPORT).expect("errno");
-        assert!(matches!(event.outcome, Outcome::Failed(errno) if errno == expected));
+        let Outcome::Failed(errno) = event.outcome else {
+            panic!("native send failure");
+        };
+        assert_eq!(errno, error);
     }
 }
 
@@ -195,23 +173,22 @@ fn check_failingsend<'d>(this: &mut FailingSend<'d>, event: handler::Event<'_, '
                 .expect("kernel flight has an accepted owner");
             assert!(owner == send::Owner::Flight(expected));
             assert!(this.active.queued.is_none());
-            let accepted =
-                (this.accepted.take()).expect("settlement has no queue acceptance observation");
+            let accepted = this
+                .accepted
+                .take()
+                .expect("settlement has no queue acceptance observation");
             assert!(
                 at >= accepted,
                 "terminal observation preceded queue acceptance"
             );
-            assert!(
-                matches!(&payload, Payload::Owned(_)),
-                "owned send changed payload ownership kind"
-            );
-            if let Payload::Owned(payload) = payload {
-                this.events.push(Event {
-                    addr,
-                    outcome,
-                    payload,
-                });
-            }
+            let Payload::Owned(payload) = payload else {
+                panic!("owned send changed payload ownership kind");
+            };
+            this.events.push(Event {
+                addr,
+                outcome,
+                payload,
+            });
             this.settled.hit();
         }
         handler::Event::Park(mut socket, now, _) => {
@@ -239,15 +216,6 @@ fn check_failingsend<'d>(this: &mut FailingSend<'d>, event: handler::Event<'_, '
             assert!(this.active.flight.replace(transfer.flight()).is_none());
             assert!(this.prior.flight.replace(transfer.flight()) != Some(transfer.flight()));
         }
-        other => assert!(
-            matches!(
-                other,
-                handler::Event::Packet(..)
-                    | handler::Event::Settle(..)
-                    | handler::Event::Park(..)
-                    | handler::Event::Transfer(..)
-            ),
-            "unexpected datagram callback"
-        ),
+        _ => panic!("unexpected datagram callback"),
     }
 }

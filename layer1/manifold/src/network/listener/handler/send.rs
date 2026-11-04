@@ -72,12 +72,6 @@ pub enum Silent {}
 pub enum Ready {}
 pub enum Run {}
 
-#[must_use]
-pub(in crate::network::listener) enum Gate<P> {
-    Open(P),
-    Done,
-}
-
 pub(in crate::network::listener) enum Next {
     Commit,
     Done,
@@ -145,41 +139,35 @@ where
         }
     }
 
-    pub(in crate::network::listener) fn gate(mut self) -> Gate<Self>
+    pub(in crate::network::listener) fn gate(mut self) -> Option<Self>
     where
         A: handler::Gated<'d, ID>,
     {
-        enum Drain {
-            Open,
-            Done,
-        }
-
-        let drain = {
+        let drained = {
             let mut this = self.root.as_mut().project();
             let Some(mut egress) = this.owner.egress_mut(self.key) else {
-                return Gate::Done;
+                return None;
             };
             let scope = egress.context(self.turn.reborrow().app());
             let wake = scope.wake_target();
             match scope.drain() {
-                conn::Drain::Ready(done) => {
+                Some(done) => {
                     if matches!(
                         handler::Gated::send_drained(this.app.as_mut(), done),
                         handler::PostDrain::Activate,
                     ) {
                         wake.wake();
                     }
-                    Drain::Done
+                    true
                 }
-                conn::Drain::Pending => Drain::Open,
+                None => false,
             }
         };
-        match drain {
-            Drain::Open => Gate::Open(self),
-            Drain::Done => {
-                self.finish();
-                Gate::Done
-            }
+        if drained {
+            self.finish();
+            None
+        } else {
+            Some(self)
         }
     }
 

@@ -1,16 +1,10 @@
 //! Explicit macro paths resolve the real renamed Cargo dependencies.
 
-use std::convert::Infallible;
-
-use engine::core::driver::life::recovery::Recovery;
 pub mod common;
 
-use common::{macros::Text, renames::*};
+use common::{macros::Text, native, renames::*};
 use engine::{
-    core::{
-        driver::{life::recovery::Policy, route, storage},
-        io::Reclaimed,
-    },
+    core::driver::{life::recovery::Policy, route, storage},
     manifold::timing,
     runtime::{executor::session::Completion, topology},
 };
@@ -27,15 +21,7 @@ fn compile_alone() {
             report: &mut report,
             check: |name: &str, value: u8| assert_eq!((name, value), ("renamed", 7)),
         },
-        Policy::new(
-            |event| {
-                assert!(
-                    matches!(event, Reclaimed::Shutdown),
-                    "unexpected operation: {event:?}"
-                );
-            },
-            recover,
-        ),
+        Policy::new(native::shutdown, native::recover),
         |result| {
             result
                 .as_ref()
@@ -51,8 +37,4 @@ fn compile_alone() {
     assert!(Application::<'static>::INNER_ROUTE == route::Id::fixed::<17>());
     assert!(Selected::<'static>::INNER_ROUTE == route::Id::fixed::<17>());
     assert!(Components::<'static>::INNER_ROUTE == route::Id::fixed::<17>());
-}
-
-fn recover(failure: Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
 }

@@ -21,6 +21,22 @@ fn ownership_contracts() -> Result<(), Error> {
         "|data, _app| data",
         "|_data, mut app| app.client(|root| root.tail())",
     );
+    let pair_first_escape = include_str!("common/contracts/positive.rs").replace(
+        "let _first: Bound<'app, 'd, Value, u8>",
+        "let _first: Bound<'d, 'd, Value, u8>",
+    );
+    let pair_second_escape = include_str!("common/contracts/positive.rs").replace(
+        "let _second: Bound<'app, 'd, Value, u8>",
+        "let _second: Bound<'d, 'd, Value, u8>",
+    );
+    let pair_first_loan = include_str!("common/contracts/positive.rs").replace(
+        "paired_loans<'first: 'app, 'second: 'app, 'app, 'd: 'app>",
+        "paired_loans<'first, 'second: 'app, 'app, 'd: 'app>",
+    );
+    let pair_second_loan = include_str!("common/contracts/positive.rs").replace(
+        "paired_loans<'first: 'app, 'second: 'app, 'app, 'd: 'app>",
+        "paired_loans<'first: 'app, 'second, 'app, 'd: 'app>",
+    );
 
     for (source, expected) in [
         (include_str!("common/contracts/positive.rs"), ""),
@@ -37,6 +53,22 @@ fn ownership_contracts() -> Result<(), Error> {
         ),
         (
             session_client_escape.as_str(),
+            "error: lifetime may not live long enough",
+        ),
+        (
+            pair_first_escape.as_str(),
+            "error: lifetime may not live long enough",
+        ),
+        (
+            pair_second_escape.as_str(),
+            "error: lifetime may not live long enough",
+        ),
+        (
+            pair_first_loan.as_str(),
+            "error: lifetime may not live long enough",
+        ),
+        (
+            pair_second_loan.as_str(),
             "error: lifetime may not live long enough",
         ),
         (

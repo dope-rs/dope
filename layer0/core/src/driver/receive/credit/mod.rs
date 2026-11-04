@@ -270,9 +270,7 @@ impl<'d> Return<'d> {
     fn retry(self) {
         let (notify, lease) = self.lease.into_parts();
         lease.release_with(Wake::Retry, |owner, target| {
-            owner
-                .stored()
-                .credit_ready(Proof::new(target, notify.driver));
+            owner.credit_ready(Proof::new(target, notify.driver));
         });
     }
 }
@@ -282,7 +280,7 @@ impl<'d> mem::Return for Notify<'d> {
 
     fn return_item(self, lease: Self::Item) {
         lease.release_with(Wake::Returned, |owner, target| {
-            owner.stored().credit_ready(Proof::new(target, self.driver));
+            owner.credit_ready(Proof::new(target, self.driver));
         });
     }
 }

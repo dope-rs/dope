@@ -39,7 +39,6 @@ pub enum Failure {
     Record(Record),
     Allocation(alloc::Error),
     Poll(Errno),
-    Source(usize),
     Alias,
     Cookie,
 }
@@ -167,7 +166,7 @@ impl Stub {
             })
             .expect("refresh worker start");
         let (output, stopped) = output;
-        worker.expect("DNS worker joined")?;
+        worker?;
         stopped.map_err(Failure::Channel)?;
         output?.expect("refresh application");
         assert!(
@@ -483,7 +482,7 @@ impl thread::Task for Server {
                     }
                     None => {}
                 },
-                _ => return Err(Failure::Source(index)),
+                _ => unreachable!("source"),
             }
         }
     }

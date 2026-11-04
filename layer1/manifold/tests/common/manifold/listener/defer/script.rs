@@ -125,32 +125,21 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
             State::Fresh => {}
             State::Done => return conn,
         }
-        let (result, ops) = match self.payload {
-            Payload::Body => {
-                let body = egress::NonEmpty::from_array(&BODY);
-                {
-                    let measure = Tracker::begin();
-                    let result = conn.write().try_bounded(driver, move |state, prefix| {
-                        *state = State::Done;
-                        prefix[0] = b'R';
-                        write::Draft::new(1, Some(Value::Checked(body)), ()).close_after()
-                    });
-                    let activity = measure.finish();
-                    (result, (activity.allocations, activity.allocated_bytes))
-                }
-            }
-            Payload::Prefix => {
-                let measure = Tracker::begin();
-                let result = conn.write().try_bounded(driver, |state, prefix| {
-                    *state = State::Done;
-                    prefix[0] = b'R';
-                    write::Draft::new(1, None, ()).close_after()
-                });
-                let activity = measure.finish();
-                (result, (activity.allocations, activity.allocated_bytes))
-            }
+        let body = match self.payload {
+            Payload::Body => Some(Value::Checked(egress::NonEmpty::from_array(&BODY))),
+            Payload::Prefix => None,
         };
-        (self.observe)(Event::Write(&result, ops));
+        let measure = Tracker::begin();
+        let result = conn.write().try_bounded(driver, move |state, prefix| {
+            *state = State::Done;
+            prefix[0] = b'R';
+            write::Draft::new(1, body, ()).close_after()
+        });
+        let activity = measure.finish();
+        (self.observe)(Event::Write(
+            &result,
+            (activity.allocations, activity.allocated_bytes),
+        ));
         if matches!(result, Ok(write::Outcome::Committed(()))) {
             self.done.hit();
         } else {

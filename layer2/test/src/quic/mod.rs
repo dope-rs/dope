@@ -313,17 +313,11 @@ impl Oracle {
 
     /// Consumes the oracle and returns the proof of complete delivery.
     pub fn finish(self) -> Result<Completion, Incomplete> {
-        if self.is_complete() {
-            Ok(Completion::new(
-                self.delivered,
-                self.scenario.payload_total.get(),
-            ))
-        } else {
-            Err(Incomplete {
-                expected: self.scenario.total(),
-                delivered: self.delivered,
-            })
-        }
+        Completion::try_new(
+            self.scenario.total(),
+            self.delivered,
+            self.scenario.payload_total.get(),
+        )
     }
 }
 
@@ -400,17 +394,11 @@ impl FlowOracle {
     }
 
     pub fn finish(self) -> Result<Completion, Incomplete> {
-        if self.delivered == self.scenario.per_flow() {
-            Ok(Completion::new(
-                self.delivered,
-                self.scenario.payload_total.get() / self.scenario.flows.get(),
-            ))
-        } else {
-            Err(Incomplete {
-                expected: self.scenario.per_flow(),
-                delivered: self.delivered,
-            })
-        }
+        Completion::try_new(
+            self.scenario.per_flow(),
+            self.delivered,
+            self.scenario.payload_total.get() / self.scenario.flows.get(),
+        )
     }
 }
 

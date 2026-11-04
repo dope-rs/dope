@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope_core::driver::life::{creation::Attempt, recovery};
 use dope_runtime::executor::session::{self, Completion};
 use dope_test::harness::scenario::TIMEOUT;
@@ -20,17 +18,7 @@ use crate::common::{runtime::executor::client::*, scenario::rt::Configured};
 static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
-fn immediate_baseline() {
-    immediate(0);
-}
-
-#[test]
-fn immediate_no_alloc() {
-    immediate(ITERATIONS);
-}
-
-#[test]
-fn manual_no_alloc() {
+fn manual_clock_and_allocation() {
     let mut polls = Some(0);
     let mut finish = Completion::new();
     let mut create = Attempt::new();
@@ -81,55 +69,6 @@ fn manual_no_alloc() {
                                         }
                                     });
                                     assert_eq!(usage, (0, 0));
-                                }
-                            )
-                            .is_ok()
-                    );
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-            )
-            .as_ref()
-            .map_err(|error| error.cause())
-            .expect("executor completion");
-    });
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-    assert_eq!(polls, Some(ITERATIONS + 1));
-}
-
-#[test]
-fn manual_clock_order() {
-    let mut polls = Some(0);
-    let mut finish = Completion::new();
-    let mut create = Attempt::new();
-    let mut reports = Vec::new();
-
-    let executor = Configured::throughput().try_executor(&mut create);
-    executor
-        .as_ref()
-        .map_err(|error| error.kind())
-        .expect("executor creation");
-    executor.ok().expect("validated executor").run(|executor| {
-        executor
-            .enter_with(
-                |mut session| {
-                    let start = (session
-                        .driver()
-                        .driver_ref()
-                        .clock()
-                        .now()
-                        .try_add(Duration::from_millis(1)))
-                    .expect("manual start deadline");
-                    assert!(
-                        session
-                            .with_at_for(
-                                &mut finish,
-                                App { value: 0 },
-                                start,
-                                TIMEOUT,
-                                |mut app| {
                                     let later = (start.try_add(Duration::from_secs(7)))
                                         .expect("later deadline");
                                     let fixed = app
@@ -160,7 +99,7 @@ fn manual_clock_order() {
                             .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -170,7 +109,7 @@ fn manual_clock_order() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-    assert_eq!(polls, Some(1));
+    assert_eq!(polls, Some(ITERATIONS + 2));
 }
 
 #[test]
@@ -213,7 +152,7 @@ fn rejects_wall_regression() {
                             .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -294,7 +233,7 @@ fn reject_keeps_clock() {
                     ));
                     assert!(!called);
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -335,7 +274,7 @@ fn issued_is_owned() {
                             .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -388,7 +327,7 @@ fn issues_client() {
                             .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -436,7 +375,7 @@ fn custom_issue_is_owned() {
                             .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -455,7 +394,8 @@ fn bound_is_copy() {
     assert_copy::<Bound<'static, 'static, App>>();
 }
 
-fn immediate(extra: usize) {
+#[test]
+fn immediate_no_alloc() {
     let mut polls = Some(0);
     let mut finish = Completion::new();
     let mut create = Attempt::new();
@@ -475,7 +415,7 @@ fn immediate(extra: usize) {
                             .with_quiesce(&mut finish, App { value: 0 }, TIMEOUT, |mut app| {
                                 assert!(matches!(app.drive(Immediate(0, &mut polls)), Ok(0)));
                                 let usage = Tracker::during(|| {
-                                    for output in 0..extra {
+                                    for output in 0..ITERATIONS {
                                         let actual = app
                                             .drive(Immediate(output, &mut polls))
                                             .expect("immediate drive");
@@ -487,7 +427,7 @@ fn immediate(extra: usize) {
                             .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -497,9 +437,5 @@ fn immediate(extra: usize) {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-    assert_eq!(polls, Some(extra + 1));
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
+    assert_eq!(polls, Some(ITERATIONS + 1));
 }

@@ -17,7 +17,7 @@ use o3::{
 pub use receiver::Receiver;
 
 use crate::{
-    link::{event, pool, slot::recv::Submit},
+    link::{duplex, event, pool},
     wire,
     wire::receive::{Chunk, mode::Disabled},
 };
@@ -28,28 +28,6 @@ pub mod input;
 mod receiver;
 pub mod reserve;
 pub mod storage;
-
-/// Borrow of the generation key stored by one occupied connection slot.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub struct Resident<'a, 'd, ID: Identity> {
-    key: &'a pool::Key<'d, ID>,
-}
-
-impl<'a, 'd, ID: Identity> Resident<'a, 'd, ID> {
-    pub(in crate::link) const fn new(key: &'a pool::Key<'d, ID>) -> Self {
-        Self { key }
-    }
-
-    pub(in crate::link) const fn key(self) -> pool::Key<'d, ID> {
-        *self.key
-    }
-}
-
-const _: () =
-    assert!(mem::size_of::<Resident<'static, 'static, KeyTag<0>>>() == mem::size_of::<usize>());
-const _: () =
-    assert!(mem::align_of::<Resident<'static, 'static, KeyTag<0>>>() == mem::align_of::<usize>());
 
 pub enum Ready<'d> {
     Completion(event::Completion<'d>),
@@ -138,7 +116,7 @@ impl<'d, ID: Identity> Rearm<'_, 'd, ID> {
 
     pub(in crate::link::pool) fn submitted(
         &mut self,
-        submit: Result<Submit, result::SubmitError>,
+        submit: Result<duplex::Rearm, result::SubmitError>,
     ) -> Result<(), Failure<'d, ID>> {
         let submit = match submit {
             Ok(submit) => submit,
@@ -150,9 +128,8 @@ impl<'d, ID: Identity> Rearm<'_, 'd, ID> {
                 });
             }
         };
-        match submit {
-            Submit::Deferred => self.queue(),
-            Submit::Armed | Submit::Waiting => {}
+        if submit.is_needed() {
+            self.queue();
         }
         Ok(())
     }

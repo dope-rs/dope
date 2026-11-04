@@ -1,20 +1,6 @@
 use std::{cell::Cell, num::NonZero};
 
 use dope_sys::io::reactor::complete;
-use o3::{depot, depot::capacity};
-
-#[derive(Clone, Copy)]
-pub struct Capacity(pub NonZero<u32>);
-
-// SAFETY: every copy returns its original positive bounded count.
-unsafe impl depot::raw::Count for Capacity {
-    fn count(self) -> capacity::Count {
-        capacity::Count::new(self.0.get())
-    }
-}
-
-// SAFETY: Capacity keeps the original immutable Count proof.
-unsafe impl complete::raw::Capacity for Capacity {}
 
 pub struct Event<'a> {
     pub key: Option<NonZero<u8>>,

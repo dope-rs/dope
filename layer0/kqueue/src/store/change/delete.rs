@@ -20,9 +20,3 @@ impl<S: change::raw::Slots> change::Delete for Delete<'_, S> {
         }
     }
 }
-
-impl<S: change::raw::Slots> Drop for Delete<'_, S> {
-    fn drop(&mut self) {
-        self.owner.clear_plan();
-    }
-}

@@ -12,7 +12,7 @@ use o3::{
 
 use crate::{Kqueue, file::Options};
 
-/// A file request retaining its exact descriptor and input borrows.
+/// A file request retaining its exact descriptor and buffer borrows.
 #[repr(transparent)]
 pub struct Request<'a>(State<'a>, ThreadBound);
 
@@ -21,6 +21,11 @@ enum State<'a> {
         dir: fd::BorrowedFd<'a>,
         path: &'a std::ffi::CStr,
         options: &'a Options,
+    },
+    Read {
+        file: fd::BorrowedFd<'a>,
+        output: bytes::bounded::Value<&'a mut [u8]>,
+        offset: file::Offset,
     },
     Write {
         file: fd::BorrowedFd<'a>,
@@ -69,6 +74,21 @@ impl<'a> request::Request<'a> for Request<'a> {
         )
     }
 
+    fn read(
+        file: fd::BorrowedFd<'a>,
+        output: bytes::bounded::Value<&'a mut [u8]>,
+        offset: file::Offset,
+    ) -> Self {
+        Self(
+            State::Read {
+                file,
+                output,
+                offset,
+            },
+            ThreadBound::NEW,
+        )
+    }
+
     fn write_current(file: fd::BorrowedFd<'a>, input: Self::Buffer) -> Self {
         Self(State::WriteCurrent { file, input }, ThreadBound::NEW)
     }
@@ -91,6 +111,15 @@ impl request::Execute for Request<'_> {
         let result = match self.0 {
             State::Open { dir, path, options } => {
                 return done.opened(Kqueue::open_at(dir, path, options.flags, options.mode));
+            }
+            State::Read {
+                file,
+                output,
+                offset,
+            } => {
+                let result = Kqueue::read_at(file, output.into_inner(), offset)
+                    .map(|read| bytes::Prefix::<MAX>::new(read).len());
+                return done.read(result);
             }
             State::Write {
                 file,

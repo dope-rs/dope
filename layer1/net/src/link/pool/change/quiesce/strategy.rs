@@ -1,18 +1,10 @@
-use dope_core::driver::{life::finish, receive::credit, route::Identity};
-use o3::base::Call as _;
+use dope_core::driver::{receive::credit, route::Identity};
 
 use crate::{
-    link::{
-        egress::{self, reserve::demand},
-        pool::{
-            self,
-            change::{
-                drain,
-                quiesce::{Entry, Plan},
-            },
-            recv::{input, storage},
-            send::Finish,
-        },
+    link::pool::{
+        change::drain,
+        recv::{self, storage, storage::tail},
+        send::Finish,
     },
     wire::{
         self,
@@ -23,43 +15,10 @@ use crate::{
 pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
     storage::raw::Mode + drain::Strategy<W> + Finish<W>
 {
-    fn credits<'a, 'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
-        _: &'a Plan<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-    ) -> Option<&'a credit::Storage<'d>>
-    where
-        Self: 'a,
-        'd: 'w,
-        T: crate::Transport,
-        W: 'w + 'd,
-        M: input::Mode<W, Ingress = Self>,
-        D: demand::Mode,
-    {
+    fn credits<'a, 'd, ID: Identity, T, S>(
+        _: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self>>,
+    ) -> Option<&'a credit::Storage<'d>> {
         None
-    }
-
-    fn retire<'a, 'p, 'w, 'd, ID: Identity + 'w, S, M, B, const IOV: usize, D, F>(
-        plan: Entry<'a, 'p, 'w, 'd, ID, W, S, M, B, IOV, D>,
-        runtime: &mut W::Runtime<'w, 'd, ID>,
-        finish: &mut finish::Finish<'_, 'd>,
-        free: F,
-    ) where
-        'd: 'w,
-        W: 'w + 'd,
-        M: input::Mode<W, Ingress = Self>,
-        D: demand::Mode,
-        F: FnOnce(
-            &mut egress::Storage<'p, 'd, ID, B, IOV, D>,
-            pool::Key<'d, ID>,
-            &mut finish::Finish<'_, 'd>,
-        ),
-    {
-        let target = credit::Id::new(plan.entry.get().key.target().dispatch());
-        if let Some(cancel) = <Self as drain::Strategy<W>>::cancel(&plan.recv.storage) {
-            cancel.call((runtime, target));
-        }
-        if let Some(release) = Self::release::<ID>(plan.retire(finish, free)) {
-            release.call(runtime);
-        }
     }
 }
 
@@ -82,18 +41,10 @@ where
     W: wire::Spec,
     <W::Receive as Policy<W>>::Reserve: reserve::Immediate<W>,
 {
-    fn credits<'a, 'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
-        plan: &'a Plan<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-    ) -> Option<&'a credit::Storage<'d>>
-    where
-        Self: 'a,
-        'd: 'w,
-        T: crate::Transport,
-        W: 'w + 'd,
-        M: input::Mode<W, Ingress = Self>,
-        D: demand::Mode,
-    {
-        Some(plan.prepared.slab.credit())
+    fn credits<'a, 'd, ID: Identity, T, S>(
+        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self>>,
+    ) -> Option<&'a credit::Storage<'d>> {
+        Some(slab.credit())
     }
 }
 
@@ -103,17 +54,9 @@ where
     R: reserve::Try<W>,
     W::Receive: Policy<W, Reserve = reserve::Waiting<R>>,
 {
-    fn credits<'a, 'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
-        plan: &'a Plan<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-    ) -> Option<&'a credit::Storage<'d>>
-    where
-        Self: 'a,
-        'd: 'w,
-        T: crate::Transport,
-        W: 'w + 'd,
-        M: input::Mode<W, Ingress = Self>,
-        D: demand::Mode,
-    {
-        Some(plan.prepared.slab.credit())
+    fn credits<'a, 'd, ID: Identity, T, S>(
+        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self>>,
+    ) -> Option<&'a credit::Storage<'d>> {
+        Some(slab.credit())
     }
 }

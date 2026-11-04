@@ -33,10 +33,9 @@ impl<'e, 'd, L: data::raw::Payload<'d>, R: data::raw::Payload<'d>, ID: Identity>
         conn: conn::Id<'d, ID>,
         load: egress::NonEmpty<L>,
     ) -> Result<(), error::Unsent<'d, L, ID>> {
-        self.core
-            .try_project(region, conn, load, |queue, region, load| {
-                queue.try_left(region, load)
-            })
+        self.try_project(region, conn, load, |queue, region, load| {
+            queue.try_left(region, load)
+        })
     }
 
     fn try_right(
@@ -45,9 +44,8 @@ impl<'e, 'd, L: data::raw::Payload<'d>, R: data::raw::Payload<'d>, ID: Identity>
         conn: conn::Id<'d, ID>,
         load: egress::NonEmpty<R>,
     ) -> Result<(), error::Unsent<'d, R, ID>> {
-        self.core
-            .try_project(region, conn, load, |queue, region, load| {
-                queue.try_right(region, load)
-            })
+        self.try_project(region, conn, load, |queue, region, load| {
+            queue.try_right(region, load)
+        })
     }
 }

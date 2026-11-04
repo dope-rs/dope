@@ -33,7 +33,6 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-use o3::base::time::Positive;
 
 use crate::common::{
     contract::Report,
@@ -133,8 +132,8 @@ fn drains_over_turn_limit() {
             .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Balanced>>(Value::new(Shutdown {
                 audit: audit.clone(),
 
-                connected: ready.clone(),
-                disconnected: closed.clone(),
+                conn: ready.clone(),
+                closed: closed.clone(),
             }))
             .expect("prepare actual client layout");
             let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
@@ -185,7 +184,7 @@ fn shutdown_does_not_poll_ready_discovery() {
             Configure as _,
             finish::close::{
                 members::{Source, Watch},
-                observe::{Events, Session},
+                observe::Session,
             },
             side::limited::Limited,
         },
@@ -205,16 +204,7 @@ fn shutdown_does_not_poll_ready_discovery() {
     executor.run(|executor| {
         let result = executor.enter_with(
             |mut runtime| {
-                let setup = Setup::new(
-                    Session {
-                        audit: Rc::new(Report::default()),
-                        codec: codec::Outbound,
-                        errors: Rc::new(Trace::new()),
-                        events: Rc::new(Cell::new(Events::default())),
-                        gate: Gate::new(),
-                    },
-                    ingress::Plan::none(),
-                );
+                let setup = Setup::new(Session::new(codec::Outbound), ingress::Plan::none());
                 let hash = runtime.hash_state(Domain::DEFAULT);
                 plan.bind(Local::new(Identity), hash)
                     .discover::<_, _, _, Replace, _, _, Bundle<Tcp, Identity, Balanced>, 1, _, _>(
@@ -253,78 +243,73 @@ fn shutdown_does_not_poll_ready_discovery() {
 }
 
 #[test]
-fn idle_redials() {
-    let (reached, hits, redial) = run(Some(IDLE_TIMEOUT), 2);
-    assert!((reached) == (Wait::Reached));
-    assert_eq!(hits, 2);
-    let dt = (redial).expect("must reconnect after silence");
-    assert!(dt >= IDLE_TIMEOUT.get() - Duration::from_millis(30));
-    assert!(
-        dt < IDLE_TIMEOUT.get() * 8,
-        "reconnect at {dt:?} — far past the deadline; watchdog is late"
-    );
-}
+fn idle_timeout_controls_redial() {
+    for timeout in [Some(IDLE_TIMEOUT), None] {
+        let mut finish = Completion::new();
 
-#[test]
-fn quiescent_stays() {
-    let (reached, gate, redial) = run(None, 2);
-    assert!((reached) == (Wait::Deadline));
-    assert_eq!(gate, 1);
-    assert_eq!(redial, None);
-}
+        TcpScript::with_many::<2, _>(
+            |_| {},
+            |server| {
+                let addr = server.addr();
+                let gate_g = LocalGate::new();
+                let gate = gate_g.handle();
+                let redial = Cell::new(None);
+                let audit = Rc::new(Report::default());
 
-fn run(timeout: Option<Positive>, want: u32) -> (Wait, u32, Option<Duration>) {
-    let mut finish = Completion::new();
+                let planned =
+                    Connector::<{ probe::MAX }>::new(addr, REDIAL_BACKOFF, REDIAL_BACKOFF)
+                        .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(
+                            Probe {
+                                audit: audit.clone(),
 
-    TcpScript::with_many::<2, _>(
-        |_| {},
-        |server| {
-            let addr = server.addr();
-            let gate_g = LocalGate::new();
-            let gate = gate_g.handle();
-            let redial = Cell::new(None);
-            let audit = Rc::new(Report::default());
+                                timeout,
+                                peer: move |peer: socket::Addr, _: ready::Target<'_>| {
+                                    assert_eq!(peer.into_std().expect("TCP peer address"), addr)
+                                },
+                                gate,
+                                start: Instant::now(),
+                                redial: &redial,
+                                rejected: None,
+                                expired: None,
+                            },
+                        ))
+                        .expect("prepare actual client layout");
+                let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-            let planned = Connector::<{ probe::MAX }>::new(addr, REDIAL_BACKOFF, REDIAL_BACKOFF)
-                .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(Probe {
-                    audit: audit.clone(),
+                let reached = planned
+                    .with_run(
+                        &mut finish,
+                        |case| case.try_wait(&gate, 2),
+                        recovery::Policy::new(|event| reclaim1.push(event), recover),
+                        native,
+                    )
+                    .expect("liveness scenario")
+                    .expect("wait for liveness scenario");
+                assert!(
+                    matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+                    "unexpected reclaimed operations: {reclaim1:?}"
+                );
 
-                    timeout,
-                    peer: move |peer: socket::Addr, _: ready::Target<'_>| {
-                        assert_eq!(peer.into_std().expect("TCP peer address"), addr)
-                    },
-                    gate,
-                    start: Instant::now(),
-                    redial: &redial,
-                    rejected: None,
-                    expired: None,
-                }))
-                .expect("prepare actual client layout");
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-
-            let reached = planned
-                .with_run(
-                    &mut finish,
-                    |case| case.try_wait(&gate, want),
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    native,
-                )
-                .expect("liveness scenario")
-                .expect("wait for liveness scenario");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
-
-            if matches!(reached, Wait::Deadline) {
-                net::TcpStream::connect(addr).expect("release liveness peer");
-            }
-            server.finish().expect("finish liveness peer");
-            audit.checked((0, 0));
-            (reached, gate.hits(), redial.get())
-        },
-    )
-    .expect("spawn liveness peer")
+                if matches!(reached, Wait::Deadline) {
+                    net::TcpStream::connect(addr).expect("release liveness peer");
+                }
+                server.finish().expect("finish liveness peer");
+                audit.checked((0, 0));
+                if let Some(timeout) = timeout {
+                    assert_eq!(reached, Wait::Reached);
+                    assert_eq!(gate.hits(), 2);
+                    let dt = redial.get().expect("must reconnect after silence");
+                    assert!(dt >= timeout.get() - Duration::from_millis(30));
+                    assert!(dt < timeout.get() * 8, "reconnect at {dt:?}");
+                } else {
+                    assert_eq!(reached, Wait::Deadline);
+                    assert_eq!(gate.hits(), 1);
+                    assert_eq!(redial.get(), None);
+                }
+            },
+        )
+        .expect("spawn liveness peer");
+    }
 }
 
 fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {

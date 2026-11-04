@@ -95,7 +95,7 @@ impl<C: read::Context> registry::State<C::Slots, Slot<C>> for Registry<C> {
         Some(
             Occupied::new(slot, &mut self.by_fd, &mut self.resume)
                 .remove()
-                .into_call(),
+                .operation(),
         )
     }
 

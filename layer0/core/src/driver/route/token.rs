@@ -25,17 +25,11 @@ impl hash::Hash for Token {
 impl Token {
     pub(in crate::driver) const fn from_flight(
         epoch: route::Epoch,
-        payload: [u8; 6],
+        slot: indices::SlotIndex,
         kind: kind::Native,
         route: route::Route,
     ) -> Self {
-        let (epoch, thread) = epoch.into_parts();
-        let [a, b, c, d, e, f] = payload;
-        Self {
-            epoch,
-            thread,
-            meta: u64::from_le_bytes([a, b, c, d, e, f, kind as u8, route.raw()]),
-        }
+        Self::pack(route, kind as u8, slot, epoch)
     }
 
     const fn pack(
@@ -74,6 +68,7 @@ impl Token {
             25 => Ok(kind::Kind::Tuning),
             28 => Ok(kind::Kind::Write),
             29 => Ok(kind::Kind::Sync),
+            30 => Ok(kind::Kind::Read),
             unknown => Err(kind::Unknown::new(unknown)),
         }
     }

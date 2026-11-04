@@ -64,7 +64,6 @@ where
     A: app::Lifecycle<'w, 'd, ID> + app::Scheduling<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
     Self: shutdown::Drain<'d>
         + drive::Run<'d>
@@ -130,7 +129,6 @@ where
     A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
     Self: dispatch::raw::Manifold<'d>,
 {
@@ -143,7 +141,6 @@ where
     A: app::Scheduling<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
     type Plan = ();
@@ -186,7 +183,6 @@ where
     A: app::Receive<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
     <A::Input as input::Mode<A::Wire>>::Reserve:
         Choice<A::Wire, <A::Input as input::Mode<A::Wire>>::Ingress>,

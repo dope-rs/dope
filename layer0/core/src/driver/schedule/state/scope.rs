@@ -1,4 +1,4 @@
-use std::{marker, mem};
+use std::mem;
 
 use o3::mem::quota;
 use state::lanes;
@@ -21,15 +21,12 @@ pub struct Guard<'turn, 'd> {
 
 #[must_use = "reactor authority must be consumed by Poll or Source"]
 pub struct Reactor<'turn, 'd> {
-    pub(in crate::driver::schedule) quota: lanes::Quota<'turn, 'd>,
+    pub(in crate::driver::schedule) quota: quota::Shared<'turn, lanes::Domain<'d>>,
     pub(in crate::driver::schedule) cursor: state::Cursor,
-    turn: marker::PhantomData<&'turn mut ()>,
-    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
 pub struct Coord<'turn, 'd> {
     state: &'turn state::Core<'d>,
-    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
 impl<'scope, 'd> Scope<'scope, 'd> {
@@ -73,10 +70,8 @@ impl<'turn, 'd> Guard<'turn, 'd> {
         state.reactor.cursor.set(cursor.next());
         (
             Reactor {
-                quota: lanes::Quota::reactor(&state.reactor.ledger),
+                quota: quota::Shared::reserve_all(&state.reactor.ledger),
                 cursor,
-                turn: marker::PhantomData,
-                driver: marker::PhantomData,
             },
             schedule::Turn::new(state),
         )
@@ -100,7 +95,7 @@ impl<'turn, 'd> Guard<'turn, 'd> {
 
 impl<'turn, 'd> Reactor<'turn, 'd> {
     pub(crate) fn refund(self) {
-        self.quota.inner.refund();
+        self.quota.refund();
     }
 
     pub(crate) fn remaining(&self) -> usize {
@@ -115,16 +110,13 @@ impl<'turn, 'd> Reactor<'turn, 'd> {
         &'budget self,
         limit: usize,
     ) -> lanes::Budget<'budget, 'd, Lane> {
-        self.quota.lease(limit)
+        lanes::Budget::lease(&self.quota, limit)
     }
 }
 
 impl<'turn, 'd> Coord<'turn, 'd> {
     pub(in crate::driver::schedule) fn new(state: &'turn state::Core<'d>) -> Self {
-        Self {
-            state,
-            driver: marker::PhantomData,
-        }
+        Self { state }
     }
 
     pub fn take(&mut self) -> quota::Take {
@@ -147,7 +139,7 @@ impl<'turn, 'd> Coord<'turn, 'd> {
         weights: [usize; 2],
         run: impl FnOnce() -> T,
     ) -> T {
-        let _held = lanes::Quota::weighted::<N, _>(&self.state.lanes.coord, rank, weights);
+        let _held = lanes::weighted::<N, _>(&self.state.lanes.coord, rank, weights);
         run()
     }
 }

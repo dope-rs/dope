@@ -7,25 +7,12 @@ impl settings::Profile for Throughput {
     const RECEIVE: settings::Receive = settings::Receive::fixed::<1024, { 64 * 1024 }>();
 }
 
-pub struct Files;
-
-impl settings::Profile for Files {
-    const QUEUES: settings::QueueLayout = settings::QueueLayout::fixed::<64, 65_536>();
-    const FILES: settings::FileSlots = settings::FileSlots::fixed::<0, 16>();
-}
-
 pub struct Receive;
 
 impl settings::Profile for Receive {
     const QUEUES: settings::QueueLayout = settings::QueueLayout::fixed::<64, 65_536>();
     const FILES: settings::FileSlots = settings::FileSlots::fixed::<0, 16>();
     const RECEIVE: settings::Receive = settings::Receive::fixed::<4096, 8192>();
-}
-
-pub struct Domain;
-
-impl settings::Profile for Domain {
-    const QUEUES: settings::QueueLayout = settings::QueueLayout::fixed::<64, 65_536>();
 }
 
 pub struct Minimal;

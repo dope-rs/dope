@@ -1,8 +1,5 @@
-use dope_core::{driver::route::KeyTag, io::datagram::ReceiveError};
-use dope_manifold::network::datagram::{
-    Endpoint,
-    hook::{self, ingress},
-};
+use dope_core::io::datagram::ReceiveError;
+use dope_manifold::network::datagram::hook::{self, ingress};
 use dope_test::harness::signals::Gate;
 use o3::buffer::{
     bytes::bounded,
@@ -20,15 +17,6 @@ pub struct Expected<'p> {
 impl handler::State for Expected<'_> {
     type Hooks = hook::Set;
     type Mode = ingress::Access;
-}
-
-#[pin_project::pin_project]
-#[derive(dope_gen::Application)]
-#[dispatcher(core = ::dope_core, manifold = ::dope_manifold, runtime = ::dope_runtime)]
-pub struct App<'d, H> {
-    #[pin]
-    #[manifold]
-    pub(crate) receiver: Endpoint<'d, KeyTag<0>, H>,
 }
 
 pub struct Exhaustion<'d> {

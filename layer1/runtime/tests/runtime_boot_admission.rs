@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope_core::{
     Errno,
     driver::{
@@ -85,7 +83,7 @@ fn native_rejects_boot() {
                 );
                 drop(creation);
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
         );
         assert!(result.is_ok(), "native owner is reclaimed by its driver");
     });
@@ -144,14 +142,10 @@ fn capacity_cancels_boot() {
                 assert!(rejected, "startup must preserve exact capacity failure");
                 drop(ready);
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
         );
         assert!(result.is_ok(), "driver retires after rejected startup");
     });
     assert_eq!((counts.polls.get(), counts.cancelled.get()), (0, 1));
     assert!(reports.is_empty(), "unexpected native work: {reports:?}");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

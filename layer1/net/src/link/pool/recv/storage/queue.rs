@@ -3,13 +3,8 @@ use pool::Front;
 
 use crate::link::event;
 
-pub enum Push<'a, 'd, T = event::Completion<'d>> {
-    Ready {
-        vacant: slots::Vacant<event::Completion<'d>, slots::Bound<'a, event::Completion<'d>>>,
-        done: T,
-    },
-    Full(T),
-}
+pub type Vacant<'a, 'd> =
+    slots::Vacant<event::Completion<'d>, slots::Bound<'a, event::Completion<'d>>>;
 
 pub trait Ops<'d> {
     fn prepare_pop(&mut self) -> Option<Front<'_, event::Completion<'d>, ()>>;
@@ -17,7 +12,7 @@ pub trait Ops<'d> {
 }
 
 pub trait Write<'d>: Ops<'d> {
-    fn prepare_push<T>(&mut self, done: T) -> Push<'_, 'd, T>;
+    fn prepare_push(&mut self) -> Option<Vacant<'_, 'd>>;
 }
 
 impl<'d> Ops<'d> for &mut () {
@@ -39,10 +34,7 @@ impl<'d> Ops<'d> for pool::Lane<'_, event::Completion<'d>> {
 }
 
 impl<'d> Write<'d> for pool::Lane<'_, event::Completion<'d>> {
-    fn prepare_push<T>(&mut self, done: T) -> Push<'_, 'd, T> {
-        match self.vacant() {
-            Some(vacant) => Push::Ready { vacant, done },
-            None => Push::Full(done),
-        }
+    fn prepare_push(&mut self) -> Option<Vacant<'_, 'd>> {
+        self.vacant()
     }
 }

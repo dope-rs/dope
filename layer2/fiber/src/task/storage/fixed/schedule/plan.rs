@@ -1,5 +1,6 @@
 use std::marker;
 
+use o3::depot::capacity;
 use schedule::{Plane, queue};
 
 use crate::{
@@ -38,8 +39,18 @@ where
         self,
         owners: owner::Capacity,
     ) -> Result<Plane<'d, R, quota::Bounded, queue::Owned<'d, Source>>, queue::PrepareError> {
+        self.try_prepare_with_capacity(owners, capacity::Count::MAX)
+    }
+
+    /// Caps each route's physical slots independently of the global admission limit.
+    /// Retired slots are not replaced from the unallocated declared suffix.
+    pub fn try_prepare_with_capacity<Source>(
+        self,
+        owners: owner::Capacity,
+        physical: capacity::Count,
+    ) -> Result<Plane<'d, R, quota::Bounded, queue::Owned<'d, Source>>, queue::PrepareError> {
         let tasks = R::TASKS;
-        let routes = R::try_build().map_err(queue::PrepareError::Routes)?;
+        let routes = R::try_build_with_capacity(physical).map_err(queue::PrepareError::Routes)?;
         let queue = queue::Owned::try_new(tasks, owners)?;
         let quota = quota::Bounded::new(self.limit, tasks);
         Ok(Plane::from_parts(routes, quota, queue))

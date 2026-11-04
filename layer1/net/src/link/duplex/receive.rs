@@ -170,23 +170,7 @@ impl<'d> Receive<'d> {
         self.2 = true;
         let pause = match self.0 {
             Arm::Exhausted => Pause::Exhausted,
-            Arm::Disarmed
-            | Arm::Active
-            | Arm::ResourcePending
-            | Arm::ApplicationPending
-            | Arm::BothPending
-            | Arm::ResourceInflight
-            | Arm::ApplicationInflight
-            | Arm::BothInflight
-            | Arm::ResumedInflight
-            | Arm::ResourceExhausted
-            | Arm::ApplicationExhausted
-            | Arm::BothExhausted
-            | Arm::BufferProbeReady
-            | Arm::BufferProbeActive
-            | Arm::BufferWaiting
-            | Arm::BufferReady
-            | Arm::CancelRejected => Pause::Active,
+            _ => Pause::Active,
         };
         self.0 = match self.0 {
             Arm::Active => Arm::ApplicationPending,
@@ -232,18 +216,7 @@ impl<'d> Receive<'d> {
             Arm::BothInflight => Arm::ApplicationInflight,
             Arm::ResourceExhausted => Arm::Exhausted,
             Arm::BothExhausted => Arm::ApplicationExhausted,
-            Arm::Disarmed
-            | Arm::Active
-            | Arm::ApplicationPending
-            | Arm::ApplicationInflight
-            | Arm::ResumedInflight
-            | Arm::Exhausted
-            | Arm::ApplicationExhausted
-            | Arm::BufferProbeReady
-            | Arm::BufferProbeActive
-            | Arm::BufferWaiting
-            | Arm::BufferReady
-            | Arm::CancelRejected => return None,
+            _ => return None,
         };
         self.0 = next;
         Some(Rearm::from_needed(self.is_armable(closing)))
@@ -261,18 +234,7 @@ impl<'d> Receive<'d> {
             Arm::BothInflight => Arm::ResourceInflight,
             Arm::ApplicationExhausted => Arm::Exhausted,
             Arm::BothExhausted => Arm::ResourceExhausted,
-            Arm::Disarmed
-            | Arm::Active
-            | Arm::ResourcePending
-            | Arm::ResourceInflight
-            | Arm::ResumedInflight
-            | Arm::Exhausted
-            | Arm::ResourceExhausted
-            | Arm::BufferProbeReady
-            | Arm::BufferProbeActive
-            | Arm::BufferWaiting
-            | Arm::BufferReady
-            | Arm::CancelRejected => self.0,
+            _ => self.0,
         };
         self.0 = next;
         Some(Rearm::from_needed(self.is_armable(closing)))
@@ -300,14 +262,7 @@ impl<'d> Receive<'d> {
                     | Arm::BothInflight
                     | Arm::ResumedInflight
                     | Arm::CancelRejected => Some(Observation::Normal(Rearm::Idle)),
-                    Arm::Disarmed
-                    | Arm::Exhausted
-                    | Arm::ResourceExhausted
-                    | Arm::ApplicationExhausted
-                    | Arm::BothExhausted
-                    | Arm::BufferProbeReady
-                    | Arm::BufferWaiting
-                    | Arm::BufferReady => None,
+                    _ => None,
                 };
             }
             Flow::Last => {}
@@ -320,14 +275,7 @@ impl<'d> Receive<'d> {
             Arm::BothPending | Arm::BothInflight => Arm::BothExhausted,
             Arm::BufferProbeActive => Arm::BufferWaiting,
             Arm::CancelRejected => Arm::Disarmed,
-            Arm::Disarmed
-            | Arm::Exhausted
-            | Arm::ResourceExhausted
-            | Arm::ApplicationExhausted
-            | Arm::BothExhausted
-            | Arm::BufferProbeReady
-            | Arm::BufferWaiting
-            | Arm::BufferReady => return None,
+            _ => return None,
         };
         self.1 = None;
         self.0 = next;
@@ -411,6 +359,7 @@ impl Resume<'_> {
 }
 
 const _: () = {
+    assert!(mem::size_of::<Arm>() == mem::size_of::<u16>());
     let fields = mem::size_of::<Arm>() + mem::size_of::<Option<flight::Flight<'_, kind::Recv>>>();
     let align = mem::align_of::<Receive<'_>>();
     assert!(mem::size_of::<Receive<'_>>() == fields.div_ceil(align) * align);

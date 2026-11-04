@@ -1,4 +1,4 @@
-use std::{marker, num, ptr};
+use std::{marker, ptr};
 
 use crate::link::egress::load::credit::wait::tree;
 
@@ -9,7 +9,6 @@ pub(in crate::link::egress::load::credit::wait) struct Nodes<'a> {
 
 pub(in crate::link::egress::load::credit::wait) struct NodeView<'a> {
     pub(super) pointer: ptr::NonNull<tree::Node>,
-    pub(super) len: num::NonZero<u32>,
     pub(super) borrow: marker::PhantomData<&'a [tree::Node]>,
 }
 
@@ -34,10 +33,6 @@ impl Nodes<'_> {
 }
 
 impl NodeView<'_> {
-    pub(in crate::link::egress::load::credit::wait) const fn len(&self) -> usize {
-        self.len.get() as usize
-    }
-
     pub(in crate::link::egress::load::credit::wait) fn get(
         &self,
         index: tree::Index,

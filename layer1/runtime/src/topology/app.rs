@@ -39,7 +39,7 @@ where
     }
 
     pub fn with_lent<'report, B>(
-        self,
+        mut self,
         report: &'report mut session::Completion,
         build: B,
     ) -> lending::Result<'report, B::Error, B::Output>
@@ -47,7 +47,7 @@ where
         A: lending::Root<'d> + lending::raw::Resume<'d>,
         B: lending::Execute<'life, 'd, A, Q>,
     {
-        session::Lent::new(self.session.core).run(report, self.app, build)
+        lending::Stage::new(&mut self.session).with_lent(report, self.app, build)
     }
 
     pub fn with_quiesce<'report, R>(

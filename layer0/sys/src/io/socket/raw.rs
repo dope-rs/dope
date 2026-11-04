@@ -73,7 +73,7 @@ pub trait Source: errno::Source {
     ) -> Result<X::Length, E> {
         let len: bounded::U32<0, { i32::MAX as u32 }> = len.into();
         let capacity = len.get() as usize;
-        let raw = unsafe { libc::send(file.as_raw_fd(), ptr.cast(), capacity, 0) };
+        let raw = unsafe { libc::send(file.as_raw_fd(), ptr.cast(), capacity, libc::MSG_NOSIGNAL) };
         // SAFETY: send completes at most the admitted c_int-bounded input extent.
         Ok(unsafe {
             kernel::raw::Status::from_count(raw)

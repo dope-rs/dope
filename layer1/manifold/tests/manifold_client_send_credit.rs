@@ -2,12 +2,7 @@ use crate::common::manifold::client::error;
 
 pub mod common;
 
-use std::{
-    cell::{Cell, RefCell},
-    fmt::Debug,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, fmt::Debug, rc::Rc, time::Duration};
 
 use dope_core::{
     dope_sys::io::socket::record::Record,
@@ -29,7 +24,6 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-use o3::buffer::storage::{self, Shared};
 
 use crate::common::{
     contract::Report,
@@ -58,9 +52,7 @@ fn release_wakes_request() {
             }
         },
         |address, release| {
-            let conn = Gate::new();
-            let moved = Gate::new();
-            let sent = Gate::new();
+            let signals = Signals::default();
 
             let audit = Rc::new(Report::default());
 
@@ -69,21 +61,10 @@ fn release_wakes_request() {
                     .egress(egress::Config::shared(egress::Credit::fixed::<1, 1>()))
                     .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, profile::Slow>>(Value::new(
                         lane::Lane {
-                            create: || {
-                                let value = Shared::try_copy(b"x").expect("shared request payload");
-                                egress::Load::new(value)
-                                    .try_nonempty()
-                                    .expect("nonempty request payload")
-                            },
                             audit: audit.clone(),
 
                             pending: [const { Cell::new(None) }; 3],
-                            signals: Signals {
-                                conn: conn.clone(),
-                                moved: moved.clone(),
-                                sent: sent.clone(),
-                                closed: Gate::new(),
-                            },
+                            signals: signals.clone(),
                             abort: Cell::new(false),
                         },
                     ))
@@ -95,21 +76,21 @@ fn release_wakes_request() {
                     &mut finish,
                     |case| {
                         assert_eq!(
-                            case.try_wait(&conn, 2).expect("progress wait"),
+                            case.try_wait(&signals.conn, 2).expect("progress wait"),
                             fibers::Wait::Reached
                         );
                         assert_eq!(
-                            case.try_wait(&moved, 1).expect("progress wait"),
+                            case.try_wait(&signals.moved, 1).expect("progress wait"),
                             fibers::Wait::Reached
                         );
-                        assert_eq!(moved.hits(), 1);
+                        assert_eq!(signals.moved.hits(), 1);
                         release.try_fire().expect("release scripted peers");
                         assert_eq!(
-                            case.try_wait(&moved, 2).expect("progress wait"),
+                            case.try_wait(&signals.moved, 2).expect("progress wait"),
                             fibers::Wait::Reached
                         );
                         assert_eq!(
-                            case.try_wait(&sent, 2).expect("progress wait"),
+                            case.try_wait(&signals.sent, 2).expect("progress wait"),
                             fibers::Wait::Reached
                         );
                     },
@@ -123,8 +104,8 @@ fn release_wakes_request() {
             );
 
             checked(&audit);
-            assert_eq!(moved.hits(), 2);
-            assert_eq!(sent.hits(), 2);
+            assert_eq!(signals.moved.hits(), 2);
+            assert_eq!(signals.sent.hits(), 2);
         },
     )
     .expect("gated peers");
@@ -163,10 +144,7 @@ fn close_relays_capacity() {
             assert_eq!(count, 2);
         },
         |address, release| {
-            let conn = Gate::new();
-            let moved = Gate::new();
-            let sent = Gate::new();
-            let closed = Gate::new();
+            let signals = Signals::default();
 
             let audit = Rc::new(Report::default());
 
@@ -175,21 +153,10 @@ fn close_relays_capacity() {
                     .egress(egress::Config::shared(egress::Credit::fixed::<1, 1>()))
                     .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, profile::Slow>>(Value::new(
                         lane::Lane {
-                            create: || {
-                                let value = Shared::try_copy(b"x").expect("shared request payload");
-                                egress::Load::new(value)
-                                    .try_nonempty()
-                                    .expect("nonempty request payload")
-                            },
                             audit: audit.clone(),
 
                             pending: [const { Cell::new(None) }; 3],
-                            signals: Signals {
-                                conn: conn.clone(),
-                                moved: moved.clone(),
-                                sent: sent.clone(),
-                                closed: closed.clone(),
-                            },
+                            signals: signals.clone(),
                             abort: Cell::new(true),
                         },
                     ))
@@ -201,21 +168,21 @@ fn close_relays_capacity() {
                     &mut finish,
                     |case| {
                         assert_eq!(
-                            case.try_wait(&conn, 3).expect("progress wait"),
+                            case.try_wait(&signals.conn, 3).expect("progress wait"),
                             fibers::Wait::Reached
                         );
                         assert_eq!(
-                            case.try_wait(&closed, 1).expect("progress wait"),
+                            case.try_wait(&signals.closed, 1).expect("progress wait"),
                             fibers::Wait::Reached
                         );
-                        assert_eq!(moved.hits(), 1);
+                        assert_eq!(signals.moved.hits(), 1);
                         release.try_fire().expect("release scripted peers");
                         assert_eq!(
-                            case.try_wait(&moved, 2).expect("progress wait"),
+                            case.try_wait(&signals.moved, 2).expect("progress wait"),
                             fibers::Wait::Reached
                         );
                         assert_eq!(
-                            case.try_wait(&sent, 2).expect("progress wait"),
+                            case.try_wait(&signals.sent, 2).expect("progress wait"),
                             fibers::Wait::Reached
                         );
                     },
@@ -229,8 +196,8 @@ fn close_relays_capacity() {
             );
 
             checked(&audit);
-            assert_eq!(moved.hits(), 2);
-            assert_eq!(sent.hits(), 2);
+            assert_eq!(signals.moved.hits(), 2);
+            assert_eq!(signals.sent.hits(), 2);
         },
     )
     .expect("gated peers");
@@ -279,18 +246,7 @@ fn credit_grants_source() {
                 audit: audit.clone(),
 
                 requests: Requests {
-                    create: |length: Option<usize>| {
-                        let length = length.expect("each connection receives one request");
-                        assert!(matches!(length, 5 | 8), "unsupported test request length");
-                        let marker = if length == 5 { b'5' } else { b'8' };
-                        let value = storage::Shared::try_from(&mut vec![marker; length])
-                            .expect("request storage freeze");
-                        let value = egress::Load::new(value)
-                            .try_nonempty()
-                            .expect("assigned request is nonempty");
-                        (length, value)
-                    },
-                    pending: RefCell::default(),
+                    pending: Default::default(),
                     next: next.clone(),
                     order: order.clone(),
                     admitted: admitted.clone(),

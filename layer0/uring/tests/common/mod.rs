@@ -15,11 +15,15 @@ pub enum DirectoryError {
 pub struct Directory(std::ffi::CString, o3::base::marker::ThreadBound);
 
 impl Directory {
-    pub fn try_new(base: &std::path::Path, tag: &str, nonce: u128) -> Result<Self, DirectoryError> {
+    pub fn try_new(tag: &str) -> Result<Self, DirectoryError> {
         use dope_sys::io::file::{File as _, Mode};
         use std::os::unix::ffi::OsStrExt as _;
 
-        let path = base.join(format!("du-{tag}-{}-{nonce}", std::process::id()));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("fixture clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("du-{tag}-{}-{nonce}", std::process::id()));
         let encoded =
             std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(DirectoryError::Path)?;
         dope_uring::Uring::mkdir::<dope_sys::Errno>(&encoded, Mode::new(0o700))

@@ -90,7 +90,7 @@ impl<'d, ID: Identity, H: Handler<'d, ID>> Complete<'d> for Endpoint<'d, ID, H> 
             event::Kind::Send(done) => done,
             event => return ControlFlow::Break(event.into()),
         };
-        match this.sender.retire().complete(done) {
+        match this.sender.complete(done) {
             Ok(outcome) => {
                 if let Some(outcome) = outcome {
                     this.handler.sent(outcome);
@@ -129,11 +129,9 @@ unsafe impl<'d, ID: Identity, H: Handler<'d, ID>> dispatch::raw::Manifold<'d>
     {
         let mut this = self.as_mut().project();
         if !this.sender.is_accepting() {
-            this.sender
-                .retire()
-                .drain(turn.reborrow().maint(), |error| {
-                    this.handler.as_mut().sent(send::Outcome::Submit(error));
-                });
+            this.sender.drain(turn.reborrow().maint(), |error| {
+                this.handler.as_mut().sent(send::Outcome::Submit(error));
+            });
             for member in this.members.iter_mut() {
                 pin::Pin::new(&mut member.receive).retry_stop(driver);
             }
@@ -172,7 +170,7 @@ unsafe impl<'d, ID: Identity, H: Handler<'d, ID>> dispatch::raw::Manifold<'d>
         for member in this.members.iter_mut() {
             pin::Pin::new(&mut member.receive).stop(driver);
         }
-        this.sender.retire().drain(turn.maint(), |error| {
+        this.sender.drain(turn.maint(), |error| {
             this.handler.as_mut().sent(send::Outcome::Submit(error));
         });
         self
@@ -241,7 +239,7 @@ impl<'d, ID: Identity, H> Endpoint<'d, ID, H> {
                 },
                 work,
                 driver,
-                None::<fn(_)>,
+                drop,
             )
             .map_err(Failure::Send)
     }
@@ -281,7 +279,7 @@ impl<'d, ID: Identity, H: Handler<'d, ID>> executor::raw::Finishes<'d, Self>
         let (mut owner, install, proof) = finish.into_parts();
         let mut this = owner.as_mut().project();
         if proof.is_forced() || !this.sender.is_empty() {
-            this.sender.retire().finish(|error| {
+            this.sender.finish(|error| {
                 this.handler.as_mut().sent(send::Outcome::Submit(error));
             });
         }

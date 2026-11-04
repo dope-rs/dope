@@ -16,7 +16,7 @@ pub(super) enum End<E> {
 
 /// Exclusive slot capability whose terminal payload is proven failed.
 #[repr(C)]
-pub(in crate::reply) struct Fault<'a, 's, 'arena, 'credits, 'region, D, E> {
+pub struct Fault<'a, 's, 'arena, 'credits, 'region, D, E = D> {
     credit: Credit<'a, 's, 'arena, 'credits, 'region, D, E>,
     failure: E,
 }
@@ -52,23 +52,21 @@ impl<'a, 's, 'arena, 'credits, 'region, D, E> Fault<'a, 's, 'arena, 'credits, 'r
                 None
             }
             End::Complete => Some(outcome::Terminal::Complete(outcome::Completion { slot })),
-            End::Failed(failure) => Some(outcome::Terminal::Failed(outcome::Fault {
-                slot: Self {
-                    credit: Credit {
-                        slot,
-                        amount: failure.amount,
-                    },
-                    failure: failure.value,
+            End::Failed(failure) => Some(outcome::Terminal::Failed(Self {
+                credit: Credit {
+                    slot,
+                    amount: failure.amount,
                 },
+                failure: failure.value,
             })),
         }
     }
 
-    pub(in crate::reply) fn pop(&mut self) -> Option<D> {
+    pub fn pop(&mut self) -> Option<D> {
         self.credit.slot.pop()
     }
 
-    pub(in crate::reply) fn into_error(self) -> E {
+    pub fn into_error(self) -> E {
         self.failure
     }
 }

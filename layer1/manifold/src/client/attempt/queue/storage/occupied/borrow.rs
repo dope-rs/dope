@@ -9,7 +9,7 @@ use crate::client::attempt::{self, queue::storage::Occupied};
 pub(in crate::client::attempt::queue) struct Borrow<E>(E);
 
 impl<E> Borrow<E> {
-    pub(in crate::client::attempt::queue::storage) fn new(entry: E) -> Self {
+    pub(in crate::client::attempt::queue) fn new(entry: E) -> Self {
         Self(entry)
     }
 }
@@ -20,9 +20,7 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Borrow<Occupied<'a, 'd, T, ID
         plan: attempt::Plan<T>,
         deferred: &Cell<Option<attempt::Id<'d, ID>>>,
     ) {
-        if self.0.state().defer(plan) != attempt::Transition::Applied {
-            return;
-        }
+        self.0.state().defer(plan);
         let first = deferred.get().is_none();
         if first {
             deferred.set(Some(self.0.key));

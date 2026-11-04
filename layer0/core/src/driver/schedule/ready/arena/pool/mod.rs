@@ -1,45 +1,9 @@
-use std::{cell, marker, num};
-
-use o3::{
-    mem,
-    mem::{Return, lease::Open},
-};
-pub(in crate::driver::schedule::ready) use permit::Permit;
+use std::{cell, num};
 
 use crate::driver::{
     route,
     schedule::ready::{self, task},
 };
-
-mod permit;
-
-/// Affine proof that one checked-out slot exhausted its generation.
-pub(in crate::driver::schedule::ready) struct Retirement<'d> {
-    pub(in crate::driver::schedule::ready) brand:
-        marker::PhantomData<fn(&'d ready::Slots) -> &'d ready::Slots>,
-}
-
-pub(in crate::driver::schedule::ready) enum Reclaimed<'d> {
-    Reusable(Permit<'d>),
-    Retired(Retirement<'d>),
-}
-
-impl Retirement<'_> {
-    pub(in crate::driver::schedule::ready) const fn new() -> Self {
-        Self {
-            brand: marker::PhantomData,
-        }
-    }
-}
-
-#[must_use = "a task vacancy must be committed or released"]
-#[repr(C)]
-pub(in crate::driver::schedule::ready) struct Vacancy<'d> {
-    pool: &'d Pool,
-    slots: &'d ready::Slots,
-    index: ready::FreeIndex,
-    rest: State,
-}
 
 /// Counts terminate free chains; every tail retains its own nonzero index.
 /// Splitting and restoring transfer the exact count with the corresponding links.
@@ -90,25 +54,6 @@ pub(in crate::driver::schedule::ready) struct Chain {
     state: cell::Cell<Option<Detached>>,
 }
 
-#[must_use = "a task lease must be committed or released"]
-#[repr(transparent)]
-pub(in crate::driver::schedule::ready) struct Lease<'d> {
-    held: mem::Lease<Restore<'d>, Open>,
-}
-
-struct Restore<'d> {
-    pool: &'d Pool,
-    slots: &'d ready::Slots,
-}
-
-impl<'d> Vacancy<'d> {
-    pub(in crate::driver::schedule::ready) fn commit(self) -> Permit<'d> {
-        let key = self.slots.mutation().reserve(self.index);
-        self.pool.state.set(self.rest);
-        Permit::new(key)
-    }
-}
-
 impl Chain {
     fn new(head: ready::FreeIndex, tail: ready::FreeIndex, count: num::NonZero<u16>) -> Self {
         Self {
@@ -119,12 +64,12 @@ impl Chain {
     pub(in crate::driver::schedule::ready) fn try_claim<'a, 'd>(
         &'a self,
         slots: &'d ready::Slots,
-    ) -> Option<(Permit<'d>, &'a Chain)> {
+    ) -> Option<(ready::ReservedKey<'d>, &'a Chain)> {
         let state = self.state.get()?;
         let rest = match num::NonZero::<u16>::new(state.count.get() - 1) {
             None => None,
             Some(count) => {
-                let head = slots.mutation().next(state.head);
+                let head = slots.next(state.head);
                 Some(Detached {
                     head,
                     tail: state.tail,
@@ -132,9 +77,9 @@ impl Chain {
                 })
             }
         };
-        let key = slots.mutation().reserve(state.head);
+        let key = slots.reserve(state.head);
         self.state.set(rest);
-        Some((Permit::new(key), self))
+        Some((key, self))
     }
 
     pub(in crate::driver::schedule::ready) fn restore<'d>(
@@ -149,7 +94,7 @@ impl Chain {
             Some(state) => state.count.saturating_add(1),
         };
         let head = state.map_or(index, |state| state.head);
-        slots.mutation().publish(key, head);
+        slots.publish(key, head);
         self.state.set(Some(Detached {
             head: index,
             tail: state.map_or(index, |state| state.tail),
@@ -204,20 +149,6 @@ impl State {
     }
 }
 
-impl Lease<'_> {
-    pub(in crate::driver::schedule::ready) fn commit(self) -> Chain {
-        self.held.into_parts().1
-    }
-}
-
-impl Return for Restore<'_> {
-    type Item = Chain;
-
-    fn return_item(self, chain: Self::Item) {
-        self.pool.restore(self.slots, &chain);
-    }
-}
-
 #[repr(transparent)]
 pub(in crate::driver::schedule::ready) struct Pool {
     state: cell::Cell<State>,
@@ -230,21 +161,18 @@ impl Pool {
         }
     }
 
-    fn vacancy<'d>(&'d self, slots: &'d ready::Slots) -> Option<Vacancy<'d>> {
+    fn claim<'d>(&self, slots: &'d ready::Slots) -> Option<ready::ReservedKey<'d>> {
         let state = self.state.get().0?;
         let rest = match num::NonZero::<u16>::new(state.count.get() - 1) {
             None => State::empty(),
             Some(count) => {
-                let head = slots.mutation().next(state.head);
+                let head = slots.next(state.head);
                 State::occupied(head, count)
             }
         };
-        Some(Vacancy {
-            pool: self,
-            slots,
-            index: state.head,
-            rest,
-        })
+        let key = slots.reserve(state.head);
+        self.state.set(rest);
+        Some(key)
     }
 
     pub(in crate::driver::schedule::ready) fn try_dispatch<'d>(
@@ -252,35 +180,33 @@ impl Pool {
         slots: &'d ready::Slots,
         target: route::Token,
     ) -> Result<ready::DispatchKey<'d>, ready::Capacity> {
-        let vacancy = self.vacancy(slots).ok_or(ready::Capacity::new(0))?;
-        let held = vacancy.commit();
-        Ok(slots.mutation().dispatch(held.into_key(), target))
+        let held = self.claim(slots).ok_or(ready::Capacity::new(0))?;
+        Ok(slots.dispatch(held, target))
     }
 
     pub(in crate::driver::schedule::ready) fn try_topology<'d>(
         &'d self,
         slots: &'d ready::Slots,
     ) -> Result<ready::TopologyKey<'d>, ready::Capacity> {
-        let vacancy = self.vacancy(slots).ok_or(ready::Capacity::new(0))?;
-        let held = vacancy.commit();
-        Ok(slots.mutation().topology(held.into_key()))
+        let held = self.claim(slots).ok_or(ready::Capacity::new(0))?;
+        Ok(slots.topology(held))
     }
 
-    pub(in crate::driver::schedule::ready) fn prepare_task<'d>(
+    pub(in crate::driver::schedule::ready) fn try_task<'d>(
         &'d self,
         slots: &'d ready::Slots,
-    ) -> Result<Vacancy<'d>, task::Error> {
-        self.vacancy(slots).ok_or(task::Error::Capacity {
+    ) -> Result<ready::ReservedKey<'d>, task::Error> {
+        self.claim(slots).ok_or(task::Error::Capacity {
             requested: num::NonZero::<usize>::MIN,
             available: 0,
         })
     }
 
-    pub(in crate::driver::schedule::ready) fn try_lease<'d>(
-        &'d self,
-        slots: &'d ready::Slots,
+    pub(in crate::driver::schedule::ready) fn try_take(
+        &self,
+        slots: &ready::Slots,
         count: num::NonZero<usize>,
-    ) -> Result<Lease<'d>, task::Error> {
+    ) -> Result<Chain, task::Error> {
         let state = self.state.get();
         let Some(state) = state
             .0
@@ -295,24 +221,19 @@ impl Pool {
         let wanted = unsafe { num::NonZero::<u16>::new_unchecked(count.get() as u16) };
         let mut tail = state.head;
         for _ in 1..wanted.get() {
-            tail = slots.mutation().next(tail);
+            tail = slots.next(tail);
         }
         let rest = state.count.get() - wanted.get();
         let next = match num::NonZero::<u16>::new(rest) {
             None => State::empty(),
             Some(left) => {
-                let head = slots.mutation().next(tail);
+                let head = slots.next(tail);
                 State::occupied(head, left)
             }
         };
-        slots.mutation().link(tail, tail);
+        slots.link(tail, tail);
         self.state.set(next);
-        Ok(Lease {
-            held: mem::Lease::open(
-                Restore { pool: self, slots },
-                Chain::new(state.head, tail, wanted),
-            ),
-        })
+        Ok(Chain::new(state.head, tail, wanted))
     }
 
     pub(in crate::driver::schedule::ready) fn free_task<'d>(
@@ -342,15 +263,13 @@ impl Pool {
         slots: &'d ready::Slots,
         held: ready::ReservedKey<'d>,
     ) {
-        let key = match held.renew(slots) {
+        let key = match slots.renew(held) {
             ready::Renewal::Reusable(key) => key,
-            ready::Renewal::Retired(Retirement {
-                brand: marker::PhantomData,
-            }) => return,
+            ready::Renewal::Retired => return,
         };
         let index = ready::FreeIndex::from_key(key.key());
         let state = self.state.get();
-        slots.mutation().publish(key, state.link(index));
+        slots.publish(key, state.link(index));
         self.state.set(state.prepend(Returned::one(index)));
     }
 
@@ -359,7 +278,7 @@ impl Pool {
             return;
         };
         let state = self.state.get();
-        slots.mutation().link(chain.tail, state.link(chain.tail));
+        slots.link(chain.tail, state.link(chain.tail));
         self.state.set(state.prepend(chain.into()));
     }
 }
@@ -370,7 +289,4 @@ const _: () = {
     assert!(std::mem::size_of::<Detached>() == 3 * std::mem::size_of::<u16>());
     assert!(std::mem::size_of::<Option<Detached>>() == std::mem::size_of::<Detached>());
     assert!(std::mem::size_of::<Chain>() == 3 * std::mem::size_of::<u16>());
-    assert!(std::mem::size_of::<Lease<'static>>() == 3 * std::mem::size_of::<usize>());
-    assert!(std::mem::size_of::<Option<Lease<'static>>>() == std::mem::size_of::<Lease<'static>>());
-    assert!(std::mem::size_of::<Vacancy<'static>>() == 3 * std::mem::size_of::<usize>());
 };

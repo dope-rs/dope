@@ -168,18 +168,15 @@ impl<'s, const LANES: usize, const N: usize> Ledger<'s, LANES, N> {
             return None;
         }
         let decoded = decode(probe.request(), lease)?;
-        let previous = mem::replace(&mut slot.value, state::Branch::Empty);
-        match previous {
-            state::Branch::Waiting {
-                attempt: probe,
-                transaction: lease,
-            } => {
-                reg.ids.release(lease);
-                return Some((waiting::State::new(slot, reg, probe, hard), decoded));
-            }
-            previous => slot.value = previous,
-        }
-        None
+        let state::Branch::Waiting {
+            attempt: probe,
+            transaction: lease,
+        } = mem::replace(&mut slot.value, state::Branch::Empty)
+        else {
+            unreachable!("waiting");
+        };
+        reg.ids.release(lease);
+        Some((waiting::State::new(slot, reg, probe, hard), decoded))
     }
 
     pub(in crate::storage::queries) fn rollback(

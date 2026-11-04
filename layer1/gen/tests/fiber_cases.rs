@@ -1,14 +1,8 @@
-use std::{cell::Cell, convert::Infallible, rc::Rc};
+use std::{cell::Cell, rc::Rc};
 
 use dope_test::{fibers::TEST, harness::scenario::TIMEOUT};
 use engine::{
-    core::{
-        driver::life::{
-            creation::Attempt,
-            recovery::{Policy, Recovery},
-        },
-        io::Reclaimed,
-    },
+    core::driver::life::{creation::Attempt, recovery::Policy},
     runtime::executor::session::Completion,
 };
 
@@ -99,7 +93,7 @@ fn nested_await_completes() {
                 assert_eq!(Rc::strong_count(&retained), 1);
                 result
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         domain
             .as_ref()
@@ -146,7 +140,7 @@ fn std_macros_lower() {
                     app.block_on(fiber)
                 })
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         domain
             .as_ref()
@@ -188,7 +182,7 @@ fn clone_keeps_local_owned() {
                     app.block_on(fiber)
                 })
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         domain
             .as_ref()
@@ -202,15 +196,4 @@ fn clone_keeps_local_owned() {
         assert_eq!(user, b"alice");
         assert_eq!(rank, 5);
     });
-}
-
-fn shutdown(event: Reclaimed) {
-    assert!(
-        matches!(event, Reclaimed::Shutdown),
-        "unexpected operation: {event:?}"
-    );
-}
-
-fn recover(failure: Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
 }

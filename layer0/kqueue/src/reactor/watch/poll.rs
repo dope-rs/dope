@@ -70,10 +70,7 @@ where
         self.check()?;
         while !files.changes().is_empty() {
             let mut tail = files.edit().tail(ready::RECEIPTS);
-            if let Err(failures) = self.receipts(tail.changes()) {
-                tail.retry();
-                return Err(failures);
-            }
+            self.receipts(tail.changes())?;
             tail.commit();
         }
         Ok(())
@@ -135,7 +132,6 @@ where
         if !deletes.as_slice().is_empty()
             && let Err(failures) = self.receipts(deletes)
         {
-            batch.retry();
             return Err(failures.first);
         }
         let empty = updates.as_slice().is_empty();
@@ -153,7 +149,6 @@ where
                     batch.commit();
                     &[]
                 } else {
-                    batch.retry();
                     return Err(self.fail(F::from(ready::Cause::Wait(errno))));
                 }
             }

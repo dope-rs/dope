@@ -72,7 +72,7 @@ pub(in crate::network::datagram) fn run<
                 |_| fd,
                 work,
                 driver,
-                Some(|event| transfer(handler.as_mut(), event)),
+                |event| transfer(handler.as_mut(), event),
             )
         }
     };

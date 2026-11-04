@@ -32,7 +32,7 @@ impl<'d> queue::Ops<'d> for Loan<'_, 'd> {
 }
 
 impl<'d> queue::Write<'d> for Loan<'_, 'd> {
-    fn prepare_push<T>(&mut self, done: T) -> queue::Push<'_, 'd, T> {
-        queue::Write::prepare_push(&mut self.events, done)
+    fn prepare_push(&mut self) -> Option<queue::Vacant<'_, 'd>> {
+        queue::Write::prepare_push(&mut self.events)
     }
 }

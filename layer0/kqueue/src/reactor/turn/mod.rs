@@ -15,7 +15,7 @@ use crate::{
 mod lanes;
 
 #[derive(Debug)]
-pub struct Work<Q> {
+pub(crate) struct Work<Q> {
     quota: Q,
 }
 

@@ -1,6 +1,6 @@
-use std::pin;
+use std::{ops::ControlFlow, pin};
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{retained, route, route::Identity, schedule};
 use dope_net::{
     link::{
         egress::data::{self, compose, exec},
@@ -14,7 +14,7 @@ use handler::{failures, policy::Policy};
 use crate::{
     app::{
         env,
-        receive::{self, Mode, ingress},
+        receive::{self, ingress},
     },
     network::listener::{
         self, conn, handler,
@@ -44,10 +44,22 @@ where
         &mut *self.project().owner.pool_mut()
     }
 
+    fn admit(
+        self: pin::Pin<&mut Self>,
+        target: impl FnOnce() -> Option<route::Target<'d, ID>>,
+        turn: schedule::Turn<'_, 'd>,
+        driver: &mut retained::Context<'_, '_, 'd>,
+    ) -> ControlFlow<schedule::ready::Target<'d>> {
+        control::admit_deadline(self, target, turn, driver)
+    }
+
     fn receive<'input>(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        input: <Self::Input as Mode<Self::Wire>>::Value<'input, 'w, 'd>,
+        input: <crate::Ingress<Self::Wire, Self::Input> as ingress::Strategy<
+            Self::Wire,
+            Self::Input,
+        >>::Value<'input, 'w, 'd>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input> {

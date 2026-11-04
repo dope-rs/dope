@@ -1,9 +1,5 @@
 use dope_core::{
-    driver::{
-        result::{SubmitCause, SubmitError},
-        retained::flight,
-        route::{self, kind},
-    },
+    driver::{retained::flight, route::kind},
     io::transfer,
 };
 use o3::depot::queue::ring::inline;
@@ -63,37 +59,9 @@ fn release<const N: usize, const B: usize>(mut block: inline::Lease<'_, Block<B>
     block.release();
 }
 impl<'p, 'd, const N: usize, const B: usize> InFlight<'p, 'd, N, B> {
-    pub(super) fn try_new(
-        pending: Pending<'p, N, B>,
-        result: Result<flight::Flight<'d, kind::Write>, SubmitError>,
-    ) -> Result<Self, (Pending<'p, N, B>, Failure)> {
-        match result {
-            Ok(flight) => Ok(Self::Submitted { pending, flight }),
-            Err(error) => match error.cause() {
-                SubmitCause::Full => Ok(Self::Rejected { pending }),
-                SubmitCause::IdentityExhausted => Err((pending, Failure::Submission(error))),
-            },
-        }
-    }
-    pub(super) fn complete(
-        self,
-        target: route::Erased<'d, kind::Write>,
-    ) -> Result<Pending<'p, N, B>, Self> {
-        match self {
-            Self::Submitted { pending, flight } if flight.matches(target) => {
-                drop(flight);
-                Ok(pending)
-            }
-            active => Err(active),
-        }
-    }
     pub(super) fn cancel(self) -> Pending<'p, N, B> {
         match self {
-            Self::Submitted { pending, flight } => {
-                drop(flight);
-                pending
-            }
-            Self::Rejected { pending } => pending,
+            Self::Submitted { pending, .. } | Self::Rejected { pending } => pending,
         }
     }
 }

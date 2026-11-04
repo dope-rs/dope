@@ -28,7 +28,7 @@ use crate::common::{
     cancel::{Context, Event, pending::Pending},
     slots::{
         Slots,
-        inputs::{Layout, Owned, Physical},
+        inputs::{Layout, Physical},
     },
     socket::try_pair,
 };
@@ -260,7 +260,7 @@ fn receipts_keep_readiness() {
     let mut poll = Poll::try_new().expect("reactor owner");
     let (handle, _peer) = try_pair().expect("first socket");
     files
-        .install(Owned::from(Physical::at::<0>()), handle)
+        .install(Physical::at::<0>(), handle)
         .expect("first owner");
     files
         .try_read(Physical::at::<0>())
@@ -268,7 +268,7 @@ fn receipts_keep_readiness() {
         .delete();
     let (handle, mut peer) = try_pair().expect("second socket");
     files
-        .install(Owned::from(Physical::at::<1>()), handle)
+        .install(Physical::at::<1>(), handle)
         .expect("second owner");
     let key = NonZeroUsize::MIN.saturating_add(1);
     files

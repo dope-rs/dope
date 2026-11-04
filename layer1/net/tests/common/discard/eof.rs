@@ -1,10 +1,10 @@
-use std::{cell::Cell, convert::Infallible, ops::ControlFlow, rc::Rc};
+use std::{cell::Cell, convert::Infallible, rc::Rc};
 
 use dope_core::{
     driver::{
         life::{self, recovery},
         retained,
-        route::{Erased, KeyTag, kind, table::conn},
+        route::{Erased, KeyTag, Tag as _, kind, table::conn},
         schedule::ready,
         settings,
     },
@@ -35,6 +35,7 @@ use dope_net::{
 };
 use dope_test::{
     harness::peer,
+    reclaim::Reports,
     scope::{self, Driver},
 };
 use o3::buffer::storage::Shared;
@@ -56,18 +57,11 @@ pub fn run<M: input::Mode<Eof>>(
         &mut life::Scope<'_, 'd>,
         peer::Stream<'static>,
     ),
-    recover: impl recovery::Recover,
-    finish: impl for<'owner> FnOnce(Result<Result<(), Error>, scope::Error<'owner, Result<(), Error>>>),
 ) -> (Vec<Reclaimed>, Input) {
-    run_with::<M>(
-        false,
-        |pool, scope, (key, peer), _| {
-            test(pool, key, scope, peer);
-            Ok(())
-        },
-        recover,
-        finish,
-    )
+    run_with::<M>(false, |pool, scope, (key, peer), _| {
+        test(pool, key, scope, peer);
+        Ok(())
+    })
 }
 
 pub fn run_pair<M: input::Mode<Eof>>(
@@ -77,19 +71,12 @@ pub fn run_pair<M: input::Mode<Eof>>(
         &mut life::Scope<'_, 'd>,
         [peer::Stream<'static>; 2],
     ),
-    recover: impl recovery::Recover,
-    finish: impl for<'owner> FnOnce(Result<Result<(), Error>, scope::Error<'owner, Result<(), Error>>>),
 ) -> (Vec<Reclaimed>, Input) {
-    run_with::<M>(
-        true,
-        |pool, scope, (a, left), other| {
-            let (b, right) = other.ok_or(Error::Connection)?;
-            test(pool, [a, b], scope, [left, right]);
-            Ok(())
-        },
-        recover,
-        finish,
-    )
+    run_with::<M>(true, |pool, scope, (a, left), other| {
+        let (b, right) = other.ok_or(Error::Connection)?;
+        test(pool, [a, b], scope, [left, right]);
+        Ok(())
+    })
 }
 
 fn run_with<M: input::Mode<Eof>>(
@@ -100,10 +87,7 @@ fn run_with<M: input::Mode<Eof>>(
         Opened<'d>,
         Option<Opened<'d>>,
     ) -> Result<(), Error>,
-    recover: impl recovery::Recover,
-    finish: impl for<'owner> FnOnce(Result<Result<(), Error>, scope::Error<'owner, Result<(), Error>>>),
 ) -> (Vec<Reclaimed>, Input) {
-    let mut reports = Vec::new();
     let input = Rc::new(Cell::new(Input::Empty));
     let (files, cap) = if pair {
         (
@@ -119,12 +103,30 @@ fn run_with<M: input::Mode<Eof>>(
     let config = settings::Config::default()
         .with_files(files)
         .with_receive(settings::Receive::fixed::<2, 4096>());
+    let mut reports = Reports::new(config, [Route::ROUTE]);
     Driver::new(config).with_scope(
         |scope| prepare::<M>(scope, Eof::new(Rc::clone(&input)), cap, pair, test),
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
+        recovery::Policy::new(
+            |event| reports.push(event),
+            |failure: recovery::Recovery<'_, '_>| -> Infallible {
+                panic!("driver recovery: {:?}", failure.cause())
+            },
+        ),
+        |result| {
+            result
+                .as_ref()
+                .map_err(scope::Error::cause)
+                .expect("native lifecycle");
+            result
+                .ok()
+                .expect("driver result")
+                .expect("receive fixture");
+        },
     );
-    (reports, input.get())
+    (
+        reports.into_events().expect("descriptor reclamation"),
+        input.get(),
+    )
 }
 
 fn prepare<'d, M: input::Mode<Eof>>(
@@ -265,15 +267,7 @@ pub fn receive<'d>(scope: &mut life::Scope<'_, 'd>) -> Result<(Flow, recv::Kind<
         event::Kind::Recv(done) => done,
         other => return Err(Error::event(kind::Kind::Recv, other)),
     };
-    let mut observed = Flow::Last;
-    let done = match done.dispatch(|_, flow, value| {
-        observed = flow;
-        ControlFlow::<_, Infallible>::Break(value)
-    }) {
-        ControlFlow::Break(done) => done,
-        ControlFlow::Continue(never) => match never {},
-    };
-    Ok((observed, done.classify()))
+    Ok((done.flow(), done.classify()))
 }
 
 pub fn final_byte<'p, 'd, M: input::Mode<Eof>>(

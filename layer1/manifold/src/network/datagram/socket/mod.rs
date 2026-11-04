@@ -152,7 +152,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
             event::Kind::Send(done) => done,
             event => return ops::ControlFlow::Break(event.into()),
         };
-        match self.as_mut().project().sender.retire().complete(done) {
+        match self.as_mut().project().sender.complete(done) {
             Ok(_) => ops::ControlFlow::Continue(()),
             Err(done) => ops::ControlFlow::Break(event::Kind::Send(done).into()),
         }
@@ -177,7 +177,6 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
             .as_mut()
             .project()
             .sender
-            .retire()
             .settle(token, done, now, sink.as_mut())
         {
             Ok(()) => ops::ControlFlow::Continue(()),
@@ -207,7 +206,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         self: pin::Pin<&mut Self>,
         work: maint::Work<'_, 'd>,
     ) {
-        self.project().sender.retire().drain(work, drop);
+        self.project().sender.drain(work, drop);
     }
 
     pub(in crate::network::datagram) fn drain_to<H>(
@@ -220,10 +219,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         H: super::Settlement<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B>,
     {
-        self.project()
-            .sender
-            .retire()
-            .drain_event(token, work, now, sink);
+        self.project().sender.drain_event(token, work, now, sink);
     }
 
     pub(in crate::network::datagram) fn finish(
@@ -232,7 +228,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
     ) {
         let mut this = self.project();
         if ctx.is_forced() || !this.sender.is_empty() {
-            this.sender.retire().finish(drop);
+            this.sender.finish(drop);
         }
         this.receive.as_mut().finish(ctx);
     }
@@ -249,7 +245,6 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         let mut this = self.project();
         if ctx.is_forced() || !this.sender.is_empty() {
             this.sender
-                .retire()
                 .finish_event(ctx.state_token(), now, sink.as_mut());
         }
         this.receive.as_mut().finish(ctx);

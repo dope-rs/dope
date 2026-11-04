@@ -1,4 +1,4 @@
-use std::thread;
+use std::{env, os::unix::process::ExitStatusExt as _, process, thread, time::Duration};
 
 use dope_sys::{
     Timer as _,
@@ -30,6 +30,25 @@ fn retains_handle() {
 }
 
 #[test]
+fn expiry_kills_owner() {
+    const CHILD: &str = "DOPE_TIMER_EXPIRY_CHILD";
+    if env::var_os(CHILD).is_some() {
+        let _timer = <Uring as Thread>::Timer::try_new(Positive::from_millis::<150>())
+            .expect("kernel watchdog creation");
+        thread::sleep(Duration::from_secs(2));
+        return;
+    }
+
+    let output = process::Command::new(env::current_exe().expect("test executable"))
+        .args(["--exact", "expiry_kills_owner"])
+        .env(CHILD, "1")
+        .env("__RUST_TEST_INVOKE", "expiry_kills_owner")
+        .output()
+        .expect("watchdog child");
+    assert_eq!(output.status.signal(), Some(libc::SIGKILL), "{output:?}");
+}
+
+#[test]
 fn rejects_arming() {
     let result = thread::spawn(|| {
         seccomp::deny_timer_settime().expect("thread-local timer-settime filter");
@@ -42,8 +61,6 @@ fn rejects_arming() {
 
 #[test]
 fn rejects_exhaustion() {
-    use std::{env, process};
-
     const CHILD: &str = "DOPE_TIMER_QUOTA_CHILD";
     if env::var_os(CHILD).is_some() {
         let limit = libc::rlimit {

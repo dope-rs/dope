@@ -1,4 +1,4 @@
-use std::pin;
+use std::{pin, task};
 
 use dope_core::driver::{
     self, retained,
@@ -6,14 +6,13 @@ use dope_core::driver::{
     schedule,
     schedule::{clock, ready::wake},
 };
-use dope_net::wire;
 use o3::mem::quota;
 
 use crate::{
     app::env,
     client::{
         app, attempt,
-        conn::engine::{self, liveness, ops::opens},
+        conn::engine::{self, ops::opens},
         side::mode::Mode,
     },
 };
@@ -24,48 +23,24 @@ pub(in crate::client) enum Source {
     Deferred,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(in crate::client) enum Retry {
-    Ready,
-    Pending,
-}
-
-pub(in crate::client) struct Dial<'a, 'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>
+impl<'p, 'w, 'd: 'p + 'w, ID: Identity + 'd, A, S, E, X> engine::Machine<'p, 'w, 'd, ID, A, S, E, X>
 where
-    A: app::Lifecycle<'w, 'd, ID> + app::Scheduling<'d, ID>,
+    A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
-    machine: pin::Pin<&'a mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-}
-
-impl<'p, 'a, 'w, 'd: 'p + 'w, ID: Identity + 'd, A, S, E, X> Dial<'a, 'p, 'w, 'd, ID, A, S, E, X>
-where
-    A: app::Lifecycle<'w, 'd, ID> + app::Scheduling<'d, ID>,
-    S: attempt::Control<'d, E::Transport, ID>,
-    E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
-    X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-{
-    pub(in crate::client) fn new(
-        machine: pin::Pin<&'a mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-    ) -> Self {
-        Self { machine }
-    }
-
-    pub(in crate::client::conn::engine) fn poll(
-        self,
+    pub(in crate::client::conn::engine) fn poll_dials(
+        self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Source
     where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>:
-            opens::Phase<'d, ID, A, S, E, A::Deferred, <A::Wire as wire::Spec>::OpenFailure>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: opens::Phase<'d, ID, A, S, E>,
     {
         let now = driver.driver_ref().clock().now();
-        let mut this = self.machine;
+        let mut this = self;
         if !this.as_ref().project_ref().shutdown.is_open() {
             return Source::Idle;
         }
@@ -114,7 +89,7 @@ where
                 Step::Continue => woke = false,
                 Step::Stop => return Source::Idle,
                 Step::Retry => {
-                    return Dial { machine: this }.defer_retry(now);
+                    return this.defer_retry(now);
                 }
                 Step::Backoff(at) => {
                     let target = this.as_ref().backoff();
@@ -128,41 +103,30 @@ where
         Source::Idle
     }
 
-    pub(in crate::client) fn retry_ready(mut self, driver: &mut driver::Context<'_, 'd>) -> Retry {
-        if !self.machine.as_ref().project_ref().drive.has_retry() {
-            return Retry::Ready;
+    pub(in crate::client) fn retry_ready(
+        mut self: pin::Pin<&mut Self>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) -> task::Poll<()> {
+        if !self.as_ref().project_ref().drive.has_retry() {
+            return task::Poll::Ready(());
         }
         let now = driver.driver_ref().clock().now();
-        let target = self.machine.as_ref().backoff();
+        let target = self.as_ref().backoff();
         let wake = wake::Waker::from(target);
-        if self
-            .machine
-            .as_mut()
-            .project()
-            .drive
-            .as_mut()
-            .poll_retry(now, wake)
-            .is_ready()
-        {
-            Retry::Ready
-        } else {
-            Retry::Pending
-        }
+        self.as_mut().project().drive.as_mut().poll_retry(now, wake)
     }
 
-    pub(in crate::client) fn defer_retry(mut self, now: clock::Moment<'d>) -> Source {
-        let target = self.machine.as_ref().backoff();
+    pub(in crate::client) fn defer_retry(
+        mut self: pin::Pin<&mut Self>,
+        now: clock::Moment<'d>,
+    ) -> Source {
+        let target = self.as_ref().backoff();
         let wake = wake::Waker::from(target);
-        self.machine
-            .as_mut()
+        self.as_mut()
             .project()
             .drive
             .as_mut()
             .defer_retry(now, wake);
         Source::Deferred
-    }
-
-    pub(in crate::client) fn finish_retry(self) {
-        self.machine.project().drive.as_mut().reset_retry();
     }
 }

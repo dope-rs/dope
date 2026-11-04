@@ -1,6 +1,6 @@
 use std::{marker, num, pin, task::Poll};
 
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 use queue::Backend as _;
 use schedule::{
     ready::{Global, Path, linked},
@@ -30,7 +30,7 @@ mod proof;
 mod slab;
 
 pub(crate) use proof::Proof;
-use slab::{Occupied, Slab};
+use slab::Slab;
 
 #[pin_project::pin_project]
 struct Entry<'d, F, T: Copy> {
@@ -72,7 +72,11 @@ where
     T: Copy,
 {
     pub fn try_new() -> Result<Self, alloc::Error> {
-        let inner = Slab::try_new(caps::Tasks::new())?;
+        Self::try_new_with_capacity(capacity::Count::MAX)
+    }
+
+    fn try_new_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
+        let inner = Slab::try_new(caps::Tasks::new(), physical)?;
         Ok(Self {
             inner,
             driver: marker::PhantomData,
@@ -153,8 +157,8 @@ where
     where
         S: queue::Backend<'d> + 'queue,
     {
-        let mut occupied = Occupied::selected(entry);
-        let mut entry = occupied.as_mut();
+        let mut occupied = Slab::selected_mut(entry);
+        let mut entry = occupied.value();
         let fields = entry.as_mut().project();
         let target = *fields.target;
         let (parent, waker) = fields.binding.poll();
@@ -221,8 +225,8 @@ where
     F: abi::Fiber<'d>,
     T: Copy,
 {
-    fn try_build() -> Result<Self, alloc::Error> {
-        Ok(Self::new(Pool::try_new()?))
+    fn try_build_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
+        Ok(Self::new(Pool::try_new_with_capacity(physical)?))
     }
 }
 
@@ -233,12 +237,12 @@ where
     T: Copy,
 {
     fn wake_global(access: Access<'_, Self>) {
-        let entry = Occupied::selected(access.entry()).get_mut();
+        let entry = Slab::selected_mut(access.entry()).into_value();
         wake::RootWaker::from(entry.as_ref().project_ref().binding.parent()).wake();
     }
 
     fn merge_ready(access: Access<'_, Self>, queue: pin::Pin<&queue::Flat<'d>>) {
-        let entry = Occupied::selected(access.entry()).get_mut();
+        let entry = Slab::selected_mut(access.entry()).into_value();
         let fields = entry.into_ref().project_ref();
         queue.queue().merge(fields.ready);
         wake::RootWaker::from(fields.binding.parent()).wake();
@@ -248,7 +252,7 @@ where
     where
         S: queue::Backend<'d> + 'queue,
     {
-        let entry = Occupied::selected(access.entry()).get_mut();
+        let entry = Slab::selected_mut(access.entry()).into_value();
         let fields = entry.into_ref().project_ref();
         S::commit(dequeued, fields.ready, queue::Disposition::Ready);
         wake::RootWaker::from(fields.binding.parent()).wake();

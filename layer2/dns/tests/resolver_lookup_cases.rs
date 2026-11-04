@@ -3,7 +3,6 @@ pub mod common;
 
 use std::{
     iter,
-    mem::size_of,
     net::SocketAddr,
     time::{Duration, Instant},
 };
@@ -17,7 +16,7 @@ use dope::{
         },
         io::datagram::ReceiveError,
     },
-    manifold::client::close,
+    manifold::{client::close, timing::Balanced},
     runtime::{executor::session::Completion, topology::lending},
 };
 use dope_dns::{
@@ -43,15 +42,10 @@ static ALLOCATOR: Tracker = Tracker::new();
 fn reclaims_live_lane() {
     let server = Peer::new(FILTER, 2).expect("two-lane peer");
     let servers = config::Servers::try_new([server.addr]).expect("configured DNS peer");
-    let ((result, received, _), worker) = server
+    let ((result, received), worker) = server
         .with(|| resolve_configured::<2>("api.example:443", fixture::configure(servers, 1)))
         .expect("two-lane worker start");
-    assert_eq!(
-        worker
-            .expect("DNS worker joined")
-            .expect("live lane response"),
-        2
-    );
+    assert_eq!(worker.expect("live lane response"), 2);
     assert!(received.is_empty());
     check(result, Ok(1));
 }
@@ -60,35 +54,24 @@ fn reclaims_live_lane() {
 fn reports_receive_errors() {
     use dope::core::io::datagram::{Cause, ReceiveError};
 
-    let server = Peer::new(Mode::Oversized, 2).expect("oversized datagram peer");
+    let receive = settings::Config::for_profile::<Balanced>().receive();
+    let capacity = receive.buffer_len().into_nonzero().get() as usize
+        - settings::Receive::MIN_DATAGRAM_SLOT.into_nonzero().get() as usize
+        + 1;
+    let payload = vec![0; capacity + 1];
+    let server = Peer::new(Mode::Oversized(&payload), 2).expect("oversized datagram peer");
     let servers = config::Servers::try_new([server.addr]).expect("configured DNS peer");
-    let ((result, received, receive), worker) = server
-        .with(|| {
-            resolve_observed(
-                "api.example:443",
-                servers,
-                1,
-                Duration::from_secs(1),
-                Duration::from_secs(1),
-            )
-        })
+    let ((result, received), worker) = server
+        .with(|| resolve_configured::<1>("api.example:443", fixture::configure(servers, 1)))
         .expect("DNS worker start");
-    assert_eq!(
-        worker
-            .expect("DNS worker joined")
-            .expect("oversized peer finished"),
-        2
-    );
+    assert_eq!(worker.expect("oversized peer finished"), 2);
     check(result, Ok(11));
     assert_eq!(
         received.len(),
         2,
         "each malformed receive must be observed: {received:?}"
     );
-    let capacity = receive.buffer_len().into_nonzero().get() as usize
-        - 4 * size_of::<u32>()
-        - size_of::<libc::sockaddr_storage>();
-    let expected = [65_507, capacity].map(|payload| {
+    let expected = [payload.len(), capacity].map(|payload| {
         ReceiveError::Truncated(Cause::Flags {
             actual: libc::MSG_TRUNC as u32,
             payload,
@@ -227,9 +210,7 @@ fn response_scenarios() {
                 )
             })
             .expect("DNS worker start");
-        worker
-            .expect("DNS worker joined")
-            .expect("DNS fixture server must finish");
+        worker.expect("DNS fixture server must finish");
         check(out, want);
         assert!(
             start.elapsed() < Duration::from_secs(2),
@@ -240,43 +221,22 @@ fn response_scenarios() {
 
 #[test]
 fn retries_bad_cookie_once() {
-    for mode in [Cookie::Bad, Cookie::Renew] {
+    for (mode, bind) in [
+        (Cookie::Bad, [127, 0, 0, 1]),
+        (Cookie::Renew, [127, 0, 0, 1]),
+        (Cookie::Renew, [0, 0, 0, 0]),
+    ] {
         let server = Peer::new(Mode::Cookie(mode), 4).expect("start cookie challenge peer");
         let servers = config::Servers::try_new([server.addr]).expect("cookie challenge server");
-        let (result, worker) = server
-            .with(|| {
-                resolve(
-                    "api.example:443",
-                    servers,
-                    1,
-                    Duration::from_secs(1),
-                    Duration::from_secs(1),
-                )
-            })
+        let mut config = fixture::configure(servers, 1);
+        config.bind = SocketAddr::from((bind, 0));
+        let ((result, received), worker) = server
+            .with(|| resolve_configured::<1>("api.example:443", config))
             .expect("cookie worker start");
         check(result, Ok(8));
-        assert_eq!(
-            worker.expect("DNS worker joined").expect("cookie exchange"),
-            4
-        );
+        assert!(received.is_empty(), "cookie source receive failed");
+        assert_eq!(worker.expect("cookie exchange"), 4);
     }
-}
-
-#[test]
-fn renews_wildcard_cookie() {
-    let server = Peer::new(Mode::Cookie(Cookie::Renew), 4).expect("start wildcard cookie peer");
-    let servers = config::Servers::try_new([server.addr]).expect("wildcard cookie server");
-    let mut config = fixture::configure(servers, 1);
-    config.bind = SocketAddr::from(([0, 0, 0, 0], 0));
-    let ((result, received, _), worker) = server
-        .with(|| resolve_configured::<1>("api.example:443", config))
-        .expect("wildcard cookie worker start");
-    check(result, Ok(8));
-    assert!(received.is_empty(), "wildcard source receive failed");
-    assert_eq!(
-        worker.expect("DNS worker joined").expect("cookie exchange"),
-        4
-    );
 }
 
 #[test]
@@ -294,9 +254,7 @@ fn bounds_alias_deadline() {
             (out, start.elapsed())
         })
         .expect("DNS worker start");
-    let count = worker
-        .expect("DNS worker joined")
-        .expect("DNS fixture server must finish");
+    let count = worker.expect("DNS fixture server must finish");
     check(out, Err(Kind::Timeout));
     assert!(count >= 3, "alias chain did not span multiple hops");
     assert!(
@@ -344,9 +302,7 @@ fn kernel_failures() {
             (out, start.elapsed())
         })
         .expect("DNS worker start");
-    worker
-        .expect("DNS worker joined")
-        .expect("DNS fixture server must finish");
+    worker.expect("DNS fixture server must finish");
     check(out, Ok(5));
     assert!(elapsed < limit, "kernel retry waited for timeout");
 }
@@ -370,12 +326,7 @@ fn cycles_servers() {
                 )
             })
             .expect("cyclic resolver worker start");
-        assert_eq!(
-            worker
-                .expect("DNS worker joined")
-                .expect("complete cyclic resolver fixture"),
-            3
-        );
+        assert_eq!(worker.expect("complete cyclic resolver fixture"), 3);
         check(out, Ok(4));
     }
 }
@@ -404,9 +355,7 @@ fn fills_maximum_query() {
                 )
             })
             .expect("maximum-name worker start");
-        worker
-            .expect("DNS worker joined")
-            .expect("the peer must observe the complete maximum-name query");
+        worker.expect("the peer must observe the complete maximum-name query");
         check(out, Ok(want));
     }
 }
@@ -430,7 +379,8 @@ fn resolve(
     attempt: Duration,
     total: Duration,
 ) -> Result<Option<SocketAddr>, Error<1>> {
-    let (result, received, _) = resolve_observed(target, servers, tries, attempt, total);
+    let (result, received) =
+        resolve_configured::<1>(target, lookup::configure(servers, tries, attempt, total));
     assert!(
         received.is_empty(),
         "unexpected DNS receive failure: {received:?}"
@@ -438,32 +388,13 @@ fn resolve(
     result
 }
 
-fn resolve_observed(
-    target: &str,
-    servers: config::Servers,
-    tries: u8,
-    attempt: Duration,
-    total: Duration,
-) -> (
-    Result<Option<SocketAddr>, Error<1>>,
-    Vec<ReceiveError>,
-    settings::Receive,
-) {
-    resolve_configured::<1>(target, lookup::configure(servers, tries, attempt, total))
-}
-
 fn resolve_configured<const LANES: usize>(
     target: &str,
     cfg: config::Config,
-) -> (
-    Result<Option<SocketAddr>, Error<1>>,
-    Vec<ReceiveError>,
-    settings::Receive,
-) {
+) -> (Result<Option<SocketAddr>, Error<1>>, Vec<ReceiveError>) {
     let mut finish = Completion::new();
     let mut received = Vec::new();
     let ready = fixture::try_prepare::<4, LANES, 1>(cfg, &mut received).expect("DNS layout");
-    let receive = ready.layout().receive();
     let mut resolved = None;
     ready.try_scoped(
         |scope| {
@@ -490,5 +421,5 @@ fn resolve_configured<const LANES: usize>(
     let resolved = resolved
         .expect("DNS scope ran")
         .expect("DNS lookup application");
-    (resolved, received, receive)
+    (resolved, received)
 }

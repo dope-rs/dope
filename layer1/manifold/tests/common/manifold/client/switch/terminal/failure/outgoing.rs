@@ -1,109 +1,15 @@
-use std::{cell::Cell, convert::Infallible, rc::Rc};
-
-use dope_core::driver::{
-    route::{Identity, KeyTag},
-    settings::{self, claim, errors},
-};
-use dope_manifold::{
-    app::env::Bundle,
-    client::session::{self, ingress},
-    network::client::topology::{factory::disabled, plan},
-    timing::Balanced,
-};
-use dope_net::{
-    tcp::Tcp,
-    wire::{
-        self, domain, failure, open, receive, receive::mode::Disabled, send, send::reclaim,
-        terminal,
-    },
-};
-use dope_test::harness::observe::VecCellExt as _;
-
-use crate::common::{
-    Buffer,
-    manifold::client::switch::terminal::failure::{Cause, Failure},
+use dope_core::driver::route::Identity;
+use dope_net::wire::{
+    self, domain, failure, open, receive, receive::mode::Disabled, send, send::reclaim, terminal,
 };
 
-#[derive(Debug)]
-pub enum Observation {
-    Prepare(bool),
-    PrepareMany(bool),
-    Completion { late: bool, failed: bool },
-    Settle(bool),
-    Flush { failed: bool, empty: bool },
-    Drain(bool),
-    Close(bool),
-}
+use crate::common::{Buffer, manifold::client::switch::terminal::failure::Cause};
 
 pub struct State {
     failed: bool,
-    observations: Rc<Cell<Vec<Observation>>>,
 }
 
-pub struct Outgoing<const LATE: bool> {
-    observations: Rc<Cell<Vec<Observation>>>,
-}
-
-pub struct Setup {
-    pub(crate) app: Failure,
-    pub(crate) observations: Rc<Cell<Vec<Observation>>>,
-}
-
-impl settings::Resource for Setup {
-    fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, errors::Claim> {
-        Ok(needs)
-    }
-}
-
-impl<const LATE: bool>
-    disabled::Application<(), KeyTag<0>, 1, Bundle<Tcp, Outgoing<LATE>, Balanced>> for Setup
-{
-    type Input = plan::Local;
-    type Session<'life, 'p, 'd>
-        = Failure
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd;
-    type Source<'life, 'p, 'd>
-        = ingress::None
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd;
-    type Wire<'life, 'p, 'd>
-        = domain::Local<'d, Outgoing<LATE>, KeyTag<0>>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd;
-    type Error = Infallible;
-
-    fn build<'life, 'p, 'd>(
-        self,
-        _: &'life (),
-    ) -> Result<
-        (
-            session::Setup<'d, Self::Session<'life, 'p, 'd>, Self::Source<'life, 'p, 'd>>,
-            Self::Wire<'life, 'p, 'd>,
-        ),
-        Self::Error,
-    >
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-    {
-        Ok((
-            session::Setup::new(self.app, ingress::Plan::none()),
-            domain::Local::new(self.observations),
-        ))
-    }
-}
+pub struct Outgoing<const LATE: bool>;
 
 impl<const LATE: bool> failure::Errors<failure::Terminal> for Outgoing<LATE> {
     type Error<'d> = Cause;
@@ -117,10 +23,7 @@ impl<'w, 'd: 'w, ID: Identity + 'w, const LATE: bool> open::Runtime<'w, 'd, Outg
         context: C,
         consume: impl FnOnce(C, State, Buffer<1>) -> open::Disposition<T, State, Buffer<1>>,
     ) -> open::Outcome<C, T, open::Error<'w, Self>> {
-        let state = State {
-            failed: false,
-            observations: Rc::clone(&self.observations),
-        };
+        let state = State { failed: false };
         let output = match consume(context, state, Buffer::default()) {
             open::Disposition::Commit(output) | open::Disposition::Retry { output, .. } => output,
         };
@@ -131,7 +34,7 @@ impl<'w, 'd: 'w, ID: Identity + 'w, const LATE: bool> open::Runtime<'w, 'd, Outg
 impl<const LATE: bool> wire::Spec for Outgoing<LATE> {
     type Connection<'d, ID: Identity + 'd> = State;
     type Storage<ID: Identity> = ();
-    type Binding<'d, ID: Identity + 'd> = Rc<Cell<Vec<Observation>>>;
+    type Binding<'d, ID: Identity + 'd> = ();
     type Runtime<'w, 'd, ID: Identity + 'w>
         = Self
     where
@@ -148,15 +51,13 @@ impl<const LATE: bool> wire::Spec for Outgoing<LATE> {
 impl<const LATE: bool> domain::Init<Outgoing<LATE>> for Outgoing<LATE> {
     fn runtime<'w, 'd, ID: Identity + 'w>(
         _: domain::Limits,
-        trace: <Self as wire::Spec>::Binding<'w, ID>,
+        _: <Self as wire::Spec>::Binding<'w, ID>,
     ) -> <Self as wire::Spec>::Runtime<'w, 'd, ID>
     where
         Self: 'w,
         'd: 'w,
     {
-        Self {
-            observations: trace,
-        }
+        Self
     }
 }
 
@@ -173,9 +74,8 @@ impl<const LATE: bool> send::Policy<Outgoing<LATE>> for Egress {
     where
         'd: 'a,
     {
-        let (wire, send) = context.into_parts();
-        wire.observations
-            .push(Observation::Prepare(plain.is_empty()));
+        assert!(plain.is_empty(), "unexpected application output");
+        let send = context.into_state();
         end.output(send.buffered())
     }
 
@@ -187,9 +87,8 @@ impl<const LATE: bool> send::Policy<Outgoing<LATE>> for Egress {
     where
         'd: 'a,
     {
-        let (wire, send) = context.into_parts();
-        wire.observations
-            .push(Observation::PrepareMany(plain.is_empty()));
+        assert!(plain.is_empty(), "unexpected application output");
+        let send = context.into_state();
         end.output(send.buffered())
     }
 
@@ -207,10 +106,7 @@ impl<const LATE: bool> send::Policy<Outgoing<LATE>> for Egress {
         'd: 'a,
     {
         let (wire, done) = context.into_parts();
-        wire.observations.push(Observation::Completion {
-            late: LATE,
-            failed: wire.failed,
-        });
+        assert!(LATE && wire.failed, "complete outgoing close output");
         let send = done.consume_max();
         let complete = send.bytes.is_empty();
         let output = send::Transition::unchanged(send.buffered());
@@ -238,7 +134,7 @@ impl<const LATE: bool> send::Policy<Outgoing<LATE>> for Egress {
         'd: 'a,
     {
         let (wire, done) = context.into_parts();
-        wire.observations.push(Observation::Settle(wire.failed));
+        assert!(wire.failed, "retire outgoing close output");
         send::Transition::unchanged(done.consume_max().buffered())
     }
 
@@ -250,10 +146,10 @@ impl<const LATE: bool> send::Policy<Outgoing<LATE>> for Egress {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        wire.observations.push(Observation::Flush {
-            failed: wire.failed,
-            empty: send.bytes.is_empty(),
-        });
+        assert!(
+            wire.failed || send.bytes.is_empty(),
+            "only close output is buffered"
+        );
         end.output(send.buffered())
     }
 
@@ -265,7 +161,7 @@ impl<const LATE: bool> send::Policy<Outgoing<LATE>> for Egress {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        wire.observations.push(Observation::Drain(wire.failed));
+        assert!(wire.failed, "retire outgoing close output");
         send.buffered()
     }
 
@@ -277,7 +173,7 @@ impl<const LATE: bool> send::Policy<Outgoing<LATE>> for Egress {
         'd: 'a,
     {
         let (wire, mut send) = context.into_parts();
-        wire.observations.push(Observation::Close(wire.failed));
+        assert!(!wire.failed, "close wire once");
         wire.failed = true;
         if LATE {
             send.bytes = (*b"!").into();

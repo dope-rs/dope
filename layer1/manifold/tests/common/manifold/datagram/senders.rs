@@ -8,7 +8,7 @@ use dope_core::{
     dope_sys::io::socket::msg::source, driver::route::KeyTag, io::datagram::source::Source,
 };
 use dope_manifold::network::datagram::{
-    self, Endpoint, Socket,
+    self, Socket,
     hook::{self, app::Schedule, ingress},
     send::{self, owners},
 };
@@ -35,7 +35,7 @@ pub enum Collect {
 }
 
 pub fn selected_source(peer: SocketAddr) -> Result<Source, source::Error> {
-    Source::try_new((Ipv4Addr::new(127, 0, 0, 2), 0).into(), peer)
+    Source::try_new((Ipv4Addr::LOCALHOST, 0).into(), peer)
 }
 
 type Pending<A> = (Vec<u8>, Option<NonZero<u16>>, A);
@@ -96,15 +96,6 @@ impl handler::Progress for Busy {
     fn is_runnable(&self) -> bool {
         self.next < self.pending.len()
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope_gen::Application)]
-#[dispatcher(core = ::dope_core, manifold = ::dope_manifold, runtime = ::dope_runtime)]
-pub struct App<'d, H, M: send::Mode = send::Plain> {
-    #[pin]
-    #[manifold]
-    pub(crate) sender: Endpoint<'d, KeyTag<0>, H, pool::Cursor, M>,
 }
 
 pub fn collect(socket: &udp::Socket<'_>, count: NonZero<usize>) -> Result<Collected, Collect> {

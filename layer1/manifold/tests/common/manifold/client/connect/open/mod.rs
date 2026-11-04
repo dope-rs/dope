@@ -35,6 +35,7 @@ use dope_test::harness::signals::Gate;
 use o3::{
     base::cell::region,
     buffer::{bytes::TryRetain, storage::Shared},
+    depot::arena::slab::key,
     mem::rc,
 };
 
@@ -44,6 +45,8 @@ pub enum Cause {
 }
 
 pub struct Wire;
+
+pub struct Runtime<'w>(pub(crate) Option<&'w mut dyn FnMut() -> bool>);
 
 pub struct First;
 
@@ -108,12 +111,18 @@ impl failure::Errors<failure::Open> for Wire {
         Self: 'd;
 }
 
-impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Wire {
+impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Runtime<'w> {
     fn open<C, T>(
         &mut self,
         context: C,
-        _: impl FnOnce(C, Wire, ()) -> open::Disposition<T, Wire, ()>,
+        consume: impl FnOnce(C, Wire, ()) -> open::Disposition<T, Wire, ()>,
     ) -> open::Outcome<C, T, open::Error<'w, Wire>> {
+        if let Some(replace) = &mut self.0 {
+            if replace() {
+                return open::Outcome::Unavailable(context);
+            }
+            return open::Outcome::Opened(consume(context, Wire, ()).into_output(|_, ()| ()));
+        }
         open::Outcome::Failed {
             context,
             cause: open::Error::from_cause(Cause::Permanent),
@@ -124,9 +133,9 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Wire {
 impl wire::Spec for Wire {
     type Connection<'d, ID: Identity + 'd> = Self;
     type Storage<ID: Identity> = ();
-    type Binding<'d, ID: Identity + 'd> = ();
+    type Binding<'d, ID: Identity + 'd> = Runtime<'d>;
     type Runtime<'w, 'd, ID: Identity + 'w>
-        = Self
+        = Runtime<'w>
     where
         Self: 'w,
         'd: 'w;
@@ -142,13 +151,13 @@ impl wire::Spec for Wire {
 impl domain::Init<Wire> for Wire {
     fn runtime<'w, 'd, ID: Identity + 'w>(
         _: Limits,
-        _: <Wire as wire::Spec>::Binding<'w, ID>,
+        binding: <Wire as wire::Spec>::Binding<'w, ID>,
     ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
     where
         Wire: 'w,
         'd: 'w,
     {
-        Wire
+        binding
     }
 }
 
@@ -253,6 +262,7 @@ pub struct State;
 
 #[derive(Default)]
 pub(crate) struct Counts {
+    pub(crate) failed: Cell<Option<(u32, key::Generation)>>,
     pub(crate) received: Cell<usize>,
     pub(crate) connected: Cell<usize>,
     pub(crate) prepared: Cell<usize>,
@@ -260,18 +270,23 @@ pub(crate) struct Counts {
     pub(crate) drained: Cell<usize>,
 }
 
-pub struct Failed<F> {
-    pub(crate) check: F,
+pub struct Failed {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
     pub(crate) counts: Rc<Counts>,
-
     pub(crate) gate: Gate,
-    pub(crate) failures: Rc<Cell<u32>>,
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> Application<'d, ID>
-    for Failed<F>
-{
+impl Failed {
+    fn check(&self, cause: opening::Failure<open::Error<'_, Wire>>) {
+        let error = cause
+            .into_wire()
+            .expect("wire failure test must not exhaust connection identities");
+        assert_eq!(error.cause(), &Cause::Permanent);
+        self.gate.hit();
+    }
+}
+
+impl<'d, ID: Identity> Application<'d, ID> for Failed {
     type Conn = State;
     type Connect = Full;
     type Deferred = Controlled;
@@ -286,9 +301,7 @@ impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> Applicati
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Receive<'d, ID>
-    for Failed<F>
-{
+impl<'d, ID: Identity> app::Receive<'d, ID> for Failed {
     type Continuation = resume::Complete;
 
     fn quiesce<'a>(
@@ -300,9 +313,7 @@ impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Rece
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Borrowed<'d, ID>
-    for Failed<F>
-{
+impl<'d, ID: Identity> app::Borrowed<'d, ID> for Failed {
     fn chunk<O, R: TryRetain>(
         &mut self,
         _: conn::Ctx<'_, 'd, ID, Wire, State, O>,
@@ -315,9 +326,7 @@ impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Borr
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Connected<'d, ID>
-    for Failed<F>
-{
+impl<'d, ID: Identity> app::Connected<'d, ID> for Failed {
     type Activation = Automatic;
 
     fn connected<O>(
@@ -332,52 +341,44 @@ impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Conn
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Exhausted<'d, ID>
-    for Failed<F>
-{
+impl<'d, ID: Identity> app::Exhausted<'d, ID> for Failed {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, ID>,
         cause: opening::Exhaustion,
         _: &mut driver::Context<'_, 'd>,
     ) {
-        (self.check)(cause.into());
-        self.failures.set(self.failures.get() + 1);
-        self.gate.hit();
+        self.check(cause.into());
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Failed<'d, ID>
-    for Failed<F>
-{
+impl<'d, ID: Identity> app::Failed<'d, ID> for Failed {
     fn failed(
         &mut self,
-        _: attempt::Completion<'_, 'd, ID>,
+        key: attempt::Completion<'_, 'd, ID>,
         error: event::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
+        let id = key.id();
+        self.counts
+            .failed
+            .set(Some((id.index().get(), id.generation())));
         self.audit.faults.record(error::Error::Connect(error));
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Opened<'d, 'd, ID>
-    for Failed<F>
-{
+impl<'w, 'd: 'w, ID: Identity> app::Opened<'w, 'd, ID> for Failed {
     fn open(
         &mut self,
         _: attempt::Completion<'_, 'd, ID>,
-        cause: open::Error<'d, Wire>,
+        cause: open::Error<'w, Wire>,
         _: &mut driver::Context<'_, 'd>,
     ) {
-        (self.check)(opening::Failure::Wire(cause));
-        self.failures.set(self.failures.get() + 1);
-        self.gate.hit();
+        self.check(opening::Failure::Wire(cause));
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Lifecycle<'d, 'd, ID>
-    for Failed<F>
-{
+impl<'w, 'd: 'w, ID: Identity> app::Lifecycle<'w, 'd, ID> for Failed {
     fn prepare<O>(
         &mut self,
         _: conn::Ctx<'_, 'd, ID, Wire, State, O>,
@@ -404,7 +405,7 @@ impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Life
         &mut self,
         _: conn::Io<'_, 'd, ID, Wire, State, O>,
         _: egress::Queue<'_, '_, 'd, 32, Shared>,
-        error: terminal::Error<'d, Wire>,
+        error: terminal::Error<'w, Wire>,
         _: &mut driver::Context<'_, 'd>,
     ) {
         error.eliminate()
@@ -441,9 +442,7 @@ impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Life
     }
 }
 
-impl<'d, ID: Identity, F: Fn(opening::Failure<open::Error<'d, Wire>>)> app::Scheduling<'d, ID>
-    for Failed<F>
-{
+impl<'d, ID: Identity> app::Scheduling<'d, ID> for Failed {
     fn progress(
         &self,
         _: &region::Token<region::Identity<'d>>,

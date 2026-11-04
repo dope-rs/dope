@@ -1,6 +1,6 @@
-use std::cell;
-
 use dope_manifold::client::close::Reason;
+use dope_net::link::egress;
+use o3::buffer::storage::Shared;
 
 mod flight;
 pub mod lane;
@@ -17,14 +17,11 @@ pub use payload::Payload;
 
 #[derive(Debug)]
 pub enum Error {
-    Borrow(cell::BorrowError),
-    BorrowMut(cell::BorrowMutError),
     MissingPayload,
     FlushPayload(usize),
     SentPayload(usize),
     Cancel { bytes: usize, closed: usize },
     Bytes(Vec<u8>),
-    Index { actual: usize, capacity: usize },
     Quarantine(Reason),
     Closed { actual: usize, maximum: usize },
     Unassigned(usize),
@@ -33,4 +30,11 @@ pub enum Error {
     AdmissionReady,
     AdmissionExhausted,
     AdmissionSaturated,
+}
+
+pub fn load(bytes: &[u8]) -> egress::NonEmpty<Shared> {
+    let value = Shared::try_copy(bytes).expect("shared request payload");
+    egress::Load::new(value)
+        .try_nonempty()
+        .expect("nonempty request payload")
 }

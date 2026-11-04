@@ -17,11 +17,11 @@ pub(super) trait Cycle<'d> {
         token: &region::Token<region::Identity<'d, 1>>,
     ) -> schedule::Progress<'d>;
 
-    fn prepare<'a, 'turn>(
-        self: pin::Pin<&'a mut Self>,
+    fn prepare<'turn>(
+        self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'turn, 'd>,
         token: &mut region::Token<region::Identity<'d, 1>>,
-    ) -> pin::Pin<&'a mut Self>;
+    );
 }
 
 impl<'q, 'h, 'p, 'w, 'd: 'w, ID: Identity, const MAX: usize, N, R, I, E, const ENDPOINTS: usize, S>
@@ -63,11 +63,11 @@ where
         }
     }
 
-    fn prepare<'a, 'turn>(
-        mut self: pin::Pin<&'a mut Self>,
+    fn prepare<'turn>(
+        mut self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'turn, 'd>,
         token: &mut region::Token<region::Identity<'d, 1>>,
-    ) -> pin::Pin<&'a mut Self> {
+    ) {
         let this = self.as_ref().project_ref();
         let due = this.engine.control().is_stale(token);
         let token = &*token;
@@ -85,7 +85,6 @@ where
             },
             |control, key| control.is_retired_at(key, token),
         );
-        self
     }
 }
 
@@ -164,11 +163,11 @@ where
         }
     }
 
-    fn prepare<'a, 'turn>(
-        mut self: pin::Pin<&'a mut Self>,
+    fn prepare<'turn>(
+        mut self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'turn, 'd>,
         token: &mut region::Token<region::Identity<'d, 1>>,
-    ) -> pin::Pin<&'a mut Self> {
+    ) {
         let now = turn.clock().now();
         let this = self.as_ref().project_ref();
         let due = this.discovery.poll_at().is_some_and(|at| at <= now)
@@ -179,6 +178,18 @@ where
             due,
             |mut owner, permit| {
                 permit.run(|| {
+                    let reconcile = |mut owner: pin::Pin<&mut Self>, set, rev, next| {
+                        let result = owner.as_mut().try_sync(set);
+                        let this = owner.project();
+                        this.discovery.schedule(next);
+                        match result {
+                            Ok(change) => {
+                                this.observer
+                                    .reconciled(this.discovery.source(), rev, change)
+                            }
+                            Err(error) => this.observer.rejected(this.discovery.source(), error),
+                        }
+                    };
                     let cause = owner
                         .as_mut()
                         .project()
@@ -191,7 +202,6 @@ where
                         source
                             .source_mut()
                             .refresh_at(now, discover::Reason::Failure(cause));
-                        source.schedule(Some(now.into()));
                     }
                     let source = owner.as_mut().project().discovery;
                     let action = discover::PollAt::poll_at(source.source_mut(), token, now);
@@ -209,18 +219,7 @@ where
                                 let this = owner.as_mut().project();
                                 this.observer.resolved(this.discovery.source(), &set, &meta);
                             }
-                            let result = owner.as_mut().try_sync(set);
-                            let this = owner.project();
-                            this.discovery.schedule(next);
-                            match result {
-                                Ok(change) => {
-                                    this.observer
-                                        .reconciled(this.discovery.source(), rev, change)
-                                }
-                                Err(error) => {
-                                    this.observer.rejected(this.discovery.source(), error)
-                                }
-                            }
+                            reconcile(owner, set, rev, next);
                         }
                         discover::Action::Stale {
                             revision: rev,
@@ -244,18 +243,7 @@ where
                                 let this = owner.as_mut().project();
                                 this.observer.expired(this.discovery.source(), rev);
                             }
-                            let result = owner.as_mut().try_sync(set);
-                            let this = owner.project();
-                            this.discovery.schedule(next);
-                            match result {
-                                Ok(change) => {
-                                    this.observer
-                                        .reconciled(this.discovery.source(), rev, change)
-                                }
-                                Err(error) => {
-                                    this.observer.rejected(this.discovery.source(), error)
-                                }
-                            }
+                            reconcile(owner, set, rev, next);
                         }
                         discover::Action::Failed {
                             error,
@@ -270,6 +258,5 @@ where
             },
             service::Pool::is_retired,
         );
-        self
     }
 }

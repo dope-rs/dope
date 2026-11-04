@@ -5,6 +5,7 @@ use dope_core::driver::{route::Identity, schedule::ready};
 mod accesses;
 pub(in crate::client) mod retire;
 pub(super) use accesses::{Quarantine, RetireRef, RetireState, SettledState};
+use retire::{Retiring, Settled, Stage, Starting};
 
 use crate::client::{
     close,
@@ -68,6 +69,14 @@ impl Packed {
     fn issue(&mut self) -> Claim {
         *self = self.resolve().with_phase(ClosePhase::Claimed);
         Claim { rule: self.rule }
+    }
+
+    pub(super) fn claim_final(&mut self) -> ClaimState {
+        match self.phase {
+            ClosePhase::Claimed => ClaimState::Active,
+            ClosePhase::Finalized => ClaimState::Issued(self.issue()),
+            _ => ClaimState::InProgress,
+        }
     }
 
     fn restore(&mut self) -> drain::Resume {
@@ -194,13 +203,6 @@ impl Claim {
     }
 }
 
-pub(super) enum SettleState {
-    Issued(Claim, claim::Urgency),
-    Waiting,
-    Active,
-    Missing,
-}
-
 pub(super) enum CutState {
     Issued(Claim, claim::Urgency),
     Owned(claim::Urgency),
@@ -210,44 +212,20 @@ pub(super) enum ClaimState {
     Issued(Claim),
     Active,
     InProgress,
-    Missing,
-}
-
-pub(super) enum Entry<'a, 'd, ID: Identity> {
-    Started(Quarantine<'a>, close::Reason, state::Enter<'d, ID>),
-    Retiring(RetireState<'a>, state::Enter<'d, ID>),
-    Settled(SettledState<'a>),
-    Finalized,
-    Claimed,
 }
 
 impl Closing {
-    pub(in crate::client::conn) fn complete(&mut self, rule: close::Directive) -> CloseUpdate {
+    pub(in crate::client::conn) fn complete(
+        &mut self,
+        rule: close::Directive,
+    ) -> (Claim, claim::Urgency, claim::Urgency) {
         let state = self.apply(rule);
-        if matches!(
-            state.phase,
-            ClosePhase::Requested
-                | ClosePhase::Quarantining
-                | ClosePhase::Retiring
-                | ClosePhase::Settled
-        ) {
-            *state = state.with_phase(ClosePhase::Settled);
-        }
-        state.outcome()
-    }
-
-    pub(in crate::client::conn) fn settle(&mut self) -> SettleState {
-        let Some(state) = &mut self.state else {
-            return SettleState::Missing;
-        };
-        if matches!(state.phase, ClosePhase::Claimed) {
-            return SettleState::Active;
-        }
-        if !matches!(state.phase, ClosePhase::Settled) {
-            return SettleState::Waiting;
-        }
-        let (claim, urgency) = state.finalize();
-        SettleState::Issued(claim, urgency)
+        // The admitted active callback cannot claim or finalize this exclusive close state.
+        *state = state.with_phase(ClosePhase::Settled);
+        // Preserve discard activation on each side of the caller's deadline update.
+        let before = state.take_urgency();
+        let (claim, after) = state.finalize();
+        (claim, before, after)
     }
 
     pub(super) fn apply(&mut self, rule: close::Directive) -> &mut Packed {
@@ -324,34 +302,25 @@ impl Closing {
         &mut self,
         reason: close::Reason,
         proof: state::Enter<'d, ID>,
-    ) -> Entry<'_, 'd, ID> {
+    ) -> Stage<'_, 'd, ID> {
         let rule = close::Directive::reconnect(reason);
         let state = self
             .state
             .get_or_insert_with(|| Packed::new(ClosePhase::Quarantining, rule));
         let reason = match state.phase {
-            ClosePhase::Claimed => return Entry::Claimed,
-            ClosePhase::Finalized => return Entry::Finalized,
-            ClosePhase::Settled => return Entry::Settled(SettledState(state)),
-            ClosePhase::Retiring => return Entry::Retiring(RetireState(state), proof),
+            // Enter comes only from an admitted ActiveMut, which excludes these phases.
+            ClosePhase::Claimed | ClosePhase::Finalized => unreachable!("close"),
+            ClosePhase::Settled => return Stage::Settled(Settled::new(SettledState(state))),
+            ClosePhase::Retiring => {
+                return Stage::Retiring(Retiring::new(RetireState(state), proof));
+            }
             ClosePhase::Quarantining => state.effective().reason(),
             ClosePhase::Requested => {
                 *state = state.merged(rule).with_phase(ClosePhase::Quarantining);
                 state.rule.reason()
             }
         };
-        Entry::Started(Quarantine(state), reason, proof)
-    }
-
-    pub(super) fn claim_final(&mut self) -> ClaimState {
-        match &mut self.state {
-            None => ClaimState::Missing,
-            Some(state) if matches!(state.phase, ClosePhase::Claimed) => ClaimState::Active,
-            Some(state) if matches!(state.phase, ClosePhase::Finalized) => {
-                ClaimState::Issued(state.issue())
-            }
-            Some(_) => ClaimState::InProgress,
-        }
+        Stage::Started(Starting::new(Quarantine(state), reason, proof))
     }
 
     pub(super) fn cut(&mut self, rule: close::Directive) -> CutState {

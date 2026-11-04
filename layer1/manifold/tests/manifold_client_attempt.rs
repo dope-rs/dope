@@ -3,7 +3,6 @@ pub mod common;
 use std::{cell::Cell, ptr, rc::Rc, time::Duration};
 
 use dope_core::driver::{
-    self,
     life::{creation::Attempt, recovery},
     route::{Id, KeyTag, table::conn::Capacity},
     schedule::clock,
@@ -42,7 +41,7 @@ use crate::common::{
     contract::Report,
     manifold::client::{
         connect::dial::{
-            Cancellation, Exhausted, Stage,
+            Cancellation, Exhausted,
             empty::{Empty, Trace},
         },
         error,
@@ -56,52 +55,46 @@ static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
 fn reserves_independently() {
-    let mut create = Attempt::new();
     let mut reports = Vec::new();
-    let result = Runtime::throughput().try_executor(&mut create);
-    result
-        .as_ref()
-        .map_err(|error| error.kind())
-        .expect("executor construction");
-    let Ok(executor) = result else {
-        return;
-    };
-    executor
-        .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(2)))
-        .run(|executor| {
-            ((executor.try_create(
-                |session| {
-                    let queue = session.storage();
-                    let ((), alloc) = Tracker::usage(|| {
-                        let (second, key) = {
-                            let first = queue.try_reserve().expect("first reservation");
-                            let second = queue.try_reserve().expect("independent reservation");
-                            assert!(!queue.has_room());
-                            assert!(matches!(queue.try_reserve(), Err(Vacancy::Full)));
-                            (second, first.id())
-                        };
-                        let first = queue.try_reserve().expect("reservation returns capacity");
-                        assert!(first.id() != key);
-                        let key = first.id();
-                        let second = {
-                            let first = first.start(Loopback(8994).target());
-                            assert!(first.id() == key);
-                            second.start(Loopback(8995).target())
-                        };
-                        let next = queue.try_reserve().expect("lease returns only its slot");
-                        assert!(next.id().index() == key.index());
-                        assert!(next.id() != key);
-                        second.cancel();
-                        assert!(queue.has_room());
-                    });
-                    assert_eq!(alloc, (0, 0));
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-            ))
-            .as_ref()
-            .map_err(Kind::from)
-            .expect("attempt source generation and finalization"));
-        });
+    Driver::new(Runtime::throughput().config()).with_scope(
+        |scope| {
+            let queue = queue::Source::<Tcp>::try_new(
+                capacity::Count::new(2),
+                &mut scope.context().storage,
+            )
+            .expect("attempt source");
+            let ((), alloc) = Tracker::usage(|| {
+                let (second, key) = {
+                    let first = queue.try_reserve().expect("first reservation");
+                    let second = queue.try_reserve().expect("independent reservation");
+                    assert!(!queue.has_room());
+                    assert!(matches!(queue.try_reserve(), Err(Vacancy::Full)));
+                    (second, first.id())
+                };
+                let first = queue.try_reserve().expect("reservation returns capacity");
+                assert!(first.id() != key);
+                let key = first.id();
+                let second = {
+                    let first = first.start(Loopback(8994).target());
+                    assert!(first.id() == key);
+                    second.start(Loopback(8995).target())
+                };
+                let next = queue.try_reserve().expect("lease returns only its slot");
+                assert!(next.id().index() == key.index());
+                assert!(next.id() != key);
+                second.cancel();
+                assert!(queue.has_room());
+            });
+            assert_eq!(alloc, (0, 0));
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        |result| {
+            result
+                .as_ref()
+                .map_err(scope::Error::cause)
+                .expect("attempt source generation and finalization");
+        },
+    );
     assert!(
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
@@ -112,52 +105,46 @@ fn reserves_independently() {
 fn capacity_mismatch() {
     let audit = Rc::new(Report::default());
     let trace = Rc::new(Trace::default());
-    let mut create = Attempt::new();
     let mut reports = Vec::new();
-    let result = Runtime::throughput().try_executor(&mut create);
-    result
-        .as_ref()
-        .map_err(|error| error.kind())
-        .expect("executor construction");
-    let Ok(executor) = result else {
-        return;
-    };
-    executor
-        .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(1)))
-        .run(|executor| {
-            ((executor.try_create(
-                |mut session| {
-                    let source = session.storage();
-                    let result = engine::Startup::new(
-                        Empty {
-                            audit: Rc::clone(&audit),
-                            trace: Rc::clone(&trace),
-                            reject: None,
-                        },
-                        source,
-                        Capacity::fixed::<2>(),
-                        Default::default(),
-                        Local::new(Identity),
-                    )
-                    .try_with::<Bundle<Tcp, Identity, Throughput>, _, _>(
-                        &mut session.driver(),
-                        driver::Context::reborrow,
-                        |_, _| (),
-                    );
-                    let (error,) = match result {
-                        Err(creation::Error::Attempt(error)) => Some((error,)),
-                        _ => None,
-                    }
-                    .expect("attempt capacity error");
-                    assert!((error.requested()) == (capacity::Count::new(2)));
-                    assert!((error.available()) == (capacity::Count::new(1)));
+    Driver::new(Runtime::throughput().config()).with_scope(
+        |scope| {
+            let source = queue::Source::<Tcp>::try_new(
+                capacity::Count::new(1),
+                &mut scope.context().storage,
+            )
+            .expect("attempt source");
+            let result = engine::Startup::new(
+                Empty {
+                    audit: Rc::clone(&audit),
+                    trace: Rc::clone(&trace),
+                    reject: None,
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
-            ))
-            .as_ref()
-            .map_err(Kind::from)
-            .expect("attempt source generation and finalization"));
-        });
+                &source,
+                Capacity::fixed::<2>(),
+                Default::default(),
+                Local::new(Identity),
+            )
+            .try_with::<Bundle<Tcp, Identity, Throughput>, _, _>(
+                scope,
+                |scope| scope.context(),
+                |_, _| (),
+            );
+            let (error,) = match result {
+                Err(creation::Error::Attempt(error)) => Some((error,)),
+                _ => None,
+            }
+            .expect("attempt capacity error");
+            assert!((error.requested()) == (capacity::Count::new(2)));
+            assert!((error.available()) == (capacity::Count::new(1)));
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        |result| {
+            result
+                .as_ref()
+                .map_err(scope::Error::cause)
+                .expect("attempt source generation and finalization");
+        },
+    );
 
     assert!(
         reports.is_empty(),
@@ -190,7 +177,7 @@ fn cancel_before_reuse() {
                     let source = sess.storage();
                     let reserve = (source.try_reserve()).expect("first attempt");
                     let lease =
-                        reserve.start(StreamTarget::new(Loopback(9).addr(), Default::default()));
+                        reserve.start(StreamTarget::new(Loopback(0).addr(), Default::default()));
                     let result = engine::Startup::new(
                         Empty {
                             audit: Rc::clone(&audit),
@@ -214,23 +201,18 @@ fn cancel_before_reuse() {
                                 start,
                                 Duration::from_secs(2),
                                 |mut app| {
-                                    let fixed = app.drive(
-                                        start,
-                                        Cancellation {
-                                            state: Stage::Pending(lease),
-                                        },
-                                    );
+                                    let fixed =
+                                        app.drive(start, Cancellation { lease: Some(lease) });
                                     let fixed = (fixed).expect("cancellation drive");
                                     let key = fixed
                                         .into_output()
                                         .expect("cancellation polled only until complete");
                                     assert_eq!(trace.connected.get(), 0);
+                                    let failures =
+                                        trace.failed.values().expect("connection failures");
                                     assert!(
-                                        trace
-                                            .failed
-                                            .values()
-                                            .expect("connection failures")
-                                            .is_empty()
+                                        failures.is_empty(),
+                                        "connection failures during cancellation: {failures:?}"
                                     );
                                     assert_eq!(trace.closed.get(), 0);
                                     assert_eq!(trace.drained.get(), 0);
@@ -239,7 +221,7 @@ fn cancel_before_reuse() {
                                     let next =
                                         (source.try_reserve()).expect("reused attempt capacity");
                                     let next = next.start(StreamTarget::new(
-                                        Loopback(9).addr(),
+                                        Loopback(0).addr(),
                                         Default::default(),
                                     ));
                                     assert!(next.id() != key);
@@ -271,11 +253,12 @@ fn connected_cancel_survives_shared_maintenance() {
         |address, release| {
             let mut create = Attempt::new();
             let mut finish = Completion::new();
-            let mut reports = Vec::new();
+            let runtime = Runtime::throughput();
+            let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
             let audit = Rc::new(Report::default());
             let trace = Rc::new(Trace::default());
             let exhaust = Cell::new(false);
-            let executor = Runtime::throughput()
+            let executor = runtime
                 .try_executor(&mut create)
                 .ok()
                 .expect("executor construction");
@@ -343,7 +326,10 @@ fn connected_cancel_survives_shared_maintenance() {
                         .map_err(Kind::from)
                         .expect("attempt source finalization");
                 });
-            assert!(reports.is_empty(), "unexpected reclamation: {reports:?}");
+            assert!(
+                matches!(reports.events(), Ok(events) if events.is_empty()),
+                "unexpected reclamation: {reports:?}"
+            );
             audit.checked((0, 0));
             release.try_fire().expect("release quiet peer");
         },

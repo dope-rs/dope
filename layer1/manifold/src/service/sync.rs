@@ -21,7 +21,7 @@ pub struct Scan {
 }
 
 /// Retirement state selected by one snapshot synchronization policy.
-pub trait State {
+pub trait State: sealed::State {
     /// Opens an authoritative scan when the policy permits retirement.
     fn scan(&mut self) -> Option<&mut Scan>;
 
@@ -30,6 +30,13 @@ pub trait State {
 
     /// Reports whether an opened scan still owns table slots.
     fn is_pending(&self) -> bool;
+}
+
+mod sealed {
+    pub trait State {}
+
+    impl State for super::Frozen {}
+    impl State for super::Scan {}
 }
 
 impl Scan {

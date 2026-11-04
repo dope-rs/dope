@@ -1,6 +1,5 @@
 use std::pin;
 
-use attempt::Report as _;
 use dope_core::driver::{retained, route::Identity, schedule};
 use dope_net::link::{
     pool::{self, pending},
@@ -13,7 +12,7 @@ use crate::{
         app, attempt,
         close::{self, Directive},
         conn::{
-            self, State, claim, drain,
+            self, State, claim, closing, drain,
             engine::{self, liveness},
             flow, state,
         },
@@ -61,7 +60,6 @@ impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> ClosePhase<'d, ID, A, S, E>
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
-    S::Error: attempt::Report<'d, ID, A>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
@@ -113,45 +111,35 @@ where
                 }
                 return;
             }
-            closing.effective()
-        };
-        {
-            let this = self.as_mut().project();
-            let Some(slot) = this.links.pool_mut().get_mut(key) else {
-                return;
-            };
-            match claim::ProbeClaim::claim(slot) {
-                claim::ProbeClaim::Ready(close) => {
-                    let close =
-                        drain::OwnedDrain::new(slot.state.owner.attempt(), close.into_drain());
+            let rule = closing.effective();
+            match closing.claim_final() {
+                closing::ClaimState::Issued(claim) => {
+                    let close = drain::Drain::new(conn::Id::from_key(slot.key()), claim);
+                    let close = drain::OwnedDrain::new(slot.state.owner.attempt(), close);
                     <S::Mode as finalize::Finalize<'p, 'w, 'd, ID, A, S, E, X>>::finish(
-                        finalize::Finalizing {
-                            machine: self,
-                            close,
-                            turn,
-                            driver,
-                        },
+                        self, close, turn, driver,
                     );
                     return;
                 }
-                claim::ProbeClaim::Active => return,
-                claim::ProbeClaim::InProgress | claim::ProbeClaim::Missing => {}
+                closing::ClaimState::Active => return,
+                closing::ClaimState::InProgress => {}
             }
-        }
+            rule
+        };
         let target = self.as_ref().backoff();
-        let outcome = {
+        let close = {
             let this = self.as_mut().project();
             let Some(liveness::Egress {
                 flights: _,
                 connection: mut slot,
-                pending: _,
+                pending: handle,
                 queue: egress,
             }) = this.links.egress(key, target)
             else {
                 return;
             };
             egress.cancel_wait(driver.region_token());
-            let outcome = match State::close(&mut slot, rule, |active| {
+            match State::close(&mut slot, rule, |active| {
                 this.app.close(
                     conn::Ctx::new(active, turn.reborrow().app()),
                     egress.reborrow(),
@@ -159,56 +147,26 @@ where
                     driver,
                 )
             }) {
-                flow::Close::Ready(
-                    flow::Flow::Continue(output) | flow::Flow::Discarded(output),
-                ) => output,
-                flow::Close::Sealed => return,
-            };
-            if matches!(outcome, app::CloseOutcome::Complete(_)) {
-                slot.closing(
-                    driver.driver_ref().clock().now(),
-                    <E::Timing as timing::Policy>::SEND_DEADLINE,
-                );
-            }
-            outcome
-        };
-        match outcome {
-            app::CloseOutcome::Complete(_) => {}
-            app::CloseOutcome::Blocked => return,
-            app::CloseOutcome::Yield => {
-                let this = self.project();
-                if let Some((_, handle)) = pending::Mut::of(this.links.pool_mut()).get(key) {
-                    handle.wake();
+                flow::Close::Complete(close, urgency) => {
+                    let slot = slot.closing(
+                        driver.driver_ref().clock().now(),
+                        <E::Timing as timing::Policy>::SEND_DEADLINE,
+                    );
+                    if matches!(urgency, claim::Urgency::Immediate) {
+                        slot.discard();
+                    }
+                    drain::OwnedDrain::new(slot.state.owner.attempt(), close)
                 }
-                return;
+                flow::Close::Yield => {
+                    handle.wake();
+                    return;
+                }
+                flow::Close::Blocked | flow::Close::Sealed => return,
             }
-        }
-        let close = {
-            let this = self.as_mut().project();
-            let Some(close) =
-                claim::Settlement::claim(this.links.pool_mut().get_mut(key)).drain(|owner| {
-                    if let Err(cause) = this.controller.kill(owner, None) {
-                        cause.retire(
-                            attempt::Completion::reported(owner, this.controller),
-                            this.app,
-                            driver,
-                        );
-                    }
-                    if this.shutdown.is_open() && this.controller.is_pending() {
-                        this.drive.target().wake();
-                    }
-                })
-            else {
-                return;
-            };
-            close
         };
-        <S::Mode as finalize::Finalize<'p, 'w, 'd, ID, A, S, E, X>>::finish(finalize::Finalizing {
-            machine: self,
-            close,
-            turn,
-            driver,
-        });
+        <S::Mode as finalize::Finalize<'p, 'w, 'd, ID, A, S, E, X>>::finish(
+            self, close, turn, driver,
+        );
     }
 
     fn maybe_close(

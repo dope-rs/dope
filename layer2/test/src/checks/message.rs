@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use super::Error;
 
-/// Borrowed Cargo JSON; selected strings alone need decoding and ownership.
+/// Borrowed Cargo JSON; only extracted escaped strings need owned storage.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Value<'a> {
     pub(super) text: &'a str,
@@ -67,16 +67,22 @@ impl<'a> Value<'a> {
 
     pub(super) fn string(&self) -> Result<Cow<'a, str>, Error> {
         let cursor = self.contents(b'"', b'"')?;
-        if cursor.rest.bytes().any(|byte| byte < 0x20) {
-            return Err(cursor.error());
-        }
         if !cursor.rest.contains('\\') {
             return Ok(Cow::Borrowed(cursor.rest));
         }
         let mut output = String::new();
+        self.decode(|ch| output.push(ch))?;
+        Ok(Cow::Owned(output))
+    }
+
+    fn decode(&self, mut emit: impl FnMut(char)) -> Result<(), Error> {
+        let cursor = self.contents(b'"', b'"')?;
+        if cursor.rest.bytes().any(|byte| byte < 0x20) {
+            return Err(cursor.error());
+        }
         let mut chars = cursor.rest.chars();
         while let Some(ch) = chars.next() {
-            output.push(if ch == '\\' {
+            emit(if ch == '\\' {
                 match chars.next().ok_or_else(|| cursor.error())? {
                     '"' => '"',
                     '\\' => '\\',
@@ -105,7 +111,7 @@ impl<'a> Value<'a> {
                 ch
             });
         }
-        Ok(Cow::Owned(output))
+        Ok(())
     }
 }
 
@@ -178,7 +184,7 @@ impl<'a> Cursor<'a> {
                     text: &start[..end],
                     offset,
                 }
-                .string()?;
+                .decode(drop)?;
             }
             Some(open @ (b'[' | b'{')) if depth < 64 => {
                 let close = if open == b'[' { b']' } else { b'}' };
@@ -189,7 +195,7 @@ impl<'a> Cursor<'a> {
                 } else {
                     loop {
                         if open == b'{' {
-                            self.take(depth + 1)?.string()?;
+                            self.take(depth + 1)?.contents(b'"', b'"')?;
                             self.expect(b':')?;
                         }
                         self.take(depth + 1)?;

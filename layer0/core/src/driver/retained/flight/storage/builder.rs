@@ -1,6 +1,6 @@
 use o3::alloc;
 
-use crate::driver::retained::flight::storage::{self, Drain, Flights, Prepared};
+use crate::driver::retained::flight::storage::{Drain, Flights, Prepared};
 
 /// Sole preparation authority for one borrowed flight arena.
 #[repr(transparent)]
@@ -18,8 +18,7 @@ impl<'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
     ) -> Result<Prepared<'_, 'owner, T, INDEX_BITS, GENERATION_BITS, GROUPS>, alloc::Error> {
         // SAFETY: the arena's exclusive owner borrow created this sole builder;
         // Prepared retains this mutable borrow until commit or rollback.
-        let access = unsafe { storage::raw::Access::new(self.arena) };
-        access.try_batch(caps)
+        unsafe { self.arena.try_batch(caps) }
     }
 
     /// Completion borrows the arena independently of the next preparation.

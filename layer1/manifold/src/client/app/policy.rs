@@ -25,7 +25,11 @@ where
     fn receive<'input, 'turn, 'driver, 'context, 'owner, R>(
         recv: R,
         key: pool::Key<'d, ID>,
-        input: <Self as Mode<A::Wire>>::Value<'input, 'w, 'd>,
+        input: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
+            'input,
+            'w,
+            'd,
+        >,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut retained::Context<'context, 'owner, 'd>,
     ) -> crate::Receiving<'w, 'd, A::Wire, Self>
@@ -44,7 +48,11 @@ where
     fn receive<'input, 'turn, 'driver, 'context, 'owner, R>(
         recv: R,
         key: pool::Key<'d, ID>,
-        input: <Self as Mode<A::Wire>>::Value<'input, 'w, 'd>,
+        input: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
+            'input,
+            'w,
+            'd,
+        >,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut retained::Context<'context, 'owner, 'd>,
     ) -> Progress<convert::Infallible>
@@ -53,7 +61,6 @@ where
         'd: 'owner,
         R: app::Receiver<'w, 'd, ID, A>,
     {
-        let input = Self::into_value(input);
         recv.borrowed(key, input, turn, driver)
     }
 }
@@ -67,7 +74,11 @@ where
     fn receive<'input, 'turn, 'driver, 'context, 'owner, R>(
         recv: R,
         key: pool::Key<'d, ID>,
-        input: <Self as Mode<A::Wire>>::Value<'input, 'w, 'd>,
+        input: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
+            'input,
+            'w,
+            'd,
+        >,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut retained::Context<'context, 'owner, 'd>,
     ) -> Progress<convert::Infallible>
@@ -76,7 +87,6 @@ where
         'd: 'owner,
         R: app::Receiver<'w, 'd, ID, A>,
     {
-        let input = Self::into_value(input);
         recv.retained(key, input, turn, driver)
     }
 }

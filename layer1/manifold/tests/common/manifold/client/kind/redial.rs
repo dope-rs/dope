@@ -39,7 +39,6 @@ use crate::common::{
 
 pub type Exhaustion = (opening::Exhaustion, u32, u32);
 
-pub const MAX: usize = 1;
 pub const BACKOFF: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Copy)]
@@ -295,11 +294,3 @@ impl<'d, 'test> Retirement<'d> for Redial<'test> {
 
 impl<'d, 'test> Scheduling<'d> for Redial<'test> {}
 impl<'d, 'test, const N: usize> Target<'d, KeyTag<0>, N> for Redial<'test> {}
-
-pub struct Run {
-    pub conns: u32,
-    pub begun: u32,
-    pub steps: u32,
-    pub closed: u32,
-    pub accepts: usize,
-}

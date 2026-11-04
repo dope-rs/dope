@@ -370,15 +370,12 @@ impl Setup {
             map::Open::Failure(failure) => Self::finish(
                 None,
                 Cause::Map(failure),
-                previous.map_or(Ok(()), map::Closing::one),
+                previous.map_or(Ok(()), |map| map::Closing::close(map, None)),
             ),
             map::Open::Cleanup { failure, unmap } => Error::Cleanup(Cleanup::new(
                 None,
                 Cause::Map(failure),
-                match previous {
-                    Some(previous) => map::Closing::dirty_two(unmap, previous),
-                    None => map::Closing::dirty(unmap),
-                },
+                map::Closing::dirty(unmap, previous),
             )),
         }
     }

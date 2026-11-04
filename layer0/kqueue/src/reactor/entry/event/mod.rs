@@ -68,6 +68,9 @@ enum State<C: entry::Context, B> {
     Write {
         result: Bytes<C>,
     },
+    Read {
+        result: Bytes<C>,
+    },
     Sync {
         result: Unit<C>,
     },
@@ -90,6 +93,7 @@ impl<C: entry::Context, B> complete::Event for Event<C, B> {
             | State::Create { .. }
             | State::Open { .. }
             | State::Write { .. }
+            | State::Read { .. }
             | State::Sync { .. } => true,
         })
     }
@@ -114,6 +118,7 @@ impl<C: entry::Context, B> complete::Map for Event<C, B> {
                 State::Create { outcome } => State::Create { outcome },
                 State::Open { result } => State::Open { result },
                 State::Write { result } => State::Write { result },
+                State::Read { result } => State::Read { result },
                 State::Sync { result } => State::Sync { result },
             },
         }))
@@ -186,6 +191,10 @@ impl<C: entry::Context, B> entry::Event<C, B> for Event<C, B> {
         Self::new(ud, State::Write { result })
     }
 
+    fn read(ud: Key<C>, result: Bytes<C>) -> Self {
+        Self::new(ud, State::Read { result })
+    }
+
     fn synced(ud: Key<C>, result: Unit<C>) -> Self {
         Self::new(ud, State::Sync { result })
     }
@@ -249,6 +258,7 @@ impl<C: entry::Context, B> entry::Event<C, B> for Event<C, B> {
             State::Send { .. }
             | State::Connect { .. }
             | State::Write { .. }
+            | State::Read { .. }
             | State::Sync { .. }
             | State::Open { .. } => finish::<C, B>(ud, drain),
             State::Create { outcome } => {
@@ -327,6 +337,7 @@ fn dispose<'q, 'd, C: entry::Socket<'q, 'd, B>, B>(
             Retired::Open { key, result, close }
         }
         State::Write { result } => Retired::Write { key, result },
+        State::Read { result } => Retired::Read { key, result },
         State::Sync { result } => Retired::Sync { key, result },
         State::Create {
             outcome: Create { slot, result },

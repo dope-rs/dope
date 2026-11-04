@@ -3,11 +3,7 @@ use o3::base::cell::region;
 
 use crate::{
     client::attempt,
-    service::{
-        self, discover,
-        pool::{dials, members},
-        sync,
-    },
+    service::{self, discover, pool::members, sync},
 };
 
 impl<'q, 'h, 'd, T, R, I, const N: usize, F, ID: Identity> attempt::Peer<'d, T, ID>
@@ -26,7 +22,7 @@ where
         token: &region::Token<region::Identity<'d, 1>>,
         map: impl FnOnce(&Self::Target) -> O,
     ) -> attempt::Connection<O> {
-        let dials::Connection::Pending(connect) = self.dials.connection(key) else {
+        let Some(connect) = self.dials.connection(key) else {
             return attempt::Connection::Stale;
         };
         let output = match self.membership.recover(connect.target(), |endpoint| {

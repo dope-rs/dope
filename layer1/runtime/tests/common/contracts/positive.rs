@@ -80,6 +80,51 @@ impl<'d> Provider<'d> for Value {
     }
 }
 
+fn paired_scope<'app, 'd: 'app>(
+    context: client::Context<'_, 'app, 'd, client::Pair<'d, Value, Value>>,
+) {
+    let (first, second) = client::Pair::provide(context);
+    let _first: Bound<'app, 'd, Value, u8> = first;
+    let _second: Bound<'app, 'd, Value, u8> = second;
+}
+
+struct BorrowedValue<'loan>(&'loan u8);
+
+impl<'d, 'loan> Provider<'d> for BorrowedValue<'loan> {
+    type Client<'app>
+        = Bound<'app, 'd, Self, &'loan u8>
+    where
+        Self: 'app,
+        'd: 'app;
+
+    fn provide<'app>(context: client::Context<'_, 'app, 'd, Self>) -> Self::Client<'app>
+    where
+        Self: 'app,
+        'd: 'app,
+    {
+        let (provider, bound) = context.into_parts();
+        bound.bind(provider.get_ref().0)
+    }
+}
+
+struct Selected<'loan>(BorrowedValue<'loan>);
+
+impl<'d, 'loan> lending::Root<'d> for Selected<'loan> {
+    type Provider = BorrowedValue<'loan>;
+
+    fn provider(self: Pin<&Self>) -> Pin<&Self::Provider> {
+        Pin::new(&self.get_ref().0)
+    }
+}
+
+fn paired_loans<'first: 'app, 'second: 'app, 'app, 'd: 'app>(
+    context: client::Context<'_, 'app, 'd, client::Pair<'d, Selected<'first>, Selected<'second>>>,
+) {
+    let (first, second) = client::Pair::provide(context);
+    let _: Bound<'app, 'd, BorrowedValue<'first>, &'first u8> = first;
+    let _: Bound<'app, 'd, BorrowedValue<'second>, &'second u8> = second;
+}
+
 fn owned_only<'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S, Q>(
     stage: &mut lending::Stage<'_, 'scope, 'life, 'p, 'd, S, Q>,
     report: &mut session::Completion,

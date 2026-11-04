@@ -82,10 +82,6 @@ type Transition<'a, 'd, ID, E, X, S> = liveness::Change<
     S,
 >;
 
-pub(in crate::client) struct Config {
-    connection_lifetime: Option<Positive>,
-}
-
 #[pin_project::pin_project(!Unpin)]
 /// A connector retains its route identity for the complete driver domain.
 pub struct Machine<'p, 'w, 'd: 'p + 'w, ID: Identity + 'd, A, S, E, X = side::Disabled>
@@ -93,7 +89,6 @@ where
     A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
     pub(in crate::client) links: liveness::Links<'p, 'w, 'd, ID, A, E, X>,
@@ -101,7 +96,7 @@ where
     pub(in crate::client) controller: S,
     pub(in crate::client) side: X,
     pub(in crate::client) shutdown: state::State,
-    pub(in crate::client) configuration: Config,
+    connection_lifetime: Option<Positive>,
     #[pin]
     drive: cycle::Cycle<'d, ID, phase::Phase<S::Mode, X>>,
 }
@@ -112,7 +107,6 @@ where
     A: app::Lifecycle<'w, 'd, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
 {
     fn call<'app, 'finish, 'owner, 'epoch>(
         finish: executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self>,
@@ -132,7 +126,6 @@ where
     A: app::Lifecycle<'w, 'd, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     I: registry::Intent<'d, ID>,
 {
     fn call<'app, 'finish, 'owner, 'epoch>(
@@ -161,7 +154,6 @@ where
     A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
     fn flush_recv(
@@ -287,7 +279,6 @@ where
     A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
     pub(in crate::client) fn backoff(self: pin::Pin<&Self>) -> ready::Target<'d> {
@@ -303,7 +294,6 @@ where
     A::Requests: send::Policy<'w, 'd, ID, A>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
     X: Mode<'d, ID>
         + Complete<'w, 'd, ID, A, S, E>
         + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,

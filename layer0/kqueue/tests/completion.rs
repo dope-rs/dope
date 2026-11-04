@@ -5,16 +5,16 @@ use std::{cell::Cell, num::NonZero};
 use dope_kqueue::Kqueue;
 use dope_sys::io::reactor::complete::{self, Dequeued, Queue as _, Vacancy as _};
 
-use crate::common::event::{Capacity, Event};
+use crate::common::event::Event;
 
-type Queue<'a> = <Kqueue as complete::Source>::Queue<Event<'a>, Capacity>;
+type Queue<'a> = <Kqueue as complete::Source>::Queue<Event<'a>, NonZero<u32>>;
 
 #[test]
 fn suppression_keeps_owners() {
     let retired = Cell::new(0);
     let key = NonZero::<u8>::MIN;
-    let mut queue = Queue::try_new(Capacity(NonZero::<u32>::MIN.saturating_add(2)))
-        .expect("completion storage");
+    let mut queue =
+        Queue::try_new(NonZero::<u32>::MIN.saturating_add(2)).expect("completion storage");
     for value in 0..3 {
         queue.vacant().expect("reserved capacity").push(Event {
             key: (value != 2).then_some(key),
@@ -73,7 +73,7 @@ fn suppression_keeps_owners() {
 fn more_keeps_pending() {
     let retired = Cell::new(0);
     let key = NonZero::<u8>::MIN;
-    let mut queue = Queue::try_new(Capacity(NonZero::<u32>::MIN)).expect("completion storage");
+    let mut queue = Queue::try_new(NonZero::<u32>::MIN).expect("completion storage");
     queue.vacant().expect("reserved capacity").push(Event {
         key: Some(key),
         value: 7,

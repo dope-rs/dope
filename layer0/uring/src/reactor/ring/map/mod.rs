@@ -40,9 +40,9 @@ pub(crate) enum Open {
 pub(crate) struct Set(ring::ffi::Map, ring::ffi::Map);
 
 #[derive(Debug)]
-enum State<C> {
-    One(C),
-    Two { current: C, next: ring::ffi::Map },
+struct State<C> {
+    current: C,
+    next: Option<ring::ffi::Map>,
 }
 
 impl Region {
@@ -96,32 +96,19 @@ impl Retry for Unmap {
 
 impl Closing {
     pub(crate) fn failure(&self) -> crate::Unmap {
-        match &self.0 {
-            State::One(current) | State::Two { current, .. } => current.failure(),
-        }
+        self.0.current.failure()
     }
 
-    pub(crate) fn one(first: ring::ffi::Map) -> Result<(), Self> {
-        Pending(State::One(first.into_region())).try_close()
-    }
-
-    pub(crate) fn two(first: ring::ffi::Map, second: ring::ffi::Map) -> Result<(), Self> {
-        Pending(State::Two {
-            current: first.into_region(),
-            next: second,
+    pub(crate) fn close(current: ring::ffi::Map, next: Option<ring::ffi::Map>) -> Result<(), Self> {
+        Pending(State {
+            current: current.into_region(),
+            next,
         })
         .try_close()
     }
 
-    pub(crate) const fn dirty(unmap: Unmap) -> Self {
-        Self(State::One(unmap))
-    }
-
-    pub(crate) const fn dirty_two(unmap: Unmap, second: ring::ffi::Map) -> Self {
-        Self(State::Two {
-            current: unmap,
-            next: second,
-        })
+    pub(crate) const fn dirty(current: Unmap, next: Option<ring::ffi::Map>) -> Self {
+        Self(State { current, next })
     }
 }
 
@@ -130,14 +117,10 @@ impl Retry for Closing {
     type Owner = Pending;
 
     fn recover(self) -> Rejected<Pending, crate::Unmap> {
-        match self.0 {
-            State::One(current) => current
-                .recover()
-                .map(|current| Pending(State::One(current))),
-            State::Two { current, next } => current
-                .recover()
-                .map(|current| Pending(State::Two { current, next })),
-        }
+        let State { current, next } = self.0;
+        current
+            .recover()
+            .map(|current| Pending(State { current, next }))
     }
 }
 
@@ -145,12 +128,10 @@ impl Close for Pending {
     type State = Closing;
 
     fn try_close(self) -> Result<(), Closing> {
-        match self.0 {
-            State::One(current) => current.try_close().map_err(Closing::dirty),
-            State::Two { current, next } => match current.try_close() {
-                Ok(()) => Closing::one(next),
-                Err(current) => Err(Closing(State::Two { current, next })),
-            },
+        let State { current, next } = self.0;
+        match current.try_close() {
+            Ok(()) => next.map_or(Ok(()), |next| Closing::close(next, None)),
+            Err(current) => Err(Closing::dirty(current, next)),
         }
     }
 }
@@ -170,7 +151,7 @@ impl Set {
 
     pub(crate) fn try_close(self) -> Result<(), Closing> {
         let Self(submit, entries) = self;
-        Closing::two(entries, submit)
+        Closing::close(entries, Some(submit))
     }
 }
 

@@ -1,6 +1,7 @@
 use std::{
-    convert, iter, num,
-    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    convert, iter, mem, num,
+    os::fd::{AsFd, AsRawFd as _, BorrowedFd, OwnedFd},
+    ptr,
 };
 
 use dope_sys::{
@@ -17,14 +18,14 @@ use dope_sys::{
             ready::{
                 Backend as _, delivery,
                 delivery::entry,
-                store::{Context, Create, Quota, config},
+                store::{Context, Create, config},
             },
             retry,
         },
         request, socket,
         socket::{
             accept, addr, gso, option,
-            option::{Name, fast, tuning::device},
+            option::{fast, tuning::device},
             record, route,
             route::install,
         },
@@ -158,7 +159,7 @@ impl<T: Copy + Eq, S: Copy + Eq, F: Copy + Eq> Observe<T, S, F> for Kqueue {
 }
 
 impl complete::Source for Kqueue {
-    type Queue<E: complete::Event, C: complete::raw::Capacity> = done::Queue<E, C>;
+    type Queue<E: complete::Event, C: depot::raw::Count> = done::Queue<E, C>;
 }
 
 impl kernel::Source for Kqueue {
@@ -251,6 +252,32 @@ impl socket::Socket for Kqueue {
         Ok(file)
     }
 
+    /// Darwin's listening-state query requires a TCP socket.
+    fn is_listening<E: From<Errno>>(file: BorrowedFd<'_>) -> Result<bool, E> {
+        // SAFETY: the native record contains only integers and padding.
+        let mut info: libc::tcp_connection_info = unsafe { mem::zeroed() };
+        let capacity = mem::size_of_val(&info) as libc::socklen_t;
+        let mut len = capacity;
+        // SAFETY: the descriptor and full exclusive output extent outlive the call.
+        let raw = unsafe {
+            libc::getsockopt(
+                file.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_CONNECTION_INFO,
+                ptr::from_mut(&mut info).cast(),
+                &mut len,
+            )
+        };
+        // SAFETY: getsockopt returns zero or -1; errno is captured immediately.
+        unsafe {
+            kernel::raw::Status::new(raw).try_zero::<E>(|| kernel::raw::Code::last::<Self>().into())
+        }?;
+        if len == 0 || len > capacity {
+            unreachable!("length");
+        }
+        Ok(info.tcpi_state == 1) // Darwin TCPS_LISTEN.
+    }
+
     fn pair() -> Result<(OwnedFd, OwnedFd), record::Error> {
         let (left, right) =
             Self::try_pair::<Errno>(libc::SOCK_STREAM).map_err(record::Error::Open)?;
@@ -266,7 +293,7 @@ impl socket::Socket for Kqueue {
 }
 
 impl option::Source for Kqueue {
-    const KEEP_IDLE: Name = Name::new(libc::TCP_KEEPALIVE);
+    const KEEP_IDLE: libc::c_int = libc::TCP_KEEPALIVE;
 }
 
 impl addr::Source for Kqueue {
@@ -313,11 +340,6 @@ impl socket::Prepare for Kqueue {
 impl ready::Source for Kqueue {
     const LANES: num::NonZero<u8> = num::NonZero::<u8>::MIN.saturating_add(3);
 
-    type Work<C, Q>
-        = reactor::Work<Q>
-    where
-        C: ready::Driver<Context: ready::raw::Decode>,
-        Q: Quota;
     type State<C: Context> = reactor::State<C>;
     type Poll<S: table::raw::Slots, F: ready::Failure<Index = S::Index, Missing = S::Missing>> =
         Poll<S, F, { Self::LANES.get() }>;

@@ -22,8 +22,8 @@ use crate::link::{
     oneshot::{Error, phase, phase::Phase},
 };
 
-pub(super) struct Creating<'d, State = pending::Live> {
-    pub(super) socket: handles::Creation<'d, State>,
+pub(super) struct Creating<'d> {
+    pub(super) socket: handles::Creation<'d>,
     pub(super) options: option::Set,
     pub(super) send_window: Positive,
 }
@@ -32,8 +32,8 @@ pub(super) struct ConnectRetry<'d> {
     pub(super) options: option::Set,
     pub(super) send_window: Positive,
 }
-pub(super) struct Connecting<'d, State = pending::Live> {
-    pub(super) pending: pending::Connection<'d, State>,
+pub(super) struct Connecting<'d> {
+    pub(super) pending: pending::Connection<'d>,
     pub(super) send_window: Positive,
 }
 pub(super) struct Sending<'d> {

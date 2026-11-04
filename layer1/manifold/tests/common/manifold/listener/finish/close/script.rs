@@ -7,7 +7,7 @@ use dope_core::{
 use dope_manifold::{
     app::{receive, receive::Outcome},
     network::listener::{
-        conn::{self, write, write::error},
+        conn::{self, write},
         handler::{self, Application, failures, retire, send},
     },
 };
@@ -16,18 +16,10 @@ use o3::buffer::{bytes::TryRetain, resident};
 
 use crate::common::manifold::listener::finish::close::wire::Wire;
 
-pub enum Event<'d> {
-    Close(u8),
-    Chunk(usize),
-    Prefix(u8),
-    Write(Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>),
-}
-
-pub struct App<F> {
+pub struct App {
     pub(crate) payload: Option<Vec<u8>>,
     pub(crate) close: Gate,
     pub(crate) chunk: Option<Gate>,
-    pub(crate) observe: F,
 }
 
 #[derive(Debug)]
@@ -48,7 +40,7 @@ impl Script {
     }
 }
 
-impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> Application<'d, ID> for App<F> {
+impl<'d, ID: Identity> Application<'d, ID> for App {
     type Conn = u8;
     type Build = convert::Infallible;
     type Wire = Wire;
@@ -85,20 +77,20 @@ impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> Application<'d, ID> for App<F> 
     where
         'd: 'w,
     {
-        (self.observe)(Event::Close(*conn.state()));
+        assert!(*conn.state() <= 1);
         self.as_ref().get_ref().close.hit();
         conn
     }
 }
 
-impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> handler::Borrowed<'d, ID> for App<F> {
+impl<'d, ID: Identity> handler::Borrowed<'d, ID> for App {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, u8>,
         chunk: R,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
-        (self.observe)(Event::Chunk(chunk.as_ref().len()));
+        assert!(!chunk.as_ref().is_empty());
         if let Some(gate) = self.as_ref().get_ref().chunk.as_ref() {
             gate.hit();
         }
@@ -107,12 +99,12 @@ impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> handler::Borrowed<'d, ID> for A
         };
         let n = reply.len();
         let outcome = conn.write().try_bounded(driver, |state, prefix| {
-            (self.observe)(Event::Prefix(*state));
+            assert_eq!(*state, 0);
             *state = 1;
             prefix[..n].copy_from_slice(reply);
             write::Draft::new(n, None, ())
         });
-        (self.observe)(Event::Write(outcome));
+        assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
         Outcome::CloseAfter
     }
 }

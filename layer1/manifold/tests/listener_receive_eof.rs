@@ -4,8 +4,8 @@ use std::{cell::Cell, net::Shutdown, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::terminal::{
-        Observation, eof,
-        wire::{self, EofOnData, Event, Wire},
+        Observation, accepted, eof,
+        wire::{self, Event, Mode, Wire},
     },
     recover,
     scenario::case::listener::Listener,
@@ -30,20 +30,6 @@ use dope_test::{
     reclaim::Reports,
 };
 
-fn terminal(event: Observation<'_>) {
-    use dope_manifold::network::listener::conn::{
-        deadline::Arm,
-        write::{self, body::Admit},
-    };
-    assert!(match event {
-        Observation::Deadline(armed) => matches!(armed, Arm::Armed),
-        Observation::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
-        Observation::Owned(result) => matches!(result, Admit::Committed),
-        Observation::Replay(result) => matches!(result, Some(Ok(()))),
-        Observation::Failure(_) => false,
-    });
-}
-
 #[test]
 fn eof_holds_gated_tail() {
     let mut finish = Completion::new();
@@ -54,10 +40,13 @@ fn eof_holds_gated_tail() {
     let done = Gate::new();
     let end = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(
+        Rc::clone(&events),
+        Mode::EofOnData { control: false },
+    ));
     let prepared = Listener::<receive::GatedScoped>::new::<1>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<EofOnData>, Throughput>>((
-            eof::Probe {
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
+            eof::Probe::<_, false> {
                 ready: ready.clone(),
                 release: release.clone(),
                 eof: eof.clone(),
@@ -65,7 +54,7 @@ fn eof_holds_gated_tail() {
                 close: close.clone(),
                 retired: done.clone(),
                 events: Rc::clone(&events),
-                observe: terminal,
+                observe: accepted,
             },
             Rc::clone(&wire),
         ))
@@ -183,9 +172,12 @@ fn eof_flushes_control() {
     let done = Gate::new();
     let end = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(
+        Rc::clone(&events),
+        Mode::EofOnData { control: true },
+    ));
     let prepared = Listener::<receive::GatedScoped>::new::<1>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<EofOnData<true>>, Throughput>>((
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
             eof::Probe::<_, true> {
                 ready: Gate::new(),
                 release: Gate::new(),
@@ -199,7 +191,7 @@ fn eof_flushes_control() {
                         !matches!(event, Observation::Write(_)),
                         "wire control must not rely on application writes"
                     );
-                    terminal(event);
+                    accepted(event);
                 },
             },
             Rc::clone(&wire),

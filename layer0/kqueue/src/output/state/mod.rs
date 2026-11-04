@@ -3,7 +3,7 @@ pub(in crate::output) mod vacancy;
 
 use std::{mem, os::fd};
 
-use dope_sys::io::reactor::retry;
+use dope_sys::{io::reactor::retry, table::change::Id as _};
 use o3::{
     alloc,
     depot::{
@@ -71,7 +71,7 @@ impl<E: retry::Entry> retry::State<E> for State<E> {
     fn occupied(&mut self, target: E::Target) -> Option<Self::Occupied<'_>> {
         let key = target.into();
         let task = self.by_target.occupied(hash(key), |entry| entry.0 == key)?;
-        let raw = E::descriptor(&task.get().1) as usize;
+        let raw = E::file(&task.get().1).fd() as usize;
         let fd = self.by_fd.occupied(hash(raw), |entry| entry.0 == raw)?;
         if fd.get().1 != target {
             return None;
@@ -84,7 +84,7 @@ impl<E: retry::Entry> retry::State<E> for State<E> {
         let fd = self.by_fd.occupied(hash(key), |entry| entry.0 == key)?;
         let key = fd.get().1.into();
         let task = self.by_target.occupied(hash(key), |entry| entry.0 == key)?;
-        if E::descriptor(&task.get().1) != raw {
+        if E::file(&task.get().1).fd() != raw {
             return None;
         }
         Some(Removal::<E> { task, fd })

@@ -31,11 +31,9 @@ pub fn serve(source: shutdown::ReadySource) {
         settings::Progress::Prompt,
     );
     let mut create = Attempt::new();
-    let executor = executor::Build::try_build(source, &mut create, config);
-    assert!(executor.is_ok(), "executor");
-    let Some(executor) = executor.ok() else {
-        return;
-    };
+    let executor = executor::Build::try_build(source, &mut create, config)
+        .ok()
+        .expect("executor");
     let mut reports = Vec::new();
 
     executor.run(|executor| {

@@ -1,6 +1,6 @@
 use std::{marker, mem, num, pin};
 
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 
 mod branch;
 mod leaf;
@@ -104,7 +104,12 @@ pub trait Tree<'d>: Proof {
 
 /// Constructs each route's storage before the task tree is pinned or published.
 pub trait Build<'d>: Tree<'d> + Sized {
-    fn try_build() -> Result<Self, alloc::Error>;
+    fn try_build() -> Result<Self, alloc::Error> {
+        Self::try_build_with_capacity(capacity::Count::MAX)
+    }
+
+    /// Allocates at most `physical` slots per route, preserving declared indices.
+    fn try_build_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error>;
 }
 
 pub trait At<'d, P>: Tree<'d> + Proof<P> {

@@ -1,4 +1,4 @@
-use std::{cell::Cell, ops::ControlFlow, pin::Pin, rc::Rc};
+use std::{cell::Cell, convert::Infallible, fmt::Debug, ops::ControlFlow, pin::Pin, rc::Rc};
 
 use dope_core::{
     driver::{route::KeyTag, schedule},
@@ -12,10 +12,13 @@ use dope_manifold::{
     app::{dispatch, dispatch::event, env},
     network::listener::{self, handler},
 };
-use dope_runtime::executor;
-use dope_test::harness::{
-    observe::VecCellExt as _,
-    signals::{Gate, Progress as _},
+use dope_runtime::{executor, topology::error};
+use dope_test::{
+    fibers::{Run, Wait},
+    harness::{
+        observe::VecCellExt as _,
+        signals::{Gate, Progress as _},
+    },
 };
 use o3::depot::capacity;
 
@@ -27,6 +30,18 @@ pub mod pipeline;
 pub mod probes;
 pub mod terminal;
 pub mod trace;
+
+pub fn native<R: Debug>(outcome: Result<R, error::Kind<'_, Infallible, &R>>) -> R {
+    outcome.expect("native lifecycle")
+}
+
+pub fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
+    assert_eq!(
+        outcome.expect("drive progress"),
+        Wait::Reached,
+        "{actual} of {want} hits"
+    );
+}
 
 #[derive(Default)]
 pub struct Trace {

@@ -23,16 +23,12 @@ fn finishes_interrupted_app() {
     let pair = Pair::new().expect("shutdown pair creation");
     let (source, trigger) = pair.split();
     assert!(trigger.fire().is_ok(), "fire shutdown");
-    let executor = Setup::for_profile::<Tasks>().try_executor(&mut create);
-    assert!(executor.is_ok(), "shutdown test executor creation failed");
-    let Ok(executor) = executor else {
-        return;
-    };
-    let executor = executor.shutdown(source);
-    assert!(executor.is_ok(), "shutdown source registration failed");
-    let Ok(executor) = executor else {
-        return;
-    };
+    let executor = Setup::for_profile::<Tasks>()
+        .try_executor(&mut create)
+        .unwrap_or_else(|error| panic!("shutdown test executor: {:?}", error.kind()));
+    let executor = executor
+        .shutdown(source)
+        .expect("shutdown source registration");
     let mut reports = Vec::new();
 
     executor.run(|executor| {
@@ -53,9 +49,6 @@ fn finishes_interrupted_app() {
             "unexpected reclaimed operations: {reports:?}"
         );
 
-        assert!(entered.is_ok(), "shutdown driver domain failed");
-        let Ok(()) = entered else {
-            return;
-        };
+        entered.unwrap_or_else(|error| panic!("shutdown driver domain: {:?}", error.cause()));
     });
 }

@@ -69,7 +69,7 @@ where
     }
 
     fn connect<'p>(
-        mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
+        machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: connect::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
@@ -77,18 +77,7 @@ where
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: Connect<'d, ID, A, S, E>,
     {
-        match Self::try_side(machine.as_mut(), done, driver) {
-            Ok(()) => Ok(()),
-            Err(done) => Connect::try_connect(machine, done, turn, driver),
-        }
-    }
-
-    fn try_side<'p>(
-        _: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
-        done: connect::Completion<'d>,
-        _: &mut retained::Context<'_, '_, 'd>,
-    ) -> Result<(), connect::Completion<'d>> {
-        Err(done)
+        Connect::try_connect(machine, done, turn, driver)
     }
 }
 
@@ -163,16 +152,20 @@ where
         }
     }
 
-    fn try_side<'p>(
+    fn connect<'p>(
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: connect::Completion<'d>,
+        turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> Result<(), connect::Completion<'d>> {
+    ) -> Result<(), connect::Completion<'d>>
+    where
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: Connect<'d, ID, A, S, E>,
+    {
         let primary = table::Capacity::from(machine.as_ref().project_ref().links.capacity());
         if !primary.contains(done.token().slot()) {
             Turn::new(machine).connect(done, driver)
         } else {
-            Err(done)
+            Connect::try_connect(machine, done, turn, driver)
         }
     }
 }

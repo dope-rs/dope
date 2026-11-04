@@ -1,10 +1,10 @@
 pub mod common;
 
-use std::{cell::Cell, convert::Infallible, fmt::Debug, rc::Rc};
+use common::manifold::listener::{native, reached};
+
+use std::{cell::Cell, rc::Rc};
 
 use dope_core::driver::life::recovery;
-use dope_runtime::topology::error::Kind;
-use dope_test::fibers::{Run, Wait};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -30,18 +30,6 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
-}
 
 #[test]
 fn queued_writes_survive() {
@@ -223,6 +211,7 @@ fn direct_recycles_bodies() {
         steps.as_slice(),
         [
             Event::Submit(State::First),
+            Event::Failed(Some(7), State::First, before, after),
             Event::Write(
                 Some(write::Prefix::CAPACITY),
                 Ok(write::Outcome::Committed(()))
@@ -238,7 +227,7 @@ fn direct_recycles_bodies() {
                 Ok(write::Outcome::Committed(()))
             ),
             Event::Close(State::Done),
-        ]
+        ] if before == after
     ));
     assert!(
         reports.events().expect("reclaimed events").is_empty(),
@@ -321,55 +310,47 @@ fn changed_body_commits() {
 }
 
 #[test]
-fn direct_zero_rolls_back() {
-    bounded_zero_rolls_back(1);
-}
-
-#[test]
-fn queued_zero_rolls_back() {
-    bounded_zero_rolls_back(0);
-}
-
-fn bounded_zero_rolls_back(direct: usize) {
-    let mut finish = Completion::new();
-    let gate = Gate::new();
-    let attempts = Rc::new(Cell::new(Vec::new()));
-    let prepared = Listener::new::<1>(Default::default())
-        .direct(direct)
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
-            Zero {
-                gate: gate.clone(),
-                attempts: Rc::clone(&attempts),
-            },
-            Identity,
-        ))
-        .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"GO\n".to_vec(), |peer| {
-                        reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                        assert_eq!(
-                            peer.finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed"),
-                            b"Z"
-                        );
-                    })
-                    .expect("peer spawn failed");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    let attempts = attempts.take();
-    assert!(
-        !attempts.is_empty()
-            && attempts.chunks(2).all(|events| matches!(events, [
+fn bounded_zero_rolls_back() {
+    for direct in [1, 0] {
+        let mut finish = Completion::new();
+        let gate = Gate::new();
+        let attempts = Rc::new(Cell::new(Vec::new()));
+        let prepared = Listener::new::<1>(Default::default())
+            .direct(direct)
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
+                Zero {
+                    gate: gate.clone(),
+                    attempts: Rc::clone(&attempts),
+                },
+                Identity,
+            ))
+            .expect("listener layout");
+        let mut reports =
+            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+        prepared
+            .with_run(
+                &mut finish,
+                |case| {
+                    Peer::at(case.addr())
+                        .exchange(b"GO\n".to_vec(), |peer| {
+                            reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                            assert_eq!(
+                                peer.finish()
+                                    .expect("finish client peer")
+                                    .expect("client peer failed"),
+                                b"Z"
+                            );
+                        })
+                        .expect("peer spawn failed");
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                native,
+            )
+            .expect("listener run");
+        let attempts = attempts.take();
+        assert!(
+            !attempts.is_empty()
+                && attempts.chunks(2).all(|events| matches!(events, [
         ZeroEvent::Zero {
             input, before, capacity: Some(write::Prefix::CAPACITY),
             result: Ok(write::Outcome::Committed(7)), allocations: (0, 0),
@@ -380,11 +361,12 @@ fn bounded_zero_rolls_back(direct: usize) {
             remaining: after,
         },
     ] if *input != 0 && *before != 0 && remaining == before && after + 1 == *before))
-    );
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+        );
+        assert!(
+            reports.events().expect("reclaimed events").is_empty(),
+            "unexpected reclaimed operations: {reports:?}"
+        );
+    }
 }
 
 #[test]

@@ -135,6 +135,7 @@ pub trait Identity:
     + Materialize<kind::Tuning>
     + Materialize<kind::Write>
     + Materialize<kind::Sync>
+    + Materialize<kind::Read>
 {
 }
 

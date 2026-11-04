@@ -32,8 +32,7 @@ const GENERATION_BITS: u32 = 32;
 #[repr(C)]
 struct Target {
     epoch: route::Epoch,
-    slot: [u8; 3],
-    auxiliary: [u8; 3],
+    slot: route::indices::SlotIndex,
     kind: kind::Native,
     route: route::Route,
 }
@@ -43,17 +42,14 @@ impl Target {
         let parts = target.parts();
         Self {
             epoch: parts.epoch(),
-            slot: parts.slot().into_le24(),
-            auxiliary: [0; 3],
+            slot: parts.slot(),
             kind: C::FLIGHT,
             route: Tag::ROUTE,
         }
     }
 
     fn token(self) -> route::Token {
-        let [a, b, c] = self.slot;
-        let [d, e, f] = self.auxiliary;
-        route::Token::from_flight(self.epoch, [a, b, c, d, e, f], self.kind, self.route)
+        route::Token::from_flight(self.epoch, self.slot, self.kind, self.route)
     }
 
     fn bind<'d, C: kind::Class>(
@@ -243,13 +239,7 @@ impl Arena {
         need: Need<Tags, GROUPS>,
         driver: driver::Reference<'d>,
     ) -> Result<Prepared<'a, 'd, Tags, GROUPS>, alloc::Error> {
-        let access = raw::Access::new(&mut self.0, driver);
-        let (prepared, driver) = access.try_batch(need.into_caps().map(Capacity::get))?;
-        Ok(Prepared {
-            prepared,
-            driver,
-            tags: marker::PhantomData,
-        })
+        raw::prepare(&mut self.0, need, driver)
     }
 }
 

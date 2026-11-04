@@ -28,7 +28,7 @@ use crate::network::listener::conn;
 mod modes;
 mod send;
 
-use send::{body, build, capacity};
+use send::{body, capacity};
 
 /// Affine access to one callback-scoped listener write transaction.
 pub struct Context<'e, 'turn, 'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
@@ -219,7 +219,9 @@ where
         >,
     {
         self.try_send(driver, capacity::Capacity::take, |send, driver| {
-            send.try_header(driver, build::Scoped(commit))
+            send.try_header(driver, |state, bytes, owner| {
+                commit(state, write::Prefix::new(bytes, owner)).map_err(Error::Build)
+            })
         })
     }
 }

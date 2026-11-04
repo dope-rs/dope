@@ -23,7 +23,10 @@ use dope_net::wire::{
     send::Direct,
     terminal,
 };
-use dope_test::harness::{observe::Trace, signals::Gate};
+use dope_test::harness::{
+    observe::Trace,
+    signals::{Gate, Progress as _},
+};
 use o3::{
     base::Call,
     buffer::{bytes::TryRetain, hold::limits, resident},
@@ -53,6 +56,21 @@ impl State {
             events: Trace::new(),
             closed: Gate::new(),
         }
+    }
+
+    pub fn check(&self) {
+        assert_eq!(
+            &*self.events.values().expect("receive events"),
+            &[Event::Wire(ptr::from_ref(&self.source), None)]
+        );
+        assert_eq!(self.reservations.get(), 1 + usize::from(self.retry));
+        assert_eq!(self.registered.get(), usize::from(self.retry));
+        assert_eq!(
+            self.cancelled.get(),
+            0,
+            "retried waits are already released"
+        );
+        assert_eq!(self.closed.hits(), 1);
     }
 }
 

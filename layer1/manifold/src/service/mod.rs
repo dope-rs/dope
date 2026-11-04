@@ -99,20 +99,12 @@ pub struct Snapshot<E, const N: usize = 16> {
 impl<E, const N: usize> Snapshot<E, N> {
     /// Builds an empty inline snapshot at `rev`.
     pub fn empty(rev: Revision) -> Self {
-        let () = Limit::<N>::BOUNDED;
-        Self {
-            revision: rev,
-            endpoints: array::Vec::new(),
-        }
+        Self::from_vec(rev, array::Vec::new())
     }
 
     /// Builds an inline snapshot containing exactly one endpoint.
     pub fn from_one(rev: Revision, endpoint: E) -> Self {
-        let () = Limit::<N>::BOUNDED;
-        Self {
-            revision: rev,
-            endpoints: array::Vec::from_one(endpoint),
-        }
+        Self::from_vec(rev, array::Vec::from_one(endpoint))
     }
 
     /// Adopts an inline vector whose capacity proof is already established.

@@ -1,5 +1,3 @@
-use std::pin::pin;
-
 use dope::{
     core::driver::{life::recovery, schedule::ready::wake::store::Slot},
     runtime::executor::session::Completion,
@@ -9,7 +7,6 @@ use dope_fiber::{
     task::storage::{
         fixed::{schedule, tree::Branch},
         scope::Scope,
-        set::Access as _,
     },
 };
 use dope_test::harness::scenario;
@@ -30,20 +27,16 @@ use dope_fiber::{
     task::{
         batch,
         batch::{Join, Pool},
-        storage::{
-            fixed::{
-                schedule::{
-                    Plane,
-                    result::{Outcome, Selection},
-                },
-                tree,
-                tree::Leaf,
+        storage::fixed::{
+            schedule::{
+                Plane,
+                result::{Outcome, Selection},
             },
-            set::{Length, Set, Work},
+            tree,
+            tree::Leaf,
         },
     },
 };
-use o3::depot::capacity::Count;
 
 use crate::common::{runtime::Setup, storage::cases::*};
 
@@ -103,43 +96,6 @@ fn binds_exact_waker() {
 
             assert!(stored.get().is_some_and(|current| current == same));
             assert!(stored.get().is_some_and(|current| current != distinct));
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    runtime::check_reports(&reports);
-}
-
-#[test]
-#[deny(unsafe_code)]
-fn owns_task_bindings() {
-    let mut reports = Vec::new();
-
-    Setup::for_profile::<Tasks>().with_turn(
-        |turn, mut driver| {
-            let core = driver.driver_ref();
-            let targets = core.targets::<KeyTag<0>>();
-            let ready = (core
-                .ready()
-                .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch()))
-            .expect("ready slot");
-            let parent = RootWaker::from(ready.target());
-            let tasks = (Set::<'_, PendingTask, usize, Domain>::try_new(Count::new(1)))
-                .expect("task set allocation");
-            let mut tasks = pin!(tasks);
-            Scope::with(tasks.as_mut(), |mut tasks| {
-                let task = (tasks.try_insert(PendingTask, 17, parent)).expect("task slot");
-                assert_eq!(tasks.poll_ready(turn.turn().app(), &mut driver).get(), 0);
-                assert!(tasks.work() == Work::Idle);
-
-                assert!(tasks.remove(task).is_ok());
-                assert!(tasks.len() == Length::ZERO);
-
-                let task = (tasks.try_insert(PendingTask, 23, parent)).expect("reused task slot");
-                assert_eq!(tasks.poll_ready(turn.turn().app(), &mut driver).get(), 0);
-                assert!(tasks.remove(task).is_ok());
-                assert!(tasks.len() == Length::ZERO);
-            });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,

@@ -8,10 +8,7 @@ use dope_sys::{
 };
 use o3::buffer::{
     bytes::bounded,
-    storage::{
-        provided,
-        provided::{Unique, fixed},
-    },
+    storage::{provided, provided::Unique},
 };
 
 use crate::{
@@ -62,7 +59,7 @@ impl<'d, T: Into<<Engine as Buffer>::Token>> Token<'d, T> {
         // SAFETY: Token and Vacant retain the same driver brand and native context.
         // The completed token uniquely owns its initialized prefix, whose length
         // was admitted against the unchanged receive layout before this binding.
-        let buffer = unsafe { buffer::raw::Fixed::insert(vacant.native, self.native.into()) };
+        let buffer = unsafe { buffer::raw::Fixed::insert(vacant, self.native.into()) };
         // SAFETY: the completed native owner retains its ABI-bounded prefix.
         let proof = unsafe { bounded::raw::Input::new(buffer) };
         bounded::Value::from_raw(proof)
@@ -111,18 +108,8 @@ impl<T: dope_sys::Buffer> Token<'_, T> {
 }
 
 /// The fixed vacancy already retains its source arena's invariant lifetime.
-#[repr(transparent)]
-pub(crate) struct Vacant<'d> {
-    native: provided::Vacant<'d, <Engine as Buffer>::Token, (), &'d driver::Shared>,
-}
-
-impl<'d> Vacant<'d> {
-    pub(crate) fn try_new(driver: driver::Reference<'d>) -> Result<Self, fixed::Full> {
-        Ok(Self {
-            native: driver.receive().owners().try_vacant()?,
-        })
-    }
-}
+pub(crate) type Vacant<'d> =
+    provided::Vacant<'d, <Engine as Buffer>::Token, (), &'d driver::Shared>;
 
 impl<'d> Token<'d> {
     pub(crate) fn next(local: &mut life::Local<'d>) -> Option<Option<Entry<'d>>> {

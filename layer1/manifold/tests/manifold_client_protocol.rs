@@ -3,7 +3,7 @@ pub mod common;
 use std::{cell::Cell, net::Shutdown, rc::Rc, time::Duration};
 
 use dope_core::driver::{
-    life::{creation::Attempt, recovery},
+    life::recovery,
     route::{Id, KeyTag},
 };
 use dope_manifold::{
@@ -24,14 +24,10 @@ use dope_net::{
     tcp::Tcp,
     wire::{Identity, domain},
 };
-use dope_runtime::executor::{
-    self, Executor,
-    session::{Completion, Scope},
-};
+use dope_runtime::executor::session::{Completion, Scope};
 use dope_test::{
     fibers,
     harness::{
-        observe::Trace,
         peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
@@ -57,7 +53,10 @@ use crate::common::{
         switch::terminal::clean::Clean,
     },
     recover,
-    scenario::case::{Connector, Value},
+    scenario::{
+        Runtime,
+        case::{Connector, Value},
+    },
 };
 
 #[test]
@@ -85,7 +84,6 @@ where
     let mut finish = Completion::new();
     peer::AcceptScript::with(serve, |peer| {
         let addr = peer.addr();
-        let gate = Gate::new();
         let plan = (plan::Plan::<KeyTag<0>, 1, plan::Standard, plan::Local<C::Staging>>::new(
             1,
             plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
@@ -93,50 +91,37 @@ where
         ))
         .expect("connector capacity");
         let config = (plan.configured()).expect("configure executor");
-        use dope_core::driver::life::creation::Attempt;
-        let mut create = Attempt::new();
-        let result = Executor::new(&mut create, config);
-        result
-            .as_ref()
-            .map_err(|error| error.kind())
-            .expect("create executor");
-        let Ok(executor) = result else {
-            return;
-        };
         let mut reclaim1 = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-        executor.with_storage(()).run(|executor| {
-            let result = executor.enter_with(
-                |mut runtime| {
-                    use executor::session::Scope;
-
-                    let events = Rc::new(Cell::new(Events::default()));
-                    let errors = Rc::new(Trace::new());
-                    let backoff = runtime.hash_state(health::Domain::DEFAULT);
-                    let audit = Rc::new(Report::default());
-                    let target = Session {
-                        audit: audit.clone(),
-
-                        codec: case.codec,
-                        errors: errors.clone(),
-                        events: events.clone(),
-                        gate: gate.clone(),
-                    };
-                    let setup = session::Setup::new(target, ingress::Plan::none());
-                    let set = Snapshot::from_one(Revision::new(1), Endpoint::new(addr, addr));
-                    let result =
-                        plan.bind(domain::Local::new(Identity), backoff)
-                            .install::<_, _, sync::Preserve, _, Bundle<Tcp, Identity, Balanced>, 16, _, _>(
+        Runtime::new(config).with_scope(
+            |mut runtime| {
+                let target = Session::new(case.codec);
+                let events = target.events.clone();
+                let errors = target.errors.clone();
+                let audit = target.audit.clone();
+                let gate = target.gate.clone();
+                let backoff = runtime.hash_state(health::Domain::DEFAULT);
+                let setup = session::Setup::new(target, ingress::Plan::none());
+                let set = Snapshot::from_one(Revision::new(1), Endpoint::new(addr, addr));
+                let result = plan
+                    .bind(domain::Local::new(Identity), backoff)
+                    .install::<_, _, sync::Preserve, _, Bundle<Tcp, Identity, Balanced>, 16, _, _>(
                         setup,
                         set,
                         &mut runtime,
                         Scope::driver,
                         |host, runtime| {
-                            let result = runtime.with_quiesce(&mut finish,
+                            let result = runtime.with_quiesce(
+                                &mut finish,
                                 Host::new(host),
                                 Duration::from_secs(2),
                                 |mut app| {
-                                    assert_eq!(fibers::TEST.try_wait(&mut app, &gate, 2).expect("driver wait"), fibers::Wait::Reached);
+                                    assert_eq!(
+                                        fibers::TEST
+                                            .try_wait(&mut app, &gate, 2)
+                                            .expect("driver wait"),
+                                        fibers::Wait::Reached
+                                    );
                                     let events = Events::snapshot(&events);
                                     assert_eq!(events.closed.len(), 1);
                                     assert!((events.closed[0].1) == (case.reason));
@@ -150,30 +135,32 @@ where
                             assert!(result.is_ok(), "application teardown");
                         },
                     );
-                    assert!(result.is_ok(), "create connector");
-                    audit.checked((0, 0));
-                    assert!(&*errors.values().expect("codec observations") == case.error.as_slice());
-                    let observed = Events::snapshot(&events);
-                    assert_eq!(gate.hits() as usize, observed.conn.len());
-                    assert!(observed.replies.is_some(), "reply count overflowed");
-                    assert!(observed.is_ordered(), "{:?}", (&observed.conn, &observed.closed, &observed.quarantined));
-                },
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-            );
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+                assert!(result.is_ok(), "create connector");
+                audit.checked((0, 0));
+                assert!(&*errors.values().expect("codec observations") == case.error.as_slice());
+                let observed = Events::snapshot(&events);
+                assert_eq!(gate.hits() as usize, observed.conn.len());
+                assert!(observed.replies.is_some(), "reply count overflowed");
+                assert!(
+                    observed.is_ordered(),
+                    "{:?}",
+                    (&observed.conn, &observed.closed, &observed.quarantined)
+                );
+            },
+            recovery::Policy::new(|event| reclaim1.push(event), recover),
+        );
+        assert!(
+            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+            "unexpected reclaimed operations: {reclaim1:?}"
+        );
 
-            assert!(result.is_ok(), "executor teardown");
-
-            Peer::at(addr)
-                .try_connect()
-                .expect("release protocol-error peer");
-            let finished = (peer.finish()).expect("finish protocol-error peer");
-            finished.expect("protocol-error peer I/O");
-        });
-    }).expect("spawn protocol-error peer");
+        Peer::at(addr)
+            .try_connect()
+            .expect("release protocol-error peer");
+        let finished = (peer.finish()).expect("finish protocol-error peer");
+        finished.expect("protocol-error peer I/O");
+    })
+    .expect("spawn protocol-error peer");
 }
 
 #[test]
@@ -298,91 +285,80 @@ fn held_eof_timeout_closes() {
             .expect("connector capacity")
             .with_ttl(lifetime);
             let config = plan.configured().expect("configure executor");
-            let mut create = Attempt::new();
-            let result = Executor::new(&mut create, config);
-            result
-                .as_ref()
-                .map_err(|error| error.kind())
-                .expect("create executor");
-            let executor = result.ok().expect("create executor");
             let mut reclaim = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-            executor.with_storage(()).run(|executor| {
-                let result = executor.enter_with(
-                    |mut runtime| {
-                        let setup = session::Setup::new(
-                            Half {
-                                action: Action::Timeout,
-                                progress: Progress {
-                                    eof: false,
-                                    issued: false,
-                                    sent: false,
-                                    parked: held.clone(),
-                                    release: Gate::new(),
+            Runtime::new(config).with_scope(
+                |mut runtime| {
+                    let setup = session::Setup::new(
+                        Half {
+                            action: Action::Timeout,
+                            progress: Progress {
+                                eof: false,
+                                issued: false,
+                                sent: false,
+                                parked: held.clone(),
+                                release: Gate::new(),
+                            },
+                            response: None,
+                            audit: audit.clone(),
+                            conn: conn.clone(),
+                            closed: closed.clone(),
+                            input: input.clone(),
+                        },
+                        ingress::Plan::none(),
+                    );
+                    let backoff = runtime.hash_state(health::Domain::DEFAULT);
+                    let set = Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
+                    let result = plan.bind(domain::Local::new(()), backoff).install::<
+                        _,
+                        _,
+                        sync::Preserve,
+                        _,
+                        Bundle<Tcp, Clean<true>, Throughput>,
+                        1,
+                        _,
+                        _,
+                    >(
+                        setup,
+                        set,
+                        &mut runtime,
+                        Scope::driver,
+                        |host, runtime| {
+                            let now = runtime.driver().driver_ref().clock().now();
+                            let result = runtime.with_at_for(
+                                &mut finish,
+                                Host::new(host),
+                                now.into(),
+                                Duration::from_secs(2),
+                                |mut app| {
+                                    let progress = app.drive_for(
+                                        now.into(),
+                                        Duration::from_secs(2),
+                                        Until(|| held.hits() == 1),
+                                    )
+                                    .map(|fixed| fixed.into_output());
+                                    assert!(
+                                        progress.is_ok(),
+                                        "hold plaintext before EOF: {progress:?}, counts {:?}",
+                                        [conn.hits(), held.hits(), closed.hits()],
+                                    );
+                                    assert_eq!(closed.hits(), 0);
+                                    app.drive_for(
+                                        now.clamp_add(lifetime.get()),
+                                        Duration::from_secs(2),
+                                        Until(|| closed.hits() == 1),
+                                    )
+                                    .expect("timeout retires held EOF")
+                                    .into_output();
                                 },
-                                response: None,
-                                audit: audit.clone(),
-                                conn: conn.clone(),
-                                closed: closed.clone(),
-                                input: input.clone(),
-                            },
-                            ingress::Plan::none(),
-                        );
-                        let backoff = runtime.hash_state(health::Domain::DEFAULT);
-                        let set =
-                            Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
-                        let result = plan.bind(domain::Local::new(()), backoff).install::<
-                            _,
-                            _,
-                            sync::Preserve,
-                            _,
-                            Bundle<Tcp, Clean<true>, Throughput>,
-                            1,
-                            _,
-                            _,
-                        >(
-                            setup,
-                            set,
-                            &mut runtime,
-                            Scope::driver,
-                            |host, runtime| {
-                                let now = runtime.driver().driver_ref().clock().now();
-                                let result = runtime.with_at_for(
-                                    &mut finish,
-                                    Host::new(host),
-                                    now.into(),
-                                    Duration::from_secs(2),
-                                    |mut app| {
-                                        let progress = app.drive_for(
-                                            now.into(),
-                                            Duration::from_secs(2),
-                                            Until(|| held.hits() == 1),
-                                        )
-                                        .map(|fixed| fixed.into_output());
-                                        assert!(
-                                            progress.is_ok(),
-                                            "hold plaintext before EOF: {progress:?}, counts {:?}",
-                                            [conn.hits(), held.hits(), closed.hits()],
-                                        );
-                                        assert_eq!(closed.hits(), 0);
-                                        app.drive_for(
-                                            now.clamp_add(lifetime.get()),
-                                            Duration::from_secs(2),
-                                            Until(|| closed.hits() == 1),
-                                        )
-                                        .expect("timeout retires held EOF")
-                                        .into_output();
-                                    },
-                                );
-                                assert!(result.is_ok(), "application teardown");
-                            },
-                        );
-                        assert!(result.is_ok(), "install EOF connector");
-                    },
-                    recovery::Policy::new(|event| reclaim.push(event), recover),
-                );
-                assert!(result.is_ok(), "executor teardown");
-            });
+                            );
+                            assert!(result.is_ok(), "application teardown");
+                        },
+                    );
+                    assert!(result.is_ok(), "install EOF connector");
+                },
+                recovery::Policy::new(|event| reclaim.push(event), recover),
+            );
 
             assert!(
                 matches!(reclaim.events(), Ok(events) if events.is_empty()),

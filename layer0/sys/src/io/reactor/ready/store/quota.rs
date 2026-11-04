@@ -7,7 +7,6 @@ pub trait Quota {
         Self: 'a;
 
     fn remaining(&self) -> usize;
-    fn share<const N: usize, const I: usize>(&self, cursor: usize) -> usize;
     fn budget<Lane>(&self, limit: usize) -> Self::Budget<'_, Lane>;
 
     /// Returns the reservation before work resumes outside this reactor scope.

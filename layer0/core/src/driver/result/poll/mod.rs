@@ -1,6 +1,7 @@
 use std::{mem, os::fd, task};
 
-use dope_sys::table::change;
+/// Descriptor readiness direction whose native change could not be committed.
+pub use dope_sys::table::change::Filter;
 
 use crate::driver::route::{indices, table::bounds};
 
@@ -91,22 +92,4 @@ const _: () = {
 pub enum Close {
     Missing(Missing),
     Closed(Result<(), crate::Errno>),
-}
-
-/// Descriptor readiness direction whose native change could not be committed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Filter {
-    Read,
-    Write,
-}
-
-impl Filter {
-    pub(crate) const fn from_native(filter: change::Filter) -> Self {
-        use dope_sys::table::change::Filter;
-        match filter {
-            Filter::Read => Self::Read,
-            Filter::Write => Self::Write,
-        }
-    }
 }

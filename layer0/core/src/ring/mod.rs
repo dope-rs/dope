@@ -1,32 +1,21 @@
 use dope_sys::{
     engine::{Complete, ring::Backend as _},
     io::reactor::complete::resolve::Reclaimed,
-    memory::buffer::provided,
     probe::Stopped,
-    ring,
-    table::token,
 };
 
 mod cqe;
 use cqe::Envelope;
 
 use crate::{
-    Backend, Engine, Events,
+    Engine, Events,
     driver::{
-        life::native::{host::context::Context, resolver::Resolver},
-        receive::tokens,
-        result::poll::fault,
-        retained::flight,
+        life::native::resolver::Resolver, receive::tokens, result::poll::fault, retained::flight,
     },
-    io::{self, transfer},
+    io,
 };
 
 type Rejected<'d> = Stopped<Option<tokens::Token<'d, <Engine as Complete>::Pending>>, fault::Fault>;
-
-type Packet<'d> = <Backend as ring::Source>::Packet<
-    <Backend as token::Source>::Token<Context>,
-    tokens::Token<'d, <Backend as provided::Source>::Pending<transfer::Extent>>,
->;
 
 pub(crate) fn resolve<'d, S>(
     root: &mut Resolver<'_, 'd, S>,
@@ -34,7 +23,7 @@ pub(crate) fn resolve<'d, S>(
 ) -> Result<Option<io::Event<'d>>, Rejected<'d>> {
     let local = &mut root.local;
     let drain = flight::Drain::new(local.flights, local.driver);
-    Envelope::<Packet<'d>>::resolve(local.backend.tuning(), &drain, entry.decode::<Events, _>())
+    Envelope::resolve(local.backend.tuning(), &drain, entry.decode::<Events, _>())
         .map_err(Rejected::from)
 }
 
@@ -48,7 +37,7 @@ pub(crate) fn reclaim<'d, S>(
         buffer,
         report,
         result,
-    } = Envelope::<Packet<'d>>::reclaim(
+    } = Envelope::reclaim(
         local.backend.tuning(),
         &drain,
         entry.decode::<Events, _>(),
@@ -58,7 +47,7 @@ pub(crate) fn reclaim<'d, S>(
         buffer.release(local);
     }
     if let Some(report) = report {
-        local.lifecycle.report(report.0);
+        local.lifecycle.report(report);
     }
     result.map_err(Rejected::from)
 }

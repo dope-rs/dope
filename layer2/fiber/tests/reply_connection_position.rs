@@ -10,7 +10,7 @@ use dope::{
     core::{
         driver::{
             life::recovery,
-            route::{KeyTag, table::conn::Capacity},
+            route::{Id, KeyTag, table::conn::Capacity},
         },
         io::socket,
     },
@@ -35,6 +35,7 @@ use dope_fiber::reply::{
 use dope_test::{
     fibers,
     harness::{observe::Trace, peer::TcpScript, scenario, signals::Gate},
+    reclaim::Reports,
 };
 use o3::{base::cell::region, depot::capacity};
 
@@ -52,8 +53,9 @@ fn connection_selects_lane() {
             let checked = Cell::new(false);
             let errors = Trace::new();
             let mut finish = Completion::new();
-            let mut reports = Vec::new();
-            Setup::for_profile::<Balanced>().with_session(
+            let setup = Setup::for_profile::<Balanced>();
+            let mut reports = Reports::new(setup.config(), [Id::fixed::<0>()]);
+            setup.with_session(
                 |mut session| {
                     let source = queue::Source::<Tcp, KeyTag<0>>::try_new(
                         capacity::Count::new(2),
@@ -114,7 +116,7 @@ fn connection_selects_lane() {
             );
             assert!(errors.values().expect("client observations").is_empty());
             assert!(
-                reports.is_empty(),
+                reports.events().expect("native reclamation").is_empty(),
                 "unexpected reclaimed operations: {reports:?}"
             );
             server.finish().expect("connected peers");

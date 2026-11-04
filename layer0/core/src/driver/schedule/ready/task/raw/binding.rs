@@ -71,9 +71,14 @@ impl<'node, 'd, I: topology::raw::Index> Binding<'node, 'd, I> {
         pool.reclaim(root, held, (), ())
     }
 
-    fn reclaim_task(self) -> ready::Reclaimed<'d> {
+    fn reclaim_task(self) -> ready::Renewal<'d> {
         let state = self.into_state();
-        state.parent.reclaim_task(state.child)
+        state
+            .parent
+            .driver()
+            .ready()
+            .arena()
+            .reclaim_task(state.child)
     }
 
     fn into_state(self) -> task::raw::State<'d> {

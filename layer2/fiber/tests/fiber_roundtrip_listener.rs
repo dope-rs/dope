@@ -1,6 +1,6 @@
 use dope::{
     core::driver::{life::recovery, storage::Value},
-    manifold::network::listener::Domain,
+    manifold::{app::Host, network::listener::Domain},
     runtime::executor::{Executor, session::Completion},
 };
 use dope_core::{driver::route::KeyTag, platform::wake};
@@ -13,10 +13,10 @@ use std::time::Duration;
 use dope::{
     core::{
         driver::{
-            route::{FrameworkTag, Tag, kind, table::conn::Capacity},
+            route::{FrameworkTag, Id, Tag, kind, table::conn::Capacity},
             settings::claim::Needs,
         },
-        io::socket::Backlog,
+        io::socket::{self, Backlog},
     },
     manifold::timing::Balanced,
     net::{
@@ -36,13 +36,14 @@ use dope_fiber::{
 use dope_test::{fibers, harness::peer::Peer, reclaim::Reports};
 use o3::buffer::Source as _;
 
-use crate::common::network::{reserve::Reservation, rounds::listener::*};
+use crate::common::network::rounds::listener::*;
 
 #[test]
 fn fiber_listener_roundtrip() {
     let mut finish = Completion::new();
-    let held = (Reservation::bind()).expect("listener address must be reserved");
-    let addr = held.addr();
+    let held = socket::Listener::bind(([127, 0, 0, 1], 0).into())
+        .expect("listener address must be reserved");
+    let addr = held.local_addr();
     let plan = Plan::<Identity>::new(Capacity::fixed::<MAX_CONN>(), Identity);
     let config = (Needs::from_tree(&plan).and_then(|needs| needs.resolve::<Balanced>()))
         .expect("listener driver requirements must resolve");
@@ -73,7 +74,7 @@ fn fiber_listener_roundtrip() {
                         stream: Default::default(),
                         transport: Default::default(),
                         egress: Default::default(),
-                        bound: held.into_tcp(),
+                        bound: held,
                         wire: domain::Local::new(Identity),
                     },
                     |cause| cause.eliminate(),
@@ -101,46 +102,39 @@ fn fiber_listener_roundtrip() {
                                     .expect("client reply must be read");
                                 sent.wait_timeout(scenario::TIMEOUT)
                                     .expect("server send must finish before reset");
-                                stream
-                                    .reset_on_close()
+                                Peer::try_reset(*stream)
                                     .expect("client must reset the connection on close");
                                 (ack, reply)
                             }, |client| {
-                        let app = App { pool: listener };
+                        let app = Host::new(listener);
                         let driven = (sess.with_quiesce(&mut finish, app, scenario::TIMEOUT, |mut app| -> Result<(), drive::Error> {
                                 let accepted = app.block_on(pool.accept())?;
-                                let stream = (accepted).ok().expect("listener must accept the peer");
-                                let mut stream = Some(stream);
+                                let mut stream = accepted.ok().expect("listener must accept the peer");
                                 app.block_on(dope_fiber::fiber!('_ => async move {
-                                    let mut stream = stream.take().expect("stream must be owned");
                                     let mut retained: Option<Lease<'_, '_, '_, Identity>> = None;
                                     let mut prefix = Vec::with_capacity(5);
                                     while prefix.len() < 5 {
                                         if retained.as_ref().is_none_or(|lease| lease.is_empty()) {
-                                            if let Some(exhausted) = retained.take() {
-                                                assert!(exhausted.is_empty());
-                                            }
+                                            drop(retained.take());
                                             let read = stream.read().await;
                                             retained = (read).ok().expect("prefix read must succeed");
                                         }
                                         let lease = retained
                                             .as_mut()
                                             .expect("prefix read must retain a lease");
-                                        lease.try_append(&mut prefix, 5).expect("consume received prefix");
+                                        try_append(lease, &mut prefix, 5).expect("consume received prefix");
                                     }
                                     let mut tail = Vec::with_capacity(2);
                                     while tail.len() < 2 {
                                         if retained.as_ref().is_none_or(|lease| lease.is_empty()) {
-                                            if let Some(exhausted) = retained.take() {
-                                                assert!(exhausted.is_empty());
-                                            }
+                                            drop(retained.take());
                                             let read = stream.read().await;
                                             retained = (read).ok().expect("tail read must succeed");
                                         }
                                         let lease = retained
                                             .as_mut()
                                             .expect("tail read must retain a lease");
-                                        lease.try_append(&mut tail, 2).expect("consume received prefix");
+                                        try_append(lease, &mut tail, 2).expect("consume received prefix");
                                     }
                                     {
                                         let exhausted = retained
@@ -156,16 +150,14 @@ fn fiber_listener_roundtrip() {
                                     let mut reused = Vec::with_capacity(3);
                                     while reused.len() < 3 {
                                         if retained.as_ref().is_none_or(|lease| lease.is_empty()) {
-                                            if let Some(exhausted) = retained.take() {
-                                                assert!(exhausted.is_empty());
-                                            }
+                                            drop(retained.take());
                                             let read = stream.read().await;
                                             retained = (read).ok().expect("reused stream read must succeed");
                                         }
                                         let lease = retained
                                             .as_mut()
                                             .expect("reused stream read must retain a lease");
-                                        lease.try_append(&mut reused, 3).expect("consume received prefix");
+                                        try_append(lease, &mut reused, 3).expect("consume received prefix");
                                     }
                                     {
                                         let exhausted = retained
@@ -216,13 +208,12 @@ fn cancelled_inflight_reuses_slot() {
 
     for drop_first in [false, true] {
         let payload = vec![b'x'; 1 << 20];
-        let held = Reservation::bind().expect("listener address");
-        let addr = held.addr();
+        let held = socket::Listener::bind(([127, 0, 0, 1], 0).into()).expect("listener address");
+        let addr = held.local_addr();
         let plan = Plan::<Identity>::new(Capacity::fixed::<1>(), Identity);
-        let mut report = None;
-        Setup::try_for_plan::<Balanced, _>(&plan)
-            .expect("driver configuration")
-            .with_input(
+        let setup = Setup::try_for_plan::<Balanced, _>(&plan).expect("driver configuration");
+        let mut reports = Reports::new(setup.config(), [Id::fixed::<0>()]);
+        setup.with_input(
                 (plan, payload.as_slice()),
                 |mut sess| {
                     let mut finish = Completion::new();
@@ -244,7 +235,7 @@ fn cancelled_inflight_reuses_slot() {
                             },
                             transport: Default::default(),
                             egress: Default::default(),
-                            bound: held.into_tcp(),
+                            bound: held,
                             wire: domain::Local::new(Identity),
                         },
                         |cause| cause.eliminate(),
@@ -255,7 +246,7 @@ fn cancelled_inflight_reuses_slot() {
                             let handle = storage.handle();
                             sess.with_quiesce(
                                 &mut finish,
-                                App { pool: listener },
+                                Host::new(listener),
                                 scenario::TIMEOUT,
                                 |mut app| -> Result<(), drive::Error> {
                                     let (entered, sent) = wake::Ends::blocking().expect("send gate").split();
@@ -268,7 +259,7 @@ fn cancelled_inflight_reuses_slot() {
                                             assert_eq!(byte, [b'x']);
                                             sent.notify().expect("native send observed");
                                             reset.wait_timeout(scenario::TIMEOUT).expect("write cancelled");
-                                            peer.reset_on_close().expect("reset on close");
+                                            Peer::try_reset(*peer).expect("reset on close");
                                         },
                                         |peer| {
                                             let mut io = Some(app.block_on(handle.accept())?.ok().expect("first accept"));
@@ -286,6 +277,10 @@ fn cancelled_inflight_reuses_slot() {
                                                     }
                                                 })).expect("native send progress");
                                                 assert!(app.block_on(fibers::TEST.poll_once(write.as_mut()))?.is_none(), "the backend must still own the incomplete send");
+                                            }
+                                            {
+                                                let waiting = io.as_mut().expect("first owner").write_all(b"waiting");
+                                                assert!(app.block_on(fibers::TEST.poll_once(waiting))?.is_none(), "the cancelled native send still owns the slot");
                                             }
                                             if drop_first {
                                                 drop(io.take());
@@ -333,14 +328,12 @@ fn cancelled_inflight_reuses_slot() {
                     );
                     assert!(result.is_ok(), "listener installation");
                 },
-                recovery::Policy::new(
-                    |event| {
-                        report.get_or_insert(event);
-                    },
-                    recover,
-                ),
+                recovery::Policy::new(|event| reports.push(event), recover),
                 |result| result.expect("driver lifecycle"),
             );
-        assert!(report.is_none(), "unexpected reclamation: {report:?}");
+        assert!(
+            reports.events().expect("native reclamation").is_empty(),
+            "unexpected reclamation: {reports:?}"
+        );
     }
 }

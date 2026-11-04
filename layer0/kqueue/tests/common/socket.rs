@@ -18,10 +18,7 @@ use o3::base::{marker::ThreadBound, num::bounded};
 
 use crate::common::{
     Files, Poll,
-    slots::{
-        Slots,
-        inputs::{Owned, Physical},
-    },
+    slots::{Slots, inputs::Physical},
 };
 
 type Handle = <Files as table::Files<Slots>>::Handle;
@@ -143,9 +140,7 @@ fn try_arm(poll: &mut Poll, files: &mut Files, token: NonZeroUsize) -> Result<Pa
     let read = if token == NonZeroUsize::MIN {
         let slot = Physical::at::<1>();
         let handle = Kqueue::adopt(read).map_err(Error::Adopt)?;
-        files
-            .install(Owned::from(slot), handle)
-            .map_err(Error::Install)?;
+        files.install(slot, handle).map_err(Error::Install)?;
         poll.arm_shutdown(files.borrow(slot).ok_or(Error::Missing(slot))?, token)
             .map_err(Error::Arm)?;
         None

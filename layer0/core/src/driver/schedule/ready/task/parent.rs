@@ -62,49 +62,21 @@ impl<'d> Parent<'d> {
     pub fn try_admit(self) -> Result<task::raw::Admission<'d>, task::Error> {
         self.validate(task::MAX_WAKE_HOPS - 1)?;
         let arena = self.0.driver.ready().arena();
-        let vacant = arena.entries.pool.prepare_task(&arena.entries.slots)?;
-        let child = vacant.commit();
+        let child = arena.entries.pool.try_task(&arena.entries.slots)?;
         Ok(task::raw::Admission::new(self, child))
     }
 
     pub(in crate::driver::schedule::ready) fn return_lease(
         self,
-        held: ready::Permit<'d>,
+        held: ready::ReservedKey<'d>,
         chain: &ready::Chain,
     ) {
         let entries = &self.0.driver.ready().arena().entries;
-        chain.restore(&entries.slots, held.into_key());
-    }
-
-    pub(in crate::driver::schedule::ready) fn install_task(
-        self,
-        held: ready::Permit<'d>,
-        root: &ready::TopologyKey<'d>,
-        local: u32,
-    ) -> ready::TaskKey<'d> {
-        let arena = self.0.driver.ready().arena();
-        let task = ready::Task::new(self.key(), root, local);
-        held.install(&arena.entries.slots, root, task)
-    }
-
-    pub(in crate::driver::schedule::ready) fn release_hold(self, held: ready::Permit<'d>) {
-        let entries = &self.0.driver.ready().arena().entries;
-        entries.pool.recycle(&entries.slots, held.into_key());
+        chain.restore(&entries.slots, held);
     }
 
     pub(in crate::driver::schedule::ready) fn retarget(self, key: ready::Key<'d>) -> Self {
         Self(self.0.retarget(key))
-    }
-
-    pub(in crate::driver::schedule::ready) fn release(self, key: ready::TaskKey<'d>) {
-        self.0.driver.ready().arena().free_task(key)
-    }
-
-    pub(in crate::driver::schedule::ready) fn reclaim_task(
-        self,
-        key: ready::TaskKey<'d>,
-    ) -> ready::Reclaimed<'d> {
-        self.0.driver.ready().arena().reclaim_task(key)
     }
 }
 

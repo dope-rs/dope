@@ -75,9 +75,8 @@ impl<'p, 'd, M> Clone for Lane<'_, 'p, 'd, M> {
 
 impl<'p, 'd, M> Copy for Lane<'_, 'p, 'd, M> {}
 
-pub(in crate::link::egress) struct Grant<'p>(
-    mem::raw::Grant<mem::raw::Lane<'p, 'p, 2, credit::Tag, u32>, 2, credit::Amount>,
-);
+pub(in crate::link::egress) type Grant<'p> =
+    mem::raw::Grant<mem::raw::Lane<'p, 'p, 2, credit::Tag, u32>, 2, credit::Amount>;
 
 pub(in crate::link::egress) struct Pair {
     first: egress::Resident,
@@ -124,27 +123,6 @@ unsafe impl mem::raw::Exact<2, u32, credit::Amount> for Pair {
     fn parts(self, source: credit::Amount, (): ()) -> (Self::Left, Self::Right) {
         let first = credit::Amount::new(egress::Entries::new(1), self.first);
         (source.sub(first), first)
-    }
-}
-
-impl<'p> Grant<'p> {
-    pub(in crate::link::egress) fn release(self) {
-        self.0.release();
-    }
-
-    fn from(
-        charge: mem::raw::Charge<mem::raw::Lane<'p, 'p, 2, credit::Tag, u32>, 2, credit::Amount>,
-    ) -> Self {
-        Self(mem::raw::Grant::from(charge))
-    }
-
-    fn amount(&self) -> credit::Amount {
-        self.0.amount()
-    }
-
-    fn split_pair(&mut self, pair: Pair) -> Self {
-        // SAFETY: Pair is the two active bounds that minted this aggregate grant.
-        Self(unsafe { self.0.bind_mut(pair) }.split(()))
     }
 }
 
@@ -310,17 +288,11 @@ impl<'p, 'd> Pool<'p, 'd, credit::Ready<'p, 'd>> {
                 self.mode.pending.set(false);
                 let wait = token.borrow_mut(&self.mode.wait);
                 let shared = credit::Amount::from_raw(self.shared.shared());
-                let selected = match wait.select(self, shared) {
-                    wait::Selection::Selected(selected) => selected,
-                    wait::Selection::NoWaiting
-                    | wait::Selection::Insufficient
-                    | wait::Selection::BypassExhausted => return,
+                let Some(selected) = wait.select(self, shared) else {
+                    return;
                 };
-                let result = selected.activate(self.mode.owner);
+                selected.activate(self.mode.owner);
                 self.mode.pending.set(wait.has_waiting());
-                if let wait::Activation::Stale(grant) = result {
-                    grant.release();
-                }
             });
         }
     }

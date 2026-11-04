@@ -29,19 +29,6 @@ pub(in crate::link::egress) struct Vacant<
     value: V,
 }
 
-#[must_use = "a prepared metadata slot must be published or rolled back"]
-pub(in crate::link::egress::metadata) struct Prepared<
-    'queue,
-    'p,
-    'd,
-    T,
-    D: demand::Mode = demand::Fallible,
-> {
-    credit: credit::Bound<'queue, 'p, 'd, T, metadata::Local, D>,
-    index: index::Index<'d>,
-    value: egress::NonEmpty<T>,
-}
-
 impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
     Vacant<'queue, 'p, 'd, T, V, M, D>
 {
@@ -66,20 +53,28 @@ impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
         let (index, claim, value) = vacancy.reserve(token, claim, value);
         Self::new(claim, index, value)
     }
-}
 
-impl<'p, 'd, T, D: demand::Mode> Rollback<'d>
-    for Vacant<'_, 'p, 'd, T, (), credit::Ready<'p, 'd>, D>
-{
-    fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
+    pub(in crate::link::egress::metadata) fn reclaim(
+        self,
+        token: &mut region::Token<region::Identity<'d>>,
+    ) -> V {
         let Self {
             claim,
             index,
-            value: (),
+            value,
         } = self;
         let queue = claim.queue();
         queue.pool.store.recycle(token, index);
         claim.rollback(token);
+        value
+    }
+}
+
+impl<'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode> Rollback<'d>
+    for Vacant<'_, 'p, 'd, T, V, M, D>
+{
+    fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
+        drop(self.reclaim(token));
     }
 }
 
@@ -155,6 +150,10 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Bound<'queue, 'p, 'd, B, D> {
 impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
     Vacant<'queue, 'p, 'd, T, egress::NonEmpty<T>, M, D>
 {
+    pub(in crate::link::egress::metadata) const fn value(&self) -> &T {
+        self.value.as_inner()
+    }
+
     pub(in crate::link::egress) fn commit(self, token: &mut region::Token<region::Identity<'d>>) {
         let Self {
             claim,
@@ -165,65 +164,6 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
         let (queue, stored) = credit::Bound::new(len, claim).into_parts();
         commit(queue, token, index, value, stored);
     }
-}
-
-impl<'queue, 'p, 'd, T, D: demand::Mode> Prepared<'queue, 'p, 'd, T, D> {
-    pub(in crate::link::egress::metadata) fn from(
-        node: Vacant<'queue, 'p, 'd, T, egress::NonEmpty<T>, metadata::Local, D>,
-    ) -> Self {
-        let Vacant {
-            claim,
-            index,
-            value,
-        } = node;
-        let credit = credit::Bound::new(value.geometry().wire(), claim);
-        Self {
-            credit,
-            index,
-            value,
-        }
-    }
-
-    pub(in crate::link::egress::metadata) const fn value(&self) -> &T {
-        self.value.as_inner()
-    }
-
-    pub(in crate::link::egress::metadata) fn rollback(
-        self,
-        token: &mut region::Token<region::Identity<'d>>,
-    ) -> egress::NonEmpty<T> {
-        recycle(self.credit, self.index, token);
-        self.value
-    }
-
-    pub(in crate::link::egress::metadata) fn commit(
-        self,
-        token: &mut region::Token<region::Identity<'d>>,
-    ) {
-        let Self {
-            credit,
-            index,
-            value,
-        } = self;
-        let (queue, stored) = credit.into_parts();
-        commit(queue, token, index, value, stored);
-    }
-}
-
-impl<'p, 'd, T, D: demand::Mode> Rollback<'d> for Prepared<'_, 'p, 'd, T, D> {
-    fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
-        recycle(self.credit, self.index, token);
-    }
-}
-
-fn recycle<'p, 'd, T>(
-    credit: credit::Bound<'_, 'p, 'd, T, metadata::Local, impl demand::Mode>,
-    index: index::Index<'d>,
-    token: &mut region::Token<region::Identity<'d>>,
-) {
-    let (queue, stored) = credit.into_parts();
-    queue.pool.store.recycle(token, index);
-    credit::Lane::new(queue).release(token, stored.into_grant());
 }
 
 fn commit<'p, 'd, T>(
@@ -242,8 +182,10 @@ fn commit<'p, 'd, T>(
     });
 }
 
-const _: () =
-    assert!(mem::size_of::<Prepared<'static, 'static, 'static, ()>>() == 7 * mem::size_of::<u64>());
+const _: () = assert!(
+    mem::size_of::<Vacant<'static, 'static, 'static, (), egress::NonEmpty<()>>>()
+        == 7 * mem::size_of::<u64>()
+);
 
 const _: () = assert!(
     mem::size_of::<Bound<'static, 'static, 'static, (), demand::Fallible>>()

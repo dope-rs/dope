@@ -24,10 +24,8 @@ use crate::{
 
 pub mod factory;
 pub mod plan;
-mod recipe;
 
 use factory::disabled;
-pub use recipe::Recipe;
 
 /// Construction and installation retain the same side registry loan.
 type Registered<'life, 'd, ID, I> = side::Enabled<&'life registry::Registry<'d, I, ID>>;

@@ -4,7 +4,7 @@ use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
     app::{admit::Automatic, connect::Full, failure::Observed, request},
     attempt,
-    close::Reason,
+    close::{LocalOrigin, Reason},
     conn,
     session::{
         self, Output, Parser, Plain, Retirement, Scheduling, Session, Target,
@@ -29,19 +29,19 @@ use crate::common::{
     contract::{Report, codec, codec::errors},
     manifold::client::{
         error::{self, Error::Finish},
-        finish::Error,
+        finish::{Error, shutdown::CONNECTIONS},
         flush,
     },
 };
 
-pub struct Epoch {
+pub struct Epoch<const SHUTDOWN: bool = false> {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
 
     pub(crate) conn: Gate,
     pub(crate) closed: Gate,
 }
 
-impl<'d> Session<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> Session<'d> for Epoch<SHUTDOWN> {
     type Codec = codec::Pending;
     type Connect = Full;
     type ConnState = ();
@@ -53,7 +53,7 @@ impl<'d> Session<'d> for Epoch {
     }
 }
 
-impl<'d> policy::Compatible<'d, 'd, Identity, KeyTag<0>> for Epoch {
+impl<'d, const SHUTDOWN: bool> policy::Compatible<'d, 'd, Identity, KeyTag<0>> for Epoch<SHUTDOWN> {
     type Open = Self;
     type Terminal = Self;
 
@@ -66,12 +66,12 @@ impl<'d> policy::Compatible<'d, 'd, Identity, KeyTag<0>> for Epoch {
     }
 }
 
-impl<'d> Parser<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> Parser<'d> for Epoch<SHUTDOWN> {
     type Mode = mode::Plain;
     type Response = response::Immediate;
 }
 
-impl<'d> Plain<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> Plain<'d> for Epoch<SHUTDOWN> {
     type Delivery = response::Direct;
 
     fn reject(
@@ -96,7 +96,7 @@ impl<'d> Plain<'d> for Epoch {
     }
 }
 
-impl<'d> Output<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> Output<'d> for Epoch<SHUTDOWN> {
     fn flush() -> Option<
         impl for<'a, 'c, 't, 'e> Call<(
             &'a mut Self,
@@ -142,7 +142,7 @@ impl<'d> Output<'d> for Epoch {
     }
 }
 
-impl<'d> session::Connected<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> session::Connected<'d> for Epoch<SHUTDOWN> {
     type Activation = Automatic;
 
     fn connect(
@@ -155,7 +155,7 @@ impl<'d> session::Connected<'d> for Epoch {
     }
 }
 
-impl<'d> session::Failed<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> session::Failed<'d> for Epoch<SHUTDOWN> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -166,7 +166,7 @@ impl<'d> session::Failed<'d> for Epoch {
     }
 }
 
-impl<'d> session::Exhausted<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> session::Exhausted<'d> for Epoch<SHUTDOWN> {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -177,7 +177,7 @@ impl<'d> session::Exhausted<'d> for Epoch {
     }
 }
 
-impl<'d> Retirement<'d> for Epoch {
+impl<'d, const SHUTDOWN: bool> Retirement<'d> for Epoch<SHUTDOWN> {
     type Drain = Ready;
 
     fn io_fail(
@@ -192,13 +192,22 @@ impl<'d> Retirement<'d> for Epoch {
         &self,
         _: conn::Id<'d, KeyTag<0>>,
         _: &mut (),
-        _: Reason,
+        reason: Reason,
         _: &mut (
             region::Token<region::Identity<'d>>,
             region::Token<region::Identity<'d, 1>>,
         ),
     ) {
         let conn = self.conn.hits();
+        if SHUTDOWN {
+            if reason != Reason::Local(LocalOrigin::RuntimeShutdown) || conn != CONNECTIONS as u32 {
+                self.audit.faults.record(Finish(Error::ShutdownRetired {
+                    reason,
+                    connected: conn,
+                }));
+            }
+            return;
+        }
         let closed = self.closed.hits();
         if conn <= closed {
             self.audit.faults.record(Finish(Error::Epoch {
@@ -230,4 +239,20 @@ impl<'d> Retirement<'d> for Epoch {
 }
 
 impl<'d> Scheduling<'d> for Epoch {}
+impl<'d> Scheduling<'d> for Epoch<true> {
+    fn shutdown() -> Option<impl for<'v> Call<&'v mut Self>> {
+        Some(|session: &mut Self| {
+            let conn = session.conn.hits();
+            let closed = session.closed.hits();
+            if conn != CONNECTIONS as u32 || closed != 0 {
+                session.audit.faults.record(Finish(Error::Shutdown {
+                    connected: conn,
+                    closed,
+                }));
+            }
+        })
+    }
+}
+
 impl<'d> Target<'d, KeyTag<0>, 2> for Epoch {}
+impl<'d> Target<'d, KeyTag<0>, CONNECTIONS> for Epoch<true> {}

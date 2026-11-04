@@ -67,6 +67,9 @@ const _: fn() = || {
     confined::<clock::Deadline<'static>, _, _>();
     confined::<scope::Scope<'static, 'static>, _, _>();
     confined::<scope::Guard<'static, 'static>, _, _>();
+    confined::<scope::Reactor<'static, 'static>, _, _>();
+    confined::<scope::Coord<'static, 'static>, _, _>();
+    confined::<driver::schedule::Turn<'static, 'static>, _, _>();
     confined::<app::Permit<'static, 'static>, _, _>();
     confined::<maint::Permit<'static, 'static>, _, _>();
     confined::<step::Delegated<'static, 'static, 'static>, _, _>();

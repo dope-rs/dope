@@ -30,7 +30,7 @@ use o3::{
 use plan::bounds;
 use send::{flights, kernel, owners, pending, retained};
 
-use crate::network::datagram::{RejectCause, Rejected, plan, send, socket::retire::Retire};
+use crate::network::datagram::{RejectCause, Rejected, plan, send};
 
 pub(in crate::network::datagram) struct Sender<
     'd,
@@ -39,13 +39,14 @@ pub(in crate::network::datagram) struct Sender<
     M: send::Mode = send::Plain,
     F = flight::Slots<'d, <ID as route::Materialize<Send>>::With>,
 > {
-    pending: pending::Pending<'d, ID, B, M>,
-    in_flight: table::Slab<flights::Backing<'d, B, M>, <ID as route::Materialize<Send>>::With>,
+    pub(super) pending: pending::Pending<'d, ID, B, M>,
+    pub(super) in_flight:
+        table::Slab<flights::Backing<'d, B, M>, <ID as route::Materialize<Send>>::With>,
     budget: Option<Budget<'d>>,
     receive_slot: NonZero<usize>,
     flights: F,
-    space: route::Space<'d, <ID as route::Materialize<Send>>::With>,
-    phase: send::Phase,
+    pub(super) space: route::Space<'d, <ID as route::Materialize<Send>>::With>,
+    pub(super) phase: send::Phase,
 }
 
 impl<ID: Identity, B, M: send::Mode, F> Sender<'_, ID, B, M, F> {
@@ -211,27 +212,11 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
             };
         }
         if !self.phase.can_accept()
-            || (self.phase.can_submit() && live.len() < live.capacity().count())
+            || (self.phase == send::Phase::Ready && live.len() < live.capacity().count())
         {
             schedule::Progress::Runnable
         } else {
             schedule::Progress::waiting(region)
-        }
-    }
-
-    pub(in crate::network::datagram) fn retire(&mut self) -> Retire<'_, 'd, ID, B, M> {
-        let Self {
-            pending,
-            in_flight: active,
-            space,
-            phase,
-            ..
-        } = self;
-        Retire {
-            pending,
-            in_flight: active,
-            space,
-            phase,
         }
     }
 
@@ -321,7 +306,7 @@ mod raw {
             mut select: impl FnMut(&M::Queued) -> &'fd handles::Datagram<'d>,
             work: app::Work<'turn, 'd>,
             driver: &mut Context<'_, 'owner, 'd>,
-            mut transfer: Option<impl FnMut(send::Transfer<'d, ID>)>,
+            mut transfer: impl FnMut(send::Transfer<'d, ID>),
         ) -> Result<(), result::SubmitError>
         where
             'd: 'fd + 'owner,
@@ -334,9 +319,10 @@ mod raw {
                 phase,
                 ..
             } = self;
-            match phase.begin() {
-                send::Pass::Run => {}
-                send::Pass::Stop => return Ok(()),
+            match phase {
+                send::Phase::Ready => {}
+                send::Phase::Deferred => *phase = send::Phase::Ready,
+                send::Phase::Failed(_) | send::Phase::Stopped => return Ok(()),
             }
             loop {
                 let step = work.run(|| {
@@ -372,9 +358,7 @@ mod raw {
                     });
                     Some(match moved {
                         pending::Commit::Submitted((queued, flight)) => {
-                            if let Some(transfer) = &mut transfer {
-                                transfer(send::Transfer::new(queued, flight));
-                            }
+                            transfer(send::Transfer::new(queued, flight));
                             Ok(true)
                         }
                         pending::Commit::Deferred(error) => match error.cause() {

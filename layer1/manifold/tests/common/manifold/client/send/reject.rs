@@ -30,14 +30,13 @@ use crate::common::{
     manifold::client::{
         error::{self, Error::Send},
         flush,
-        send::Error,
+        send::{Error, load},
     },
 };
 
 pub const MAX: usize = 1;
 
-pub struct Reject<'a, F> {
-    pub(crate) create: F,
+pub struct Reject<'a> {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
 
     pub(crate) pending: Cell<bool>,
@@ -45,7 +44,7 @@ pub struct Reject<'a, F> {
     pub(crate) reason: &'a Cell<Option<Reason>>,
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Session<'d> for Reject<'_, F> {
+impl<'d> Session<'d> for Reject<'_> {
     type Codec = codec::Pending;
     type Connect = Full;
     type ConnState = ();
@@ -58,9 +57,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Session<'d> for Reject<'_, F> {
     }
 }
 
-impl<'a, 'd, F: Fn() -> egress::NonEmpty<Shared>> policy::Compatible<'d, 'd, Identity, KeyTag<0>>
-    for Reject<'a, F>
-{
+impl<'a, 'd> policy::Compatible<'d, 'd, Identity, KeyTag<0>> for Reject<'a> {
     type Open = Self;
     type Terminal = Self;
 
@@ -73,12 +70,12 @@ impl<'a, 'd, F: Fn() -> egress::NonEmpty<Shared>> policy::Compatible<'d, 'd, Ide
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Parser<'d> for Reject<'_, F> {
+impl<'d> Parser<'d> for Reject<'_> {
     type Mode = mode::Plain;
     type Response = response::Immediate;
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Plain<'d> for Reject<'_, F> {
+impl<'d> Plain<'d> for Reject<'_> {
     type Delivery = response::Direct;
 
     fn reject(
@@ -104,7 +101,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Plain<'d> for Reject<'_, F> {
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Output<'d> for Reject<'_, F> {
+impl<'d> Output<'d> for Reject<'_> {
     fn flush() -> Option<
         impl for<'a, 'c, 't, 'e> Call<(
             &'a mut Self,
@@ -149,7 +146,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Output<'d> for Reject<'_, F> {
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Source<'d> for Reject<'_, F> {
+impl<'d> Source<'d> for Reject<'_> {
     fn drain<'w, 'e, 'turn, W: wire::Spec + 'd>(
         &self,
         turn: &mut request::Turn<
@@ -165,7 +162,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Source<'d> for Reject<'_, F> {
         if !self.pending.get() {
             return;
         }
-        let value = (self.create)();
+        let value = load(b"xx");
         let outcome = match turn.admit(value) {
             request::Admission::Rejected(rejected) => Ok(rejected),
             request::Admission::Ready(_) => Err(Error::AdmissionReady),
@@ -197,7 +194,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Source<'d> for Reject<'_, F> {
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Connected<'d> for Reject<'_, F> {
+impl<'d> session::Connected<'d> for Reject<'_> {
     type Activation = Automatic;
 
     fn connect(
@@ -210,7 +207,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Connected<'d> for Reject<
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Failed<'d> for Reject<'_, F> {
+impl<'d> session::Failed<'d> for Reject<'_> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -221,7 +218,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Failed<'d> for Reject<'_,
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Exhausted<'d> for Reject<'_, F> {
+impl<'d> session::Exhausted<'d> for Reject<'_> {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -232,7 +229,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Exhausted<'d> for Reject<
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Retirement<'d> for Reject<'_, F> {
+impl<'d> Retirement<'d> for Reject<'_> {
     type Drain = Ready;
 
     fn io_fail(
@@ -274,6 +271,6 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Retirement<'d> for Reject<'_, F> {
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Scheduling<'d> for Reject<'_, F> {}
+impl<'d> Scheduling<'d> for Reject<'_> {}
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Target<'d, KeyTag<0>, MAX> for Reject<'_, F> {}
+impl<'d> Target<'d, KeyTag<0>, MAX> for Reject<'_> {}

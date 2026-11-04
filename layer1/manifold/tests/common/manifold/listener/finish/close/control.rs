@@ -25,11 +25,7 @@ use dope_net::wire::{
     terminal,
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
-use o3::buffer::{
-    bytes::TryRetain,
-    resident,
-    write::{Sink as _, consume},
-};
+use o3::buffer::{bytes::TryRetain, resident, write::Sink as _};
 use wire::receive::{eof, mode::access, reserve};
 
 use crate::common::{Buffer, contract::batch::Pair, manifold::listener::finish::close::buffer};
@@ -38,7 +34,6 @@ pub const OUTPUT: &[u8] = b"<<CONTROL>>";
 
 pub struct Control {
     pub(crate) pending: Pending,
-    faults: Rc<Trace<consume::Error, 16>>,
 }
 
 impl Control {
@@ -46,10 +41,8 @@ impl Control {
         &mut self,
         mut send: Storage<'a, Buffer<64>>,
     ) -> Prepared<'a, reclaim::OnSubmit, Plain<'a>> {
-        if let Pending::Output = mem::take(&mut self.pending)
-            && let Err(error) = send.bytes.write_slice(OUTPUT)
-        {
-            self.faults.record(error);
+        if let Pending::Output = mem::take(&mut self.pending) {
+            send.bytes.write_slice(OUTPUT).expect("wire control bytes");
         }
         send.buffered()
     }
@@ -142,8 +135,7 @@ impl Policy<Control> for Send {
         Control: 'd,
         'd: 'a,
     {
-        let (wire, send) = context.into_parts();
-        end.output(buffer::Buffer::new(send, &wire.faults).plain(plain))
+        end.output(buffer::plain(context.into_state(), plain))
     }
 
     fn prepare_many<'a, 'd, ID: Identity + 'd, const N: usize>(
@@ -155,8 +147,7 @@ impl Policy<Control> for Send {
         Control: 'd,
         'd: 'a,
     {
-        let (wire, send) = context.into_parts();
-        end.output(buffer::Buffer::new(send, &wire.faults).vectored(plain))
+        end.output(buffer::vectored(context.into_state(), plain))
     }
 
     fn after_send<'a, 'd, ID: Identity + 'd>(
@@ -168,7 +159,7 @@ impl Policy<Control> for Send {
         'd: 'a,
     {
         let done = context.into_state();
-        end.output(buffer::Buffer::complete(done))
+        end.output(buffer::complete(done))
     }
 
     fn settle<'a, 'd, ID: Identity + 'd>(
@@ -180,7 +171,7 @@ impl Policy<Control> for Send {
         'd: 'a,
     {
         let done = context.into_state();
-        buffer::Buffer::complete(done)
+        buffer::complete(done)
     }
 
     fn flush<'a, 'd, ID: Identity + 'd>(
@@ -208,9 +199,7 @@ impl Policy<Control> for Send {
     }
 }
 
-pub struct Runtime(Rc<Trace<consume::Error, 16>>);
-
-impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Control, ID> for Runtime {
+impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Control, ID> for () {
     fn open<C, T>(
         &mut self,
         context: C,
@@ -218,7 +207,6 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Control, ID> for Runti
     ) -> open::Outcome<C, T, open::Error<'w, Control>> {
         let wire = Control {
             pending: Pending::Clean,
-            faults: Rc::clone(&self.0),
         };
         let output = match consume(context, wire, Buffer::default()) {
             open::Disposition::Commit(output) | open::Disposition::Retry { output, .. } => output,
@@ -234,11 +222,11 @@ impl wire::Spec for Control {
         Self: 'd;
     type Storage<ID: Identity> = ();
     type Binding<'d, ID: Identity + 'd>
-        = Rc<Trace<consume::Error, 16>>
+        = ()
     where
         Self: 'd;
     type Runtime<'w, 'd, ID: Identity + 'w>
-        = Runtime
+        = ()
     where
         Self: 'w,
         'd: 'w;
@@ -256,13 +244,12 @@ impl wire::Spec for Control {
 impl domain::Init<Control> for Control {
     fn runtime<'w, 'd, ID: Identity + 'w>(
         _: domain::Limits,
-        faults: <Control as wire::Spec>::Binding<'w, ID>,
+        _: <Control as wire::Spec>::Binding<'w, ID>,
     ) -> <Control as wire::Spec>::Runtime<'w, 'd, ID>
     where
         Control: 'w,
         'd: 'w,
     {
-        Runtime(faults)
     }
 }
 
@@ -272,22 +259,12 @@ pub enum State<'d> {
     Seen(clock::Moment<'d>),
 }
 
-#[derive(Debug)]
-pub enum Event<'a, 'd> {
-    Close(&'a State<'d>),
-    Send(&'a State<'d>, clock::Moment<'d>),
-}
-
-pub struct App<F> {
+pub struct App {
     pub(crate) close: Gate,
     pub(crate) received: Rc<Trace<u8, 16>>,
-    pub(crate) observe: F,
 }
 
-impl<'d, ID: Identity, F> Application<'d, ID> for App<F>
-where
-    F: for<'a, 'scope> Fn(Event<'a, 'scope>) + Unpin,
-{
+impl<'d, ID: Identity> Application<'d, ID> for App {
     type Conn = State<'d>;
     type Build = convert::Infallible;
     type Wire = Control;
@@ -317,16 +294,13 @@ where
         'd: 'w,
     {
         let this = self.get_mut();
-        (this.observe)(Event::Close(conn.state()));
+        assert!(matches!(conn.state(), State::Seen(_)));
         this.close.hit();
         conn
     }
 }
 
-impl<'d, ID: Identity, F> handler::Borrowed<'d, ID> for App<F>
-where
-    F: for<'a, 'scope> Fn(Event<'a, 'scope>) + Unpin,
-{
+impl<'d, ID: Identity> handler::Borrowed<'d, ID> for App {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Control, State<'d>>,
@@ -341,16 +315,15 @@ where
     }
 }
 
-impl<'d, ID: Identity, F> send::Drive<'d, ID> for App<F>
-where
-    F: for<'a, 'scope> Fn(Event<'a, 'scope>) + Unpin,
-{
+impl<'d, ID: Identity> send::Drive<'d, ID> for App {
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Control, State<'d>>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
-        (self.observe)(Event::Send(conn.state(), driver.driver_ref().clock().now()));
+        assert!(
+            matches!(conn.state(), State::Seen(input) if *input <= driver.driver_ref().clock().now())
+        );
         conn.close_after();
     }
 }

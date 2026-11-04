@@ -16,17 +16,8 @@ pub(crate) fn udp<'d, const LANES: usize, const N: usize>(
     packet: &[u8],
     now: time::Instant,
 ) {
-    let msg = match response::Decoder::try_new(packet) {
-        Ok(msg) => msg,
-        Err(
-            error::Packet::Length { .. }
-            | error::Packet::Truncated { .. }
-            | error::Packet::Pointer { .. }
-            | error::Packet::Label { .. }
-            | error::Packet::NameLength { .. }
-            | error::Packet::PointerHops { .. }
-            | error::Packet::RecordName { .. },
-        ) => return,
+    let Ok(msg) = response::Decoder::try_new(packet) else {
+        return;
     };
     let id = msg.transaction();
     let retry = state::Retry::from_config(queries.config);
@@ -50,25 +41,8 @@ pub(crate) fn udp<'d, const LANES: usize, const N: usize>(
             if req.stream().is_some() || source != req.address() {
                 return None;
             }
-            let data = match msg.udp::<N>(req.name(), family, cookie.client()) {
-                Ok(data) => data,
-                Err(
-                    error::Malformed::Packet(_)
-                    | error::Malformed::Flags { .. }
-                    | error::Malformed::QuestionCount { .. }
-                    | error::Malformed::QuestionName(_)
-                    | error::Malformed::QuestionKind { .. }
-                    | error::Malformed::QuestionClass { .. }
-                    | error::Malformed::OptDuplicate { .. }
-                    | error::Malformed::OptName(_)
-                    | error::Malformed::Cookie(_)
-                    | error::Malformed::Address(_)
-                    | error::Malformed::Trailing { .. }
-                    | error::Malformed::AliasRecords { .. }
-                    | error::Malformed::AliasConflict
-                    | error::Malformed::AliasHops { .. }
-                    | error::Malformed::Name(_),
-                ) => return None,
+            let Ok(data) = msg.udp::<N>(req.name(), family, cookie.client()) else {
+                return None;
             };
             Some((data, *cookie, req.server()))
         },

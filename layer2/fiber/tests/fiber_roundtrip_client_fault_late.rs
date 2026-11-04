@@ -15,7 +15,7 @@ use dope::{
         driver::route::{Id, table::conn::Capacity},
         platform::wake,
     },
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::tcp::Tcp,
     runtime::executor::drive,
 };
@@ -66,7 +66,7 @@ fn reuses_after_late_error() {
                         |sess| sess.driver(),
                         |port, sess| {
                             let conn = store.handle();
-                            let app = App { connector: port };
+                            let app = Host::new(port);
 
                             let driven = (sess.with_quiesce(
                                 &mut finish,
@@ -108,7 +108,7 @@ fn reuses_after_late_error() {
                         .expect("late-error server operations must succeed");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -120,8 +120,4 @@ fn reuses_after_late_error() {
         },
     )
     .expect("late-error server must start");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

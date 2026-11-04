@@ -167,8 +167,8 @@ impl Unmap {
         create::Kernel: From<E>,
     {
         match error {
-            shutdown::Failure::Backend(error) => Self::Backend(create::Mapping::from(error).0),
-            shutdown::Failure::Context(error) => Self::Context(create::Mapping::from(error).0),
+            shutdown::Failure::Backend(error) => Self::Backend(create::Mapping::from(error)),
+            shutdown::Failure::Context(error) => Self::Context(create::Mapping::from(error)),
         }
     }
 }

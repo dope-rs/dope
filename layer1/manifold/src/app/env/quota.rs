@@ -10,9 +10,7 @@ impl PerIp {
 
     pub const fn fixed<const CONNECTIONS: u32>() -> Self {
         const { assert!(CONNECTIONS > 0) };
-        Self(Some(
-            num::NonZero::<u32>::MIN.saturating_add(CONNECTIONS - 1),
-        ))
+        Self(num::NonZero::new(CONNECTIONS))
     }
 
     pub const fn limit(self) -> Option<num::NonZero<u32>> {

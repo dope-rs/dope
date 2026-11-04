@@ -107,10 +107,9 @@ where
     where
         C::Context: 'a,
     {
-        use ready::raw::Work as _;
-
-        let work = unsafe { Work::new(self, quota) };
+        let work = Work::new(quota);
         let dirty = self.has_changes();
+        // SAFETY: this engine boundary retains every registered flight and its storage.
         let progress = unsafe { work.commit(self, dirty) }?;
         let pending = deferred();
         Ok(if progress.is_pending() || pending {
@@ -129,9 +128,8 @@ where
     where
         C::Context: 'a,
     {
-        use ready::raw::Work as _;
-
-        let work = unsafe { Work::new(self, quota) };
+        let work = Work::new(quota);
+        // SAFETY: this engine boundary retains every registered flight and its storage.
         unsafe { work.wait(self, timeout, busy()) }
     }
 }

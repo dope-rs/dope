@@ -16,9 +16,7 @@ use dope_sys::{
     },
     table::{
         self, Files as _,
-        change::{
-            self, Changes as _, Delete as _, Id as _, Interest as _, Tail as _, raw::Batch as _,
-        },
+        change::{self, Changes as _, Delete as _, Id as _, Interest as _, raw::Batch as _},
         registry::{self, Entry as _, Occupied as _, State as _},
     },
 };
@@ -113,7 +111,7 @@ fn prepare_rolls() {
     assert_eq!(tail.as_slice().len(), 1);
     assert_eq!(tail.as_slice()[0].flags, libc::EV_ADD | libc::EV_DISPATCH);
     assert_eq!({ tail.as_slice()[0].ident }, file as libc::uintptr_t);
-    tail.retry();
+    drop(tail);
     assert!(pending.is_pending());
 }
 
@@ -153,7 +151,7 @@ fn plan_commits() {
         assert_eq!({ event.data }, 0);
         assert!(event.udata.is_null());
     }
-    tail.retry();
+    drop(tail);
     assert!(pending.is_pending());
 }
 
@@ -347,7 +345,7 @@ fn mixed_error_keeps_edits() {
     let source = quota::Ledger::new(2);
     let mut budget = Budget::new(&source);
     let mut storage = Poll::storage();
-    let failure = Failure::Wait(Errno::BAD_DESCRIPTOR);
+    let failure = Failure::Ready(ready::Cause::Wait(Errno::BAD_DESCRIPTOR));
     assert_eq!(
         poll.wait(
             &mut files,

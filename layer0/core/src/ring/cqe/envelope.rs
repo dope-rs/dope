@@ -1,30 +1,17 @@
 use domain::retire;
 use dope_sys::{
-    engine,
     io::{
-        file,
-        reactor::{
-            complete,
-            complete::{
-                Observe, Outcome as _, Record as _, packet,
-                packet::record::{Map as _, Selection},
-                resolve::Reclaimed,
-            },
+        reactor::complete::{
+            Outcome as _, Packet as _, Record as _, packet,
+            packet::record::{Map as _, Selection},
+            resolve::Reclaimed,
         },
-        socket::option::{tuning, tuning::Source},
+        socket::option::tuning,
     },
-    kernel,
-    memory::buffer::provided,
     probe::Stopped,
-    ring,
     table::{
         token,
-        token::{
-            Codec as _, frame,
-            frame::Decode as _,
-            host,
-            host::{Drain as _, Flight as _},
-        },
+        token::{Codec as _, frame, frame::Decode as _, host, host::Drain as _},
     },
 };
 use poll::{
@@ -34,9 +21,7 @@ use poll::{
 
 use crate::{
     Errno,
-    driver::{
-        life::native, receive::tokens, result::poll, retained::flight, route, route::indices,
-    },
+    driver::{receive::tokens, result::poll, retained::flight, route, route::indices},
     io::{
         self, Event,
         event::batch::Flow,
@@ -44,55 +29,47 @@ use crate::{
         outputs, transfer,
     },
     ring::cqe::{
-        Binding, CloseToken, Completed, Decoded, Flags, Frame, Observation, Opened, Parts, Record,
-        Returned, Scalar, Selected, Token, Tune, Tuned, Tuning, Value, binding::Retired, tuned,
+        Binding, CloseToken, Decoded, Frame, Observation, Packet, Record, Returned, Selected,
+        Token, Tune, Tuned, Tuning, binding::Retired,
     },
 };
 
-type UserData<'q, 'd, N> = host::Bound<
+type UserData<'q, 'd> = host::Bound<
     retire::Echo<'d>,
     handles::Retirement,
-    Frame<N>,
+    Frame,
     flight::Complete<'q, 'd>,
     flight::raw::Echo,
-    Tune<N>,
+    Tune,
 >;
 
 #[repr(transparent)]
-pub(crate) struct Envelope<P>(pub(super) P);
+pub(crate) struct Envelope<'d>(pub(super) Packet<'d>);
 
 #[repr(transparent)]
-pub(crate) struct Rejected<P: complete::Packet>(Stopped<Option<P::Buffer>, fault::Fault>);
+pub(crate) struct Rejected<'d>(Stopped<Option<tokens::Token<'d, Selected>>, fault::Fault>);
 
-impl<P: complete::Packet> From<Rejected<P>> for Stopped<Option<P::Buffer>, fault::Fault> {
-    fn from(rejected: Rejected<P>) -> Self {
+impl<'d> From<Rejected<'d>> for Stopped<Option<tokens::Token<'d, Selected>>, fault::Fault> {
+    fn from(rejected: Rejected<'d>) -> Self {
         rejected.0
     }
 }
 
-impl<'d, N, P> Envelope<P>
-where
-    P: ring::Packet<Native = N, Parts = Parts<N>, Buffer = tokens::Token<'d, Selected<N>>>,
-    N: ring::Source + token::Source + provided::Source,
-    N: Observe<Token<N>>,
-    Observation<N>: complete::Record<Token<N>, Outcome = Scalar<N>, Flags = Flags<N>>
-        + Into<<crate::Engine as Observe>::Observation>,
-    Returned<N>: Into<<crate::Backend as kernel::Source>::Returned>,
-{
-    pub(super) fn reject(self, subject: fault::Subject, cause: Violation) -> Rejected<P> {
+impl<'d> Envelope<'d> {
+    pub(super) fn reject(self, subject: fault::Subject, cause: Violation) -> Rejected<'d> {
         let (parts, buffer) = self.0.into_parts();
-        let observed = Observation::<N>::new(parts.token, parts.outcome, parts.flags);
+        let observed = Observation::new(parts.token, parts.outcome, parts.flags);
         Rejected(Stopped {
             state: buffer,
             cause: fault::Fault {
-                observation: fault::Observation::new(observed.into()),
+                observation: fault::Observation::new(observed),
                 subject,
                 violation: cause,
             },
         })
     }
 
-    fn reject_close(self, echo: retire::Echo<'_>, cause: Violation) -> Rejected<P> {
+    fn reject_close(self, echo: retire::Echo<'_>, cause: Violation) -> Rejected<'d> {
         let _ = self.0.try_retire(echo);
         self.reject(fault::Subject::Unbound, cause)
     }
@@ -103,7 +80,7 @@ where
         cause: Raw,
         expected: handles::Retirement,
         observed: handles::Retirement,
-    ) -> Rejected<P> {
+    ) -> Rejected<'d> {
         use host::Echo as _;
         echo.retry();
         self.reject(
@@ -116,7 +93,7 @@ where
         )
     }
 
-    fn reject_raw(self, drain: &flight::Drain<'_, 'd>, cause: Raw) -> Rejected<P> {
+    fn reject_raw(self, drain: &flight::Drain<'_, 'd>, cause: Raw) -> Rejected<'d> {
         let retire = drain.driver().descriptors().retirement();
         match self
             .0
@@ -136,60 +113,34 @@ where
     }
 }
 
-impl<'d, N, P, S, E> From<Stopped<(Envelope<P>, S), E>> for Rejected<P>
-where
-    P: ring::Packet<Native = N, Parts = Parts<N>, Buffer = tokens::Token<'d, Selected<N>>>,
-    N: ring::Source + token::Source + provided::Source + Observe<Token<N>>,
-    Observation<N>: complete::Record<Token<N>, Outcome = Scalar<N>, Flags = Flags<N>>
-        + Into<<crate::Engine as Observe>::Observation>,
-    Returned<N>: Into<<crate::Backend as kernel::Source>::Returned>,
-    fault::Subject: From<S>,
-    E: Into<<crate::Backend as kernel::Source>::Returned>,
-{
-    fn from(stopped: Stopped<(Envelope<P>, S), E>) -> Self {
+impl<'d> From<Stopped<(Envelope<'d>, fault::Subject), Returned>> for Rejected<'d> {
+    fn from(stopped: Stopped<(Envelope<'d>, fault::Subject), Returned>) -> Self {
         let Stopped {
             state: (packet, subject),
             cause,
         } = stopped;
-        packet.reject(
-            fault::Subject::from(subject),
-            Violation::Outcome(cause.into()),
-        )
+        packet.reject(subject, Violation::Outcome(cause))
     }
 }
 
-impl<'q, 'd, N, P, E> From<Stopped<(Envelope<P>, flight::Complete<'q, 'd>), E>> for Rejected<P>
-where
-    P: ring::Packet<Native = N, Parts = Parts<N>, Buffer = tokens::Token<'d, Selected<N>>>,
-    N: ring::Source + token::Source + provided::Source + Observe<Token<N>>,
-    Observation<N>: complete::Record<Token<N>, Outcome = Scalar<N>, Flags = Flags<N>>
-        + Into<<crate::Engine as Observe>::Observation>,
-    Returned<N>: Into<<crate::Backend as kernel::Source>::Returned>,
-    E: Into<<crate::Backend as kernel::Source>::Returned>,
-{
-    fn from(stopped: Stopped<(Envelope<P>, flight::Complete<'q, 'd>), E>) -> Self {
+impl<'q, 'd> From<Stopped<(Envelope<'d>, flight::Complete<'q, 'd>), Returned>> for Rejected<'d> {
+    fn from(stopped: Stopped<(Envelope<'d>, flight::Complete<'q, 'd>), Returned>) -> Self {
         let Stopped {
             state: (packet, bound),
             cause,
         } = stopped;
         let flow = packet.0.flow().into();
         let subject = bound.settle(flow).into();
-        packet.reject(subject, Violation::Outcome(cause.into()))
+        packet.reject(subject, Violation::Outcome(cause))
     }
 }
 
-impl<'d, N, P> Envelope<P>
-where
-    P: ring::Packet<Native = N, Parts = Parts<N>, Buffer = tokens::Token<'d, Selected<N>>>,
-    N: ring::Source + token::Source + provided::Source,
-    Returned<N>:
-        kernel::Returned<Value = Value<N>, Invalid = <Scalar<N> as complete::Outcome>::Invalid>,
-{
+impl<'d> Envelope<'d> {
     pub(super) fn flow(&self) -> Flow {
         self.0.flow().into()
     }
 
-    pub(super) fn bytes(&self) -> Result<Result<transfer::Len, Errno>, Returned<N>> {
+    pub(super) fn bytes(&self) -> Result<Result<transfer::Len, Errno>, Returned> {
         Ok(self
             .0
             .parts()
@@ -198,96 +149,31 @@ where
             .map(|value| transfer::Len::from_bound(value.into())))
     }
 
-    pub(super) fn unit(&self) -> Result<Result<(), Errno>, Returned<N>> {
+    pub(super) fn unit(&self) -> Result<Result<(), Errno>, Returned> {
         self.0.parts().outcome.unit()
-    }
-}
-
-impl<'d, N, P> Envelope<P>
-where
-    P: ring::Packet<Native = N, Parts = Parts<N>, Buffer = tokens::Token<'d, Selected<N>>>,
-    N: ring::Source + token::Source + provided::Source,
-    N: Observe<Token<N>>,
-    Observation<N>: complete::Record<Token<N>, Outcome = Scalar<N>, Flags = Flags<N>>
-        + Into<<crate::Engine as Observe>::Observation>,
-    Returned<N>: Into<<crate::Backend as kernel::Source>::Returned>,
-    N: Source + file::Completion,
-    Opened<N>: file::raw::Completion<
-            Outcome = Scalar<N>,
-            Invalid = <Scalar<N> as complete::Outcome>::Invalid,
-        >,
-    Returned<N>:
-        kernel::Returned<Value = Value<N>, Invalid = <Scalar<N> as complete::Outcome>::Invalid>,
-    Completed<N>: Into<<crate::Engine as engine::Buffer>::Token>,
-{
-    fn try_control(
-        self,
-        control: route::Control,
-    ) -> Result<(Self, Result<(), Errno>), Rejected<P>> {
-        let outcome = self.unit();
-        let ((packet, _), outcome) =
-            Stopped::attach((self, fault::Subject::Control(control)), outcome)?;
-        Ok((packet, outcome))
-    }
-
-    fn reject_tuned<'q, S>(self, frame: Frame<N>, cause: tuned::Failure<'q, 'd, S>) -> Rejected<P>
-    where
-        S: tuning::Occupied<flight::raw::Echo>,
-    {
-        use tuning::Missing;
-        let control = frame.control();
-        let (subject, cause) = match cause {
-            tuned::Failure::Lookup(missing) => {
-                let cause = match missing {
-                    Missing::Slot => Violation::Slot,
-                    Missing::Vacant => Violation::Control,
-                };
-                (fault::Subject::Control(control), cause)
-            }
-            tuned::Failure::Stale(Stopped { state, cause: echo }) => {
-                state.clear();
-                let echo = fault::Echo::new(echo);
-                (
-                    fault::Subject::Tuning { echo, control },
-                    Violation::Stale(echo),
-                )
-            }
-            tuned::Failure::Class(Stopped {
-                state: (state, bound),
-                cause: observed,
-            }) => {
-                state.clear();
-                let echo = fault::Echo::new(bound.end(Flow::Last));
-                (
-                    fault::Subject::Tuning { echo, control },
-                    Violation::Tuning(observed),
-                )
-            }
-        };
-        self.reject(subject, cause)
     }
 
     fn decode<'q>(
         drain: &'q flight::Drain<'q, 'd>,
-        entry: Decoded<tokens::Token<'d, Selected<N>>, N>,
-    ) -> Result<(Self, UserData<'q, 'd, N>), Rejected<P>> {
+        entry: Decoded<'d>,
+    ) -> Result<(Self, UserData<'q, 'd>), Rejected<'d>> {
         const {
             assert!(std::mem::size_of::<Self>() == 3 * std::mem::size_of::<usize>());
             assert!(std::mem::align_of::<Self>() == std::mem::align_of::<usize>());
-            assert!(std::mem::size_of::<Rejected<P>>() == 8 * std::mem::size_of::<usize>());
-            assert!(std::mem::align_of::<Rejected<P>>() == std::mem::align_of::<usize>());
-            assert!(std::mem::size_of::<Token<N>>() == std::mem::size_of::<u64>());
-            assert!(std::mem::size_of::<Tune<N>>() == std::mem::size_of::<indices::SlotIndex>());
-            assert!(std::mem::size_of::<Frame<N>>() == std::mem::size_of::<route::Control>());
-            assert!(std::mem::size_of::<CloseToken<'static, N>>() == std::mem::size_of::<u64>());
+            assert!(std::mem::size_of::<Rejected<'d>>() == 8 * std::mem::size_of::<usize>());
+            assert!(std::mem::align_of::<Rejected<'d>>() == std::mem::align_of::<usize>());
+            assert!(std::mem::size_of::<Token>() == std::mem::size_of::<u64>());
+            assert!(std::mem::size_of::<Tune>() == std::mem::size_of::<indices::SlotIndex>());
+            assert!(std::mem::size_of::<Frame>() == std::mem::size_of::<route::Control>());
+            assert!(std::mem::size_of::<CloseToken<'static>>() == std::mem::size_of::<u64>());
         }
-        let (parts, buffer) = Record::<N>::into_parts(entry);
+        let (parts, buffer) = Record::into_parts(entry);
         let buffer = match buffer {
             Selection::None => Ok(None),
             Selection::Selected(buffer) => Ok(Some(buffer)),
             Selection::Invalid(fault) => Err(fault),
         };
-        let packet = match P::try_new(parts, buffer) {
+        let packet = match Packet::try_new(parts, buffer) {
             Ok(packet) => Envelope(packet),
             Err(Stopped {
                 state: packet,
@@ -305,10 +191,10 @@ where
     }
 
     pub(crate) fn resolve<'q>(
-        state: &mut Tuning<N>,
+        state: &mut Tuning,
         drain: &'q flight::Drain<'q, 'd>,
-        entry: Decoded<tokens::Token<'d, Selected<N>>, N>,
-    ) -> Result<Option<Event<'d>>, Rejected<P>> {
+        entry: Decoded<'d>,
+    ) -> Result<Option<Event<'d>>, Rejected<'d>> {
         use host::Echo as _;
         let (packet, user) = Self::decode(drain, entry)?;
         match user {
@@ -339,9 +225,8 @@ where
                         Ok(Some(outputs::shutdown()))
                     }
                     frame::Control::Tuning(tune) => {
-                        let (packet, outcome) = packet.try_control(control.control())?;
-                        let tuned = Tuned::bind(state, drain, tune)
-                            .map_err(|cause| packet.reject_tuned(control, cause))?;
+                        let (tuned, outcome) =
+                            Tuned::bind(state, drain, tune, packet, control.control())?;
                         Ok(Some(tuned.complete(outcome)))
                     }
                     frame::Control::ClosePrep | frame::Control::Unknown => {
@@ -358,11 +243,11 @@ where
     }
 
     pub(crate) fn reclaim<'q>(
-        state: &mut Tuning<N>,
+        state: &mut Tuning,
         drain: &'q flight::Drain<'q, 'd>,
-        entry: Decoded<tokens::Token<'d, Selected<N>>, N>,
+        entry: Decoded<'d>,
         owned: bool,
-    ) -> Result<Retired<'d, N, P>, Rejected<P>> {
+    ) -> Result<Retired<'d>, Rejected<'d>> {
         use host::Echo as _;
         let (packet, user) = Self::decode(drain, entry)?;
         let report = match user {
@@ -384,9 +269,8 @@ where
                 }
                 match control.decode() {
                     frame::Control::Tuning(tune) => {
-                        let (packet, outcome) = packet.try_control(control.control())?;
-                        let tuned = Tuned::bind(state, drain, tune)
-                            .map_err(|cause| packet.reject_tuned(control, cause))?;
+                        let (tuned, outcome) =
+                            Tuned::bind(state, drain, tune, packet, control.control())?;
                         Some(tuned.reclaim(outcome))
                     }
                     frame::Control::Shutdown => {
@@ -398,7 +282,7 @@ where
                         if owned && outcome.is_error() {
                             None
                         } else {
-                            Some(native::Report(io::Reclaimed::Shutdown))
+                            Some(io::Reclaimed::Shutdown)
                         }
                     }
                     frame::Control::ClosePrep => {
@@ -432,15 +316,15 @@ where
         })
     }
 
-    fn control(self, frame: Frame<N>) -> Rejected<P> {
+    fn control(self, frame: Frame) -> Rejected<'d> {
         self.reject(fault::Subject::Control(frame.control()), Violation::Control)
     }
 
     fn cancel(
         self,
-        state: &mut Tuning<N>,
-        cancel: host::Cancel<flight::raw::Echo, Tune<N>>,
-    ) -> Result<(), Rejected<P>> {
+        state: &mut Tuning,
+        cancel: host::Cancel<flight::raw::Echo, Tune>,
+    ) -> Result<(), Rejected<'d>> {
         use token::Tuning as _;
         let subject = match &cancel {
             host::Cancel::Flight(echo) => fault::Subject::CancelFlight(fault::Echo::new(*echo)),
@@ -462,7 +346,7 @@ where
         Ok(())
     }
 
-    fn close(self, echo: retire::Echo<'d>) -> Result<(), Rejected<P>> {
+    fn close(self, echo: retire::Echo<'d>) -> Result<(), Rejected<'d>> {
         if self.0.try_retire(echo).is_ok() {
             Ok(())
         } else {
@@ -474,7 +358,7 @@ where
         self,
         expected: handles::Retirement,
         observed: handles::Retirement,
-    ) -> Rejected<P> {
+    ) -> Rejected<'d> {
         self.reject(
             fault::Subject::Unbound,
             Violation::Class { expected, observed },

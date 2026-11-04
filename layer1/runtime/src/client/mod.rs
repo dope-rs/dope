@@ -6,4 +6,4 @@ mod provider;
 
 pub use bound::Bound;
 pub use context::Context;
-pub use provider::Provider;
+pub use provider::{Pair, Provider};

@@ -44,9 +44,8 @@ type Timeout<'a> = <<Uring as Source>::Enter<'a, Token> as Enter>::Timeout;
 
 #[test]
 fn retire_waits_terminal() {
-    assert!({
-        let mut outcome = Ok(());
-        backend::with(&mut outcome, |backend| {
+    assert!(
+        backend::with(|backend| {
             let mut observed = Vec::new();
             occupy(backend, num::NonZero::<u64>::MIN).expect("gate state");
             assert_eq!(queued(backend), 0);
@@ -121,19 +120,17 @@ fn retire_waits_terminal() {
                 "late reply grants no close authority"
             );
             backend.tuning().bind(1).expect("fresh terminal").clear();
-        });
-        outcome.is_ok()
-    });
+        })
+        .is_ok()
+    );
 }
 
 #[test]
 fn cancellation_keeps_owner() {
-    assert!({
-        let mut outcome = Ok(());
-        backend::with(&mut outcome, |first| {
-            assert!({
-                let mut outcome = Ok(());
-                backend::with(&mut outcome, |second| {
+    assert!(
+        backend::with(|first| {
+            assert!(
+                backend::with(|second| {
                     let mut observed = Vec::new();
                     occupy(first, num::NonZero::<u64>::MIN).expect("gate state");
                     occupy(second, num::NonZero::<u64>::MIN).expect("gate state");
@@ -165,12 +162,12 @@ fn cancellation_keeps_owner() {
                     );
                     assert_eq!(queued(first), 3);
                     assert_eq!(observed.as_slice(), [Some(1), Some(1)]);
-                });
-                outcome.is_ok()
-            });
-        });
-        outcome.is_ok()
-    });
+                })
+                .is_ok()
+            );
+        })
+        .is_ok()
+    );
 }
 
 #[test]
@@ -178,9 +175,8 @@ fn full_cancel_can_retry() {
     use dope_sys::io::reactor::submit::{Control as _, Ready as _, raw::Vacancy as _};
     use token::Codec as _;
 
-    assert!({
-        let mut outcome = Ok(());
-        backend::with(&mut outcome, |backend| {
+    assert!(
+        backend::with(|backend| {
             let mut observed = Vec::new();
             occupy(backend, num::NonZero::<u64>::MIN).expect("gate state");
             let nop = Uring::nop(HostToken::prepare());
@@ -220,9 +216,9 @@ fn full_cancel_can_retry() {
                 .bind(1)
                 .expect("terminal owns target")
                 .clear();
-        });
-        outcome.is_ok()
-    });
+        })
+        .is_ok()
+    );
 }
 
 #[test]

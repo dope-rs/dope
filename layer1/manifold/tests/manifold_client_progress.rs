@@ -37,7 +37,7 @@ use crate::common::{
         error,
         kind::{
             bounded::{Bounded, Phase},
-            redial::{BACKOFF, Exhaustion, MAX, Mode, Redial, Run},
+            redial::{BACKOFF, Exhaustion, Mode, Redial},
             yielding::{Life, Yielding},
         },
     },
@@ -101,25 +101,6 @@ fn drain_resumes_next_turn() {
         },
     )
     .expect("spawn held peer");
-}
-
-#[test]
-fn reconnect_redials() {
-    let run = run(Mode::Reconnect).expect("spawn held peer");
-    assert_eq!(run.conns, 2);
-    assert_eq!(run.steps, run.begun + 1);
-    assert_eq!(run.closed, 2);
-    assert_eq!(run.accepts, 2);
-}
-
-#[test]
-fn permanent_stops() {
-    let run = run(Mode::Permanent).expect("spawn held peer");
-    assert_eq!(run.conns, 1);
-    assert_eq!(run.begun, 1);
-    assert_eq!(run.steps, 2);
-    assert_eq!(run.closed, 1);
-    assert_eq!(run.accepts, 1);
 }
 
 #[test]
@@ -354,99 +335,105 @@ fn exhaustion_waits() {
     }
 }
 
-fn run(kind: Mode) -> Result<Run, peer::Spawn> {
-    let mut finish = Completion::new();
-    let (accepts, tx) = wake::Ends::blocking().map_err(peer::Spawn::Wake)?.split();
-    AcceptScript::with(
-        move |acceptor| {
-            let mut held = Vec::new();
-            loop {
-                match acceptor.accept() {
-                    Ok(stream) => {
-                        held.push(stream);
-                        tx.notify().expect("accept observer remains alive");
-                    }
-                    Err(peer::Error::Cancelled) => {
-                        return Ok(held.len());
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        },
-        |server| {
-            let addr = server.addr();
-            let conn_g = LocalGate::new();
-            let conn = conn_g.handle();
-            let begin_g = LocalGate::new();
-            let begun = begin_g.handle();
-            let step_g = LocalGate::new();
-            let steps = step_g.handle();
-            let close_g = LocalGate::new();
-            let closed = close_g.handle();
-            let audit = Rc::new(Report::default());
-
-            let planned = Connector::<MAX>::new(addr, BACKOFF, BACKOFF)
-                .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(Redial {
-                    audit: Rc::clone(&audit),
-
-                    kind,
-                    conn,
-                    begun,
-                    steps,
-                    closed,
-                    exhausted: None,
-                    pending: Cell::new(false),
-                }))
-                .expect("prepare actual client layout");
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        reached(case.try_wait(&conn, 1), &audit);
-                        reached(case.try_wait(&closed, 1), &audit);
-                        if matches!(kind, Mode::Reconnect) {
-                            reached(case.try_wait(&conn, 2), &audit);
-                        } else {
-                            case.try_pause(BACKOFF.saturating_mul(4))
-                                .expect("runtime pause");
+#[test]
+fn close_policy_controls_redial() {
+    for kind in [Mode::Reconnect, Mode::Permanent] {
+        let mut finish = Completion::new();
+        let (accepts, tx) = wake::Ends::blocking().expect("accept observer").split();
+        AcceptScript::with(
+            move |acceptor| {
+                let mut held = Vec::new();
+                loop {
+                    match acceptor.accept() {
+                        Ok(stream) => {
+                            held.push(stream);
+                            tx.notify().expect("accept observer remains alive");
                         }
-                    },
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    native,
-                )
-                .expect("application scenario");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+                        Err(peer::Error::Cancelled) => {
+                            return Ok(held.len());
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            },
+            |server| {
+                let addr = server.addr();
+                let conn_g = LocalGate::new();
+                let conn = conn_g.handle();
+                let begin_g = LocalGate::new();
+                let begun = begin_g.handle();
+                let step_g = LocalGate::new();
+                let steps = step_g.handle();
+                let close_g = LocalGate::new();
+                let closed = close_g.handle();
+                let audit = Rc::new(Report::default());
 
-            let expected = usize::from(matches!(kind, Mode::Reconnect)) + 1;
-            for _ in 0..expected {
+                let planned = Connector::<1>::new(addr, BACKOFF, BACKOFF)
+                    .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(
+                        Redial {
+                            audit: Rc::clone(&audit),
+
+                            kind,
+                            conn,
+                            begun,
+                            steps,
+                            closed,
+                            exhausted: None,
+                            pending: Cell::new(false),
+                        },
+                    ))
+                    .expect("prepare actual client layout");
+                let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
+
+                planned
+                    .with_run(
+                        &mut finish,
+                        |case| {
+                            reached(case.try_wait(&conn, 1), &audit);
+                            reached(case.try_wait(&closed, 1), &audit);
+                            if matches!(kind, Mode::Reconnect) {
+                                reached(case.try_wait(&conn, 2), &audit);
+                            } else {
+                                case.try_pause(BACKOFF.saturating_mul(4))
+                                    .expect("runtime pause");
+                            }
+                        },
+                        recovery::Policy::new(|event| reclaim1.push(event), recover),
+                        native,
+                    )
+                    .expect("application scenario");
                 assert!(
-                    accepts.wait_timeout(GUARD).is_ok(),
-                    "peer accepts each connected socket"
+                    matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+                    "unexpected reclaimed operations: {reclaim1:?}"
                 );
-            }
-            let accepts = server
-                .stop()
-                .expect("finish held peer")
-                .expect("accept held connector");
-            checked(&audit);
-            assert_eq!(
-                (audit.sent.get(), audit.cancelled.get()),
-                (Some(0), Some(0))
-            );
-            Run {
-                conns: conn.hits(),
-                begun: begun.hits(),
-                steps: steps.hits(),
-                closed: closed.hits(),
-                accepts,
-            }
-        },
-    )
+
+                let expected = usize::from(matches!(kind, Mode::Reconnect)) + 1;
+                for _ in 0..expected {
+                    assert!(
+                        accepts.wait_timeout(GUARD).is_ok(),
+                        "peer accepts each connected socket"
+                    );
+                }
+                let accepts = server
+                    .stop()
+                    .expect("finish held peer")
+                    .expect("accept held connector");
+                checked(&audit);
+                assert_eq!(
+                    (audit.sent.get(), audit.cancelled.get()),
+                    (Some(0), Some(0))
+                );
+                assert_eq!(conn.hits(), expected as u32);
+                assert_eq!(steps.hits(), begun.hits() + 1);
+                assert_eq!(closed.hits(), expected as u32);
+                assert_eq!(accepts, expected);
+                if matches!(kind, Mode::Permanent) {
+                    assert_eq!((begun.hits(), steps.hits()), (1, 2));
+                }
+            },
+        )
+        .expect("spawn held peer");
+    }
 }
 
 #[test]

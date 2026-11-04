@@ -2,23 +2,19 @@ use std::{
     array,
     cell::Cell,
     marker::{PhantomData, PhantomPinned},
-    ops,
     pin::Pin,
     rc::Rc,
     task::Poll,
 };
 
 use engine::{
-    core::{
-        driver::{
-            route::{Identity, KeyTag},
-            schedule,
-            schedule::ready,
-            settings,
-        },
-        io,
+    core::driver::{
+        route::{Identity, KeyTag},
+        schedule,
+        schedule::ready,
+        settings,
     },
-    manifold::app::dispatch::{self, event},
+    manifold::app::dispatch,
     runtime::{
         control,
         executor::{self, root},
@@ -84,32 +80,11 @@ impl<ID: Identity> Eager<ID> {
     }
 }
 
-impl<'d, ID: Identity> event::Drive<'d> for Eager<ID> {
-    type Access = dispatch::raw::Plain;
-
-    fn dispatch<'app, 'driver, 'root>(
-        _: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
-        ops::ControlFlow::Continue(())
-    }
-}
-
 // SAFETY: Eager retains no driver-visible pointer and remains pinned in the
 // installed application for the complete run.
 unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Eager<ID> {
     type Route = ID;
-    type Dispatch = event::Driven<dispatch::raw::Plain>;
+    type Dispatch = dispatch::raw::Omit;
     type Install = dispatch::raw::Omit;
     type Finish = dispatch::raw::Omit;
     type Activate = dispatch::raw::Omit;

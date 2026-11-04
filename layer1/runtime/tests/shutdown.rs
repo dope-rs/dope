@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 pub mod common;
 
 use common::{scenario::app::Empty, shutdown::try_create};
@@ -29,7 +27,7 @@ fn delivers_readiness() {
                         "readiness drive and teardown: {result:?}"
                     );
                 },
-                recovery::Policy::new(|event| observed.push(event), recover),
+                recovery::Policy::new(|event| observed.push(event), common::recover),
             );
             result
                 .as_ref()
@@ -65,7 +63,7 @@ fn reclaims_shutdown() {
         executor.run(|executor| {
             let result = executor.enter_with(
                 |_| {},
-                recovery::Policy::new(|event| observed.push(event), recover),
+                recovery::Policy::new(|event| observed.push(event), common::recover),
             );
             assert!(
                 observed.len() <= 1,
@@ -82,8 +80,4 @@ fn reclaims_shutdown() {
                 .expect("executor completion");
         });
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

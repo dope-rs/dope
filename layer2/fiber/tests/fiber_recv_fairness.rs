@@ -1,6 +1,6 @@
 use dope::{
     core::driver::{life::recovery, settings::Receive},
-    manifold::network::listener::Domain,
+    manifold::{app::Host, network::listener::Domain},
     runtime::executor::{Executor, session::Completion},
 };
 use dope_core::{driver::route::KeyTag, platform::wake};
@@ -17,7 +17,7 @@ use dope::{
             settings::{self, claim::Needs},
             storage::Value,
         },
-        io::socket::Backlog,
+        io::socket::{self, Backlog},
     },
     manifold::timing::Balanced,
     net::{
@@ -40,7 +40,7 @@ use dope_test::{
 };
 use o3::buffer::write::consume::Consume as _;
 
-use crate::common::network::{fair::*, reserve::Reservation};
+use crate::common::network::fair::*;
 
 #[test]
 fn capacity_before_build() {
@@ -54,8 +54,8 @@ fn capacity_before_build() {
 #[test]
 fn hoarder_yields_to_peer() {
     let mut finish = Completion::new();
-    let bound = (Reservation::bind()).expect("reserve listener");
-    let addr = bound.addr();
+    let bound = socket::Listener::bind(([127, 0, 0, 1], 0).into()).expect("reserve listener");
+    let addr = bound.local_addr();
     let seen = Gate::new();
     let owner = Endpoint::try_new(seen.clone()).expect("fairness receive slots");
     let limits = Rc::clone(&owner.limits);
@@ -97,7 +97,7 @@ fn hoarder_yields_to_peer() {
                         stream: Default::default(),
                         transport: Default::default(),
                         egress: Default::default(),
-                        bound: bound.into_tcp(),
+                        bound,
                         wire: end,
                     },
                     |cause| cause.eliminate(),
@@ -119,20 +119,18 @@ fn hoarder_yields_to_peer() {
                                 reply
                             }, |peers| {
                         let result = sess.with_quiesce(&mut finish,
-                            App { pool: server }, scenario::TIMEOUT,
+                            Host::new(server), scenario::TIMEOUT,
                             |mut app| -> Result<(), drive::Error> {
                                 let bulk = app.block_on(
                                     dope_fiber::fiber!('_ => async move { pool.accept().await }),
                                 )?;
                                 assert!(bulk.is_ok(), "accept hoarder");
-                                let probe = (app.block_on(
+                                let mut probe = (app.block_on(
                                     dope_fiber::fiber!('_ => async move { pool.accept().await }),
                                 )?).ok().expect("accept probe");
                                 assert_eq!(fibers::TEST.try_wait(&mut app, &seen, QUEUE_CAP as u32).expect("bounded progress"), fibers::Wait::Reached);
                                 assert!(tx.notify().is_ok(), "probe peer must remain connected");
-                                let mut probe = Some(probe);
                                 app.block_on(dope_fiber::fiber!('_ => async move {
-                                    let mut probe = probe.take().expect("probe owner");
                                     {
                                         let read = probe.read().await;
                                         assert!(read.is_ok(), "read typed probe input: {:?}",

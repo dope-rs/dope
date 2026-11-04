@@ -39,11 +39,9 @@ use crate::{
 pub(crate) mod create;
 pub(in crate::driver) mod drain;
 pub(crate) mod host;
-mod report;
 pub(crate) mod request;
 pub(crate) mod resolver;
 mod retired;
-pub(crate) use report::Report;
 
 /// Exclusive native authority borrowed from one driver-local scope.
 ///
@@ -92,6 +90,7 @@ impl<'a, 'd> Access<'a, 'd> {
             | kind::Kind::TaskQueue
             | kind::Kind::Tuning
             | kind::Kind::Write
+            | kind::Kind::Read
             | kind::Kind::Sync => self.cancel::<admit::Immediate>(echo, pending, None),
         }
     }
@@ -301,6 +300,19 @@ impl<'turn, 'd> Backend<'turn, 'd> {
     pub(crate) fn new(work: scope::Reactor<'turn, 'd>) -> Self {
         Self { work }
     }
+
+    fn share<const N: usize, const I: usize>(&self, cursor: usize) -> usize {
+        const {
+            assert!(N != 0);
+            assert!(I < N);
+            assert!(N <= usize::MAX - I);
+        }
+        let total = self.remaining();
+        let base = total / N;
+        let extra = total % N;
+        let span = (I + N - (cursor % N)) % N;
+        base + if span < extra { 1 } else { 0 }
+    }
 }
 
 impl<'d> delivery::Quota<driver::Context<'_, 'd>> for Backend<'_, 'd> {
@@ -330,19 +342,6 @@ impl<'turn, 'd> Quota for Backend<'turn, 'd> {
 
     fn refund(self) {
         self.work.refund();
-    }
-
-    fn share<const N: usize, const I: usize>(&self, cursor: usize) -> usize {
-        const {
-            assert!(N != 0);
-            assert!(I < N);
-            assert!(N <= usize::MAX - I);
-        }
-        let total = self.remaining();
-        let base = total / N;
-        let extra = total % N;
-        let span = (I + N - (cursor % N)) % N;
-        base + if span < extra { 1 } else { 0 }
     }
 
     fn budget<Lane>(&self, limit: usize) -> Self::Budget<'_, Lane> {

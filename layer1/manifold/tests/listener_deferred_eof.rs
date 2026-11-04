@@ -1,9 +1,11 @@
 pub mod common;
 
+use common::manifold::listener::{native, reached};
+
+use dope_test::fibers::Wait;
+
 use std::{
     cell::Cell,
-    convert::Infallible,
-    fmt::Debug,
     marker::PhantomData,
     net::Shutdown,
     rc::Rc,
@@ -15,7 +17,7 @@ use common::{
         Cancel, CancelAt, Trace,
         terminal::{
             Ingress, Probe, accepted,
-            wire::{self, CleanOnEof, Event, FailOnEof, Fault, Wire},
+            wire::{self, Event, Fault, Mode, Wire},
         },
         trace::One,
     },
@@ -33,15 +35,12 @@ use dope_manifold::{
     timing::Throughput,
 };
 use dope_net::{tcp::Tcp, wire::domain};
-use dope_runtime::{
-    executor::{
-        Executor,
-        session::{self, Completion},
-    },
-    topology::error::Kind,
+use dope_runtime::executor::{
+    Executor,
+    session::{self, Completion},
 };
 use dope_test::{
-    fibers::{self, Run, Wait},
+    fibers,
     harness::{
         GUARD,
         observe::VecCellExt as _,
@@ -51,18 +50,6 @@ use dope_test::{
     reclaim::Reports,
 };
 
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
-}
-
 #[test]
 fn shutdown_keeps_close() {
     let mut finish = Completion::new();
@@ -71,7 +58,10 @@ fn shutdown_keeps_close() {
     let cancel = Gate::new();
     let trace = Rc::new(Trace::default());
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(
+        Rc::clone(&events),
+        Mode::CleanOnEof { control: true },
+    ));
     let server = One::config();
     let layout = Layout::<KeyTag<0>, receive::Coupled>::new(server.connections);
     let config = Needs::from_tree(&layout)
@@ -90,64 +80,63 @@ fn shutdown_keeps_close() {
         let result = executor.enter_with(
             |mut session| {
                 let hash = session.hash_state(listener::Domain::DEFAULT);
-                listener::Install::<
-                        KeyTag<0>,
-                        Bundle<Tcp, Wire<CleanOnEof<true>>, Throughput>,
-                        _,
-                    >::new(server, domain::Local::new(Rc::clone(&wire)))
-                    .with_driver(
-                        Probe::<Wire<CleanOnEof<true>>, receive::Coupled, _> {
-                            close: close.clone(),
-                            retired: done.clone(),
-                            events: Rc::clone(&events),
-                            ingress: Ingress::Held,
-                            marker: PhantomData,
-            observe: accepted,
-                        },
-                        hash,
-                        &mut session,
-                        session::Scope::driver,
-                        |listener, session| {
-                            let addr = listener.local_addr();
-                            let result = session.with_quiesce(
-                                &mut finish,
-                                Host::new(Cancel {
-                                    listener,
-                                    at: CancelAt::Send,
-                                    trace: Rc::clone(&trace),
-                                    gate: cancel.clone(),
-                                }),
-                                Duration::from_secs(2),
-                                |mut app| {
-                                    Peer::at(addr)
-                                        .with(
-                                            |stream| Half::try_run(stream, b"x"),
-                                            |peer| {
-                                                reached(
-                                                    fibers::TEST.try_wait(&mut app, &close, 1),
-                                                    close.hits(),
-                                                    1,
-                                                );
-                                                reached(
-                                                    fibers::TEST.try_wait(&mut app, &done, 1),
-                                                    done.hits(),
-                                                    1,
-                                                );
-                                                assert_eq!(
-                                                    peer.finish()
-                                                        .expect("peer finish")
-                                                        .expect("peer I/O"),
-                                                    b"!"
-                                                );
-                                            },
-                                        )
-                                        .expect("peer spawn");
-                                },
-                            );
-                            assert!(result.is_ok(), "finish clean control application");
-                        },
-                    )
-                    .expect("install listener");
+                listener::Install::<KeyTag<0>, Bundle<Tcp, Wire, Throughput>, _>::new(
+                    server,
+                    domain::Local::new(Rc::clone(&wire)),
+                )
+                .with_driver(
+                    Probe::<receive::Coupled, _> {
+                        close: close.clone(),
+                        retired: done.clone(),
+                        events: Rc::clone(&events),
+                        ingress: Ingress::Held,
+                        marker: PhantomData,
+                        observe: accepted,
+                    },
+                    hash,
+                    &mut session,
+                    session::Scope::driver,
+                    |listener, session| {
+                        let addr = listener.local_addr();
+                        let result = session.with_quiesce(
+                            &mut finish,
+                            Host::new(Cancel {
+                                listener,
+                                at: CancelAt::Send,
+                                trace: Rc::clone(&trace),
+                                gate: cancel.clone(),
+                            }),
+                            Duration::from_secs(2),
+                            |mut app| {
+                                Peer::at(addr)
+                                    .with(
+                                        |stream| Half::try_run(stream, b"x"),
+                                        |peer| {
+                                            reached(
+                                                fibers::TEST.try_wait(&mut app, &close, 1),
+                                                close.hits(),
+                                                1,
+                                            );
+                                            reached(
+                                                fibers::TEST.try_wait(&mut app, &done, 1),
+                                                done.hits(),
+                                                1,
+                                            );
+                                            assert_eq!(
+                                                peer.finish()
+                                                    .expect("peer finish")
+                                                    .expect("peer I/O"),
+                                                b"!"
+                                            );
+                                        },
+                                    )
+                                    .expect("peer spawn");
+                            },
+                        );
+                        assert!(result.is_ok(), "finish clean control application");
+                    },
+                )
+                .expect("install listener");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
         );
@@ -190,10 +179,13 @@ fn half_close_before_gate() {
     let done = Gate::new();
     let peer_eof = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(
+        Rc::clone(&events),
+        Mode::CleanOnEof { control: true },
+    ));
     let prepared = Listener::<receive::Coupled>::new::<1>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<CleanOnEof<true>>, Throughput>>((
-            Probe::<Wire<CleanOnEof<true>>, receive::Coupled, _> {
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
+            Probe::<receive::Coupled, _> {
                 close: close.clone(),
                 retired: done.clone(),
                 events: Rc::clone(&events),
@@ -275,10 +267,13 @@ fn eof_waits_for_release() {
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(
+        Rc::clone(&events),
+        Mode::CleanOnEof { control: false },
+    ));
     let prepared = Listener::<receive::Coupled>::new::<1>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<CleanOnEof>, Throughput>>((
-            Probe::<Wire<CleanOnEof>, receive::Coupled, _> {
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
+            Probe::<receive::Coupled, _> {
                 close: close.clone(),
                 retired: done.clone(),
                 events: Rc::clone(&events),
@@ -339,10 +334,10 @@ fn publishes_eof() {
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(Rc::clone(&events), Mode::FailOnEof));
     let prepared = Listener::<receive::Gated>::new::<4>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<FailOnEof>, Throughput>>((
-            Probe::<Wire<FailOnEof>, receive::Gated, _> {
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
+            Probe::<receive::Gated, _> {
                 close: close.clone(),
                 retired: done.clone(),
                 events: Rc::clone(&events),

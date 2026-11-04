@@ -3,7 +3,7 @@ pub(in crate::driver::life::native::host) mod file;
 pub(in crate::driver::life::native::host) mod files;
 pub(in crate::driver::life::native::host) mod raw;
 
-use std::{mem, time};
+use std::mem;
 
 use dope_sys::{
     io::reactor::ready,
@@ -15,30 +15,7 @@ use crate::driver::{
     route::indices,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Failure {
-    Timeout {
-        requested: time::Duration,
-    },
-    System {
-        operation: Operation,
-        fault: dope_sys::Errno,
-    },
-    Revoke {
-        descriptor: usize,
-        filter: Filter,
-        errno: dope_sys::Errno,
-    },
-    Backing {
-        operation: Operation,
-        index: indices::SlotIndex,
-        filter: Filter,
-    },
-    Missing {
-        operation: Operation,
-        cause: poll::Missing,
-    },
-}
+pub(crate) type Failure = poll::Cause;
 
 impl From<ready::Cause> for Failure {
     fn from(cause: ready::Cause) -> Self {
@@ -97,43 +74,3 @@ const _: () = {
     assert!(mem::size_of::<Failure>() == 3 * mem::size_of::<usize>());
     assert!(mem::size_of::<Result<(), Failure>>() == mem::size_of::<Failure>());
 };
-
-impl From<Failure> for poll::Cause {
-    fn from(error: Failure) -> Self {
-        match error {
-            Failure::Timeout { requested: span } => Self::Timeout { requested: span },
-            Failure::System {
-                operation: op,
-                fault,
-            } => Self::System {
-                operation: op,
-                fault,
-            },
-            Failure::Revoke {
-                descriptor: fd,
-                filter,
-                errno,
-            } => Self::Revoke {
-                descriptor: fd,
-                filter: poll::Filter::from_native(filter),
-                errno,
-            },
-            Failure::Backing {
-                operation: op,
-                index,
-                filter,
-            } => Self::Backing {
-                operation: op,
-                index,
-                filter: poll::Filter::from_native(filter),
-            },
-            Failure::Missing {
-                operation: op,
-                cause,
-            } => Self::Missing {
-                operation: op,
-                cause,
-            },
-        }
-    }
-}

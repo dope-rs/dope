@@ -3,7 +3,6 @@ use std::{cell::Cell, rc::Rc};
 use dope::{
     core::io::recv,
     net::{
-        tcp::Tcp,
         wire,
         wire::{
             domain, failure, open,
@@ -20,8 +19,7 @@ use dope::{
         },
     },
 };
-use dope_core::driver::route::{Identity, KeyTag};
-use dope_fiber::net::client::Machine;
+use dope_core::driver::route::Identity;
 use dope_test::harness::{signals, signals::Gate};
 
 use crate::common::network::rounds::client::fault::Error;
@@ -268,13 +266,4 @@ impl domain::Init<Wire> for Wire {
     {
         bind
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-pub struct App<'p, 'scope, 'd> {
-    #[pin]
-    #[manifold]
-    pub(crate) connector: Machine<'p, 'scope, 'd, 'd, KeyTag<0>, Tcp, Wire>,
 }

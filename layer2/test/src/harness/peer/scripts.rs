@@ -134,7 +134,7 @@ pub(super) struct Script<'scope, T> {
     pub(super) addr: net::SocketAddr,
     done: &'scope fd::OwnedFd,
     cancel: &'scope Cell<Option<wake::Notify>>,
-    join: &'scope mut dyn FnMut() -> Result<Result<T, Error>, run::Join>,
+    join: &'scope mut dyn FnMut() -> Result<T, Error>,
 }
 
 impl<T: Send> Script<'_, T> {
@@ -184,7 +184,7 @@ impl<T> Script<'_, T> {
         if !matches!(ready, Ok(true)) {
             self.cancel.take();
         }
-        let output = (self.join)().map_err(Finish::Join)?;
+        let output = (self.join)();
         match ready {
             Ok(true) => output.map_err(Finish::Worker),
             Ok(false) => Err(Finish::Timeout),

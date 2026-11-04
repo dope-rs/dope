@@ -3,13 +3,10 @@ pub mod common;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use std::{cell::Cell, convert::Infallible, env, fs, io, pin, time::Duration};
+use std::{cell::Cell, env, fs, io, pin, time::Duration};
 
 use dope_core::{
-    driver::{
-        life::{creation::Attempt, domain, recovery},
-        route::KeyTag,
-    },
+    driver::{life::recovery, route::KeyTag},
     io::fs::{open, path::CStrExt as _},
 };
 use dope_manifold::{
@@ -17,11 +14,11 @@ use dope_manifold::{
     file::appender,
     timing,
 };
-use dope_runtime::executor::{create, session::Completion};
+use dope_runtime::executor::session::Completion;
 use dope_test::{alloc::Tracker, harness::support::file};
 use o3::alloc;
 
-use crate::common::{manifold::appender::Observed, scenario::Runtime};
+use crate::common::{manifold::appender::Observed, recover, scenario::Runtime};
 
 #[test]
 fn storage_releases_prefix() {
@@ -54,17 +51,9 @@ fn tail_precedes_route_admission() {
         appender::Layout::<KeyTag<38>>::default(),
         appender::Layout::<KeyTag<39>>::default(),
     );
-    let mut create = Attempt::new();
-    let executor = Runtime::try_for_plan::<timing::Throughput, _>(&layout)
+    Runtime::try_for_plan::<timing::Throughput, _>(&layout)
         .expect("appender layout")
-        .try_executor(&mut create);
-    executor
-        .as_ref()
-        .map_err(create::Error::kind)
-        .expect("native creation");
-    let executor = executor.ok().expect("native creation");
-    executor.with_storage(layout).run(|executor| {
-        let result = executor.enter_with(
+        .with_scope(
             |mut session| {
                 let held = appender::Appender::<KeyTag<38>, 1, 64>::open(
                     &empty,
@@ -109,17 +98,9 @@ fn tail_precedes_route_admission() {
             },
             recovery::Policy::new(
                 |event| panic!("unexpected reclaimed operation: {event:?}"),
-                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("native recovery: {:?}", failure.cause())
-                },
+                recover,
             ),
         );
-        result
-            .as_ref()
-            .map_err(domain::Error::cause)
-            .expect("native retirement");
-        result.ok().expect("native retirement")
-    });
     assert_eq!(fs::read(torn).expect("unchanged rejected file"), b"{");
 }
 
@@ -127,7 +108,6 @@ fn tail_precedes_route_admission() {
 fn drains_reused_blocks_after_truncation() {
     let base = env::temp_dir();
     let mut finish = Completion::new();
-    let mut create = Attempt::new();
     let dir = file::Directory::try_with(&base, "appender_blocks", |result| {
         result.expect("remove appender fixture")
     })
@@ -139,24 +119,16 @@ fn drains_reused_blocks_after_truncation() {
     // SAFETY: pipename retains this terminated fixture path through creation.
     let created = unsafe { libc::mkfifo(pipename.as_ptr(), 0o600) };
     assert_eq!(created, 0, "create fifo: {}", io::Error::last_os_error());
-    let storage = appender::Storage::<2, 64>::try_new();
-    let mut storage = storage.expect("append buffers");
+    let mut storage = appender::Storage::<2, 64>::try_new().expect("append buffers");
     let mut events = Vec::new();
     let layout = (
         appender::Layout::<KeyTag<36>>::default(),
         appender::Layout::<KeyTag<37>>::default(),
     );
 
-    let executor = Runtime::try_for_plan::<timing::Throughput, _>(&layout)
+    Runtime::try_for_plan::<timing::Throughput, _>(&layout)
         .expect("appender layout")
-        .try_executor(&mut create);
-    executor
-        .as_ref()
-        .map_err(create::Error::kind)
-        .expect("native creation");
-    let executor = executor.ok().expect("native creation");
-    executor.with_storage(layout).run(|executor| {
-        let result = executor.enter_with(|mut session| {
+        .with_scope(|mut session| {
             {
                 let rejected = appender::Appender::<KeyTag<37>, 2, 64>::open(
                     &pipepath, None, &mut storage, &mut session.driver(),
@@ -238,19 +210,13 @@ fn drains_reused_blocks_after_truncation() {
                 assert_eq!(checked.get(), Some(true), "submitted write waits before completion");
             }
             assert!(storage.failure().is_none(), "successful drain replaces cancellation");
-        }, recovery::Policy::new(|event| events.push(event), |failure: recovery::Recovery<'_, '_>| -> Infallible {
-            panic!("native recovery: {:?}", failure.cause())
-        }));
-        result.as_ref().map_err(domain::Error::cause).expect("native retirement");
-        result.ok().expect("native retirement")
-    });
+        }, recovery::Policy::new(|event| events.push(event), recover));
     assert!(
         events.is_empty(),
         "unexpected reclaimed operations: {events:?}"
     );
 
-    let bytes = fs::read(&path);
-    let bytes = (bytes).expect("written file");
+    let bytes = fs::read(&path).expect("written file");
     let mut expected = b"keep\n".to_vec();
     expected.extend_from_slice(&[b'a'; 64]);
     expected.extend_from_slice(&[b'b'; 64]);

@@ -22,7 +22,7 @@ use crate::{
             engine::{
                 self, liveness,
                 ops::close,
-                transfer::{effect, finish, send},
+                transfer::{effect, send},
             },
             flow,
         },
@@ -35,12 +35,13 @@ impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> app::Receiver<'w, 'd, ID, A>
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
     A::Requests: send::Policy<'w, 'd, ID, A>,
+    A::Continuation: liveness::Inspection<'d, ID, A>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>:
-        close::ClosePhase<'d, ID, A, S, E> + finish::Finish<'w, 'd, ID, A, A::Continuation>,
+    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+    <A::Continuation as app::resume::Mode>::Outcome: effect::Effect<'w, 'd, ID, A, S, E, X>,
 {
     fn borrowed<'input, 'turn, 'driver, 'context, 'owner>(
         mut self,
@@ -127,12 +128,7 @@ where
                 }
             }
         };
-        <engine::Machine<'p, 'w, 'd, ID, A, S, E, X> as finish::Finish<
-            'w,
-            'd,
-            ID,
-            A,
-            A::Continuation,
-        >>::finish(self, key, outcome, turn, driver)
+        let (done, next) = outcome.into_parts();
+        ingress::Progress::Done(done.apply(self, key, next, turn, driver))
     }
 }

@@ -27,7 +27,11 @@ impl<'d> State<'d> {
     ) -> Self {
         let (parent, held) = admit.into_parts();
         let (endpoint, local) = edge.into_parts();
-        let child = parent.install_task(held, endpoint.key(), local.raw());
+        let arena = parent.driver().ready().arena();
+        let root = endpoint.key();
+        let task = ready::Task::new(parent.key(), root, local.raw());
+        let staged = arena.entries.slots.task(held, task);
+        let child = ready::Topology::get(&arena.entries.slots, root).attach(staged);
         Self { parent, child }
     }
 
@@ -40,7 +44,8 @@ impl Return for State<'_> {
     type Item = ();
 
     fn return_item(self, (): ()) {
-        self.parent.release(self.child);
+        let entries = &self.parent.driver().ready().arena().entries;
+        entries.pool.free_task(&entries.slots, self.child);
     }
 }
 
@@ -52,23 +57,24 @@ pub struct Admission<'d> {
 struct Release<'d>(task::Parent<'d>);
 
 impl<'d> Admission<'d> {
-    pub(super) const fn new(parent: task::Parent<'d>, child: ready::Permit<'d>) -> Self {
+    pub(super) const fn new(parent: task::Parent<'d>, child: ready::ReservedKey<'d>) -> Self {
         Self {
             held: mem::Lease::open(Release(parent), child),
         }
     }
 
-    pub(super) fn into_parts(self) -> (task::Parent<'d>, ready::Permit<'d>) {
+    pub(super) fn into_parts(self) -> (task::Parent<'d>, ready::ReservedKey<'d>) {
         let (Release(parent), child) = self.held.into_parts();
         (parent, child)
     }
 }
 
 impl<'d> Return for Release<'d> {
-    type Item = ready::Permit<'d>;
+    type Item = ready::ReservedKey<'d>;
 
     fn return_item(self, child: Self::Item) {
-        self.0.release_hold(child);
+        let entries = &self.0.driver().ready().arena().entries;
+        entries.pool.recycle(&entries.slots, child);
     }
 }
 
@@ -86,7 +92,7 @@ struct Recycle<'lease, 'd> {
 impl<'lease, 'd> Lease<'lease, 'd> {
     pub(super) fn new(
         parent: task::Parent<'d>,
-        child: ready::Permit<'d>,
+        child: ready::ReservedKey<'d>,
         chain: &'lease ready::Chain,
     ) -> Self {
         Self {
@@ -101,7 +107,7 @@ impl<'lease, 'd> Lease<'lease, 'd> {
 }
 
 impl<'d> Return for Recycle<'_, 'd> {
-    type Item = ready::Permit<'d>;
+    type Item = ready::ReservedKey<'d>;
 
     fn return_item(self, child: Self::Item) {
         self.parent.return_lease(child, self.chain);

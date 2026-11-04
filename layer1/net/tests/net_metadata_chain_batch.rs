@@ -22,10 +22,7 @@ fn rollback_reuses() {
         let mut stored = (stored).expect("required fixture outcome");
         let arena = Arena::<&[u8]>::try_new(&token, &mut stored);
         let arena = (arena).expect("required fixture outcome");
-        let lane = LANE;
-        let lane = arena.get(lane);
-        assert!(lane.is_some());
-        let Some(lane) = lane else { return };
+        let lane = arena.get(LANE).expect("lane");
         let queue = lane.queue();
 
         let ((), alloc) = Tracker::usage(|| {
@@ -35,9 +32,8 @@ fn rollback_reuses() {
             ));
             let plan = batch::Plan::new(egress::Entries::new(2), egress::Resident::new(0));
             let plan = (plan).expect("required fixture outcome");
-            let (b, c) = (egress::NonEmpty::try_new(B), egress::NonEmpty::try_new(C));
-            assert!(b.is_ok() && c.is_ok());
-            let (Ok(b), Ok(c)) = (b, c) else { return };
+            let b = egress::NonEmpty::try_new(B).expect("nonempty B");
+            let c = egress::NonEmpty::try_new(C).expect("nonempty C");
             let result = queue.try_batch(&mut token, plan, |mut sink| {
                 sink.try_push(b)?;
                 sink.try_push(c)?;
@@ -45,9 +41,7 @@ fn rollback_reuses() {
             });
             assert!(result.is_ok());
             for want in [A, B, C] {
-                let front = queue.take_front(&mut token);
-                assert!(front.is_some());
-                let Some(front) = front else { return };
+                let front = queue.take_front(&mut token).expect("published owner");
                 let value = front.into_inner();
                 assert_eq!(value.as_ptr(), want.as_ptr());
                 assert_eq!(value.len(), want.len());
@@ -57,11 +51,8 @@ fn rollback_reuses() {
             let plan = (plan).expect("required fixture outcome");
             let rolled = queue.try_batch(&mut token, plan, |mut sink| {
                 for value in [A, B] {
-                    let load = egress::NonEmpty::try_new(value);
-                    assert!(load.is_ok());
-                    if let Ok(load) = load {
-                        assert!(sink.try_push(load).is_ok());
-                    }
+                    let load = egress::NonEmpty::try_new(value).expect("nonempty owner");
+                    assert!(sink.try_push(load).is_ok());
                 }
                 Ok::<_, Infallible>(())
             });
@@ -79,18 +70,16 @@ fn rollback_reuses() {
                 ));
             }
             let denied = queue.admit(&mut token, egress::Load::new(REJECTED));
-            assert!(matches!(denied, metadata::Admission::Rejected(_)));
-            if let metadata::Admission::Rejected(denied) = denied {
-                assert!(*denied.error() == LANE.capacity::<1, 0>(egress::Charge::of(&REJECTED)));
-                let denied = denied.into_parts().0.into_inner();
-                assert_eq!(denied.as_ptr(), REJECTED.as_ptr());
-                assert_eq!(denied.len(), REJECTED.len());
-            }
+            let metadata::Admission::Rejected(denied) = denied else {
+                panic!("full queue must reject admission");
+            };
+            assert!(*denied.error() == LANE.capacity::<1, 0>(egress::Charge::of(&REJECTED)));
+            let denied = denied.into_parts().0.into_inner();
+            assert_eq!(denied.as_ptr(), REJECTED.as_ptr());
+            assert_eq!(denied.len(), REJECTED.len());
 
             for want in [A, B, C, D] {
-                let front = queue.take_front(&mut token);
-                assert!(front.is_some());
-                let Some(front) = front else { return };
+                let front = queue.take_front(&mut token).expect("published owner");
                 assert_eq!(front.into_inner().as_ptr(), want.as_ptr());
             }
             assert!(queue.is_empty());
@@ -110,10 +99,7 @@ fn admission_skips_build() {
         let mut stored = (stored).expect("required fixture outcome");
         let arena = Arena::<&[u8]>::try_new(&token, &mut stored);
         let arena = (arena).expect("required fixture outcome");
-        let lane = LANE;
-        let lane = arena.get(lane);
-        assert!(lane.is_some());
-        let Some(lane) = lane else { return };
+        let lane = arena.get(LANE).expect("lane");
         let queue = lane.queue();
 
         let ((), alloc) = Tracker::usage(|| {
@@ -126,10 +112,10 @@ fn admission_skips_build() {
                     Ok(())
                 });
             assert!(!called.get());
-            assert!(matches!(&denied, Err(batch::Error::Admission(_))));
-            if let Err(batch::Error::Admission(cause)) = denied {
-                assert!(cause == LANE.credit::<2, 0>(1));
-            }
+            let Err(batch::Error::Admission(cause)) = denied else {
+                panic!("batch admission must fail before build");
+            };
+            assert!(cause == LANE.credit::<2, 0>(1));
             assert!(queue.is_empty());
         });
 
@@ -147,10 +133,7 @@ fn error_rolls_back() {
         let mut stored = (stored).expect("required fixture outcome");
         let arena = Arena::<&[u8]>::try_new(&token, &mut stored);
         let arena = (arena).expect("required fixture outcome");
-        let lane = LANE;
-        let lane = arena.get(lane);
-        assert!(lane.is_some());
-        let Some(lane) = lane else { return };
+        let lane = arena.get(LANE).expect("lane");
         let queue = lane.queue();
 
         let ((), alloc) = Tracker::usage(|| {
@@ -158,11 +141,8 @@ fn error_rolls_back() {
             let plan = (plan).expect("required fixture outcome");
             let failed = queue.try_batch(&mut token, plan, |mut sink| {
                 for value in [A, B] {
-                    let load = egress::NonEmpty::try_new(value);
-                    assert!(load.is_ok());
-                    if let Ok(load) = load {
-                        assert!(sink.try_push(load).is_ok());
-                    }
+                    let load = egress::NonEmpty::try_new(value).expect("nonempty owner");
+                    assert!(sink.try_push(load).is_ok());
                 }
                 Err::<(), _>(7_u8)
             });
@@ -176,9 +156,7 @@ fn error_rolls_back() {
                 ));
             }
             for want in [C, D] {
-                let front = queue.take_front(&mut token);
-                assert!(front.is_some());
-                let Some(front) = front else { return };
+                let front = queue.take_front(&mut token).expect("published owner");
                 assert_eq!(front.into_inner().as_ptr(), want.as_ptr());
             }
         });
@@ -203,10 +181,7 @@ fn resident_once() {
         let mut stored = (stored).expect("required fixture outcome");
         let arena = Arena::<pool::Cursor>::try_new(&token, &mut stored);
         let arena = (arena).expect("required fixture outcome");
-        let lane = LANE;
-        let lane = arena.get(lane);
-        assert!(lane.is_some());
-        let Some(lane) = lane else { return };
+        let lane = arena.get(LANE).expect("lane");
         let queue = lane.queue();
 
         let ((), alloc) = Tracker::usage(|| {
@@ -215,25 +190,18 @@ fn resident_once() {
             let plan = (plan).expect("required fixture outcome");
             let a = bufs.try_cursor(A).expect("buffer fixture");
             let b = bufs.try_cursor(B).expect("buffer fixture");
-            let a = egress::NonEmpty::try_new(a);
-            let b = egress::NonEmpty::try_new(b);
-            assert!(a.is_ok() && b.is_ok());
-            let (Ok(a), Ok(b)) = (a, b) else { return };
+            let a = egress::NonEmpty::try_new(a).expect("nonempty A");
+            let b = egress::NonEmpty::try_new(b).expect("nonempty B");
             let result = queue.try_batch(&mut token, plan, |mut sink| {
                 sink.try_push(a)?;
                 sink.try_push(b)?;
                 Ok::<_, batch::Rejected<pool::Cursor>>(11)
             });
-            assert!(result.is_ok());
-            if let Ok(output) = result {
-                assert_eq!(output, 11);
-            }
+            assert_eq!(result.ok().expect("batch callback"), 11);
         });
         assert_eq!(alloc, (0, 0));
         for want in [A, B] {
-            let front = queue.take_front(&mut token);
-            assert!(front.is_some());
-            let Some(front) = front else { return };
+            let front = queue.take_front(&mut token).expect("published owner");
             assert_eq!(front.into_inner().as_ref(), want);
         }
         assert!(queue.is_empty());

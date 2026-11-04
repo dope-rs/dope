@@ -1,4 +1,4 @@
-use std::{convert::Infallible, marker, mem};
+use std::{convert::Infallible, mem};
 
 use codec::{mode, staging, staging::Seal};
 use dope_core::{
@@ -67,7 +67,6 @@ pub struct Connection<'w, 'd: 'w, ID: Identity, N: Parser<'d, ID>, W: wire::Spec
     pub(super) ingress: Ingress<'w, 'd, ID, N, W>,
     pub(in crate::client) conn_state: N::ConnState,
     pub(super) continuation: <N::Response as response::Plan>::Flow,
-    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
 impl<'w, 'd: 'w, ID: Identity, N: Parser<'d, ID>, W: wire::Spec + 'd> Connection<'w, 'd, ID, N, W> {
@@ -81,7 +80,6 @@ impl<'w, 'd: 'w, ID: Identity, N: Parser<'d, ID>, W: wire::Spec + 'd> Connection
             ingress: mode::Ingress::new(stage, session.codec(), budget),
             conn_state: N::ConnState::default(),
             continuation: Default::default(),
-            driver: marker::PhantomData,
         })
     }
 

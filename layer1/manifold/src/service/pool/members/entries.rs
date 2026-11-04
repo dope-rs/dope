@@ -28,22 +28,15 @@ enum Entry<'a, 'h, I, A> {
     },
 }
 
-/// The exclusive records loan remains held by every reserved entry until commit or drop.
-pub(super) struct Reservation<'a, 'h, I, A, const N: usize> {
-    entries: [Option<Entry<'a, 'h, I, A>>; N],
-    retained: usize,
-}
-
-impl<'a, 'h, I: Eq, A, const N: usize> Reservation<'a, 'h, I, A, N> {
-    /// Every reserved slot remains behind this exclusive records borrow until commit or drop.
-    /// No member operation can borrow the set until those guards have been consumed.
-    pub(super) fn try_new(
-        records: &'a mut Records<'h, I, A>,
-        snapshot: service::Snapshot<service::Endpoint<I, A>, N>,
-        preserve: bool,
-    ) -> Result<Self, service::Reconcile> {
+pub(super) fn try_apply<'h, I: Eq, A, const N: usize>(
+    records: &mut Records<'h, I, A>,
+    snapshot: service::Snapshot<service::Endpoint<I, A>, N>,
+    preserve: bool,
+    queue: &mut queues::Queue<'h, '_>,
+) -> Result<([Option<pool::MemberKey<'h>>; N], usize), service::Reconcile> {
+    let (entries, retained) = {
         let mut keep = [const { None }; N];
-        let mut spare: [Option<Vacant<'a, 'h, I, A>>; N] = [const { None }; N];
+        let mut spare: [Option<Vacant<'_, 'h, I, A>>; N] = [const { None }; N];
         let mut space = spare.iter_mut();
         let mut retained = 0;
         for entry in records.entries() {
@@ -88,21 +81,12 @@ impl<'a, 'h, I: Eq, A, const N: usize> Reservation<'a, 'h, I, A, N> {
                 },
             });
         }
-        Ok(Self { entries, retained })
-    }
-}
-
-impl<'h, I, A, const N: usize> Reservation<'_, 'h, I, A, N> {
-    pub(super) fn commit(
-        self,
-        queue: &mut queues::Queue<'h, '_>,
-    ) -> ([Option<pool::MemberKey<'h>>; N], usize) {
-        let Self { entries, retained } = self;
-        (
-            entries.map(|entry| entry.map(|entry| entry.commit(queue))),
-            retained,
-        )
-    }
+        (entries, retained)
+    };
+    Ok((
+        entries.map(|entry| entry.map(|entry| entry.commit(queue))),
+        retained,
+    ))
 }
 
 impl<'h, I, A> Entry<'_, 'h, I, A> {

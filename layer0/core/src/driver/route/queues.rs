@@ -17,12 +17,13 @@ const SHAPE: bitmap::Shape<num::NonZero<u32>, u32> = bitmap::Shape::<num::NonZer
 const WORDS: usize = 9;
 
 pub(in crate::driver) struct Pending {
-    state: (cell::UnsafeCell<State>, ThreadBound),
+    state: State,
+    _thread: ThreadBound,
 }
 
 struct State {
     words: [bitmap::Word<u32>; WORDS],
-    cursor: u8,
+    cursor: cell::Cell<u8>,
 }
 
 pub(in crate::driver) struct Retired<'d> {
@@ -49,46 +50,38 @@ impl<'d> Retired<'d> {
 impl Pending {
     pub(in crate::driver) const fn new() -> Self {
         Self {
-            state: (
-                cell::UnsafeCell::new(State {
-                    words: [const { bitmap::Word::zero() }; WORDS],
-                    cursor: 0,
-                }),
-                ThreadBound::NEW,
-            ),
+            state: State {
+                words: [const { bitmap::Word::zero() }; WORDS],
+                cursor: cell::Cell::new(0),
+            },
+            _thread: ThreadBound::NEW,
         }
     }
 
     pub(in crate::driver::route) fn defer<B: route::App>(reserved: lease::Reserved<'_, B>) {
-        let queue = &reserved.driver().shared.context().retire;
-        // SAFETY: the queue is thread-bound. This complete transition calls
-        // no user code, and no state borrow escapes a queue operation.
-        let state = unsafe { &mut *queue.state.0.get() };
-        state.insert(reserved);
+        let state = &reserved.driver().shared.context().retire.state;
+        Row::clamp(state, usize::from(B::ROUTE.raw())).update::<true>(());
     }
 
     pub(in crate::driver) fn pop(driver: driver::Reference<'_>) -> Option<Retired<'_>> {
-        let queue = &driver.shared.context().retire;
-        // SAFETY: the thread-bound queue lends its state only for this
-        // non-reentrant operation; an entry cannot outlive the call.
-        let state = unsafe { &mut *queue.state.0.get() };
-        let id = state.pop()?;
+        let state = &driver.shared.context().retire.state;
+        let removed = state.pop_from((), usize::from(state.cursor.get()))?;
+        let index = removed.index() as u8;
+        state.cursor.set(index.wrapping_add(1));
         Some(Retired {
-            id,
+            id: route::Id(index),
             driver: marker::PhantomData,
         })
     }
 
     pub(in crate::driver) fn has_pending(&self) -> bool {
-        // SAFETY: state transitions never call user code or expose their
-        // exclusive borrow, and ThreadBound prevents concurrent access.
-        unsafe { !(&*self.state.0.get()).is_empty(()) }
+        !self.state.is_empty(())
     }
 }
 
 // SAFETY: State retains eight initialized u32 leaves and their root summary.
-// Only bitmap operations mutate them during one exclusive queue transition;
-// the fixed u8 route domain fills all eight leaves without tail bits.
+// Only bitmap operations mutate them inside Pending, without callbacks or reentry;
+// ThreadBound excludes concurrent access. The u8 domain fills every leaf without tails.
 unsafe impl depot::raw::Words<u32> for State {
     type Plane = ();
     type Size = num::NonZero<u32>;
@@ -99,24 +92,6 @@ unsafe impl depot::raw::Words<u32> for State {
 
     fn words(&self, (): ()) -> &[bitmap::Word<u32>] {
         &self.words
-    }
-}
-
-// SAFETY: the thread-bound queue exposes no plane access during &mut State.
-unsafe impl depot::raw::Bitmap<u32> for State {}
-
-impl State {
-    fn insert<B: route::App>(&mut self, _claim: lease::Reserved<'_, B>) {
-        let raw = usize::from(B::ROUTE.raw());
-        Row::clamp(self, raw).update::<true>(());
-    }
-
-    fn pop(&mut self) -> Option<route::Id> {
-        let start = usize::from(self.cursor);
-        let removed = (&mut *self).pop_from((), start)?;
-        let index = removed.index() as u8;
-        self.cursor = index.wrapping_add(1);
-        Some(route::Id(index))
     }
 }
 

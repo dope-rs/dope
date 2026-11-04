@@ -14,15 +14,15 @@ use std::{pin::Pin, rc::Rc, time::Duration};
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::tcp::Tcp,
 };
 use dope_fiber::{BlockOn as _, abi::Task, net::client::Plan};
 use dope_test::{fibers, reclaim::Reports};
 
 use crate::common::network::rounds::client::{
-    Ping,
-    gated::{App, Probe, Wire},
+    gated::{Probe, Wire},
+    try_ping,
 };
 
 #[test]
@@ -69,7 +69,7 @@ fn reuses_settled_slot() {
                         |sess| sess.driver(),
                         |port, sess| {
                             let handle = store.handle();
-                            let app = App { connector: port };
+                            let app = Host::new(port);
 
                             let driven = (sess.with_quiesce(
                                 &mut finish,
@@ -103,7 +103,7 @@ fn reuses_settled_slot() {
                                     let next = (opened).ok().expect(
                                         "the replacement connection must open after retirement",
                                     );
-                                    Ping::try_ping(&mut app, next).map(|result| {
+                                    try_ping(&mut app, next).map(|result| {
                                         assert_eq!(
                                             result.ok().expect("complete ping roundtrip"),
                                             RESPONSE
@@ -125,7 +125,7 @@ fn reuses_settled_slot() {
                         .expect("the settled-cancel reply server must complete both accepts");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -138,8 +138,4 @@ fn reuses_settled_slot() {
         },
     )
     .expect("the settled-cancel reply-server thread must start");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

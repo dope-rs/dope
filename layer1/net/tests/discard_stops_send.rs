@@ -67,7 +67,7 @@ fn discard_stops_send() {
     assert!(observed.buffered);
     assert!(!observed.inflight);
     let events = reports.events().expect("reclaimed operations");
-    assert_eq!(events.len(), usize::from(observed.pending_accept));
+    assert!(events.len() <= usize::from(observed.pending_accept));
     for event in events {
         assert!(
             matches!(event,

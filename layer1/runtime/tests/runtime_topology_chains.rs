@@ -10,6 +10,7 @@ use dope_core::driver::{
     settings::{claim, errors},
 };
 use dope_runtime::{
+    client,
     executor::session::Completion,
     shutdown, topology,
     topology::{
@@ -45,7 +46,7 @@ fn pins_then_lends_chain() {
 
     prepared.try_local(
         |scope: topology::Worker<'_, '_, '_, '_, _, _, _>| Tracker::usage(|| Compose.run(scope)),
-        recovery::Policy::new(|event| reports.push(event), recover),
+        recovery::Policy::new(|event| reports.push(event), common::recover),
         |entered| {
             entered
                 .as_ref()
@@ -138,7 +139,7 @@ fn drains_after_client_drop() {
                     });
                 });
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
             |entered| {
                 entered
                     .as_ref()
@@ -152,6 +153,60 @@ fn drains_after_client_drop() {
             "unexpected native recovery: {reports:?}"
         );
     }
+}
+
+#[test]
+fn lends_two_providers() {
+    let events = [Cell::new(0), Cell::new(0)];
+    let addresses = [Cell::new(ptr::null()), Cell::new(ptr::null())];
+    let mut complete = Completion::new();
+    let mut reports = Vec::new();
+    let prepared = topology::Plan::new(Storage(claim::Claim::new(settings::Routes::EMPTY)), ())
+        .for_profile::<Profile>()
+        .expect("empty composition");
+    let (source, trigger) = shutdown::Pair::new().expect("shutdown source").split();
+    trigger.fire().expect("request shutdown");
+    prepared.try_with(
+        source,
+        |worker: topology::Worker<'_, '_, '_, '_, _, _, _>| {
+            worker.lend(|(), stage| {
+                let first = stages::Owner {
+                    events: &events[0],
+                    address: &addresses[0],
+                };
+                let second = stages::Owner {
+                    events: &events[1],
+                    address: &addresses[1],
+                };
+                let _first = stages::Backing(&events[0]);
+                let _second = stages::Backing(&events[1]);
+                stage
+                    .lend_scope(&mut complete, client::Pair::new(first, second), |issued| {
+                        let ((first, second), permit) = issued.into_parts();
+                        permit.try_run(
+                            |_driver| Ok::<_, Infallible>((stages::Clients { first, second }, ())),
+                            |(), _app| {
+                                for state in &events {
+                                    assert_eq!(state.get(), 0x12);
+                                    state.set(0x123);
+                                }
+                            },
+                        )
+                    })
+                    .expect("both clients precede provider finalization");
+            });
+        },
+        recovery::Policy::new(|event| reports.push(event), common::recover),
+        |entered| {
+            entered
+                .as_ref()
+                .map_err(|error| error.kind())
+                .expect("paired provider domain");
+        },
+    );
+    assert!(events.iter().all(|state| state.get() == 0x123456789a));
+    assert_ne!(addresses[0].get(), addresses[1].get());
+    assert!(reports.is_empty());
 }
 
 #[test]
@@ -190,7 +245,7 @@ fn rejects_held_provider() {
                     assert_eq!(rejected, Err(37));
                 });
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
             |entered| {
                 entered
                     .as_ref()
@@ -202,8 +257,4 @@ fn rejects_held_provider() {
         assert_eq!(address.get().is_null(), !issued);
         assert!(reports.is_empty());
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

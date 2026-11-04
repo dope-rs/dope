@@ -1,12 +1,8 @@
 use std::mem;
 
-use crate::client::app;
+use dope_core::driver::route::Identity;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Effect {
-    Preserved,
-    Discarded,
-}
+use crate::client::conn::{claim, drain};
 
 #[must_use = "callback flow must handle discarded transport"]
 pub(in crate::client) enum Flow<T> {
@@ -22,8 +18,10 @@ pub(in crate::client) enum Active<T> {
 }
 
 #[must_use = "close callback must preserve settlement and sealed state"]
-pub(in crate::client) enum Close {
-    Ready(Flow<app::CloseOutcome>),
+pub(super) enum Close<'d, ID: Identity> {
+    Complete(drain::Drain<'d, ID>, claim::Urgency),
+    Yield,
+    Blocked,
     Sealed,
 }
 
@@ -41,13 +39,6 @@ pub(in crate::client) enum Follow {
 }
 
 impl<T> Flow<T> {
-    pub(super) fn from_effect(output: T, effect: Effect) -> Self {
-        match effect {
-            Effect::Preserved => Self::Continue(output),
-            Effect::Discarded => Self::Discarded(output),
-        }
-    }
-
     pub(in crate::client) fn into_parts(self) -> (T, Flow<()>) {
         match self {
             Self::Continue(output) => (output, Flow::Continue(())),
@@ -56,7 +47,4 @@ impl<T> Flow<T> {
     }
 }
 
-const _: () = {
-    assert!(mem::size_of::<Active<()>>() == mem::size_of::<Flow<()>>());
-    assert!(mem::size_of::<Close>() == mem::size_of::<Flow<app::CloseOutcome>>());
-};
+const _: () = assert!(mem::size_of::<Active<()>>() == mem::size_of::<Flow<()>>());

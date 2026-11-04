@@ -26,7 +26,7 @@ pub(in crate::network::listener::writer) enum Mode {
 pub(in crate::network::listener) enum Settled<B> {
     More,
     Done(Option<B>),
-    Invalid,
+    Closed,
 }
 
 impl<ID: Identity, B> Default for Send<'_, '_, '_, ID, B> {
@@ -75,21 +75,11 @@ impl<'p, 's, 'd, ID: Identity, B> Send<'p, 's, 'd, ID, B> {
     }
 
     pub(in crate::network::listener) fn release(&mut self) -> Option<B> {
-        match mem::replace(&mut self.state, State::Queued) {
-            State::Queued => None,
-            State::Direct(mut state) => {
-                let error = state.progress.error();
-                let source = state.take_source();
-                if let Some(error) = error {
-                    self.state = State::Failed(error);
-                }
-                source
-            }
-            State::Failed(error) => {
-                self.state = State::Failed(error);
-                None
-            }
+        let (source, error) = self.retire();
+        if let Some(error) = error {
+            self.state = State::Failed(error);
         }
+        source
     }
 
     pub(in crate::network::listener) fn fail(&mut self, failure: conn::Transmit) -> Option<B> {
@@ -109,11 +99,11 @@ impl<'p, 's, 'd, ID: Identity, B> Send<'p, 's, 'd, ID, B> {
         done: Option<link::Consumed>,
     ) -> Settled<B> {
         let State::Direct(state) = &mut self.state else {
-            return Settled::Invalid;
+            return Settled::Closed;
         };
         state.progress.settle(done);
         if state.progress.error().is_some() {
-            return Settled::Invalid;
+            return Settled::Closed;
         }
         if state.progress.has_more() {
             Settled::More

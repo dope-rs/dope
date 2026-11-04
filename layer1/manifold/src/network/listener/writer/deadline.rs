@@ -284,6 +284,12 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
         });
     }
 
+    pub(in crate::network::listener) fn is_due(&mut self, now: clock::Moment<'d>) -> bool {
+        self.with(false, |entry| {
+            matches!(entry.entry, resident::Entry::Occupied(entry) if entry.priority().at <= now)
+        })
+    }
+
     pub(in crate::network::listener) fn progress(&mut self, now: clock::Moment<'d>) {
         self.with((), |entry| {
             let policy = entry.policy;

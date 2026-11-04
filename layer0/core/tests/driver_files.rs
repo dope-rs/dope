@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use crate::common::rt::{finish, recover};
 
 use dope_core::{
     driver,
@@ -8,14 +8,13 @@ use dope_core::{
         socket::{Open, install::Install},
     },
 };
-use dope_test::scope::Error;
 use o3::depot::arena::slab::Vacancy;
 
 use crate::common::driver::{Native as _, Scoped as _};
 
 pub mod common;
 
-use std::{env::consts, ops::ControlFlow, time::Duration};
+use std::{ops::ControlFlow, time::Duration};
 
 use dope_core::{
     driver::{
@@ -178,7 +177,6 @@ fn failed_bind_reuses_slots() {
 
 #[test]
 fn rejects_foreign_creator() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
     let runtime = Runtime::quic::<2, 8>();
     let mut reports = Reports::<_>::new(
         runtime.config(),
@@ -242,7 +240,6 @@ fn rejects_foreign_creator() {
 
 #[test]
 fn drop_waits_for_result() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
     let runtime = Runtime::quic::<2, 8>().file_slots(settings::FileSlots::fixed::<15, 1>());
     let mut reports = Reports::<_>::new(
         runtime.config(),
@@ -311,7 +308,6 @@ fn drop_waits_for_result() {
 
 #[test]
 fn late_owner_joins_close() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
     let runtime = Runtime::quic::<2, 8>();
     let mut reports = Reports::<_>::new(
         runtime.config(),
@@ -361,7 +357,6 @@ fn late_owner_joins_close() {
 
 #[test]
 fn stale_creator_pins_slot() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
     let runtime = Runtime::quic::<2, 8>();
     let mut reports = Reports::<_>::new(
         runtime.config(),
@@ -448,7 +443,6 @@ fn stale_creator_pins_slot() {
 
 #[test]
 fn retiring_waits_close() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
     let runtime = Runtime::quic::<2, 8>();
     let mut reports = Reports::<_>::new(
         runtime.config(),
@@ -480,7 +474,7 @@ fn retiring_waits_close() {
                         "socket creation must finish with its creating authority"
                     );
                     if let Ok(Finished::Created(fd)) = fd {
-                        fd.close(&mut driver);
+                        drop(fd);
                         reclaim(&mut driver, turn);
                     }
                 })
@@ -493,15 +487,4 @@ fn retiring_waits_close() {
         reports.events().expect("valid reclamation").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

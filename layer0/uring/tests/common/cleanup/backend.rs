@@ -4,9 +4,9 @@ use dope_sys::{
     engine::{
         self, admit, life,
         ring::{Backend as _, Context},
+        shutdown::Shutdown,
     },
     io::{
-        Close,
         reactor::{complete, submit::Queue as _},
         request,
         socket::option::tuning::{self, Create as _, Table as _},
@@ -51,11 +51,7 @@ pub enum Error {
         error: Prepare,
         storage: Storage,
     },
-    Backend {
-        error: <Owner as Close>::State,
-        storage: Storage,
-    },
-    Storage(<Storage as Close>::State),
+    Shutdown(<Owner as Shutdown>::State),
 }
 
 pub enum Inputs {}
@@ -115,32 +111,24 @@ impl reclaim::View for View<'_> {
     }
 }
 
-pub fn with(outcome: &mut Result<(), Error>, run: impl FnOnce(&mut Owner)) {
+pub fn with(run: impl FnOnce(&mut Owner)) -> Result<(), Error> {
     use ready::raw::Create as _;
-    let table = match Table::try_new(num::NonZero::<u32>::MIN.saturating_add(1)) {
-        Ok(table) => table,
-        Err(error) => return *outcome = Err(Error::Tuning(error)),
-    };
-    let ring = match try_create::<Token, 16, 32>(false) {
-        Ok(ring) => ring,
-        Err(error) => return *outcome = Err(Error::Ring(error)),
-    };
+    let table =
+        Table::try_new(num::NonZero::<u32>::MIN.saturating_add(1)).map_err(Error::Tuning)?;
+    let ring = try_create::<Token, 16, 32>(false).map_err(Error::Ring)?;
     let storage = match Storage::new(Layout::fixed::<2, 64>()) {
         Ok(storage) => storage,
-        Err(error) => return *outcome = Err(Error::Memory { error, ring }),
+        Err(error) => return Err(Error::Memory { error, ring }),
     };
     // SAFETY: this exact storage is retained until the registered backend closes,
-    // including every failed registration or teardown owner stored in outcome.
+    // including every failed registration or teardown owner returned to the caller.
     let ready = match unsafe { Ready::new(ring, &storage) } {
         Ok(ready) => ready,
-        Err(error) => return *outcome = Err(Error::Ready { error, storage }),
+        Err(error) => return Err(Error::Ready { error, storage }),
     };
     let mut backend = Owner::new(ready, table);
     run(&mut backend);
-    if let Err(error) = backend.try_close() {
-        return *outcome = Err(Error::Backend { error, storage });
-    }
-    *outcome = storage.try_close().map_err(Error::Storage);
+    backend.try_shutdown(storage).map_err(Error::Shutdown)
 }
 
 pub fn occupy(backend: &mut Owner, target: num::NonZero<u64>) -> Option<&mut [libc::c_int; 7]> {

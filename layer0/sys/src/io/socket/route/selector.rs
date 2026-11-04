@@ -2,42 +2,24 @@ use std::num;
 
 use o3::buffer::bytes::scope;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct Offset(u8);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct Mask(num::NonZero<u8>);
-
-/// Minimum packet payload extent required by one selector branch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct Minimum(num::NonZero<u8>);
-
-/// Packet byte interpreted as the selected shape's declared length.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct Length(u8);
-
 /// Selects one dense route byte from either of two packet shapes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Selector {
-    branch_at: Offset,
-    branch_mask: Mask,
-    clear_key: Offset,
-    clear_min: Minimum,
-    length_at: Offset,
-    length: Length,
-    set_key: Offset,
-    set_min: Minimum,
+    branch_at: u8,
+    branch_mask: num::NonZero<u8>,
+    clear_key: u8,
+    clear_min: num::NonZero<u8>,
+    length_at: u8,
+    length: u8,
+    set_key: u8,
+    set_min: num::NonZero<u8>,
 }
 
 /// An optional fixed prefix whose tags cannot be mistaken for a direct packet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrefixPlan {
-    extent: Minimum,
-    raw_mask: Mask,
+    extent: num::NonZero<u8>,
+    raw_mask: num::NonZero<u8>,
     tags: [u8; 2],
 }
 
@@ -62,52 +44,6 @@ pub enum PrefixError {
     Inner(u8),
 }
 
-impl Offset {
-    const fn new(offset: u8) -> Self {
-        Self(offset)
-    }
-
-    pub const fn get(self) -> u8 {
-        self.0
-    }
-}
-
-impl Mask {
-    const fn new<const MASK: u8>() -> Self {
-        const {
-            assert!(MASK > 0);
-        }
-        Self(num::NonZero::<u8>::MIN.saturating_add(MASK - 1))
-    }
-
-    pub const fn get(self) -> num::NonZero<u8> {
-        self.0
-    }
-}
-
-impl Minimum {
-    const fn new<const BYTES: u8>() -> Self {
-        const {
-            assert!(BYTES > 0);
-        }
-        Self(num::NonZero::<u8>::MIN.saturating_add(BYTES - 1))
-    }
-
-    pub const fn get(self) -> num::NonZero<u8> {
-        self.0
-    }
-}
-
-impl Length {
-    pub(crate) const fn new(bytes: u8) -> Self {
-        Self(bytes)
-    }
-
-    pub const fn get(self) -> u8 {
-        self.0
-    }
-}
-
 impl Selector {
     pub const fn fixed<
         const BRANCH_AT: u8,
@@ -120,6 +56,7 @@ impl Selector {
         const SET_MIN: u8,
     >() -> Self {
         const {
+            assert!(BRANCH_MASK > 0);
             assert!(BRANCH_AT < CLEAR_MIN);
             assert!(CLEAR_KEY < CLEAR_MIN);
             assert!(BRANCH_AT < SET_MIN);
@@ -128,46 +65,46 @@ impl Selector {
             assert!(CLEAR_MIN <= SET_MIN);
         }
         Self {
-            branch_at: Offset::new(BRANCH_AT),
-            branch_mask: Mask::new::<BRANCH_MASK>(),
-            clear_key: Offset::new(CLEAR_KEY),
-            clear_min: Minimum::new::<CLEAR_MIN>(),
-            length_at: Offset::new(LENGTH_AT),
-            length: Length::new(LENGTH),
-            set_key: Offset::new(SET_KEY),
-            set_min: Minimum::new::<SET_MIN>(),
+            branch_at: BRANCH_AT,
+            branch_mask: num::NonZero::<u8>::MIN.saturating_add(BRANCH_MASK - 1),
+            clear_key: CLEAR_KEY,
+            clear_min: num::NonZero::<u8>::MIN.saturating_add(CLEAR_MIN - 1),
+            length_at: LENGTH_AT,
+            length: LENGTH,
+            set_key: SET_KEY,
+            set_min: num::NonZero::<u8>::MIN.saturating_add(SET_MIN - 1),
         }
     }
 
-    pub const fn branch_at(self) -> Offset {
+    pub const fn branch_at(self) -> u8 {
         self.branch_at
     }
 
-    pub const fn branch_mask(self) -> Mask {
+    pub const fn branch_mask(self) -> num::NonZero<u8> {
         self.branch_mask
     }
 
-    pub const fn clear_key(self) -> Offset {
+    pub const fn clear_key(self) -> u8 {
         self.clear_key
     }
 
-    pub const fn clear_min(self) -> Minimum {
+    pub const fn clear_min(self) -> num::NonZero<u8> {
         self.clear_min
     }
 
-    pub const fn length_at(self) -> Offset {
+    pub const fn length_at(self) -> u8 {
         self.length_at
     }
 
-    pub const fn length(self) -> Length {
+    pub const fn length(self) -> u8 {
         self.length
     }
 
-    pub const fn set_key(self) -> Offset {
+    pub const fn set_key(self) -> u8 {
         self.set_key
     }
 
-    pub const fn set_min(self) -> Minimum {
+    pub const fn set_min(self) -> num::NonZero<u8> {
         self.set_min
     }
 }
@@ -176,22 +113,24 @@ impl PrefixPlan {
     pub const fn fixed<const BYTES: u8, const RAW_MASK: u8, const FIRST: u8, const SECOND: u8>()
     -> Self {
         const {
+            assert!(BYTES > 0);
+            assert!(RAW_MASK > 0);
             assert!(FIRST != SECOND);
             assert!(FIRST & RAW_MASK == 0);
             assert!(SECOND & RAW_MASK == 0);
         }
         Self {
-            extent: Minimum::new::<BYTES>(),
-            raw_mask: Mask::new::<RAW_MASK>(),
+            extent: num::NonZero::<u8>::MIN.saturating_add(BYTES - 1),
+            raw_mask: num::NonZero::<u8>::MIN.saturating_add(RAW_MASK - 1),
             tags: [FIRST, SECOND],
         }
     }
 
     pub const fn extent(self) -> num::NonZero<u8> {
-        self.extent.get()
+        self.extent
     }
 
-    pub const fn raw_mask(self) -> Mask {
+    pub const fn raw_mask(self) -> num::NonZero<u8> {
         self.raw_mask
     }
 
@@ -208,7 +147,7 @@ impl PrefixPlan {
             actual: 0,
             required: num::NonZero::<usize>::MIN,
         })?;
-        let raw_mask = self.raw_mask.get().get();
+        let raw_mask = self.raw_mask.get();
         if first & raw_mask != 0 {
             return Ok(Frame::Direct);
         }

@@ -26,7 +26,6 @@ pub struct Stream<'a> {
     read: Cell<Option<time::Duration>>,
     write: Cell<Option<time::Duration>>,
     nonblocking: Cell<bool>,
-    stopped: Cell<bool>,
     _thread: ThreadBound,
 }
 
@@ -44,7 +43,6 @@ impl<'a> Stream<'a> {
             read: Cell::new(control.map(|_| IO_TIMEOUT)),
             write: Cell::new(control.map(|_| IO_TIMEOUT)),
             nonblocking: Cell::new(false),
-            stopped: Cell::new(false),
             _thread: ThreadBound::NEW,
         })
     }
@@ -73,16 +71,6 @@ impl<'a> Stream<'a> {
         )
     }
 
-    pub fn reset_on_close(&self) -> Result<(), Error> {
-        Backend::reset_on_close(self.socket.as_fd())
-    }
-
-    /// Whether this stream has observed its owner's cancellation during I/O.
-    /// Native socket failures never establish this witness.
-    pub fn is_stopped(&self) -> bool {
-        self.stopped.get()
-    }
-
     pub fn nonblock(&self, value: bool) {
         self.nonblocking.set(value);
     }
@@ -101,13 +89,7 @@ impl<'a> Stream<'a> {
         timeout: Option<time::Duration>,
         run: impl FnMut() -> Result<T, Errno>,
     ) -> Result<T, Error> {
-        scripts::io(self.control, entry, timeout, self.nonblocking.get(), run).inspect_err(
-            |error| {
-                if matches!(error, Error::Cancelled) {
-                    self.stopped.set(true);
-                }
-            },
-        )
+        scripts::io(self.control, entry, timeout, self.nonblocking.get(), run)
     }
 
     pub fn read(&self, output: &mut [u8]) -> Result<usize, Error> {

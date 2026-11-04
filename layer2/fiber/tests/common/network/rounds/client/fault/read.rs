@@ -3,7 +3,6 @@ use std::{marker, ops::ControlFlow};
 use dope::{
     core::io::recv,
     net::{
-        tcp::Tcp,
         wire,
         wire::{
             domain,
@@ -17,8 +16,7 @@ use dope::{
         },
     },
 };
-use dope_core::driver::route::{Identity, KeyTag};
-use dope_fiber::net::client::Machine;
+use dope_core::driver::route::Identity;
 
 use crate::common::network::rounds::client::fault::{self, Error};
 
@@ -193,15 +191,6 @@ impl<S: Observe> domain::Init<Wire<S>> for Wire<S> {
     {
         bind
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-pub struct App<'p, 'scope, 'd, S: Observe + 'd> {
-    #[pin]
-    #[manifold]
-    pub(crate) connector: Machine<'p, 'scope, 'd, 'd, KeyTag<0>, Tcp, Wire<S>>,
 }
 
 impl<'w, S: Observe + 'w> Conn<'w, S> {

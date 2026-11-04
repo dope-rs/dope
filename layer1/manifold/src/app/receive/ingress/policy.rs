@@ -32,10 +32,23 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
 
     fn storage<'a>(self: pin::Pin<&'a mut Self>) -> &'a mut crate::Inbound<'p, 'w, 'd, ID, Self>;
 
+    /// Admits input before its native completion or held tail is consumed.
+    fn admit(
+        self: pin::Pin<&mut Self>,
+        _: impl FnOnce() -> Option<route::Target<'d, ID>>,
+        _: schedule::Turn<'_, 'd>,
+        _: &mut retained::Context<'_, '_, 'd>,
+    ) -> ops::ControlFlow<schedule::ready::Target<'d>> {
+        ops::ControlFlow::Continue(())
+    }
+
     fn receive<'input>(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        input: <Self::Input as Mode<Self::Wire>>::Value<'input, 'w, 'd>,
+        input: <crate::Ingress<Self::Wire, Self::Input> as Strategy<
+            Self::Wire,
+            Self::Input,
+        >>::Value<'input, 'w, 'd>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input>;
@@ -104,8 +117,20 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         <Self::Input as input::Mode<Self::Wire>>::Reserve:
             Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>,
     {
+        let token = item.token();
         match item.classify() {
             recv::Kind::Data(data) => {
+                let targets = driver.driver_ref().targets::<ID>();
+                if Self::admit(
+                    self.as_mut(),
+                    || targets.parse(token).ok().map(|op| route::Target::from(&op)),
+                    turn.reborrow(),
+                    driver,
+                )
+                .is_break()
+                {
+                    return ops::ControlFlow::Break(data.rejoin());
+                }
                 let work = match <crate::Ingress<Self::Wire, Self::Input> as Strategy<
                     Self::Wire,
                     Self::Input,

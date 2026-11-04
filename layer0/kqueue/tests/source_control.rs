@@ -61,7 +61,15 @@ fn sends_selected_source() {
             .expect("send selected source");
         let mut output = [0u8];
         let (len, actual) = receiver.recv_from(&mut output).expect("datagram");
-        assert_eq!((len, output, actual), (1, bytes, selected.get()));
+        assert_eq!(
+            (len, output, actual.ip().to_canonical(), actual.port()),
+            (
+                1,
+                bytes,
+                selected.get().ip().to_canonical(),
+                selected.get().port(),
+            ),
+        );
         let (restored, gso) = Kqueue::release(control);
         assert!(gso.is_none());
         assert_eq!(restored.as_ref(), source.as_ref());

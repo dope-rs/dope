@@ -18,8 +18,7 @@ use o3::mem::quota;
 use crate::common::{
     Budget, Failure, Files, Poll,
     cancel::Context,
-    event::Capacity,
-    slots::{Slots, inputs::Owned},
+    slots::{Slots, inputs::Physical},
 };
 
 pub struct Host;
@@ -49,7 +48,7 @@ unsafe impl memory::raw::Layout for Receive {
 impl entry::Context for Host {
     type Reader = Context;
     type Writer = Context;
-    type Outbound = Owned;
+    type Outbound = Physical;
     type Handle = <Kqueue as socket::Prepare>::Handle;
     type Native = Kqueue;
     type Failure = socket::accept::Error;
@@ -101,7 +100,7 @@ impl ready::Driver for Host {
     type Observation = ();
     type Context = Self;
     type State = <Kqueue as ready::Source>::State<Self>;
-    type Queue = <Kqueue as complete::Source>::Queue<Event, Capacity>;
+    type Queue = <Kqueue as complete::Source>::Queue<Event, NonZero<u32>>;
 
     fn shutdown() -> NonZero<usize> {
         NonZero::<usize>::MAX
@@ -153,18 +152,6 @@ impl store::Quota for &Quota {
 
     fn remaining(&self) -> usize {
         self.0.remaining()
-    }
-
-    fn share<const N: usize, const I: usize>(&self, cursor: usize) -> usize {
-        const { assert!(N != 0 && I < N) };
-        let cursor = cursor % N;
-        let rank = if I >= cursor {
-            I - cursor
-        } else {
-            N - (cursor - I)
-        };
-        let left = self.0.remaining();
-        left / N + usize::from(rank < left % N)
     }
 
     fn budget<Lane>(&self, limit: usize) -> Budget<'_> {

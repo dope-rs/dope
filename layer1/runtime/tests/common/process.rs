@@ -1,19 +1,227 @@
-use std::{cell, convert::Infallible, mem, ops};
+use std::{cell, convert::Infallible, mem, ops, thread, time};
 
 use dope_core::{
     Backend, Errno,
-    dope_sys::kernel,
+    dope_sys::{io::socket::record::Record, kernel},
     driver::life::{creation::Attempt, recovery},
-    platform::{affinity, affinity::Cpu},
+    platform::{affinity, affinity::Cpu, channel::Channel, wake},
 };
 use dope_runtime::{
-    executor::{Build as _, session::Completion},
-    process::{self, failure::execute, watch},
+    executor::{Build as _, session, session::Completion},
+    process::{
+        self,
+        failure::{bus, execute},
+        watch,
+    },
+    shutdown,
 };
 use dope_test::alloc::Tracker;
 use o3::{alloc, base::time::Positive, depot::array::init, mem::slot};
 
-use crate::common::{runtime::topology::PROFILE_CONFIG, scenario::app::Empty};
+use crate::common::{
+    runtime::topology::PROFILE_CONFIG,
+    scenario::{app::Empty, rt::Configured},
+};
+
+pub fn repeated_install() {
+    let cpus = <[Cpu; 1]>::try_current().expect("one available worker CPU");
+    for heartbeat in [false, true] {
+        let (wait, ready) = wake::Ends::blocking().expect("worker readiness").split();
+        let runtime = process::Layout::pinned(cpus)
+            .and_then(|layout| layout.try_assign([ready]))
+            .expect("one process worker");
+        let mut storage = mem::MaybeUninit::uninit();
+        let result = runtime.run_watched(
+            slot::Vacant::new(&mut storage),
+            |ready, context| {
+                Ok::<_, Infallible>(worker(context, |mut scope| {
+                    let mut finish = Completion::new();
+                    for _ in 0..3 {
+                        scope
+                            .with_app(&mut finish, Empty {}, |_| ())
+                            .expect("repeated installation");
+                    }
+                    ready.notify().expect("worker readiness");
+                    scope
+                        .with_app(&mut finish, Empty {}, |app| {
+                            app.run().expect("worker shutdown")
+                        })
+                        .unwrap_or_else(|error| panic!("worker session: {:?}", error.cause()))
+                }))
+            },
+            Watch::new(Some(wait), heartbeat),
+        );
+        assert!(
+            result.is_ok(),
+            "process installation, heartbeat {heartbeat}: {result:?}"
+        );
+    }
+}
+
+thread_local! {
+    static EXIT: cell::Cell<Option<Channel>> = const { cell::Cell::new(None) };
+}
+
+pub fn ordered_shutdown() {
+    let cpus = <[Cpu; 2]>::try_current().expect("two available worker CPUs");
+    let (wait, exit) = Channel::pair().expect("worker retirement");
+    let runtime = process::Layout::pinned(cpus)
+        .and_then(|layout| layout.try_assign([(true, exit), (false, wait)]))
+        .expect("two process workers");
+    let mut storage = mem::MaybeUninit::uninit();
+    let result = runtime.watch_gated(
+        slot::Vacant::new(&mut storage),
+        |(first, channel), context, gate| {
+            let wait = if first {
+                EXIT.with(|exit| exit.set(Some(channel)));
+                None
+            } else {
+                Some(channel)
+            };
+            Ok::<_, Infallible>(worker(context, |mut scope| {
+                let mut finish = Completion::new();
+                scope
+                    .with_app(&mut finish, Empty {}, |app| {
+                        let drain = gate.open().expect("worker gate");
+                        let request = app.run().expect("worker shutdown");
+                        if let Some(wait) = wait {
+                            let observed = wait.recv();
+                            assert!(
+                                matches!(observed, Record::Closed),
+                                "first worker retired: {observed:?}"
+                            );
+                        }
+                        drain.finish().expect("worker drain");
+                        request
+                    })
+                    .unwrap_or_else(|error| panic!("worker session: {:?}", error.cause()))
+            }))
+        },
+        Watch::new(None, false),
+    );
+    assert!(result.is_ok(), "ordered process shutdown: {result:?}");
+}
+
+fn worker<'run>(
+    context: process::Context<'run>,
+    run: impl for<'scope, 'life, 'p, 'd> FnOnce(
+        session::Scope<'scope, 'life, 'p, 'd, (), process::Shutdown<'run>>,
+    ) -> shutdown::Requested<process::Shutdown<'run>>,
+) -> shutdown::Requested<process::Shutdown<'run>> {
+    let mut create = Attempt::new();
+    let executor = Configured::quic::<2, 8>()
+        .try_source(&mut create, context)
+        .unwrap_or_else(|error| panic!("worker executor: {:?}", error.kind()));
+    let mut reported = None;
+    let request = executor.run(|executor| {
+        executor
+            .enter_with(
+                run,
+                recovery::Policy::new(
+                    |event| {
+                        reported.get_or_insert(event);
+                    },
+                    crate::common::recover,
+                ),
+            )
+            .unwrap_or_else(|error| panic!("worker teardown: {:?}", error.cause()))
+    });
+    assert!(reported.is_none(), "native reclamation: {reported:?}");
+    request
+}
+
+struct Watch {
+    ready: Option<wake::Wait>,
+    heartbeat: bool,
+    pulsed: cell::Cell<bool>,
+    draining: cell::Cell<bool>,
+}
+
+impl Watch {
+    fn new(ready: Option<wake::Wait>, heartbeat: bool) -> Self {
+        Self {
+            ready,
+            heartbeat,
+            pulsed: cell::Cell::new(false),
+            draining: cell::Cell::new(false),
+        }
+    }
+}
+
+impl watch::Notify for Watch {
+    type Error = Error;
+    type Heartbeat = Self;
+
+    fn ready(mut self) -> Result<Self, Error> {
+        if let Some(ready) = self.ready.take() {
+            ready.wait().map_err(Error::Wait)?;
+        }
+        if !self.heartbeat {
+            try_terminate().map_err(Error::Signal)?;
+        }
+        Ok(self)
+    }
+}
+
+impl watch::Heartbeat<Error> for Watch {
+    fn period(&self) -> Positive {
+        if self.heartbeat {
+            Positive::from_nanos::<1>()
+        } else {
+            Positive::from_secs::<1>()
+        }
+    }
+
+    fn pulse(&self) -> Result<(), Error> {
+        if self.heartbeat {
+            if !self.pulsed.replace(true) {
+                try_terminate().map_err(Error::Signal)?;
+                thread::sleep(time::Duration::from_millis(1));
+            } else if !self.draining.get() {
+                return Err(Error::Starved);
+            }
+        }
+        Ok(())
+    }
+
+    fn draining(&self) -> Result<(), Error> {
+        self.draining.set(true);
+        Ok(())
+    }
+}
+
+pub fn terminal_failure() {
+    let [cpu] = <[Cpu; 1]>::try_current().expect("one available worker CPU");
+    let runtime = process::Layout::pinned([cpu])
+        .and_then(|layout| layout.try_assign([cpu]))
+        .expect("one process worker");
+    let mut storage = mem::MaybeUninit::uninit();
+    let error = runtime
+        .run(slot::Vacant::new(&mut storage), |cpu, context| {
+            assert_eq!(context.cpu(), cpu);
+            Err(context.terminal().fail())
+        })
+        .expect_err("reported entry failure");
+    let faults = error.fold(Vec::new(), |mut faults, fault| {
+        faults.push(fault);
+        faults
+    });
+    assert_eq!(faults.len(), 2);
+    assert!(faults.iter().any(|fault| matches!(
+        fault,
+        execute::Fault::Control(execute::Cause::WorkerFailed { cpu: actual }) if *actual == cpu
+    )));
+    assert!(faults.iter().any(|fault| matches!(
+        fault,
+        execute::Fault::Worker(execute::Worker::Entry {
+            cpu: actual,
+            source: Ok(bus::Event::Failed),
+            bus: bus::Report::Clean,
+            terminal: None,
+            handoff: None,
+        }) if *actual == cpu
+    )));
+}
 
 pub fn cancel_gated_startup() {
     let [cpu] = <[Cpu; 1]>::try_current().expect("required available CPU");
@@ -59,12 +267,7 @@ pub fn cancel_gated_startup() {
                                     .expect("worker application");
                                 result.ok().expect("validated application")
                             },
-                            recovery::Policy::new(
-                                drop,
-                                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                                    panic!("native recovery: {:?}", failure.cause());
-                                },
-                            ),
+                            recovery::Policy::new(drop, crate::common::recover),
                         );
                         result
                             .as_ref()
@@ -191,6 +394,9 @@ pub enum Error {
     Ready,
     Pulse,
     Drain,
+    Wait(wake::WaitError),
+    Signal(Errno),
+    Starved,
 }
 
 pub struct Resources {

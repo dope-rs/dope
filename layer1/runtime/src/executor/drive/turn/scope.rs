@@ -47,20 +47,6 @@ pub(crate) struct Core<'turn, 'd, M> {
     pub(super) mode: M,
 }
 
-pub(crate) trait Roots<'d> {
-    type Mode<'turn>: modes::Mode<'d>
-    where
-        Self: 'turn;
-
-    fn driver_ref(&self) -> driver::Reference<'d>;
-
-    fn next_root<'turn>(
-        &'turn mut self,
-        root: &ready::Slot<'d, routes::Wake>,
-        tick: clock::Sample,
-    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, drive::Error>;
-}
-
 impl<'run, 'driver, 'app, 'd: 'app, D, S> Scope<'run, 'driver, 'app, 'd, D, S>
 where
     D: executor::raw::App<'d>,
@@ -100,26 +86,16 @@ where
             },
         }
     }
-}
 
-impl<'app, 'd: 'app, D, S> Roots<'d> for Scope<'_, '_, 'app, 'd, D, S>
-where
-    D: executor::raw::App<'d>,
-{
-    type Mode<'turn>
-        = modes::App<'turn, 'app, 'd, D, S>
-    where
-        Self: 'turn;
-
-    fn driver_ref(&self) -> driver::Reference<'d> {
+    pub(crate) fn driver_ref(&self) -> driver::Reference<'d> {
         self.driver.driver_ref()
     }
 
-    fn next_root<'turn>(
+    pub(crate) fn next_root<'turn>(
         &'turn mut self,
         root: &ready::Slot<'d, routes::Wake>,
         tick: clock::Sample,
-    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, drive::Error> {
+    ) -> Result<RootReady<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>, drive::Error> {
         RootReady::new_app(self.begin(tick), root)
     }
 }
@@ -151,23 +127,16 @@ impl<'run, 'driver, 'd> Boot<'run, 'driver, 'd> {
             mode: self.mode,
         }
     }
-}
 
-impl<'d> Roots<'d> for Boot<'_, '_, 'd> {
-    type Mode<'turn>
-        = modes::Boot
-    where
-        Self: 'turn;
-
-    fn driver_ref(&self) -> driver::Reference<'d> {
+    pub(crate) fn driver_ref(&self) -> driver::Reference<'d> {
         self.driver.driver_ref()
     }
 
-    fn next_root<'turn>(
+    pub(crate) fn next_root<'turn>(
         &'turn mut self,
         root: &ready::Slot<'d, routes::Wake>,
         tick: clock::Sample,
-    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, drive::Error> {
+    ) -> Result<RootReady<'turn, 'd, modes::Boot>, drive::Error> {
         RootReady::new_boot(self.begin(tick), root)
     }
 }

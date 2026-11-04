@@ -26,7 +26,7 @@ use crate::{
 };
 
 mod connect;
-pub(super) use connect::Connection;
+pub(super) use connect::Connect;
 
 #[derive(Clone, Copy)]
 enum State<'h> {
@@ -300,14 +300,12 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
     pub(super) fn connection(
         &mut self,
         key: attempt::Id<'d, ID>,
-    ) -> Connection<'_, 'q, 'h, 'd, ID> {
-        let Some(dial) = self.get(key) else {
-            return Connection::Stale;
-        };
+    ) -> Option<Connect<'_, 'q, 'h, 'd, ID>> {
+        let dial = self.get(key)?;
         let State::Submitted(target) = dial.state.get() else {
-            return Connection::Stale;
+            return None;
         };
-        Connection::Pending(connect::Connect { dial, target })
+        Some(Connect { dial, target })
     }
 
     pub(super) fn recycle<O>(

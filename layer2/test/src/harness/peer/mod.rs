@@ -19,7 +19,6 @@ use scripts::{Control, Script};
 
 use crate::harness::scenario::run;
 
-mod client;
 mod connect;
 mod finish;
 mod half;
@@ -28,7 +27,7 @@ mod scripts;
 mod stream;
 pub mod udp;
 
-pub use client::Client;
+pub type Client<'scope, T, const N: usize = 1> = TcpScript<'scope, T, N>;
 pub use finish::Finish;
 pub use half::Half;
 pub use release::Release;
@@ -136,7 +135,7 @@ impl Peer {
         Script::with(
             addr,
             move |control| fixed(|| connect::open(addr, Some(control)), script),
-            |inner| run(Client::new(inner)),
+            |inner| run(TcpScript { inner }),
         )
     }
 

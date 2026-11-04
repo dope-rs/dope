@@ -22,7 +22,7 @@ use crate::common::{
     Budget, Failure,
     slots::{
         Slots,
-        inputs::{Layout, Owned, Physical},
+        inputs::{Layout, Physical},
     },
     socket::try_pair,
 };
@@ -37,9 +37,7 @@ fn close_clears_edits() {
     let first = Physical::at::<0>();
     let second = Physical::at::<1>();
     let (handle, _peer) = try_pair().expect("first socket");
-    files
-        .install(Owned::from(first), handle)
-        .expect("first owner");
+    files.install(first, handle).expect("first owner");
     let raw = files.raw(first).expect("first descriptor");
     files.try_read(first).expect("pending read delete").delete();
     files
@@ -52,9 +50,7 @@ fn close_clears_edits() {
 
     let reused = Kqueue::duplicate::<Errno>(next.as_fd()).expect("reused descriptor");
     let handle = Kqueue::adopt(reused).expect("replacement admission");
-    files
-        .install(Owned::from(second), handle)
-        .expect("replacement owner");
+    files.install(second, handle).expect("replacement owner");
     assert_eq!(files.raw(second), Some(raw));
     let key = NonZeroUsize::MIN;
     files

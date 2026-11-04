@@ -1,4 +1,4 @@
-use std::{cell::Cell, mem, pin::Pin, task};
+use std::{cell::Cell, pin::Pin, task};
 
 use dope_core::driver::schedule;
 use dope_manifold::{
@@ -11,13 +11,7 @@ use dope_runtime::executor::root;
 pub mod empty;
 
 pub struct Cancellation<'source, 'd> {
-    pub(crate) state: Stage<'source, 'd>,
-}
-
-pub enum Stage<'source, 'd> {
-    Pending(queue::Lease<'source, 'd, Tcp>),
-    Armed(queue::Lease<'source, 'd, Tcp>),
-    Done,
+    pub(crate) lease: Option<queue::Lease<'source, 'd, Tcp>>,
 }
 
 #[derive(Debug)]
@@ -27,21 +21,13 @@ impl<'d> root::Root<'d> for Cancellation<'_, 'd> {
     type Output = Result<attempt::Id<'d>, Completed>;
 
     fn poll(context: root::Context<'_, 'd, Self>) -> task::Poll<Self::Output> {
-        let (root, wake, _, _) = context.into_parts();
-        let this = root.get_mut();
-        match mem::replace(&mut this.state, Stage::Done) {
-            Stage::Pending(lease) => {
-                this.state = Stage::Armed(lease);
-                wake.wake();
-                task::Poll::Pending
-            }
-            Stage::Armed(lease) => {
-                let key = lease.id();
-                lease.cancel();
-                task::Poll::Ready(Ok(key))
-            }
-            Stage::Done => task::Poll::Ready(Err(Completed)),
-        }
+        let (root, _, _, _) = context.into_parts();
+        let Some(lease) = root.get_mut().lease.take() else {
+            return task::Poll::Ready(Err(Completed));
+        };
+        let key = lease.id();
+        lease.cancel();
+        task::Poll::Ready(Ok(key))
     }
 }
 

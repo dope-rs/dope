@@ -123,7 +123,7 @@ fn shutdown_preserves_write() {
                     server.finish().expect("shutdown peers finish");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -135,8 +135,4 @@ fn shutdown_preserves_write() {
         },
     )
     .expect("shutdown peers");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

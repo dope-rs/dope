@@ -22,10 +22,6 @@ pub unsafe trait Batch<'input> {
 
     fn len(&self) -> usize;
 
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     fn next(&mut self) -> Option<Self::Item>;
 }
 

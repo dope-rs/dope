@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    convert::Infallible,
     io::{Read as _, Write as _},
     ops::ControlFlow,
     os::unix::net::UnixStream,
@@ -15,7 +14,10 @@ use dope_core::{
     io::{Reclaimed, event::Kind},
 };
 
-use crate::common::{driver::Scoped as _, rt::Runtime};
+use crate::common::{
+    driver::Scoped as _,
+    rt::{Runtime, recover},
+};
 
 pub mod common;
 
@@ -90,8 +92,4 @@ fn reports_pending() {
         seen.get()
     });
     assert_eq!(counts[1], counts[0] + 1);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
 }

@@ -122,42 +122,6 @@ fn moves_waiter() {
 }
 
 #[test]
-fn allocates_nothing() {
-    let mut reports = Vec::new();
-
-    Setup::throughput().with_turn(
-        |turn, mut driver| {
-            let site = driver.driver_ref();
-            let target = site
-                .targets::<KeyTag<0>>()
-                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                .dispatch();
-            let ready = (site.ready().make_slot(target)).expect("ready slot");
-            let (queue, build) = Tracker::usage(|| Queue::new(site, Capacity::new(1)));
-            assert_eq!(build, (0, 0));
-            let waiter = pin!(Waiter::new());
-            let (status, hot) = Tracker::usage(|| {
-                assert!(matches!(
-                    Context::with_target(
-                        ready.target(),
-                        turn.turn().app(),
-                        driver.reborrow(),
-                        |context| queue.try_register(waiter.as_ref(), context.as_ref()),
-                    ),
-                    Ok(())
-                ));
-                queue.wake_one(turn.turn().app())
-            });
-            assert!(matches!(status, WakeStatus::Complete));
-            assert_eq!(hot, (0, 0));
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    runtime::check_reports(&reports);
-}
-
-#[test]
 fn keeps_replacement_order() {
     let mut reports = Vec::new();
 
@@ -171,7 +135,8 @@ fn keeps_replacement_order() {
             });
             let [first, second, next] =
                 keys.map(|key| site.ready().make_slot(key).expect("ready slot"));
-            let queue = Queue::new(site, Capacity::new(2));
+            let (queue, build) = Tracker::usage(|| Queue::new(site, Capacity::new(2)));
+            assert_eq!(build, (0, 0));
             let left = pin!(Waiter::new());
             let right = pin!(Waiter::new());
             let ((), hot) = Tracker::usage(|| {

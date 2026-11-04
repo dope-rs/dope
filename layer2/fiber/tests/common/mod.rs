@@ -1,6 +1,7 @@
 use dope_core::driver::life::recovery;
 use std::convert::Infallible;
 
+pub mod file;
 pub mod network;
 pub mod schedule;
 pub mod storage;

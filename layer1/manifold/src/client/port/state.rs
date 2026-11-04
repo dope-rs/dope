@@ -19,13 +19,6 @@ struct Generation(u64);
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
-enum Availability {
-    Reusable,
-    Retired,
-}
-
-#[derive(Clone, Copy)]
-#[repr(u8)]
 pub(super) enum Suspension {
     Suspended,
     Stale,
@@ -92,20 +85,13 @@ struct Publication<'d, I: identity::Identity> {
     ready: ready::Target<'d>,
 }
 
-impl<'d, I: identity::Identity> Publication<'d, I> {
-    fn activate(self, entry: &Entry<'d, I>) {
-        entry.write.set(WriteState::Open);
-        entry.state.set(State::Active(self));
-    }
-}
-
 #[derive(Clone, Copy)]
 enum State<'d, I: identity::Identity> {
-    Idle(Availability),
+    Idle,
     Active(Publication<'d, I>),
     Suspended(Publication<'d, I>),
     Publishing(I),
-    Draining { connection: I, next: Availability },
+    Draining { connection: I },
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -119,19 +105,18 @@ pub(super) struct Busy;
 #[must_use = "a draining port lane must be cleared before it becomes reusable"]
 pub(super) struct Drain<'a, 'd, I: identity::Identity> {
     entry: &'a Entry<'d, I>,
-    next: Availability,
 }
 
 impl<I: identity::Identity> Drain<'_, '_, I> {
     pub(super) fn finish(self) {
-        self.entry.state.set(State::Idle(self.next));
+        self.entry.state.set(State::Idle);
     }
 }
 
 impl<'d, I: identity::Identity> Default for Entry<'d, I> {
     fn default() -> Self {
         Self {
-            state: cell::Cell::new(State::Idle(Availability::Reusable)),
+            state: cell::Cell::new(State::Idle),
             write: cell::Cell::new(WriteState::Open),
             generation: cell::Cell::new(Generation::INITIAL),
         }
@@ -202,8 +187,7 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
         ready: ready::Target<'d>,
     ) -> Result<(), error::Open> {
         match self.state.get() {
-            State::Idle(Availability::Reusable) => {}
-            State::Idle(Availability::Retired) => return Err(error::Open::Exhausted),
+            State::Idle => {}
             State::Active(_)
             | State::Suspended(_)
             | State::Publishing(_)
@@ -211,20 +195,17 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
                 return Err(error::Open::Occupied);
             }
         }
-        if matches!(self.advance(), Availability::Retired) {
-            self.state.set(State::Idle(Availability::Retired));
-            return Err(error::Open::Exhausted);
-        }
-        Publication {
+        self.advance().ok_or(error::Open::Exhausted)?;
+        self.write.set(WriteState::Open);
+        self.state.set(State::Active(Publication {
             connection: conn,
             ready,
-        }
-        .activate(self);
+        }));
         Ok(())
     }
 
     pub(super) fn begin_retire(&self, conn: I) -> Result<Option<Drain<'_, 'd, I>>, Busy> {
-        let next = match self.state.get() {
+        match self.state.get() {
             State::Publishing(owner) if owner == conn => {
                 if self.write.get().is_open() {
                     self.write.set(WriteState::Sealed);
@@ -233,26 +214,19 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
             }
             State::Active(live) | State::Suspended(live) if live.connection == conn => {
                 self.write.set(WriteState::Sealed);
-                let next = self.advance();
-                self.state.set(State::Draining {
-                    connection: conn,
-                    next,
-                });
-                next
+                let _ = self.advance();
+                self.state.set(State::Draining { connection: conn });
             }
-            State::Draining {
-                connection: owner,
-                next,
-            } if owner == conn => next,
-            State::Idle(_)
+            State::Draining { connection: owner } if owner == conn => {}
+            State::Idle
             | State::Active(_)
             | State::Suspended(_)
             | State::Publishing(_)
             | State::Draining { .. } => {
                 return Ok(None);
             }
-        };
-        Ok(Some(Drain { entry: self, next }))
+        }
+        Ok(Some(Drain { entry: self }))
     }
 
     /// Seals writers and restores Active, invalidating the suspended loan.
@@ -269,16 +243,14 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
             }
             State::Suspended(live) if live.connection == conn => {
                 self.write.set(self.write.get().close(reason));
-                self.advance();
+                let _ = self.advance();
                 self.state.set(State::Active(live));
                 live.ready.wake();
             }
-            State::Draining {
-                connection: live, ..
-            } if live == conn => {
+            State::Draining { connection: live } if live == conn => {
                 self.write.set(self.write.get().close(reason));
             }
-            State::Idle(_)
+            State::Idle
             | State::Active(_)
             | State::Suspended(_)
             | State::Publishing(_)
@@ -346,12 +318,10 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
         }
     }
 
-    fn advance(&self) -> Availability {
-        let Some(next) = self.generation.get().next() else {
-            return Availability::Retired;
-        };
+    fn advance(&self) -> Option<()> {
+        let next = self.generation.get().next()?;
         self.generation.set(next);
-        Availability::Reusable
+        Some(())
     }
 }
 
@@ -366,7 +336,6 @@ impl Generation {
     }
 }
 
-const _: () = assert!(mem::size_of::<Availability>() == mem::size_of::<bool>());
 const _: () = assert!(mem::size_of::<Suspension>() == mem::size_of::<bool>());
 const _: () = assert!(mem::size_of::<Signal>() == mem::size_of::<bool>());
 const _: () = assert!(

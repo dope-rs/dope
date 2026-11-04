@@ -1,10 +1,7 @@
-use std::convert::Infallible;
-
 use dope_core::driver::{
-    life::{creation, recovery},
+    life::recovery,
     route::{Identity, KeyTag},
 };
-use dope_test::scope::Error;
 
 use crate::common::contract::Scope;
 pub mod common;
@@ -12,69 +9,29 @@ pub mod common;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use dope_core::driver::{Context, life::domain, route::lease, schedule::Progress};
+use dope_core::driver::{Context, route::lease, schedule::Progress};
 use dope_test::alloc::Tracker;
 
-use crate::common::rt::Runtime;
+use crate::common::rt::{Runtime, finish, recover};
 
 #[test]
-fn quiesced_restarts() {
+fn repeated_quiescence_preserves_config_without_allocating() {
     let config = Runtime::quic::<2, 8>().config();
     let receive = config.receive();
-    let mut creation = creation::Attempt::new();
-    let result = creation.try_driver(config);
-    let driver = result
-        .map_err(|error| error.kind())
-        .expect("driver creation");
     let mut events = Vec::new();
 
-    assert!(
-        domain::Domain::new(driver)
-            .start()
-            .expect("fresh generation")
-            .enter_with(
-                (),
-                |mut scope, _, _| {
-                    scope.quiesce();
-                    scope.quiesce();
-                    assert!((scope.context().receive()) == (receive));
-                    scope.quiesce();
-                },
-                recovery::Policy::new(|event| events.push(event), recover)
-            )
-            .is_ok()
-    );
-    assert!(
-        events.is_empty(),
-        "unexpected reclaimed operations: {events:?}"
-    );
-}
-
-#[test]
-fn quiescence_alloc() {
-    let mut creation = creation::Attempt::new();
-    let result = creation.try_driver(Runtime::quic::<2, 8>().config());
-    let driver = result
-        .map_err(|error| error.kind())
-        .expect("driver creation");
-    let mut events = Vec::new();
-
-    assert!(
-        domain::Domain::new(driver)
-            .start()
-            .expect("fresh generation")
-            .enter_with(
-                (),
-                |mut scope, _, _| {
-                    scope.quiesce();
-                    let (_, alloc) = Tracker::usage(|| {
-                        scope.quiesce();
-                    });
-                    assert_eq!(alloc, (0, 0));
-                },
-                recovery::Policy::new(|event| events.push(event), recover)
-            )
-            .is_ok()
+    Runtime { config }.with_scope(
+        |scope| {
+            scope.quiesce();
+            let ((), alloc) = Tracker::usage(|| {
+                scope.quiesce();
+                assert!(scope.context().receive() == receive);
+                scope.quiesce();
+            });
+            assert_eq!(alloc, (0, 0));
+        },
+        recovery::Policy::new(|event| events.push(event), recover),
+        finish,
     );
     assert!(
         events.is_empty(),
@@ -241,15 +198,4 @@ fn retains_dropping_value() {
         events.is_empty(),
         "unexpected reclaimed operations: {events:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

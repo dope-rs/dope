@@ -16,7 +16,7 @@ use dope_sys::table::{
 use crate::common::{
     slots::{
         Slots,
-        inputs::{Layout, Missing, Owned, Physical},
+        inputs::{Layout, Missing, Physical},
     },
     socket::{try_exchange, try_pair},
 };
@@ -30,7 +30,7 @@ fn owns_successful_install() {
     let slot = Physical::at::<1>();
     let (handle, mut peer) = try_pair().expect("socket pair");
     let raw = handle.as_fd().as_raw_fd();
-    assert!(files.install(Owned::from(slot), handle).is_ok());
+    assert!(files.install(slot, handle).is_ok());
     assert_eq!(files.raw(slot), Some(raw));
     assert_eq!(
         try_exchange(&files, slot, &mut peer).expect("connected peer"),
@@ -57,39 +57,28 @@ fn rejects_replacement() {
     {
         let mut files = Files::try_new(Layout).expect("file table must allocate");
         let raw = first.as_fd().as_raw_fd();
-        assert!(files.install(Owned::from(slot), first).is_ok());
-
-        let (second, mut rejected) = try_pair().expect("socket pair");
-        assert!(matches!(files.install(Owned::from(slot), second),
-            Err(table::Install::Occupied(index)) if index == slot.index()));
-        assert_eq!(
-            rejected
-                .read(&mut [0])
-                .expect("closed owner must deliver EOF"),
-            0
-        );
-        assert_eq!(files.raw(slot), Some(raw));
-        assert_eq!(
-            try_exchange(&files, slot, &mut peer).expect("connected peer"),
-            *b"x"
-        );
+        assert!(files.install(slot, first).is_ok());
 
         let outside = Physical::at::<2>();
-        let (third, mut rejected) = try_pair().expect("socket pair");
-        assert!(matches!(files.install(Owned::from(outside), third),
-            Err(table::Install::Index(index)) if index == outside.index()));
-        assert_eq!(
-            rejected
-                .read(&mut [0])
-                .expect("closed owner must deliver EOF"),
-            0
-        );
-        assert_eq!(files.raw(outside), None);
-        assert_eq!(files.raw(slot), Some(raw));
-        assert_eq!(
-            try_exchange(&files, slot, &mut peer).expect("connected peer"),
-            *b"x"
-        );
+        for (target, error) in [
+            (slot, table::Install::Occupied(slot.index())),
+            (outside, table::Install::Index(outside.index())),
+        ] {
+            let (handle, mut rejected) = try_pair().expect("socket pair");
+            assert_eq!(files.install(target, handle), Err(error));
+            assert_eq!(
+                rejected
+                    .read(&mut [0])
+                    .expect("closed owner must deliver EOF"),
+                0
+            );
+            assert_eq!(files.raw(outside), None);
+            assert_eq!(files.raw(slot), Some(raw));
+            assert_eq!(
+                try_exchange(&files, slot, &mut peer).expect("connected peer"),
+                *b"x"
+            );
+        }
     }
     assert_eq!(
         peer.read(&mut [0]).expect("closed owner must deliver EOF"),
@@ -99,20 +88,29 @@ fn rejects_replacement() {
 
 #[test]
 fn keeps_accepted_prefix() {
-    let mut spare = {
+    for install in [false, true] {
         let mut files = Files::try_new(Layout).expect("file table must allocate");
+        let slot = Physical::at::<0>();
         let (first, mut peer) = try_pair().expect("socket pair");
-        let accepted = files
-            .establish(first)
-            .expect("accepted prefix must have one free row");
-        assert_eq!(accepted.physical(), Physical::at::<0>());
+        if install {
+            files.install(slot, first).expect("prefix owner");
+        } else {
+            let accepted = files
+                .establish(first)
+                .expect("accepted prefix must have one free row");
+            assert_eq!(accepted.physical(), slot);
+        }
 
         let (second, mut spare) = try_pair().expect("socket pair");
         let second = files
             .establish(second)
             .expect_err("outbound rows must stay reserved");
         assert_eq!(files.raw(Physical::at::<1>()), None);
-        assert_eq!(files.close(accepted.physical()), File::Closed(Ok(())));
+        assert_eq!(
+            try_exchange(&files, slot, &mut peer).expect("connected peer"),
+            *b"x"
+        );
+        assert_eq!(files.close(slot), File::Closed(Ok(())));
         assert_eq!(
             peer.read(&mut [0]).expect("closed owner must deliver EOF"),
             0
@@ -120,17 +118,17 @@ fn keeps_accepted_prefix() {
         let accepted = files
             .establish(second)
             .expect("closing the accepted row must free it");
-        assert_eq!(accepted.physical(), Physical::at::<0>());
+        assert_eq!(accepted.physical(), slot);
         assert_eq!(
             try_exchange(&files, accepted.physical(), &mut spare).expect("connected peer"),
             *b"x"
         );
-        spare
-    };
-    assert_eq!(
-        spare.read(&mut [0]).expect("closed owner must deliver EOF"),
-        0
-    );
+        drop(files);
+        assert_eq!(
+            spare.read(&mut [0]).expect("closed owner must deliver EOF"),
+            0
+        );
+    }
 }
 
 #[test]
@@ -139,9 +137,7 @@ fn rejects_stale_identity() {
     let slot = Physical::at::<1>();
     let (first, mut peer) = try_pair().expect("socket pair");
     let expected = first.as_fd().as_raw_fd();
-    files
-        .install(Owned::from(slot), first)
-        .expect("first socket");
+    files.install(slot, first).expect("first socket");
     let id = files.try_read(slot).expect("registered identity").id();
     assert_eq!(
         files
@@ -166,9 +162,7 @@ fn rejects_stale_identity() {
             index: slot.index()
         }
     );
-    files
-        .install(Owned::from(slot), second)
-        .expect("replacement socket");
+    files.install(slot, second).expect("replacement socket");
     assert_eq!(
         files.try_socket(id).expect_err("replaced identity"),
         Missing::Replaced {
@@ -194,13 +188,9 @@ fn commits_staged_changes() {
     let first = Physical::at::<0>();
     let second = Physical::at::<1>();
     let (handle, mut peer) = try_pair().expect("socket pair");
-    files
-        .install(Owned::from(first), handle)
-        .expect("first owner");
+    files.install(first, handle).expect("first owner");
     let (handle, mut next) = try_pair().expect("socket pair");
-    files
-        .install(Owned::from(second), handle)
-        .expect("second owner");
+    files.install(second, handle).expect("second owner");
     for slot in [first, second] {
         files
             .try_read(slot)
@@ -227,7 +217,7 @@ fn commits_staged_changes() {
     let tail = files.edit().tail(1);
     assert_eq!({ tail.as_slice()[0].ident }, next_fd);
     assert_eq!({ tail.as_slice()[0].filter }, libc::EVFILT_READ);
-    tail.retry();
+    drop(tail);
     assert_eq!(files.changes().len(), 2);
     let tail = files.edit().tail(2);
     assert!(
@@ -249,38 +239,13 @@ fn commits_staged_changes() {
 }
 
 #[test]
-fn keeps_prefix_occupied() {
-    let mut files = Files::try_new(Layout).expect("file table");
-    let first = Physical::at::<0>();
-    let (handle, mut peer) = try_pair().expect("socket pair");
-    files
-        .install(Owned::from(first), handle)
-        .expect("prefix owner");
-    let (handle, mut next) = try_pair().expect("socket pair");
-    let handle = files
-        .establish(handle)
-        .expect_err("installed prefix is occupied");
-    assert_eq!(
-        try_exchange(&files, first, &mut peer).expect("connected peer"),
-        *b"x"
-    );
-    assert_eq!(files.close(first), File::Closed(Ok(())));
-    let accepted = files.establish(handle).expect("closed prefix becomes free");
-    assert_eq!(accepted.physical(), first);
-    assert_eq!(
-        try_exchange(&files, first, &mut next).expect("connected peer"),
-        *b"x"
-    );
-}
-
-#[test]
 fn counts_pending_changes() {
     use change::{Delete as _, Filter, Write as _};
 
     let mut files = Files::try_new(Layout).expect("file table");
     let slot = Physical::at::<1>();
     let (handle, mut peer) = try_pair().expect("socket pair");
-    files.install(Owned::from(slot), handle).expect("owner");
+    files.install(slot, handle).expect("owner");
     let id = files.try_read(slot).expect("read identity").id();
     for _ in 0..2 {
         files
@@ -302,9 +267,9 @@ fn counts_pending_changes() {
         );
     }
     let tail = files.edit().tail(usize::MAX);
-    assert_eq!(tail.len(), 1);
+    assert_eq!(tail.as_slice().len(), 1);
     assert_eq!({ tail.as_slice()[0].flags }, libc::EV_ADD);
-    tail.retry();
+    drop(tail);
     files.try_read(slot).expect("read").discard();
     assert!(files.changes().is_empty());
 
@@ -315,15 +280,15 @@ fn counts_pending_changes() {
     assert_eq!(files.changes().len(), 2);
     {
         let tail = files.edit().tail(1);
-        assert_eq!(tail.len(), 1);
+        assert_eq!(tail.as_slice().len(), 1);
     }
     assert_eq!(files.changes().len(), 2);
     files.edit().tail(0).commit();
     assert_eq!(files.changes().len(), 2);
-    files.edit().tail(1).retry();
+    drop(files.edit().tail(1));
     assert_eq!(files.changes().len(), 2);
     let tail = files.edit().tail(usize::MAX);
-    assert_eq!(tail.len(), 2);
+    assert_eq!(tail.as_slice().len(), 2);
     assert_eq!({ tail.as_slice()[0].filter }, libc::EVFILT_WRITE);
     assert_eq!({ tail.as_slice()[1].filter }, libc::EVFILT_READ);
     tail.commit();
@@ -352,7 +317,7 @@ fn rejects_plan_reuse() {
     ));
     let tail = files.edit().tail(1);
     assert_eq!({ tail.as_slice()[0].flags }, libc::EV_ADD);
-    tail.retry();
+    drop(tail);
     files
         .edit()
         .try_delete(iter::empty())
@@ -377,7 +342,7 @@ fn forgets_plan_reuse() {
         .write(id)
         .expect("represented cell")
         .arm(libc::EV_ADD, NonZeroUsize::MIN);
-    files.edit().tail(1).retry();
+    drop(files.edit().tail(1));
     files
         .edit()
         .try_delete(iter::empty())

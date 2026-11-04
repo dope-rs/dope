@@ -68,6 +68,11 @@ pub(super) fn try_deliver<'q, 'd, C: entry::Socket<'q, 'd, B>, B>(
                 try_bound::<C, B, C::Write, _>(bound, result, |result| State::Write { result })?;
             C::written(bound, result)
         }
+        State::Read { result } => {
+            let (bound, result) =
+                try_bound::<C, B, C::Read, _>(bound, result, |result| State::Read { result })?;
+            C::read(bound, result)
+        }
         State::Sync { result } => {
             let (bound, result) =
                 try_bound::<C, B, C::Sync, _>(bound, result, |result| State::Sync { result })?;

@@ -1,14 +1,6 @@
-use std::convert::Infallible;
-
 use dope_test::harness::scenario::TIMEOUT;
 use engine::{
-    core::{
-        driver::life::{
-            creation::Attempt,
-            recovery::{Policy, Recovery},
-        },
-        io::Reclaimed,
-    },
+    core::driver::life::{creation::Attempt, recovery::Policy},
     runtime::executor::session::Completion,
 };
 
@@ -53,7 +45,7 @@ fn repeated_awaits() {
                 );
                 assert!(result.is_ok(), "application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -90,7 +82,7 @@ fn impl_lifetime() {
                 );
                 assert!(result.is_ok(), "application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -113,14 +105,3 @@ async fn wait_repeated<'d>() -> usize {
 }
 
 fn assert_output<'d>(_: &impl abi::Fiber<'d, Output = usize>) {}
-
-fn shutdown(event: Reclaimed) {
-    assert!(
-        matches!(event, Reclaimed::Shutdown),
-        "unexpected operation: {event:?}"
-    );
-}
-
-fn recover(failure: Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}

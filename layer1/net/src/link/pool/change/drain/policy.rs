@@ -238,7 +238,7 @@ where
         D: demand::Mode,
         F: FnMut(B, &mut region::Token<region::Identity<'d, 1>>),
     {
-        quiesce::Plan::new(&mut pool.prepared).run(finish, free);
+        pool.prepared.run(finish, free);
     }
 
     fn finish_keyed<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, F>(
@@ -253,6 +253,6 @@ where
         D: demand::Mode,
         F: FnMut(pool::Key<'d, ID>, B),
     {
-        quiesce::Plan::new(&mut pool.prepared).keyed(finish, free);
+        pool.prepared.keyed(finish, free);
     }
 }

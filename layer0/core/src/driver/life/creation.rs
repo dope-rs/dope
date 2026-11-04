@@ -59,7 +59,7 @@ impl Attempt {
             Err(error) => {
                 return Err(failure.insert(result::CreateError::kernel(
                     result::IoOperation::Entropy,
-                    create::Kernel::from(error).0,
+                    create::Kernel::from(error),
                 )));
             }
         };

@@ -11,7 +11,6 @@ use crate::link::egress::{
 pub(in crate::link::egress) mod store;
 mod vacant;
 
-pub(in crate::link::egress::metadata) use vacant::Prepared;
 pub(in crate::link::egress) use vacant::{Bound, Vacant};
 
 pub(in crate::link::egress) struct Pool<

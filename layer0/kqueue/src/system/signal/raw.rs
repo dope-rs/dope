@@ -1,6 +1,6 @@
 use std::{mem, os::fd, ptr};
 
-use dope_sys::{Errno, kernel, thread::signal};
+use dope_sys::{Errno, io::reactor, kernel, thread::signal};
 
 use crate::{
     Kqueue,
@@ -72,7 +72,10 @@ impl signal::raw::Receiver for Receiver {
     type Source<'a> = Source<'a>;
 
     unsafe fn try_new() -> Result<Self, Acquire> {
-        let queue = Queue::new().map_err(Acquire::Kqueue)?;
+        let queue = Queue::new().map_err(|error| match error {
+            reactor::Create::Open(error) => Acquire::QueueOpen(error),
+            reactor::Create::Cloexec(error) => Acquire::QueueCloexec(error),
+        })?;
         Self::register(&queue)?;
         let previous = Self::ignore()?;
         Ok(Self(queue, previous))

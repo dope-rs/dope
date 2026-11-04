@@ -3,7 +3,6 @@ use core::{pin::Pin, task::Poll};
 use crate::{
     abi,
     context::{self, PollCall, PollResult},
-    task::storage::slots::{self, Action},
 };
 
 /// Owns a fiber until completion, then releases it and remains terminal.
@@ -12,14 +11,12 @@ use crate::{
 #[must_use = "a task does nothing unless it is driven"]
 pub struct Task<F> {
     #[pin]
-    state: slots::raw::Entry<F, ()>,
+    state: Option<F>,
 }
 
 impl<F> Task<F> {
     pub const fn new(fiber: F) -> Self {
-        Self {
-            state: slots::raw::Entry::live(fiber),
-        }
+        Self { state: Some(fiber) }
     }
     pub(crate) fn poll_with<'d>(
         self: Pin<&mut Self>,
@@ -28,16 +25,15 @@ impl<F> Task<F> {
     where
         F: abi::Fiber<'d>,
     {
-        match self
-            .project()
-            .state
-            .visit((), |fiber, ()| match poll(fiber) {
-                result @ PollResult::Polled(Poll::Ready(_)) => Action::Vacate(result),
-                result => Action::Keep(result),
-            }) {
-            slots::Phase::Live(result) => result,
-            slots::Phase::Vacant(()) | slots::Phase::Done(()) => PollResult::Polled(Poll::Pending),
+        let mut state = self.project().state;
+        let Some(fiber) = state.as_mut().as_pin_mut() else {
+            return PollResult::Polled(Poll::Pending);
+        };
+        let result = poll(fiber);
+        if matches!(result, PollResult::Polled(Poll::Ready(_))) {
+            state.set(None);
         }
+        result
     }
 }
 

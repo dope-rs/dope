@@ -272,7 +272,7 @@ impl<C: ring::Context> Close for Engine<C> {
         let Self { ring, tuning } = self;
         match ring.try_close() {
             Ok(()) => Ok(()),
-            Err(ring) => Err(Closing::new(ring, tuning)),
+            Err(ring) => Err(Closing::<C>::new(ring, tuning)),
         }
     }
 }

@@ -20,6 +20,17 @@ pub struct Runtime {
     pub config: settings::Config,
 }
 
+pub fn finish(result: Result<(), Error<'_, ()>>) {
+    result
+        .as_ref()
+        .map_err(Error::cause)
+        .expect("driver lifecycle");
+}
+
+pub fn recover(failure: recovery::Recovery<'_, '_>) -> std::convert::Infallible {
+    panic!("native retirement: {:?}", failure.cause())
+}
+
 impl Runtime {
     pub fn with_scope(
         self,

@@ -8,6 +8,7 @@ use dope_core::{
 use crate::network::datagram::{
     self,
     hook::{self, Disabled, Enabled, Endpoint, Transit, app, ingress},
+    send,
     socket::priority,
 };
 
@@ -29,6 +30,20 @@ where
     ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>>;
 }
 
+trait Transfer<'d, ID: Identity, H> {
+    fn transferred(handler: pin::Pin<&mut H>, transfer: send::Transfer<'d, ID>);
+}
+
+impl<'d, ID: Identity, H> Transfer<'d, ID, H> for Disabled {
+    fn transferred(_: pin::Pin<&mut H>, _: send::Transfer<'d, ID>) {}
+}
+
+impl<'d, ID: Identity, H: datagram::Transfer<'d, ID>> Transfer<'d, ID, H> for Enabled {
+    fn transferred(handler: pin::Pin<&mut H>, transfer: send::Transfer<'d, ID>) {
+        handler.transferred(transfer);
+    }
+}
+
 impl<'d, ID: Identity, H> Drive<'d, ID, H, Disabled> for Disabled
 where
     H: datagram::Ingress<'d, ID>,
@@ -47,7 +62,6 @@ where
                 .as_mut()
                 .project()
                 .sender
-                .retire()
                 .drain(turn.reborrow().maint(), drop);
         }
         let result = priority::run(
@@ -62,10 +76,10 @@ where
     }
 }
 
-impl<'d, ID: Identity, H> hook::raw::Drive<'d, ID, H, hook::Disabled>
-    for app::Schedule<hook::Disabled>
+impl<'d, ID: Identity, H, T> hook::raw::Drive<'d, ID, H, hook::Disabled> for app::Schedule<T>
 where
     H: datagram::Ingress<'d, ID> + datagram::Application<'d, ID>,
+    T: Transfer<'d, ID, H>,
 {
     const COORDS: usize = 0;
 
@@ -82,7 +96,6 @@ where
                 .as_mut()
                 .project()
                 .sender
-                .retire()
                 .drain(turn.reborrow().maint(), drop);
         }
         let result = priority::run(
@@ -91,16 +104,16 @@ where
             turn.app(),
             driver,
             |handler, socket, work, driver| handler.pre_park(socket, now, work, driver),
-            |_, _| {},
+            T::transferred,
         );
         submitted(endpoint, result, driver)
     }
 }
 
-impl<'d, ID: Identity, H> hook::raw::Drive<'d, ID, H, hook::Enabled>
-    for app::Schedule<hook::Disabled>
+impl<'d, ID: Identity, H, T> hook::raw::Drive<'d, ID, H, hook::Enabled> for app::Schedule<T>
 where
     H: datagram::Settlement<'d, ID> + datagram::Application<'d, ID>,
+    T: Transfer<'d, ID, H>,
 {
     const COORDS: usize = 0;
 
@@ -113,7 +126,7 @@ where
         let mut socket = this.socket;
         let now = driver.driver_ref().clock().now();
         if !socket.as_ref().get_ref().sender.is_accepting() {
-            socket.as_mut().project().sender.retire().drain_event(
+            socket.as_mut().project().sender.drain_event(
                 driver.state_token(),
                 turn.reborrow().maint(),
                 now,
@@ -126,85 +139,16 @@ where
             turn.app(),
             driver,
             |handler, socket, work, driver| handler.pre_park(socket, now, work, driver),
-            |_, _| {},
+            T::transferred,
         );
         submitted(endpoint, result, driver)
     }
 }
 
-impl<'d, ID: Identity, H> hook::raw::Drive<'d, ID, H, hook::Disabled>
-    for app::Schedule<hook::Enabled>
-where
-    H: datagram::Ingress<'d, ID> + datagram::Application<'d, ID> + datagram::Transfer<'d, ID>,
-{
-    const COORDS: usize = 0;
-
-    unsafe fn pre_park<'a, 'turn>(
-        mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
-        let this = endpoint.as_mut().project();
-        let mut socket = this.socket;
-        let now = driver.driver_ref().clock().now();
-        if !socket.as_ref().get_ref().sender.is_accepting() {
-            socket
-                .as_mut()
-                .project()
-                .sender
-                .retire()
-                .drain(turn.reborrow().maint(), drop);
-        }
-        let result = priority::run(
-            socket,
-            this.handler,
-            turn.app(),
-            driver,
-            |handler, socket, work, driver| handler.pre_park(socket, now, work, driver),
-            H::transferred,
-        );
-        submitted(endpoint, result, driver)
-    }
-}
-
-impl<'d, ID: Identity, H> hook::raw::Drive<'d, ID, H, hook::Enabled>
-    for app::Schedule<hook::Enabled>
-where
-    H: datagram::Settlement<'d, ID> + datagram::Application<'d, ID> + datagram::Transfer<'d, ID>,
-{
-    const COORDS: usize = 0;
-
-    unsafe fn pre_park<'a, 'turn>(
-        mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
-        let mut this = endpoint.as_mut().project();
-        let mut socket = this.socket;
-        let now = driver.driver_ref().clock().now();
-        if !socket.as_ref().get_ref().sender.is_accepting() {
-            socket.as_mut().project().sender.retire().drain_event(
-                driver.state_token(),
-                turn.reborrow().maint(),
-                now,
-                this.handler.as_mut(),
-            );
-        }
-        let result = priority::run(
-            socket,
-            this.handler,
-            turn.app(),
-            driver,
-            |handler, socket, work, driver| handler.pre_park(socket, now, work, driver),
-            H::transferred,
-        );
-        submitted(endpoint, result, driver)
-    }
-}
-
-impl<'d, ID: Identity, H> hook::raw::Drive<'d, ID, H, Enabled> for Transit<Disabled>
+impl<'d, ID: Identity, H, T> hook::raw::Drive<'d, ID, H, Enabled> for Transit<T>
 where
     H: datagram::Settlement<'d, ID> + datagram::Transport<'d, ID>,
+    T: Transfer<'d, ID, H>,
 {
     const COORDS: usize = 0;
 
@@ -217,7 +161,7 @@ where
         let mut socket = this.socket;
         let now = driver.driver_ref().clock().now();
         if !socket.as_ref().get_ref().sender.is_accepting() {
-            socket.as_mut().project().sender.retire().drain_event(
+            socket.as_mut().project().sender.drain_event(
                 driver.state_token(),
                 turn.reborrow().maint(),
                 now,
@@ -232,43 +176,7 @@ where
             |handler, socket, work, driver| {
                 handler.pre_park(socket, now, work, driver.state_token());
             },
-            |_, _| {},
-        );
-        submitted(endpoint, result, driver)
-    }
-}
-
-impl<'d, ID: Identity, H> hook::raw::Drive<'d, ID, H, Enabled> for Transit<Enabled>
-where
-    H: datagram::Settlement<'d, ID> + datagram::Transport<'d, ID> + datagram::Transfer<'d, ID>,
-{
-    const COORDS: usize = 0;
-
-    unsafe fn pre_park<'a, 'turn>(
-        mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
-        let mut this = endpoint.as_mut().project();
-        let mut socket = this.socket;
-        let now = driver.driver_ref().clock().now();
-        if !socket.as_ref().get_ref().sender.is_accepting() {
-            socket.as_mut().project().sender.retire().drain_event(
-                driver.state_token(),
-                turn.reborrow().maint(),
-                now,
-                this.handler.as_mut(),
-            );
-        }
-        let result = priority::run(
-            socket,
-            this.handler,
-            turn.app(),
-            driver,
-            |handler, socket, work, driver| {
-                handler.pre_park(socket, now, work, driver.state_token());
-            },
-            H::transferred,
+            T::transferred,
         );
         submitted(endpoint, result, driver)
     }

@@ -66,17 +66,6 @@ where
         &mut self,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> task::Poll<(clock::Moment<'d>, ready::Target<'d>)> {
-        if !self
-            .machine
-            .as_ref()
-            .project_ref()
-            .links
-            .liveness()
-            .deadlines
-            .is_armed()
-        {
-            return task::Poll::Pending;
-        }
         let now = driver.driver_ref().clock().now();
         let target = self.machine.as_ref().backoff();
         let wake = wake::Waker::from(target);

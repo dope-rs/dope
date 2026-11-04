@@ -11,15 +11,12 @@ use std::time::Duration;
 
 use dope::{
     manifold::client::conn,
-    net::{
-        tcp::Tcp,
-        wire::{Identity, Spec, failure, receive},
-    },
+    net::wire::{Spec, failure, receive},
     runtime::executor::{self, drive, session},
 };
 use dope_fiber::{
     BlockOn as _,
-    net::{Io, client::Machine, read::Lease},
+    net::{Io, read::Lease},
 };
 use dope_test::harness::peer;
 use o3::{
@@ -29,35 +26,22 @@ use o3::{
 
 pub const MAX_CONN: usize = 8;
 
-pub trait Collect {
-    fn try_into_vec(self) -> Result<Vec<u8>, consume::Error>;
-}
-
-impl<'w, 'd: 'w, W: Spec + 'w> Collect for Lease<'_, 'w, 'd, W>
+pub fn try_into_vec<'w, 'd: 'w, W: Spec + 'w>(
+    mut lease: Lease<'_, 'w, 'd, W>,
+) -> Result<Vec<u8>, consume::Error>
 where
     <W::Receive as receive::Policy<W>>::Cursor<'w, 'd>: buffer::Cursor + consume::Consume,
 {
-    fn try_into_vec(mut self) -> Result<Vec<u8>, consume::Error> {
-        use dope::core::io::transfer::Length;
+    use dope::core::io::transfer::Length;
 
-        let mut bytes = Vec::with_capacity(Length::len(&*self).into_raw());
-        while !self.is_empty() {
-            let chunk = self.as_ref();
-            let amount = chunk.len();
-            bytes.extend_from_slice(chunk);
-            self.try_consume(amount)?;
-        }
-        Ok(bytes)
+    let mut bytes = Vec::with_capacity(Length::len(&*lease).into_raw());
+    while !lease.is_empty() {
+        let chunk = lease.as_ref();
+        let amount = chunk.len();
+        bytes.extend_from_slice(chunk);
+        lease.try_consume(amount)?;
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-pub struct App<'p, 'scope, 'd> {
-    #[pin]
-    #[manifold]
-    pub(crate) connector: Machine<'p, 'scope, 'd, 'd, KeyTag<0>, Tcp, Identity>,
+    Ok(bytes)
 }
 
 pub fn try_reply(
@@ -86,45 +70,30 @@ pub enum Exchange<'d, W: Spec + 'd> {
     Consume(consume::Error),
 }
 
-pub trait Ping<'d> {
-    fn try_ping<'scope, W>(
-        &mut self,
-        io: Io<'scope, 'd, 'd, W, conn::Id<'d, KeyTag<0>>>,
-    ) -> Result<Result<Vec<u8>, Exchange<'d, W>>, drive::Error>
-    where
-        'd: 'scope,
-        W: Spec<TerminalFailure = failure::Never> + 'd,
-        <W::Receive as receive::Policy<W>>::Cursor<'d, 'd>: buffer::Cursor + consume::Consume;
-}
-
-impl<'app, 'life: 'app, 'd: 'life, D: executor::raw::App<'d>> Ping<'d>
-    for session::App<'app, 'life, 'd, D>
+pub fn try_ping<'scope, 'app, 'life: 'app, 'd: 'life + 'scope, D, W>(
+    app: &mut session::App<'app, 'life, 'd, D>,
+    mut io: Io<'scope, 'd, 'd, W, conn::Id<'d, KeyTag<0>>>,
+) -> Result<Result<Vec<u8>, Exchange<'d, W>>, drive::Error>
+where
+    D: executor::raw::App<'d>,
+    W: Spec<TerminalFailure = failure::Never> + 'd,
+    <W::Receive as receive::Policy<W>>::Cursor<'d, 'd>: buffer::Cursor + consume::Consume,
 {
-    fn try_ping<'scope, W>(
-        &mut self,
-        mut io: Io<'scope, 'd, 'd, W, conn::Id<'d, KeyTag<0>>>,
-    ) -> Result<Result<Vec<u8>, Exchange<'d, W>>, drive::Error>
-    where
-        'd: 'scope,
-        W: Spec<TerminalFailure = failure::Never> + 'd,
-        <W::Receive as receive::Policy<W>>::Cursor<'d, 'd>: buffer::Cursor + consume::Consume,
-    {
-        let sent = self.block_on(io.write_all(b"ping"))?;
-        if let Err(error) = sent {
-            return Ok(Err(Exchange::Write(error)));
-        }
-        let mut got = Vec::new();
-        loop {
-            let received = self.block_on(io.read())?;
-            match received {
-                Ok(Some(lease)) => match lease.try_into_vec() {
-                    Ok(bytes) => got.extend_from_slice(&bytes),
-                    Err(error) => return Ok(Err(Exchange::Consume(error))),
-                },
-                Ok(None) => break,
-                Err(error) => return Ok(Err(Exchange::Read(error))),
-            }
-        }
-        Ok(Ok(got))
+    let sent = app.block_on(io.write_all(b"ping"))?;
+    if let Err(error) = sent {
+        return Ok(Err(Exchange::Write(error)));
     }
+    let mut got = Vec::new();
+    loop {
+        let received = app.block_on(io.read())?;
+        match received {
+            Ok(Some(lease)) => match try_into_vec(lease) {
+                Ok(bytes) => got.extend_from_slice(&bytes),
+                Err(error) => return Ok(Err(Exchange::Consume(error))),
+            },
+            Ok(None) => break,
+            Err(error) => return Ok(Err(Exchange::Read(error))),
+        }
+    }
+    Ok(Ok(got))
 }

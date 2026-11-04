@@ -170,7 +170,7 @@ fn rejects_large_timeout() {
             Some(time::Duration::MAX),
             &mut budget,
         ),
-        Err(Failure::Timeout(timeout)) if timeout == time::Duration::MAX
+        Err(Failure::Ready(ready::Cause::Timeout(timeout))) if timeout == time::Duration::MAX
     ));
     assert_eq!(queue.check(), Ok(()));
 }

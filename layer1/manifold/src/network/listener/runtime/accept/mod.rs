@@ -1,4 +1,4 @@
-use std::{mem, net, pin};
+use std::{net, pin};
 
 use dope_core::{
     Backend,
@@ -59,22 +59,6 @@ enum Rejection<E> {
     Application(E),
 }
 
-pub(in crate::network::listener) enum Prepare {
-    Capacity(capacity::Error),
-    Allocation(alloc::Error),
-}
-
-impl Prepare {
-    pub(in crate::network::listener) fn into_error(self) -> creation::Error {
-        match self {
-            Self::Capacity(cause) => {
-                creation::Error::Config(crate::ConfigError::ListenerPeerCapacity(cause))
-            }
-            Self::Allocation(cause) => creation::Error::Allocation(cause),
-        }
-    }
-}
-
 const MAX_ONESHOT_LANES: usize = {
     let native = <Backend as Source>::MAX_IN_FLIGHT.get();
     if native < schedule::LIMIT {
@@ -85,12 +69,7 @@ const MAX_ONESHOT_LANES: usize = {
 };
 // Bound persistent exhaustion to 100 retry batches per second without a timer slot.
 const RETRY_DELAY: Positive = Positive::from_millis::<10>();
-const _: () = {
-    assert!(MAX_ONESHOT_LANES <= u16::MAX as usize);
-    assert!(mem::size_of::<Prepare>() == 2 * mem::size_of::<usize>());
-    assert!(mem::align_of::<Prepare>() == mem::align_of::<usize>());
-    assert!(!mem::needs_drop::<Prepare>());
-};
+const _: () = assert!(MAX_ONESHOT_LANES <= u16::MAX as usize);
 #[pin_project::pin_project(!Unpin)]
 pub(in crate::network::listener) struct Accept<
     'd,
@@ -109,35 +88,32 @@ pub(in crate::network::listener) struct Accept<
 }
 
 pub(in crate::network::listener) struct Prepared<'d, ID: Identity> {
-    capacity: table::Capacity,
+    capacity: Capacity,
     quota: Quota<'d, ID>,
 }
 
 impl<'d, ID: Identity> Prepared<'d, ID> {
     pub(in crate::network::listener) fn try_new(
-        capacity: table::Capacity,
+        capacity: Capacity,
         policy: PerIp,
         hash: random::HashState<'d>,
-    ) -> Result<Self, Prepare> {
+    ) -> Result<Self, creation::Error> {
         Ok(Self {
             capacity,
-            quota: Quota::try_new(capacity, policy, hash)?,
+            quota: Quota::try_new(capacity.into(), policy, hash)?,
         })
     }
 
     pub(in crate::network::listener) fn bind(
         self,
         fd: handles::Descriptor<'d>,
-        capacity: Capacity,
         opts: option::Set,
     ) -> Result<
         Accept<'d, ID, flight::Need<<ID as route::Materialize<kind::Accept>>::With>>,
         alloc::Error,
     > {
-        let Prepared {
-            capacity: total,
-            quota,
-        } = self;
+        let Prepared { capacity, quota } = self;
+        let total = table::Capacity::from(capacity);
         let edge = indices::Edge::from(capacity);
         let routes = fd
             .driver()

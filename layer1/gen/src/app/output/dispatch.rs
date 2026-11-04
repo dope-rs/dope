@@ -353,7 +353,7 @@ impl<'a> Dispatch<'a> {
         let mf = self.application.paths.manifold();
         let exec = self.application.paths.runtime();
         let inner = owner.inner();
-        if owner.is_app() {
+        let (select, pattern, routes, body) = if owner.is_app() {
             let body = Project::new(owner, self.application).map(
                 quote::quote! { ::core::ops::ControlFlow::Break(#vevent) },
                 |recv| {
@@ -369,20 +369,12 @@ impl<'a> Dispatch<'a> {
                     }
                 },
             );
-            quote::quote! {
-                let #vdisp = match #vdisp.route() {
-                #vcand if <#inner as #exec::executor::raw::App<#life>>::ROUTES.has_route(#vcand) => {
-                    match #vdisp.map(
-                        |mut #vapp, #vevent, #vturn, #vdriver| #body,
-                    ) {
-                        ::core::ops::ControlFlow::Continue(()) =>
-                            return ::core::ops::ControlFlow::Continue(()),
-                        ::core::ops::ControlFlow::Break(#vdisp) => #vdisp,
-                    }
-                }
-                _ => #vdisp,
-                };
-            }
+            (
+                quote::quote! { #vdisp.route() },
+                quote::quote! { #vcand },
+                quote::quote! { <#inner as #exec::executor::raw::App<#life>>::ROUTES },
+                body,
+            )
         } else {
             let dispatch = quote::quote! {
                 <<#inner as #mf::app::dispatch::raw::Manifold<#life>>::Dispatch as
@@ -402,21 +394,23 @@ impl<'a> Dispatch<'a> {
                             #vdriver,
                         );
                         #dispatch::call(
-                                #recv,
-                                #vplan,
-                                #vevent,
-                            )
+                            #recv,
+                            #vplan,
+                            #vevent,
+                        )
                     }
                 },
             );
-            quote::quote! {
-                let #vdisp = match (
-                    #vdisp.route(),
-                    #dispatch::select(),
-                ) {
-                (#vcand, ::core::option::Option::Some(#vplan)) if
-                    #dispatch::ROUTES.has_route(#vcand) =>
-                {
+            (
+                quote::quote! { (#vdisp.route(), #dispatch::select()) },
+                quote::quote! { (#vcand, ::core::option::Option::Some(#vplan)) },
+                quote::quote! { #dispatch::ROUTES },
+                body,
+            )
+        };
+        quote::quote! {
+            let #vdisp = match #select {
+                #pattern if #routes.has_route(#vcand) => {
                     match #vdisp.map(
                         |mut #vapp, #vevent, #vturn, #vdriver| #body,
                     ) {
@@ -426,8 +420,7 @@ impl<'a> Dispatch<'a> {
                     }
                 }
                 _ => #vdisp,
-                };
-            }
+            };
         }
     }
 

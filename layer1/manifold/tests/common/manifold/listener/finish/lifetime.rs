@@ -1,7 +1,10 @@
-use std::{convert, num::NonZero, pin::Pin, rc::Rc, time};
+use std::{cell::Cell, convert, num::NonZero, pin::Pin, rc::Rc, time};
 
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{
+        retained, route,
+        schedule::{clock, ready},
+    },
     random::Seed,
 };
 use dope_manifold::{
@@ -11,11 +14,17 @@ use dope_manifold::{
         handler::{self, failures, retire, send},
     },
 };
-use dope_net::{link::slot::types::CloseGate, wire::Identity};
+use dope_net::{
+    link::slot::types::CloseGate,
+    wire::{
+        Identity,
+        receive::{Chunk, mode::Disabled},
+    },
+};
 use dope_test::harness::{observe::Trace, signals::Gate};
 use o3::buffer::{bytes::TryRetain, resident};
 
-pub struct Lifetime<F> {
+pub struct Lifetime {
     pub(crate) accept: Gate,
     pub(crate) expire: Gate,
     pub(crate) begun: Gate,
@@ -23,7 +32,10 @@ pub struct Lifetime<F> {
     pub(crate) expiry: Expiry,
     pub(crate) drain: handler::Drain,
     pub(crate) gate: CloseGate,
-    pub(crate) deadline: F,
+}
+
+fn deadline(outcome: Arm<'_>) {
+    assert!(matches!(outcome, Arm::Armed));
 }
 
 pub enum Expiry {
@@ -47,7 +59,7 @@ pub struct Connection<'d> {
     remaining: Option<NonZero<u32>>,
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, ID> for Lifetime<F> {
+impl<'d, ID: route::Identity> handler::Application<'d, ID> for Lifetime {
     type Conn = Connection<'d>;
     type Build = convert::Infallible;
     type Wire = Identity;
@@ -145,10 +157,10 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
         let this = self.as_ref().get_ref();
         if matches!(this.expiry, Expiry::Clear) {
             let now = driver.driver_ref().clock().now();
-            (this.deadline)(conn.deadline().try_ensure(now));
+            deadline(conn.deadline().try_ensure(now));
             let at = now.clamp_add(time::Duration::from_millis(10));
             for _ in 0..2 {
-                (this.deadline)(conn.deadline().try_arm(at));
+                deadline(conn.deadline().try_arm(at));
             }
             this.accept.hit();
         } else if let Expiry::Rearm { slot, .. } = &this.expiry
@@ -157,7 +169,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
             let at = driver.driver_ref().clock().now().into();
             conn.state_mut().deadline = Some(at);
             if conn.id().index().into_usize() == *slot {
-                (this.deadline)(conn.deadline().try_arm(at));
+                deadline(conn.deadline().try_arm(at));
             }
             this.accept.hit();
         }
@@ -187,13 +199,97 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Borrowed<'d, ID> for Lifetime<F> {
+impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Lifetime {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
         _: R,
         _: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
+        Outcome::Continue
+    }
+}
+
+pub struct DeadlineAdmission<'d> {
+    pub(crate) target: Rc<Cell<Option<ready::Target<'d>>>>,
+    pub(crate) activate: Rc<Cell<bool>>,
+    pub(crate) completed: Gate,
+    pub(crate) expired: Gate,
+}
+
+impl<'d, ID: route::Identity> handler::Application<'d, ID> for DeadlineAdmission<'d> {
+    type Conn = ();
+    type Build = convert::Infallible;
+    type Wire = Identity;
+    type WireFailure = failures::Close;
+    type Retirement = retire::Close;
+    type Egress = resident::Shared<'d>;
+    type Input = receive::Owned;
+    type Send = send::Silent;
+
+    fn connection(self: Pin<&Self>, _: &Seed) -> Result<(), Self::Build> {
+        Ok(())
+    }
+
+    fn build_failed(self: Pin<&mut Self>, cause: Self::Build) {
+        match cause {}
+    }
+
+    fn timing(&self) -> handler::Timing {
+        handler::Timing::timeout(time::Duration::from_millis(10))
+    }
+
+    fn deadline(self: Pin<&Self>, _: clock::Clock<'_, 'd>) -> Option<clock::Deadline<'d>> {
+        None
+    }
+
+    fn accept(
+        self: Pin<&mut Self>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
+    ) -> Outcome {
+        let now = conn.work().clock().now();
+        assert!(matches!(conn.deadline().try_ensure(now), Arm::Armed));
+        self.target.set(Some(conn.wake_target()));
+        Outcome::Continue
+    }
+
+    fn timeout(
+        self: Pin<&mut Self>,
+        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
+        _: &mut retained::Context<'_, '_, 'd>,
+    ) -> handler::Timeout<'d> {
+        self.expired.hit();
+        self.completed.hit();
+        handler::Timeout::Discard
+    }
+
+    fn activate<'e, 'a, 'p, 's, 'w>(
+        self: Pin<&mut Self>,
+        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>,
+        _: &mut retained::Context<'_, '_, 'd>,
+    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>
+    where
+        'd: 'w,
+    {
+        if self.activate.get() {
+            conn.deadline().cancel();
+            self.completed.hit();
+        }
+        conn
+    }
+}
+
+impl<'w, 'd: 'w, ID: route::Identity> handler::Owned<'w, 'd, ID> for DeadlineAdmission<'d> {
+    const RETENTION: receive::limits::Retention = receive::limits::Retention::new(1, 0);
+
+    fn chunk(
+        self: Pin<&mut Self>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, ()>,
+        _: Chunk<'w, 'd, Identity, Disabled>,
+        _: &mut retained::Context<'_, '_, 'd>,
+    ) -> Outcome {
+        conn.deadline().cancel();
+        self.completed.hit();
         Outcome::Continue
     }
 }

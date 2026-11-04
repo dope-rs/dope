@@ -92,12 +92,6 @@ impl<const N: usize> State<N> {
         };
         PendingState::Live(Pending { state: self, left })
     }
-
-    pub(super) fn reset(&mut self) {
-        self.len = array::Len::ZERO;
-        self.next = array::Len::ZERO;
-        self.left = None;
-    }
 }
 
 impl<const N: usize> Push<'_, N> {

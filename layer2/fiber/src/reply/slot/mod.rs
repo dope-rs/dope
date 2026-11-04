@@ -23,7 +23,7 @@ use crate::reply::{
 mod end;
 
 use end::End;
-pub(in crate::reply) use end::Fault;
+pub use end::Fault;
 
 pub(in crate::reply) struct Item<C> {
     pub(in crate::reply) value: C,

@@ -1,11 +1,11 @@
 pub mod common;
 
-use std::{convert::Infallible, net::Shutdown, time::Duration};
+use std::{net::Shutdown, time::Duration};
 
 use common::{discard::eof, wire::Input};
 use dope_core::{
     Errno,
-    driver::{life::recovery, result::poll, route::kind, schedule::ready},
+    driver::{result::poll, route::kind, schedule::ready},
     io::{
         Reclaimed,
         event::{
@@ -21,7 +21,7 @@ use dope_net::link::{
     event::Dispatch,
     pool::recv::{self, input},
 };
-use dope_test::{harness::scenario::process::Deadline, scope};
+use dope_test::harness::scenario::process::Deadline;
 
 #[test]
 fn idle_peer_progress() {
@@ -39,8 +39,8 @@ fn idle_peer_progress() {
                 Phase::Waiting => (2, "B progresses after idle retry"),
             };
             let mut tails = 0;
-            let (reports, input) = eof::run_pair::<input::Scoped>(
-                |pool, [a, b], scope, [left, right]| {
+            let (reports, input) =
+                eof::run_pair::<input::Scoped>(|pool, [a, b], scope, [left, right]| {
                     eof::arm(pool, b, scope).expect("receive admission");
                     let [first, second] = [(); 2].map(|()| {
                         right.write_all(b"H").expect("hold native buffer");
@@ -225,21 +225,7 @@ fn idle_peer_progress() {
                     }
                     assert_eq!(seen, [true; 2]);
                     assert!(!pool.inspect().has_rearm());
-                },
-                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("driver recovery: {:?}", failure.cause())
-                },
-                |result| {
-                    result
-                        .as_ref()
-                        .map_err(scope::Error::cause)
-                        .expect("native lifecycle");
-                    result
-                        .ok()
-                        .expect("driver result")
-                        .expect("receive fixture");
-                },
-            );
+                });
             assert_eq!(input, Input::Empty);
             let mut errors = 0;
             for report in reports {

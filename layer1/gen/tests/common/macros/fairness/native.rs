@@ -1,13 +1,11 @@
-use std::{cell::Cell, marker::PhantomPinned, ops, pin::Pin, rc::Rc};
+use std::{cell::Cell, marker::PhantomPinned, pin::Pin, rc::Rc};
 
 use engine::{
     core::{
         driver::{route::KeyTag, schedule},
-        io,
         o3::mem::quota,
     },
-    manifold::app::dispatch::{self, event},
-    runtime::executor,
+    manifold::app::dispatch,
 };
 
 use crate::common::macros::fairness::Child;
@@ -28,32 +26,11 @@ impl Count {
     }
 }
 
-impl<'d> event::Drive<'d> for Count {
-    type Access = dispatch::raw::Plain;
-
-    fn dispatch<'app, 'driver, 'root>(
-        _: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
-        ops::ControlFlow::Continue(())
-    }
-}
-
 // SAFETY: Count retains no driver-visible pointer and remains pinned in Mixed
 // throughout the installed application lifecycle.
 unsafe impl<'d> dispatch::raw::Manifold<'d> for Count {
     type Route = KeyTag<0>;
-    type Dispatch = event::Driven<dispatch::raw::Plain>;
+    type Dispatch = dispatch::raw::Omit;
     type Install = dispatch::raw::Omit;
     type Finish = dispatch::raw::Omit;
     type Activate = dispatch::raw::Omit;

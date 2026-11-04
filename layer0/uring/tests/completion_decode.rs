@@ -20,7 +20,7 @@ use o3::base::num::bounded;
 
 use crate::common::{
     cleanup::Host,
-    message::{PREFIX, prefix, try_buffer},
+    message::{PREFIX, prefix},
     packets::{Echo, Lease, flags, outcome, parts, rejected, token},
 };
 
@@ -82,18 +82,15 @@ fn retains_unknown_bits() {
     for bit in 3..16 {
         for known in [0, 1, 2, 3, 4, 5, 6, 7, 0xffff_0007] {
             let flags = flags(known | (1 << bit));
-            let decoded = flags.decode();
-            assert!(decoded.is_err());
-            if let Err(invalid) = decoded {
-                assert!(Flags::from(invalid) == flags);
-            }
+            let invalid = flags.decode().err().expect("unknown flag");
+            assert!(Flags::from(invalid) == flags);
         }
     }
 }
 
 #[test]
 fn rejects_control_cut() {
-    let mut storage = try_buffer::<4, 4>(8).expect("message buffer");
+    let mut storage = [0; PREFIX + 4 + 4 + 8];
     prefix(
         storage.first_chunk_mut().expect("message prefix"),
         0,
@@ -116,7 +113,7 @@ fn rejects_control_cut() {
 
 #[test]
 fn binds_payload_cut() {
-    let mut storage = try_buffer::<4, 4>(3).expect("message buffer");
+    let mut storage = [0; PREFIX + 4 + 4 + 3];
     prefix(
         storage.first_chunk_mut().expect("message prefix"),
         0,
@@ -136,7 +133,7 @@ fn verifies_probe_payload() {
     assert_eq!(Payload::bytes(b"a", b"a"), Ok(()));
     assert_eq!(Payload::bytes(b"a", b"b"), Err(Corrupt));
 
-    let mut storage = try_buffer::<4, 0>(1).expect("message buffer");
+    let mut storage = [0; PREFIX + 4 + 1];
     prefix(
         storage.first_chunk_mut().expect("message prefix"),
         4,
@@ -352,10 +349,8 @@ fn keeps_shutdown_mask() {
         -libc::ECANCELED,
     ] {
         let value = outcome(raw);
-        assert!(value.shutdown().is_err());
-        if let Err(returned) = value.shutdown() {
-            assert_eq!(rejected(returned), raw);
-        }
+        let returned = value.shutdown().expect_err("invalid shutdown completion");
+        assert_eq!(rejected(returned), raw);
         assert_eq!(value.stopped().is_ok(), raw == -libc::ECANCELED);
         if let Err(returned) = value.stopped() {
             assert_eq!(rejected(returned), raw);

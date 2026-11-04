@@ -4,7 +4,7 @@ mod entry;
 pub mod file;
 pub mod net;
 
-use file::{open, sync, write};
+use file::{open, read, sync, write};
 use net::{accept, connect, recv, send, socket, tuning};
 
 pub enum Kind<'d> {
@@ -17,6 +17,7 @@ pub enum Kind<'d> {
     Connect(connect::Completion<'d>),
     Open(open::Completion<'d>),
     Write(write::Completion<'d>),
+    Read(read::Completion<'d>),
     Sync(sync::Completion<'d>),
     Shutdown,
 }

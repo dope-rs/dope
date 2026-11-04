@@ -11,7 +11,7 @@ use o3::{
     buffer,
     buffer::storage::{provided, provided::fixed},
 };
-use plans::{Build, Create, Direct, Provided};
+use plans::Provided;
 use schedule::state::Core;
 use state::scope;
 
@@ -118,10 +118,6 @@ impl<'d> State<'d> {
 
 mod epochs;
 
-pub(in crate::driver) struct Lease<'a> {
-    driver: pin::Pin<&'a mut driver::Driver>,
-}
-
 /// One lexical view of the hidden owner for an exact driver generation.
 ///
 #[repr(transparent)]
@@ -211,76 +207,9 @@ impl<'a, 'd> Scope<'a, 'd> {
     }
 }
 
-impl<'a> Lease<'a> {
-    pub(crate) fn take(driver: pin::Pin<&'a mut driver::Driver>) -> Self {
-        Self { driver }
-    }
-
-    fn run_with<S, Q: ?Sized, O>(
-        self,
-        plan: S,
-        source: &domain::Source<Q>,
-        op: O,
-        report: &mut dyn Observe,
-    ) -> O::Output
-    where
-        S: storage::Direct,
-        O: Operation<S, Q>,
-    {
-        self.scope(
-            source,
-            Direct {
-                plan,
-                operation: op,
-            },
-            report,
-        )
-    }
-
-    fn try_run_with<S, Q: ?Sized, O>(
-        self,
-        plan: S,
-        source: &domain::Source<Q>,
-        op: O,
-        report: &mut dyn Observe,
-    ) -> Result<O::Output, domain::Rejected<S::Error, O>>
-    where
-        S: storage::Build,
-        O: Operation<S, Q>,
-    {
-        self.scope(
-            source,
-            Build {
-                plan,
-                operation: op,
-            },
-            report,
-        )
-    }
-
-    fn try_create<S, Q: ?Sized, O>(
-        self,
-        plan: S,
-        source: &domain::Source<Q>,
-        op: O,
-        report: &mut dyn Observe,
-    ) -> Result<O::Output, domain::Rejected<S::Error, O>>
-    where
-        S: storage::Create,
-        O: Operation<S, Q>,
-    {
-        self.scope(
-            source,
-            Create {
-                plan,
-                operation: op,
-            },
-            report,
-        )
-    }
-
+impl driver::Driver {
     fn run_scope<A, Q: ?Sized, O>(
-        self,
+        &mut self,
         arenas: A,
         source: &domain::Source<Q>,
         op: O,
@@ -290,7 +219,7 @@ impl<'a> Lease<'a> {
         A: buffer::raw::Arenas,
         O: Operation<storage::Scope<A>, Q>,
     {
-        let runtime = &mut self.driver.get_mut().runtime;
+        let runtime = &mut self.runtime;
         let (report, recover) = report.split();
         let root = Root {
             flights: &mut runtime.flights,
@@ -308,16 +237,15 @@ impl<'a> Lease<'a> {
     }
 
     fn scope<'b, Q: ?Sized, O>(
-        self,
+        &'b mut self,
         source: &'b domain::Source<Q>,
         op: O,
         report: &'b mut dyn Observe,
     ) -> O::Output
     where
-        'a: 'b,
         O: fixed::Operation<Root<'b, Q>, driver::Buffer, driver::Shared, Terminal = crate::Engine>,
     {
-        let runtime = &mut self.driver.get_mut().runtime;
+        let runtime = &mut self.runtime;
         let (report, recover) = report.split();
         let root = Root {
             flights: &mut runtime.flights,

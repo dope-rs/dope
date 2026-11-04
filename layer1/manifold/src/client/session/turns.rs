@@ -42,24 +42,6 @@ pub struct Startup<'a, 'e, 'd, C, B: data::raw::Payload<'d>, ID: Identity = KeyT
 }
 
 impl<'a, 'e, 'd, C, B: data::raw::Payload<'d>, ID: Identity> Startup<'a, 'e, 'd, C, B, ID> {
-    pub(super) fn new(
-        lifetime: conn::Lifetime<'d, ID>,
-        state: &'a mut C,
-        sink: egress::Queue<'a, 'e, 'd, { client::IOV_CAP }, B>,
-        ready: ready::Target<'d>,
-        driver: driver::Context<'a, 'd>,
-        close: conn::CloseRequest<'a, 'd, ID>,
-    ) -> Self {
-        Self {
-            lifetime,
-            state,
-            sink,
-            ready,
-            driver,
-            close,
-        }
-    }
-
     pub const fn connection(&self) -> conn::Id<'d, ID> {
         self.lifetime.connection()
     }

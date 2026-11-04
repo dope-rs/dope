@@ -76,13 +76,11 @@ impl Needs {
         if let Some(route) = self.claim.routes.overlap(next.routes) {
             return Err(errors::Claim::DuplicateRoute(route));
         }
-        let mut merged = self.claim;
-        merged.routes = merged.routes.join(next.routes);
-        merged.files = merged.files.merge(next.files)?;
-        merged.receive = merged.receive.merge(next.receive)?;
-        merged.resident_domains = merged.resident_domains.combine(next.resident_domains)?;
-        merged.schedule = merged.schedule.merge(next.schedule)?;
-        self.claim = merged;
+        self.claim.routes = self.claim.routes.join(next.routes);
+        self.claim.files = self.claim.files.merge(next.files)?;
+        self.claim.receive = self.claim.receive.merge(next.receive)?;
+        self.claim.resident_domains = self.claim.resident_domains.combine(next.resident_domains)?;
+        self.claim.schedule = self.claim.schedule.merge(next.schedule)?;
         Ok(self)
     }
 

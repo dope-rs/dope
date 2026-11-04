@@ -1,10 +1,9 @@
-use std::convert::Infallible;
+use crate::common::rt::{finish, recover};
 
 use dope_core::driver::{
     life::{creation, recovery},
     route::KeyTag,
 };
-use dope_test::scope::Error;
 
 use crate::common::file::{Retain as _, Submit as _};
 
@@ -13,6 +12,7 @@ pub mod common;
 use std::{
     env,
     fs::{File, OpenOptions, read_dir, write},
+    io::{Seek as _, SeekFrom},
     ops,
     os::fd::AsFd as _,
     time::Duration,
@@ -41,9 +41,10 @@ use dope_core::{
     },
 };
 use dope_test::harness::support::file;
+use o3::buffer::bytes::bounded;
 
 use crate::common::{
-    file::{Identity, Inspect as _},
+    file::{Identity, Inspect as _, cleanup},
     rt,
 };
 
@@ -157,6 +158,124 @@ fn sync_completes() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
+}
+
+#[test]
+fn read_at_completes() {
+    let base = env::temp_dir();
+    let tmp =
+        file::Directory::try_with(&base, "bounded_read", cleanup).expect("temporary directory");
+    let path = tmp.path().join("data");
+    write(&path, b"abcdefghij").expect("fixture data");
+    let mut file = File::open(&path).expect("readable file");
+    file.seek(SeekFrom::Start(4)).expect("current position");
+    let write_only = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("write only file");
+    let mut output = [0xa5; 8];
+    let mut reports = Vec::new();
+
+    rt::Runtime::quic::<2, 8>().with_turn(
+        |turn, mut driver| {
+            for (fd, offset, expected) in [
+                (file.as_fd(), fs::Offset::fixed::<7>(), Ok(3)),
+                (file.as_fd(), fs::Offset::fixed::<10>(), Ok(0)),
+                (
+                    write_only.as_fd(),
+                    fs::Offset::fixed::<0>(),
+                    Err(Errno::BAD_DESCRIPTOR),
+                ),
+            ] {
+                output.fill(0xa5);
+                let target = target(driver.driver_ref(), 3);
+                let done = target.operation::<kind::Read>();
+                // SAFETY: both descriptors and the exclusive output remain outside
+                // this scope until its final quiescence, including early failures.
+                unsafe {
+                    driver.submit(Submission::<Route, kind::Read>::read_at(
+                        fd,
+                        bounded::Value::try_new(&mut output[1..7])
+                            .map_err(|e| e.into_parts().1)
+                            .expect("bounded output"),
+                        offset,
+                        target,
+                    ))
+                }
+                .expect("read admission");
+                let event = drive_until(driver.driver(), turn, done, |event| match event {
+                    Kind::Read(done) => Some(done.token()),
+                    _ => None,
+                })
+                .expect("read completion");
+                let done = match event {
+                    Kind::Read(done) => Some(done),
+                    _ => None,
+                }
+                .expect("typed read completion");
+                assert_eq!(done.outcome().map(|len| len.into_raw()), expected);
+                if expected == Ok(3) {
+                    assert_eq!(&output, b"\xa5hij\xa5\xa5\xa5\xa5");
+                } else {
+                    assert_eq!(output, [0xa5; 8]);
+                }
+            }
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        finish,
+    );
+    assert!(reports.is_empty(), "unexpected reclamation: {reports:?}");
+    assert_eq!(file.stream_position().expect("current position"), 4);
+}
+
+#[test]
+fn finish_drains_reads() {
+    let base = env::temp_dir();
+    let tmp =
+        file::Directory::try_with(&base, "read_quiescence", cleanup).expect("temporary directory");
+    let path = tmp.path().join("data");
+    write(&path, b"retained").expect("fixture data");
+    let file = File::open(path).expect("readable file");
+    let mut output = [0_u8; 8];
+    let mut reports = Vec::new();
+
+    rt::Runtime::quic::<2, 8>().with_scope(
+        |scope| {
+            scope.with_driver(|context, _| {
+                let mut driver = context.retained();
+                let target = target(driver.driver_ref(), 4);
+                // SAFETY: the descriptor and exclusive output outlive this scope
+                // and its quiescence; this deliberately abandons normal delivery.
+                unsafe {
+                    driver.submit(Submission::<Route, kind::Read>::read_at(
+                        file.as_fd(),
+                        bounded::Value::try_new(output.as_mut_slice())
+                            .map_err(|e| e.into_parts().1)
+                            .expect("bounded output"),
+                        fs::Offset::fixed::<0>(),
+                        target,
+                    ))
+                }
+                .expect("read admission");
+            });
+            scope.quiesce();
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        finish,
+    );
+    assert_eq!(reports.len(), 1, "retire the original read once");
+    match &reports[0] {
+        Reclaimed::Read {
+            result: Ok(len), ..
+        } => {
+            assert_eq!(len.into_raw(), 8);
+            assert_eq!(&output, b"retained");
+        }
+        Reclaimed::Read {
+            result: Err(errno), ..
+        } => assert_eq!(*errno, Errno::CANCELED),
+        other => panic!("unexpected read retirement: {other:?}"),
+    }
 }
 
 #[test]
@@ -398,19 +517,4 @@ fn dispatch_all<'d>(
         }
         poll::Dispatch::Fault(error) => Err(error),
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
-}
-
-fn cleanup(result: Result<(), dope_test::harness::support::file::Error>) {
-    result.expect("fixture directory cleanup");
 }

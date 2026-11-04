@@ -8,11 +8,17 @@ pub struct Completion {
 }
 
 impl Completion {
-    pub(super) const fn new(done: usize, bytes: usize) -> Self {
-        Self {
+    pub(super) fn try_new(expected: usize, done: usize, bytes: usize) -> Result<Self, Incomplete> {
+        if done != expected {
+            return Err(Incomplete {
+                expected,
+                delivered: done,
+            });
+        }
+        Ok(Self {
             delivered: done,
             payload_bytes: bytes,
-        }
+        })
     }
 
     pub const fn delivered(self) -> usize {

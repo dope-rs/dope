@@ -66,9 +66,7 @@ where
                     next,
                     turn,
                     driver,
-                    |policy, key, input, turn, driver| {
-                        P::receive(policy, key, M::from_value(input), turn, driver)
-                    },
+                    |policy, key, input, turn, driver| P::receive(policy, key, input, turn, driver),
                 )
             },
         )
@@ -110,13 +108,7 @@ where
         };
         let (driver, step) = work.into();
         ingress::prepare_terminal(policy.as_mut(), key);
-        let done = P::receive(
-            policy.as_mut(),
-            key,
-            M::from_value(chunk),
-            step.reborrow(),
-            driver,
-        );
+        let done = P::receive(policy.as_mut(), key, chunk, step.reborrow(), driver);
         flow::settle(policy.as_mut(), key, done, step.reborrow(), driver)?;
         P::storage(policy).recv().finish_tail(item);
         ControlFlow::Continue(true)

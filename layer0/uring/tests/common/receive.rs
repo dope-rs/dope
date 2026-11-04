@@ -37,7 +37,7 @@ unsafe impl memory::raw::Layout for Layout {
 
 // SAFETY: the typed limit is the exact capacity stored by the layout.
 unsafe impl memory::raw::Receive for Layout {
-    type Extent = Extent;
+    type Extent = Self;
     fn limit(self) -> NonZero<u32> {
         self.capacity
     }
@@ -48,11 +48,8 @@ unsafe impl memory::raw::Canary for Layout {
     const LAYOUT: Self = Self::fixed::<2, 4>();
 }
 
-#[derive(Debug)]
-pub struct Extent;
-
 // SAFETY: bounded lengths are returned unchanged and capacities remain nonzero.
-unsafe impl memory::raw::Extent for Extent {
+unsafe impl memory::raw::Extent for Layout {
     type Length = bounded::U32<0, { MAX as u32 }>;
     type Capacity = NonZero<u32>;
 }

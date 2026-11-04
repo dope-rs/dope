@@ -1,15 +1,19 @@
 use dope_core::driver::{
-    life::creation::Attempt,
+    life::{creation::Attempt, domain, recovery},
     settings::{self, claim::Needs, errors},
 };
 use dope_manifold::timing::Throughput;
-use dope_runtime::executor::{self, create};
+use dope_runtime::executor::{self, create, session};
 
 pub struct Runtime {
     config: settings::Config,
 }
 
 impl Runtime {
+    pub const fn new(config: settings::Config) -> Self {
+        Self { config }
+    }
+
     pub fn throughput() -> Self {
         Self {
             config: settings::Config::for_profile::<Throughput>(),
@@ -45,5 +49,27 @@ impl Runtime {
         attempt: &mut Attempt,
     ) -> Result<executor::Executor<()>, create::Error<'_>> {
         executor::Executor::new(attempt, self.config)
+    }
+
+    pub fn with_scope<R>(
+        self,
+        run: impl for<'scope, 'life, 'p, 'd> FnOnce(session::Scope<'scope, 'life, 'p, 'd, (), ()>) -> R,
+        policy: impl recovery::Observe,
+    ) -> R {
+        let mut create = Attempt::new();
+        let executor = self.try_executor(&mut create);
+        executor
+            .as_ref()
+            .map_err(create::Error::kind)
+            .expect("native creation");
+        let executor = executor.ok().expect("native creation");
+        executor.run(|executor| {
+            let result = executor.enter_with(run, policy);
+            result
+                .as_ref()
+                .map_err(domain::Error::cause)
+                .expect("native retirement");
+            result.ok().expect("native retirement")
+        })
     }
 }

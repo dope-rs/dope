@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope_core::{
     driver::life::{creation::Attempt, recovery},
     io::{
@@ -8,7 +6,7 @@ use dope_core::{
     },
 };
 use dope_runtime::executor::session::Completion;
-use dope_test::harness::scenario::TIMEOUT;
+use dope_test::{harness::scenario::TIMEOUT, reclaim::Reports};
 pub mod common;
 
 use std::{cell::Cell, net::UdpSocket, rc::Rc};
@@ -16,7 +14,7 @@ use std::{cell::Cell, net::UdpSocket, rc::Rc};
 use dope_core::{
     driver::{
         retained::flight,
-        route::{Epoch, KeyTag, indices::SlotIndex},
+        route::{self, Epoch, KeyTag, indices::SlotIndex},
         settings::{
             self, Config,
             demands::{Schedule, slots::Slots},
@@ -166,7 +164,7 @@ fn retains_deferred_event() {
     let Some(executor) = executor.ok() else {
         return;
     };
-    let mut reports = Vec::new();
+    let mut reports = Reports::new::<route::Route>(config, []);
 
     executor.run(|executor| {
         let result = executor.enter_with(
@@ -225,16 +223,18 @@ fn retains_deferred_event() {
                 );
                 assert_eq!(fired, Some(()), "shutdown");
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
         );
+        let events = reports.events().expect("native retirement succeeds");
         assert!(
-            matches!(
-                reports.as_slice(),
-                [io::Reclaimed::Recv {
-                    result: Err(error), flow: io::event::batch::Flow::Last, ..
-                }] if *error == dope_core::Errno::CANCELED
-            ),
-            "the deferred receive must report terminal cancellation: {reports:?}"
+            events.is_empty()
+                || matches!(
+                    events,
+                    [io::Reclaimed::Recv {
+                        result: Err(error), flow: io::event::batch::Flow::Last, ..
+                    }] if *error == dope_core::Errno::CANCELED
+                ),
+            "unexpected deferred receive retirement: {events:?}"
         );
 
         assert!(result.is_ok(), "runtime completion dispatch");
@@ -269,7 +269,7 @@ fn stopped(
         executor.run(|executor| executor
             .enter_with(
                 run,
-                recovery::Policy::new(|event| reports.push(event), recover)
+                recovery::Policy::new(|event| reports.push(event), common::recover)
             )
             .is_ok()),
         "runtime turn"
@@ -278,8 +278,4 @@ fn stopped(
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

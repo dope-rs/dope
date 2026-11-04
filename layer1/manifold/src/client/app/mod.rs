@@ -251,23 +251,18 @@ impl<'a, 'd, ID: Identity> Barrier<'a, 'd, ID> {
     }
 
     pub const fn pending(self) -> Drain<'a, 'd, ID> {
-        Drain(Outcome::Pending(self))
+        Drain(None)
     }
 
     pub const fn ready(self) -> Drain<'a, 'd, ID> {
-        Drain(Outcome::Ready(self))
+        Drain(Some(self))
     }
 }
 
 /// Exact application-drain result for one connection generation.
 #[must_use = "drain outcome must reach connection retirement"]
 #[repr(transparent)]
-pub struct Drain<'a, 'd, ID: Identity>(Outcome<'a, 'd, ID>);
-
-enum Outcome<'a, 'd, ID: Identity> {
-    Pending(Barrier<'a, 'd, ID>),
-    Ready(Barrier<'a, 'd, ID>),
-}
+pub struct Drain<'a, 'd, ID: Identity>(Option<Barrier<'a, 'd, ID>>);
 
 pub(in crate::client) enum Resolution<'d, ID: Identity> {
     Pending,
@@ -277,8 +272,8 @@ pub(in crate::client) enum Resolution<'d, ID: Identity> {
 impl<'a, 'd, ID: Identity> Drain<'a, 'd, ID> {
     pub(in crate::client) const fn resolve(self) -> Resolution<'d, ID> {
         match self.0 {
-            Outcome::Pending(Barrier(..)) => Resolution::Pending,
-            Outcome::Ready(barrier) => Resolution::Ready(Quiesced(barrier.connection())),
+            None => Resolution::Pending,
+            Some(barrier) => Resolution::Ready(Quiesced(barrier.connection())),
         }
     }
 }
@@ -300,7 +295,7 @@ const _: () = {
             == size_of::<&conn::Id<'static, KeyTag<0>>>()
     );
     assert!(size_of::<Quiesced<'static, KeyTag<0>>>() == size_of::<conn::Id<'static, KeyTag<0>>>());
-    assert!(size_of::<Drain<'static, 'static, KeyTag<0>>>() == 2 * size_of::<usize>());
+    assert!(size_of::<Drain<'static, 'static, KeyTag<0>>>() == size_of::<usize>());
     assert!(
         std::mem::align_of::<Drain<'static, 'static, KeyTag<0>>>() == std::mem::align_of::<usize>()
     );

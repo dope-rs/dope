@@ -74,7 +74,6 @@ impl<R, A, S, X, P> Startup<R, A, S, X, P> {
         (A::Input, A::Continuation): retain::Policy<'w, 'd, ID, A>,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
         X: startup::Startup<'d, ID>,
         R: change::Prepare<'w, 'd, ID, A::Wire>,
     {
@@ -152,9 +151,7 @@ impl<R, A, S, X, P> Startup<R, A, S, X, P> {
                         controller: ctl,
                         side,
                         shutdown: stop,
-                        configuration: engine::Config {
-                            connection_lifetime: ttl,
-                        },
+                        connection_lifetime: ttl,
                         drive,
                     }
                 };
@@ -226,7 +223,6 @@ impl<R, A, S, X> Startup<R, A, S, X> {
         (A::Input, A::Continuation): retain::Policy<'w, 'd, ID, A>,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
         R: change::Prepare<'w, 'd, ID, A::Wire>,
         X: startup::Startup<'d, ID>,
     {

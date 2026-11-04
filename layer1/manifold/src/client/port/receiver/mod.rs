@@ -1,7 +1,4 @@
-use dope_core::driver::{
-    route::Identity,
-    schedule::{app, ready},
-};
+use dope_core::driver::route::Identity;
 use dope_net::link::egress::{
     self, data,
     metadata::{self, arena, front},
@@ -14,7 +11,10 @@ use crate::{
     client::{
         app::request,
         close, conn,
-        port::{Reserve, error, retire, state, write::Hold},
+        port::{
+            Port, error, state,
+            write::{Hold, Reserve},
+        },
     },
 };
 
@@ -161,26 +161,22 @@ impl<'a, 'e, 'd, S: data::raw::Payload<'d>, I: identity::Identity> Receiver<'a, 
     }
 }
 
-pub(super) struct Core<'e, 'd, B, ID: Identity> {
-    pub(super) arena: arena::Arena<'e, 'd, B, state::Entry<'d, conn::Id<'d, ID>>>,
-}
-
-impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Core<'e, 'd, B, ID> {
-    pub(super) fn try_new(
+impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
+    pub fn try_new(
         store: &'e mut arena::Store<'d>,
         token: &region::Token<region::Identity<'d>>,
     ) -> Result<Self, alloc::Error> {
-        use arena::Arena;
         Ok(Self {
-            arena: Arena::try_new(token, store)?,
+            arena: arena::Arena::try_new(token, store)?,
         })
     }
 
-    pub(super) fn capacity(&self) -> metadata::LaneCount {
+    pub fn capacity(&self) -> metadata::LaneCount {
         self.arena.len()
     }
 
-    pub(super) fn config(&self) -> egress::Config {
+    /// Exact retained-credit policy encoded by the live arena.
+    pub fn config(&self) -> egress::Config {
         self.arena.config()
     }
 
@@ -195,38 +191,18 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Core<'e, 'd, B, ID> {
         })
     }
 
-    pub(super) fn try_activate(
-        &self,
-        conn: conn::Id<'d, ID>,
-        ready: ready::Target<'d>,
-    ) -> Result<(), error::Open> {
+    /// Applies port admission to the engine-owned activation.
+    pub fn try_activate(&self, active: &conn::Activation<'_, 'd, ID>) -> Result<(), error::Open> {
+        let conn = active.connection();
         let Some(slot) = self.arena.get(metadata::Lane::from_slot(conn.slot())) else {
             return Err(error::Open::Unknown);
         };
-        slot.state().try_activate(conn, ready)
-    }
-
-    pub(super) fn retire<'turn>(
-        &self,
-        conn: conn::Id<'d, ID>,
-        work: app::Work<'turn, 'd>,
-        region: &mut region::Token<region::Identity<'d>>,
-        cancel: impl FnOnce(B),
-    ) -> egress::Cleared {
-        let Some(slot) = self.arena.get(metadata::Lane::from_slot(conn.slot())) else {
-            return egress::Cleared::Done;
-        };
-        let retire = match retire::Retire::begin(slot, conn, region) {
-            Ok(Some(retire)) => retire,
-            Ok(None) => return egress::Cleared::Done,
-            Err(state::Busy) => return egress::Cleared::Retry,
-        };
-        retire.clear(work, cancel)
+        slot.state().try_activate(conn, active.ready())
     }
 
     /// Owns one exact payload before protocol state is touched. Validation is
     /// a separate consuming type transition.
-    pub(super) fn try_reserve<'a, 'token>(
+    pub fn try_reserve<'a, 'token>(
         &'a self,
         region: &'token mut region::Token<region::Identity<'d>>,
         conn: conn::Id<'d, ID>,
@@ -258,12 +234,13 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Core<'e, 'd, B, ID> {
         Reserve::Item(Hold::new(entry, proof, source))
     }
 
-    pub(super) fn try_admit(
+    pub fn try_enqueue(
         &self,
         region: &mut region::Token<region::Identity<'d>>,
         conn: conn::Id<'d, ID>,
-        load: egress::Load<B>,
+        value: B,
     ) -> Result<(), error::Enqueue<B>> {
+        let load = egress::Load::new(value);
         let Some(slot) = self.arena.get(metadata::Lane::from_slot(conn.slot())) else {
             return Err(error::Enqueue::Unknown(load));
         };
@@ -313,14 +290,16 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Core<'e, 'd, B, ID> {
         Ok(())
     }
 
-    pub(super) fn close(&self, conn: conn::Id<'d, ID>, reason: close::Reason) {
+    pub fn close(&self, conn: conn::Id<'d, ID>, reason: close::Reason) {
         let Some(slot) = self.arena.get(metadata::Lane::from_slot(conn.slot())) else {
             return;
         };
         slot.state().close(conn, reason);
     }
 
-    pub(super) fn finish_write(&self, conn: conn::Id<'d, ID>) -> Result<(), error::Shutdown> {
+    /// Orders write-half shutdown after all payloads already admitted for this
+    /// exact connection generation.
+    pub fn finish_write(&self, conn: conn::Id<'d, ID>) -> Result<(), error::Shutdown> {
         let Some(slot) = self.arena.get(metadata::Lane::from_slot(conn.slot())) else {
             return Err(error::Shutdown::Unknown);
         };
@@ -369,12 +348,8 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Core<'e, 'd, B, ID> {
         Self::finish_drain(slot, proof, close, requests);
     }
 
-    pub(super) fn drain<'p, ROUTE: Identity>(
-        &self,
-        conn: conn::Id<'d, ID>,
-        requests: &mut request::Requests<'_, '_, 'p, 'd, B, ROUTE>,
-    ) {
-        let Some(receiver) = self.entry(conn) else {
+    pub fn drain<'p>(&self, requests: &mut request::Requests<'_, '_, 'p, 'd, B, ID>) {
+        let Some(receiver) = self.entry(requests.connection()) else {
             return;
         };
         let (slot, proof) = (receiver.slot, receiver.txn);

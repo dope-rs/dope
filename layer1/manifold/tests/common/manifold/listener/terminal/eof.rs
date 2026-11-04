@@ -34,7 +34,7 @@ use o3::{
 
 use crate::common::manifold::listener::terminal::{
     Failure, Observation, Retirement,
-    wire::{EofOnData, Event, Wire},
+    wire::{Event, Wire},
 };
 
 pub struct Probe<F, const CONTROL: bool = false> {
@@ -63,7 +63,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
 {
     type Conn = State;
     type Build = convert::Infallible;
-    type Wire = Wire<EofOnData<CONTROL>>;
+    type Wire = Wire;
     type WireFailure = Failure;
     type Retirement = Retirement;
     type Egress = Shared;
@@ -88,7 +88,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
 
     fn timeout(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> handler::Timeout<'d> {
         if matches!(*conn.state(), State::Eof) && self.finish.hits() != 0 {
@@ -104,14 +104,14 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
 
     fn is_blocked(
         self: Pin<&Self>,
-        conn: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+        conn: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
     ) -> bool {
         matches!(*conn.state(), State::Pending)
     }
 
     fn eof(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
         _: receive::End,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> handler::Eof {
@@ -135,7 +135,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
 
     fn close_gate(
         self: Pin<&Self>,
-        conn: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+        conn: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
     ) -> CloseGate {
         if matches!(*conn.state(), State::Closed) {
             CloseGate::Immediate
@@ -146,8 +146,8 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
 
     fn close<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>
+        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State, Shared>,
+    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State, Shared>
     where
         'd: 'w,
     {
@@ -165,7 +165,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
 {
     fn send_drained(
         self: Pin<&mut Self>,
-        _: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+        _: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
     ) -> handler::PostDrain {
         handler::PostDrain::Idle
     }
@@ -181,7 +181,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
     fn retire(
         self,
         app: Pin<&mut Probe<F, CONTROL>>,
-        _: conn::Retired<'_, '_, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
+        _: conn::Retired<'_, '_, 'd, ID, Wire, State, Shared>,
     ) {
         let this = app.get_mut();
         this.events.push(Event::Retired);
@@ -192,10 +192,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
 impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bool>
     failures::Policy<'w, 'd, Probe<F, CONTROL>, ID> for Failure
 {
-    fn open_failed(
-        _: Pin<&mut Probe<F, CONTROL>>,
-        cause: open::Error<'w, Wire<EofOnData<CONTROL>>>,
-    ) {
+    fn open_failed(_: Pin<&mut Probe<F, CONTROL>>, cause: open::Error<'w, Wire>) {
         cause.eliminate()
     }
 
@@ -209,8 +206,8 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
 
     fn wire_failed<'e>(
         app: Pin<&mut Probe<F, CONTROL>>,
-        conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
-        cause: terminal::Error<'w, Wire<EofOnData<CONTROL>>>,
+        conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire, State, Shared>,
+        cause: terminal::Error<'w, Wire>,
     ) {
         let (cause, closing) = cause.into_parts();
         app.get_mut()
@@ -228,8 +225,8 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
 
     fn scoped_chunk(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire<EofOnData<CONTROL>>, State, Shared>,
-        chunk: scoped::Input<'_, 'w, 'd, Wire<EofOnData<CONTROL>>>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, State, Shared>,
+        chunk: scoped::Input<'_, 'w, 'd, Wire>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();

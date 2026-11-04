@@ -6,29 +6,25 @@ use dope_test::harness::peer::{
 };
 
 #[test]
-fn receive_after_stop() {
-    Script::with(
-        |socket| {
-            for _ in 0..2 {
-                let error = socket.recv_from(&mut [0]).expect_err("cancelled receive");
-                assert!(matches!(error, Error::Cancelled));
-            }
-        },
-        |peer| peer.stop().expect("cancelled script completes"),
-    )
-    .expect("UDP script");
-}
-
-#[test]
-fn forgotten_view() {
-    Script::with(
-        |socket| {
-            let error = socket.recv_from(&mut [0]).expect_err("cancelled receive");
-            assert!(matches!(error, Error::Cancelled));
-        },
-        |peer| mem::forget(peer),
-    )
-    .expect("forgotten peer remains owned");
+fn receive_after_stop_or_forgotten_view() {
+    for (forgotten, reads) in [(false, 2), (true, 1)] {
+        Script::with(
+            |socket| {
+                for _ in 0..reads {
+                    let error = socket.recv_from(&mut [0]).expect_err("cancelled receive");
+                    assert!(matches!(error, Error::Cancelled));
+                }
+            },
+            |peer| {
+                if forgotten {
+                    mem::forget(peer);
+                } else {
+                    peer.stop().expect("cancelled script completes");
+                }
+            },
+        )
+        .expect("UDP script");
+    }
 }
 
 #[test]

@@ -1,12 +1,11 @@
 use std::{marker, mem, os::fd};
 
-pub(crate) use acquire::Acquire;
 use dope_sys::{Errno, kernel, thread::signal};
+pub(crate) use signal::AcquireFault as Acquire;
 pub(crate) use wait::Wait;
 
 use crate::Uring;
 
-mod acquire;
 pub(crate) mod raw;
 mod wait;
 

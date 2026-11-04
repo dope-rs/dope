@@ -28,6 +28,7 @@ pub trait Effects<'q, 'd, B>: Context + Sized {
     type Send: TryFrom<Self::Bound, Error = Self::Mismatch>;
     type Connect: TryFrom<Self::Bound, Error = Self::Mismatch>;
     type Write: TryFrom<Self::Bound, Error = Self::Mismatch>;
+    type Read: TryFrom<Self::Bound, Error = Self::Mismatch>;
     type Sync: TryFrom<Self::Bound, Error = Self::Mismatch>;
     type Target: Copy + for<'a> From<&'a Self::Socket>;
     type Creation: AsRef<Self::Outbound>;
@@ -48,6 +49,7 @@ pub trait Effects<'q, 'd, B>: Context + Sized {
     fn connected(bound: Self::Connect, result: Unit<Self>) -> Self::Output;
     fn opened(bound: Self::Open, result: Result<fd::OwnedFd, Errno>) -> Self::Output;
     fn written(bound: Self::Write, result: Bytes<Self>) -> Self::Output;
+    fn read(bound: Self::Read, result: Bytes<Self>) -> Self::Output;
     fn synced(bound: Self::Sync, result: Unit<Self>) -> Self::Output;
     fn mismatched(key: Key<Self>, cause: Self::Mismatch) -> Self::Error;
     fn abandon(driver: Self::Driver, accepted: Accepted<Self>) -> Self::Reclaimed;

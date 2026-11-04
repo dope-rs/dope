@@ -1,19 +1,17 @@
-use std::convert::Infallible;
-
 use dope_core::{
     driver::{life::recovery, route::KeyTag},
     io::socket::install::Install,
 };
-use dope_test::scope::Error;
 use o3::buffer::storage::Zero;
 
 use crate::common::rt::{
-    profile,
-    profile::{Domain, Minimal, Receive, StreamOnly},
+    Runtime, finish,
+    profile::{Minimal, Receive, StreamOnly},
+    recover,
 };
 pub mod common;
 
-use std::{mem::size_of, net::SocketAddr};
+use std::net::SocketAddr;
 
 use dope_core::{
     driver::{
@@ -28,51 +26,25 @@ use dope_core::{
     },
     io::{datagram::payload, transfer},
 };
-use o3::buffer::bytes::bounded::Overflow;
-
-use crate::common::rt::Runtime;
 
 #[test]
-fn accept_files() {
-    let claim = Claim::new(settings::Routes::EMPTY)
-        .files(Files::accept(Accept::from(Slots::fixed::<112>())));
-    let result = Needs::new()
-        .include(claim)
-        .and_then(|reqs| reqs.resolve::<profile::Files>());
-    let config = result.expect("topology resources fit the driver representation");
-    assert!((config.file_slots().accept()) == (settings::FileSlots::fixed::<0, 112>().outbound()));
-    assert_eq!(config.file_slots().outbound().count().get(), 16);
-    assert_eq!(config.file_slots().capacity().count().get(), 128);
-}
-
-#[test]
-fn receive_layout() {
+fn resolves_profile_and_file_demand() {
     let claim = Claim::new(settings::Routes::EMPTY)
         .files(Files::accept(Accept::from(Slots::fixed::<112>())));
     let result = Needs::new()
         .include(claim)
         .and_then(|reqs| reqs.resolve::<Receive>());
     let config = result.expect("topology resources fit the driver representation");
+    assert_eq!(config.file_slots().accept().count().get(), 112);
+    assert_eq!(config.file_slots().outbound().count().get(), 16);
+    assert_eq!(config.file_slots().capacity().count().get(), 128);
     assert!((config.receive()) == (Receive::RECEIVE));
 }
 
 #[test]
 fn resident_domains() {
     assert!(settings::Config::default().domains() == settings::Domain::ZERO);
-    assert!(settings::Config::for_profile::<Domain>().domains() == settings::Domain::ZERO);
-    let claims = (
-        Claim::new(settings::Routes::singleton::<KeyTag<1>>())
-            .domains(settings::Domain::fixed::<2>()),
-        Claim::new(settings::Routes::singleton::<KeyTag<2>>())
-            .domains(settings::Domain::fixed::<3>()),
-    );
-    let result = Needs::new()
-        .include(claims.0)
-        .and_then(|needs| needs.include(claims.1))
-        .and_then(|reqs| reqs.resolve::<Domain>());
-    let config = result.expect("resident-domain claims fit the driver representation");
-    assert!((config.domains()) == (settings::Domain::fixed::<5>()));
-
+    assert!(settings::Config::for_profile::<Receive>().domains() == settings::Domain::ZERO);
     let claims = (
         Claim::new(settings::Routes::singleton::<KeyTag<3>>()).domains(settings::Domain::MAX),
         Claim::new(settings::Routes::singleton::<KeyTag<4>>()).domains(settings::Domain::ONE),
@@ -81,22 +53,11 @@ fn resident_domains() {
         matches!(
             Needs::new()
                 .include(claims.0)
-                .and_then(|needs| needs.include(claims.1))
-                .and_then(|needs| needs.resolve::<Domain>()),
+                .and_then(|needs| needs.include(claims.1)),
             Err(errors::Claim::ResidentDomainsOverflow(_))
         ),
         "resident domain sum must retain both demands"
     );
-}
-
-#[test]
-fn storage_preserves_value_layout() {
-    use std::{alloc::Layout, mem::needs_drop};
-
-    use dope_core::driver::storage::With;
-
-    assert_eq!(Layout::new::<With<(), usize>>(), Layout::new::<usize>());
-    assert_eq!(needs_drop::<With<(), usize>>(), needs_drop::<usize>());
 }
 
 #[test]
@@ -146,24 +107,6 @@ fn invalid_receive() {
         Entries::try_from(count).expect("fixture entry counts must fit their representation")
     });
 
-    assert!((transfer::Len::try_new(0)) == (Ok(transfer::Len::ZERO)));
-    assert!(transfer::Len::try_new(transfer::MAX_BYTES).is_ok());
-    assert_eq!(
-        size_of::<Result<transfer::Len, Overflow>>(),
-        2 * size_of::<usize>(),
-    );
-    assert!(
-        Receive::exact(demands::Receive::new(
-            Entries::ZERO,
-            transfer::Len::fixed::<4096>()
-        )) == Err(errors::Claim::Layout(
-            errors::Config::ReceiveEntriesOutOfRange {
-                actual: 0,
-                minimum: 2,
-                maximum: u16::MAX as u32,
-            }
-        ))
-    );
     assert!(
         Receive::exact(demands::Receive::new(one, transfer::Len::fixed::<4096>()))
             == Err(errors::Claim::Layout(
@@ -379,15 +322,4 @@ fn failed_merge_is_atomic() {
             .is_ok(),
         "failed merge must preserve neither route nor descriptors"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

@@ -1,8 +1,4 @@
-use std::{
-    cell::{Cell, RefCell},
-    convert::Infallible,
-    rc::Rc,
-};
+use std::{cell::Cell, convert::Infallible, rc::Rc};
 
 use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
@@ -33,24 +29,22 @@ use crate::common::{
     contract::{Report, codec, codec::errors},
     manifold::client::{
         error::{self, Error::Send},
-        flush,
-        send::{Error, wire::Wire},
+        send::{Error, load, wire::Wire},
     },
 };
 
 pub const MAX: usize = 1;
 pub const PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 
-pub struct Wait<F> {
-    pub(crate) create: F,
+pub struct Wait {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
-    pub(crate) pending: RefCell<[Option<egress::NonEmpty<Shared>>; 2]>,
+    pub(crate) pending: [Cell<Option<egress::NonEmpty<Shared>>>; 2],
     pub(crate) index: Rc<Cell<Option<usize>>>,
     pub(crate) reasons: Rc<Trace<(usize, Reason), 2>>,
     pub(crate) seen: Gate,
     pub(crate) closed: Gate,
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Session<'d> for Wait<F> {
+impl<'d> Session<'d> for Wait {
     type Codec = codec::Pending;
     type Connect = Full;
     type ConnState = ();
@@ -62,9 +56,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Session<'d> for Wait<F> {
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> policy::Compatible<'d, 'd, Wire, KeyTag<0>>
-    for Wait<F>
-{
+impl<'d> policy::Compatible<'d, 'd, Wire, KeyTag<0>> for Wait {
     type Open = Self;
     type Terminal = Self;
 
@@ -77,11 +69,11 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> policy::Compatible<'d, 'd, Wire, K
     }
 }
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Parser<'d> for Wait<F> {
+impl<'d> Parser<'d> for Wait {
     type Mode = mode::Plain;
     type Response = response::Immediate;
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Plain<'d> for Wait<F> {
+impl<'d> Plain<'d> for Wait {
     type Delivery = response::Direct;
 
     fn reject(
@@ -106,46 +98,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Plain<'d> for Wait<F> {
         match head {}
     }
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Output<'d> for Wait<F> {
-    fn flush() -> Option<
-        impl for<'a, 'c, 't, 'e> Call<(
-            &'a mut Self,
-            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-            dope_manifold::client::session::Input,
-        )>,
-    > {
-        flush(|owner: &mut Self, context| {
-            let actual = context.conn_id.index().into_usize();
-            let capacity = owner.pending.get_mut().len();
-            if actual >= capacity {
-                owner
-                    .audit
-                    .faults
-                    .record(Send(Error::Index { actual, capacity }));
-            }
-        })
-    }
-
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<Infallible, Infallible, Infallible, _>::Queue(
-            |(owner, conn, _): (&mut Self, conn::Id<'d, KeyTag<0>>, egress::Pending)| {
-                let actual = conn.index().into_usize();
-                let capacity = owner.pending.get_mut().len();
-                if actual >= capacity {
-                    owner
-                        .audit
-                        .faults
-                        .record(Send(Error::Index { actual, capacity }));
-                }
-            },
-        )
-    }
-
+impl<'d> Output<'d> for Wait {
     fn cancel() -> impl for<'a, 't> Call<(
         &'a mut Self,
         Self::Send,
@@ -161,7 +114,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Output<'d> for Wait<F> {
         })
     }
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Source<'d> for Wait<F> {
+impl<'d> Source<'d> for Wait {
     fn drain<'w, 'e, 'turn, W: wire::Spec + 'd>(
         &self,
         turn: &mut request::Turn<
@@ -176,35 +129,21 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Source<'d> for Wait<F> {
     {
         let (mut requests, _) = turn.requests();
         let index = requests.connection().index().into_usize();
-        let mut pending = match self.pending.try_borrow_mut() {
-            Ok(pending) => pending,
-            Err(error) => {
-                self.audit.faults.record(Send(Error::BorrowMut(error)));
-                return;
-            }
-        };
-        let capacity = pending.len();
-        let Some(slot) = pending.get_mut(index) else {
-            self.audit.faults.record(Send(Error::Index {
-                actual: index,
-                capacity,
-            }));
-            return;
-        };
+        let slot = &self.pending[index];
         let Some(value) = slot.take() else {
             return;
         };
         match requests.admit(value) {
             request::Admission::Ready(ready) => ready.push(),
             request::Admission::Saturated(load) => {
-                *slot = Some(load);
+                slot.set(Some(load));
                 if self.index.get().is_none() {
                     self.index.set(Some(index));
                     self.seen.hit();
                 }
             }
             request::Admission::Exhausted(value) => {
-                *slot = Some(value);
+                slot.set(Some(value));
             }
             request::Admission::Rejected(rejected) => {
                 self.audit.faults.record(error::Error::Admit(rejected));
@@ -212,7 +151,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Source<'d> for Wait<F> {
         }
     }
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Connected<'d> for Wait<F> {
+impl<'d> session::Connected<'d> for Wait {
     type Activation = Automatic;
 
     fn connect(
@@ -222,19 +161,11 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Connected<'d> for Wait<F>
         context: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
         let index = context.connection().index().into_usize();
-        let pending = self.pending.get_mut();
-        let capacity = pending.len();
-        let Some(slot) = pending.get_mut(index) else {
-            self.audit.faults.record(Send(Error::Index {
-                actual: index,
-                capacity,
-            }));
-            return;
-        };
-        *slot = Some((self.create)());
+        let slot = &self.pending[index];
+        slot.set(Some(load(b"x")));
     }
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Failed<'d> for Wait<F> {
+impl<'d> session::Failed<'d> for Wait {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -244,7 +175,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Failed<'d> for Wait<F> {
         self.audit.faults.record(error::Error::Connect(error));
     }
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Exhausted<'d> for Wait<F> {
+impl<'d> session::Exhausted<'d> for Wait {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -254,7 +185,7 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> session::Exhausted<'d> for Wait<F>
         self.audit.faults.record(error::Error::Exhaust(error));
     }
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Retirement<'d> for Wait<F> {
+impl<'d> Retirement<'d> for Wait {
     type Drain = Ready;
 
     fn io_fail(
@@ -298,6 +229,6 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Retirement<'d> for Wait<F> {
         }
     }
 }
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Scheduling<'d> for Wait<F> {}
+impl<'d> Scheduling<'d> for Wait {}
 
-impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Target<'d, KeyTag<0>, 2> for Wait<F> {}
+impl<'d> Target<'d, KeyTag<0>, 2> for Wait {}

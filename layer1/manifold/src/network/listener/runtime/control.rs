@@ -1,7 +1,7 @@
-use std::pin;
+use std::{ops::ControlFlow, pin};
 
 use conn::deadline::Arm;
-use dope_core::driver::{retained, route::Identity, schedule, schedule::clock};
+use dope_core::driver::{retained, route, route::Identity, schedule, schedule::clock};
 use dope_net::link::pool::{self, pending, recv};
 use o3::mem::quota;
 
@@ -9,6 +9,43 @@ use crate::{
     app::env,
     network::listener::{self, conn, handler, writer::phase},
 };
+
+/// Settles due deadlines before input delivery or application activation.
+pub(in crate::network::listener) fn admit_deadline<'w, 'd: 'w, ID: Identity, A, E>(
+    mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
+    target: impl FnOnce() -> Option<route::Target<'d, ID>>,
+    turn: schedule::Turn<'_, 'd>,
+    driver: &mut retained::Context<'_, '_, 'd>,
+) -> ControlFlow<schedule::ready::Target<'d>>
+where
+    A: handler::Application<'d, ID>,
+    E: env::Spec<Wire = A::Wire>,
+{
+    let now = driver.driver_ref().clock().now();
+    let owner = root.as_ref().project_ref().owner;
+    if owner.earliest().is_none_or(|at| at > now) {
+        return ControlFlow::Continue(());
+    }
+    let Some(key) = target().and_then(|target| owner.pool().inspect().by_target(target)) else {
+        return ControlFlow::Continue(());
+    };
+    if !root
+        .as_mut()
+        .project()
+        .owner
+        .egress_mut(key)
+        .is_some_and(|mut egress| egress.connection.is_due(now))
+    {
+        return ControlFlow::Continue(());
+    }
+    expire(root.as_mut(), now, turn, driver);
+    if let Some(mut egress) = root.as_mut().project().owner.egress_mut(key)
+        && egress.connection.is_due(now)
+    {
+        return ControlFlow::Break(egress.connection.io().wake_target());
+    }
+    ControlFlow::Continue(())
+}
 
 pub(in crate::network::listener) fn admit<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,

@@ -1,4 +1,5 @@
-use std::{convert::Infallible, env::consts::OS, mem};
+use crate::common::rt::{finish, recover};
+use std::{env::consts::OS, mem};
 
 use dope_core::{
     driver::{
@@ -16,7 +17,6 @@ use dope_core::{
     },
 };
 use dope_sys::{io::socket::accept as native, table::registry};
-use dope_test::scope::Error;
 
 use crate::common::rt::Runtime;
 
@@ -331,15 +331,4 @@ fn pending_accept_identity() {
             recovery::Policy::new(|_| {}, recover),
             finish,
         );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

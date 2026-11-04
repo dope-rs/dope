@@ -15,7 +15,7 @@ use crate::{
     app::{
         env,
         receive::{
-            self, Mode,
+            self,
             ingress::{self, Dispatch},
         },
     },
@@ -26,7 +26,7 @@ use crate::{
             self, State,
             engine::{
                 self, liveness,
-                transfer::{finish, send},
+                transfer::{effect, send},
             },
             flow,
         },
@@ -41,12 +41,14 @@ where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
     A::Input: app::Policy<'w, 'd, ID, A> + Dispatch<A::Wire>,
     A::Requests: send::Policy<'w, 'd, ID, A>,
+    A::Continuation: liveness::Inspection<'d, ID, A>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: mode::Mode<'d, ID>
         + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    Self: close::ClosePhase<'d, ID, A, S, E> + finish::Finish<'w, 'd, ID, A, A::Continuation>,
+    Self: close::ClosePhase<'d, ID, A, S, E>,
+    <A::Continuation as app::resume::Mode>::Outcome: effect::Effect<'w, 'd, ID, A, S, E, X>,
 {
     type Transport = E::Transport;
     type Wire = A::Wire;
@@ -62,7 +64,10 @@ where
     fn receive<'input>(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        input: <Self::Input as Mode<Self::Wire>>::Value<'input, 'w, 'd>,
+        input: <crate::Ingress<Self::Wire, Self::Input> as ingress::Strategy<
+            Self::Wire,
+            Self::Input,
+        >>::Value<'input, 'w, 'd>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input> {

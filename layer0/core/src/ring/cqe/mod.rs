@@ -1,9 +1,8 @@
 pub(super) use binding::Binding;
 use dope_sys::{
     io::{
-        file,
         reactor::{complete, complete::Observe},
-        socket::option::tuning::Source,
+        socket::option::tuning,
     },
     kernel,
     memory::buffer::provided,
@@ -17,6 +16,7 @@ use crate::{
     Backend,
     driver::{
         life::native::host::{Selection, context::Context},
+        receive::tokens,
         retained::flight,
     },
     io::{socket::option, transfer},
@@ -26,20 +26,19 @@ mod binding;
 mod envelope;
 mod tuned;
 
-type Token<N> = <N as token::Source>::Token<Context>;
-type Frame<N> = <Token<N> as token::Codec>::Frame;
-type Tune<N> = <Token<N> as token::Codec>::Tuning;
-type CloseToken<'d, N> = <Token<N> as token::Codec>::Close<'d>;
-type Selected<N> = <N as provided::Source>::Pending<transfer::Extent>;
-type Completed<N> = <N as provided::Source>::Complete<transfer::Extent>;
-type Opened<N> = <N as file::Completion>::Opened;
-type Returned<N = Backend> = <N as kernel::Source>::Returned;
-type Entry<N> = <N as ring::Source>::Entry<Token<N>>;
-type Scalar<N> = <Entry<N> as complete::Entry>::Outcome;
-type Flags<N> = <Entry<N> as complete::Entry>::Flags;
-type Value<N> = <Scalar<N> as complete::Outcome>::Value;
-type Parts<N> = complete::Parts<Token<N>, Scalar<N>, Flags<N>>;
-type Observation<N> = <N as Observe<Token<N>>>::Observation;
-type Record<N> = <N as ring::Source>::Decoded<Token<N>, Selection>;
-type Decoded<B, N> = <Record<N> as complete::Map>::Entry<B>;
-type Tuning<N> = <N as Source>::Table<flight::raw::Echo, { option::MAX_STREAM_OPTIONS }>;
+type Token = <Backend as token::Source>::Token<Context>;
+type Frame = <Token as token::Codec>::Frame;
+type Tune = <Token as token::Codec>::Tuning;
+type CloseToken<'d> = <Token as token::Codec>::Close<'d>;
+type Selected = <Backend as provided::Source>::Pending<transfer::Extent>;
+type Returned = <Backend as kernel::Source>::Returned;
+type Entry = <Backend as ring::Source>::Entry<Token>;
+type Scalar = <Entry as complete::Entry>::Outcome;
+type Value = <Scalar as complete::Outcome>::Value;
+type Observation = <Backend as Observe<Token>>::Observation;
+type Record = <Backend as ring::Source>::Decoded<Token, Selection>;
+type Decoded<'d> = <Record as complete::Map>::Entry<tokens::Token<'d, Selected>>;
+type Packet<'d> = <Backend as ring::Source>::Packet<Token, tokens::Token<'d, Selected>>;
+type Tuning = <Backend as tuning::Source>::Table<flight::raw::Echo, { option::MAX_STREAM_OPTIONS }>;
+type Occupied<'state> =
+    <Tuning as tuning::Table<flight::raw::Echo, { option::MAX_STREAM_OPTIONS }>>::Occupied<'state>;

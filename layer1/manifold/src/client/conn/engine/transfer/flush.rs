@@ -24,7 +24,7 @@ use crate::{
                 self, liveness,
                 transfer::{effect, send},
             },
-            flow, state,
+            flow,
         },
         side::mode::Mode,
     },
@@ -79,7 +79,7 @@ where
                 this.links
                     .pool_mut()
                     .get_mut(key)
-                    .is_some_and(|slot| slot.state.work.take_drain() == state::Taken::Ready)
+                    .is_some_and(|slot| slot.state.work.take_drain())
             };
             if drain {
                 <A::Requests as send::Policy<'w, 'd, ID, A>>::drain(
@@ -254,27 +254,23 @@ where
         if control == types::Demand::Discard || !pending {
             return Some((control, reason));
         }
-        let Some(permit) = turn.reborrow().app().permit() else {
-            let this = engine.as_mut().project();
-            if let Some(handle) = pending::Pending::of(this.links.pool()).at(key) {
-                handle.wake();
-            }
-            return Some((control, reason));
-        };
         let callback = {
             let this = engine.as_mut().project();
             let Some(pool::EgressMut {
                 flights: _,
                 connection: slot,
-                pending: _,
+                pending: handle,
                 queue: egress,
             }) = this.links.pool_mut().egress_mut(key)
             else {
                 return Some((control, reason));
             };
-            if slot.state.work.take_next() != state::Taken::Ready {
+            let Some(permit) = turn.reborrow().app().permit() else {
+                handle.wake();
                 return Some((control, reason));
-            }
+            };
+            // The same slot's continuation remains set until this exclusive loan clears it.
+            slot.state.work.clear_next();
             match State::active(slot, |active| {
                 app::Resumable::resume(
                     this.app,

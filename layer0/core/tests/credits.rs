@@ -59,6 +59,37 @@ fn allocation_reuses_group() {
 }
 
 #[test]
+fn best_fit_survives_failed_growth() {
+    let owner = storage::Owner::<NonZero<u64>, NonZero<u8>, _>::new(());
+    let small = NonZero::<u32>::MIN.saturating_add(8);
+    let large = NonZero::<u32>::MIN.saturating_add(16);
+    let first = owner.try_slots(small).expect("small backing");
+    let old = first
+        .get(indices::SlotIndex::ZERO)
+        .expect("first slot")
+        .key();
+    let second = owner.try_slots(large).expect("large backing");
+    drop((first, second));
+
+    let failed = Tracker::fail_after(0, || owner.try_slots(large.saturating_add(16)));
+    assert!(matches!(failed, Err(o3::alloc::Error::Exhausted)));
+    let (first, activity) = Tracker::measure(|| owner.try_slots(small));
+    let first = first.expect("reuse the smaller fitting group");
+    assert_eq!(activity, [0; 4]);
+    let (second, activity) = Tracker::measure(|| owner.try_slots(large));
+    let second = second.expect("the larger group remains available");
+    assert_eq!(activity, [0; 4]);
+    assert!(matches!(
+        old.arm(NonZero::<u64>::MIN),
+        Err(error::Arm::Stale(error::Stale {
+            observed: error::Generation::Active(generation),
+            ..
+        })) if generation == NonZero::<u64>::MIN.saturating_add(1)
+    ));
+    drop((first, second));
+}
+
+#[test]
 fn bounds_growth() {
     let owner = storage::Owner::<NonZero<u64>, NonZero<u8>, _>::new(());
     let ((), alloc) = Tracker::measure(|| {

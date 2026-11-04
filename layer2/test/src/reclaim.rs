@@ -79,11 +79,9 @@ impl<const ROUTES: usize> Reports<ROUTES> {
                         capacity: self.capacity,
                     });
                 }
-                let admitted = if index < self.accepted {
-                    slot.route() == origin
-                } else {
-                    self.routes.contains(&slot.route())
-                };
+                // Retirement reports may carry only the framework's physical identity.
+                let admitted = slot.route() == origin
+                    || (index >= self.accepted && self.routes.contains(&slot.route()));
                 if !admitted {
                     return Err(Error::ClosedOwner(event));
                 }

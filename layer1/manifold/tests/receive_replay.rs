@@ -1,8 +1,8 @@
 pub mod common;
 
-use std::{
-    convert::Infallible, fmt::Debug, io::Write as _, net::TcpStream, rc::Rc, time::Duration,
-};
+use common::manifold::listener::{native, reached};
+
+use std::{io::Write as _, net::TcpStream, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::{
@@ -26,15 +26,12 @@ use dope_net::{
     tcp::Tcp,
     wire::{Identity, domain},
 };
-use dope_runtime::{
-    executor::{
-        Executor,
-        session::{self, Completion},
-    },
-    topology::error::Kind,
+use dope_runtime::executor::{
+    Executor,
+    session::{self, Completion},
 };
 use dope_test::{
-    fibers::{self, Run, Wait},
+    fibers,
     harness::{
         observe::Trace,
         peer::Peer,
@@ -42,18 +39,6 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
-}
 
 #[test]
 fn replays_owner() {
@@ -105,7 +90,6 @@ fn replays_owner() {
 
 #[test]
 fn replay_preserves_wake() {
-    let writes = Rc::new(Trace::new());
     let state = Rc::new(State::default());
     let mut attempt = Attempt::new();
     let config = One::driver().expect("listener layout");
@@ -123,7 +107,7 @@ fn replay_preserves_wake() {
                 let mut finish = Completion::new();
                 listener::Install::<KeyTag<0>, Bundle<Tcp, Control, Throughput>, _>::new(
                     One::config(),
-                    domain::Local::new(Rc::clone(&writes)),
+                    domain::Local::new(()),
                 )
                 .with_driver(
                     App(Rc::clone(&state)),
@@ -137,6 +121,7 @@ fn replay_preserves_wake() {
                             Host::new(Observed {
                                 listener,
                                 state: Rc::clone(&state),
+                                pending: None,
                             }),
                             Duration::from_secs(2),
                             |mut app| {
@@ -165,6 +150,4 @@ fn replay_preserves_wake() {
         0,
         "receive must follow the exhausted replay"
     );
-    let writes = writes.values().expect("wire writes");
-    assert!(writes.is_empty(), "wire write failures: {writes:?}");
 }

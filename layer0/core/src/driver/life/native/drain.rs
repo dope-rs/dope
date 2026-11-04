@@ -26,10 +26,6 @@ pub(in crate::driver) struct Drain<'a, 'scope, 'd> {
     cursor: Cursor,
 }
 
-pub(in crate::driver) struct Final<'a, 'scope, 'd> {
-    context: &'a mut driver::Context<'scope, 'd>,
-}
-
 impl<'a, 'scope, 'd> Drain<'a, 'scope, 'd> {
     pub(in crate::driver) fn reclaim(
         ctx: &'a mut driver::Context<'scope, 'd>,
@@ -84,15 +80,9 @@ impl<'a, 'scope, 'd> Drain<'a, 'scope, 'd> {
     }
 }
 
-impl<'a, 'scope, 'd> Final<'a, 'scope, 'd> {
-    pub(in crate::driver) fn new(ctx: &'a mut driver::Context<'scope, 'd>) -> Self {
-        Self { context: ctx }
-    }
-
-    pub(in crate::driver) fn all(self) {
-        let driver = self.context.driver_ref();
-        while let Some(id) = queues::Pending::pop(driver) {
-            self.context.storage.release(id);
-        }
+pub(in crate::driver) fn routes(context: &mut driver::Context<'_, '_>) {
+    let driver = context.driver_ref();
+    while let Some(id) = queues::Pending::pop(driver) {
+        context.storage.release(id);
     }
 }

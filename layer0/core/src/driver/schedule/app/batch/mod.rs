@@ -2,7 +2,7 @@ use std::num::NonZero;
 
 use o3::{
     base::cell::region,
-    mem::{self, lease},
+    mem::{self, lease, quota},
 };
 
 use crate::driver::{
@@ -15,7 +15,7 @@ pub mod raw;
 /// Quota reserved for one batch before its actual size is known.
 #[must_use = "dropping a batch reservation returns all of its quota"]
 pub struct Reserved<'turn, 'd, T> {
-    quota: lanes::Quota<'turn, 'd, lease::Open>,
+    quota: quota::Shared<'turn, lanes::Domain<'d>, lease::Open>,
     limit: T,
 }
 
@@ -29,11 +29,9 @@ pub struct Bound<'id, T> {
 impl<'turn, 'd, T: batch::raw::Limit> Reserved<'turn, 'd, T> {
     pub fn reserve(work: app::Work<'turn, 'd>, limit: T, prior: bool) -> schedule::Capacity<Self> {
         let reserved = limit.get().get() - 1 + usize::from(prior);
-        match lanes::Quota::reserve_app(work, reserved) {
-            schedule::Capacity::Available(quota) => {
-                schedule::Capacity::Available(Self { quota, limit })
-            }
-            schedule::Capacity::Exhausted => schedule::Capacity::Exhausted,
+        match quota::Shared::reserve(&work.state.lanes.app, reserved) {
+            Some(quota) => schedule::Capacity::Available(Self { quota, limit }),
+            None => schedule::Capacity::Exhausted,
         }
     }
 
@@ -50,11 +48,9 @@ impl<'turn, 'd, T: batch::raw::Limit> Reserved<'turn, 'd, T> {
             quota: reserved,
             limit,
         } = self;
-        reserved
-            .inner
-            .with((context, limit), |(context, limit), token| {
-                apply(context, Bound { limit, token })
-            })
+        reserved.with((context, limit), |(context, limit), token| {
+            apply(context, Bound { limit, token })
+        })
     }
 }
 

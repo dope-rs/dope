@@ -204,8 +204,7 @@ where
         let limit = plan
             .per_ip
             .unwrap_or(<E::Admission as quota::Policy>::PER_IP);
-        let accept = accept::Prepared::<ID>::try_new(conns.into(), limit, hash)
-            .map_err(accept::Prepare::into_error)?;
+        let accept = accept::Prepared::<ID>::try_new(conns, limit, hash)?;
         let driver = context(owner).driver_ref();
         memory::Arena::<ID, B>::try_with(shape, conns.into(), driver, |writes, setup| {
             change::raw::Storage::<ID, _, IOV_CAP, _>::try_with(

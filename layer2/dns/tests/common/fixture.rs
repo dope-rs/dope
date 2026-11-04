@@ -4,6 +4,7 @@ use dope::{
     core::{
         Errno,
         driver::{
+            result::poll::Close,
             route::{self, KeyTag, kind::Kind},
             settings::errors,
         },
@@ -54,7 +55,12 @@ pub fn try_prepare<const OUTBOUND: usize, const LANES: usize, const ADDRESSES: u
 
 pub(crate) fn shutdown(report: Reclaimed) -> Result<(), Reclaimed> {
     match report {
-        Reclaimed::Shutdown => Ok(()),
+        Reclaimed::Shutdown
+        | Reclaimed::Close {
+            file: Close::Closed(Ok(())),
+            reactor: Ok(()),
+            ..
+        } => Ok(()),
         report => Err(report),
     }
 }

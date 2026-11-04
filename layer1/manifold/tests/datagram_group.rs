@@ -12,13 +12,14 @@ use common::{
 };
 use dope_core::{
     driver::{
-        life::{creation::Attempt, recovery},
+        life::recovery,
         route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
     },
     io,
 };
-use dope_manifold::network::datagram::{
-    RejectCause, group::plan::Plan, plan::Config, send::Outcome,
+use dope_manifold::{
+    app::Host,
+    network::datagram::{RejectCause, group::plan::Plan, plan::Config, send::Outcome},
 };
 use dope_runtime::executor::{
     drive,
@@ -41,7 +42,6 @@ fn routes_work_budget() {
         NonZero::<usize>::MIN.saturating_add(3),
     ] {
         let mut finish = Completion::new();
-        let mut create = Attempt::new();
         let client =
             peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
         let upstream =
@@ -53,19 +53,13 @@ fn routes_work_budget() {
         let dropped = Gate::new();
         let runtime = Runtime::quic::<64, 2048>();
         let mut reports = Reports::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-        let created = runtime.try_executor(&mut create);
-        created
-            .as_ref()
-            .map_err(|cause| cause.kind())
-            .expect("native creation");
-        created.ok().expect("native creation").run(|executor| {
-            let closed = executor.enter_with(
-                |mut scope| {
-                    let config = Config::new(4, 16_384, 4).expect("send bounds");
-                    let plan =
-                        Plan::<KeyTag<0>>::try_new(config, NonZero::<u32>::MIN.saturating_add(1))
-                            .expect("two socket domain");
-                    let endpoint = plan
+        runtime.with_scope(
+            |mut scope| {
+                let config = Config::new(4, 16_384, 4).expect("send bounds");
+                let plan =
+                    Plan::<KeyTag<0>>::try_new(config, NonZero::<u32>::MIN.saturating_add(1))
+                        .expect("two socket domain");
+                let endpoint = plan
                     .bind(
                         (net::Ipv4Addr::LOCALHOST, 0).into(),
                         (net::Ipv4Addr::LOCALHOST, 0).into(),
@@ -105,80 +99,79 @@ fn routes_work_budget() {
                         &mut scope.driver(),
                     )
                     .expect("group bind");
-                    let front = endpoint.local_addr(SlotIndex::ZERO).expect("front socket");
-                    let member = endpoint
-                        .local_addr(SlotIndex::fixed::<1>())
-                        .expect("member socket");
-                    assert_ne!(front, member);
-                    for _ in 0..4 {
-                        client.send_to(&[1, 2], front).expect("request burst");
-                    }
-                    let result = scope.with_quiesce(
-                        &mut finish,
-                        group::App { endpoint },
-                        Duration::from_secs(2),
-                        |mut app| {
-                            let mut bytes = [0; 8];
-                            for _ in 0..4 {
-                                let (length, source, left) = app
-                                    .drive_for(
-                                        Duration::from_secs(2),
-                                        group::Read {
-                                            socket: &upstream,
-                                            bytes: &mut bytes,
-                                            credits,
-                                        },
-                                    )
-                                    .expect("forward under bounded credits")
-                                    .expect("upstream receives");
-                                assert_eq!(
-                                    (&bytes[..length], source, left),
-                                    (&[1, 2][..], member, credits.get())
-                                );
-                            }
-                            for _ in 0..4 {
-                                upstream.send_to(&[3, 4], member).expect("reply burst");
-                            }
-                            for _ in 0..4 {
-                                let (length, source, left) = app
-                                    .drive_for(
-                                        Duration::from_secs(2),
-                                        group::Read {
-                                            socket: &client,
-                                            bytes: &mut bytes,
-                                            credits,
-                                        },
-                                    )
-                                    .expect("reply under bounded credits")
-                                    .expect("client receives");
-                                assert_eq!(
-                                    (&bytes[..length], source, left),
-                                    (&[3, 4][..], front, credits.get())
-                                );
-                            }
+                let front = endpoint.local_addr(SlotIndex::ZERO).expect("front socket");
+                let member = endpoint
+                    .local_addr(SlotIndex::fixed::<1>())
+                    .expect("member socket");
+                assert_ne!(front, member);
+                for _ in 0..4 {
+                    client.send_to(&[1, 2], front).expect("request burst");
+                }
+                let result = scope.with_quiesce(
+                    &mut finish,
+                    Host::new(endpoint),
+                    Duration::from_secs(2),
+                    |mut app| {
+                        let mut bytes = [0; 8];
+                        for _ in 0..4 {
+                            let (length, source, left) = app
+                                .drive_for(
+                                    Duration::from_secs(2),
+                                    group::Read {
+                                        socket: &upstream,
+                                        bytes: &mut bytes,
+                                        credits,
+                                    },
+                                )
+                                .expect("forward under bounded credits")
+                                .expect("upstream receives");
                             assert_eq!(
-                                fibers::TEST
-                                    .try_wait(&mut app, &sent, 8)
-                                    .expect("send completions"),
-                                fibers::Wait::Reached,
+                                (&bytes[..length], source, left),
+                                (&[1, 2][..], member, credits.get())
                             );
-                        },
-                    );
-                    assert!(result.is_ok(), "group quiescence");
-                },
-                recovery::Policy::new(
-                    |event| {
-                        assert_eq!(dropped.hits(), 0, "group owner retained during recovery");
-                        reports.push(event);
+                        }
+                        for _ in 0..4 {
+                            upstream.send_to(&[3, 4], member).expect("reply burst");
+                        }
+                        for _ in 0..4 {
+                            let (length, source, left) = app
+                                .drive_for(
+                                    Duration::from_secs(2),
+                                    group::Read {
+                                        socket: &client,
+                                        bytes: &mut bytes,
+                                        credits,
+                                    },
+                                )
+                                .expect("reply under bounded credits")
+                                .expect("client receives");
+                            assert_eq!(
+                                (&bytes[..length], source, left),
+                                (&[3, 4][..], front, credits.get())
+                            );
+                        }
+                        assert_eq!(
+                            fibers::TEST
+                                .try_wait(&mut app, &sent, 8)
+                                .expect("send completions"),
+                            fibers::Wait::Reached,
+                        );
                     },
-                    recover,
-                ),
-            );
-            closed
-                .as_ref()
-                .map_err(|cause| cause.cause())
-                .expect("native retirement");
-        });
+                );
+                assert!(result.is_ok(), "group quiescence");
+            },
+            recovery::Policy::new(
+                |event| {
+                    assert_eq!(
+                        dropped.hits(),
+                        u32::from(matches!(event, io::Reclaimed::Close { .. })),
+                        "requests finish before owner release; descriptors close afterward"
+                    );
+                    reports.push(event);
+                },
+                recover,
+            ),
+        );
         assert_eq!((received.hits(), sent.hits(), dropped.hits()), (8, 8, 1));
         let events = reports.events().expect("reclaim observations");
         assert_eq!(events.len(), 2);
@@ -199,7 +192,6 @@ fn routes_work_budget() {
 fn pooled_admission_keeps_owner() {
     for (pending, slot) in [(1, SlotIndex::ZERO), (2, SlotIndex::fixed::<1>())] {
         let mut finish = Completion::new();
-        let mut create = Attempt::new();
         let client =
             peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
         client.nonblock(true);
@@ -208,254 +200,9 @@ fn pooled_admission_keeps_owner() {
         let sent = Gate::new();
         let dropped = Gate::new();
         let runtime = Runtime::quic::<64, 2048>();
-        let created = runtime.try_executor(&mut create);
-        created
-            .as_ref()
-            .map_err(|cause| cause.kind())
-            .expect("native creation");
-        created.ok().expect("native creation").run(|executor| {
-            let closed = executor.enter_with(
-                |mut scope| {
-                    let config = Config::new(pending, 16, 1).expect("one resident pool slot");
-                    let plan =
-                        Plan::<KeyTag<0>>::try_new(config, NonZero::<u32>::MIN.saturating_add(1))
-                            .expect("two socket domain");
-                    let endpoint = plan
-                        .bind(
-                            (net::Ipv4Addr::LOCALHOST, 0).into(),
-                            (net::Ipv4Addr::LOCALHOST, 0).into(),
-                            group::Handler::new(
-                                State {
-                                    client: client.local_addr().expect("client address"),
-                                    upstream: client.local_addr().expect("reply address"),
-                                    received: received.clone(),
-                                },
-                                |state, received, source, mut access| {
-                                    let (address, packet) = received.expect("valid datagram");
-                                    assert_eq!((source, address), (SlotIndex::ZERO, state.client));
-                                    let mut cursor = pool.cursor().expect("first owner");
-                                    cursor
-                                        .write_slices([&[9][..], packet.as_ref()])
-                                        .expect("prefixed payload fits");
-                                    let pointer = cursor.as_ref().as_ptr();
-                                    let rejected = access
-                                        .queue_pooled(cursor, SlotIndex::fixed::<2>(), state.client)
-                                        .expect_err("slot outside this group");
-                                    let (cursor, cause) = rejected.into_parts();
-                                    assert_eq!(
-                                        cause,
-                                        RejectCause::Slot {
-                                            requested: SlotIndex::fixed::<2>(),
-                                            capacity: 2,
-                                        }
-                                    );
-                                    assert_eq!(cursor.as_ref().as_ptr(), pointer);
-                                    assert_eq!(cursor.as_ref(), &[9, 1, 2]);
-                                    assert_eq!((cursor.spare_len(), pool.available()), (13, 1));
-                                    assert!(
-                                        access.queue_pooled(cursor, slot, state.client).is_ok()
-                                    );
-
-                                    let mut cursor = pool.cursor().expect("second owner");
-                                    cursor.write_slice(&[3, 4]).expect("second payload fits");
-                                    let pointer = cursor.as_ref().as_ptr();
-                                    let rejected = access
-                                        .queue_pooled(cursor, slot, state.client)
-                                        .expect_err("first owner consumes admission");
-                                    let (cursor, cause) = rejected.into_parts();
-                                    assert_eq!(
-                                        cause,
-                                        if pending == 1 {
-                                            RejectCause::QueueFull
-                                        } else {
-                                            RejectCause::Resident {
-                                                required: NonZero::<usize>::MIN.saturating_add(15),
-                                                available: 0,
-                                            }
-                                        }
-                                    );
-                                    assert_eq!(cursor.as_ref().as_ptr(), pointer);
-                                    assert_eq!(cursor.as_ref(), &[3, 4]);
-                                    assert_eq!((cursor.spare_len(), pool.available()), (14, 0));
-                                    drop(cursor);
-                                    assert_eq!(pool.available(), 1);
-                                    state.received.hit();
-                                },
-                                |outcome| {
-                                    assert!(matches!(outcome,
-                                        Outcome::Sent(bytes) if bytes.into_raw() == 3
-                                    ));
-                                    assert_eq!(
-                                        pool.available(),
-                                        2,
-                                        "payload released before callback"
-                                    );
-                                    sent.hit();
-                                },
-                                dropped.clone(),
-                            ),
-                            &mut scope.driver(),
-                        )
-                        .expect("group bind");
-                    let front = endpoint.local_addr(SlotIndex::ZERO).expect("front socket");
-                    let outgoing = endpoint.local_addr(slot).expect("selected socket");
-                    client.send_to(&[1, 2], front).expect("request");
-                    let result = scope.with_quiesce(
-                        &mut finish,
-                        group::App { endpoint },
-                        Duration::from_secs(2),
-                        |mut app| {
-                            let mut bytes = [0; 8];
-                            let (length, source, _) = app
-                                .drive_for(
-                                    Duration::from_secs(2),
-                                    group::Read {
-                                        socket: &client,
-                                        bytes: &mut bytes,
-                                        credits: NonZero::<usize>::MIN,
-                                    },
-                                )
-                                .expect("pooled forwarding")
-                                .expect("client receives");
-                            assert_eq!((&bytes[..length], source), (&[9, 1, 2][..], outgoing));
-                            assert_eq!(
-                                fibers::TEST
-                                    .try_wait(&mut app, &sent, 1)
-                                    .expect("pooled completion"),
-                                fibers::Wait::Reached,
-                            );
-                        },
-                    );
-                    assert!(result.is_ok(), "group quiescence");
-                },
-                recovery::Policy::new(|_| {}, recover),
-            );
-            closed
-                .as_ref()
-                .map_err(|cause| cause.cause())
-                .expect("native retirement");
-        });
-        assert_eq!((received.hits(), sent.hits(), dropped.hits()), (1, 1, 1));
-        assert_eq!(pool.available(), 2);
-    }
-}
-
-#[test]
-fn reports_native_failure() {
-    let mut finish = Completion::new();
-    let mut create = Attempt::new();
-    let client =
-        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
-    let pool = pool::Pool::try_new(1, 16).expect("send owner");
-    let received = Gate::new();
-    let sent = Gate::new();
-    let dropped = Gate::new();
-    let expected = dope_core::Errno::try_from(libc::EAFNOSUPPORT).expect("address family error");
-    let runtime = Runtime::quic::<64, 2048>();
-    let created = runtime.try_executor(&mut create);
-    created
-        .as_ref()
-        .map_err(|cause| cause.kind())
-        .expect("native creation");
-    created.ok().expect("native creation").run(|executor| {
-        let closed =
-            executor.enter_with(
-                |mut scope| {
-                    let config = Config::new(2, 4096, 2).expect("packet and pooled send slots");
-                    let plan =
-                        Plan::<KeyTag<0>>::try_new(config, NonZero::<u32>::MIN.saturating_add(1))
-                            .expect("two socket domain");
-                    let endpoint = plan
-                    .bind(
-                        (net::Ipv4Addr::LOCALHOST, 0).into(),
-                        (net::Ipv4Addr::LOCALHOST, 0).into(),
-                        group::Handler::new(
-                            State {
-                                client: client.local_addr().expect("client address"),
-                                upstream: (net::Ipv6Addr::LOCALHOST, 9).into(),
-                                received: received.clone(),
-                            },
-                            |state, received, source, mut access| {
-                                let (address, packet) = received.expect("valid datagram");
-                                assert_eq!((source, address), (SlotIndex::ZERO, state.client));
-                                let mut cursor = pool.cursor().expect("pooled owner");
-                                cursor.write_slice(packet.as_ref()).expect("payload fits");
-                                assert!(
-                                    access
-                                        .queue_packet(
-                                            packet,
-                                            SlotIndex::fixed::<1>(),
-                                            state.upstream,
-                                        )
-                                        .is_ok()
-                                );
-                                assert!(access
-                                    .queue_pooled(cursor, SlotIndex::fixed::<1>(), state.upstream)
-                                    .is_ok());
-                                state.received.hit();
-                            },
-                            |outcome| {
-                                assert!(
-                                    matches!(outcome, Outcome::Failed(error) if error == expected)
-                                );
-                                sent.hit();
-                            },
-                            dropped.clone(),
-                        ),
-                        &mut scope.driver(),
-                    )
-                    .expect("IPv4 group bind");
-                    let front = endpoint.local_addr(SlotIndex::ZERO).expect("front socket");
-                    client.send_to(&[1], front).expect("request");
-                    let result = scope.with_quiesce(
-                        &mut finish,
-                        group::App { endpoint },
-                        Duration::from_secs(2),
-                        |mut app| {
-                            assert_eq!(
-                                fibers::TEST
-                                    .try_wait(&mut app, &sent, 2)
-                                    .expect("native send failure"),
-                                fibers::Wait::Reached,
-                            );
-                        },
-                    );
-                    assert!(result.is_ok(), "group quiescence");
-                },
-                recovery::Policy::new(|_| {}, recover),
-            );
-        closed
-            .as_ref()
-            .map_err(|cause| cause.cause())
-            .expect("native retirement");
-    });
-    assert_eq!((received.hits(), sent.hits(), dropped.hits()), (1, 2, 1));
-    assert_eq!(pool.available(), 1);
-}
-
-#[test]
-fn forced_finish_retains() {
-    let mut finish = Completion::new();
-    let mut create = Attempt::new();
-    let client =
-        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
-    let upstream =
-        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("upstream socket");
-    let pool = pool::Pool::try_new(1, 16).expect("send owner");
-    let received = Gate::new();
-    let sent = Gate::new();
-    let dropped = Gate::new();
-    let runtime = Runtime::quic::<64, 2048>();
-    let mut reports = Reports::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    let created = runtime.try_executor(&mut create);
-    created
-        .as_ref()
-        .map_err(|cause| cause.kind())
-        .expect("native creation");
-    created.ok().expect("native creation").run(|executor| {
-        let closed = executor.enter_with(
+        runtime.with_scope(
             |mut scope| {
-                let config = Config::new(2, 4096, 1).expect("send bounds");
+                let config = Config::new(pending, 16, 1).expect("one resident pool slot");
                 let plan =
                     Plan::<KeyTag<0>>::try_new(config, NonZero::<u32>::MIN.saturating_add(1))
                         .expect("two socket domain");
@@ -466,80 +213,281 @@ fn forced_finish_retains() {
                         group::Handler::new(
                             State {
                                 client: client.local_addr().expect("client address"),
-                                upstream: upstream.local_addr().expect("upstream address"),
+                                upstream: client.local_addr().expect("reply address"),
                                 received: received.clone(),
                             },
                             |state, received, source, mut access| {
                                 let (address, packet) = received.expect("valid datagram");
-                                assert_eq!(source, SlotIndex::ZERO);
-                                assert_eq!((address, packet.as_ref()), (state.client, &[1, 2][..]));
-                                let mut cursor = pool.cursor().expect("pooled owner");
-                                cursor.write_slice(packet.as_ref()).expect("payload fits");
-                                assert!(
-                                    access
-                                        .queue_pooled(
-                                            cursor,
-                                            SlotIndex::fixed::<1>(),
-                                            state.upstream
-                                        )
-                                        .is_ok()
+                                assert_eq!((source, address), (SlotIndex::ZERO, state.client));
+                                let mut cursor = pool.cursor().expect("first owner");
+                                cursor
+                                    .write_slices([&[9][..], packet.as_ref()])
+                                    .expect("prefixed payload fits");
+                                let pointer = cursor.as_ref().as_ptr();
+                                let rejected = access
+                                    .queue_pooled(cursor, SlotIndex::fixed::<2>(), state.client)
+                                    .expect_err("slot outside this group");
+                                let (cursor, cause) = rejected.into_parts();
+                                assert_eq!(
+                                    cause,
+                                    RejectCause::Slot {
+                                        requested: SlotIndex::fixed::<2>(),
+                                        capacity: 2,
+                                    }
                                 );
-                                assert!(
-                                    access
-                                        .queue_packet(
-                                            packet,
-                                            SlotIndex::fixed::<1>(),
-                                            state.upstream
-                                        )
-                                        .is_ok()
+                                assert_eq!(cursor.as_ref().as_ptr(), pointer);
+                                assert_eq!(cursor.as_ref(), &[9, 1, 2]);
+                                assert_eq!((cursor.spare_len(), pool.available()), (13, 1));
+                                assert!(access.queue_pooled(cursor, slot, state.client).is_ok());
+
+                                let mut cursor = pool.cursor().expect("second owner");
+                                cursor.write_slice(&[3, 4]).expect("second payload fits");
+                                let pointer = cursor.as_ref().as_ptr();
+                                let rejected = access
+                                    .queue_pooled(cursor, slot, state.client)
+                                    .expect_err("first owner consumes admission");
+                                let (cursor, cause) = rejected.into_parts();
+                                assert_eq!(
+                                    cause,
+                                    if pending == 1 {
+                                        RejectCause::QueueFull
+                                    } else {
+                                        RejectCause::Resident {
+                                            required: NonZero::<usize>::MIN.saturating_add(15),
+                                            available: 0,
+                                        }
+                                    }
                                 );
+                                assert_eq!(cursor.as_ref().as_ptr(), pointer);
+                                assert_eq!(cursor.as_ref(), &[3, 4]);
+                                assert_eq!((cursor.spare_len(), pool.available()), (14, 0));
+                                drop(cursor);
+                                assert_eq!(pool.available(), 1);
                                 state.received.hit();
                             },
-                            |_| sent.hit(),
+                            |outcome| {
+                                assert!(matches!(outcome,
+                                    Outcome::Sent(bytes) if bytes.into_raw() == 3
+                                ));
+                                assert_eq!(pool.available(), 2, "payload released before callback");
+                                sent.hit();
+                            },
                             dropped.clone(),
                         ),
                         &mut scope.driver(),
                     )
                     .expect("group bind");
                 let front = endpoint.local_addr(SlotIndex::ZERO).expect("front socket");
-                client.send_to(&[1, 2], front).expect("request owner");
+                let outgoing = endpoint.local_addr(slot).expect("selected socket");
+                client.send_to(&[1, 2], front).expect("request");
                 let result = scope.with_quiesce(
                     &mut finish,
-                    group::App { endpoint },
-                    Duration::ZERO,
+                    Host::new(endpoint),
+                    Duration::from_secs(2),
                     |mut app| {
+                        let mut bytes = [0; 8];
+                        let (length, source, _) = app
+                            .drive_for(
+                                Duration::from_secs(2),
+                                group::Read {
+                                    socket: &client,
+                                    bytes: &mut bytes,
+                                    credits: NonZero::<usize>::MIN,
+                                },
+                            )
+                            .expect("pooled forwarding")
+                            .expect("client receives");
+                        assert_eq!((&bytes[..length], source), (&[9, 1, 2][..], outgoing));
                         assert_eq!(
                             fibers::TEST
-                                .try_wait(&mut app, &received, 1)
-                                .expect("forward admission"),
+                                .try_wait(&mut app, &sent, 1)
+                                .expect("pooled completion"),
                             fibers::Wait::Reached,
                         );
                     },
                 );
-                let error = result.expect_err("forced quiescence timeout");
-                assert!(matches!(error,
-                    session::Error::Quiesce { output: (), drive, disarm: None }
-                        if drive.kind() == drive::Kind::QuiescenceTimeout
-                ));
+                assert!(result.is_ok(), "group quiescence");
             },
-            recovery::Policy::new(
-                |event| {
-                    assert_eq!(pool.available(), 0, "pooled flight retains its owner");
-                    assert_eq!(
-                        dropped.hits(),
-                        0,
-                        "queued packet and descriptors retain group owner"
-                    );
-                    reports.push(event);
-                },
-                recover,
-            ),
+            recovery::Policy::new(|_| {}, recover),
         );
-        closed
-            .as_ref()
-            .map_err(|cause| cause.cause())
-            .expect("native retirement");
-    });
+        assert_eq!((received.hits(), sent.hits(), dropped.hits()), (1, 1, 1));
+        assert_eq!(pool.available(), 2);
+    }
+}
+
+#[test]
+fn reports_native_failure() {
+    let mut finish = Completion::new();
+    let client =
+        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
+    let pool = pool::Pool::try_new(1, 16).expect("send owner");
+    let received = Gate::new();
+    let sent = Gate::new();
+    let dropped = Gate::new();
+    let upstream = (net::Ipv6Addr::LOCALHOST, 9).into();
+    let expected = match client.send_to(&[1], upstream) {
+        Err(peer::Error::Syscall(error)) => error,
+        result => panic!("incompatible native destination: {result:?}"),
+    };
+    let runtime = Runtime::quic::<64, 2048>();
+    runtime.with_scope(
+        |mut scope| {
+            let config = Config::new(2, 4096, 2).expect("packet and pooled send slots");
+            let plan = Plan::<KeyTag<0>>::try_new(config, NonZero::<u32>::MIN.saturating_add(1))
+                .expect("two socket domain");
+            let endpoint = plan
+                .bind(
+                    (net::Ipv4Addr::LOCALHOST, 0).into(),
+                    (net::Ipv4Addr::LOCALHOST, 0).into(),
+                    group::Handler::new(
+                        State {
+                            client: client.local_addr().expect("client address"),
+                            upstream,
+                            received: received.clone(),
+                        },
+                        |state, received, source, mut access| {
+                            let (address, packet) = received.expect("valid datagram");
+                            assert_eq!((source, address), (SlotIndex::ZERO, state.client));
+                            let mut cursor = pool.cursor().expect("pooled owner");
+                            cursor.write_slice(packet.as_ref()).expect("payload fits");
+                            assert!(
+                                access
+                                    .queue_packet(packet, SlotIndex::fixed::<1>(), state.upstream,)
+                                    .is_ok()
+                            );
+                            assert!(
+                                access
+                                    .queue_pooled(cursor, SlotIndex::fixed::<1>(), state.upstream)
+                                    .is_ok()
+                            );
+                            state.received.hit();
+                        },
+                        |outcome| {
+                            let Outcome::Failed(error) = outcome else {
+                                panic!("native send failure");
+                            };
+                            assert_eq!(error, expected);
+                            sent.hit();
+                        },
+                        dropped.clone(),
+                    ),
+                    &mut scope.driver(),
+                )
+                .expect("IPv4 group bind");
+            let front = endpoint.local_addr(SlotIndex::ZERO).expect("front socket");
+            client.send_to(&[1], front).expect("request");
+            let result = scope.with_quiesce(
+                &mut finish,
+                Host::new(endpoint),
+                Duration::from_secs(2),
+                |mut app| {
+                    assert_eq!(
+                        fibers::TEST
+                            .try_wait(&mut app, &sent, 2)
+                            .expect("native send failure"),
+                        fibers::Wait::Reached,
+                    );
+                },
+            );
+            assert!(result.is_ok(), "group quiescence");
+        },
+        recovery::Policy::new(|_| {}, recover),
+    );
+    assert_eq!((received.hits(), sent.hits(), dropped.hits()), (1, 2, 1));
+    assert_eq!(pool.available(), 1);
+}
+
+#[test]
+fn forced_finish_retains() {
+    let mut finish = Completion::new();
+    let client =
+        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("client socket");
+    let upstream =
+        peer::udp::Socket::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("upstream socket");
+    let pool = pool::Pool::try_new(1, 16).expect("send owner");
+    let received = Gate::new();
+    let sent = Gate::new();
+    let dropped = Gate::new();
+    let runtime = Runtime::quic::<64, 2048>();
+    let mut reports = Reports::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    runtime.with_scope(
+        |mut scope| {
+            let config = Config::new(2, 4096, 1).expect("send bounds");
+            let plan = Plan::<KeyTag<0>>::try_new(config, NonZero::<u32>::MIN.saturating_add(1))
+                .expect("two socket domain");
+            let endpoint = plan
+                .bind(
+                    (net::Ipv4Addr::LOCALHOST, 0).into(),
+                    (net::Ipv4Addr::LOCALHOST, 0).into(),
+                    group::Handler::new(
+                        State {
+                            client: client.local_addr().expect("client address"),
+                            upstream: upstream.local_addr().expect("upstream address"),
+                            received: received.clone(),
+                        },
+                        |state, received, source, mut access| {
+                            let (address, packet) = received.expect("valid datagram");
+                            assert_eq!(source, SlotIndex::ZERO);
+                            assert_eq!((address, packet.as_ref()), (state.client, &[1, 2][..]));
+                            let mut cursor = pool.cursor().expect("pooled owner");
+                            cursor.write_slice(packet.as_ref()).expect("payload fits");
+                            assert!(
+                                access
+                                    .queue_pooled(cursor, SlotIndex::fixed::<1>(), state.upstream)
+                                    .is_ok()
+                            );
+                            assert!(
+                                access
+                                    .queue_packet(packet, SlotIndex::fixed::<1>(), state.upstream)
+                                    .is_ok()
+                            );
+                            state.received.hit();
+                        },
+                        |_| sent.hit(),
+                        dropped.clone(),
+                    ),
+                    &mut scope.driver(),
+                )
+                .expect("group bind");
+            let front = endpoint.local_addr(SlotIndex::ZERO).expect("front socket");
+            client.send_to(&[1, 2], front).expect("request owner");
+            let result = scope.with_quiesce(
+                &mut finish,
+                Host::new(endpoint),
+                Duration::ZERO,
+                |mut app| {
+                    assert_eq!(
+                        fibers::TEST
+                            .try_wait(&mut app, &received, 1)
+                            .expect("forward admission"),
+                        fibers::Wait::Reached,
+                    );
+                },
+            );
+            let error = result.expect_err("forced quiescence timeout");
+            assert!(matches!(error,
+                session::Error::Quiesce { output: (), drive, disarm: None }
+                    if drive.kind() == drive::Kind::QuiescenceTimeout
+            ));
+        },
+        recovery::Policy::new(
+            |event| {
+                let released = matches!(event, io::Reclaimed::Close { .. });
+                assert_eq!(
+                    pool.available(),
+                    usize::from(released),
+                    "pooled flight retains its owner"
+                );
+                assert_eq!(
+                    dropped.hits(),
+                    u32::from(released),
+                    "requests finish before owner release; descriptors close afterward"
+                );
+                reports.push(event);
+            },
+            recover,
+        ),
+    );
     assert_eq!((received.hits(), sent.hits(), dropped.hits()), (1, 0, 1));
     assert_eq!(pool.available(), 1);
     let mut receives = Vec::new();

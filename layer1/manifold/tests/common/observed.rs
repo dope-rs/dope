@@ -8,16 +8,13 @@ use dope_core::{
 use dope_manifold::{
     app::{
         dispatch::{self, event},
-        env::Bundle,
         receive,
     },
     network::listener::{
-        self, conn,
+        conn,
         handler::{self, failures, retire, send},
     },
-    timing::Throughput,
 };
-use dope_net::tcp::Tcp;
 use dope_runtime::executor;
 use dope_test::harness::signals::Gate;
 use o3::buffer::{bytes::TryRetain, resident};
@@ -26,6 +23,8 @@ use crate::common::manifold::listener::finish::close::control::Control;
 
 #[derive(Default)]
 pub struct State {
+    pub(crate) hold: Cell<bool>,
+    pub(crate) intercepted: Gate,
     pub(crate) parked: Cell<bool>,
     pub(crate) exhausted: Cell<bool>,
     pub(crate) early: Cell<usize>,
@@ -118,18 +117,16 @@ impl<'d> handler::Gated<'d, KeyTag<0>> for App {
     }
 }
 
-type Listener<'n, 'p, 's, 'd> =
-    listener::Listener<'n, 'p, 's, 'd, 'd, KeyTag<0>, App, Bundle<Tcp, Control, Throughput>>;
-
 #[pin_project::pin_project]
-pub struct Observed<'n, 'p, 's, 'd: 's> {
+pub struct Observed<'d, M> {
     #[pin]
-    pub(crate) listener: Listener<'n, 'p, 's, 'd>,
+    pub(crate) listener: M,
     pub(crate) state: Rc<State>,
+    pub(crate) pending: Option<io::Event<'d>>,
 }
 
-impl<'n, 'p, 's, 'd> dispatch::raw::Projection<'d> for Observed<'n, 'p, 's, 'd> {
-    type Inner = Listener<'n, 'p, 's, 'd>;
+impl<'d, M> dispatch::raw::Projection<'d> for Observed<'d, M> {
+    type Inner = M;
     fn inner(self: Pin<&Self>) -> Pin<&Self::Inner> {
         self.project_ref().listener
     }
@@ -139,8 +136,16 @@ impl<'n, 'p, 's, 'd> dispatch::raw::Projection<'d> for Observed<'n, 'p, 's, 'd> 
 }
 
 // SAFETY: every lifecycle and dispatch operation retains the installed listener;
-// observation only releases the test gate after its receive has been parked.
-unsafe impl<'n, 'p, 's, 'd> dispatch::raw::Manifold<'d> for Observed<'n, 'p, 's, 'd> {
+// one owned native completion is replayed unchanged before listener maintenance.
+unsafe impl<'d, M> dispatch::raw::Manifold<'d> for Observed<'d, M>
+where
+    M: dispatch::raw::Manifold<
+            'd,
+            Route = KeyTag<0>,
+            PrePark = dispatch::raw::Retained,
+            Shutdown = dispatch::raw::Retained,
+        > + event::Turn<'d, Access = dispatch::raw::Retained>,
+{
     type Route = KeyTag<0>;
     type Dispatch = event::Timed<dispatch::raw::Retained>;
     type Install = dispatch::raw::Projected<Self>;
@@ -161,9 +166,20 @@ unsafe impl<'n, 'p, 's, 'd> dispatch::raw::Manifold<'d> for Observed<'n, 'p, 's,
     where
         Self: 'root,
     {
+        let mut this = self.as_mut().project();
+        if !this.state.hold.get()
+            && let Some(done) = this.pending.take()
+            && let ControlFlow::Break(done) = M::dispatch(executor::raw::Call::new(
+                this.listener.as_mut(),
+                (),
+                (done, turn.reborrow(), driver.reborrow()),
+            ))
+        {
+            *this.pending = Some(done);
+        }
         // SAFETY: this is the unchanged pinned listener of the installed wrapper.
         unsafe {
-            dispatch::raw::Manifold::pre_park(self.as_mut().project().listener, turn, driver);
+            dispatch::raw::Manifold::pre_park(this.listener, turn, driver);
         }
         self
     }
@@ -176,12 +192,13 @@ unsafe impl<'n, 'p, 's, 'd> dispatch::raw::Manifold<'d> for Observed<'n, 'p, 's,
     where
         Self: 'root,
     {
+        self.as_ref().project_ref().state.hold.set(false);
         dispatch::raw::Manifold::shutdown(self.as_mut().project().listener, turn, driver);
         self
     }
 }
 
-impl<'n, 'p, 's, 'd> event::Turn<'d> for Observed<'n, 'p, 's, 'd> {
+impl<'d, M: event::Turn<'d, Access = dispatch::raw::Retained>> event::Turn<'d> for Observed<'d, M> {
     type Access = dispatch::raw::Retained;
 
     fn dispatch<'app, 'driver, 'turn, 'root>(
@@ -200,9 +217,20 @@ impl<'n, 'p, 's, 'd> event::Turn<'d> for Observed<'n, 'p, 's, 'd> {
         'd: 'root,
     {
         let (owner, (), (done, turn, driver)) = call.into_parts();
-        let kind = done.into_kind();
-        let received = matches!(&kind, io::event::Kind::Recv(_));
         let this = owner.project();
+        let kind = match done.into_kind() {
+            io::event::Kind::Recv(done) if this.state.hold.get() => match done.classify() {
+                io::event::net::recv::Kind::Data(data) => {
+                    assert!(this.pending.is_none(), "one held native completion");
+                    *this.pending = Some(data.rejoin().into());
+                    this.state.intercepted.hit();
+                    return ControlFlow::Continue(());
+                }
+                io::event::net::recv::Kind::Control(done) => io::event::Kind::Recv(done.rejoin()),
+            },
+            kind => kind,
+        };
+        let received = matches!(&kind, io::event::Kind::Recv(_));
         let result = event::Turn::dispatch(executor::raw::Call::new(
             this.listener,
             (),

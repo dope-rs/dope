@@ -15,16 +15,13 @@ pub mod raw;
 #[repr(transparent)]
 pub struct Context<'a, 'owner, 'd: 'owner> {
     pub(in crate::driver) driver: driver::Context<'a, 'd>,
-    owner: raw::Proof<'owner, 'd>,
+    owner: raw::Owner<'owner, 'd>,
 }
 
 impl<'a, 'owner, 'd: 'owner> Context<'a, 'owner, 'd> {
     /// Joins driver access with a validated owner proof.
     pub fn new(driver: driver::Context<'a, 'd>, owner: raw::Owner<'owner, 'd>) -> Self {
-        Self {
-            driver,
-            owner: owner.into_proof(),
-        }
+        Self { driver, owner }
     }
 
     pub(crate) const fn token(&self) -> raw::Token<'owner, 'd> {

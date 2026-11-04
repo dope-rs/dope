@@ -228,34 +228,17 @@ where
     }
 }
 
-impl<'d, ID: Identity, H> Finalize<'d, ID, H, Disabled> for Enabled
+impl<'d, ID: Identity, H, R> Finalize<'d, ID, H, R> for Enabled
 where
     H: datagram::Ingress<'d, ID> + datagram::Finalize,
+    Disabled: Finalize<'d, ID, H, R>,
 {
     fn finalize<'a>(
-        mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
+        endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
         finish: &mut finish::Finish<'_, 'd>,
     ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
-        let mut this = endpoint.as_mut().project();
-        this.socket.as_mut().finish(finish);
-        let state = this.socket.as_ref().get_ref().receive.residency();
-        this.handler.finalized(state);
-        endpoint
-    }
-}
-
-impl<'d, ID: Identity, H> Finalize<'d, ID, H, Enabled> for Enabled
-where
-    H: datagram::Settlement<'d, ID> + datagram::Finalize,
-{
-    fn finalize<'a>(
-        mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
-        finish: &mut finish::Finish<'_, 'd>,
-    ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
-        let mut this = endpoint.as_mut().project();
-        this.socket
-            .as_mut()
-            .finish_to(this.handler.as_mut(), finish);
+        let mut endpoint = <Disabled as Finalize<'d, ID, H, R>>::finalize(endpoint, finish);
+        let this = endpoint.as_mut().project();
         let state = this.socket.as_ref().get_ref().receive.residency();
         this.handler.finalized(state);
         endpoint

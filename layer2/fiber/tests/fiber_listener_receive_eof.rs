@@ -1,15 +1,15 @@
-use std::{convert::Infallible, net::Shutdown};
+use std::net::Shutdown;
 
 use dope::{
     core::{
         driver::{
             life::recovery,
-            route::{KeyTag, table::conn::Capacity},
+            route::{Id, KeyTag, table::conn::Capacity},
         },
-        io::socket::Backlog,
+        io::socket::{self, Backlog},
         platform::wake,
     },
-    manifold::{network::listener::Domain, timing::Balanced},
+    manifold::{app::Host, network::listener::Domain, timing::Balanced},
     net::{
         link::event::SendFailure,
         tcp::Tcp,
@@ -27,27 +27,27 @@ use dope_fiber::{
         server::{Config, Listener, Plan},
     },
 };
-use dope_test::harness::{peer::Peer, scenario};
+use dope_test::{
+    harness::{peer::Peer, scenario},
+    reclaim::Reports,
+};
 
 pub mod common;
 
 use common::{
-    network::{
-        reserve::Reservation,
-        rounds::{client::Collect as _, listener::App},
-    },
-    runtime::Setup,
+    network::rounds::client::try_into_vec,
+    recover,
+    runtime::{self, Setup},
 };
 
 #[test]
 fn writes_after_eof() {
-    let held = Reservation::bind().expect("listener address");
-    let addr = held.addr();
+    let held = socket::Listener::bind(([127, 0, 0, 1], 0).into()).expect("listener address");
+    let addr = held.local_addr();
     let plan = Plan::<Identity>::new(Capacity::fixed::<1>(), Identity);
-    let mut report = None;
-    Setup::try_for_plan::<Balanced, _>(&plan)
-        .expect("driver configuration")
-        .with_input(
+    let setup = Setup::try_for_plan::<Balanced, _>(&plan).expect("driver configuration");
+    let mut reports = Reports::new(setup.config(), [Id::fixed::<0>()]);
+    setup.with_input(
             plan,
             |mut sess| {
                 let mut finish = Completion::new();
@@ -65,7 +65,7 @@ fn writes_after_eof() {
                         stream: Default::default(),
                         transport: Default::default(),
                         egress: Default::default(),
-                        bound: held.into_tcp(),
+                        bound: held,
                         wire: domain::Local::new(Identity),
                     },
                     |cause| cause.eliminate(),
@@ -83,20 +83,20 @@ fn writes_after_eof() {
                                     peer.read_exact(&mut response).expect("reply after EOF");
                                     assert_eq!(&response, b"ok");
                                     reset.wait_timeout(scenario::TIMEOUT).expect("reply observed");
-                                    peer.reset_on_close().expect("reset on close");
+                                    Peer::try_reset(*peer).expect("reset on close");
                                 },
                                 |peer| {
                                     let handle = storage.handle();
                                     sess.with_quiesce(
                                         &mut finish,
-                                        App { pool: listener },
+                                        Host::new(listener),
                                         scenario::TIMEOUT,
                                         |mut app| {
                                             app.block_on(dope_fiber::fiber!('_ => async move {
                                                 let mut io = handle.accept().await.ok().expect("accept");
                                                 let mut tail = Vec::new();
                                                 while let Some(chunk) = io.read().await.ok().expect("receive") {
-                                                    tail.extend_from_slice(&chunk.try_into_vec().expect("consume tail"));
+                                                    tail.extend_from_slice(&try_into_vec(chunk).expect("consume tail"));
                                                 }
                                                 assert_eq!(tail, b"tail");
                                                 assert!(matches!(io.read().await, Ok(None)));
@@ -125,15 +125,11 @@ fn writes_after_eof() {
                 );
                 assert!(result.is_ok(), "listener installation");
             },
-            recovery::Policy::new(
-                |event| {
-                    report.get_or_insert(event);
-                },
-                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("native recovery: {:?}", failure.cause())
-                },
-            ),
-            |result| result.expect("driver lifecycle"),
+            recovery::Policy::new(|event| reports.push(event), recover),
+            runtime::check_scope,
         );
-    assert!(report.is_none(), "unexpected reclamation: {report:?}");
+    assert!(
+        reports.events().expect("native reclamation").is_empty(),
+        "unexpected reclamation: {reports:?}"
+    );
 }

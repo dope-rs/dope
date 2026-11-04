@@ -14,30 +14,22 @@ use crate::{
         },
         result,
         result::{IoOperation, poll::fault},
-        settings, storage,
+        settings,
     },
     io::{socket, transfer},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
-pub(crate) struct Failure(pub(crate) storage::Failure);
-
-impl From<Failure> for storage::Failure {
-    fn from(failure: Failure) -> Self {
-        failure.0
-    }
-}
+pub(crate) use crate::driver::storage::Failure;
 
 impl<E> From<probe::Syscall<result::Probe, E>> for Failure
 where
     Kernel: From<E>,
 {
     fn from(cause: probe::Syscall<result::Probe, E>) -> Self {
-        Self(storage::Failure::Kernel {
+        Self::Kernel {
             operation: IoOperation::Probe(cause.probe),
-            cause: Kernel::from(cause.error).0,
-        })
+            cause: Kernel::from(cause.error),
+        }
     }
 }
 
@@ -51,10 +43,10 @@ impl From<probe::Syscall<result::Probe, probe::Creation>> for Failure {
             }
             .into(),
             probe::Creation::Local(addr::Local::Length { actual, capacity }) => {
-                Self(storage::Failure::Probe(result::ProbeError::new(
+                Self::Probe(result::ProbeError::new(
                     cause.probe,
                     result::Violation::InvalidAddress(socket::Error::Storage { actual, capacity }),
-                )))
+                ))
             }
         }
     }
@@ -68,15 +60,13 @@ impl From<accept::Check<result::Probe>> for Failure {
                 (probe, result::Violation::EscapedSlot(cause.into()))
             }
         };
-        Self(storage::Failure::Probe(result::ProbeError::new(
-            probe, cause,
-        )))
+        Self::Probe(result::ProbeError::new(probe, cause))
     }
 }
 
 impl From<memory::Error> for Failure {
     fn from(error: memory::Error) -> Self {
-        Self(storage::Failure::Mapping(Mapping::from(error).0))
+        Self::Mapping(Mapping::from(error))
     }
 }
 
@@ -87,16 +77,16 @@ where
     fn from(primary: session::Primary<R, U>) -> Self {
         let (op, cause) = match primary {
             session::Primary::Register(error) => {
-                (IoOperation::RegisterCanaryBuffers, Kernel::from(error).0)
+                (IoOperation::RegisterCanaryBuffers, Kernel::from(error))
             }
             session::Primary::Unregister(error) => {
-                (IoOperation::UnregisterCanaryBuffers, Kernel::from(error).0)
+                (IoOperation::UnregisterCanaryBuffers, Kernel::from(error))
             }
         };
-        Self(storage::Failure::Kernel {
+        Self::Kernel {
             operation: op,
             cause,
-        })
+        }
     }
 }
 
@@ -109,10 +99,10 @@ where
             receive::Mode::Data => IoOperation::InstallReceiveFile,
             receive::Mode::Message => IoOperation::InstallReceiveMessageFile,
         };
-        Self(storage::Failure::Kernel {
+        Self::Kernel {
             operation: op,
-            cause: Kernel::from(failure.error).0,
-        })
+            cause: Kernel::from(failure.error),
+        }
     }
 }
 
@@ -136,7 +126,7 @@ where
             Checked::Buffer { probe, failure } => {
                 let fault = match failure {
                     canary::Failure::Inspect(error) => {
-                        return Self(storage::Failure::Probe(error));
+                        return Self::Probe(error);
                     }
                     canary::Failure::Index(index) => {
                         let layout = <Receive as memory::raw::Canary>::LAYOUT;
@@ -154,9 +144,7 @@ where
                 (probe, fault)
             }
         };
-        Self(storage::Failure::Probe(result::ProbeError::new(
-            probe, fault,
-        )))
+        Self::Probe(result::ProbeError::new(probe, fault))
     }
 }
 
@@ -166,30 +154,30 @@ where
     Kernel: From<E>,
 {
     fn from(error: inspect::Unsupported<C, E>) -> Self {
-        Self(match error {
-            inspect::Unsupported::Opcode(code) => storage::Failure::Capability(
-                result::Capability::Opcode(result::Opcode::native(code)),
-            ),
-            inspect::Unsupported::Register(error) => storage::Failure::Kernel {
+        match error {
+            inspect::Unsupported::Opcode(code) => {
+                Self::Capability(result::Capability::Opcode(result::Opcode::native(code)))
+            }
+            inspect::Unsupported::Register(error) => Self::Kernel {
                 operation: IoOperation::RegisterOpcodes,
-                cause: Kernel::from(error).0,
+                cause: Kernel::from(error),
             },
-        })
+        }
     }
 }
 
 impl From<(result::Probe, receive::Send)> for Failure {
     fn from((probe, error): (result::Probe, receive::Send)) -> Self {
-        Self(match error {
-            receive::Send::Syscall(error) => storage::Failure::Kernel {
+        match error {
+            receive::Send::Syscall(error) => Self::Kernel {
                 operation: IoOperation::Probe(probe),
-                cause: Kernel::from(error).0,
+                cause: Kernel::from(error),
             },
-            receive::Send::Partial(partial) => storage::Failure::Probe(result::ProbeError::new(
+            receive::Send::Partial(partial) => Self::Probe(result::ProbeError::new(
                 probe,
                 result::Violation::Send(fault::Send::from_partial(partial)),
             )),
-        })
+        }
     }
 }
 
@@ -200,18 +188,16 @@ where
     fn from(cause: Rejection<C, F, R>) -> Self {
         let (op, cause) = match cause {
             Rejection::Feature(feature) => {
-                return Self(storage::Failure::Capability(result::Capability::Feature(
-                    feature,
-                )));
+                return Self::Capability(result::Capability::Feature(feature));
             }
-            Rejection::Cancel(cause) => (IoOperation::CancelRegistrations, Kernel::from(cause).0),
-            Rejection::Files(cause) => (IoOperation::RegisterFileTable, Kernel::from(cause).0),
-            Rejection::Range(cause) => (IoOperation::RegisterFileRange, Kernel::from(cause).0),
+            Rejection::Cancel(cause) => (IoOperation::CancelRegistrations, Kernel::from(cause)),
+            Rejection::Files(cause) => (IoOperation::RegisterFileTable, Kernel::from(cause)),
+            Rejection::Range(cause) => (IoOperation::RegisterFileRange, Kernel::from(cause)),
         };
-        Self(storage::Failure::Kernel {
+        Self::Kernel {
             operation: op,
             cause,
-        })
+        }
     }
 }
 
@@ -221,14 +207,14 @@ where
     Mapping: From<map::Map<M>>,
 {
     fn from(cause: create::Cause<S, M>) -> Self {
-        Self(match cause {
-            create::Cause::Setup(cause) => storage::Failure::Kernel {
+        match cause {
+            create::Cause::Setup(cause) => Self::Kernel {
                 operation: IoOperation::ReactorCreate,
-                cause: Kernel::from(cause).0,
+                cause: Kernel::from(cause),
             },
-            create::Cause::Layout(cause) => storage::Failure::RingLayout(cause),
-            create::Cause::Map(cause) => storage::Failure::Mapping(Mapping::from(cause).0),
-        })
+            create::Cause::Layout(cause) => Self::RingLayout(cause),
+            create::Cause::Map(cause) => Self::Mapping(Mapping::from(cause)),
+        }
     }
 }
 
@@ -238,35 +224,35 @@ where
     Kernel: From<R> + From<B>,
 {
     fn from(primary: create::Primary<M, R, B>) -> Self {
-        Self(match primary {
-            create::Primary::Ring(error) => return Self::from(error),
+        match primary {
+            create::Primary::Ring(error) => Self::from(error),
             create::Primary::Memory(error) => {
-                storage::Failure::Mapping(<Mapping as From<memory::Error>>::from(error).0)
+                Self::Mapping(<Mapping as From<memory::Error>>::from(error))
             }
-            create::Primary::Register(cause) => storage::Failure::Kernel {
+            create::Primary::Register(cause) => Self::Kernel {
                 operation: IoOperation::RegisterReactor,
-                cause: Kernel::from(cause).0,
+                cause: Kernel::from(cause),
             },
-            create::Primary::Provided(cause) => storage::Failure::Kernel {
+            create::Primary::Provided(cause) => Self::Kernel {
                 operation: IoOperation::RegisterProvidedBuffers,
-                cause: Kernel::from(cause).0,
+                cause: Kernel::from(cause),
             },
-        })
+        }
     }
 }
 
-impl<S, W> From<create::Failure<S, W>> for storage::Failure
+impl<S, W> From<create::Failure<S, W>> for Failure
 where
     Mapping: From<S>,
     Failure: From<W>,
 {
     fn from(failure: create::Failure<S, W>) -> Self {
         match failure {
-            create::Failure::Storage(error) => Self::Mapping(Mapping::from(error).0),
+            create::Failure::Storage(error) => Self::Mapping(Mapping::from(error)),
             create::Failure::Memory(error) => {
-                Self::Mapping(<Mapping as From<memory::Error>>::from(error).0)
+                Self::Mapping(<Mapping as From<memory::Error>>::from(error))
             }
-            create::Failure::Wait(cause) => Failure::from(cause).0,
+            create::Failure::Wait(cause) => Self::from(cause),
         }
     }
 }
@@ -281,13 +267,13 @@ where
 
         let (probe, fault) = match cause {
             Cause::Enter { probe, error } => {
-                return Self(storage::Failure::Kernel {
+                return Self::Kernel {
                     operation: IoOperation::Probe(probe),
-                    cause: Kernel::from(error).0,
-                });
+                    cause: Kernel::from(error),
+                };
             }
             Cause::Check(error) => {
-                return Self(storage::Failure::Probe(result::ProbeError::decode(error)));
+                return Self::Probe(result::ProbeError::decode(error));
             }
             Cause::Missing(probe) => (probe, result::Violation::MissingCompletion),
             Cause::Unexpected { probe, observed } => (
@@ -309,8 +295,6 @@ where
                 },
             ),
         };
-        Self(storage::Failure::Probe(result::ProbeError::new(
-            probe, fault,
-        )))
+        Self::Probe(result::ProbeError::new(probe, fault))
     }
 }

@@ -1,18 +1,21 @@
 use std::marker;
 
 use dope_sys::io::reactor::complete::{self, Dequeued, Event};
-use o3::{alloc, depot::queue::ring};
+use o3::{
+    alloc,
+    depot::{self, queue::ring},
+};
 
 use crate::store::done::{Entry, Vacancy};
 
 /// Owns completion resources until draining binds them to a driver lifetime.
 #[repr(transparent)]
-pub struct Queue<E: Event, C: complete::raw::Capacity> {
+pub struct Queue<E: Event, C: depot::raw::Count> {
     pending: ring::Fifo<Entry<E>>,
     capacity: marker::PhantomData<C>,
 }
 
-impl<E: Event, C: complete::raw::Capacity> complete::Queue for Queue<E, C> {
+impl<E: Event, C: depot::raw::Count> complete::Queue for Queue<E, C> {
     type Event = E;
     type Capacity = C;
     type Vacancy<'a>

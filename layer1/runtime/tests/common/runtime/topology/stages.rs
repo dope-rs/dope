@@ -159,6 +159,16 @@ pub struct App<'app, 'd: 'app, 'a> {
     client: Client<'app, 'd, 'a>,
 }
 
+#[pin_project::pin_project]
+#[derive(dope_gen::Application)]
+#[dispatcher(core = ::dope_core, manifold = ::dope_manifold, runtime = ::dope_runtime, driver = 'd)]
+pub struct Clients<'app, 'd: 'app, 'a, 'b> {
+    #[dispatcher(state)]
+    pub first: Client<'app, 'd, 'a>,
+    #[dispatcher(state)]
+    pub second: Client<'app, 'd, 'b>,
+}
+
 impl<'a, 'd> lending::Build<'d, Owner<'a>> for Create<'a> {
     type App<'app>
         = App<'app, 'd, 'a>

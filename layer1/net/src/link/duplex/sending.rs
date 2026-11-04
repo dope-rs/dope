@@ -229,7 +229,7 @@ impl<'a, 'd, P: reclaim::Policy> Ready<'a, 'd, P> {
             Some(ready) => ready,
         };
         let send::Submitted { bytes, flight } =
-            match send::raw::Submission(ready).submit(fd, target, slots, driver.reborrow()) {
+            match send::raw::submit(ready, fd, target, slots, driver.reborrow()) {
                 Ok(sent) => sent,
                 Err(error) => return send::Attempt::rejected(credit, error),
             };

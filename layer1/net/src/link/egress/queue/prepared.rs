@@ -5,13 +5,7 @@ use dope_core::{
 use o3::base::cell::region;
 
 use crate::{
-    link::egress::{
-        self, data,
-        load::credit,
-        metadata,
-        queue::{Released, flight},
-        reserve::demand,
-    },
+    link::egress::{self, data, load::credit, metadata, queue::flight, reserve::demand},
     wire::send,
 };
 
@@ -58,7 +52,7 @@ impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: de
         token: &mut region::Token<region::Identity<'d>>,
     ) -> Result<(), egress::Invalid> {
         let Self { flight, entries } = self;
-        Released::new(entries, flight.release(bytes)?).consume(token, drop);
+        flight.release(bytes)?.consume(entries, token, &mut drop);
         Ok(())
     }
 }

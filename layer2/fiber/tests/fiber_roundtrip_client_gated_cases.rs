@@ -16,7 +16,7 @@ use dope::{
         route::{Id, table::conn::Capacity},
         settings::claim::Needs,
     },
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::tcp::Tcp,
     runtime::executor::{Executor, drive},
 };
@@ -25,8 +25,9 @@ use dope_test::{fibers, harness::signals::Progress as _, reclaim::Reports};
 use o3::buffer::Source as _;
 
 use crate::common::network::rounds::client::{
-    Collect, MAX_CONN, Ping,
-    gated::{App, Probe, Wire},
+    MAX_CONN,
+    gated::{Probe, Wire},
+    try_into_vec, try_ping,
 };
 
 #[test]
@@ -50,7 +51,7 @@ fn parks_until_receive() {
                     |link, sess| {
                         let conn = store.handle();
 
-                        let app = App { connector: link };
+                        let app = Host::new(link);
                         let driven = (sess.with_quiesce(
                             &mut finish,
                             app,
@@ -58,7 +59,7 @@ fn parks_until_receive() {
                             |mut app| -> Result<(), drive::Error> {
                                 let opened = app.block_on(conn.connect(addr))?;
                                 let io = (opened).ok().expect("gated connection must succeed");
-                                Ping::try_ping(&mut app, io).map(|result| {
+                                try_ping(&mut app, io).map(|result| {
                                     assert_eq!(result.ok().expect("complete ping roundtrip"), reply)
                                 })
                             },
@@ -75,7 +76,7 @@ fn parks_until_receive() {
                 );
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            self::finish,
+            runtime::check_scope,
         );
         assert!(
             reports
@@ -126,7 +127,7 @@ fn credit_resumes_receive() {
                         |link, sess| {
                             let conn = store.handle();
 
-                            let app = App { connector: link };
+                            let app = Host::new(link);
                             let driven = (sess.with_quiesce(
                                 &mut finish,
                                 app,
@@ -151,8 +152,8 @@ fn credit_resumes_receive() {
                                             .ok()
                                             .expect("credited response must remain open")
                                             .expect("credited response must remain open");
-                                        let bytes = Collect::try_into_vec(lease)
-                                            .expect("consume received bytes");
+                                        let bytes =
+                                            try_into_vec(lease).expect("consume received bytes");
                                         assert!(
                                             !bytes.is_empty(),
                                             "connection closed before deferred data drained"
@@ -227,7 +228,7 @@ fn drop_returns_credit() {
                         |sess| sess.driver(),
                         |link, sess| {
                             let conn = store.handle();
-                            let app = App { connector: link };
+                            let app = Host::new(link);
 
                             let driven = (sess.with_quiesce(
                                 &mut finish,
@@ -317,7 +318,7 @@ fn credit_resumes_close() {
                     |sess| sess.driver(),
                     |link, sess| {
                         let conn = store.handle();
-                        let app = App { connector: link };
+                        let app = Host::new(link);
 
                         let driven =
                         (sess.with_quiesce(&mut finish, app, scenario::TIMEOUT, |mut app| -> Result<(), drive::Error> {
@@ -365,8 +366,4 @@ fn credit_resumes_close() {
 }).expect("gated peers")
     .expect("gated peer I/O");
     assert_eq!(request, *b"ping");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

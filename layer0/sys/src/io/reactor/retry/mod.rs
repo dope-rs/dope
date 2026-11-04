@@ -33,7 +33,6 @@ pub trait Entry: Sized {
 
     fn target(&self) -> Self::Target;
     fn fd(&self) -> fd::RawFd;
-    fn descriptor(record: &Self::Record) -> fd::RawFd;
     fn file(record: &Self::Record) -> Self::File;
     fn into_parts(self) -> (Self::Target, Self::Record);
     fn from_parts(target: Self::Target, record: Self::Record) -> Self;

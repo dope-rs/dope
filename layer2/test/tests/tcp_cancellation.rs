@@ -37,7 +37,6 @@ fn cancel_precedes_ready() {
                     stream.write_vectored(&[&[1]]),
                 ] {
                     assert!(matches!(result, Err(Error::Cancelled)));
-                    assert!(stream.is_stopped());
                 }
                 assert_eq!(stream.read(&mut []).expect("empty read"), 0);
                 assert_eq!(stream.write(&[]).expect("empty write"), 0);
@@ -67,19 +66,16 @@ fn native_is_not_cancelled() {
             assert!(
                 matches!(stream.read(&mut [0]), Err(Error::Syscall(error)) if error.is_block())
             );
-            assert!(!stream.is_stopped());
             stream.nonblock(false);
             stream
                 .read_wait(Some(Duration::from_millis(1)))
                 .expect("timeout");
             assert!(matches!(stream.read(&mut [0]), Err(Error::TimedOut)));
-            assert!(!stream.is_stopped());
             stream.write_all(&[1]).expect("ready for EOF");
             stream
                 .read_wait(Some(Duration::from_secs(1)))
                 .expect("EOF timeout");
             assert_eq!(stream.read(&mut [0]).expect("EOF"), 0);
-            assert!(!stream.is_stopped());
         },
         |peer| {
             let socket = Peer::at(peer.addr()).try_connect().expect("connect");

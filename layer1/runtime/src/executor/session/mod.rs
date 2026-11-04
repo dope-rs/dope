@@ -23,7 +23,6 @@ pub use error::Error;
 pub type Result<'report, T> = std::result::Result<T, Error<'report, T>>;
 
 pub use drive::block::Fixed;
-pub(crate) use lent::Lent;
 pub use manual::Manual;
 pub use scope::Scope;
 

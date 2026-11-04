@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 pub mod common;
 
 use std::time::Duration;
@@ -56,7 +54,7 @@ fn deadline_preserves_reuse() {
                         })
                         .expect("release timed execution session");
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -67,8 +65,4 @@ fn deadline_preserves_reuse() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

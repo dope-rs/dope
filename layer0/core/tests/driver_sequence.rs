@@ -1,10 +1,9 @@
-use std::{collections::HashSet, convert::Infallible, num::NonZero};
+use std::{collections::HashSet, num::NonZero};
 
 use dope_core::driver::{Binding, life::recovery, schedule::ready::task::owner};
-use dope_test::scope::Error;
 
 pub mod common;
-use common::rt::Runtime;
+use common::rt::{Runtime, finish, recover};
 
 #[test]
 fn interleaves_issuance() {
@@ -30,15 +29,4 @@ fn interleaves_issuance() {
         finish,
     );
     assert!(events.is_empty(), "unexpected reclamation: {events:?}");
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

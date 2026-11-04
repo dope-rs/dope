@@ -6,7 +6,6 @@ pub(super) mod phase;
 use std::pin;
 
 use dope_core::driver::{retained, route::Identity, schedule};
-use dope_net::wire;
 use flush::Flush as _;
 
 use crate::{
@@ -35,30 +34,26 @@ fn submit<'p, 'w, 'd: 'p + 'w, ID, A, S, E, X>(
     driver: &mut retained::Context<'_, '_, 'd>,
 ) where
     ID: Identity + 'd,
-    A: app::Lifecycle<'w, 'd, ID> + app::Scheduling<'d, ID>,
+    A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
-    X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>:
-        opens::Phase<'d, ID, A, S, E, A::Deferred, <A::Wire as wire::Spec>::OpenFailure>,
+    X: Mode<'d, ID>,
+    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: opens::Phase<'d, ID, A, S, E>,
 {
-    if matches!(
-        dial::Dial::new(machine.as_mut()).retry_ready(driver),
-        dial::Retry::Pending
-    ) {
+    if machine.as_mut().retry_ready(driver).is_pending() {
         return;
     }
-    match dial::Dial::new(machine.as_mut()).poll(work.reborrow(), driver) {
-        dial::Source::Deferred => machine.as_mut().flush_recv(work.reborrow().maint(), driver),
-        dial::Source::Idle => {
-            machine.as_mut().flush_recv(work.reborrow().maint(), driver);
-            let this = machine.as_mut().project();
-            if this.links.pool().inspect().has_rearm() {
-                dial::Dial::new(machine.as_mut()).defer_retry(driver.driver_ref().clock().now());
-            } else {
-                dial::Dial::new(machine.as_mut()).finish_retry();
-            }
+    let source = machine.as_mut().poll_dials(work.reborrow(), driver);
+    machine.as_mut().flush_recv(work.reborrow().maint(), driver);
+    if matches!(source, dial::Source::Idle) {
+        let this = machine.as_mut().project();
+        if this.links.pool().inspect().has_rearm() {
+            machine
+                .as_mut()
+                .defer_retry(driver.driver_ref().clock().now());
+        } else {
+            machine.project().drive.as_mut().reset_retry();
         }
     }
 }
@@ -90,15 +85,8 @@ where
         >,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
-    Self: opens::Phase<
-            'd,
-            ID,
-            A,
-            queue::Control<'source, 'd, E::Transport, ID>,
-            E,
-            A::Deferred,
-            <A::Wire as wire::Spec>::OpenFailure,
-        > + close::ClosePhase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>,
+    Self: opens::Phase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>
+        + close::ClosePhase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,
@@ -162,15 +150,8 @@ where
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     I: registry::Intent<'d, ID>,
-    Self: opens::Phase<
-            'd,
-            ID,
-            A,
-            queue::Control<'source, 'd, E::Transport, ID>,
-            E,
-            A::Deferred,
-            <A::Wire as wire::Spec>::OpenFailure,
-        > + close::ClosePhase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>,
+    Self: opens::Phase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>
+        + close::ClosePhase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,
@@ -243,15 +224,8 @@ where
     F: discover::Access,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
-    Self: opens::Phase<
-            'd,
-            ID,
-            A,
-            service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>,
-            E,
-            A::Deferred,
-            <A::Wire as wire::Spec>::OpenFailure,
-        > + close::ClosePhase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E>,
+    Self: opens::Phase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E>
+        + close::ClosePhase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,
@@ -315,15 +289,8 @@ where
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     I: registry::Intent<'d, ID>,
-    Self: opens::Phase<
-            'd,
-            ID,
-            A,
-            service::Pool<'q, 'h, 'd, ID, E::Transport, R, K, N, F>,
-            E,
-            A::Deferred,
-            <A::Wire as wire::Spec>::OpenFailure,
-        > + close::ClosePhase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, K, N, F>, E>,
+    Self: opens::Phase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, K, N, F>, E>
+        + close::ClosePhase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, K, N, F>, E>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,

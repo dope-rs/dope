@@ -296,3 +296,87 @@ fn idle_retargets_root() {
     );
     runtime::check_reports(&reports);
 }
+
+#[test]
+fn changed_root_reclaims() {
+    use dope_fiber::{
+        abi::Task,
+        task::batch::{Error, RootError},
+    };
+
+    let mut reports = Vec::new();
+    Setup::throughput().with_turn(
+        |turn, mut driver| {
+            let core = driver.driver_ref();
+            let roots = from_fn::<_, 2, _>(|index| {
+                core.ready()
+                    .make_slot(
+                        core.targets::<KeyTag<0>>()
+                            .bind(SlotIndex::from(index as u16), Epoch::INITIAL)
+                            .dispatch(),
+                    )
+                    .expect("root slot")
+            });
+            let targets = roots.each_ref().map(|root| root.target());
+            let ids = {
+                let pool =
+                    schedule::ready::task::pool::Pool::<Domain, 1>::try_new(targets[0].into())
+                        .expect("root identities");
+                targets.map(|target| pool.try_root(target.into()).expect("root identity").id())
+            };
+            let mut pool = Pool::<1>::try_new(RootWaker::from(targets[0])).expect("batch pool");
+            let wake = Rc::new(Cell::new(None));
+            let polls = Rc::new(Cell::new(0));
+            let drops = Rc::new(Cell::new(0));
+            {
+                let mut batch = pin!(Task::new(Join::from_array(
+                    &mut pool,
+                    [CaptureReady {
+                        wake: Rc::clone(&wake),
+                        drops: Rc::clone(&drops),
+                        polls: Rc::clone(&polls),
+                        ready: Rc::new(Cell::new(false)),
+                        output: 0,
+                    }],
+                )));
+                for (index, target) in targets.into_iter().enumerate() {
+                    let poll = Context::with_target(
+                        target,
+                        turn.turn().app(),
+                        driver.reborrow(),
+                        |mut context| {
+                            Polled::polled(context.as_mut().try_poll(batch.as_mut()))
+                                .expect("poll budget")
+                        },
+                    );
+                    if index == 0 {
+                        assert!(poll.is_pending());
+                    } else {
+                        assert!(matches!(
+                            poll,
+                            Poll::Ready(Err(Error::Root(RootError::Changed { active, observed })))
+                                if [active, observed] == ids
+                        ));
+                    }
+                }
+            }
+            assert_eq!((polls.get(), drops.get()), (1, 1));
+            wake.take().expect("cancelled child wake").wake();
+            assert_eq!(turn.ready_round(|_| {}), 0);
+
+            let mut batch = pin!(Task::new(Join::from_array(&mut pool, [Ready::new(())])));
+            let poll = Context::with_target(
+                targets[1],
+                turn.turn().app(),
+                driver.reborrow(),
+                |mut context| {
+                    Polled::polled(context.as_mut().try_poll(batch.as_mut())).expect("poll budget")
+                },
+            );
+            assert!(matches!(poll, Poll::Ready(Ok(_))));
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        runtime::check_scope,
+    );
+    runtime::check_reports(&reports);
+}

@@ -55,7 +55,8 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 
     pub(in crate::link::egress) fn split_pair(&mut self, pair: credit::Pair) -> Self {
-        let grant = self.grant.split_pair(pair);
+        // SAFETY: Pair is the two active bounds that minted this aggregate grant.
+        let grant = unsafe { self.grant.bind_mut(pair) }.split(());
         Self::new(self.queue, grant)
     }
 }

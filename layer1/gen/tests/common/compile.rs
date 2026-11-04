@@ -231,7 +231,7 @@ fn main() {}
             "mod common { pub mod optional; }\nuse common::optional::Option;",
         )
         .replace("choice::Option<", "Option<");
-    let cases: [(String, &[&str]); 32] = [
+    let cases: [(String, &[&str]); 33] = [
         (optional.into(), &[]),
         (optional_wrapper, &["error[E0308]:"]),
         (include_str!("compile_fiber.rs").into(), &[]),
@@ -241,6 +241,11 @@ fn main() {}
         ),
         (app.into(), &[]),
         (unpinned.into(), &["error: DopeAppPinRequired"]),
+        (
+            "#[derive(dope_gen::Forward)] struct Owner { #[forward] field: () } fn main() {}"
+                .into(),
+            &["error: DopeManifoldFieldPin"],
+        ),
         (
             include_str!("compile_borrowed.rs").into(),
             &["error: DopeAppUnknownOwner"],

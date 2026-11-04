@@ -30,7 +30,7 @@ impl<'a, 'id, P: Ord, R, Tag> Minimum<'a, 'id, P, R, Tag> {
     }
 
     pub fn priority(&self) -> &P {
-        order::Order::new(self.core).min_priority(self.root)
+        self.core.min_priority(self.root)
     }
 
     /// Removes the proven minimum and marks its resident as fired.

@@ -1,7 +1,10 @@
 use dope::{
-    core::driver::{
-        life::recovery,
-        route::{Id, table::conn::Capacity},
+    core::{
+        driver::{
+            life::recovery,
+            route::{Id, table::conn::Capacity},
+        },
+        platform::wake,
     },
     manifold::{app::Host, timing::Balanced},
     net::{link::event::ParkError, tcp::Tcp, wire::domain},
@@ -28,10 +31,12 @@ use common::{
 
 #[test]
 fn keeps_receive_rejection() {
+    let (next, release) = wake::Ends::blocking().expect("receive gate").split();
     TcpScript::with(
-        |peer| {
+        move |peer| {
             peer.write_all(b"p").expect("prefix");
-            peer.read_exact(&mut [0]).expect("prefix admitted");
+            next.wait_timeout(scenario::TIMEOUT)
+                .expect("prefix admitted");
             peer.write_all(b"r").expect("registration input");
             assert_eq!(peer.read(&mut [0]).expect("closed peer"), 0);
         },
@@ -70,7 +75,7 @@ fn keeps_receive_rejection() {
                                                 .expect("receive prefix"),
                                             fibers::Wait::Reached
                                         );
-                                        assert!(app.block_on(io.write_all(b"a"))?.is_ok());
+                                        release.notify().expect("registration input");
                                         assert_eq!(
                                             fibers::TEST
                                                 .try_wait(&mut app, &state.rejected.handle(), 1)

@@ -49,6 +49,6 @@ impl socket::raw::Open for Handle {
             .map_err(Nonblock::Set)
             .map_err(Setup::nonblock)
             .map_err(accept::Error::Setup)?;
-        Handle::prepare(file).map_err(accept::Error::Setup)
+        Ok(Self(file))
     }
 }

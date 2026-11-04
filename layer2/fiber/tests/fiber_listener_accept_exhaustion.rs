@@ -11,9 +11,9 @@ use dope::{
     core::{
         driver::{
             life::recovery,
-            route::{Epoch, KeyTag, indices::SlotIndex, table::conn::Capacity},
+            route::{Epoch, Id, KeyTag, indices::SlotIndex, table::conn::Capacity},
         },
-        io::socket::{Backlog, option::Switch},
+        io::socket::{self, Backlog, option::Switch},
         platform::wake,
     },
     manifold::{
@@ -51,6 +51,7 @@ use dope_test::{
             run::{Entry, Task as _},
         },
     },
+    reclaim::Reports,
 };
 use o3::depot::capacity::Count;
 
@@ -58,18 +59,15 @@ pub mod common;
 use common::recover;
 
 use common::{
-    network::{
-        accept::{App, CancelFirst, Native},
-        reserve::Reservation,
-    },
+    network::accept::{App, CancelFirst, Native},
     runtime::{self, Setup},
 };
 
 #[test]
 fn accepts_after_exhaustion_and_cancellation() {
     for (no_delay, cancel_first) in [(None, false), (Some(Switch::On), false), (None, true)] {
-        let held = Reservation::bind().expect("listener address");
-        let addr = held.addr();
+        let held = socket::Listener::bind(([127, 0, 0, 1], 0).into()).expect("listener address");
+        let addr = held.local_addr();
         let (wait, start) = wake::Ends::blocking().expect("accept release").split();
         let peer = Entry(move || {
             wait.wait_timeout(scenario::TIMEOUT).expect("accept waiter");
@@ -80,16 +78,15 @@ fn accepts_after_exhaustion_and_cancellation() {
         });
         let ((), reply) = peer
             .with(|| {
-                let mut report = None;
                 let capacity = if cancel_first {
                     Capacity::fixed::<2>()
                 } else {
                     Capacity::fixed::<1>()
                 };
                 let plan = Plan::<Identity>::new(capacity, Identity);
-                Setup::try_for_plan::<Balanced, _>(&plan)
-                    .expect("driver configuration")
-                    .with_input(
+                let setup = Setup::try_for_plan::<Balanced, _>(&plan).expect("driver configuration");
+                let mut reports = Reports::new(setup.config(), [Id::fixed::<0>()]);
+                setup.with_input(
                         plan,
                         |mut sess| {
                             let seen = Cell::new(0);
@@ -111,7 +108,7 @@ fn accepts_after_exhaustion_and_cancellation() {
                                     },
                                     transport: Default::default(),
                                     egress: Default::default(),
-                                    bound: held.into_tcp(),
+                                    bound: held,
                                     wire: domain::Local::new(Identity),
                                 },
                                 |cause| cause.eliminate(),
@@ -173,18 +170,13 @@ fn accepts_after_exhaustion_and_cancellation() {
                                 "accept credit exhausted before dispatch"
                             );
                         },
-                        recovery::Policy::new(
-                            |event| {
-                                report.get_or_insert(event);
-                            },
-                            recover,
-                        ),
-                        self::finish,
+                        recovery::Policy::new(|event| reports.push(event), recover),
+                        runtime::check_scope,
                     );
-                assert!(report.is_none(), "unexpected reclamation: {report:?}");
+                assert!(reports.events().expect("native reclamation").is_empty(), "unexpected reclamation: {reports:?}");
             })
             .expect("peer worker");
-        assert_eq!(reply.expect("peer join"), *b"x");
+        assert_eq!(reply, *b"x");
     }
 }
 
@@ -226,7 +218,7 @@ fn wait_failure() {
                 });
             },
             recovery::Policy::new(|_| {}, recover),
-            self::finish,
+            runtime::check_scope,
         );
 }
 
@@ -312,12 +304,8 @@ fn completion_failure() {
                 },
                 recover,
             ),
-            self::finish,
+            runtime::check_scope,
         );
     assert_eq!(reports.get(), 1, "one exact native failure report");
     assert_eq!(cause.get(), Some(Failure::Syscall(Errno::INVALID_ARGUMENT)));
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

@@ -100,23 +100,27 @@ fn preserves_borrows() -> io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
+    let admitted = include_str!("common/borrowed.rs");
+    let connect = admitted.replace(
+        "addr::Addr<'a>) -> Request<'a>",
+        "addr::Addr<'a>) -> Request<'static>",
+    );
+    let unlink = admitted.replace(
+        "fn(fd::BorrowedFd<'a>) -> Request<'a>",
+        "fn(fd::BorrowedFd<'a>) -> Request<'static>",
+    );
+    let fifo = admitted.replace(
+        "fn retain_fifo<'a>(fifo: Queue<'a>) -> Queue<'a>",
+        "fn retain_fifo<'a, 'b: 'a>(fifo: Queue<'a>) -> Queue<'b>",
+    );
     for (source, expected) in [
-        (include_str!("common/borrowed.rs"), ""),
-        (
-            include_str!("common/borrowed_connect.rs"),
-            "error: lifetime may not live long enough",
-        ),
+        (admitted, ""),
+        (connect.as_str(), "error: lifetime may not live long enough"),
         (include_str!("common/borrowed_open.rs"), "error[E0515]:"),
         (include_str!("common/borrowed_rename.rs"), "error[E0515]:"),
-        (
-            include_str!("common/borrowed_unlink.rs"),
-            "error: lifetime may not live long enough",
-        ),
+        (unlink.as_str(), "error: lifetime may not live long enough"),
         (include_str!("common/borrowed_pending.rs"), "error[E0382]:"),
-        (
-            include_str!("common/borrowed_fifo.rs"),
-            "error: lifetime may not live long enough",
-        ),
+        (fifo.as_str(), "error: lifetime may not live long enough"),
         (
             include_str!("common/borrowed_session.rs"),
             "error[E0624]: method `ring` is private",

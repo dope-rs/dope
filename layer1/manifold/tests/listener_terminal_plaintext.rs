@@ -1,6 +1,8 @@
 pub mod common;
 
-use std::{cell::Cell, convert::Infallible, fmt::Debug, marker::PhantomData, rc::Rc};
+use common::manifold::listener::{native, reached};
+
+use std::{cell::Cell, marker::PhantomData, rc::Rc};
 
 use dope_core::driver::{
     life::recovery,
@@ -11,9 +13,8 @@ use dope_manifold::{
     timing::Throughput,
 };
 use dope_net::{link::egress, tcp::Tcp};
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
-    fibers::{Run, Wait},
     harness::{
         peer::{self, Peer},
         signals::{Gate, Progress as _},
@@ -25,23 +26,11 @@ use o3::buffer::storage;
 use crate::common::{
     manifold::listener::terminal::{
         Ingress, OWNED_REPLY, Probe, accepted,
-        wire::{self, CleanOnData, CleanOnEof, Event, Wire},
+        wire::{self, Event, Mode, Wire},
     },
     recover,
     scenario::case::listener::Listener,
 };
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
-}
 
 #[test]
 fn resumes_owned_plaintext() {
@@ -49,10 +38,13 @@ fn resumes_owned_plaintext() {
     let close = Gate::new();
     let retired = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(
+        Rc::clone(&events),
+        Mode::CleanOnEof { control: false },
+    ));
     let prepared = Listener::<receive::Coupled>::new::<1>(Default::default())
         .direct(0)
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<CleanOnEof>, Throughput>>((
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
             Probe {
                 close: close.clone(),
                 retired: retired.clone(),
@@ -120,9 +112,9 @@ fn retires_plaintext() {
     let close = Gate::new();
     let retired = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
-    let wire = Rc::new(wire::Probe::new(Rc::clone(&events)));
+    let wire = Rc::new(wire::Probe::new(Rc::clone(&events), Mode::CleanOnData));
     let prepared = Listener::<receive::Coupled>::new::<1>(Default::default())
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire<CleanOnData>, Throughput>>((
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
             Probe {
                 close: close.clone(),
                 retired: retired.clone(),

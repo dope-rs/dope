@@ -35,14 +35,7 @@ impl<D: Copy> Range<D> {
                     lower = next;
                     at = value;
                 }
-                None => {
-                    let nanos = next.subsec_nanos();
-                    upper = if nanos == 0 {
-                        time::Duration::new(next.as_secs() - 1, 999_999_999)
-                    } else {
-                        time::Duration::new(next.as_secs(), nanos - 1)
-                    };
-                }
+                None => upper = next.saturating_sub(time::Duration::from_nanos(1)),
             }
         }
         at

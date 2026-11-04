@@ -7,7 +7,7 @@ use dope_core::driver::{
 use o3::mem;
 use receive::{batch, mode, reserve};
 use slot::recv::{Blocked, Prepared};
-use storage::queue::{Push, Write};
+use storage::queue::Write;
 
 use crate::{
     link::{
@@ -152,7 +152,7 @@ where
 
     pub(super) fn park(mut self) -> event::ParkRecv<'d, ID> {
         let wait = self.wait;
-        let key = wait.resident.key();
+        let key = *wait.key;
         let reg = match reserve::Wait::register(wait.block, wait.credit) {
             Ok(reg) => reg,
             Err(cause) => {
@@ -163,8 +163,8 @@ where
             }
         };
         let done = self.event;
-        match self.store.prepare_push(done) {
-            Push::Ready { vacant, done } => {
+        match self.store.prepare_push() {
+            Some(vacant) => {
                 vacant.append(done.complete());
                 reserve::Registration::commit(reg);
                 if wait.needs_cancel {
@@ -172,10 +172,13 @@ where
                 }
                 event::ParkRecv::Deferred
             }
-            Push::Full(..) => event::ParkRecv::Failed {
-                key,
-                error: event::ParkError::Full,
-            },
+            None => {
+                drop(done);
+                event::ParkRecv::Failed {
+                    key,
+                    error: event::ParkError::Full,
+                }
+            }
         }
     }
 }
@@ -306,26 +309,29 @@ where
 pub(super) fn defer_completion<'a, 'd: 'a, ID: Identity, P: storage::raw::Mode>(
     mut store: P::Bound<'a, 'd>,
     mut rearm: recv::Rearm<'_, 'd, ID>,
-    resident: recv::Resident<'_, 'd, ID>,
+    key: &pool::Key<'d, ID>,
     cancel: bool,
     done: event::Data<'d>,
 ) -> event::ParkRecv<'d, ID>
 where
     P::Bound<'a, 'd>: Write<'d>,
 {
-    let key = resident.key();
-    match store.prepare_push(done) {
-        Push::Ready { vacant, done } => {
+    let key = *key;
+    match store.prepare_push() {
+        Some(vacant) => {
             vacant.append(done.complete());
             if cancel {
                 rearm.queue();
             }
             event::ParkRecv::Deferred
         }
-        Push::Full(..) => event::ParkRecv::Failed {
-            key,
-            error: event::ParkError::Full,
-        },
+        None => {
+            drop(done);
+            event::ParkRecv::Failed {
+                key,
+                error: event::ParkError::Full,
+            }
+        }
     }
 }
 

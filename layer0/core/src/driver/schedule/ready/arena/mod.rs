@@ -70,7 +70,7 @@ impl Arena {
     ) where
         'd: 'a,
     {
-        self.stored().complete(access, ready::Retained::new(key));
+        self.complete(access, ready::Retained::new(key));
     }
 
     fn resolve(&self, key: ready::Stored) -> Option<ready::Entry<'_>> {
@@ -102,30 +102,19 @@ impl Arena {
         }
     }
 
-    pub(in crate::driver) const fn stored(&self) -> Stored<'_> {
-        Stored(self)
-    }
-
     pub(super) fn free_route<'d>(&'d self, key: ready::DispatchKey<'d>) {
         let index = key.key().raw().dense();
-        let held = self.entries.slots.mutation().unroute(key);
+        let held = self.entries.slots.unroute(key);
         self.ready.clear(index);
         self.entries.pool.recycle(&self.entries.slots, held);
     }
 
-    pub(super) fn free_task<'d>(&'d self, key: ready::TaskKey<'d>) {
-        self.entries.pool.free_task(&self.entries.slots, key)
-    }
-
-    pub(super) fn reclaim_task<'d>(&'d self, key: ready::TaskKey<'d>) -> ready::Reclaimed<'d> {
+    pub(super) fn reclaim_task<'d>(&'d self, key: ready::TaskKey<'d>) -> ready::Renewal<'d> {
         let ready::Detached { task, root } = key.detach(&self.entries.slots);
         if let Some(root) = root {
             self.entries.pool.recycle(&self.entries.slots, root);
         }
-        match task.renew(&self.entries.slots) {
-            ready::Renewal::Reusable(key) => ready::Reclaimed::Reusable(ready::Permit::new(key)),
-            ready::Renewal::Retired(retired) => ready::Reclaimed::Retired(retired),
-        }
+        self.entries.slots.renew(task)
     }
 
     pub(in crate::driver::schedule) fn drain<'a, 'd>(
@@ -179,71 +168,64 @@ impl Arena {
             ready::Entry::Dispatch(_) => ready::TaskParent::Root,
         }
     }
-}
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(in crate::driver) struct Stored<'a>(&'a Arena);
-
-impl<'arena> Stored<'arena> {
-    pub(in crate::driver::schedule::ready) fn activate(self, key: &ready::DispatchKey<'_>) {
-        self.0.ready.insert(key.key().raw().dense());
+    pub(in crate::driver::schedule::ready) fn activate_slot(&self, key: &ready::DispatchKey<'_>) {
+        self.ready.insert(key.key().raw().dense());
     }
 
-    pub(in crate::driver::schedule::ready) fn take(self, key: &ready::DispatchKey<'_>) -> Removal {
-        self.0.ready.remove(key.key().raw().dense())
+    pub(in crate::driver::schedule::ready) fn take(&self, key: &ready::DispatchKey<'_>) -> Removal {
+        self.ready.remove(key.key().raw().dense())
     }
 
-    pub(in crate::driver) fn is_dispatch(self, proof: receive::Proof) -> bool {
+    pub(in crate::driver) fn is_dispatch(&self, proof: receive::Proof) -> bool {
         self.try_index(proof.key()).is_some()
     }
 
-    pub(in crate::driver) fn credit_ready(self, proof: credit::Proof<'_>) {
+    pub(in crate::driver) fn credit_ready(&self, proof: credit::Proof<'_>) {
         if let Some(index) = self.try_index(proof.key()) {
-            self.0.ready.insert(index);
+            self.ready.insert(index);
         }
     }
 
     pub(in crate::driver) fn try_receive(
-        self,
+        &self,
         proof: receive::Proof,
     ) -> Result<(), receive::Proof> {
         let key = proof.key();
         let Some(index) = self.try_index(key) else {
             return Err(proof);
         };
-        self.0.ready.insert(index);
+        self.ready.insert(index);
         Ok(())
     }
 
     pub(in crate::driver) fn try_retained(
-        self,
+        &self,
         key: ready::Retained<'_>,
     ) -> Result<(), ready::Stale> {
         let Some(index) = self.try_index(key.raw()) else {
             return Err(ready::Stale);
         };
-        self.0.ready.insert(index);
+        self.ready.insert(index);
         Ok(())
     }
 
     /// Activates a completion key that may name a dispatch or nested task.
     pub(in crate::driver::schedule::ready) fn complete<'a, 'd>(
-        self,
+        &'a self,
         access: ready::Access<'a, 'd>,
         key: ready::Retained<'d>,
     ) where
-        'arena: 'a,
         'd: 'a,
     {
-        let Some(entry) = self.0.resolve(key.raw()) else {
+        let Some(entry) = self.resolve(key.raw()) else {
             return;
         };
-        self.0.queue_entry(access, entry);
+        self.queue_entry(access, entry);
     }
 
-    fn try_index(self, key: ready::Stored) -> Option<ready::DynamicIndex> {
-        match self.0.resolve(key)? {
+    fn try_index(&self, key: ready::Stored) -> Option<ready::DynamicIndex> {
+        match self.resolve(key)? {
             ready::Entry::Dispatch(index) => Some(index),
             ready::Entry::Task(_, _) => None,
         }

@@ -182,7 +182,7 @@ fn oneshot_option_failure() {
         },
         io::{event::Kind, socket},
     };
-    use dope_net::link::oneshot::{self, Busy, Dispatch, Progress, Unsent};
+    use dope_net::link::oneshot::{self, Dispatch, Progress};
     use o3::base::time::Positive;
 
     let interval = option::Period::try_from(Duration::from_secs(i32::MAX as u64))
@@ -191,7 +191,7 @@ fn oneshot_option_failure() {
     let config = settings::Config::default()
         .with_queues(settings::QueueLayout::fixed::<64, 128>())
         .with_files(settings::FileSlots::fixed::<0, 2>());
-    let mut reports = Vec::new();
+    let mut reports = Reports::new(config, [Route::ROUTE]);
     let mut observed = None;
     Driver::new(config).with_scope(
         |scope| {
@@ -219,35 +219,13 @@ fn oneshot_option_failure() {
                     until,
                     window,
                 );
-                match pool.try_send(&held, SlotIndex::ZERO, request, &mut driver) {
-                    Dispatch::Sent => {}
-                    Dispatch::Unsent(Unsent::Busy {
-                        cause: Busy::Slot, ..
-                    }) => {
-                        panic!("oneshot slot busy");
-                    }
-                    Dispatch::Unsent(Unsent::Busy {
-                        cause: Busy::Descriptor,
-                        ..
-                    }) => {
-                        panic!("oneshot descriptor busy");
-                    }
-                    Dispatch::Unsent(Unsent::Busy {
-                        cause: Busy::Submit(cause),
-                        ..
-                    }) => {
-                        panic!("oneshot submission busy: {cause:?}");
-                    }
-                    Dispatch::Unsent(Unsent::Rejected { cause, .. }) => {
-                        panic!("oneshot submission rejected: {cause:?}");
-                    }
-                    Dispatch::Unsent(Unsent::Outside { cause, .. }) => {
-                        panic!("oneshot route outside: {cause:?}");
-                    }
-                    Dispatch::Unsent(Unsent::Exhausted(..)) => {
-                        panic!("oneshot identity exhausted");
-                    }
-                }
+                assert!(
+                    matches!(
+                        pool.try_send(&held, SlotIndex::ZERO, request, &mut driver),
+                        Dispatch::Sent
+                    ),
+                    "oneshot operation must be admitted before testing option rejection"
+                );
                 (held, pool)
             };
             for _ in 0..2 {
@@ -275,7 +253,8 @@ fn oneshot_option_failure() {
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
     );
-    assert!(reports.is_empty(), "unexpected reclamation: {reports:?}");
+    let events = reports.events().expect("reclaimed operations");
+    assert!(events.is_empty(), "unexpected reclamation: {events:?}");
     match observed.expect("terminal option rejection") {
         Err(oneshot::Error::Option(errno)) => assert_eq!(errno, Errno::INVALID_ARGUMENT),
         Err(oneshot::Error::Connect(errno)) => {
@@ -362,8 +341,7 @@ fn mode_resources() {
 #[test]
 fn reports_file_shortfall() {
     let mut reports = Vec::new();
-    throughput().with_scope(|scope| {
-        scope.with_driver(|mut driver, _| {
+    throughput().with_driver(|mut driver| {
             let cap = conn::Capacity::fixed::<1>();
             let result = change::try_prepare::<
                 Route, Tcp, Identity, (), input::Borrowed, Shared, 32, _, _, _, _,
@@ -383,7 +361,6 @@ fn reports_file_shortfall() {
                 },
             );
             assert!(result.is_ok(), "pool storage preparation failed");
-        });
     }, recovery::Policy::new(|event| reports.push(event), recover), finish);
     assert!(
         reports.is_empty(),
@@ -521,65 +498,63 @@ fn oneshot_rejects_outside() {
     };
     use o3::base::time::Positive;
 
-    throughput().with_scope(
-        |scope| {
-            scope.with_driver(|mut driver, _| {
-                let cap = settings::FileSlots::fixed::<0, 1>().outbound();
-                let held = Reserved::<Route>::try_new(&driver, cap)
-                    .expect("oneshot descriptor reservation");
-                let mut pool = oneshot::Pool::<Route, Box<u32>, socket::Inet, Shared>::prepare(
-                    Edge::from(conn::Capacity::fixed::<1>()),
-                    cap,
-                    &mut driver,
-                )
-                .expect("oneshot storage");
-                let outside = SlotIndex::from(1_u16);
-                let cause = cap.excludes(outside).expect("excluded local position");
-                assert_eq!(pool.try_cancel(outside, &mut driver).err(), Some(cause));
-                assert!(matches!(
-                    pool.try_cancel(SlotIndex::ZERO, &mut driver),
-                    Ok(Progress::Idle)
-                ));
-                let mut cursor = u32::MAX;
-                assert!(pool.cancel_next(&mut cursor, &mut driver).is_none());
-                assert_eq!(cursor, u32::MAX);
+    throughput().with_driver(
+        |mut driver| {
+            let cap = settings::FileSlots::fixed::<0, 1>().outbound();
+            let held =
+                Reserved::<Route>::try_new(&driver, cap).expect("oneshot descriptor reservation");
+            let mut pool = oneshot::Pool::<Route, Box<u32>, socket::Inet, Shared>::prepare(
+                Edge::from(conn::Capacity::fixed::<1>()),
+                cap,
+                &mut driver,
+            )
+            .expect("oneshot storage");
+            let outside = SlotIndex::from(1_u16);
+            let cause = cap.excludes(outside).expect("excluded local position");
+            assert_eq!(pool.try_cancel(outside, &mut driver).err(), Some(cause));
+            assert!(matches!(
+                pool.try_cancel(SlotIndex::ZERO, &mut driver),
+                Ok(Progress::Idle)
+            ));
+            let mut cursor = u32::MAX;
+            assert!(pool.cancel_next(&mut cursor, &mut driver).is_none());
+            assert_eq!(cursor, u32::MAX);
 
-                let addr = SocketAddr::from(([127, 0, 0, 1], 32123));
-                let payload = Shared::try_copy(b"original-request-payload").expect("payload");
-                let bytes = payload.as_slice().as_ptr();
-                let owner = Box::new(73);
-                let original = ptr::from_ref(&*owner);
-                let window = Positive::from_secs::<7>();
-                let until = driver.driver_ref().clock().now().clamp_add(window);
-                let request = oneshot::Request::new(
-                    socket::Inet::from_std(addr),
-                    option::Set::EMPTY,
-                    owner,
-                    payload,
-                    until,
-                    window,
-                );
-                let result = pool.try_send(&held, outside, request, &mut driver);
-                let (request, actual) = match result {
-                    Dispatch::Unsent(Unsent::Outside { request, cause }) => Some((request, cause)),
-                    _ => None,
-                }
-                .expect("outside request must fail before submission");
-                assert_eq!(actual, cause);
-                let parts = request.into_parts();
-                assert_eq!(ptr::from_ref(&*parts.authority), original);
-                assert_eq!(*parts.authority, 73);
-                assert_eq!(parts.payload.as_slice().as_ptr(), bytes);
-                assert_eq!(parts.payload.as_slice(), b"original-request-payload");
-                assert_eq!(
-                    socket::Addr::copy_from(&parts.address).into_std().ok(),
-                    Some(addr)
-                );
-                assert_eq!(parts.connect_deadline.into_raw(), until.into_raw());
-                assert_eq!(parts.send_window, window);
-                assert!(!pool.has_io());
-                assert!(pool.earliest().is_none());
-            });
+            let addr = SocketAddr::from(([127, 0, 0, 1], 32123));
+            let payload = Shared::try_copy(b"original-request-payload").expect("payload");
+            let bytes = payload.as_slice().as_ptr();
+            let owner = Box::new(73);
+            let original = ptr::from_ref(&*owner);
+            let window = Positive::from_secs::<7>();
+            let until = driver.driver_ref().clock().now().clamp_add(window);
+            let request = oneshot::Request::new(
+                socket::Inet::from_std(addr),
+                option::Set::EMPTY,
+                owner,
+                payload,
+                until,
+                window,
+            );
+            let result = pool.try_send(&held, outside, request, &mut driver);
+            let (request, actual) = match result {
+                Dispatch::Unsent(Unsent::Outside { request, cause }) => Some((request, cause)),
+                _ => None,
+            }
+            .expect("outside request must fail before submission");
+            assert_eq!(actual, cause);
+            let parts = request.into_parts();
+            assert_eq!(ptr::from_ref(&*parts.authority), original);
+            assert_eq!(*parts.authority, 73);
+            assert_eq!(parts.payload.as_slice().as_ptr(), bytes);
+            assert_eq!(parts.payload.as_slice(), b"original-request-payload");
+            assert_eq!(
+                socket::Addr::copy_from(&parts.address).into_std().ok(),
+                Some(addr)
+            );
+            assert_eq!(parts.connect_deadline.into_raw(), until.into_raw());
+            assert_eq!(parts.send_window, window);
+            assert!(!pool.has_io());
+            assert!(pool.earliest().is_none());
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,

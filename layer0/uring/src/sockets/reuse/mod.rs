@@ -29,7 +29,7 @@ const ATTACH_TYPE: u32 = 39;
 
 #[repr(C)]
 #[derive(Default)]
-struct MapShape {
+struct MapCreate {
     map_type: u32,
     key_size: u32,
     value_size: u32,
@@ -37,12 +37,6 @@ struct MapShape {
     map_flags: u32,
     inner_map_fd: u32,
     numa_node: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct MapCreate {
-    shape: MapShape,
     map_name: [u8; 16],
     map_ifindex: u32,
     btf_fd: u32,
@@ -62,34 +56,19 @@ struct MapUpdate {
 }
 
 #[repr(C)]
-struct ProgSource {
+struct ProgLoad {
     prog_type: u32,
     insn_cnt: u32,
     insns: u64,
     license: u64,
-}
-
-#[repr(C)]
-struct ProgLog {
     log_level: u32,
     log_size: u32,
     log_buf: u64,
-}
-
-#[repr(C)]
-struct ProgMetadata {
     kern_version: u32,
     prog_flags: u32,
     prog_name: [u8; 16],
     prog_ifindex: u32,
     expected_attach_type: u32,
-}
-
-#[repr(C)]
-struct ProgLoad {
-    source: ProgSource,
-    log: ProgLog,
-    metadata: ProgMetadata,
 }
 
 pub struct Installer {
@@ -145,13 +124,10 @@ impl Attach for Installer {
 impl Map {
     fn create(count: Count) -> Result<Self, Error> {
         let mut attr = MapCreate {
-            shape: MapShape {
-                map_type: MAP_TYPE,
-                key_size: mem::size_of::<u32>() as u32,
-                value_size: mem::size_of::<u32>() as u32,
-                max_entries: u32::from(count.encode()),
-                ..MapShape::default()
-            },
+            map_type: MAP_TYPE,
+            key_size: mem::size_of::<u32>() as u32,
+            value_size: mem::size_of::<u32>() as u32,
+            max_entries: u32::from(count.encode()),
             ..MapCreate::default()
         };
         attr.map_name[..14].copy_from_slice(b"dope_route_map");
@@ -172,24 +148,18 @@ impl Loaded {
         name[..10].copy_from_slice(b"dope_route");
         let code = program.instructions();
         let attr = ProgLoad {
-            source: ProgSource {
-                prog_type: PROGRAM_TYPE,
-                insn_cnt: code.len() as u32,
-                insns: address_slice(code),
-                license: address_slice(license),
-            },
-            log: ProgLog {
-                log_level: 0,
-                log_size: 0,
-                log_buf: 0,
-            },
-            metadata: ProgMetadata {
-                kern_version: 0,
-                prog_flags: 0,
-                prog_name: name,
-                prog_ifindex: 0,
-                expected_attach_type: ATTACH_TYPE,
-            },
+            prog_type: PROGRAM_TYPE,
+            insn_cnt: code.len() as u32,
+            insns: address_slice(code),
+            license: address_slice(license),
+            log_level: 0,
+            log_size: 0,
+            log_buf: 0,
+            kern_version: 0,
+            prog_flags: 0,
+            prog_name: name,
+            prog_ifindex: 0,
+            expected_attach_type: ATTACH_TYPE,
         };
         Ok(Self(bpf_fd(Operation::ProgramLoad, PROG_LOAD, &attr)?))
     }

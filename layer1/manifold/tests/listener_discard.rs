@@ -1,9 +1,9 @@
 pub mod common;
 
+use common::manifold::listener::{native, reached};
+
 use std::{
     cell::Cell,
-    convert::Infallible,
-    fmt::Debug,
     marker,
     net::Shutdown,
     rc::Rc,
@@ -27,9 +27,8 @@ use dope_manifold::{
     timing::Throughput,
 };
 use dope_net::{tcp::Tcp, wire::Identity};
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
-    fibers::{Run, Wait},
     harness::{
         GUARD,
         peer::{self, Peer},
@@ -50,18 +49,6 @@ fn observe(event: Event<'_, '_>) {
         Event::Deadline(armed) => matches!(armed, Arm::Armed),
         Event::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
     });
-}
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
 }
 
 #[test]

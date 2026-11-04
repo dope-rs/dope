@@ -77,8 +77,7 @@ where
     where
         A: executor::raw::App<'d>,
     {
-        let mut lent = session::Lent::new(&mut *self.core);
-        let (parent, outcome, disarm) = lent.execute(
+        let (parent, outcome, disarm) = self.core.execute(
             self.owner,
             app,
             self.start,

@@ -67,14 +67,6 @@ impl<'a, S: change::raw::Slots> Batch<'a, S> {
 }
 
 impl<S: change::raw::Slots> change::Tail for Tail<'_, S> {
-    fn is_empty(&self) -> bool {
-        self.0.staged_len == 0
-    }
-
-    fn len(&self) -> usize {
-        self.0.staged_len
-    }
-
     fn as_mut_slice(&mut self) -> &mut [libc::kevent] {
         self.0.staged_delete = true;
         self.changes().events
@@ -82,11 +74,6 @@ impl<S: change::raw::Slots> change::Tail for Tail<'_, S> {
 
     fn commit(self) {
         self.0.remove(self.0.staged_len);
-        self.0.staged_len = 0;
-    }
-
-    fn retry(self) {
-        self.0.staged_len = 0;
     }
 }
 

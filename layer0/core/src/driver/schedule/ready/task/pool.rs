@@ -4,10 +4,7 @@ use dope_sys::table::permit;
 
 use crate::{
     driver,
-    driver::schedule::{
-        ready,
-        ready::{arena::pool::Retirement, task},
-    },
+    driver::schedule::{ready, ready::task},
 };
 
 /// A driver-scoped lease of `N` task admissions without a stored parent.
@@ -56,10 +53,10 @@ impl<'d, Tag, const N: usize> Pool<'d, Tag, N> {
         };
         let driver = parent.driver();
         let entries = &driver.ready().arena().entries;
-        let lease = entries.pool.try_lease(&entries.slots, count)?;
+        let chain = entries.pool.try_take(&entries.slots, count)?;
         Ok(Self {
             driver,
-            chain: lease.commit(),
+            chain,
             tag: marker::PhantomData,
         })
     }
@@ -92,18 +89,16 @@ impl<'d, Tag, const N: usize> Pool<'d, Tag, N> {
     pub(in crate::driver::schedule::ready::task) fn reclaim<R>(
         &self,
         root: Root<'d>,
-        child: ready::Reclaimed<'d>,
+        child: ready::Renewal<'d>,
         reusable: R,
         retired: R,
     ) -> R {
         match child {
-            ready::Reclaimed::Reusable(child) => {
+            ready::Renewal::Reusable(child) => {
                 self.parent(root).return_lease(child, &self.chain);
                 reusable
             }
-            ready::Reclaimed::Retired(Retirement {
-                brand: marker::PhantomData,
-            }) => retired,
+            ready::Renewal::Retired => retired,
         }
     }
 }

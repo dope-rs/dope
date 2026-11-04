@@ -1,4 +1,4 @@
-use std::{convert::Infallible, hash::BuildHasher};
+use std::hash::BuildHasher;
 
 use dope_core::driver::life::{creation::Attempt, recovery};
 use dope_runtime::random::Entropy;
@@ -68,7 +68,7 @@ fn separates_roots() {
                 assert_ne!(hash, root.hash_seed::<0x7061_7469>().hash(&HASH_INPUT));
                 assert_ne!(hash, driver.hash_seed::<0x7061_7468>().hash(&HASH_INPUT));
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
         );
         assert!(
             reports.is_empty(),
@@ -77,8 +77,4 @@ fn separates_roots() {
 
         assert!(result.is_ok(), "random domain must finish");
     });
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

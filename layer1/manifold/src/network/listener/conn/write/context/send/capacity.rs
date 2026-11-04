@@ -37,17 +37,6 @@ enum Direct {
     Waiting,
 }
 
-pub(super) struct Unsent<S> {
-    cause: Unavailable,
-    value: egress::NonEmpty<S>,
-}
-
-impl<S> Unsent<S> {
-    pub(super) fn into_parts(self) -> (Unavailable, egress::NonEmpty<S>) {
-        (self.cause, self.value)
-    }
-}
-
 pub(in crate::network::listener::conn::write::context) struct Capacity<
     'e,
     'a,
@@ -86,17 +75,14 @@ where
         self,
         token: &mut region::Token<region::Identity<'d>>,
         value: egress::NonEmpty<S>,
-    ) -> Result<Payload<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B, S>, Unsent<S>>
+    ) -> Result<Payload<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B, S>, (Unavailable, egress::NonEmpty<S>)>
     where
         B: 'd,
     {
         let Self { scope, now, lease } = self;
         let slot = &mut scope.slot;
         if slot.send_status().is_closed() {
-            return Err(Unsent {
-                cause: Unavailable::Closed,
-                value,
-            });
+            return Err((Unavailable::Closed, value));
         }
         let conn::Output::Open {
             slots,
@@ -105,10 +91,7 @@ where
             queue,
         } = &mut scope.output
         else {
-            return Err(Unsent {
-                cause: Unavailable::Closed,
-                value,
-            });
+            return Err((Unavailable::Closed, value));
         };
         let target = slot.io().wake_target();
         let flow = slot.flow(queue.pending());
@@ -150,27 +133,19 @@ where
                     Direct::Queued => {
                         held.cancel(token, queue, target);
                         slot.ensure_send(now);
-                        return Err(Unsent {
-                            cause: Unavailable::Deferred(write::Deferred::OrderedDrain),
-                            value,
-                        });
+                        return Err((Unavailable::Deferred(write::Deferred::OrderedDrain), value));
                     }
                     Direct::Waiting => {
                         queue.cancel_wait(token);
                         slot.ensure_send(now);
-                        return Err(Unsent {
-                            cause: Unavailable::Deferred(write::Deferred::Capacity),
-                            value,
-                        });
+                        return Err((Unavailable::Deferred(write::Deferred::Capacity), value));
                     }
                 }
                 held.cancel(token, queue, target);
-                return Err(Unsent {
-                    cause: Unavailable::Rejected(write::Reject::Geometry(error::Full::Reserve(
-                        reason,
-                    ))),
+                return Err((
+                    Unavailable::Rejected(write::Reject::Geometry(error::Full::Reserve(reason))),
                     value,
-                });
+                ));
             }
         };
         held.cancel_wait(target);
@@ -191,6 +166,26 @@ where
     where
         B: 'd,
     {
+        self.header::<_, true>(token, |_| Some(()))
+    }
+
+    fn header<P, const CANCEL: bool>(
+        self,
+        token: &mut region::Token<region::Identity<'d>>,
+        prepare: impl FnOnce(
+            &egress::Queue<
+                'c,
+                'e,
+                'd,
+                { crate::network::listener::IOV_CAP },
+                writer::Payload<'p, 's, 'd, ID, B>,
+                writer::Reserve<'d, B>,
+            >,
+        ) -> Option<P>,
+    ) -> Result<
+        Send<'a, 'p, 's, 'w, 'd, ID, W, C, B, Buffer<'a, 'p, 's, 'e, 'd, ID, B, P>>,
+        Unavailable,
+    > {
         let Self { scope, now, lease } = self;
         let slot = &mut scope.slot;
         if slot.send_status().is_closed() {
@@ -208,7 +203,8 @@ where
         let target = slot.io().wake_target();
         let flow = slot.flow(queue.pending());
         let (direct, header) = held.sources();
-        if !matches!(&flow, Clear) && direct.is_some() && header.is_none() {
+        let plan = header.zip(prepare(queue));
+        if !matches!(&flow, Clear) && direct.is_some() && plan.is_none() {
             held.cancel(token, queue, target);
             slot.ensure_send(now);
             return Err(Unavailable::Deferred(write::Deferred::OrderedDrain));
@@ -221,12 +217,12 @@ where
                         slot: slot.reborrow(),
                         flights: slots,
                         pending: *permit,
-                        buffer: memory::Bounded::Direct(flight),
+                        buffer: Buffer::Direct(flight),
 
                         lease,
                     });
                 }
-                Claim::Waiting if header.is_none() => {
+                Claim::Waiting if plan.is_none() => {
                     queue.cancel_wait(token);
                     slot.ensure_send(now);
                     return Err(Unavailable::Deferred(write::Deferred::Capacity));
@@ -234,7 +230,7 @@ where
                 Claim::Waiting => {}
             }
         }
-        let Some(header) = header else {
+        let Some((header, plan)) = plan else {
             held.cancel(token, queue, target);
             return Err(Unavailable::Rejected(write::Reject::Header));
         };
@@ -246,14 +242,17 @@ where
                 return Err(Unavailable::Deferred(write::Deferred::Capacity));
             }
         };
-        queue.cancel_wait(token);
+        if CANCEL {
+            queue.cancel_wait(token);
+        }
         Ok(Send {
             slot: slot.reborrow(),
             flights: slots,
             pending: *permit,
-            buffer: memory::Bounded::Queued {
+            buffer: Buffer::Queued {
                 slot: header,
                 queue: queue.reborrow(),
+                plan,
             },
 
             lease,
@@ -272,75 +271,6 @@ where
         self,
         token: &mut region::Token<region::Identity<'d>>,
     ) -> Result<Header<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, Bound<B, G>>, Unavailable> {
-        let Self { scope, now, lease } = self;
-        let slot = &mut scope.slot;
-        if slot.send_status().is_closed() {
-            return Err(Unavailable::Closed);
-        }
-        let conn::Output::Open {
-            slots,
-            permit,
-            held,
-            queue,
-        } = &mut scope.output
-        else {
-            return Err(Unavailable::Closed);
-        };
-        let target = slot.io().wake_target();
-        let flow = slot.flow(queue.pending());
-        let (direct, header) = held.sources();
-        let plan = header.zip(queue.prove());
-        if !matches!(&flow, Clear) && direct.is_some() && plan.is_none() {
-            held.cancel(token, queue, target);
-            slot.ensure_send(now);
-            return Err(Unavailable::Deferred(write::Deferred::OrderedDrain));
-        } else if matches!(&flow, Clear)
-            && let Some(source) = direct
-        {
-            match held.take_direct(source, target) {
-                Claim::Acquired(flight) => {
-                    queue.cancel_wait(token);
-                    return Ok(super::Send {
-                        slot: slot.reborrow(),
-                        flights: slots,
-                        pending: *permit,
-                        buffer: Buffer::Direct(flight),
-
-                        lease,
-                    });
-                }
-                Claim::Waiting => {
-                    if plan.is_none() {
-                        queue.cancel_wait(token);
-                        slot.ensure_send(now);
-                        return Err(Unavailable::Deferred(write::Deferred::Capacity));
-                    }
-                }
-            }
-        }
-        let Some((header, plan)) = plan else {
-            held.cancel(token, queue, target);
-            return Err(Unavailable::Rejected(write::Reject::Header));
-        };
-        let buffer = match held.take_header(header, target) {
-            Claim::Acquired(slot) => Buffer::Queued {
-                slot,
-                queue: queue.reborrow(),
-                plan,
-            },
-            Claim::Waiting => {
-                queue.cancel_wait(token);
-                slot.ensure_send(now);
-                return Err(Unavailable::Deferred(write::Deferred::Capacity));
-            }
-        };
-        Ok(super::Send {
-            slot: slot.reborrow(),
-            flights: slots,
-            pending: *permit,
-            buffer,
-
-            lease,
-        })
+        self.header::<_, false>(token, egress::Queue::prove)
     }
 }

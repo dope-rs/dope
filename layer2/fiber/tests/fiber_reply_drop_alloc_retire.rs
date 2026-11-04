@@ -118,73 +118,6 @@ fn retry_after_cancel() {
 }
 
 #[test]
-fn detach_waits_for_finish() {
-    let mut finish = Completion::new();
-    let drops = Drops::new();
-    let mut reports = Vec::with_capacity(1);
-
-    Setup::throughput().with_session(
-        |mut session| {
-            let proof = session.driver().region_token().proof();
-            Fixture::Queue(&drops)
-                .try_with(proof, |state| {
-                    let state = &state;
-                    let arena = &state.arena;
-                    let lane = arena.try_lane(LaneIndex::ZERO).expect("lane exists");
-                    let mut reply = recv::Response::<_, Never>::new();
-                    assert!((reply.try_attach(session.driver().region_token(), lane)) == (Ok(())));
-                    assert_eq!(lane.depth(session.driver().region_token()).get(), 1);
-
-                    reply.detach();
-                    let releases = Releases::new();
-                    let result = session.with_quiesce(
-                        &mut finish,
-                        Maintenance::new(state, &releases),
-                        scenario::TIMEOUT,
-                        |mut app| app.drive(Once::new(Drain::new(state))),
-                    );
-                    assert!(
-                        matches!(result, Ok(Ok(()))),
-                        "finalize detached reply maintenance"
-                    );
-                    assert!(releases.take().is_empty());
-                    {
-                        let mut driver = session.driver();
-                        let region = driver.region_token();
-                        assert!((lane.control().attachment(region)) == (Attachment::Detached));
-                        assert_eq!(lane.depth(region).get(), 1);
-                        assert_eq!(arena.inflight().get(), 1);
-
-                        lane.complete(region);
-                        assert!((lane.depth(region)) == (Depth::ZERO));
-                        assert_eq!(arena.inflight().get(), 1);
-                    }
-                    let result = session.with_quiesce(
-                        &mut finish,
-                        Maintenance::new(state, &releases),
-                        scenario::TIMEOUT,
-                        |mut app| app.drive(Once::new(Drain::new(state))),
-                    );
-                    assert!(
-                        matches!(result, Ok(Ok(()))),
-                        "finalize detached completion reclaim"
-                    );
-                    assert_eq!(arena.inflight().get(), 0);
-                    let released = releases.take();
-                    assert!(released.into_iter().map(|lane| lane.index().get()).eq([0]));
-                })
-                .expect("reply storage construction");
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
 fn keeps_reply_order() {
     let drops = Drops::new();
 
@@ -338,74 +271,86 @@ fn complete_during_drain() {
 
 #[test]
 fn partial_stays_live() {
-    let mut finish = Completion::new();
-    let drops = Drops::new();
-    let mut reports = Vec::with_capacity(1);
+    for values in [0, 4] {
+        let mut finish = Completion::new();
+        let drops = Drops::new();
+        let mut reports = Vec::with_capacity(1);
 
-    Setup::throughput().with_session(
-        |mut session| {
-            let proof = session.driver().region_token().proof();
-            Fixture::Queue(&drops)
-                .try_with(proof, |state| {
-                    let state = &state;
-                    let arena = &state.arena;
-                    let lane = arena.try_lane(LaneIndex::ZERO).expect("lane exists");
-                    let mut reply = recv::Response::<_, Never>::new();
-                    assert!((reply.try_attach(session.driver().region_token(), lane)) == (Ok(())));
-                    for _ in 0..4 {
+        Setup::throughput().with_session(
+            |mut session| {
+                let proof = session.driver().region_token().proof();
+                Fixture::Queue(&drops)
+                    .try_with(proof, |state| {
+                        let state = &state;
+                        let arena = &state.arena;
+                        let lane = arena.try_lane(LaneIndex::ZERO).expect("lane exists");
+                        let mut reply = recv::Response::<_, Never>::new();
                         assert!(
-                            lane.select(session.driver().region_token())
-                                .try_push(Counted::data(&drops))
-                                .is_ok()
+                            (reply.try_attach(session.driver().region_token(), lane)) == (Ok(()))
                         );
-                    }
-                    reply.detach();
+                        assert_eq!(lane.depth(session.driver().region_token()).get(), 1);
+                        for _ in 0..values {
+                            assert!(
+                                lane.select(session.driver().region_token())
+                                    .try_push(Counted::data(&drops))
+                                    .is_ok()
+                            );
+                        }
+                        reply.detach();
 
-                    let releases = Releases::new();
-                    let result = session.with_quiesce(
-                        &mut finish,
-                        Maintenance::new(state, &releases),
-                        scenario::TIMEOUT,
-                        |mut app| app.drive(Once::new(Drain::new(state))),
-                    );
-                    assert!(
-                        matches!(result, Ok(Ok(()))),
-                        "finalize partial reply retirement"
-                    );
-                    assert!(
-                        (lane.select(session.driver().region_token()).front()) == (Front::Detached)
-                    );
-                    assert_eq!(drops.count(), 4);
-                    assert_eq!(arena.inflight().get(), 1);
-                    assert!(releases.take().is_empty());
+                        let releases = Releases::new();
+                        let result = session.with_quiesce(
+                            &mut finish,
+                            Maintenance::new(state, &releases),
+                            scenario::TIMEOUT,
+                            |mut app| app.drive(Once::new(Drain::new(state))),
+                        );
+                        assert!(
+                            matches!(result, Ok(Ok(()))),
+                            "finalize partial reply retirement"
+                        );
+                        assert!(
+                            (lane.select(session.driver().region_token()).front())
+                                == (Front::Detached)
+                        );
+                        assert!(
+                            lane.control().attachment(session.driver().region_token())
+                                == Attachment::Detached
+                        );
+                        assert_eq!(lane.depth(session.driver().region_token()).get(), 1);
+                        assert_eq!(drops.count(), values);
+                        assert_eq!(arena.inflight().get(), 1);
+                        assert!(releases.take().is_empty());
 
-                    lane.complete(session.driver().region_token());
-                    assert_eq!(arena.inflight().get(), 1);
-                    let result = session.with_quiesce(
-                        &mut finish,
-                        Maintenance::new(state, &releases),
-                        scenario::TIMEOUT,
-                        |mut app| app.drive(Once::new(Drain::new(state))),
-                    );
-                    assert!(
-                        matches!(result, Ok(Ok(()))),
-                        "finalize detached reply reclaim"
-                    );
-                    assert_eq!(drops.count(), 4);
-                    assert_eq!(arena.inflight().get(), 0);
-                    let released = releases.take();
-                    assert!(released.into_iter().map(|lane| lane.index().get()).eq([0]));
-                    assert!((arena.work()) == (Work::Idle));
-                })
-                .expect("reply storage construction");
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+                        lane.complete(session.driver().region_token());
+                        assert_eq!(lane.depth(session.driver().region_token()).get(), 0);
+                        assert_eq!(arena.inflight().get(), 1);
+                        let result = session.with_quiesce(
+                            &mut finish,
+                            Maintenance::new(state, &releases),
+                            scenario::TIMEOUT,
+                            |mut app| app.drive(Once::new(Drain::new(state))),
+                        );
+                        assert!(
+                            matches!(result, Ok(Ok(()))),
+                            "finalize detached reply reclaim"
+                        );
+                        assert_eq!(drops.count(), values);
+                        assert_eq!(arena.inflight().get(), 0);
+                        let released = releases.take();
+                        assert!(released.into_iter().map(|lane| lane.index().get()).eq([0]));
+                        assert!((arena.work()) == (Work::Idle));
+                    })
+                    .expect("reply storage construction");
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+            runtime::check_scope,
+        );
+        assert!(
+            matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
+            "unexpected reclaimed operations: {reports:?}"
+        );
+    }
 }
 
 #[test]

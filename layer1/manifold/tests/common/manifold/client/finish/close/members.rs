@@ -148,6 +148,17 @@ pub struct DemandState {
     pub(crate) withdrawn: Cell<bool>,
 }
 
+impl Default for DemandState {
+    fn default() -> Self {
+        Self {
+            needed: Cell::new(true),
+            pending: Cell::new(Some(0)),
+            live: Cell::new(Some(0)),
+            withdrawn: Cell::new(false),
+        }
+    }
+}
+
 pub struct Demand(pub(crate) Rc<DemandState>);
 
 impl<'d> discover::Demand<'d> for Demand {

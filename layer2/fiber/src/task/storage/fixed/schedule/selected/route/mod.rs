@@ -77,7 +77,7 @@ where
     type Output = O;
 
     fn run(self, context: C, selected: Item<'plane, 'turn, 'd, R, Q, S>) -> Self::Output {
-        Dispatch::dispatch(self, context, selected.claim.map())
+        Dispatch::dispatch(self, context, selected.claim.take())
     }
 }
 

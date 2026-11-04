@@ -200,7 +200,7 @@ impl<'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         let pending = &mut core.pending;
         core.scope.with_driver(|mut driver, turn| {
             let block = scope::Boot::try_new(&mut driver, turn, pending, admitted)
-                .and_then(|state| block::Block::new(state, wall()));
+                .and_then(|state| block::Block::new(state.driver_ref(), state, wall()));
             block::Block::run_boot(block, root)
         })
     }

@@ -1,10 +1,9 @@
-use std::{cell::Cell, convert::Infallible, rc::Rc, task};
+use std::{convert::Infallible, rc::Rc, task};
 
 use dope_core::{
     driver::{
         self,
         route::{KeyTag, table::conn::Capacity},
-        schedule::ready,
         settings,
         settings::{claim, errors::Claim},
         storage,
@@ -54,7 +53,6 @@ use crate::common::{
     manifold::client::{error, flush},
 };
 
-pub mod app;
 pub mod limited;
 pub mod retry;
 
@@ -63,13 +61,6 @@ pub enum Error {
     Flush { connected: u32, empty: bool },
     Quarantine(u32),
     Shutdown { pending: bool, done: u32 },
-}
-
-#[derive(Debug)]
-pub struct Reservation<'d> {
-    pub target: conn::Id<'d, KeyTag<0>>,
-    pub address: *const u8,
-    pub result: Result<(), (registry::Cause<'d>, conn::Id<'d, KeyTag<0>>, *const u8)>,
 }
 
 pub struct Intent<'d> {
@@ -135,20 +126,19 @@ impl storage::Build for Storage {
     }
 }
 
-pub struct Session<'test, 'life, 'd, F, G> {
-    pub(crate) create: F,
-    pub(crate) ready: G,
+pub struct Session<'test, 'life, 'd> {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
-    pub(crate) claims: Rc<Trace<Reservation<'d>, 2>>,
-
-    pub(crate) state: State<'test, 'd>,
     pub(crate) registry: &'life registry::Registry<'d, Intent<'d>>,
     pub(crate) conn: LocalGateRef<'test>,
+    pub(crate) pending: Option<conn::Id<'d, KeyTag<0>>>,
+    pub(crate) eager: bool,
+    pub(crate) armed: bool,
+    pub(crate) done: LocalGateRef<'test>,
+    pub(crate) closed: LocalGateRef<'test>,
+    pub(crate) events: &'test Trace<Result<(), side::Error>, 4>,
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>>
-    session::Session<'d> for Session<'_, '_, 'd, F, G>
-{
+impl<'d> session::Session<'d> for Session<'_, '_, 'd> {
     type Codec = codec::Pending;
     type Connect = Full;
     type Requests = request::Disabled;
@@ -160,9 +150,7 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
     }
 }
 
-impl<'test, 'life, 'd, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>>
-    policy::Compatible<'d, 'd, wire::Identity, KeyTag<0>> for Session<'test, 'life, 'd, F, G>
-{
+impl<'d> policy::Compatible<'d, 'd, wire::Identity, KeyTag<0>> for Session<'_, '_, 'd> {
     type Open = Self;
     type Terminal = Self;
 
@@ -175,16 +163,12 @@ impl<'test, 'life, 'd, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> re
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>> Parser<'d>
-    for Session<'_, '_, 'd, F, G>
-{
+impl<'d> Parser<'d> for Session<'_, '_, 'd> {
     type Mode = mode::Plain;
     type Response = response::Immediate;
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>> Plain<'d>
-    for Session<'_, '_, 'd, F, G>
-{
+impl<'d> Plain<'d> for Session<'_, '_, 'd> {
     type Delivery = response::Direct;
 
     fn reject(
@@ -210,9 +194,7 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>> Output<'d>
-    for Session<'_, '_, 'd, F, G>
-{
+impl<'d> Output<'d> for Session<'_, '_, 'd> {
     fn flush() -> Option<
         impl for<'a, 'c, 't, 'e> Call<(
             &'a mut Self,
@@ -259,9 +241,7 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>>
-    session::Connected<'d> for Session<'_, '_, 'd, F, G>
-{
+impl<'d> session::Connected<'d> for Session<'_, '_, 'd> {
     type Activation = Automatic;
 
     fn connect(
@@ -271,50 +251,42 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
         context: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
         let target = context.connection();
-        let ready = (self.ready)(self.registry.ready_target());
-        for _ in 0..2 {
-            let payload = (self.create)();
+        let ready = self
+            .registry
+            .ready_target()
+            .expect("side registry is running");
+        for duplicate in [false, true] {
+            let payload = Shared::try_copy(b"cancel").expect("allocate side payload");
             let address = payload.as_ref().as_ptr();
-            let result = self
+            match self
                 .registry
                 .try_reserve(Intent { target, payload }, ready.into())
-                .map_err(|rejected| {
-                    let cause = match rejected.cause() {
-                        registry::Cause::Stale => registry::Cause::Stale,
-                        registry::Cause::Slot(direct::Error::Outside {
-                            key,
-                            index,
-                            capacity,
-                        }) => registry::Cause::Slot(direct::Error::Outside {
-                            key: *key,
-                            index: *index,
-                            capacity: *capacity,
-                        }),
-                        registry::Cause::Slot(direct::Error::Occupied { key, stored }) => {
-                            registry::Cause::Slot(direct::Error::Occupied {
-                                key: *key,
-                                stored: *stored,
-                            })
-                        }
-                    };
+            {
+                Ok(()) => assert!(!duplicate, "duplicate reservation must fail"),
+                Err(rejected) => {
+                    assert!(duplicate, "initial reservation must succeed");
+                    assert!(matches!(
+                        rejected.cause(),
+                        registry::Cause::Slot(direct::Error::Occupied { key, stored })
+                            if key == stored && key.into_key().index() == target.index()
+                    ));
                     let (intent, _) = rejected.into_parts();
-                    (cause, intent.target, intent.payload.as_ref().as_ptr())
-                });
-            self.claims.record(Reservation {
-                target,
-                address,
-                result,
-            });
+                    assert!(intent.target == target, "returned reservation target");
+                    assert_eq!(
+                        intent.payload.as_ref().as_ptr(),
+                        address,
+                        "returned payload"
+                    );
+                }
+            }
         }
-        self.state.pending.set(Some(target));
+        self.pending = Some(target);
         ready.wake();
         self.conn.hit();
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>>
-    session::Failed<'d> for Session<'_, '_, 'd, F, G>
-{
+impl<'d> session::Failed<'d> for Session<'_, '_, 'd> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -325,9 +297,7 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>>
-    session::Exhausted<'d> for Session<'_, '_, 'd, F, G>
-{
+impl<'d> session::Exhausted<'d> for Session<'_, '_, 'd> {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -338,9 +308,7 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>> Retirement<'d>
-    for Session<'_, '_, 'd, F, G>
-{
+impl<'d> Retirement<'d> for Session<'_, '_, 'd> {
     type Drain = Ready;
 
     fn io_fail(
@@ -378,35 +346,37 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
     }
 
     fn disconnect(&mut self, _: turns::Retired<'_, 'd, Self::ConnState, KeyTag<0>, Self>) {
-        self.state.closed.hit();
+        self.closed.hit();
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>> Scheduling<'d>
-    for Session<'_, '_, 'd, F, G>
-{
+impl<'d> Scheduling<'d> for Session<'_, '_, 'd> {
     fn park() -> Option<impl for<'v, 'w, 'x, 'y> Call<(&'v mut Self, &'w mut Park<'x, 'y, 'd>)>> {
         Some(|(session, _): (&mut Self, &mut Park<'_, '_, 'd>)| {
-            let Some(target) = session.state.pending.get() else {
+            let Some(target) = session.pending else {
                 return;
             };
-            let ready = (session.ready)(session.registry.ready_target());
-            if session.state.eager {
-                if !session.state.armed.replace(true) {
+            let ready = session
+                .registry
+                .ready_target()
+                .expect("side registry is running");
+            if session.eager {
+                if !session.armed {
+                    session.armed = true;
                     ready.wake();
                     return;
                 }
                 session.registry.abandon(target);
-                session.state.pending.set(None);
-                session.state.done.hit();
+                session.pending = None;
+                session.done.hit();
                 return;
             }
             match session.registry.poll(target, ready.into()) {
                 task::Poll::Pending => {}
                 task::Poll::Ready(result) => {
-                    session.state.pending.set(None);
-                    session.state.events.record(result);
-                    session.state.done.hit();
+                    session.pending = None;
+                    session.events.record(result);
+                    session.done.hit();
                 }
             }
         })
@@ -414,8 +384,8 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
 
     fn shutdown() -> Option<impl for<'v> Call<&'v mut Self>> {
         Some(|session: &mut Self| {
-            let pending = session.state.pending.get().is_some();
-            let done = session.state.done.hits();
+            let pending = session.pending.is_some();
+            let done = session.done.hits();
             if pending || done != 1 {
                 session
                     .audit
@@ -426,16 +396,4 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
     }
 }
 
-impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>>
-    Target<'d, KeyTag<0>, 1> for Session<'_, '_, 'd, F, G>
-{
-}
-
-pub(crate) struct State<'test, 'd> {
-    pub(crate) pending: Cell<Option<conn::Id<'d, KeyTag<0>>>>,
-    pub(crate) eager: bool,
-    pub(crate) armed: Cell<bool>,
-    pub(crate) done: LocalGateRef<'test>,
-    pub(crate) closed: LocalGateRef<'test>,
-    pub(crate) events: &'test Trace<Result<(), side::Error>, 4>,
-}
+impl<'d> Target<'d, KeyTag<0>, 1> for Session<'_, '_, 'd> {}

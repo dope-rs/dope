@@ -116,10 +116,11 @@ impl<'d> RequestState<'d> {
         })
     }
 
-    pub(super) fn try_stage(&self, send: resident::Shared<'d>) -> result::StageSend<'d> {
+    pub(super) fn try_stage(&self, bytes: &'d [u8]) -> result::StageSend<'d> {
         use result::StageSend;
         match self.state.replace(Request::Idle) {
             Request::Idle => {
+                let send = resident::Shared::from(bytes);
                 let send = match egress::Load::new(send).try_nonempty() {
                     Ok(send) => send,
                     Err(rejected) => return StageSend::Failed(error::Write::Invalid(rejected)),
@@ -130,7 +131,7 @@ impl<'d> RequestState<'d> {
             Request::Failed(failure) => StageSend::Failed(failure),
             state => {
                 self.state.set(state);
-                StageSend::Busy(send)
+                StageSend::Busy
             }
         }
     }

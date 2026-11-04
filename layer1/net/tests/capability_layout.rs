@@ -15,7 +15,7 @@ use dope_net::{
         send::Vectored,
     },
 };
-use metadata::{batch, front, reserve};
+use metadata::{front, reserve};
 use o3::{buffer::bytes::Source, mem};
 use wire::{
     receive::mode,
@@ -51,11 +51,6 @@ fn failure_exact_layout() {
     );
     assert_eq!(size_of::<open::Error<'static, wire::Identity>>(), 0);
     assert_eq!(size_of::<terminal::Error<'static, wire::Identity>>(), 0);
-}
-
-#[test]
-fn failure_state_two_words() {
-    assert!(size_of::<terminal::State<usize>>() <= 2 * size_of::<usize>());
 }
 
 #[test]
@@ -178,20 +173,12 @@ fn receive_loan_layouts() {
 fn metadata_owner_layouts() {
     assert_eq!(size_of::<egress::NonEmpty<()>>(), 8);
     assert_eq!(
-        size_of::<metadata::Queue<'static, 'static, 'static, ()>>(),
-        2 * size_of::<usize>()
-    );
-    assert_eq!(
         size_of::<front::Front<'static, 'static, 'static, 'static, ()>>(),
         4 * size_of::<usize>()
             + size_of::<mem::raw::Grant<mem::raw::Lane<'static, 'static, 2, (), u32>, 2>>()
             + size_of::<egress::NonEmpty<()>>()
     );
     assert_eq!(size_of::<metadata::batch::Plan>(), size_of::<usize>());
-    assert_eq!(
-        size_of::<batch::Sink<'static, 'static, 'static, 'static, 'static, ()>>(),
-        size_of::<usize>()
-    );
     assert_eq!(
         size_of::<reserve::Reserve<'static, 'static, 'static, 'static, ()>>(),
         4 * size_of::<usize>()

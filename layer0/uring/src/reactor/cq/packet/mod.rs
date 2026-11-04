@@ -1,4 +1,3 @@
-use dope_sys::ring;
 mod decoded;
 pub(crate) use decoded::Decoded;
 use dope_sys::{
@@ -16,10 +15,6 @@ use crate::reactor::cq::{Flags, Outcome};
 pub struct Packet<T, B> {
     parts: Parts<T, Outcome, Flags>,
     buffer: Option<B>,
-}
-
-impl<T: Copy, B> ring::Packet for Packet<T, B> {
-    type Native = crate::Uring;
 }
 
 impl<T: Copy, B> complete::Packet for Packet<T, B> {

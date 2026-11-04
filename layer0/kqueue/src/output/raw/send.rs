@@ -37,7 +37,10 @@ impl<C: retry::Context> retry::raw::Send<C> for Data<C> {
             Payload::Message { msg } => {
                 // SAFETY: the retained pointer stays live through this attempt.
                 let header = unsafe { &**msg };
-                unsafe { <Kqueue as socket::raw::Source>::sendmsg(file, header, 0) }.map(Into::into)
+                unsafe {
+                    <Kqueue as socket::raw::Source>::sendmsg(file, header, libc::MSG_NOSIGNAL)
+                }
+                .map(Into::into)
             }
         };
         match result {

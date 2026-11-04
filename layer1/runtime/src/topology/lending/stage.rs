@@ -70,7 +70,7 @@ impl<'stage, 'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         B: lending::Execute<'life, 'd, O, Q>,
         Q: executor::Startup,
     {
-        session::Lent::new(self.session.core).run(report, owner, build)
+        self.hold(owner, |held, stage| held.with_lent(stage, report, build))
     }
 
     /// Bounds quiescence after dependent execution relinquishes its client scope.
@@ -86,7 +86,12 @@ impl<'stage, 'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         B: lending::Execute<'life, 'd, O, Q>,
         Q: executor::Startup,
     {
-        session::Lent::new(self.session.core).run_for(report, owner, build, timeout)
+        self.hold(owner, |held, stage| {
+            stage
+                .session
+                .core
+                .held(report, held.owner, build, Some(timeout))
+        })
     }
 
     /// Runs one affine request while callback-local projected state stays pinned.
@@ -102,9 +107,7 @@ impl<'stage, 'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         O: lending::Root<'d> + lending::raw::Resume<'d>,
         Q: executor::Startup,
     {
-        let mut place = mem::MaybeUninit::uninit();
-        let owner = slot::Vacant::new(&mut place).insert(owner);
-        session::Lent::new(self.session.core).scope_held(report, owner, build)
+        self.hold(owner, |held, stage| held.lend_scope(stage, report, build))
     }
 
     /// Executes with caller-controlled protocol time and bounded quiescence.
@@ -121,7 +124,9 @@ impl<'stage, 'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         B: lending::ExecuteAt<'life, 'd, O, Q>,
         Q: executor::Startup,
     {
-        session::Lent::new(self.session.core).run_at(report, owner, build, start, timeout)
+        self.session
+            .core
+            .run_at(report, owner, build, start, timeout)
     }
 
     pub fn with_app<'report, D, R>(

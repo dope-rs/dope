@@ -1,7 +1,5 @@
-use std::{marker, mem};
-
 use dope_core::driver::route::{Identity, KeyTag};
-use dope_net::wire;
+use dope_net::link::pool::recv::input;
 
 use crate::client::{
     app::{self, admit},
@@ -23,29 +21,12 @@ where
     }
 }
 
-/// Zero-sized projection of a session admission policy into its application.
-pub struct Policy<M>(marker::PhantomData<fn(M) -> M>);
-
-impl<M: admit::Mode> admit::Mode for Policy<M> {}
-
-impl<'w, 'd: 'w, ID: Identity, N, W, M> admit::Dispatch<'d, ID, State<'w, 'd, ID, N, W>>
-    for Policy<M>
+impl<'w, 'd: 'w, ID: Identity, N, W> admit::Register<'d, ID> for State<'w, 'd, ID, N, W>
 where
-    N: session::Parser<'d, ID> + Register<'d, ID, M>,
-    W: wire::Spec + 'd,
-    M: admit::Mode,
-    State<'w, 'd, ID, N, W>: app::Application<'d, ID, Wire = W>,
+    N: session::Parser<'d, ID> + session::Connected<'d, ID>,
+    W: input::Execution + 'd,
 {
-    fn admit(
-        state: &mut State<'w, 'd, ID, N, W>,
-        active: &conn::Activation<'_, 'd, ID>,
-    ) -> app::Admission {
-        <N as Register<'d, ID, M>>::register(&state.session, active)
+    fn register(&mut self, active: &conn::Activation<'_, 'd, ID>) -> app::Admission {
+        <N as Register<'d, ID, N::Activation>>::register(&self.session, active)
     }
 }
-
-const _: () = {
-    assert!(mem::size_of::<Policy<admit::Automatic>>() == 0);
-    assert!(mem::align_of::<Policy<admit::Automatic>>() == 1);
-    assert!(!mem::needs_drop::<Policy<admit::Automatic>>());
-};

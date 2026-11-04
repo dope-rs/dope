@@ -24,9 +24,8 @@ impl<'a> RetireState<'a> {
         self.0.effective().reason()
     }
 
-    pub(in crate::client::conn) fn settle(self, reason: close::Reason) -> SettledState<'a> {
-        let state = self.0.merged(close::Directive::reconnect(reason));
-        *self.0 = state.with_phase(ClosePhase::Settled);
+    pub(in crate::client::conn) fn settle(self) -> SettledState<'a> {
+        *self.0 = self.0.with_phase(ClosePhase::Settled);
         SettledState(self.0)
     }
 }

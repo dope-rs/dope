@@ -48,15 +48,7 @@ unsafe impl depot::raw::Count<indices::SlotIndex> for table::Capacity {
 /// Raw consuming access to one shared route table.
 #[repr(transparent)]
 pub struct Cell<'a, T, Tag: route::Tag> {
-    inner: &'a shared::Storage<T, route::Epoch, Tag>,
-}
-
-impl<'a, T, Tag: route::Tag> Cell<'a, T, Tag> {
-    pub(in crate::driver::route) const fn new(
-        inner: &'a shared::Storage<T, route::Epoch, Tag>,
-    ) -> Self {
-        Self { inner }
-    }
+    pub(in crate::driver::route) inner: &'a shared::Storage<T, route::Epoch, Tag>,
 }
 
 type Allocation<'a, T, Tag> = depot::raw::Proof<
@@ -88,14 +80,14 @@ impl<'a, T, Tag: route::Tag> Slot<'a, T, Tag> {
     pub fn try_entry(
         self,
     ) -> Result<table::Current<'a, T, Tag>, lookup::Error<(), convert::Infallible>> {
-        Ok(table::Current::new(self.0.try_entry()?))
+        Ok(table::Current(self.0.try_entry()?))
     }
 
     pub fn try_key(
         self,
         epoch: route::Epoch,
     ) -> Result<table::Current<'a, T, Tag>, errors::Lookup<route::Epoch, Tag, ()>> {
-        Ok(table::Current::new(self.0.try_key(epoch)?))
+        Ok(table::Current(self.0.try_key(epoch)?))
     }
 }
 

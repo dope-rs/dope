@@ -6,11 +6,7 @@ use dope_core::{
 };
 use o3::alloc;
 
-use crate::common::{
-    contract::submit,
-    driver::polling::{Deadline, Error, Source},
-    file::Inspect,
-};
+use crate::common::{contract::submit, driver::polling::Error, file::Inspect};
 pub mod accept;
 pub mod support;
 pub mod task;
@@ -76,35 +72,6 @@ impl<'d> Wait<'_, '_, '_, 'd> {
             poll::Dispatch::Ready { retained: None, .. } => Ok(()),
             other => Err(Failure::Dispatch(other)),
         }
-    }
-}
-
-struct Rebind<'a, 'context, 'turn, 'd> {
-    driver: &'a mut driver::Context<'context, 'd>,
-    turn: &'a mut Guard<'turn, 'd>,
-}
-
-impl<'d> Source for Rebind<'_, '_, '_, 'd> {
-    type Output = (handles::Datagram<'d>, SocketAddr);
-    type Error = Failure<'d>;
-
-    fn try_poll(&mut self, left: Duration) -> Result<Poll<Self::Output>, Self::Error> {
-        match Install::bind_udp(
-            self.driver.reborrow(),
-            ([127, 0, 0, 1], 0).into(),
-            crate::common::DATAGRAM,
-        ) {
-            Err(install::Error::Slot(slot::Error::Retiring { available: 0 })) => {}
-            Ok(output) => return Ok(Poll::Ready(output)),
-            Err(error) => return Err(Failure::Bind(error)),
-        }
-        Wait {
-            driver: self.driver,
-            turn: self.turn,
-            timeout: left,
-        }
-        .try_run()?;
-        Ok(Poll::Pending)
     }
 }
 
@@ -179,7 +146,24 @@ impl<'d> Native<'d> for driver::Context<'_, 'd> {
         &mut self,
         turn: &mut Guard<'_, 'd>,
     ) -> Result<(handles::Datagram<'d>, SocketAddr), Error<Failure<'d>>> {
-        Deadline::new(Duration::from_secs(1)).try_run(Rebind { driver: self, turn })
+        polling::try_run(Duration::from_secs(1), |left| {
+            match Install::bind_udp(
+                self.reborrow(),
+                ([127, 0, 0, 1], 0).into(),
+                crate::common::DATAGRAM,
+            ) {
+                Err(install::Error::Slot(slot::Error::Retiring { available: 0 })) => {}
+                Ok(output) => return Ok(Poll::Ready(output)),
+                Err(error) => return Err(Failure::Bind(error)),
+            }
+            Wait {
+                driver: self,
+                turn,
+                timeout: left,
+            }
+            .try_run()?;
+            Ok(Poll::Pending)
+        })
     }
 
     fn submit_recv<ID: Identity>(

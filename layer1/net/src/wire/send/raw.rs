@@ -122,21 +122,14 @@ impl<'a, L: Ready<'a>, R: Ready<'a>> Ready<'a> for Either<L, R> {
     }
 }
 
-pub(crate) struct Submission<R>(pub(crate) R);
-
-impl<R> Submission<R> {
-    pub(crate) fn submit<'a, 'owner: 'a, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
-        self,
-        fd: &handles::Descriptor<'d>,
-        target: route::Target<'d, Tag>,
-        slots: &flight::Slots<'d, Tag>,
-        driver: retained::Context<'_, 'owner, 'd>,
-    ) -> Result<Submitted<'d>, result::SubmitError>
-    where
-        R: Ready<'a>,
-    {
-        // SAFETY: the installed pool retains wire and queue storage; direct callers
-        // additionally establish the original source graph's retention contract.
-        unsafe { self.0.submit(fd, target, slots, driver) }
-    }
+pub(crate) fn submit<'a, 'owner: 'a, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
+    ready: impl Ready<'a>,
+    fd: &handles::Descriptor<'d>,
+    target: route::Target<'d, Tag>,
+    slots: &flight::Slots<'d, Tag>,
+    driver: retained::Context<'_, 'owner, 'd>,
+) -> Result<Submitted<'d>, result::SubmitError> {
+    // SAFETY: the installed pool retains wire and queue storage; direct callers
+    // additionally establish the original source graph's retention contract.
+    unsafe { ready.submit(fd, target, slots, driver) }
 }

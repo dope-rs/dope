@@ -185,18 +185,4 @@ const _: () = {
 };
 
 /// Exact descriptor-table occupancy rejected during completion installation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Install {
-    Index(indices::SlotIndex),
-    Occupied(indices::SlotIndex),
-}
-
-impl Install {
-    pub(crate) const fn from_native(error: table::Install<indices::SlotIndex>) -> Self {
-        use dope_sys::table::Install;
-        match error {
-            Install::Index(index) => Self::Index(index),
-            Install::Occupied(index) => Self::Occupied(index),
-        }
-    }
-}
+pub type Install = table::Install<indices::SlotIndex>;

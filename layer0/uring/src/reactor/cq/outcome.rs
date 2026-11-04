@@ -34,7 +34,7 @@ impl complete::Outcome for Outcome {
 
         let raw = self.0;
         if let Some(value) = bounded::U32::new(raw as u32) {
-            return Decode::Value(Value(value));
+            return Decode::Value(value);
         }
         if raw == i32::MIN {
             Decode::Invalid(Invalid(raw))

@@ -221,8 +221,6 @@ impl Artifacts<'_> {
             "--color=never",
         ]);
         compiler
-            .arg("--out-dir")
-            .arg(&self.outputs)
             .current_dir(Path::new(self.suite.manifest).join("tests"))
             .env("CARGO_MANIFEST_DIR", self.suite.manifest)
             .stdin(Stdio::piped())

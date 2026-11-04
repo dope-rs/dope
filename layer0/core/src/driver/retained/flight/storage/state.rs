@@ -325,12 +325,6 @@ impl<T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
         self.live.value()
     }
 
-    pub(super) fn complete(self) -> T {
-        let value = self.value();
-        self.finish();
-        value
-    }
-
     pub(super) fn finish(self) {
         let live = self.live;
         let pointer = live.entry.pointer();

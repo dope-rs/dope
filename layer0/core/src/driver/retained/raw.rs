@@ -214,36 +214,25 @@ impl<'addr, 'd, Tag: route::Tag> Connect<'addr, 'd, Tag> {
 /// belong to an owner retained through completion or quiescence.
 #[derive(Clone, Copy)]
 pub struct Owner<'owner, 'd: 'owner> {
-    proof: Proof<'owner, 'd>,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Proof<'owner, 'd: 'owner> {
     owner: marker::PhantomData<(&'owner (), ThreadBound)>,
     _driver: driver::Invariant<'d>,
 }
 
 /// One affine capture of a retained owner's driver-bound proof.
-pub(crate) struct Token<'owner, 'd: 'owner>(Proof<'owner, 'd>);
+pub(crate) struct Token<'owner, 'd: 'owner>(Owner<'owner, 'd>);
 
 impl<'owner, 'd: 'owner> Token<'owner, 'd> {
-    pub(super) const fn new(proof: Proof<'owner, 'd>) -> Self {
-        Self(proof)
+    pub(super) const fn new(owner: Owner<'owner, 'd>) -> Self {
+        Self(owner)
     }
 }
 
 impl<'d> Token<'d, 'd> {
     pub(crate) fn scoped() -> Self {
-        Self(Proof {
+        Self(Owner {
             owner: marker::PhantomData,
             _driver: driver::Invariant(marker::PhantomData),
         })
-    }
-}
-
-impl<'owner, 'd: 'owner> Owner<'owner, 'd> {
-    pub(super) fn into_proof(self) -> Proof<'owner, 'd> {
-        self.proof
     }
 }
 
@@ -252,10 +241,8 @@ impl<'d> Owner<'d, 'd> {
     /// Each raw submission still requires its exact resource-retention proof.
     pub fn from_driver(driver: driver::Reference<'d>) -> Self {
         Self {
-            proof: Proof {
-                owner: marker::PhantomData,
-                _driver: driver.brand,
-            },
+            owner: marker::PhantomData,
+            _driver: driver.brand,
         }
     }
 }

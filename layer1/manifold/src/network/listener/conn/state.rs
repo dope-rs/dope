@@ -35,12 +35,6 @@ const _: () = {
     assert!(mem::size_of::<Option<conn::Failure>>() == 7 * mem::size_of::<usize>());
     assert!(
         mem::size_of::<State<'static, 'static, 'static, KeyTag<0>, ()>>()
-            == mem::size_of::<state::Send<'static, 'static, 'static, KeyTag<0>>>()
-                + mem::size_of::<Option<accept::Admission<'static, KeyTag<0>>>>()
-                + mem::size_of::<Option<conn::Failure>>()
-    );
-    assert!(
-        mem::size_of::<State<'static, 'static, 'static, KeyTag<0>, ()>>()
-            == 14 * mem::size_of::<usize>()
+            == 13 * mem::size_of::<usize>()
     );
 };

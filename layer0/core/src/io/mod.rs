@@ -47,6 +47,7 @@ impl<'d> Event<'d> {
             event::Kind::Connect(done) => done.token().route(),
             event::Kind::Open(done) => done.token().route(),
             event::Kind::Write(done) => done.token().route(),
+            event::Kind::Read(done) => done.token().route(),
             event::Kind::Sync(done) => done.token().route(),
             event::Kind::Shutdown => route::Route::FRAMEWORK,
         }
@@ -118,6 +119,10 @@ pub enum Reclaimed {
         close: Option<Result<(), Errno>>,
     },
     Write {
+        echo: Echo,
+        result: Result<transfer::Len, Errno>,
+    },
+    Read {
         echo: Echo,
         result: Result<transfer::Len, Errno>,
     },

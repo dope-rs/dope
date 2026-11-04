@@ -23,10 +23,6 @@ impl<C: retry::Context> retry::Entry for Pending<C> {
         self.file.fd()
     }
 
-    fn descriptor(record: &Self::Record) -> fd::RawFd {
-        record.file.fd()
-    }
-
     fn file(record: &Self::Record) -> Self::File {
         record.file
     }

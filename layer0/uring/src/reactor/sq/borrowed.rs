@@ -122,6 +122,21 @@ impl<'a> request::Request<'a> for Borrowed<'a> {
         Self::file_write(file, input, offset.get())
     }
 
+    fn read(
+        file: fd::BorrowedFd<'a>,
+        output: bytes::bounded::Value<&'a mut [u8]>,
+        offset: Offset,
+    ) -> Self {
+        let output = output.into_inner();
+        let raw = fd::AsRawFd::as_raw_fd(&file);
+        let mut entry = sq::Entry::new(files::READ, sq::Descriptor::File(raw));
+        let mut fields = entry.fields();
+        fields.address(output.as_mut_ptr() as u64);
+        fields.length(output.len() as u32);
+        fields.offset(offset.get());
+        Self::new(entry.flags(sq::Flags::ASYNC))
+    }
+
     fn write_current(file: fd::BorrowedFd<'a>, input: Self::Buffer) -> Self {
         // io_uring's -1 offset selects the descriptor's current position.
         Self::file_write(file, input, u64::MAX)

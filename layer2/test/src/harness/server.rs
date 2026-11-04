@@ -1,9 +1,6 @@
 use std::{convert, net, time};
 
-use dope_core::{
-    io::{socket, socket::Listener},
-    platform::wake,
-};
+use dope_core::io::{socket, socket::Listener};
 use dope_runtime::shutdown;
 
 use crate::harness::scenario::run::{self, Task as _};
@@ -56,7 +53,7 @@ impl Pair {
         self.listener.local_addr()
     }
 
-    pub fn run<S, C, R, E>(self, server: S, client: C) -> Result<R, Failure<E>>
+    pub fn run<S, C, R, E>(self, server: S, client: C) -> Result<R, run::Error<E>>
     where
         S: FnOnce(shutdown::ReadySource, Listener) -> Result<(), E> + Send,
         C: FnOnce(net::SocketAddr) -> R,
@@ -83,7 +80,7 @@ impl Pair {
         server: S,
         client: C,
         check: F,
-    ) -> Result<R, Failure<convert::Infallible>>
+    ) -> Result<R, run::Error<convert::Infallible>>
     where
         S: FnOnce(shutdown::ReadySource, Listener) -> Result<T, E> + Send,
         C: FnOnce(net::SocketAddr) -> R,
@@ -104,7 +101,7 @@ impl Pair {
         server: S,
         client: C,
         check: F,
-    ) -> Result<R, Failure<convert::Infallible>>
+    ) -> Result<R, run::Error<convert::Infallible>>
     where
         S: FnOnce(shutdown::ReadySource) -> Result<T, E> + Send,
         C: FnOnce(net::SocketAddr) -> R,
@@ -119,7 +116,7 @@ impl Pair {
         )
     }
 
-    pub fn run_unbound<S, C, R, E>(self, server: S, client: C) -> Result<R, Failure<E>>
+    pub fn run_unbound<S, C, R, E>(self, server: S, client: C) -> Result<R, run::Error<E>>
     where
         S: FnOnce(shutdown::ReadySource) -> Result<(), E> + Send,
         C: FnOnce(net::SocketAddr) -> R,
@@ -142,7 +139,7 @@ impl Pair {
         deadline: time::Duration,
         server: S,
         client: C,
-    ) -> Result<R, Failure<E>>
+    ) -> Result<R, run::Error<E>>
     where
         S: FnOnce(shutdown::ReadySource) -> Result<(), E> + Send,
         C: FnOnce(net::SocketAddr) -> R,
@@ -161,15 +158,10 @@ impl Pair {
                 })
                 .map_err(run::Error::Start)?;
             let outcome = outcome.map_err(run::Error::Readiness)?;
-            served
-                .map_err(run::Error::Join)?
-                .map_err(run::Error::Server)?;
+            served.map_err(run::Error::Server)?;
             fired.map_err(run::Error::ShutdownFire)?;
             Ok(outcome)
         })
         .map_err(run::Error::Deadline)?
     }
 }
-
-/// Preserves the runtime's exact creation, shutdown and readiness failures.
-type Failure<E> = run::Error<E, wake::CreateError, shutdown::FireError, wake::WaitError>;

@@ -1,12 +1,15 @@
 pub mod common;
 
-use std::{array, convert::Infallible, net::UdpSocket, ops::ControlFlow};
+use std::{array, net::UdpSocket, ops::ControlFlow};
 
-use common::{driver::Scoped as _, rt::Runtime};
+use common::{
+    driver::Scoped as _,
+    rt::{Runtime, finish, recover},
+};
 use dope_core::{
     driver::{
         self,
-        life::{recovery, recovery::Recovery},
+        life::recovery,
         result::{SubmitCause, poll},
         retained::{self, flight, flight::cancel},
         route::{Epoch, KeyTag, indices::SlotIndex},
@@ -165,18 +168,8 @@ fn full_queue_retries_once() {
                         );
                     });
                 },
-                recovery::Policy::new(
-                    |_| {},
-                    |failure: Recovery<'_, '_>| -> Infallible {
-                        panic!("native retirement: {:?}", failure.cause())
-                    },
-                ),
-                |result| {
-                    result
-                        .as_ref()
-                        .map_err(|cause| cause.cause())
-                        .expect("driver lifecycle");
-                },
+                recovery::Policy::new(|_| {}, recover),
+                finish,
             );
     }
 }
@@ -267,18 +260,8 @@ fn cancel_retries_once() {
                     ));
                 });
             },
-            recovery::Policy::new(
-                |_| {},
-                |failure: Recovery<'_, '_>| -> Infallible {
-                    panic!("native retirement: {:?}", failure.cause())
-                },
-            ),
-            |result| {
-                result
-                    .as_ref()
-                    .map_err(|cause| cause.cause())
-                    .expect("driver lifecycle");
-            },
+            recovery::Policy::new(|_| {}, recover),
+            finish,
         );
 }
 
@@ -421,18 +404,8 @@ fn socket_retries_once() {
                         }
                     });
                 },
-                recovery::Policy::new(
-                    |_| {},
-                    |failure: Recovery<'_, '_>| -> Infallible {
-                        panic!("native retirement: {:?}", failure.cause())
-                    },
-                ),
-                |result| {
-                    result
-                        .as_ref()
-                        .map_err(|cause| cause.cause())
-                        .expect("driver lifecycle");
-                },
+                recovery::Policy::new(|_| {}, recover),
+                finish,
             );
     }
 }

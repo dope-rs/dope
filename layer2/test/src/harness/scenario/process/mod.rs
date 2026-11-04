@@ -11,7 +11,7 @@ pub const CHILD: &str = "O3_TEST_CHILD";
 
 pub struct Deadline<'scope> {
     cancel: Option<wake::Notify>,
-    join: &'scope mut dyn FnMut() -> Result<Result<(), wake::WaitError>, run::Join>,
+    join: &'scope mut dyn FnMut() -> Result<(), wake::WaitError>,
 }
 
 impl Deadline<'_> {
@@ -53,14 +53,10 @@ impl Deadline<'_> {
         let notified = cancel.notify();
         drop(cancel);
         match (notified, (self.join)()) {
-            (cancel, Err(cause)) => Err(deadline::Error::Join {
-                cancel: cancel.err(),
-                cause,
-            }),
-            (Ok(()), Ok(Ok(()))) => Ok(()),
-            (Err(cancel), Ok(Ok(()))) => Err(deadline::Error::Cancel(cancel)),
-            (Ok(()), Ok(Err(wait))) => Err(deadline::Error::Wait(wait)),
-            (Err(cancel), Ok(Err(wait))) => Err(deadline::Error::Both { cancel, wait }),
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(cancel), Ok(())) => Err(deadline::Error::Cancel(cancel)),
+            (Ok(()), Err(wait)) => Err(deadline::Error::Wait(wait)),
+            (Err(cancel), Err(wait)) => Err(deadline::Error::Both { cancel, wait }),
         }
     }
 }

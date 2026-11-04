@@ -152,35 +152,37 @@ impl<'a, 'd, R, E, I: identity::Identity> Channel<'a, 'd, R, E, I> {
     pub(crate) fn try_send(
         self,
         token: I,
-        bytes: resident::Shared<'d>,
+        bytes: &'d [u8],
         wake: wake::Waker<'d>,
     ) -> result::StageSend<'d> {
         use crate::net::port::result::StageSend;
 
         if self.port.shutting_down.get() {
-            return StageSend::Failed(error::Write::PortShuttingDown { payload: bytes });
+            return StageSend::Failed(error::Write::PortShuttingDown {
+                payload: resident::Shared::from(bytes),
+            });
         }
         let Some(bound) = queues::Bound::get(&self.port.entries, token) else {
             return StageSend::Failed(error::Write::ConnectionUnavailable {
-                payload: Some(bytes),
+                payload: Some(resident::Shared::from(bytes)),
             });
         };
         if let Err(cause) = bound.state.start_send() {
             let error = match cause {
                 state::SendError::Closed => error::Write::ConnectionClosed {
-                    payload: Some(bytes),
+                    payload: Some(resident::Shared::from(bytes)),
                 },
                 state::SendError::Failed => error::Write::ConnectionFailed {
-                    payload: Some(bytes),
+                    payload: Some(resident::Shared::from(bytes)),
                 },
             };
             return StageSend::Failed(error);
         }
         match bound.requests.try_stage(bytes) {
             StageSend::Staged => {}
-            StageSend::Busy(bytes) => {
+            StageSend::Busy => {
                 bound.state.send.set(wake);
-                return StageSend::Busy(bytes);
+                return StageSend::Busy;
             }
             StageSend::Failed(error) => return StageSend::Failed(error),
         }

@@ -4,7 +4,6 @@ use dope::{
     core::io::{recv::Lease, transfer, transfer::Len},
     net,
     net::{
-        tcp::Tcp,
         wire,
         wire::{
             domain, failure, open,
@@ -16,8 +15,7 @@ use dope::{
         },
     },
 };
-use dope_core::driver::route::{Identity, KeyTag};
-use dope_fiber::net::server::Listener;
+use dope_core::driver::route::Identity;
 use dope_test::harness::signals::Gate;
 use o3::{
     buffer,
@@ -253,13 +251,4 @@ impl<ID: Identity> domain::Plan<PooledWire, ID> for () {
     {
         Ok(owner)
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-pub struct App<'n, 'p, 's, 'scope, 'w, 'd: 's + 'w, F: FnMut(open::Error<'w, PooledWire>)> {
-    #[pin]
-    #[manifold]
-    pub(crate) pool: Listener<'n, 'p, 's, 'scope, 'w, 'd, KeyTag<0>, Tcp, PooledWire, F>,
 }

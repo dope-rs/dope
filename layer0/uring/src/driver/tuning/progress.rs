@@ -69,7 +69,7 @@ impl<T: Codec, const N: usize> Progress<T> for Table<Key<T>, N> {
         } else if state.status.stopped {
             parts.outcome = cq::Outcome::from_error(dope_sys::Errno::CANCELED);
         } else if matches!(state.status.phase, Phase::OptionsConnect) {
-            state.status.phase = Phase::Ready;
+            state.status.phase = Phase::Idle;
             let slot = fixed(index);
             if let Some(tail) = self.tail {
                 // SAFETY: `tail` was admitted by `get` before it was linked.
@@ -82,7 +82,7 @@ impl<T: Codec, const N: usize> Progress<T> for Table<Key<T>, N> {
             self.tail = Some(slot);
             return None;
         }
-        state.status.phase = Phase::Complete;
+        state.status.phase = Phase::Idle;
         Some(parts)
     }
 
@@ -92,16 +92,13 @@ impl<T: Codec, const N: usize> Progress<T> for Table<Key<T>, N> {
         // and the deferred request move, retaining every pinned option value.
         let state = unsafe { self.admitted(slot).get_unchecked_mut() };
         let stopped = state.status.stopped;
-        if stopped {
-            state.status.phase = Phase::Complete;
-        } else {
+        if !stopped {
             let vacancy = queue.try_acquire().ok()?;
             // SAFETY: `observe` links only an initialized, unread CONNECT.
             // This consumes it once; its host retains every encoded address
             // until the terminal CQE, including after this link is released.
             let entry = unsafe { state.connect.assume_init_read() };
             entry.submit(vacancy, token::<T>(slot));
-            state.status.phase = Phase::Connecting;
         }
         self.ready = state.next.take();
         if self.ready.is_none() {

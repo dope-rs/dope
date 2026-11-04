@@ -21,7 +21,7 @@ use dope_uring::Uring;
 use crate::common::{
     cleanup::{
         self, Host,
-        schedule::{self, Error, Schedule},
+        schedule::{self, Error},
     },
     receive::Layout,
     ring::{Ring as _, seccomp},
@@ -44,35 +44,34 @@ fn retains_setup_primary() {
     use crate::common::ring::Ring as _;
 
     let mut observed = Vec::new();
-    let faults = Schedule::new(schedule::ERRORS)
-        .try_run(|| {
-            let error = Uring::try_ring::<8, 4>(false)
-                .expect_err("completion capacity below submission capacity");
-            let state = match error {
-                create::Error::Cleanup(state) => Some(state),
-                _ => None,
-            }
-            .expect("setup failure retains its backing cleanup");
-            let primary = state.primary();
-            assert!(
-                matches!(primary, create::Cause::Setup(error) if error.code().get() == libc::EINVAL)
-            );
-            let first = state.failure();
-            assert_eq!(state.failure().into_parts().2.code().get(), libc::ENOMEM);
-            let state = state
+    let faults = schedule::try_run(|| {
+        let error = Uring::try_ring::<8, 4>(false)
+            .expect_err("completion capacity below submission capacity");
+        let state = match error {
+            create::Error::Cleanup(state) => Some(state),
+            _ => None,
+        }
+        .expect("setup failure retains its backing cleanup");
+        let primary = state.primary();
+        assert!(
+            matches!(primary, create::Cause::Setup(error) if error.code().get() == libc::EINVAL)
+        );
+        let first = state.failure();
+        assert_eq!(state.failure().into_parts().2.code().get(), libc::ENOMEM);
+        let state = state
+            .try_close(|cause| observed.push(cause))
+            .expect_err("second backing unmap failure");
+        assert!(state.primary() == primary);
+        let second = state.failure();
+        assert_eq!(state.failure().into_parts().2.code().get(), libc::EAGAIN);
+        assert!(
+            state
                 .try_close(|cause| observed.push(cause))
-                .expect_err("second backing unmap failure");
-            assert!(state.primary() == primary);
-            let second = state.failure();
-            assert_eq!(state.failure().into_parts().2.code().get(), libc::EAGAIN);
-            assert!(
-                state
-                    .try_close(|cause| observed.push(cause))
-                    .is_ok_and(|value| value == primary)
-            );
-            assert_eq!(observed, [first, second]);
-        })
-        .expect("two injected backing unmaps");
+                .is_ok_and(|value| value == primary)
+        );
+        assert_eq!(observed, [first, second]);
+    })
+    .expect("two injected backing unmaps");
     assert_eq!(faults[0].address, faults[1].address);
     assert_eq!(faults[0].length, faults[1].length);
 }
@@ -83,25 +82,24 @@ fn retains_probe_primary() {
 
     let ring = cleanup::try_ring().expect("cleanup ring setup");
     let mut observed = Vec::new();
-    let faults = Schedule::new(schedule::ERRORS)
-        .try_run(|| {
-            let state = Recover::raw(ring, 41).expect_err("first probe unmap failure");
-            assert_eq!(state.primary(), 41);
-            let first = state.failure();
-            assert!(matches!(first, probe::cleanup::Failure::Storage(_)));
-            let state = state
-                .try_close(|cause| observed.push(cause))
-                .expect_err("second probe unmap failure");
-            assert_eq!(state.primary(), 41);
-            let second = state.failure();
-            assert!(second != first);
-            assert!(matches!(
-                state.try_close(|cause| observed.push(cause)),
-                Ok(41)
-            ));
-            assert_eq!(observed, [first, second]);
-        })
-        .expect("two injected unmaps");
+    let faults = schedule::try_run(|| {
+        let state = Recover::raw(ring, 41).expect_err("first probe unmap failure");
+        assert_eq!(state.primary(), 41);
+        let first = state.failure();
+        assert!(matches!(first, probe::cleanup::Failure::Storage(_)));
+        let state = state
+            .try_close(|cause| observed.push(cause))
+            .expect_err("second probe unmap failure");
+        assert_eq!(state.primary(), 41);
+        let second = state.failure();
+        assert!(second != first);
+        assert!(matches!(
+            state.try_close(|cause| observed.push(cause)),
+            Ok(41)
+        ));
+        assert_eq!(observed, [first, second]);
+    })
+    .expect("two injected unmaps");
     assert_eq!(faults[0].address, faults[1].address);
     assert_eq!(faults[0].length, faults[1].length);
     assert_eq!(
@@ -124,27 +122,26 @@ fn retains_resource_primary() {
         count: 43,
     });
     let mut observed = Vec::new();
-    let faults = Schedule::new(schedule::ERRORS)
-        .try_run(|| {
-            let state = Cleanup::raw(ring, primary).expect_err("first resource unmap failure");
-            let state = Resources::probe(state);
-            assert!(state.primary() == primary);
-            let first = state.failure();
-            assert!(matches!(first, create::Failure::Storage(_)));
-            let state = state
+    let faults = schedule::try_run(|| {
+        let state = Cleanup::raw(ring, primary).expect_err("first resource unmap failure");
+        let state = Resources::probe(state);
+        assert!(state.primary() == primary);
+        let first = state.failure();
+        assert!(matches!(first, create::Failure::Storage(_)));
+        let state = state
+            .try_close(|cause| observed.push(cause))
+            .expect_err("second resource unmap failure");
+        assert!(state.primary() == primary);
+        let second = state.failure();
+        assert!(second != first);
+        assert!(
+            state
                 .try_close(|cause| observed.push(cause))
-                .expect_err("second resource unmap failure");
-            assert!(state.primary() == primary);
-            let second = state.failure();
-            assert!(second != first);
-            assert!(
-                state
-                    .try_close(|cause| observed.push(cause))
-                    .is_ok_and(|value| value == primary)
-            );
-            assert_eq!(observed, [first, second]);
-        })
-        .expect("two injected unmaps");
+                .is_ok_and(|value| value == primary)
+        );
+        assert_eq!(observed, [first, second]);
+    })
+    .expect("two injected unmaps");
     assert_eq!(faults[0].address, faults[1].address);
     assert_eq!(faults[0].length, faults[1].length);
     assert_eq!(
@@ -174,25 +171,24 @@ fn retains_removed_slot() {
         .occupy(slot, sockets.0.as_fd())
         .expect("occupied removal slot");
     let mut observed = Vec::new();
-    let faults = Schedule::new(schedule::ERRORS)
-        .try_run(|| {
-            let state = Released::raw(ring, file, 41).expect_err("first removal unmap failure");
-            assert!(state.primary() == (41, slot));
-            let first = state.failure();
-            let state = state
+    let faults = schedule::try_run(|| {
+        let state = Released::raw(ring, file, 41).expect_err("first removal unmap failure");
+        assert!(state.primary() == (41, slot));
+        let first = state.failure();
+        let state = state
+            .try_close(|cause| observed.push(cause))
+            .expect_err("second removal unmap failure");
+        assert!(state.primary() == (41, slot));
+        let second = state.failure();
+        assert!(second != first);
+        assert!(
+            state
                 .try_close(|cause| observed.push(cause))
-                .expect_err("second removal unmap failure");
-            assert!(state.primary() == (41, slot));
-            let second = state.failure();
-            assert!(second != first);
-            assert!(
-                state
-                    .try_close(|cause| observed.push(cause))
-                    .is_ok_and(|value| value == (41, slot))
-            );
-            assert_eq!(observed, [first, second]);
-        })
-        .expect("two injected unmaps");
+                .is_ok_and(|value| value == (41, slot))
+        );
+        assert_eq!(observed, [first, second]);
+    })
+    .expect("two injected unmaps");
     assert_eq!(faults[0].address, faults[1].address);
     assert_eq!(faults[0].length, faults[1].length);
     assert_eq!(
@@ -273,25 +269,20 @@ fn resume_probe() {
     let cause = stopped.cause;
     assert!(matches!(cause, probe::Cause::Unexpected { probe: 7, .. }));
     let mut reported = Vec::new();
-    let resumed = Waiting::resume(
+    let waiting = Waiting::resume(
         probe::Stopped {
             state: waiting,
             cause,
         },
         |ring| ring,
         |cause| reported.push(cause),
-    );
-    assert!(
-        resumed.is_ok(),
-        "reported head can be acknowledged: {:?}",
-        resumed.as_ref().err().map(|stopped| &stopped.cause),
-    );
-    if let Ok(waiting) = resumed {
-        assert!(reported == [cause]);
-        let (ring, done) = waiting.finish(|ring| ring).expect("next probe completes");
-        assert!(done.zero().is_ok());
-        assert!(ring.try_close().is_ok());
-    }
+    )
+    .map_err(|stopped| stopped.cause)
+    .expect("reported head can be acknowledged");
+    assert!(reported == [cause]);
+    let (ring, done) = waiting.finish(|ring| ring).expect("next probe completes");
+    assert!(done.zero().is_ok());
+    assert!(ring.try_close().is_ok());
 }
 
 #[test]
@@ -314,36 +305,26 @@ fn keeps_next() {
             .expect_err("the consumed NOP completion is not a cancellation"),
     );
     let waiting = Waiting::submit(ring, |ring| ring, &entry, 7).expect("second probe submission");
-    let checked = unsafe { waiting.inspect(|ring| ring.enter().try_wait(None)) };
-    assert!(
-        checked.is_ok(),
-        "second completion is published without consuming its head: {:?}",
-        checked.as_ref().err().map(|stopped| &stopped.cause),
-    );
-    if let Ok(waiting) = checked {
-        let mut reported = Vec::new();
-        let resumed = Waiting::resume(
-            probe::Stopped {
-                state: waiting,
-                cause,
-            },
-            |ring| ring,
-            |cause| reported.push(cause),
-        );
-        assert!(
-            resumed.is_ok(),
-            "a consumed check needs no acknowledgement: {:?}",
-            resumed.as_ref().err().map(|stopped| &stopped.cause),
-        );
-        if let Ok(waiting) = resumed {
-            assert!(reported == [cause]);
-            let (ring, done) = waiting
-                .finish(|ring| ring)
-                .expect("identical next head is retained");
-            assert!(done.zero().is_ok());
-            assert!(ring.try_close().is_ok());
-        }
-    }
+    let waiting = unsafe { waiting.inspect(|ring| ring.enter().try_wait(None)) }
+        .map_err(|stopped| stopped.cause)
+        .expect("second completion is published without consuming its head");
+    let mut reported = Vec::new();
+    let waiting = Waiting::resume(
+        probe::Stopped {
+            state: waiting,
+            cause,
+        },
+        |ring| ring,
+        |cause| reported.push(cause),
+    )
+    .map_err(|stopped| stopped.cause)
+    .expect("a consumed check needs no acknowledgement");
+    assert!(reported == [cause]);
+    let (ring, done) = waiting
+        .finish(|ring| ring)
+        .expect("identical next head is retained");
+    assert!(done.zero().is_ok());
+    assert!(ring.try_close().is_ok());
 }
 
 #[test]
@@ -365,7 +346,7 @@ fn release_keeps_mappings() {
         let ring = Uring::try_ring::<2, 4>(false).expect("ring fixture");
         let ring = ring.try_register().expect("ring registration");
         seccomp::deny_unregister().expect("thread-local unregister filter");
-        let unmaps = Schedule::new(schedule::ERRORS).try_run(|| {
+        let unmaps = schedule::try_run(|| {
             let state = ring.try_close().expect_err("unregister denied");
             let first = state.failure();
             assert!(
@@ -388,22 +369,21 @@ fn mapping_retry_stays_free() {
         let ring = Uring::try_ring::<2, 4>(false).expect("ring fixture");
         let ring = ring.try_register().expect("ring registration");
         let mut observed = Vec::new();
-        let unmaps = Schedule::new(schedule::ERRORS)
-            .try_run(|| {
-                let state = ring.try_close().expect_err("first mapping failure");
-                let first = state.failure();
-                let (owner, cause) = state.recover().into_parts();
-                assert_eq!(cause, first);
-                observed.push(first);
-                seccomp::deny_unregister().expect("thread-local unregister filter");
-                let state = owner.try_close().expect_err("second mapping failure");
-                let second = state.failure();
-                let (owner, cause) = state.recover().into_parts();
-                assert_eq!(cause, second);
-                observed.push(second);
-                assert!(owner.try_close().is_ok(), "mapping cleanup completes");
-            })
-            .expect("two mapping failures after registration release");
+        let unmaps = schedule::try_run(|| {
+            let state = ring.try_close().expect_err("first mapping failure");
+            let first = state.failure();
+            let (owner, cause) = state.recover().into_parts();
+            assert_eq!(cause, first);
+            observed.push(first);
+            seccomp::deny_unregister().expect("thread-local unregister filter");
+            let state = owner.try_close().expect_err("second mapping failure");
+            let second = state.failure();
+            let (owner, cause) = state.recover().into_parts();
+            assert_eq!(cause, second);
+            observed.push(second);
+            assert!(owner.try_close().is_ok(), "mapping cleanup completes");
+        })
+        .expect("two mapping failures after registration release");
         for (failure, unmap) in observed.into_iter().zip(unmaps) {
             let error = Errno::try_from(unmap.code).expect("fixture errno");
             assert_eq!(
@@ -433,9 +413,8 @@ fn retirement_wait_errors() {
     for code in [Errno::INTERRUPTED, denied] {
         for flight in [true, false] {
             thread::spawn(move || {
-                assert!({
-                    let mut outcome = Ok(());
-                    backend::with(&mut outcome, |owner| {
+                assert!(
+                    backend::with(|owner| {
                         seccomp::deny_wait(code).expect("thread-local wait filter");
                         let resolver = backend::Retirement {
                             owner,
@@ -458,9 +437,9 @@ fn retirement_wait_errors() {
                                 life::Error::File(Poll::Wait(actual)) if actual.is_code(code)));
                             }
                         }
-                    });
-                    outcome.is_ok()
-                });
+                    })
+                    .is_ok()
+                );
             })
             .join()
             .expect("retirement keeps its filtered native owner");

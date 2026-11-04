@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use crate::common::rt::{finish, recover};
 
 use common::contract::reclaim::Canceled;
 use dope_core::{
@@ -9,7 +9,6 @@ use dope_core::{
         socket::{Listener, install::Install},
     },
 };
-use dope_test::scope::Error;
 
 use crate::common::driver::Native as _;
 
@@ -522,15 +521,4 @@ fn reclaimed(reports: &Reports<1>) {
         matches!(reports.events(), Ok([])) || matches!(reports.matches_one(&Canceled), Ok(true)),
         "unexpected reclamation: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

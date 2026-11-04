@@ -1,7 +1,7 @@
-use std::{cell, marker, mem, time};
+use std::{cell, mem, time};
 
 use o3::{alloc, base::cell::region, mem::quota};
-use state::{lanes::Quota, scope};
+use state::{lanes, scope};
 
 use crate::{
     driver,
@@ -35,15 +35,11 @@ pub enum Capacity<T> {
 #[repr(transparent)]
 pub struct Turn<'turn, 'd> {
     state: &'turn state::Core<'d>,
-    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
 impl<'turn, 'd> Turn<'turn, 'd> {
     pub(in crate::driver::schedule) const fn new(state: &'turn state::Core<'d>) -> Self {
-        Self {
-            state,
-            driver: marker::PhantomData,
-        }
+        Self { state }
     }
 
     pub fn reborrow(&self) -> Turn<'_, 'd> {
@@ -72,9 +68,9 @@ impl<'turn, 'd> Turn<'turn, 'd> {
         weights: [usize; 2],
         run: impl for<'scope> FnOnce(Turn<'scope, 'd>) -> T,
     ) -> T {
-        let _app = Quota::share::<N, _>(&self.state.lanes.app, ranks[0]);
-        let _maint = Quota::share::<N, _>(&self.state.lanes.maint, ranks[1]);
-        let _coord = Quota::weighted::<N, _>(&self.state.lanes.coord, ranks[2], weights);
+        let _app = lanes::share::<N, _>(&self.state.lanes.app, ranks[0]);
+        let _maint = lanes::share::<N, _>(&self.state.lanes.maint, ranks[1]);
+        let _coord = lanes::weighted::<N, _>(&self.state.lanes.coord, ranks[2], weights);
         run(Turn::new(self.state))
     }
 

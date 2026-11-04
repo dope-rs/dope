@@ -51,7 +51,6 @@ pub enum Error {
     Failed(pending::Cause),
     Unavailable,
     Exhausted,
-    Count(usize),
 }
 
 pub fn reclaimed(report: Reclaimed) {
@@ -76,8 +75,6 @@ pub fn with_pool<const LANES: usize>(
         &mut driver::Context<'_, 'd>,
         schedule::Turn<'_, 'd>,
     ),
-    policy: impl recovery::Observe,
-    finish: impl for<'owner> FnOnce(Result<Result<(), Error>, scope::Error<'owner, Result<(), Error>>>),
 ) {
     rt::throughput().with_scope(
         |scope| {
@@ -118,22 +115,30 @@ pub fn with_pool<const LANES: usize>(
                         // SAFETY: this fixture never submits send, receive, or tuning
                         // operations. Pool storage therefore has no kernel borrowers.
                         let mut pool = unsafe { prepared.commit(flights).bind(route) };
-                        let mut keys = Vec::with_capacity(LANES);
-                        for _ in 0..LANES {
-                            keys.push(open(&mut pool, capacity, driver)?);
+                        let mut keys = [open(&mut pool, capacity, driver)?; LANES];
+                        for key in &mut keys[1..] {
+                            *key = open(&mut pool, capacity, driver)?;
                         }
-                        let keys = keys
-                            .try_into()
-                            .map_err(|keys: Vec<_>| Error::Count(keys.len()))?;
                         test(&mut pool, keys, driver, turn.turn());
-                        Ok(())
+                        Ok::<_, Error>(())
                     },
                 )
                 .map_err(Error::Resource)?
             })
         },
-        policy,
-        finish,
+        recovery::Policy::new(
+            reclaimed,
+            |failure: recovery::Recovery<'_, '_>| -> Infallible {
+                panic!("driver recovery: {:?}", failure.cause())
+            },
+        ),
+        |result| {
+            result
+                .as_ref()
+                .map_err(scope::Error::cause)
+                .expect("native lifecycle");
+            result.ok().expect("driver output").expect("credit fixture");
+        },
     );
 }
 

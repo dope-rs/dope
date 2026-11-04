@@ -60,17 +60,6 @@ impl Inspect for Identity {
 
 use dope_core::Errno;
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Failure {
-    pub errno: Errno,
-}
-
-impl From<Errno> for Failure {
-    fn from(errno: Errno) -> Self {
-        Self { errno }
-    }
-}
-
 pub trait Retain<'a, 'd> {
     fn retained(self) -> retained::Context<'a, 'd, 'd>;
 }
@@ -163,4 +152,8 @@ impl Message {
                 .retain()
         }
     }
+}
+
+pub fn cleanup(result: Result<(), dope_test::harness::support::file::Error>) {
+    result.expect("fixture directory cleanup");
 }

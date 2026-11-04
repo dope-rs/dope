@@ -97,7 +97,7 @@ fn prefixed(
     program[PREFIX_BODY..].copy_from_slice(&body[2..]);
     let [first, second] = prefix.tags();
     let extent = i32::from(prefix.extent().get());
-    let raw_mask = i32::from(prefix.raw_mask().get().get());
+    let raw_mask = i32::from(prefix.raw_mask().get());
     program[2] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
     program[3] = instruction(ALU64_ADD_K, 4, 0, 0, UDP_HEADER_LEN + 1);
     program[4] = instruction(JMP_JGT_X, 4, 3, link(4, PREFIX_DROP), 0);
@@ -129,7 +129,7 @@ fn shape(selector: selector::Selector, count: Count, map: &Map) -> [Instruction;
         4,
         0,
         0,
-        UDP_HEADER_LEN + i32::from(selector.clear_min().get().get()),
+        UDP_HEADER_LEN + i32::from(selector.clear_min().get()),
     );
     program[4] = instruction(JMP_JGT_X, 4, 3, link(4, DROP), 0);
     program[5] = instruction(LDX_B_MEM, 7, 2, payload_offset(selector.branch_at()), 0);
@@ -138,7 +138,7 @@ fn shape(selector: selector::Selector, count: Count, map: &Map) -> [Instruction;
         7,
         0,
         link(6, SET),
-        i32::from(selector.branch_mask().get().get()),
+        i32::from(selector.branch_mask().get()),
     );
     program[7] = instruction(LDX_B_MEM, 7, 2, payload_offset(selector.clear_key()), 0);
     program[8] = instruction(JMP_JA, 0, 0, link(8, SELECT), 0);
@@ -148,7 +148,7 @@ fn shape(selector: selector::Selector, count: Count, map: &Map) -> [Instruction;
         4,
         0,
         0,
-        UDP_HEADER_LEN + i32::from(selector.set_min().get().get()),
+        UDP_HEADER_LEN + i32::from(selector.set_min().get()),
     );
     program[11] = instruction(JMP_JGT_X, 4, 3, link(11, DROP), 0);
     program[12] = instruction(LDX_B_MEM, 7, 2, payload_offset(selector.length_at()), 0);
@@ -157,7 +157,7 @@ fn shape(selector: selector::Selector, count: Count, map: &Map) -> [Instruction;
         7,
         0,
         link(13, DROP),
-        i32::from(selector.length().get()),
+        i32::from(selector.length()),
     );
     program[14] = instruction(LDX_B_MEM, 7, 2, payload_offset(selector.set_key()), 0);
     program[15] = instruction(JMP_JGE_K, 7, 0, link(15, DROP), i32::from(count.encode()));
@@ -187,8 +187,8 @@ pub(super) const fn instruction(code: u8, dst: u8, src: u8, off: i16, imm: i32) 
     }
 }
 
-const fn payload_offset(offset: selector::Offset) -> i16 {
-    offset.get() as i16 + UDP_HEADER_LEN as i16
+const fn payload_offset(offset: u8) -> i16 {
+    offset as i16 + UDP_HEADER_LEN as i16
 }
 
 const _: () = {

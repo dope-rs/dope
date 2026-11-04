@@ -5,7 +5,7 @@ use std::{num::NonZero, os::fd};
 use dope_sys::{table, table::change};
 use o3::base::num::bounded;
 
-use crate::common::slots::inputs::{Accepted, Capacity, Layout, Missing, Owned, Physical};
+use crate::common::slots::inputs::{Accepted, Capacity, Layout, Missing, Physical};
 
 #[derive(Debug)]
 pub struct Slots;
@@ -37,7 +37,7 @@ unsafe impl change::raw::Slots for Slots {
 // construction validates that prefix and its token deliberately is not Copy.
 unsafe impl table::raw::Slots for Slots {
     type Layout = Layout;
-    type Owned = Owned;
+    type Owned = Physical;
     type Accepted = Accepted;
     type Missing = Missing;
 

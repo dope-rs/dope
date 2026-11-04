@@ -114,7 +114,7 @@ impl<'turn, 'd> Work<'turn, 'd> {
         self,
         run: impl for<'scope> FnOnce(Share<'scope, 'd>) -> T,
     ) -> T {
-        let _reserve = lanes::Quota::share::<N, _>(&self.state.lanes.app, 0);
+        let _reserve = lanes::share::<N, _>(&self.state.lanes.app, 0);
         run(Share {
             turn: schedule::Turn::new(self.state),
         })

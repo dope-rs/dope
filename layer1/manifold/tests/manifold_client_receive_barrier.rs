@@ -29,7 +29,7 @@ use dope_net::{
         },
     },
 };
-use dope_runtime::executor::{self, Executor, session::Completion};
+use dope_runtime::executor::session::{Completion, Scope};
 use dope_test::{
     fibers,
     harness::{
@@ -51,6 +51,7 @@ use crate::common::{
         },
     },
     recover,
+    scenario::Runtime,
 };
 
 #[test]
@@ -92,21 +93,9 @@ fn owner_survives_barrier() {
             ))
             .expect("connector capacity");
             let config = (plan.configured()).expect("configure executor");
-            use dope_core::driver::life::creation::Attempt;
-            let mut create = Attempt::new();
-            let result = Executor::new(&mut create, config);
-            result
-                .as_ref()
-                .map_err(|error| error.kind())
-                .expect("create executor");
-            let Ok(executor) = result else {
-                return;
-            };
             let mut reclaim1 = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-            executor.with_storage(()).run(|executor| {
-    let result = executor.enter_with(|mut runtime| {
-                use executor::session::Scope;
+            Runtime::new(config).with_scope(|mut runtime| {
                 let mode = Rc::new(Cell::new(ReceiveMode::Framed));
                 let target = Rc::new(Cell::new(None));
                 let bytes = Bytes {
@@ -213,15 +202,12 @@ fn owner_survives_barrier() {
                 );
                 assert!(result.is_ok(), "create transition connector");
             }, recovery::Policy::new(|event| reclaim1.push(event), recover));
-        assert!(
-            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim1:?}"
-        );
+            assert!(
+                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+                "unexpected reclaimed operations: {reclaim1:?}"
+            );
 
-        assert!(result.is_ok(), "executor teardown");
-
-        assert!(peer.finish().is_ok(), "finish transition peer");
-        });
+            assert!(peer.finish().is_ok(), "finish transition peer");
         }).expect("spawn transition peer");
     }
 }
@@ -346,183 +332,155 @@ fn run<W>(
             ))
             .expect("connector capacity");
             let config = (plan.configured()).expect("configure executor");
-            use dope_core::driver::life::creation::Attempt;
-            let mut create = Attempt::new();
-            let result = Executor::new(&mut create, config);
-            result
-                .as_ref()
-                .map_err(|error| error.kind())
-                .expect("create executor");
-            let Ok(executor) = result else {
-                return;
-            };
             let mut reclaim1 = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-            executor.with_storage(()).run(|executor| {
-                let result = executor.enter_with(
-                    |mut runtime| {
-                        use executor::session::Scope;
-                        let target = Rc::new(Cell::new(None));
-                        let suffix = Rc::new(Cell::new(ptr::null()));
-                        let tries = Rc::new(Cell::new(0));
-                        let released = Rc::new(Cell::new(false));
-                        let blocked = signals::Gate::new();
-                        let commit = signals::Gate::new();
-                        let cleared = signals::Gate::new();
-                        let partial = signals::Gate::new();
-                        let growth = signals::Gate::new();
-                        let input = Rc::new(Cell::new(None));
-                        let audit = Rc::new(Report::default());
-                        let app = Retry {
-                            audit: Rc::clone(&audit),
+            Runtime::new(config).with_scope(
+                |mut runtime| {
+                    let target = Rc::new(Cell::new(None));
+                    let suffix = Rc::new(Cell::new(ptr::null()));
+                    let tries = Rc::new(Cell::new(0));
+                    let released = Rc::new(Cell::new(false));
+                    let blocked = signals::Gate::new();
+                    let commit = signals::Gate::new();
+                    let cleared = signals::Gate::new();
+                    let partial = signals::Gate::new();
+                    let growth = signals::Gate::new();
+                    let input = Rc::new(Cell::new(None));
+                    let audit = Rc::new(Report::default());
+                    let app = Retry {
+                        audit: Rc::clone(&audit),
 
-                            decode: Decode {
-                                attempts,
-                                prefix: partial.clone(),
-                                growth: growth.clone(),
-                            },
-                            target: target.clone(),
-                            suffix,
-                            tries: tries.clone(),
-                            released: released.clone(),
-                            closing,
-                            stages: Stages {
-                                input: input.clone(),
-                                blocked: blocked.clone(),
-                                commit: commit.clone(),
-                                cleared: cleared.clone(),
-                                retired: retired.clone(),
-                                terminal: terminal.clone(),
-                            },
-                        };
-                        let source =
-                            Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
-                        let backoff = runtime.hash_state(Domain::DEFAULT);
-                        let setup = session::Setup::new(app, ingress::Plan::none());
-                        let result = plan
-                            .bind(Local::<W, KeyTag<0>>::new(Default::default()), backoff)
-                            .install::<_, _, sync::Preserve, _, Bundle<Tcp, W, Balanced>, 1, _, _>(
-                                setup,
-                                source,
-                                &mut runtime,
-                                Scope::driver,
-                                |host, runtime| {
-                                    let host = Host::new(queued::Host {
-                                        inner: host,
-                                        state: terminal.clone(),
-                                        renewal: None,
-                                        pending: None,
-                                    });
-                                    let result = runtime.with_quiesce(
-                                        &mut finish,
-                                        host,
-                                        Duration::from_secs(2),
-                                        |mut running| {
-                                            if prefix {
-                                                reached(
-                                                    fibers::TEST.try_wait(
-                                                        &mut running,
-                                                        &partial,
-                                                        1,
-                                                    ),
-                                                    &audit,
-                                                );
-                                                assert_eq!(growth.hits(), 1);
-                                                assert_eq!(
-                                                    input.get(),
-                                                    Some(session::Input::Empty)
-                                                );
-                                                resume.notify().expect("release next chunk");
-                                            }
+                        decode: Decode {
+                            attempts,
+                            prefix: partial.clone(),
+                            growth: growth.clone(),
+                        },
+                        target: target.clone(),
+                        suffix,
+                        tries: tries.clone(),
+                        released: released.clone(),
+                        closing,
+                        stages: Stages {
+                            input: input.clone(),
+                            blocked: blocked.clone(),
+                            commit: commit.clone(),
+                            cleared: cleared.clone(),
+                            retired: retired.clone(),
+                            terminal: terminal.clone(),
+                        },
+                    };
+                    let source =
+                        Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
+                    let backoff = runtime.hash_state(Domain::DEFAULT);
+                    let setup = session::Setup::new(app, ingress::Plan::none());
+                    let result = plan
+                        .bind(Local::<W, KeyTag<0>>::new(Default::default()), backoff)
+                        .install::<_, _, sync::Preserve, _, Bundle<Tcp, W, Balanced>, 1, _, _>(
+                            setup,
+                            source,
+                            &mut runtime,
+                            Scope::driver,
+                            |host, runtime| {
+                                let host = Host::new(queued::Host {
+                                    inner: host,
+                                    state: terminal.clone(),
+                                    renewal: None,
+                                    pending: None,
+                                });
+                                let result = runtime.with_quiesce(
+                                    &mut finish,
+                                    host,
+                                    Duration::from_secs(2),
+                                    |mut running| {
+                                        if prefix {
                                             reached(
-                                                fibers::TEST.try_wait(&mut running, &blocked, 1),
+                                                fibers::TEST.try_wait(&mut running, &partial, 1),
                                                 &audit,
                                             );
-                                            if closing {
-                                                let retired =
-                                                    retired.as_ref().expect("retirement gate");
-                                                reached(
-                                                    fibers::TEST.try_wait(&mut running, retired, 1),
-                                                    &audit,
-                                                );
-                                                assert_eq!(retired.hits(), 1);
-                                                assert_eq!(cleared.hits(), 1);
-                                                assert_eq!(commit.hits(), 0);
-                                                return;
-                                            }
-                                            assert_eq!(input.get(), Some(session::Input::Blocked));
-                                            if let Some(terminal) = &terminal {
-                                                reached(
-                                                    fibers::TEST.try_wait(
-                                                        &mut running,
-                                                        &terminal.queued,
-                                                        1,
-                                                    ),
-                                                    &audit,
-                                                );
-                                                assert!(
-                                                    terminal
-                                                        .events
-                                                        .values()
-                                                        .expect("held EOF observations")
-                                                        .is_empty()
-                                                );
-                                            }
-                                            assert_eq!(tries.get(), 1);
+                                            assert_eq!(growth.hits(), 1);
+                                            assert_eq!(input.get(), Some(session::Input::Empty));
+                                            resume.notify().expect("release next chunk");
+                                        }
+                                        reached(
+                                            fibers::TEST.try_wait(&mut running, &blocked, 1),
+                                            &audit,
+                                        );
+                                        if closing {
+                                            let retired =
+                                                retired.as_ref().expect("retirement gate");
+                                            reached(
+                                                fibers::TEST.try_wait(&mut running, retired, 1),
+                                                &audit,
+                                            );
+                                            assert_eq!(retired.hits(), 1);
+                                            assert_eq!(cleared.hits(), 1);
                                             assert_eq!(commit.hits(), 0);
-                                            if let Some(retired) = &retired {
-                                                assert_eq!(retired.hits(), 0);
-                                            }
-                                            let target = (target.get())
-                                                .expect("generation readiness target");
-                                            released.set(true);
-                                            target.wake();
+                                            return;
+                                        }
+                                        assert_eq!(input.get(), Some(session::Input::Blocked));
+                                        if let Some(terminal) = &terminal {
                                             reached(
                                                 fibers::TEST.try_wait(
                                                     &mut running,
-                                                    &commit,
-                                                    want.get(),
+                                                    &terminal.queued,
+                                                    1,
                                                 ),
                                                 &audit,
                                             );
-                                            assert_eq!(tries.get(), attempts.get());
-                                            if terminal.is_none() {
-                                                assert_eq!(
-                                                    input.get(),
-                                                    Some(session::Input::Empty)
-                                                );
-                                            }
-                                            if let Some(retired) = &retired {
-                                                reached(
-                                                    fibers::TEST.try_wait(&mut running, retired, 1),
-                                                    &audit,
-                                                );
-                                            }
-                                        },
-                                    );
-                                    assert!(result.is_ok(), "application teardown");
-                                    audit.checked((0, 0));
-                                    assert_eq!(
-                                        tries.get(),
-                                        if closing { 1 } else { attempts.get() }
-                                    );
-                                    assert_eq!(partial.hits(), u32::from(prefix));
-                                    assert_eq!(growth.hits(), u32::from(prefix));
-                                },
-                            );
-                        assert!(result.is_ok(), "create causal connector");
-                    },
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                );
-                assert!(
-                    matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                    "unexpected reclaimed operations: {reclaim1:?}"
-                );
+                                            assert!(
+                                                terminal
+                                                    .events
+                                                    .values()
+                                                    .expect("held EOF observations")
+                                                    .is_empty()
+                                            );
+                                        }
+                                        assert_eq!(tries.get(), 1);
+                                        assert_eq!(commit.hits(), 0);
+                                        if let Some(retired) = &retired {
+                                            assert_eq!(retired.hits(), 0);
+                                        }
+                                        let target =
+                                            (target.get()).expect("generation readiness target");
+                                        released.set(true);
+                                        target.wake();
+                                        reached(
+                                            fibers::TEST.try_wait(
+                                                &mut running,
+                                                &commit,
+                                                want.get(),
+                                            ),
+                                            &audit,
+                                        );
+                                        assert_eq!(tries.get(), attempts.get());
+                                        if terminal.is_none() {
+                                            assert_eq!(input.get(), Some(session::Input::Empty));
+                                        }
+                                        if let Some(retired) = &retired {
+                                            reached(
+                                                fibers::TEST.try_wait(&mut running, retired, 1),
+                                                &audit,
+                                            );
+                                        }
+                                    },
+                                );
+                                assert!(result.is_ok(), "application teardown");
+                                audit.checked((0, 0));
+                                assert_eq!(tries.get(), if closing { 1 } else { attempts.get() });
+                                assert_eq!(partial.hits(), u32::from(prefix));
+                                assert_eq!(growth.hits(), u32::from(prefix));
+                            },
+                        );
+                    assert!(result.is_ok(), "create causal connector");
+                },
+                recovery::Policy::new(|event| reclaim1.push(event), recover),
+            );
+            assert!(
+                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+                "unexpected reclaimed operations: {reclaim1:?}"
+            );
 
-                assert!(result.is_ok(), "executor teardown");
-
-                peer.finish().expect("finish causal peer");
-            });
+            peer.finish().expect("finish causal peer");
         },
     )
     .expect("spawn causal peer");

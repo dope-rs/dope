@@ -9,7 +9,8 @@ use crate::link::egress::{
 /// One source node that owns its exact immutable payload before state changes.
 #[must_use = "a source reservation must be committed or rolled back"]
 pub struct Reserve<'queue, 'token, 'p, 'd, T, D: demand::Mode = demand::Fallible> {
-    parts: Guard<'token, 'd, pool::Prepared<'queue, 'p, 'd, T, D>>,
+    parts:
+        Guard<'token, 'd, pool::Vacant<'queue, 'p, 'd, T, egress::NonEmpty<T>, metadata::Local, D>>,
 }
 
 /// A rejected state transition with its exact source owner.
@@ -32,7 +33,7 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode> Reserve<'queue, 'token, 'p, 'd,
         token: &'token mut region::Token<region::Identity<'d>>,
     ) -> Self {
         Self {
-            parts: Guard::new(token, pool::Prepared::from(node)),
+            parts: Guard::new(token, node),
         }
     }
 
@@ -43,7 +44,7 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode> Reserve<'queue, 'token, 'p, 'd,
 
     pub fn rollback(self) -> egress::NonEmpty<T> {
         let (token, node) = self.parts.into_parts();
-        node.rollback(token)
+        node.reclaim(token)
     }
 }
 
@@ -84,7 +85,7 @@ impl<'p, 'd, T: data::raw::Resident<'d>, D: demand::Mode> Reserve<'_, '_, 'p, 'd
 const fn layout<'queue, 'token, 'p: 'queue, 'd: 'p + 'token>() {
     assert!(
         std::mem::size_of::<Reserve<'queue, 'token, 'p, 'd, ()>>()
-            == std::mem::size_of::<pool::Prepared<'queue, 'p, 'd, (), demand::Fallible>>()
+            == std::mem::size_of::<pool::Vacant<'queue, 'p, 'd, (), egress::NonEmpty<()>>>()
                 + std::mem::size_of::<&'token mut region::Token<region::Identity<'d>>>()
     );
     assert!(
@@ -93,7 +94,7 @@ const fn layout<'queue, 'token, 'p: 'queue, 'd: 'p + 'token>() {
     );
     assert!(
         std::mem::align_of::<Reserve<'queue, 'token, 'p, 'd, ()>>()
-            == std::mem::align_of::<pool::Prepared<'queue, 'p, 'd, (), demand::Fallible>>()
+            == std::mem::align_of::<pool::Vacant<'queue, 'p, 'd, (), egress::NonEmpty<()>>>()
     );
 }
 

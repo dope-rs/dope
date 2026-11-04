@@ -53,31 +53,6 @@ pub(crate) struct Table<'d, F, O, const N: usize> {
     slots: [raw::Entry<F, O>; N],
 }
 
-struct Drain<'a, F, O, const N: usize> {
-    slots: pin::Pin<&'a mut [raw::Entry<F, O>; N]>,
-    complete: batch::Completed<N>,
-}
-
-impl<F, O, const N: usize> Drain<'_, F, O, N> {
-    fn into_iter(mut self) -> array::IntoIter<O, N> {
-        array::Vec::from_fn(self.complete.len(), |slot| self.take(slot)).into_iter()
-    }
-
-    fn take(&mut self, slot: array::Vacancy<N>) -> O {
-        let index = Index::from_vacant(&slot);
-        // SAFETY: the constructor's admitted ordinal is below N and this
-        // projection retains the exact pinned table's exclusive borrow.
-        let entry = unsafe {
-            self.slots
-                .as_mut()
-                .map_unchecked_mut(|slots| slots.get_unchecked_mut(index.get()))
-        };
-        // SAFETY: this owner retains Completed until its last admitted output
-        // is taken; no table mutation can intervene or revisit an ordinal.
-        unsafe { raw::Done::exact(entry) }.take()
-    }
-}
-
 impl<const N: usize> Index<N> {
     pub(crate) fn from_vacant(vacant: &array::Vacancy<N>) -> Self {
         // SAFETY: Vacancy<N> identifies one index below the validated N.
@@ -274,10 +249,20 @@ impl<'d, F, O, const N: usize> Table<'d, F, O, N> {
         self: pin::Pin<&mut Self>,
         complete: batch::Completed<N>,
     ) -> array::IntoIter<O, N> {
-        Drain {
-            slots: self.project().slots,
-            complete,
-        }
+        let mut slots = self.project().slots;
+        array::Vec::from_fn(complete.len(), |slot| {
+            let index = Index::from_vacant(&slot);
+            // SAFETY: the constructor's admitted ordinal is below N and this
+            // projection retains the exact pinned table's exclusive borrow.
+            let entry = unsafe {
+                slots
+                    .as_mut()
+                    .map_unchecked_mut(|slots| slots.get_unchecked_mut(index.get()))
+            };
+            // SAFETY: this owner retains Completed until its last admitted output
+            // is taken; no table mutation can intervene or revisit an ordinal.
+            unsafe { raw::Done::exact(entry) }.take()
+        })
         .into_iter()
     }
 }

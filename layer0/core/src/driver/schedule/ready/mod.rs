@@ -19,7 +19,7 @@ use o3::{
     mem::Lease,
 };
 use payload::{Link, Task};
-use pool::{Chain, Permit, Pool, Reclaimed};
+use pool::{Chain, Pool};
 use record::Record;
 pub use rounds::Rounds;
 use topology::Topology;
@@ -264,21 +264,13 @@ impl<'d, Tag: route::Tag> Slot<'d, Tag> {
             .item()
             .ready()
             .arena()
-            .stored()
-            .activate(self.dispatch_key());
+            .activate_slot(self.dispatch_key());
     }
 
     /// Takes readiness for this exact live slot without draining other entries.
     #[must_use]
     pub fn take(&self) -> Readiness {
-        match self
-            .owner
-            .item()
-            .ready()
-            .arena()
-            .stored()
-            .take(self.dispatch_key())
-        {
+        match self.owner.item().ready().arena().take(self.dispatch_key()) {
             Removal::Removed => Readiness::Ready,
             Removal::Absent => Readiness::Idle,
         }
@@ -348,7 +340,7 @@ impl<'d> Context<'d> {
 
     /// Activates a retained key when its generation is still current.
     pub fn try_activate(self, key: Retained<'d>) -> Result<(), Stale> {
-        self.arena().stored().try_retained(key)
+        self.arena().try_retained(key)
     }
 
     pub fn has_ready(self) -> bool {

@@ -15,16 +15,15 @@ use crate::{
     },
 };
 
-pub(in crate::client::conn::engine) trait Effect<'p, 'w, 'd: 'p + 'w, ID: Identity + 'd, A, S, E, X>
+pub(in crate::client::conn::engine) trait Effect<'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
 {
-    fn apply<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
         self,
         engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
@@ -33,21 +32,20 @@ where
         driver: &'driver mut retained::Context<'context, 'owner, 'd>,
     ) -> receive::Outcome
     where
-        'd: 'owner,
+        'd: 'p + 'owner,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         A::Requests: send::Policy<'w, 'd, ID, A>;
 }
 
-impl<'p, 'w, 'd: 'p + 'w, ID: Identity + 'd, A, S, E, X> Effect<'p, 'w, 'd, ID, A, S, E, X>
-    for app::ChunkOutcome
+impl<'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Effect<'w, 'd, ID, A, S, E, X> for app::ChunkOutcome
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
 {
-    fn apply<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
         self,
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
@@ -56,7 +54,8 @@ where
         driver: &'driver mut retained::Context<'context, 'owner, 'd>,
     ) -> receive::Outcome
     where
-        'd: 'owner,
+        'd: 'p + 'owner,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {
         if let Err(error) = self.into_result() {
@@ -86,17 +85,43 @@ where
     }
 }
 
-impl<'p, 'w, 'd: 'p + 'w, ID: Identity + 'd, A, S, E, X> Effect<'p, 'w, 'd, ID, A, S, E, X>
-    for app::Pause
+impl<'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Effect<'w, 'd, ID, A, S, E, X> for app::Resumed
+where
+    A: app::Resumable<'d, ID, Continuation = app::resume::Retained> + app::Lifecycle<'w, 'd, ID>,
+    S: attempt::Control<'d, E::Transport, ID>,
+    E: env::Spec<Wire = A::Wire>,
+    E::Transport: dope_net::Transport,
+    X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
+{
+    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
+        self,
+        engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
+        key: pool::Key<'d, ID>,
+        flow: flow::Flow<()>,
+        turn: schedule::Turn<'turn, 'd>,
+        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+    ) -> receive::Outcome
+    where
+        'd: 'p + 'owner,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        A::Requests: send::Policy<'w, 'd, ID, A>,
+    {
+        match self {
+            Self::Complete(done) => done.apply(engine, key, flow, turn, driver),
+            Self::Paused(pause) => pause.apply(engine, key, flow, turn, driver),
+        }
+    }
+}
+
+impl<'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Effect<'w, 'd, ID, A, S, E, X> for app::Pause
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
 {
-    fn apply<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
         self,
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
@@ -105,7 +130,8 @@ where
         driver: &'driver mut retained::Context<'context, 'owner, 'd>,
     ) -> receive::Outcome
     where
-        'd: 'owner,
+        'd: 'p + 'owner,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {
         let close = {

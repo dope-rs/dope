@@ -32,10 +32,6 @@ impl Timeout {
 pub struct Enter<'a, T> {
     owner: marker::PhantomData<&'a mut Ring<T>>,
     binding: ring::ffi::Binding<'a>,
-    state: State,
-}
-
-struct State {
     submit: sq::Pending,
     sq_flags: u32,
 }
@@ -71,7 +67,8 @@ impl<'a, T> Enter<'a, T> {
         Self {
             owner: marker::PhantomData,
             binding,
-            state: State { submit, sq_flags },
+            submit,
+            sq_flags,
         }
     }
 }
@@ -81,31 +78,10 @@ impl<T> enter::Enter for Enter<'_, T> {
     type Timeout = Timeout;
 
     fn try_submit(self) -> Result<(), Self::Error> {
-        self.state.try_submit(self.binding)
+        self.try_enter(0, 0, ptr::null(), mem::size_of::<libc::sigset_t>())
     }
 
     fn try_wait(self, timeout: Option<Self::Timeout>) -> Result<(), Self::Error> {
-        self.state.try_wait(self.binding, timeout)
-    }
-
-    fn try_commit(self) -> Result<enter::Progress, Self::Error> {
-        self.state.try_commit(self.binding)
-    }
-}
-
-impl State {
-    fn try_submit(
-        self,
-        binding: ring::ffi::Binding<'_>,
-    ) -> Result<(), kernel::Errno<error::Enter>> {
-        self.try_enter(binding, 0, 0, ptr::null(), mem::size_of::<libc::sigset_t>())
-    }
-
-    fn try_wait(
-        self,
-        binding: ring::ffi::Binding<'_>,
-        timeout: Option<Timeout>,
-    ) -> Result<(), kernel::Errno<error::Enter>> {
         use crate::reactor::ring::ffi;
 
         match timeout {
@@ -118,21 +94,17 @@ impl State {
                     timespec: ptr::from_ref(&timespec) as u64,
                 };
                 self.try_enter(
-                    binding,
                     1,
                     ffi::ENTER_EXT_ARG,
                     ptr::from_ref(&args).cast(),
                     mem::size_of::<Arguments>(),
                 )
             }
-            None => self.try_enter(binding, 1, 0, ptr::null(), mem::size_of::<libc::sigset_t>()),
+            None => self.try_enter(1, 0, ptr::null(), mem::size_of::<libc::sigset_t>()),
         }
     }
 
-    fn try_commit(
-        self,
-        binding: ring::ffi::Binding<'_>,
-    ) -> Result<enter::Progress, kernel::Errno<error::Enter>> {
+    fn try_commit(self) -> Result<enter::Progress, Self::Error> {
         use crate::reactor::ring::ffi;
 
         let progress = self.sq_flags & (ffi::SQ_TASKRUN | ffi::SQ_CQ_OVERFLOW) != 0;
@@ -140,16 +112,12 @@ impl State {
             return Ok(enter::Progress::Idle);
         }
         let flags = if progress { ffi::ENTER_GETEVENTS } else { 0 };
-        self.try_enter(
-            binding,
-            0,
-            flags,
-            ptr::null(),
-            mem::size_of::<libc::sigset_t>(),
-        )?;
+        self.try_enter(0, flags, ptr::null(), mem::size_of::<libc::sigset_t>())?;
         Ok(enter::Progress::Entered)
     }
+}
 
+impl<T> Enter<'_, T> {
     const fn has_overflow(&self) -> bool {
         use crate::reactor::ring::ffi;
 
@@ -158,7 +126,6 @@ impl State {
 
     fn try_enter(
         self,
-        binding: ring::ffi::Binding<'_>,
         complete: u32,
         mut flags: u32,
         args: *const libc::c_void,
@@ -169,7 +136,7 @@ impl State {
         if complete != 0 || self.has_overflow() {
             flags |= ffi::ENTER_GETEVENTS;
         }
-        ffi::Fd::try_enter(binding, self.submit, complete, flags, args, size)
+        ffi::Fd::try_enter(self.binding, self.submit, complete, flags, args, size)
     }
 }
 
@@ -179,7 +146,6 @@ const _: () = {
     assert!(mem::size_of::<ring::ffi::Timespec>() == mem::size_of::<Timeout>());
     assert!(mem::align_of::<ring::ffi::Timespec>() == mem::align_of::<Timeout>());
     assert!(mem::size_of::<Arguments>() == 24);
-    assert!(mem::size_of::<State>() == 8);
     assert!(mem::size_of::<Enter<'static, ()>>() == 16);
 };
 

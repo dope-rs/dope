@@ -1,4 +1,5 @@
-use std::{convert::Infallible, net::UdpSocket};
+use crate::common::rt::{finish, recover};
+use std::net::UdpSocket;
 
 use dope_core::{
     driver::{
@@ -8,7 +9,7 @@ use dope_core::{
     },
     io::socket::{Inet, install::Install, option},
 };
-use dope_test::{reclaim::Reports, scope::Error};
+use dope_test::reclaim::Reports;
 
 use crate::common::{
     driver::{Scoped as _, support::Targets as _, tuning::Tuned as _},
@@ -151,15 +152,4 @@ fn connect_completion_matches_native_flight() {
         rejected,
         "same-target completion from another native flight was accepted"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

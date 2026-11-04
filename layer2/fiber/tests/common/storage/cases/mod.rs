@@ -16,16 +16,6 @@ use crate::common::runtime::profile::Tasks;
 
 pub struct Domain;
 
-pub struct PendingTask;
-
-impl<'d> Fiber<'d> for PendingTask {
-    type Output = ();
-
-    fn poll(_: context::PollCall<'_, '_, 'd, Self>) -> Poll<()> {
-        Poll::Pending
-    }
-}
-
 pub struct WakeProfile;
 
 impl Profile for WakeProfile {

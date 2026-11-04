@@ -13,11 +13,10 @@ use receive::discard;
 
 use crate::{
     link::{
-        pool,
-        pool::recv::Resident,
+        duplex, pool,
         slot::{
             self,
-            recv::{Capture, Retirement, Submit},
+            recv::{Capture, Retirement},
             transmit,
             transmit::direct,
         },
@@ -248,21 +247,17 @@ impl<'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Connection<'w, 'd, ID, W,
 where
     'd: 'w,
 {
-    pub(in crate::link) fn resident(&self) -> Resident<'_, 'd, ID> {
-        Resident::new(&self.key)
-    }
-
     pub(in crate::link) fn submit_recv(
         &mut self,
         slots: &flight::Slots<'d, ID>,
         ctx: &mut retained::Context<'_, '_, 'd>,
-    ) -> Result<Submit, result::SubmitError> {
+    ) -> Result<duplex::Rearm, result::SubmitError> {
         let conn = self;
         if conn.control.engine.operations.recv.is_armed() {
-            return Ok(Submit::Armed);
+            return Ok(duplex::Rearm::Idle);
         }
         if conn.is_recv_done() || conn.control.engine.operations.recv.is_paused() {
-            return Ok(Submit::Deferred);
+            return Ok(duplex::Rearm::Needed);
         }
         let mut exhaust = conn.control.engine.operations.recv.exhaustion();
         let probe = match exhaust.bind() {
@@ -292,16 +287,16 @@ where
             None => Probe::Absent,
         };
         if matches!(probe, Probe::Waiting) {
-            return Ok(Submit::Waiting);
+            return Ok(duplex::Rearm::Idle);
         }
         let target = conn.key.target();
         let Some(fd) = conn.control.engine.fd() else {
-            return Ok(Submit::Deferred);
+            return Ok(duplex::Rearm::Needed);
         };
         let op = match slots.recv(ctx.driver().reborrow(), fd, target) {
             Ok(op) => op,
             Err(error) => match error.cause() {
-                result::SubmitCause::Full => return Ok(Submit::Deferred),
+                result::SubmitCause::Full => return Ok(duplex::Rearm::Needed),
                 result::SubmitCause::IdentityExhausted => {
                     conn.discard();
                     return Err(error);
@@ -313,7 +308,7 @@ where
             Probe::Ready(probe) => probe.commit(),
             Probe::Waiting | Probe::Absent => {}
         }
-        Ok(Submit::Armed)
+        Ok(duplex::Rearm::Idle)
     }
 
     pub(in crate::link) fn recv_eof(&mut self) -> slot::Control

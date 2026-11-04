@@ -35,14 +35,14 @@ pub unsafe trait Directory: kernel::raw::Source {
 /// # Safety
 /// Each decoded success retains the uniquely transferred descriptor until
 /// delivery or reclamation. Closing consumes that ownership.
-pub unsafe trait Completion: Opened + Sized {
+pub unsafe trait Completion {
     type Outcome;
     type Invalid;
 
     /// # Safety
     /// A successful outcome transfers one live descriptor from a completed
     /// open operation. Its descriptor has not been decoded or reclaimed before.
-    unsafe fn open(outcome: Self::Outcome) -> Result<Self, Self::Invalid>;
+    unsafe fn open(outcome: Self::Outcome) -> Result<Opened, Self::Invalid>;
 
     fn close(file: fd::OwnedFd) -> Result<(), Errno>;
 }

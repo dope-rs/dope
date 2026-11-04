@@ -8,6 +8,8 @@ mod source;
 
 use std::os::fd;
 
+use o3::buffer::bytes::bounded;
+
 pub use borrow::Borrow;
 pub use complete::Complete;
 pub use context::Context;
@@ -18,13 +20,18 @@ pub use source::Source;
 
 use crate::io::file;
 
-/// File requests retaining their descriptor, path, options, and input borrows.
+/// File requests retaining their descriptor, path, options, and buffer borrows.
 pub trait Request<'a>: Sized {
     type Buffer;
     type Options;
 
     fn options(flags: file::Open, mode: file::Mode) -> Self::Options;
     fn open(dir: fd::BorrowedFd<'a>, path: &'a std::ffi::CStr, options: &'a Self::Options) -> Self;
+    fn read(
+        file: fd::BorrowedFd<'a>,
+        output: bounded::Value<&'a mut [u8]>,
+        offset: file::Offset,
+    ) -> Self;
     fn write(file: fd::BorrowedFd<'a>, input: Self::Buffer, offset: file::Offset) -> Self;
     /// Writes at the owned descriptor's current position, honoring `O_APPEND`.
     fn write_current(file: fd::BorrowedFd<'a>, input: Self::Buffer) -> Self;

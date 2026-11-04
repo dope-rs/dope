@@ -2,8 +2,7 @@ use std::num;
 
 pub use config::Config;
 pub(crate) use config::plan::{Plan, Ready};
-use demands::slots;
-use dope_sys::io::reactor::complete;
+pub use demands::Schedule;
 use o3::{base::num::bounded, depot, depot::capacity};
 pub use receive::Receive;
 pub use resource::Resource;
@@ -232,42 +231,6 @@ impl QueueLayout {
     }
 }
 
-/// Independent bounds for ready work and live timer registrations.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Schedule {
-    ready: slots::Slots,
-    timers: slots::Slots,
-}
-
-impl Schedule {
-    pub const DEFAULT: Self = Self::fixed::<1024, 1024>();
-
-    pub const fn fixed<const READY: u32, const TIMERS: u32>() -> Self {
-        Self {
-            ready: slots::Slots::fixed::<READY>(),
-            timers: slots::Slots::fixed::<TIMERS>(),
-        }
-    }
-
-    #[must_use]
-    pub const fn resolve(self, need: demands::Schedule) -> Self {
-        Self {
-            ready: self.ready.max(need.ready()),
-            timers: self.timers.max(need.timers()),
-        }
-    }
-
-    #[must_use]
-    pub const fn ready(self) -> slots::Slots {
-        self.ready
-    }
-
-    #[must_use]
-    pub const fn timers(self) -> slots::Slots {
-        self.timers
-    }
-}
-
 /// A descriptor-slot layout representable by every backend target table.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FileSlots {
@@ -428,6 +391,3 @@ unsafe impl depot::raw::Count for Completion {
         capacity::Count::new(self.0.get())
     }
 }
-
-// SAFETY: every copy retains the same immutable bounded capacity.
-unsafe impl complete::raw::Capacity for Completion {}

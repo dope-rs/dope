@@ -16,68 +16,10 @@ use crate::{
     topology::lending,
 };
 
-/// Exclusive construction and execution authority for one client-bearing tree.
-pub(crate) struct Lent<'scope, 'life: 'scope, 'd: 'life, Q> {
-    core: &'scope mut session::Core<'life, 'd, Q>,
-}
-
-impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
-    pub(crate) fn new(core: &'scope mut session::Core<'life, 'd, Q>) -> Self {
-        Self { core }
-    }
-
+impl<'life, 'd: 'life, Q> session::Core<'life, 'd, Q> {
     /// Issues a client only while this scope owns both construction and execution.
-    pub(crate) fn run<'report, O, B>(
-        self,
-        report: &'report mut session::Completion,
-        owner: O,
-        build: B,
-    ) -> lending::Result<'report, B::Error, B::Output>
-    where
-        O: lending::Root<'d> + lending::raw::Resume<'d>,
-        B: lending::Execute<'life, 'd, O, Q>,
-        Q: executor::Startup,
-    {
-        self.run_wall(report, owner, build, None)
-    }
-
-    pub(crate) fn run_for<'report, O, B>(
-        self,
-        report: &'report mut session::Completion,
-        owner: O,
-        build: B,
-        timeout: time::Duration,
-    ) -> lending::Result<'report, B::Error, B::Output>
-    where
-        O: lending::Root<'d> + lending::raw::Resume<'d>,
-        B: lending::Execute<'life, 'd, O, Q>,
-        Q: executor::Startup,
-    {
-        self.run_wall(report, owner, build, Some(timeout))
-    }
-
-    fn run_wall<'report, O, B>(
-        self,
-        report: &'report mut session::Completion,
-        owner: O,
-        build: B,
-        timeout: Option<time::Duration>,
-    ) -> lending::Result<'report, B::Error, B::Output>
-    where
-        O: lending::Root<'d> + lending::raw::Resume<'d>,
-        B: lending::Execute<'life, 'd, O, Q>,
-        Q: executor::Startup,
-    {
-        let start = self
-            .core
-            .admit(None)
-            .map_err(|error| lending::Error::Run(session::Error::Drive(error)))?;
-        let mut owner = pin::pin!(owner);
-        self.pinned(report, owner.as_mut(), build, start, timeout)
-    }
-
     pub(crate) fn held<'report, O, B>(
-        self,
+        &mut self,
         report: &'report mut session::Completion,
         owner: slot::Occupied<'_, O>,
         build: B,
@@ -89,14 +31,13 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
         Q: executor::Startup,
     {
         let start = self
-            .core
             .admit(None)
             .map_err(|error| lending::Error::Run(session::Error::Drive(error)))?;
         owner.with_pin(move |owner| self.pinned(report, owner, build, start, timeout))
     }
 
     fn pinned<'report, O, B>(
-        mut self,
+        &mut self,
         report: &'report mut session::Completion,
         mut owner: pin::Pin<&mut O>,
         build: B,
@@ -113,7 +54,7 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
         let provider = lending::Root::provider(owner.as_ref());
         let client = client::Provider::provide(client::Context::new(provider));
         let (app, data) = build
-            .build(client, self.core.scope.context())
+            .build(client, self.scope.context())
             .map_err(lending::Error::Build)?;
         let result = match timeout {
             Some(timeout) => {
@@ -127,7 +68,7 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
                     },
                     drive::quiesce,
                 );
-                run::finish_parent(self.core, parent, report, outcome, disarm, drive::quiesce)
+                run::finish_parent(self, parent, report, outcome, disarm, drive::quiesce)
             }
             None => {
                 let (parent, outcome, disarm) = self.execute(
@@ -137,14 +78,14 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
                     |scope| (B::run(data, scope.app()), wall()),
                     drive::tick,
                 );
-                run::finish_parent(self.core, parent, report, outcome, disarm, drive::tick)
+                run::finish_parent(self, parent, report, outcome, disarm, drive::tick)
             }
         };
         result.map_err(lending::Error::Run)
     }
 
     pub(crate) fn run_at<'report, O, B>(
-        mut self,
+        &mut self,
         report: &'report mut session::Completion,
         owner: O,
         build: B,
@@ -159,14 +100,13 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
         use drive::clock::{Bound, at};
 
         let start = self
-            .core
             .admit(Some(start))
             .map_err(|error| lending::Error::Run(session::Error::Drive(error)))?;
         let mut owner = pin::pin!(owner);
         let provider = lending::Root::provider(owner.as_ref());
         let client = client::Provider::provide(client::Context::new(provider));
         let (app, data) = build
-            .build(client, self.core.scope.context())
+            .build(client, self.scope.context())
             .map_err(lending::Error::Build)?;
         let (parent, outcome, disarm) = self.execute(
             owner.as_mut(),
@@ -184,13 +124,13 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
             },
             drive::quiesce,
         );
-        run::finish_parent(self.core, parent, report, outcome, disarm, drive::quiesce)
+        run::finish_parent(self, parent, report, outcome, disarm, drive::quiesce)
             .map_err(lending::Error::Run)
     }
 
     /// Ends callback-local state before consuming its exact provider continuation.
     pub(crate) fn scope_held<'report, O, E, R>(
-        self,
+        &mut self,
         report: &'report mut session::Completion,
         owner: slot::Occupied<'_, O>,
         build: impl for<'issued> FnOnce(
@@ -202,13 +142,12 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
         Q: executor::Startup,
     {
         let start = self
-            .core
             .admit(None)
             .map_err(|error| lending::Error::Run(session::Error::Drive(error)))?;
         owner.with_pin(move |owner| {
             let provider = lending::Root::provider(owner.as_ref());
             let client = client::Provider::provide(client::Context::new(provider));
-            let permit = lending::Permit::new(self.core, owner, start);
+            let permit = lending::Permit::new(self, owner, start);
             build(lending::Issued::new(client, permit)).finish(report)
         })
     }
@@ -235,15 +174,12 @@ impl<'scope, 'life: 'scope, 'd: 'life, Q> Lent<'scope, 'life, 'd, Q> {
         Q: executor::Startup,
     {
         let app = lending::raw::Bound::new(owner, app);
-        let backing = pin::pin!(executor::raw::Backing::new(self.core.scope.token(), app));
-        let owner = self.core.scope.with_turn(|token, driver, mut turn| {
+        let backing = pin::pin!(executor::raw::Backing::new(self.scope.token(), app));
+        let owner = self.scope.with_turn(|token, driver, mut turn| {
             turn.sample(start);
             executor::raw::Owner::install(backing.as_ref().pin(), token, driver.driver_ref())
         });
-        let mut scope = run::Run {
-            core: &mut *self.core,
-            owner,
-        };
+        let mut scope = run::Run { core: self, owner };
         if let Err(error) = scope.admit() {
             let (parent, disarm) = scope.cancel_lent();
             return (parent, Err(error), disarm);

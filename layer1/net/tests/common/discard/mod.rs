@@ -110,6 +110,7 @@ impl Error {
             event::Kind::Tuning(_) => kind::Kind::Tuning,
             event::Kind::Connect(_) => kind::Kind::Connect,
             event::Kind::Open(_) => kind::Kind::Open,
+            event::Kind::Read(_) => kind::Kind::Read,
             event::Kind::Write(_) => kind::Kind::Write,
             event::Kind::Sync(_) => kind::Kind::Sync,
             event::Kind::Shutdown => kind::Kind::Shutdown,

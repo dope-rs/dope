@@ -35,17 +35,6 @@ use crate::{
 mod deadline;
 pub(in crate::client) use deadline::Deadline;
 
-enum Binding {
-    Unbound,
-    Bound,
-}
-
-enum Step {
-    Failed(reclaim::Advance),
-    Quiescent(reclaim::Advance),
-    Runnable(reclaim::Advance),
-    Waiting,
-}
 pub(in crate::client) trait Policy<'w, 'd: 'w, ID: Identity + 'd, A>:
     request::Mode + Sized
 where
@@ -162,15 +151,15 @@ where
             if !slot.is_connected() {
                 return;
             }
-            let binding = match State::active(&mut slot, |active| {
+            let bound = match State::active(&mut slot, |active| {
                 this.app.prepare(
                     conn::Ctx::new(active, turn.reborrow().app()),
                     egress.reborrow(),
                     driver,
                 );
             }) {
-                flow::Active::Ready(flow::Flow::Continue(())) => Binding::Bound,
-                flow::Active::Opening => Binding::Unbound,
+                flow::Active::Ready(flow::Flow::Continue(())) => true,
+                flow::Active::Opening => false,
                 flow::Active::Ready(flow::Flow::Discarded(())) => {
                     handle.wake();
                     return;
@@ -188,20 +177,49 @@ where
                 queue: egress,
                 ..
             } = sender.view();
-            let step = match done {
+            let status = slot.send_status();
+            let live = !egress.is_empty()
+                || status.is_inflight()
+                || status.retention() == outcome::Retention::Held
+                || status.is_closing();
+            let (advance, update) = match done {
                 transmit::Attempt::Runnable(advance) => {
                     handle.wake();
-                    Step::Runnable(advance)
+                    (
+                        advance,
+                        if live {
+                            Deadline::Progress
+                        } else {
+                            Deadline::Cancel
+                        },
+                    )
                 }
-                transmit::Attempt::Waiting => Step::Waiting,
-                transmit::Attempt::Quiescent(advance) => Step::Quiescent(advance),
+                transmit::Attempt::Quiescent(reclaim::Advance::Ready) => (
+                    reclaim::Advance::Ready,
+                    if live {
+                        Deadline::Progress
+                    } else {
+                        Deadline::Cancel
+                    },
+                ),
+                transmit::Attempt::Waiting
+                | transmit::Attempt::Quiescent(reclaim::Advance::Idle) => (
+                    reclaim::Advance::Idle,
+                    if !live {
+                        Deadline::Cancel
+                    } else if !armed && status.is_inflight() {
+                        Deadline::Progress
+                    } else {
+                        Deadline::Ensure
+                    },
+                ),
                 transmit::Attempt::Invalid(error) => {
                     slot.state.fail(conn::Transmit::Invalid(error));
                     slot.state
                         .closing
                         .apply(Directive::reconnect(Reason::Transport));
                     handle.wake();
-                    Step::Failed(reclaim::Advance::Idle)
+                    (reclaim::Advance::Idle, Deadline::None)
                 }
                 transmit::Attempt::Rejected(failure, advance) => {
                     slot.state.fail(conn::Transmit::Rejected(failure));
@@ -210,53 +228,13 @@ where
                         .rejected(slot.state.owner.attempt(), failure.into_error());
                     slot.state.closing.apply(Directive::from_submit(error));
                     handle.wake();
-                    Step::Failed(advance)
+                    (advance, Deadline::None)
                 }
             };
-            let status = slot.send_status();
-            let live = !egress.is_empty()
-                || status.is_inflight()
-                || status.retention() == outcome::Retention::Held
-                || status.is_closing();
-            let update = match &step {
-                Step::Failed(reclaim::Advance::Idle | reclaim::Advance::Ready) => Deadline::None,
-                Step::Waiting
-                | Step::Quiescent(reclaim::Advance::Idle | reclaim::Advance::Ready)
-                | Step::Runnable(reclaim::Advance::Idle | reclaim::Advance::Ready)
-                    if !live =>
-                {
-                    Deadline::Cancel
-                }
-                Step::Runnable(reclaim::Advance::Idle | reclaim::Advance::Ready)
-                | Step::Quiescent(reclaim::Advance::Ready) => Deadline::Progress,
-                Step::Waiting | Step::Quiescent(reclaim::Advance::Idle)
-                    if !armed && status.is_inflight() =>
-                {
-                    Deadline::Progress
-                }
-                Step::Waiting | Step::Quiescent(reclaim::Advance::Idle) => Deadline::Ensure,
-            };
-            let follow = match (binding, step) {
-                (
-                    Binding::Unbound,
-                    Step::Failed(reclaim::Advance::Idle | reclaim::Advance::Ready)
-                    | Step::Quiescent(reclaim::Advance::Idle | reclaim::Advance::Ready)
-                    | Step::Runnable(reclaim::Advance::Idle | reclaim::Advance::Ready)
-                    | Step::Waiting,
-                ) => flow::Follow::Unbound,
-                (
-                    Binding::Bound,
-                    Step::Failed(reclaim::Advance::Ready)
-                    | Step::Quiescent(reclaim::Advance::Ready)
-                    | Step::Runnable(reclaim::Advance::Ready),
-                ) => flow::Follow::Released,
-                (
-                    Binding::Bound,
-                    Step::Failed(reclaim::Advance::Idle)
-                    | Step::Quiescent(reclaim::Advance::Idle)
-                    | Step::Runnable(reclaim::Advance::Idle)
-                    | Step::Waiting,
-                ) => flow::Follow::Bound,
+            let follow = match (bound, advance) {
+                (false, reclaim::Advance::Idle | reclaim::Advance::Ready) => flow::Follow::Unbound,
+                (true, reclaim::Advance::Ready) => flow::Follow::Released,
+                (true, reclaim::Advance::Idle) => flow::Follow::Bound,
             };
             update.apply(
                 slot,

@@ -93,10 +93,7 @@ impl<'a, 'owner, 'd: 'owner> Context<'a, 'owner, 'd, Retained> {
 
     /// Reborrows the same exact retained app authority.
     pub fn reborrow(&mut self) -> Context<'_, 'owner, 'd, Retained> {
-        Context {
-            inner: self.inner.reborrow(),
-            access: marker::PhantomData,
-        }
+        self.narrow()
     }
 
     /// # Safety

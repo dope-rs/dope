@@ -20,7 +20,7 @@ impl kernel::Returned for Returned {
     type Invalid = Invalid;
 
     fn value(value: Value) -> Self {
-        Self(value.into_outcome())
+        Self(Outcome::new(value.get() as i32))
     }
 
     fn error(code: Errno) -> Self {

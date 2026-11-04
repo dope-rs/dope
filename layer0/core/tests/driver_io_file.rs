@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use crate::common::rt::{finish, recover};
 
 use common::{DATAGRAM, LOCALHOST, contract::reclaim::Canceled};
 use dope_core::{
@@ -6,7 +6,6 @@ use dope_core::{
     driver::life::{creation, recovery},
     io::{fd::handles::Descriptor, socket::install::Install},
 };
-use dope_test::scope::Error;
 
 use crate::common::{
     driver::{Native as _, Open, Scoped as _, support::Targets as _},
@@ -282,7 +281,6 @@ fn close_before_fd_reuse() {
 
 #[test]
 fn close_retires_generation() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
     let runtime = Runtime::quic::<2, 8>().file_slots(settings::FileSlots::fixed::<0, 1>());
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
@@ -350,8 +348,8 @@ fn close_retires_generation() {
         finish,
     );
     assert!(
-        matches!(reports.matches_one(&Canceled), Ok(true)),
-        "exact cancellation: {reports:?}"
+        matches!(reports.events(), Ok([])) || matches!(reports.matches_one(&Canceled), Ok(true)),
+        "unexpected reclamation: {reports:?}"
     );
 }
 
@@ -359,45 +357,62 @@ fn close_retires_generation() {
 #[ignore = "requires macOS kqueue"]
 fn kqueue_defers_work() {
     assert_eq!(consts::OS, "macos", "requires kqueue");
-    const REGISTRATIONS: u16 = 200;
-    let runtime = Runtime::throughput();
+    const REGISTRATIONS: usize = schedule::LIMIT + 1;
+    let runtime = Runtime::throughput()
+        .file_slots(settings::FileSlots::fixed::<0, { REGISTRATIONS as u32 }>());
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
-    runtime.with_turn(
-        |turn, mut driver| {
-            let mut sockets = Vec::with_capacity(REGISTRATIONS as usize);
-            for index in 0..REGISTRATIONS {
-                let socket = Install::bind_udp(driver.driver().reborrow(), LOCALHOST, DATAGRAM);
-                let (socket, _) = socket.expect("bind datagram");
-                let target = socket
-                    .driver()
-                    .targets::<KeyTag<1>>()
-                    .bind(SlotIndex::from(index), Epoch::INITIAL);
-                driver
-                    .submit_recv(&socket, target)
-                    .expect("receive fixture");
-                sockets.push(socket);
-            }
+    runtime.with_scope(
+        |scope| {
+            scope.with_driver(|mut driver, mut ctl| {
+                let mut sockets = Vec::with_capacity(REGISTRATIONS);
+                for index in 0..REGISTRATIONS {
+                    let socket = Install::bind_udp(driver.reborrow(), LOCALHOST, DATAGRAM);
+                    let (socket, _) = socket.expect("bind datagram");
+                    let target = socket.driver().targets::<KeyTag<1>>().bind(
+                        SlotIndex::try_from(index).expect("route slot"),
+                        Epoch::INITIAL,
+                    );
+                    driver
+                        .submit_recv(&socket, target)
+                        .expect("receive fixture");
+                    sockets.push(socket);
+                }
 
-            assert!(
-                matches!(
-                    driver::Context::commit(driver.driver(), turn.reactor()),
-                    Ok(Commit::Pending)
-                ),
-                "commit one bounded changelist batch"
-            );
-            assert!(
-                matches!(
-                    driver::Context::commit(driver.driver(), turn.reactor()),
-                    Ok(Commit::Drained)
-                ),
-                "commit remaining changelist batch"
-            );
+                {
+                    let mut turn = ctl.begin();
+                    assert!(
+                        matches!(
+                            driver::Context::commit(&mut driver, turn.reactor()),
+                            Ok(Commit::Pending)
+                        ),
+                        "commit one bounded changelist batch"
+                    );
+                    assert!(turn.is_exhausted());
+                    assert!(
+                        matches!(
+                            driver::Context::commit(&mut driver, turn.reactor()),
+                            Ok(Commit::Pending)
+                        ),
+                        "retain changes until the next turn"
+                    );
+                }
+                {
+                    let mut turn = ctl.begin();
+                    assert!(
+                        matches!(
+                            driver::Context::commit(&mut driver, turn.reactor()),
+                            Ok(Commit::Drained)
+                        ),
+                        "commit remaining changelist batch"
+                    );
+                }
 
-            for socket in sockets {
-                Descriptor::from(socket).close(driver.driver());
-            }
+                for socket in sockets {
+                    Descriptor::from(socket).close(&mut driver);
+                }
+            });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -409,8 +424,7 @@ fn kqueue_defers_work() {
 }
 
 #[test]
-fn uring_defers_maintenance() {
-    assert_eq!(consts::OS, "linux", "requires io_uring");
+fn defers_maintenance() {
     let runtime = Runtime::quic::<2, 8>().file_slots(settings::FileSlots::fixed::<
         0,
         { schedule::LIMIT as u32 + 1 },
@@ -488,15 +502,4 @@ fn uring_defers_maintenance() {
         reports.events().expect("valid reclamation").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

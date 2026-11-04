@@ -121,11 +121,6 @@ pub trait Init<W: wire::Spec> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     connections: conn::Capacity,
-    receive: Receive,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Receive {
     retained: Retained,
     resident: Resident,
     len: transfer::NonZero,
@@ -148,11 +143,9 @@ impl Limits {
     ) -> Self {
         Self {
             connections: cap,
-            receive: Receive {
-                retained,
-                resident,
-                len,
-            },
+            retained,
+            resident,
+            len,
         }
     }
 
@@ -164,11 +157,9 @@ impl Limits {
     >() -> Self {
         Self {
             connections: conn::Capacity::fixed::<CONNECTIONS>(),
-            receive: Receive {
-                retained: Retained(RETAINED),
-                resident: Resident(RESIDENT),
-                len: transfer::NonZero::fixed::<RECEIVE_LEN>(),
-            },
+            retained: Retained(RETAINED),
+            resident: Resident(RESIDENT),
+            len: transfer::NonZero::fixed::<RECEIVE_LEN>(),
         }
     }
 
@@ -177,15 +168,15 @@ impl Limits {
     }
 
     pub const fn retained(self) -> Retained {
-        self.receive.retained
+        self.retained
     }
 
     pub const fn resident(self) -> Resident {
-        self.receive.resident
+        self.resident
     }
 
     pub const fn receive_len(self) -> transfer::NonZero {
-        self.receive.len
+        self.len
     }
 }
 
@@ -223,4 +214,7 @@ impl From<usize> for Resident {
     }
 }
 
-const _: () = assert!(std::mem::size_of::<Limits>() == 4 * std::mem::size_of::<usize>());
+const _: () = assert!(
+    std::mem::size_of::<Limits>()
+        == 2 * std::mem::size_of::<usize>() + 2 * std::mem::size_of::<u32>()
+);

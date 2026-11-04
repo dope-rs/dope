@@ -7,8 +7,6 @@ use crate::task::storage::fixed::schedule::ready::linked::{Entry, Side, Store};
 enum Mode {
     IdleFirst,
     IdleSecond,
-    DrainingFirst,
-    DrainingSecond,
     PausedFirst,
     PausedSecond,
 }
@@ -38,28 +36,29 @@ impl State {
         match self.mode.get() {
             Mode::IdleFirst => Side::First,
             Mode::IdleSecond => Side::Second,
-            Mode::DrainingFirst | Mode::PausedFirst => Side::Second,
-            Mode::DrainingSecond | Mode::PausedSecond => Side::First,
+            Mode::PausedFirst => Side::Second,
+            Mode::PausedSecond => Side::First,
         }
     }
 
-    pub(in crate::task::storage::fixed::schedule::ready::linked) fn start(&self) -> Option<Side> {
-        let side = match self.mode.get() {
-            Mode::DrainingFirst | Mode::DrainingSecond => None,
-            Mode::PausedFirst => Some(if self.store.is_empty(Side::First) {
-                self.active()
-            } else {
-                Side::First
-            }),
-            Mode::PausedSecond => Some(if self.store.is_empty(Side::Second) {
-                self.active()
-            } else {
-                Side::Second
-            }),
-            Mode::IdleFirst | Mode::IdleSecond => Some(self.active()),
-        }?;
-        self.draining(side);
-        Some(side)
+    pub(in crate::task::storage::fixed::schedule::ready::linked) fn start(&self) -> Side {
+        match self.mode.get() {
+            Mode::PausedFirst => {
+                if self.store.is_empty(Side::First) {
+                    self.active()
+                } else {
+                    Side::First
+                }
+            }
+            Mode::PausedSecond => {
+                if self.store.is_empty(Side::Second) {
+                    self.active()
+                } else {
+                    Side::Second
+                }
+            }
+            Mode::IdleFirst | Mode::IdleSecond => self.active(),
+        }
     }
 
     pub(in crate::task::storage::fixed::schedule::ready::linked) fn pause(&self, side: Side) {
@@ -83,13 +82,6 @@ impl State {
         self.mode.set(match side {
             Side::First => Mode::IdleFirst,
             Side::Second => Mode::IdleSecond,
-        });
-    }
-
-    fn draining(&self, side: Side) {
-        self.mode.set(match side {
-            Side::First => Mode::DrainingFirst,
-            Side::Second => Mode::DrainingSecond,
         });
     }
 

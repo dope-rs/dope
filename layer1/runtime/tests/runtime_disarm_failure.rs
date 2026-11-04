@@ -56,7 +56,7 @@ fn install_retains_disarm() {
                     assert!(!called);
                     assert_eq!(events.get(), 0x1234);
                 },
-                recovery::Policy::new(|_| {}, recover),
+                recovery::Policy::new(|_| {}, common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -108,7 +108,7 @@ fn quiesce_disarm_output() {
                     }
                     assert!(out.get());
                 },
-                recovery::Policy::new(|_| {}, recover),
+                recovery::Policy::new(|_| {}, common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -160,7 +160,7 @@ fn lending_disarm_drop() {
                 });
             });
         },
-        recovery::Policy::new(|_| {}, recover),
+        recovery::Policy::new(|_| {}, common::recover),
         |entered| {
             entered
                 .as_ref()
@@ -168,8 +168,4 @@ fn lending_disarm_drop() {
                 .expect("lifecycle domain");
         },
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

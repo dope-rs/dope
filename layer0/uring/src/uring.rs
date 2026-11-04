@@ -9,10 +9,7 @@ use dope_sys::{
     engine::{life, life::Error, ring::Backend as _},
     io::{
         fd::{self, Fd},
-        socket::{
-            Setup, Socket as _, addr,
-            option::{Name, tuning::Quiesce as _},
-        },
+        socket::{Setup, Socket as _, addr, option::tuning::Quiesce as _},
     },
     probe::Stopped,
     ring::ready::Ready as _,
@@ -317,7 +314,7 @@ impl addr::Source for Uring {
 }
 
 impl option::Source for Uring {
-    const KEEP_IDLE: Name = Name::new(libc::TCP_KEEPIDLE);
+    const KEEP_IDLE: libc::c_int = libc::TCP_KEEPIDLE;
 }
 
 impl socket::Prepare for Uring {
@@ -350,10 +347,6 @@ impl socket::Prepare for Uring {
         Self::set_option(file, libc::IPPROTO_TCP, libc::TCP_FASTOPEN, &fast.get())
     }
 }
-impl file::Completion for Uring {
-    type Opened = crate::Opened;
-}
-
 impl<T: Copy + Eq, S: Copy + Eq, F: Copy + Eq> Observe<T, S, F> for Uring {
     type Observation = crate::Observed<T>;
 }
@@ -399,9 +392,9 @@ impl submit::Control for Uring {
     }
 
     fn shutdown<T: complete::raw::Token>(slot: Self::Target, complete: T) -> Self::Owned<T> {
-        use crate::reactor::op::sockets::{self, Direction};
+        use crate::reactor::op::sockets;
 
-        sockets::shutdown(slot, Direction::Both)
+        sockets::shutdown(slot, socket::How::BOTH)
             .flags(sq::Flags::HARD_LINK | sq::Flags::SKIP_SUCCESS)
             .user_data(complete)
     }

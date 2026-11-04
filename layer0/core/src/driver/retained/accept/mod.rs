@@ -1,4 +1,4 @@
-use std::{cell, mem, net, num::NonZero, pin};
+use std::{cell, mem, net, pin};
 
 use dope_sys::io::socket::addr::{Length, Storage};
 use o3::base::cell::region;
@@ -57,7 +57,7 @@ pub struct Lane<'d, Tag>
 where
     Tag: route::Tag<Class = kind::Accept>,
 {
-    state: arm::Base<'d, Tag>,
+    state: arm::State<'d, Tag>,
     addr: cell::UnsafeCell<Storage<Length>>,
     closed: retire::Completed,
 }
@@ -68,7 +68,7 @@ where
 {
     pub fn new(target: route::Target<'d, Tag>) -> Self {
         Self {
-            state: arm::Base::new(target),
+            state: arm::State::new(target),
             addr: cell::UnsafeCell::new(Storage::<Length>::empty()),
             closed: retire::Completed::EMPTY,
         }
@@ -82,7 +82,7 @@ where
     Tag: route::Tag<Class = kind::Accept>,
 {
     lanes: pin::Pin<Box<[Lane<'d, Tag>]>>,
-    active: Option<NonZero<usize>>,
+    active: usize,
 }
 
 impl<'d, Tag> Slots<'d, Tag>
@@ -92,7 +92,7 @@ where
     pub fn new(lanes: Box<[Lane<'d, Tag>]>) -> Self {
         Self {
             lanes: Box::into_pin(lanes),
-            active: None,
+            active: 0,
         }
     }
 
@@ -126,10 +126,7 @@ where
 
     /// Returns the number of submitted accepts awaiting terminal retirement.
     pub const fn active(&self) -> usize {
-        match self.active {
-            Some(active) => active.get(),
-            None => 0,
-        }
+        self.active
     }
 
     pub fn stop(&mut self, driver: &mut driver::Context<'_, 'd>) {
@@ -139,7 +136,7 @@ where
             state.stop(driver);
             active += usize::from(state.is_live());
         }
-        self.active = NonZero::new(active);
+        self.active = active;
     }
 
     pub fn progress<'a>(
@@ -157,7 +154,7 @@ where
         for lane in self.iter_mut() {
             lane.project().state.finish(proof);
         }
-        self.active = None;
+        self.active = 0;
     }
 }
 
@@ -169,7 +166,7 @@ where
     Tag: route::Tag<Class = kind::Accept>,
 {
     lane: pin::Pin<&'a mut Lane<'d, Tag>>,
-    active: &'a mut Option<NonZero<usize>>,
+    active: &'a mut usize,
 }
 
 impl<'a, 'd, Tag> Entry<'a, 'd, Tag>
@@ -177,27 +174,24 @@ where
     Tag: route::Tag<Class = kind::Accept>,
 {
     pub fn begin(mut self) -> Option<accept::raw::Arming<'a, 'd, Tag>> {
-        let lane = self.lane.as_mut().project();
-        match lane.state.begin() {
-            arm::Start::Ready => Some(accept::raw::Arming::new(self)),
-            arm::Start::Blocked => None,
+        if !self.lane.as_mut().project().state.start() {
+            return None;
         }
+        Some(accept::raw::Arming::new(self))
     }
 
-    /// Retires an operation while borrowing its active owner's nonzero count.
+    /// Retires an operation while borrowing its owner's active count.
     /// The matching lane must have reached native terminal completion.
     /// Empty owners and pending flights cannot grant terminal access.
     pub fn retire(mut self, token: route::Erased<'d, kind::Accept>) -> Retire<'a, 'd, Tag> {
-        let Some(active) = *self.active else {
-            return Retire::Stale;
-        };
         let lane = self.lane.as_mut().project();
         let retired = match lane.state.retire(token) {
             arm::End::Stale => return Retire::Stale,
             arm::End::Terminal => Retired::Terminal(Terminal { lane: self.lane }),
             arm::End::Cancelled => Retired::Cancelled,
         };
-        *self.active = NonZero::new(active.get() - 1);
+        // A successful retirement consumes one live lane counted by this owner.
+        *self.active -= 1;
         Retire::Done(retired)
     }
 
@@ -209,20 +203,13 @@ where
         closed: retire::Completed,
     ) -> arm::Submission {
         let lane = self.lane.as_mut().project();
-        match lane.state.apply(result) {
-            arm::Submission::Armed => {
-                *lane.closed = closed;
-                let prior = self.active.map_or(0, NonZero::get);
-                // SAFETY: `active` counts distinct lanes of this one owned slice,
-                // whose length the driver admits against its accept capacity in the
-                // `u16`-bounded ready arena. So `prior + 1 <= u16::MAX + 1` is a
-                // nonzero `usize` that cannot overflow off the lane domain.
-                *self.active = Some(unsafe { NonZero::new_unchecked(prior + 1) });
-                arm::Submission::Armed
-            }
-            arm::Submission::Deferred => arm::Submission::Deferred,
-            arm::Submission::Failed(error) => arm::Submission::Failed(error),
+        let result = lane.state.apply(result);
+        if let arm::Submission::Armed = result {
+            *lane.closed = closed;
+            // Entry owns one distinct idle lane in this count's owned slice.
+            *self.active += 1;
         }
+        result
     }
 }
 
@@ -279,11 +266,11 @@ const _: () = {
     const fn layout<'a, 'd: 'a>() {
         assert!(
             mem::size_of::<Lane<'d, Tag>>()
-                == mem::size_of::<(arm::Base<'d, Tag>, Storage<Length>, retire::Completed)>()
+                == mem::size_of::<(arm::State<'d, Tag>, Storage<Length>, retire::Completed)>()
         );
         assert!(
             mem::align_of::<Lane<'d, Tag>>()
-                == mem::align_of::<(arm::Base<'d, Tag>, Storage<Length>, retire::Completed)>()
+                == mem::align_of::<(arm::State<'d, Tag>, Storage<Length>, retire::Completed)>()
         );
         assert!(
             mem::size_of::<Slots<'d, Tag>>()

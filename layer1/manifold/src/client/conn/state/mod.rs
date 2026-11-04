@@ -19,13 +19,12 @@ use crate::client::{
     app, close,
     conn::{
         self, closing, drain,
-        flow::{Active, Apply, Close, Effect, Flow},
+        flow::{Active, Apply, Close, Flow},
     },
 };
 
 mod work;
 
-pub(in crate::client) use work::Taken;
 pub(super) use work::Work;
 
 struct Attached<'d, C> {
@@ -33,28 +32,9 @@ struct Attached<'d, C> {
     last_recv: clock::Moment<'d>,
 }
 
+/// An exclusively borrowed connection admitted before its close was finalized or claimed.
 pub(in crate::client) struct Enter<'d, ID: Identity> {
     brand: marker::PhantomData<fn(conn::Id<'d, ID>) -> conn::Id<'d, ID>>,
-}
-
-/// Final close decision after its I/O effect has been reconciled.
-pub(in crate::client) struct Finalized<'d, ID: Identity> {
-    pub(super) drain: drain::Drain<'d, ID>,
-}
-
-impl<'d, ID: Identity> Finalized<'d, ID> {
-    pub(in crate::client::conn) const fn new(
-        conn: conn::Id<'d, ID>,
-        claim: closing::Claim,
-    ) -> Self {
-        Self {
-            drain: drain::Drain::new(conn, claim),
-        }
-    }
-
-    pub(in crate::client) fn into_drain(self) -> drain::Drain<'d, ID> {
-        self.drain
-    }
 }
 
 impl<'d, C, O> State<'d, C, O> {
@@ -131,15 +111,15 @@ impl<'d, C, O> State<'d, C, O> {
             ready,
             spec: marker::PhantomData,
         });
-        Active::Ready(Flow::from_effect(output, Self::reconcile(slot)))
+        Active::Ready(Self::reconcile(slot, output))
     }
 
     /// Runs an active close callback or settles an opening connection.
-    pub(in crate::client) fn close<ID: Identity, W>(
+    pub(super) fn close<ID: Identity, W>(
         slot: &mut types::Connection<'_, 'd, ID, W, Self>,
         rule: close::Directive,
         callback: impl for<'call> FnOnce(ActiveMut<'call, 'd, ID, W, C, O>) -> app::CloseOutcome,
-    ) -> Close
+    ) -> Close<'d, ID>
     where
         W: wire::Spec + 'd,
     {
@@ -159,18 +139,20 @@ impl<'d, C, O> State<'d, C, O> {
             }),
             None => app::CloseOutcome::Complete(rule),
         };
-        let output = match output {
-            app::CloseOutcome::Complete(rule) => match slot.state.closing.complete(rule) {
-                conn::CloseUpdate::Applied(rule) => app::CloseOutcome::Complete(rule),
-                conn::CloseUpdate::Sealed(_) => {
-                    Self::reconcile(slot);
-                    return Close::Sealed;
-                }
-            },
-            app::CloseOutcome::Yield => app::CloseOutcome::Yield,
-            app::CloseOutcome::Blocked => app::CloseOutcome::Blocked,
-        };
-        Close::Ready(Flow::from_effect(output, Self::reconcile(slot)))
+        match output {
+            app::CloseOutcome::Complete(rule) => {
+                let (claim, before, after) = slot.state.closing.complete(rule);
+                Close::Complete(before.finalize(slot, claim), after)
+            }
+            app::CloseOutcome::Yield => {
+                let _ = Self::reconcile(slot, ());
+                Close::Yield
+            }
+            app::CloseOutcome::Blocked => {
+                let _ = Self::reconcile(slot, ());
+                Close::Blocked
+            }
+        }
     }
 
     /// Merges a close directive and immediately settles its I/O effect.
@@ -182,25 +164,26 @@ impl<'d, C, O> State<'d, C, O> {
         W: wire::Spec + 'd,
     {
         match slot.state.closing.apply(rule).outcome() {
-            conn::CloseUpdate::Applied(_) => {
-                Apply::Applied(Flow::from_effect((), Self::reconcile(slot)))
-            }
+            conn::CloseUpdate::Applied(_) => Apply::Applied(Self::reconcile(slot, ())),
             conn::CloseUpdate::Sealed(_) => {
-                Self::reconcile(slot);
+                let _ = Self::reconcile(slot, ());
                 Apply::Sealed
             }
         }
     }
 
-    fn reconcile<ID: Identity, W>(slot: &mut types::Connection<'_, 'd, ID, W, Self>) -> Effect
+    fn reconcile<ID: Identity, W, T>(
+        slot: &mut types::Connection<'_, 'd, ID, W, Self>,
+        output: T,
+    ) -> Flow<T>
     where
         W: wire::Spec + 'd,
     {
         match slot.state.closing.take_urgency() {
-            conn::Urgency::Deferred => Effect::Preserved,
+            conn::Urgency::Deferred => Flow::Continue(output),
             conn::Urgency::Immediate => {
                 slot.discard();
-                Effect::Discarded
+                Flow::Discarded(output)
             }
         }
     }
@@ -361,15 +344,15 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec, C, O> OpeningMut<'a, 'w, 'd, I
             ready,
             spec: marker::PhantomData,
         });
-        match State::reconcile(slot) {
-            Effect::Preserved => {
+        match State::reconcile(slot, ()) {
+            Flow::Continue(()) => {
                 if slot.state.closing.is_closing() {
                     Attachment::Closing
                 } else {
                     Attachment::Active
                 }
             }
-            Effect::Discarded => Attachment::Discarded,
+            Flow::Discarded(()) => Attachment::Discarded,
         }
     }
 

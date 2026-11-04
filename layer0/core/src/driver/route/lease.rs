@@ -95,7 +95,7 @@ impl<'d, B: route::App> Claim<'d, B> {
     }
 
     pub fn store<T>(self, value: T) -> Owner<'d, B, T> {
-        Owner::new(self, value)
+        Owner { value, claim: self }
     }
 
     pub fn driver(&self) -> driver::Reference<'d> {
@@ -157,10 +157,6 @@ impl<'d, B: route::App, T> Owner<'d, B, T> {
                 .zip(floor)
                 .map(|(current, floor)| current.max(floor)),
         );
-    }
-
-    pub(super) fn new(claim: Claim<'d, B>, value: T) -> Self {
-        Self { value, claim }
     }
 }
 

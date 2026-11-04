@@ -20,9 +20,8 @@ use o3::{depot::map::Plan, mem::quota};
 use crate::common::{
     Budget,
     cancel::pending::insert,
-    event::Capacity,
     reactor::{Engine, Event, Host, Quota, Read, Receive, Turn},
-    slots::inputs::{Layout, Owned, Physical},
+    slots::inputs::{Layout, Physical},
     socket,
 };
 
@@ -36,7 +35,7 @@ fn blocked_receives_preserve_native_lane_progress() {
                 Receive,
                 Layout,
                 Plan::fixed::<2>(),
-                Capacity(NonZero::<u32>::MIN.saturating_add(3)),
+                NonZero::<u32>::MIN.saturating_add(3),
             )
             .expect("native engine");
             let held =
@@ -44,10 +43,7 @@ fn blocked_receives_preserve_native_lane_progress() {
             let peers = [Physical::at::<0>(), Physical::at::<1>()].map(|slot| {
                 let (socket, mut peer) = socket::try_pair().expect("read socket");
                 let parts = backend.state_mut().edit();
-                parts
-                    .files
-                    .install(Owned::from(slot), socket)
-                    .expect("install read");
+                parts.files.install(slot, socket).expect("install read");
                 let file = parts.files.try_read(slot).expect("read interest");
                 let key = NonZero::<usize>::MIN.saturating_add(u32::from(slot) as usize);
                 let echo = insert(parts.reads, Read::recv(file.id(), key))

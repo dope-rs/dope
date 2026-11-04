@@ -1,27 +1,18 @@
-use std::{mem, ops::ControlFlow};
+use std::ops::ControlFlow;
 
 use conn::write;
-use dope_core::{driver::route::KeyTag, io::transfer};
 use dope_net::link::egress::{self, load::Value};
 use egress::reserve::{
     self,
     error::{Full, Part},
     limit::Limit,
 };
-use o3::buffer::resident;
 use write::error;
 
 use crate::network::listener::{conn, writer::memory};
 
-pub(super) struct Bounded<H, B, R> {
-    header: H,
-    draft: write::Draft<B, R>,
-    written: memory::Len,
-    total: Option<transfer::NonZero>,
-}
-
-impl<H, B, R> Bounded<H, B, R> {
-    pub(super) fn try_new(
+impl<H, B, R> write::Commit<H, B, R> {
+    pub(super) fn try_draft(
         header: H,
         draft: write::Draft<B, R>,
     ) -> Result<Self, error::Mismatch<B, R>> {
@@ -45,12 +36,17 @@ impl<H, B, R> Bounded<H, B, R> {
             Ok((written, total))
         })();
         match checked {
-            Ok((written, total)) => Ok(Self {
-                header,
-                draft,
-                written,
-                total,
-            }),
+            Ok((written, total)) => {
+                let (_, body, receipt, end) = draft.into_parts();
+                Ok(Self {
+                    header,
+                    written,
+                    total,
+                    body,
+                    receipt,
+                    end,
+                })
+            }
             Err(cause) => Err(error::Mismatch::bounded(cause, draft)),
         }
     }
@@ -58,7 +54,7 @@ impl<H, B, R> Bounded<H, B, R> {
     pub(super) fn try_bounds(&self) -> Result<reserve::Bounds, error::Bounded> {
         let header =
             Limit::at_most::<{ write::Prefix::CAPACITY }, { write::Prefix::CAPACITY as u32 }>();
-        let Some(body) = self.draft.body() else {
+        let Some(body) = self.body.as_ref() else {
             return Ok(reserve::Bounds::one(header));
         };
         if matches!(body, Value::Unchecked(body) if body.charge().bytes() == egress::WireBytes::ZERO)
@@ -90,51 +86,9 @@ impl<H, B, R> Bounded<H, B, R> {
     }
 
     pub(super) fn split(self) -> ControlFlow<(R, write::End), Self> {
-        if self.total.is_some() || self.draft.body().is_some() {
+        if self.total.is_some() || self.body.is_some() {
             return ControlFlow::Continue(self);
         }
-        let (_, _, receipt, end) = self.draft.into_parts();
-        ControlFlow::Break((receipt, end))
-    }
-
-    pub(super) fn into_draft(self) -> write::Draft<B, R> {
-        self.draft
-    }
-
-    pub(super) fn validate(self) -> write::Commit<H, B, R> {
-        let (_, body, receipt, end) = self.draft.into_parts();
-        write::Commit {
-            header: self.header,
-            written: self.written,
-            total: self.total,
-            body,
-            receipt,
-            end,
-        }
+        ControlFlow::Break((self.receipt, self.end))
     }
 }
-
-const _: () = {
-    let word = mem::size_of::<usize>();
-    assert!(
-        mem::size_of::<
-            Bounded<
-                memory::HeaderSlot<'static, 'static, 'static, KeyTag<0>>,
-                resident::Shared<'static>,
-                (),
-            >,
-        >() == 11 * word
-    );
-    assert!(
-        mem::size_of::<
-            ControlFlow<
-                ((), write::End),
-                Bounded<
-                    memory::HeaderSlot<'static, 'static, 'static, KeyTag<0>>,
-                    resident::Shared<'static>,
-                    (),
-                >,
-            >,
-        >() == 11 * word
-    );
-};

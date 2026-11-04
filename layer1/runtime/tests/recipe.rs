@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::runtime::topology::{Name, Number};
+use common::runtime::topology::Name;
 use dope_core::driver::storage;
 use dope_runtime::topology::recipe;
 use dope_test::alloc::Tracker;
@@ -15,13 +15,14 @@ fn tuple_borrows() {
     let pair = (owner, 41_u64);
 
     let ((first, second), counts) = Tracker::usage(|| {
-        let Ok(built) = <(Name, Number) as recipe::Build<(
+        let Ok(built) = <(Name, recipe::Borrow) as recipe::Build<(
             storage::Value<String>,
             storage::Value<u64>,
-        )>>::build((Name, Number), &pair);
+        )>>::build((Name, recipe::Borrow), &pair);
         built
     });
     assert_eq!(counts, (0, 0));
     assert_eq!(first.as_ptr(), address);
-    assert_eq!(*second, 41);
+    assert!(std::ptr::eq(second, &pair));
+    assert_eq!(second.1, 41);
 }

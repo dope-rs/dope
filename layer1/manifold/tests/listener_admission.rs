@@ -1,9 +1,8 @@
 pub mod common;
 
-use std::{
-    cell::Cell, convert::Infallible, env::consts, fmt::Debug, net::TcpStream, rc::Rc,
-    time::Duration,
-};
+use common::manifold::listener::{native, reached};
+
+use std::{cell::Cell, env::consts, net::TcpStream, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::{
@@ -33,15 +32,12 @@ use dope_net::{
     tcp::{StreamConfig, Tcp},
     wire::{Identity, domain},
 };
-use dope_runtime::{
-    executor::{
-        Executor,
-        session::{self, Completion},
-    },
-    topology::error::Kind,
+use dope_runtime::executor::{
+    Executor,
+    session::{self, Completion},
 };
 use dope_test::{
-    fibers::{self, Run, Wait},
+    fibers,
     harness::{
         observe,
         peer::Peer,
@@ -58,18 +54,6 @@ fn observe(event: trace::Event<'_, '_, KeyTag<0>>) {
             "only the original accepted connection may enter application close"
         ),
     }
-}
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
 }
 
 #[test]
@@ -110,83 +94,47 @@ fn readiness_activates() {
 
 #[test]
 fn accepts_once() {
-    let mut finish = Completion::new();
-    let trace = Rc::new(trace::Trace::default());
-    let gate = Gate::new();
-    let prepared = Listener::new::<64>(Default::default())
-        .per_ip(PerIp::UNLIMITED)
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
-            App {
-                trace: trace.clone(),
-                gate: gate.clone(),
-                observe,
-            },
-            Identity,
-        ))
-        .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = (Peer::at(case.addr()).try_connect()).expect("connect acceptance peer");
-                reached(case.try_wait(&gate, 1), gate.hits(), 1);
+    for no_delay in [None, Some(option::Switch::On)] {
+        let mut finish = Completion::new();
+        let trace = Rc::new(trace::Trace::default());
+        let gate = Gate::new();
+        let prepared = Listener::new::<64>(Default::default())
+            .per_ip(PerIp::UNLIMITED)
+            .stream(StreamConfig {
+                no_delay,
+                ..Default::default()
+            })
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
+                App {
+                    trace: trace.clone(),
+                    gate: gate.clone(),
+                    observe,
+                },
+                Identity,
+            ))
+            .expect("listener layout");
+        let mut reports =
+            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+        prepared
+            .with_run(
+                &mut finish,
+                |case| {
+                    let peer =
+                        (Peer::at(case.addr()).try_connect()).expect("connect acceptance peer");
+                    reached(case.try_wait(&gate, 1), gate.hits(), 1);
 
-                assert_eq!(trace.accepted.get(), 1, "accept must fire exactly once");
-                assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn tuned_accepts() {
-    let mut finish = Completion::new();
-    let trace = Rc::new(trace::Trace::default());
-    let gate = Gate::new();
-    let stream = StreamConfig {
-        no_delay: Some(option::Switch::On),
-        ..Default::default()
-    };
-    let prepared = Listener::new::<64>(Default::default())
-        .per_ip(PerIp::UNLIMITED)
-        .stream(stream)
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
-            App {
-                trace: trace.clone(),
-                gate: gate.clone(),
-                observe,
-            },
-            Identity,
-        ))
-        .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = (Peer::at(case.addr()).try_connect()).expect("connect acceptance peer");
-                reached(case.try_wait(&gate, 1), gate.hits(), 1);
-
-                assert_eq!(trace.accepted.get(), 1, "tuned accept must publish once");
-                assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+                    assert_eq!(trace.accepted.get(), 1, "accept must fire exactly once");
+                    assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                native,
+            )
+            .expect("listener run");
+        assert!(
+            reports.events().expect("reclaimed events").is_empty(),
+            "unexpected reclaimed operations: {reports:?}"
+        );
+    }
 }
 
 #[test]

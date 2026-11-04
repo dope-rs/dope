@@ -132,34 +132,22 @@ impl<'d, T: dope_net::Transport, ID: Identity> Entry<'d, T, ID> {
         }
     }
 
-    pub(in crate::client::attempt::queue) fn defer(
-        &mut self,
-        plan: attempt::Plan<T>,
-    ) -> attempt::Transition {
-        if matches!(self.phase(), Phase::Opening) {
-            *self = Self::queued(plan);
-            attempt::Transition::Applied
-        } else {
-            attempt::Transition::Stale
-        }
+    pub(in crate::client::attempt::queue) fn defer(&mut self, plan: attempt::Plan<T>) {
+        *self = Self::queued(plan);
     }
 
     pub(in crate::client::attempt::queue) fn reject(&mut self) {
-        if matches!(self.phase(), Phase::Opening) {
-            self.done();
-        }
+        self.done();
     }
 
     pub(in crate::client::attempt::queue) fn bind(&mut self, key: pool::Key<'d, ID>) {
         const { assert!(!mem::needs_drop::<Bound<'d, ID>>()) };
-        if matches!(self.phase(), Phase::Opening) {
-            *self = Self {
-                bound: ManuallyDrop::new(Bound {
-                    phase: Pending::Submitted as u32,
-                    key,
-                }),
-            };
-        }
+        *self = Self {
+            bound: ManuallyDrop::new(Bound {
+                phase: Pending::Submitted as u32,
+                key,
+            }),
+        };
     }
 
     /// # Safety

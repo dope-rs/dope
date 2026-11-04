@@ -21,6 +21,12 @@ pub enum AcquireFault {
     Ignore(crate::Errno),
 }
 
+const _: () = {
+    assert!(std::mem::size_of::<AcquireFault>() == 8);
+    assert!(std::mem::align_of::<AcquireFault>() == std::mem::align_of::<crate::Errno>());
+    assert!(std::mem::size_of::<Result<(), AcquireFault>>() == 8);
+};
+
 /// Exact failure to restore the policy retained by a signal receiver.
 #[derive(Debug)]
 pub enum ReleaseFault {

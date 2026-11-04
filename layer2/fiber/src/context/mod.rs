@@ -86,7 +86,7 @@ const _: () = {
     assert!(mem::size_of::<PollResult<()>>() == mem::size_of::<Option<task::Poll<()>>>());
 };
 
-#[pin_project::pin_project(PinnedDrop, !Unpin)]
+#[pin_project::pin_project(!Unpin)]
 pub struct Context<'poll, 'd: 'poll> {
     wake: wake::Waker<'d>,
     root: wake::RootWaker<'d>,
@@ -96,21 +96,6 @@ pub struct Context<'poll, 'd: 'poll> {
 }
 
 impl<'poll, 'd: 'poll> Context<'poll, 'd> {
-    fn new(
-        wake: wake::Waker<'d>,
-        root: wake::RootWaker<'d>,
-        work: app::Work<'poll, 'd>,
-        driver: retained::Context<'poll, 'poll, 'd>,
-    ) -> Self {
-        Self {
-            wake,
-            root,
-            work,
-            driver,
-            requeue: cell::Cell::new(Requeue::Idle),
-        }
-    }
-
     pub(crate) fn with_waker<R>(
         wake: wake::Waker<'d>,
         root: wake::RootWaker<'d>,
@@ -118,8 +103,18 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
         driver: retained::Context<'poll, 'poll, 'd>,
         run: impl for<'context> FnOnce(pin::Pin<&'context mut Self>) -> R,
     ) -> R {
-        let mut context = pin::pin!(Self::new(wake, root, work, driver));
-        run(context.as_mut())
+        let mut context = pin::pin!(Self {
+            wake,
+            root,
+            work,
+            driver,
+            requeue: cell::Cell::new(Requeue::Idle),
+        });
+        let result = run(context.as_mut());
+        if context.requeue.get() == Requeue::Requested {
+            context.wake.wake();
+        }
+        result
     }
 
     /// Runs one lexical poll scope rooted at `target`.
@@ -233,23 +228,13 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
     }
 
     /// Requests exact requeue after the current fiber borrow ends. A storage
-    /// boundary may consume this bit for an inline requeue; otherwise pinned
-    /// drop preserves ordinary deferred wake semantics.
+    /// boundary may consume this bit for an inline requeue; otherwise the
+    /// lexical scope wakes the target after its callback returns.
     pub(crate) fn requeue(&self) {
         self.requeue.set(Requeue::Requested);
     }
 
     pub(crate) fn take_requeue(&self) -> Requeue {
         self.requeue.replace(Requeue::Idle)
-    }
-}
-
-#[pin_project::pinned_drop]
-impl PinnedDrop for Context<'_, '_> {
-    fn drop(self: pin::Pin<&mut Self>) {
-        let this = self.project();
-        if this.requeue.get() == Requeue::Requested {
-            (*this.wake).wake();
-        }
     }
 }

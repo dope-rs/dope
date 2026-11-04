@@ -273,33 +273,3 @@ impl recipe::Build<Pair> for Name {
         }
     }
 }
-
-pub struct Number;
-
-impl recipe::Build<Pair> for Number {
-    type Output<'life, 'p, 'd>
-        = &'life u64
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        Pair: 'd;
-    type Error = Infallible;
-
-    fn build<'life, 'p, 'd>(
-        self,
-        storage: &'life (String, u64),
-    ) -> Result<Self::Output<'life, 'p, 'd>, Self::Error>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        Pair: 'd,
-    {
-        match self {
-            Self => Ok(&storage.1),
-        }
-    }
-}

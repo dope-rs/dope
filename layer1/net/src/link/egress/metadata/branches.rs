@@ -9,11 +9,11 @@ use crate::link::egress::{
     self, data,
     load::credit,
     metadata,
-    reserve::{demand, error, guard::Guard},
+    reserve::{demand, error},
 };
 
 /// Queue-bound admission whose payload branch is chosen only at commit.
-#[must_use = "a prepared branch must be committed or deliberately dropped"]
+#[must_use = "a prepared branch must be committed"]
 pub(in crate::link::egress) struct Prepared<
     'queue,
     'token,
@@ -24,7 +24,8 @@ pub(in crate::link::egress) struct Prepared<
     M: credit::Access<'p, 'd> = metadata::Local,
     D: demand::Mode = demand::Fallible,
 > {
-    claim: Guard<'token, 'd, credit::Claim<'queue, 'p, 'd, T, M, D>>,
+    token: &'token mut region::Token<region::Identity<'d>>,
+    claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
     vacancy: store::Vacancy<'queue, 'p, 'd, T>,
     load: egress::NonEmpty<S>,
 }
@@ -33,7 +34,7 @@ impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode>
     Prepared<'queue, '_, 'p, 'd, compose::Either<L, R>, L, M, D>
 {
     pub(super) fn left(self) {
-        let (token, claim) = self.claim.into_parts();
+        let (token, claim) = (self.token, self.claim);
         pool::Vacant::prepare(self.vacancy, claim, token, self.load.into_left()).commit(token);
     }
 }
@@ -42,7 +43,7 @@ impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode>
     Prepared<'queue, '_, 'p, 'd, compose::Either<L, R>, R, M, D>
 {
     pub(in crate::link::egress) fn right(self) {
-        let (token, claim) = self.claim.into_parts();
+        let (token, claim) = (self.token, self.claim);
         pool::Vacant::prepare(self.vacancy, claim, token, self.load.into_right()).commit(token);
     }
 }
@@ -51,7 +52,7 @@ impl<'queue, 'p, 'd, B, M: credit::Access<'p, 'd>, D: demand::Mode>
     Prepared<'queue, '_, 'p, 'd, B, B, M, D>
 {
     pub(in crate::link::egress) fn retain(self) {
-        let (token, claim) = self.claim.into_parts();
+        let (token, claim) = (self.token, self.claim);
         pool::Vacant::prepare(self.vacancy, claim, token, self.load).commit(token);
     }
 }
@@ -60,7 +61,7 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode>
     Prepared<'queue, 'token, 'p, 'd, T, T, metadata::Local, D>
 {
     pub(super) fn reserve(self) -> Reserve<'queue, 'token, 'p, 'd, T, D> {
-        let (token, claim) = self.claim.into_parts();
+        let (token, claim) = (self.token, self.claim);
         let node = pool::Vacant::prepare(self.vacancy, claim, token, self.load);
         Reserve::new(node, token)
     }
@@ -95,7 +96,8 @@ where
             Err(cause) => return Err(error::Capacity { load, cause }),
         };
         Ok(Self {
-            claim: Guard::new(token, claim),
+            token,
+            claim,
             vacancy,
             load,
         })

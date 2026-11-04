@@ -33,32 +33,15 @@ impl Index {
 #[repr(transparent)]
 pub(in crate::link::egress::load::credit::wait) struct Ticket(u32);
 
-pub(in crate::link::egress::load::credit::wait) struct Issued {
-    ticket: Ticket,
-    next: Ticket,
-}
-
 impl Ticket {
     pub(in crate::link::egress::load::credit::wait) const FIRST: Self = Self(0);
 
     pub(in crate::link::egress::load::credit::wait) fn issue(
-        self,
-    ) -> Result<Issued, egress::Tickets> {
-        let next = self.0.checked_add(1).ok_or(egress::Tickets)?;
-        Ok(Issued {
-            ticket: self,
-            next: Self(next),
-        })
-    }
-}
-
-impl Issued {
-    pub(in crate::link::egress::load::credit::wait) const fn ticket(&self) -> Ticket {
-        self.ticket
-    }
-
-    pub(in crate::link::egress::load::credit::wait) const fn next(&self) -> Ticket {
-        self.next
+        &mut self,
+    ) -> Result<Self, egress::Tickets> {
+        let issued = *self;
+        self.0 = self.0.checked_add(1).ok_or(egress::Tickets)?;
+        Ok(issued)
     }
 }
 
@@ -342,7 +325,6 @@ const _: () = {
     assert!(std::mem::size_of::<Index>() == std::mem::size_of::<u32>());
     assert!(std::mem::size_of::<Option<Index>>() == std::mem::size_of::<u32>());
     assert!(std::mem::size_of::<Ticket>() == std::mem::size_of::<u32>());
-    assert!(std::mem::size_of::<Issued>() == 2 * std::mem::size_of::<u32>());
     assert!(std::mem::size_of::<Waiting>() == std::mem::size_of::<u32>());
     assert!(std::mem::size_of::<Oldest>() == std::mem::size_of::<u64>());
     assert!(std::mem::size_of::<Option<Oldest>>() == std::mem::size_of::<u64>());

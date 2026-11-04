@@ -1,6 +1,6 @@
 //! Reusable slots for externally echoed flight completions.
 
-use std::{marker, mem::size_of};
+use std::{cell, marker, mem::size_of, ptr};
 
 pub use builder::Builder;
 pub use echo::Echo;
@@ -147,8 +147,9 @@ impl<'owner, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
     }
 
     pub fn complete(self) -> T {
-        let (Retain(bound), ()) = self.bound.into_parts();
-        bound.complete()
+        let value = self.value();
+        self.finish();
+        value
     }
 
     /// Releases only this completion loan until the operation's last packet.
@@ -270,7 +271,8 @@ pub struct Flights<T: Copy, const INDEX_BITS: u32 = 32, const GENERATION_BITS: u
         state::Header<T, INDEX_BITS, GENERATION_BITS>,
         state::State<T, INDEX_BITS, GENERATION_BITS>,
     >,
-    directory: raw::Directory<T, INDEX_BITS, GENERATION_BITS>,
+    /// Topology changes only under the sole preparation capability.
+    directory: cell::UnsafeCell<Vec<ptr::NonNull<state::State<T, INDEX_BITS, GENERATION_BITS>>>>,
 }
 
 impl<T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
@@ -279,7 +281,7 @@ impl<T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
     pub const fn new() -> Self {
         Self {
             groups: chain::List::new(),
-            directory: raw::Directory::new(),
+            directory: cell::UnsafeCell::new(Vec::new()),
         }
     }
 
@@ -343,7 +345,7 @@ impl<'arena, T: Copy, const INDEX_BITS: u32, const GENERATION_BITS: u32>
     Drain<'arena, T, INDEX_BITS, GENERATION_BITS>
 {
     fn entry(&self, index: u32) -> Option<&'arena state::State<T, INDEX_BITS, GENERATION_BITS>> {
-        let pointer = self.arena.directory.read().get(index as usize)?;
+        let pointer = self.arena.directory().get(index as usize)?;
         // SAFETY: every directory pointer names an entry owned by this arena.
         Some(unsafe { pointer.as_ref() })
     }

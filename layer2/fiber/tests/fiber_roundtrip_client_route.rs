@@ -6,7 +6,7 @@ use dope::{
         },
         io::fd::outbound,
     },
-    manifold::app::creation::Error,
+    manifold::app::{Host, creation::Error},
     runtime::executor::session::Completion,
 };
 use dope_test::harness::{peer::AcceptScript, scenario};
@@ -28,7 +28,7 @@ use dope_core::driver::route::KeyTag;
 use dope_fiber::{BlockOn as _, net::client::Plan};
 use dope_test::reclaim::Reports;
 
-use crate::common::network::rounds::client::{App, MAX_CONN, Ping, try_reply};
+use crate::common::network::rounds::client::{MAX_CONN, try_ping, try_reply};
 
 #[test]
 fn owns_outbound_slots() {
@@ -82,7 +82,7 @@ fn roundtrip() {
                                 Err(Error::Descriptor(outbound::Error::Occupied))
                             ));
                             let conn = store.handle();
-                            let app = App { connector: port };
+                            let app = Host::new(port);
                             let driven = (sess.with_quiesce(
                                 &mut finish,
                                 app,
@@ -95,7 +95,7 @@ fn roundtrip() {
                                     let io = (opened)
                                         .ok()
                                         .expect("the roundtrip connector must open its connection");
-                                    Ping::try_ping(&mut app, io).map(|result| {
+                                    try_ping(&mut app, io).map(|result| {
                                         assert_eq!(
                                             result.ok().expect("complete ping roundtrip"),
                                             reply
@@ -114,7 +114,7 @@ fn roundtrip() {
                         .expect("the roundtrip reply server must complete its accept");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -126,8 +126,4 @@ fn roundtrip() {
         },
     )
     .expect("reply server");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

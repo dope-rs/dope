@@ -9,14 +9,14 @@ use std::{net::Shutdown, time::Duration};
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::{tcp::Tcp, wire::Identity},
     runtime::executor::drive,
 };
 use dope_fiber::{BlockOn as _, net::client::Plan};
 use dope_test::{fibers, reclaim::Reports};
 
-use crate::common::network::rounds::client::{App, Collect, MAX_CONN};
+use crate::common::network::rounds::client::{MAX_CONN, try_into_vec};
 
 #[test]
 fn keeps_following_writes() {
@@ -48,7 +48,7 @@ fn keeps_following_writes() {
                     |sess| sess.driver(),
                     |port, sess| {
                         let conn = store.handle();
-                        let app = App { connector: port };
+                        let app = Host::new(port);
 
                         let driven = (sess.with_quiesce(
                             &mut finish,
@@ -58,10 +58,8 @@ fn keeps_following_writes() {
                                 let opened = app.block_on(dope_fiber::fiber!('_ => async move {
                                     conn.connect(addr).await
                                 }))?;
-                                let io = (opened).ok().expect("client connection must succeed");
-                                let mut owner = Some(io);
+                                let mut io = opened.ok().expect("client connection must succeed");
                                 let sent = app.block_on(dope_fiber::fiber!('_ => async move {
-                                    let mut io = owner.take().expect("connection must be owned");
                                     let output = fibers::TEST.poll_once(io.write_all(b"discarded")).await;
                                     assert!(output.is_none());
                                     io.write_all(b"kept").await?;
@@ -80,7 +78,7 @@ fn keeps_following_writes() {
                 server.finish().expect("write server must finish");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            self::finish,
+            runtime::check_scope,
         );
         assert!(
             reports.events().expect("reclamation observations").is_empty(),
@@ -120,20 +118,18 @@ fn writes_after_receive_eof() {
                 |sess| sess.driver(),
                 |port, sess| {
                     let conn = store.handle();
-                    let app = App { connector: port };
+                    let app = Host::new(port);
 
                     let driven =
                         (sess.with_quiesce(&mut finish, app, scenario::TIMEOUT, |mut app| -> Result<(), drive::Error> {
                             let opened = app.block_on(dope_fiber::fiber!('_ => async move {
                                 conn.connect(addr).await
                             }))?;
-                            let io = (opened).ok().expect("client connection must succeed");
-                            let mut owner = Some(io);
+                            let mut io = opened.ok().expect("client connection must succeed");
                             app.block_on(dope_fiber::fiber!('_ => async move {
-                                let mut io = owner.take().expect("connection must be owned");
                                 let mut tail = Vec::new();
                                 while let Some(chunk) = io.read().await.ok().expect("receive must succeed") {
-                                    tail.extend_from_slice(&chunk.try_into_vec().expect("consume tail"));
+                                    tail.extend_from_slice(&try_into_vec(chunk).expect("consume tail"));
                                 }
                                 assert_eq!(tail, b"tail");
                                 assert!(matches!(io.read().await, Ok(None)));
@@ -149,15 +145,11 @@ fn writes_after_receive_eof() {
                 server.finish().expect("half-close server must finish");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
-            self::finish,
+            runtime::check_scope,
         );
         assert!(
             reports.events().expect("reclamation observations").is_empty(),
             "unexpected reclaimed operations: {reports:?}"
         );
     }).expect("half-close server must start");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

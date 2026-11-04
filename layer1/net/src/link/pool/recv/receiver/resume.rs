@@ -14,10 +14,7 @@ use crate::{
         },
         slot::types,
     },
-    wire::{
-        self,
-        receive::{self, mode, reserve},
-    },
+    wire,
 };
 
 pub(in crate::link::pool::recv) struct Resume<
@@ -71,23 +68,16 @@ where
         delivery::Resumed::new(slot.key, slot.io().ready_key())
     }
 
-    pub(in crate::link::pool::recv) fn credit(mut self) -> delivery::Resumed<'d, ID>
+    pub(in crate::link::pool::recv) fn credit(
+        mut self,
+        release: impl FnOnce(&mut W::Runtime<'w, 'd, ID>),
+    ) -> delivery::Resumed<'d, ID>
     where
-        M: input::Mode<W, Ingress = mode::Enabled>,
-    {
-        let wake = self.prepare();
-        self.finish(wake)
-    }
-
-    pub(in crate::link::pool::recv) fn waiting<P>(mut self) -> delivery::Resumed<'d, ID>
-    where
-        M: input::Mode<W, Ingress = mode::Waiting<P>>,
-        P: reserve::Try<W>,
-        W::Receive: receive::Policy<W, Reserve = reserve::Waiting<P>>,
+        M::Ingress: storage::raw::Mode<Bound<'a, 'd> = storage::Loan<'a, 'd>>,
     {
         let wake = self.prepare();
         match &wake {
-            credit::Take::Ready(credit::Wake::Returned) => P::release_recv(self.runtime),
+            credit::Take::Ready(credit::Wake::Returned) => release(self.runtime),
             credit::Take::Ready(credit::Wake::Retry) | credit::Take::Idle => {}
         }
         self.finish(wake)

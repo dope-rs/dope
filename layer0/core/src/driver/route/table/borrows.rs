@@ -12,14 +12,10 @@ use crate::driver::{
 
 #[repr(transparent)]
 pub struct View<'a, T, Tag: route::Tag> {
-    inner: &'a table::Storage<T, Tag>,
+    pub(in crate::driver::route::table) inner: &'a table::Storage<T, Tag>,
 }
 
 impl<'a, T, Tag: route::Tag> View<'a, T, Tag> {
-    pub(in crate::driver::route::table) fn new(inner: &'a table::Storage<T, Tag>) -> Self {
-        Self { inner }
-    }
-
     /// Returns the immutable extent admitted when this route table was allocated.
     pub fn capacity(&self) -> table::Capacity {
         table::Capacity(self.inner.capacity())
@@ -61,13 +57,11 @@ impl<'a, T, Tag: route::Tag> View<'a, T, Tag> {
 }
 
 #[repr(transparent)]
-pub struct Access<'a, T, Tag: route::Tag>(&'a mut table::Storage<T, Tag>);
+pub struct Access<'a, T, Tag: route::Tag>(
+    pub(in crate::driver::route::table) &'a mut table::Storage<T, Tag>,
+);
 
 impl<'a, T, Tag: route::Tag> Access<'a, T, Tag> {
-    pub(in crate::driver::route::table) fn new(inner: &'a mut table::Storage<T, Tag>) -> Self {
-        Self(inner)
-    }
-
     pub fn advance_to(self, floor: Option<route::Epoch>) {
         self.0.advance_to(floor);
     }
@@ -77,7 +71,7 @@ impl<'a, T, Tag: route::Tag> Access<'a, T, Tag> {
     }
 
     pub fn occupied(self, parts: table::Parts<Tag>) -> Option<occupied::Entry<'a, T, Tag>> {
-        self.0.occupied(parts.external()).map(occupied::Entry::new)
+        self.0.occupied(parts.external()).map(occupied::Entry)
     }
 
     pub fn try_occupied(
@@ -85,12 +79,12 @@ impl<'a, T, Tag: route::Tag> Access<'a, T, Tag> {
         parts: table::Parts<Tag>,
     ) -> Result<occupied::Entry<'a, T, Tag>, errors::Lookup<route::Epoch, Tag>> {
         let entry = self.0.try_occupied(parts.external())?;
-        Ok(occupied::Entry::new(entry))
+        Ok(occupied::Entry(entry))
     }
 
     /// Borrows the current owner directly from this table's physical slot.
     pub fn at(self, index: indices::SlotIndex) -> Option<occupied::Entry<'a, T, Tag>> {
-        self.0.occupied_at(index.raw()).map(occupied::Entry::new)
+        self.0.occupied_at(index.raw()).map(occupied::Entry)
     }
 }
 
@@ -100,38 +94,32 @@ pub struct Grant<'a, T, Tag: route::Tag>(
 );
 
 impl<'a, T, Tag: route::Tag> Grant<'a, T, Tag> {
-    fn new(
-        inner: external::Grant<'a, T, route::Epoch, Tag, { u32::MAX }, { table::PARTITIONS }>,
-    ) -> Self {
-        Self(inner)
-    }
-
     pub fn reserve(self) -> vacant::Entry<'a, T, Tag> {
-        vacant::Entry::new(self.0.reserve())
+        vacant::Entry {
+            inner: self.0.reserve(),
+        }
     }
 }
 
 #[repr(transparent)]
-pub struct Vacancy<'a, T, Tag: route::Tag>(&'a mut table::Storage<T, Tag>);
+pub struct Vacancy<'a, T, Tag: route::Tag>(
+    pub(in crate::driver::route::table) &'a mut table::Storage<T, Tag>,
+);
 
 impl<'a, T, Tag: route::Tag> Vacancy<'a, T, Tag> {
-    pub(in crate::driver::route::table) fn new(inner: &'a mut table::Storage<T, Tag>) -> Self {
-        Self(inner)
-    }
-
     pub fn try_reserve(self) -> Result<vacant::Entry<'a, T, Tag>, slab::Vacancy> {
         let grant = self.0.try_grant()?;
-        Ok(vacant::Entry::new(grant.reserve()))
+        Ok(vacant::Entry {
+            inner: grant.reserve(),
+        })
     }
 
     pub fn try_at(self, slot: indices::SlotIndex) -> Result<Grant<'a, T, Tag>, slab::Vacancy> {
-        self.0.try_grant_at(slot.raw()).map(Grant::new)
+        self.0.try_grant_at(slot.raw()).map(Grant)
     }
 
     pub fn try_head(self, capacity: conn::Capacity) -> Result<Grant<'a, T, Tag>, slab::Vacancy> {
-        self.0
-            .try_grant_in(0..capacity.count().get())
-            .map(Grant::new)
+        self.0.try_grant_in(0..capacity.count().get()).map(Grant)
     }
 
     /// Selects physical capacity before identity, excluding one held slot.
@@ -142,6 +130,6 @@ impl<'a, T, Tag: route::Tag> Vacancy<'a, T, Tag> {
     ) -> Result<Grant<'a, T, Tag>, slab::Vacancy> {
         self.0
             .try_except(0..capacity.count().get(), excluded.raw())
-            .map(Grant::new)
+            .map(Grant)
     }
 }

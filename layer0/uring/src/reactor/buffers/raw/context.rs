@@ -17,7 +17,7 @@ use crate::reactor::{
 
 #[derive(Debug)]
 pub struct Context<L: memory::raw::Receive> {
-    buffers: mappings::Populated<u8>,
+    buffers: mappings::Mapping<u8>,
     layout: L,
 }
 
@@ -28,8 +28,7 @@ impl<L: memory::raw::Receive> provided::Context for Context<L> {
 
     fn new(layout: L) -> Result<Self, Self::Error> {
         let bytes = usize::from(layout.entries().get()) * layout.capacity().get() as usize;
-        let mapping = mappings::Mapping::<u8>::allocate(bytes)?;
-        let buffers = mapping.populate()?;
+        let buffers = mappings::Mapping::allocate(bytes)?;
         Ok(Self { buffers, layout })
     }
 

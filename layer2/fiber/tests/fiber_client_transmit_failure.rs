@@ -1,11 +1,14 @@
-use std::{convert::Infallible, net::Shutdown};
+use std::net::Shutdown;
 
 use dope::{
     core::{
-        driver::{life::recovery, route::table::conn::Capacity},
+        driver::{
+            life::recovery,
+            route::{Id, table::conn::Capacity},
+        },
         platform::wake,
     },
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::{link::event::SendFailure, tcp::Tcp, wire::Identity},
     runtime::executor::{drive, session::Completion},
 };
@@ -19,11 +22,20 @@ use dope_fiber::{
         },
     },
 };
-use dope_test::harness::{peer::TcpScript, scenario};
+use dope_test::{
+    harness::{
+        peer::{Peer, TcpScript},
+        scenario,
+    },
+    reclaim::Reports,
+};
 
 pub mod common;
 
-use common::{network::rounds::client::App, runtime::Setup};
+use common::{
+    recover,
+    runtime::{self, Setup},
+};
 
 #[test]
 fn reports_send_failure() {
@@ -32,15 +44,14 @@ fn reports_send_failure() {
         move |peer| {
             peer.shutdown(Shutdown::Write).expect("receive EOF");
             reset.wait_timeout(scenario::TIMEOUT).expect("EOF observed");
-            peer.reset_on_close().expect("reset on close");
+            Peer::try_reset(*peer).expect("reset on close");
         },
         |peer| {
             let addr = peer.addr();
             let plan = Plan::<Tcp, Identity>::new(Capacity::fixed::<1>(), Identity);
-            let mut report = None;
-            Setup::try_for_plan::<Balanced, _>(&plan)
-                .expect("driver configuration")
-                .with_input(
+            let setup = Setup::try_for_plan::<Balanced, _>(&plan).expect("driver configuration");
+            let mut reports = Reports::new(setup.config(), [Id::fixed::<0>()]);
+            setup.with_input(
                     plan,
                     |mut sess| {
                         let mut finish = Completion::new();
@@ -55,7 +66,7 @@ fn reports_send_failure() {
                                 let handle = store.handle();
                                 sess.with_quiesce(
                                     &mut finish,
-                                    App { connector: link },
+                                    Host::new(link),
                                     scenario::TIMEOUT,
                                     |mut app| {
                                         let mut stream = app
@@ -83,17 +94,10 @@ fn reports_send_failure() {
                         );
                         assert!(result.is_ok(), "client installation");
                     },
-                    recovery::Policy::new(
-                        |event| {
-                            report.get_or_insert(event);
-                        },
-                        |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                            panic!("native recovery: {:?}", failure.cause())
-                        },
-                    ),
-                    |result| result.expect("driver lifecycle"),
+                    recovery::Policy::new(|event| reports.push(event), recover),
+                    runtime::check_scope,
                 );
-            assert!(report.is_none(), "unexpected reclamation: {report:?}");
+            assert!(reports.events().expect("native reclamation").is_empty(), "unexpected reclamation: {reports:?}");
         },
     )
     .expect("peer worker");

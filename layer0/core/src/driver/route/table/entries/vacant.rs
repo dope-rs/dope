@@ -24,7 +24,7 @@ type Insertion<'a, T, Tag> = external::Staged<
 
 #[repr(transparent)]
 pub struct Entry<'a, T, Tag: route::Tag> {
-    inner: external::Vacant<
+    pub(in crate::driver::route::table) inner: external::Vacant<
         entries::Pending<
             'a,
             external::Stamped<T, route::Epoch>,
@@ -39,29 +39,14 @@ pub struct Entry<'a, T, Tag: route::Tag> {
 }
 
 impl<'a, T, Tag: route::Tag> Entry<'a, T, Tag> {
-    pub(in crate::driver::route::table) fn new(
-        inner: external::Vacant<
-            entries::Pending<
-                'a,
-                external::Stamped<T, route::Epoch>,
-                { u32::MAX },
-                entries::Exclusive<true>,
-                { table::PARTITIONS },
-            >,
-            Tag,
-            true,
-            route::Epoch,
-        >,
-    ) -> Self {
-        Self { inner }
-    }
-
     pub fn insert(self, value: T) {
         self.inner.commit(value);
     }
 
     pub fn stage(self, value: T) -> Staged<'a, T, Tag> {
-        Staged::new(self.inner.stage(value))
+        Staged {
+            inner: self.inner.stage(value),
+        }
     }
 
     pub fn key(&self) -> table::Key<Tag> {
@@ -75,10 +60,6 @@ pub struct Staged<'a, T, Tag: route::Tag> {
 }
 
 impl<'a, T, Tag: route::Tag> Staged<'a, T, Tag> {
-    pub(in crate::driver::route::table) fn new(inner: Insertion<'a, T, Tag>) -> Self {
-        Self { inner }
-    }
-
     pub fn get_mut(&mut self) -> &mut T {
         self.inner.get_mut()
     }

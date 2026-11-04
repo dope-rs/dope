@@ -1,6 +1,6 @@
-use std::{marker, num};
+use std::{marker, num, ptr};
 
-use o3::{alloc, base::marker::ThreadBound, depot::arena::linked::chain};
+use o3::{alloc, alloc::tail, base::marker::ThreadBound, depot::arena::linked::chain};
 
 use crate::{
     driver,
@@ -39,30 +39,56 @@ impl<T: Copy, S: Copy, C> Owner<T, S, C> {
         &self,
         capacity: num::NonZero<u32>,
     ) -> Result<storage::Slots<'_, T, S, C>, alloc::Error> {
-        let vacant = match self.select(capacity) {
-            Some(vacant) => vacant,
-            None => storage::Vacant::allocate(&self.groups, capacity, &self.context)?,
-        };
-        Ok(storage::Slots::new(vacant.activate(&self.context)))
-    }
-
-    fn select(&self, required: num::NonZero<u32>) -> Option<storage::Vacant<'_, T, S, C>> {
-        let mut selected: Option<storage::Vacant<'_, T, S, C>> = None;
+        let count = capacity.get() as usize;
+        let mut selected: Option<(chain::Link<'_, _, _>, &[Entry<T, S, C>])> = None;
         for raw in self.groups.iter() {
-            let Some(vacant) = storage::Vacant::select(raw, required) else {
+            if !raw.header().available.get() {
+                continue;
+            }
+            let Some(entries) = raw.as_slice().get(..count) else {
                 continue;
             };
-            if vacant.is_exact() {
-                return Some(vacant);
-            }
             if selected
                 .as_ref()
-                .is_none_or(|current| vacant.is_smaller(current))
+                .is_none_or(|(current, _)| raw.len() < current.len())
             {
-                selected = Some(vacant);
+                selected = Some((raw, entries));
+            }
+            if raw.len() == count {
+                break;
             }
         }
-        selected
+        let (raw, entries) = match selected {
+            Some((raw, entries)) => {
+                raw.header().available.set(false);
+                (raw, entries)
+            }
+            None => {
+                // Geometric backing bounds history retained by old keys until owner drop.
+                let extent = count.checked_next_power_of_two().ok_or(alloc::Overflow)?;
+                let memory = tail::Plan::try_new(extent)?.try_allocate()?;
+                let block = memory.fill(
+                    chain::Node::new(storage::Group::new(&self.context)),
+                    |node, _| Entry::new(node.header()),
+                );
+                let raw = self.groups.push(block);
+                // SAFETY: checked growth bounds count by this initialized allocation;
+                // the immutable owner borrow retains it through every issued slot.
+                (raw, unsafe { raw.as_slice().get_unchecked(..count) })
+            }
+        };
+        // Selection invokes no callbacks and exposes no vacancy before this activation.
+        let group = raw.header();
+        group.context.set(ptr::NonNull::from(&self.context));
+        for entry in entries {
+            entry.state.set(storage::State::Idle);
+        }
+        group.attachment.set(storage::Attachment::Active);
+        Ok(storage::Slots {
+            group,
+            entries,
+            capacity,
+        })
     }
 }
 

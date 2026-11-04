@@ -1,15 +1,16 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use dope_sys::{
     Errno,
     io::reactor::{read, retry},
     memory,
 };
+use o3::{base::num::bounded, buffer};
 
-use crate::common::{cancel::Extent, slots::Slots};
+use crate::common::slots::Slots;
 
 #[derive(Clone, Copy)]
-pub struct Context;
+pub enum Context {}
 
 impl read::Context for Context {
     type Slots = Slots;
@@ -26,7 +27,7 @@ impl retry::Context for Context {
     type Slots = Slots;
     type Key = NonZeroUsize;
     type Operation = ();
-    type Extent = Extent;
+    type Extent = Self;
     type Outcome = Result<Length, Errno>;
     type Unit = Result<(), Errno>;
 
@@ -42,4 +43,22 @@ impl retry::Context for Context {
     }
 }
 
-type Length = <Extent as memory::raw::Extent>::Length;
+type Length = bounded::U32<0, { buffer::bytes::bounded::MAX as u32 }>;
+
+// SAFETY: Length retains the original admitted count and Capacity is unchanged.
+unsafe impl memory::raw::Extent for Context {
+    type Length = Length;
+    type Capacity = NonZeroU32;
+}
+
+impl dope_sys::Buffer for Context {
+    fn output(&mut self) -> buffer::raw::Output<'_> {
+        match *self {}
+    }
+    fn len(&self) -> usize {
+        match *self {}
+    }
+    fn recycle(self) {
+        match self {}
+    }
+}

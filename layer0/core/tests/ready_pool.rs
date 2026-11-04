@@ -1,7 +1,4 @@
-use std::convert::Infallible;
-
 use dope_core::driver::life::recovery;
-use dope_test::scope::Error;
 pub mod common;
 
 #[global_allocator]
@@ -14,7 +11,7 @@ use dope_core::driver::{
 };
 use dope_test::alloc::Tracker;
 
-use crate::common::rt::Runtime;
+use crate::common::rt::{Runtime, finish, recover};
 
 #[test]
 fn reuses_ready_pool() {
@@ -139,15 +136,4 @@ fn ignores_retired_wake() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

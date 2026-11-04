@@ -369,9 +369,12 @@ impl<'h, 'd, I: Eq, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         }
         let actual = snapshot.endpoints().len();
         let prior = self.desired as usize;
-        let reserved =
-            entries::Reservation::try_new(&mut self.records, snapshot, !R::AUTHORITATIVE)?;
-        let (keys, retained) = reserved.commit(&mut self.queue);
+        let (keys, retained) = entries::try_apply(
+            &mut self.records,
+            snapshot,
+            !R::AUTHORITATIVE,
+            &mut self.queue,
+        )?;
         self.prune(&keys);
         self.revision = revision;
         self.desired = actual as u32;

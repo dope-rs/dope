@@ -32,19 +32,17 @@ fn traverses_suffixes() {
     let body = resident::Shared::from(&b"cdef"[..]);
     let body_ptr = body.as_ref().as_ptr();
     let ((), alloc) = Tracker::usage(|| {
-        let pair = pair::Source::try_new(prefix, body);
-        assert!(pair.is_ok(), "required fixture outcome");
-        let Some(pair) = pair.ok() else { return };
+        let pair = pair::Source::try_new(prefix, body).ok().expect("pair");
         assert!(pair.geometry().wire() == transfer::NonZero::fixed::<6>());
         assert_eq!(pair.as_inner().charge().resident_bytes, 16);
         for offset in 0..6 {
             let len = transfer::Len::try_new(offset);
             let len = (len).expect("required fixture outcome");
             for cap in [1, 2, 3, 8] {
-                let cursor = pair.as_inner().cursor(data::Offset::from_len(len));
-                assert!(cursor.is_some());
-                let Some(cursor) = cursor else { return };
-                let mut chunks = cursor;
+                let mut chunks = pair
+                    .as_inner()
+                    .cursor(data::Offset::from_len(len))
+                    .expect("offset inside pair");
                 let mut position = offset;
                 while chunks.remaining() != 0 {
                     let before = position;
@@ -97,9 +95,9 @@ fn retains_empty_owners() {
         let append = prefix.try_append(b"recovered");
         let append = (append).expect("required fixture outcome");
         append.commit();
-        let retry = pair::Source::try_new(prefix, body);
-        assert!(retry.is_ok(), "required fixture outcome");
-        let Some(retry) = retry.ok() else { return };
+        let retry = pair::Source::try_new(prefix, body)
+            .ok()
+            .expect("retry pair");
         assert!(retry.geometry().wire() == transfer::NonZero::fixed::<9>());
     }
     assert_eq!(pool.available(), 1);
@@ -142,9 +140,9 @@ fn restores_cancelled_body() {
     let mut restored = Vec::with_capacity(1);
     let mut commits = Some(0);
     let ((), alloc) = Tracker::usage(|| {
-        let pair = pair::Source::try_new(prefix, body);
-        assert!(pair.is_ok(), "required fixture outcome");
-        let Some(pair) = pair.ok() else { return };
+        let pair = pair::Source::try_new(prefix, body)
+            .ok()
+            .expect("leased pair");
         let leased = pair.lease(Restore {
             body: &mut restored,
             commits: &mut commits,

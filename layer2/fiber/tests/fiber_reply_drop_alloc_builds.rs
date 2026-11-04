@@ -36,14 +36,11 @@ fn register_allocates_none() {
                 let lane = (lane).expect("lane exists");
                 let measure = Tracker::begin();
                 {
-                    let mut first = recv::Response::<_, Never>::new();
-                    let mut second = recv::Response::<_, Never>::new();
-                    let mut third = recv::Response::<_, Never>::new();
-                    let mut fourth = recv::Response::<_, Never>::new();
-                    assert!((first.try_attach(&mut token, lane)) == (Ok(())));
-                    assert!((second.try_attach(&mut token, lane)) == (Ok(())));
-                    assert!((third.try_attach(&mut token, lane)) == (Ok(())));
-                    assert!((fourth.try_attach(&mut token, lane)) == (Ok(())));
+                    let mut replies = [const { recv::Response::<_, Never>::new() }; 4];
+                    for reply in &mut replies {
+                        assert_eq!(reply.try_attach(&mut token, lane), Ok(()));
+                    }
+                    replies.into_iter().rev().for_each(drop);
                 }
                 allocs = Some(measure.finish().allocations);
             })

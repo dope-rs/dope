@@ -67,15 +67,12 @@ pub struct Table<E, const N: usize> {
 
 #[derive(Clone, Copy, Debug)]
 enum Phase {
+    /// No scalar option completions remain; the target and ready links retain later ownership.
     Idle,
     /// Scalar options in flight; the flight submits no deferred CONNECT.
     Options,
     /// Scalar options in flight, then one deferred CONNECT held in `connect`.
     OptionsConnect,
-    /// Linked in `ready`; the deferred CONNECT waits for a submission vacancy.
-    Ready,
-    Connecting,
-    Complete,
 }
 
 mod progress;

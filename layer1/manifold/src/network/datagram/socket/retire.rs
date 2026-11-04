@@ -3,7 +3,7 @@ use std::pin;
 use dope_core::{
     driver::{
         result,
-        route::{self, Identity, kind::Send, table},
+        route::{Identity, kind::Send},
         schedule::{clock, maint},
     },
     io::event::net::send,
@@ -12,22 +12,13 @@ use o3::{base::cell::region, buffer, mem::quota};
 
 use crate::network::datagram::{
     self, hook,
-    send::{Mode, Outcome, Owner, Phase, flights, owners, pending},
+    send::{Mode, Outcome, Owner, Phase, owners},
+    socket::sender::Sender,
 };
 
-pub(in crate::network::datagram) struct Retire<'a, 'd, ID: Identity, B, M: Mode> {
-    pub(super) pending: &'a mut pending::Pending<'d, ID, B, M>,
-    pub(super) in_flight:
-        &'a mut table::Slab<flights::Backing<'d, B, M>, <ID as route::Materialize<Send>>::With>,
-    pub(super) space: &'a route::Space<'d, <ID as route::Materialize<Send>>::With>,
-    pub(super) phase: &'a mut Phase,
-}
-
-impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
-    Retire<'_, 'd, ID, B, M>
-{
+impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Sender<'d, ID, B, M> {
     pub(in crate::network::datagram) fn complete(
-        self,
+        &mut self,
         done: send::Completion<'d>,
     ) -> Result<Option<Outcome>, send::Completion<'d>> {
         let Ok(target) = self.space.parse(done.token()) else {
@@ -44,7 +35,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
     }
 
     pub(in crate::network::datagram) fn settle<H>(
-        self,
+        &mut self,
         token: &mut region::Token<region::Identity<'d, 1>>,
         done: send::Completion<'d>,
         at: clock::Moment<'d>,
@@ -72,7 +63,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
     }
 
     pub(in crate::network::datagram) fn drain(
-        self,
+        &mut self,
         work: maint::Work<'_, 'd>,
         mut failed: impl FnMut(result::SubmitError),
     ) {
@@ -80,7 +71,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
             if !matches!(
                 work.run(|| {
                     drop(self.pending.pop()?);
-                    if let Phase::Failed(error) = *self.phase {
+                    if let Phase::Failed(error) = self.phase {
                         failed(error);
                     }
                     Some(())
@@ -93,7 +84,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
     }
 
     pub(in crate::network::datagram) fn drain_event<H>(
-        self,
+        &mut self,
         token: &mut region::Token<region::Identity<'d, 1>>,
         work: maint::Work<'_, 'd>,
         at: clock::Moment<'d>,
@@ -121,9 +112,12 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
         }
     }
 
-    pub(in crate::network::datagram) fn finish(self, mut failed: impl FnMut(result::SubmitError)) {
+    pub(in crate::network::datagram) fn finish(
+        &mut self,
+        mut failed: impl FnMut(result::SubmitError),
+    ) {
         self.phase.stop();
-        if let Phase::Failed(error) = *self.phase {
+        if let Phase::Failed(error) = self.phase {
             while let Some(queued) = self.pending.pop() {
                 drop(queued);
                 failed(error);
@@ -131,7 +125,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
         } else {
             self.pending.clear();
         }
-        let slots = self.in_flight;
+        let slots = &mut self.in_flight;
         for slot in slots.view().capacity() {
             let Some(entry) = slots.access().at(slot) else {
                 continue;
@@ -141,7 +135,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
     }
 
     pub(in crate::network::datagram) fn finish_event<H>(
-        self,
+        &mut self,
         token: &mut region::Token<region::Identity<'d, 1>>,
         at: clock::Moment<'d>,
         mut sink: pin::Pin<&mut H>,
@@ -160,7 +154,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
                 token,
             );
         }
-        let slots = self.in_flight;
+        let slots = &mut self.in_flight;
         let space = self.space;
         for slot in slots.view().capacity() {
             let Some(entry) = slots.access().at(slot) else {
@@ -169,7 +163,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode>
             let key = entry.key();
             let send = entry.remove();
             let owner =
-                owners::Flight::new((*space).bind(key.slot(), key.epoch()).operation::<Send>());
+                owners::Flight::new(space.bind(key.slot(), key.epoch()).operation::<Send>());
             let (addr, hold) = send.finish();
             hold.retire(
                 Owner::Flight(owner),

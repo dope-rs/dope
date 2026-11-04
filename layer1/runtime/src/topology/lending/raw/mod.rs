@@ -16,6 +16,16 @@ pub(crate) type Borrowed<'a, T> = Owner<pin::Pin<&'a mut T>, T>;
 pub use project::Project;
 pub use resume::Resume;
 
+// SAFETY: the owned pair forwards each lifecycle operation to both exact pinned
+// roots. Each root independently permits resume after stopped native quiescence;
+// the pair adds no operations or cleanup awaiting dispatch between them.
+unsafe impl<'d, A, B> Resume<'d> for crate::client::Pair<'d, A, B>
+where
+    A: crate::topology::lending::Root<'d> + Resume<'d>,
+    B: crate::topology::lending::Root<'d> + Resume<'d>,
+{
+}
+
 /// Operational ordering remains identical to an ordinary head-first application.
 #[pin_project::pin_project]
 #[derive(dope_gen::Application)]

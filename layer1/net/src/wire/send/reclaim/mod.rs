@@ -28,13 +28,21 @@ pub trait Policy: Proof {
     fn unsubmitted(
         state: &Self::AckState,
         credit: Self::Credit,
-    ) -> Result<(Self::AckState, transfer::Len), Overflow>;
+    ) -> Result<(Self::AckState, transfer::Len), Overflow> {
+        let (next, _) = Self::submitted(state, credit)?;
+        Ok((next, Self::immediate(credit)))
+    }
 
     /// Resolves one terminal queue completion into its plaintext source.
     fn complete(state: &mut Self::AckState) -> Completion;
 
     /// Resolves cancellation of the current kernel send.
-    fn abort(state: &mut Self::AckState) -> Abort;
+    fn abort(state: &mut Self::AckState) -> Abort {
+        match Self::complete(state) {
+            Completion::Submitted(_) => Abort::Submitted,
+            Completion::Retained => Abort::Retained,
+        }
+    }
 
     /// Reports whether a queue acknowledgement still belongs to a terminal
     /// send chain. Used to reject impossible direct/queued owner overlap.
@@ -44,7 +52,13 @@ pub trait Policy: Proof {
     fn immediate(credit: Self::Credit) -> transfer::Len;
 
     /// Classifies whether the prepared output attempted plaintext progress.
-    fn advance(credit: Self::Credit) -> Advance;
+    fn advance(credit: Self::Credit) -> Advance {
+        if Self::immediate(credit).is_zero() {
+            Advance::Idle
+        } else {
+            Advance::Ready
+        }
+    }
 
     /// Selects the plaintext ownership of a direct kernel completion.
     fn direct() -> Direct;
@@ -150,20 +164,8 @@ impl Policy for OnSubmit {
         Ok((state.add(consumed)?, Submission::Reclaim(consumed)))
     }
 
-    fn unsubmitted(
-        state: &Self::AckState,
-        consumed: transfer::Len,
-    ) -> Result<(Self::AckState, transfer::Len), Overflow> {
-        Ok((state.add(consumed)?, consumed))
-    }
-
     fn complete(state: &mut Self::AckState) -> Completion {
         Completion::Submitted(mem::take(state).0)
-    }
-
-    fn abort(state: &mut Self::AckState) -> Abort {
-        mem::take(state);
-        Abort::Submitted
     }
 
     fn has_pending(state: &Self::AckState) -> bool {
@@ -172,14 +174,6 @@ impl Policy for OnSubmit {
 
     fn immediate(consumed: transfer::Len) -> transfer::Len {
         consumed
-    }
-
-    fn advance(consumed: transfer::Len) -> Advance {
-        if consumed.is_zero() {
-            Advance::Idle
-        } else {
-            Advance::Ready
-        }
     }
 
     fn direct() -> Direct {
@@ -202,19 +196,8 @@ impl Policy for OnComplete {
         Ok((Exact, Submission::Retain))
     }
 
-    fn unsubmitted(
-        Exact: &Self::AckState,
-        Exact: Self::Credit,
-    ) -> Result<(Self::AckState, transfer::Len), Overflow> {
-        Ok((Exact, transfer::Len::ZERO))
-    }
-
     fn complete(Exact: &mut Self::AckState) -> Completion {
         Completion::Retained
-    }
-
-    fn abort(Exact: &mut Self::AckState) -> Abort {
-        Abort::Retained
     }
 
     fn has_pending(Exact: &Self::AckState) -> bool {
@@ -223,10 +206,6 @@ impl Policy for OnComplete {
 
     fn immediate(Exact: Self::Credit) -> transfer::Len {
         transfer::Len::ZERO
-    }
-
-    fn advance(Exact: Self::Credit) -> Advance {
-        Advance::Idle
     }
 
     fn direct() -> Direct {

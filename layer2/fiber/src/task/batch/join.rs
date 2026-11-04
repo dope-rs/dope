@@ -3,9 +3,7 @@ use core::{convert, pin, task::Poll};
 use o3::depot::array;
 
 use crate::{
-    abi,
-    abi::machine,
-    context,
+    abi, context,
     context::wake,
     core::driver::schedule::{
         app,
@@ -39,22 +37,7 @@ where
     table: slots::Table<'d, F, F::Output, N>,
     pool: &'pool Pool<'d, N>,
     state: state::State<N>,
-    live: machine::Machine<()>,
     root: Option<pool::Root<'d>>,
-}
-
-/// Exclusive proof of the next empty entry in one batch.
-#[must_use = "a batch vacancy must be filled or abandoned"]
-struct Vacant<'batch, F, O, const N: usize> {
-    entry: slots::raw::Vacant<'batch, F, O>,
-    state: state::Push<'batch, N>,
-}
-
-impl<F, O, const N: usize> Vacant<'_, F, O, N> {
-    fn insert(self, fiber: F) {
-        self.entry.insert(fiber);
-        self.state.commit();
-    }
 }
 
 impl<'pool, 'd, F, const N: usize> Join<'pool, 'd, F, N>
@@ -94,14 +77,14 @@ where
             table,
             pool,
             state: state::State::new(len),
-            live: machine::Machine::new(()),
             root: None,
         }
     }
 
-    /// Borrows the next entry while the batch is still being built.
-    fn vacant(&mut self) -> Option<Vacant<'_, F, F::Output, N>> {
-        let state = self.state.vacancy()?;
+    pub fn try_push(&mut self, fiber: F) -> Result<(), F> {
+        let Some(state) = self.state.vacancy() else {
+            return Err(fiber);
+        };
         let index = slots::Index::from_vacant(state.slot());
         // SAFETY: only this owner pairs its table and admitted prefix. Empty
         // construction initializes every entry as vacant; full construction has
@@ -109,14 +92,8 @@ where
         // that same prefix. This exclusive borrow cannot overlap a pinned poll,
         // cancellation, or another insertion.
         let entry = unsafe { slots::raw::Vacant::new(&mut self.table, index) };
-        Some(Vacant { entry, state })
-    }
-
-    pub fn try_push(&mut self, fiber: F) -> Result<(), F> {
-        let Some(vacant) = self.vacant() else {
-            return Err(fiber);
-        };
-        vacant.insert(fiber);
+        entry.insert(fiber);
+        state.commit();
         Ok(())
     }
 
@@ -126,15 +103,7 @@ where
     ) -> Result<Progress<N>, Error> {
         let mut this = self.project();
         if let Some(done) = this.state.completed() {
-            return Ok(
-                match this
-                    .live
-                    .turn(|()| machine::Flow::Suspend(Poll::Ready(done)))
-                {
-                    Poll::Ready(done) => Progress::Done(done),
-                    Poll::Pending => Progress::Parked,
-                },
-            );
+            return Ok(Progress::Done(done));
         }
 
         let parent: wake::Waker<'d> = context.as_ref().root_waker().into();
@@ -248,7 +217,7 @@ where
 
     fn cancel(self: pin::Pin<&mut Self>) {
         let mut this = self.project();
-        if let Some(root) = *this.root {
+        if let Some(root) = this.root.take() {
             let pool = *this.pool;
             for index in slots::Index::until(this.state.next()) {
                 this.table.as_mut().cancel(index, |bindings| {
@@ -256,7 +225,6 @@ where
                 });
             }
         }
-        this.state.reset();
     }
 }
 
@@ -311,7 +279,7 @@ where
         match this.as_mut().progress(context.as_mut()) {
             Ok(Progress::Done(done)) => {
                 let output = this.as_mut().project().table.drain_exact(done);
-                let _ = this.as_mut().project().live.take();
+                *this.as_mut().project().root = None;
                 Poll::Ready(Ok(output))
             }
             Ok(Progress::Parked) => Poll::Pending,
@@ -321,7 +289,6 @@ where
             }
             Err(error) => {
                 this.as_mut().cancel();
-                let _ = this.as_mut().project().live.take();
                 Poll::Ready(Err(error))
             }
         }
@@ -333,10 +300,8 @@ impl<'d, F, const N: usize> PinnedDrop for Join<'_, 'd, F, N>
 where
     F: abi::Fiber<'d>,
 {
-    fn drop(mut self: pin::Pin<&mut Self>) {
-        if self.as_mut().project().live.take().is_some() {
-            self.cancel();
-        }
+    fn drop(self: pin::Pin<&mut Self>) {
+        self.cancel();
     }
 }
 
@@ -344,7 +309,6 @@ const _: () = {
     use core::mem;
 
     let word = mem::size_of::<usize>();
-    assert!(mem::size_of::<machine::Machine<()>>() == 1);
     assert!(mem::size_of::<Join<'static, 'static, abi::Ready<()>, 0>>() == 4 * word);
     assert!(mem::align_of::<Join<'static, 'static, abi::Ready<()>, 0>>() == word);
     assert!(mem::size_of::<Option<Join<'static, 'static, abi::Ready<()>, 0>>>() == 4 * word);

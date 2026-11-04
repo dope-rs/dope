@@ -34,15 +34,15 @@ where
         &self.status
     }
 
-    pub(crate) fn sync(mut self) -> Result<turn::Sync<turn::Idle<'turn, 'd, M>>, poll::Error> {
+    pub(crate) fn sync(mut self) -> Result<Option<turn::Idle<'turn, 'd, M>>, poll::Error> {
         if !self.core.pending.is_none() {
-            return Ok(turn::Sync::Again);
+            return Ok(None);
         }
         if matches!(self.events, poll::Drain::Pending) {
             let _ = driver::Context::commit(&mut self.core.driver, self.core.turn.reactor())?;
-            return Ok(turn::Sync::Again);
+            return Ok(None);
         }
-        Ok(turn::Sync::Idle(turn::Idle::new(self.core)))
+        Ok(Some(turn::Idle::new(self.core)))
     }
 
     /// Resolves idle work and waits until the next turn unless the loop completes.
@@ -57,9 +57,8 @@ where
     where
         C: clock::Time,
     {
-        let idle = match self.sync()? {
-            turn::Sync::Again => return Ok(false),
-            turn::Sync::Idle(idle) => idle,
+        let Some(idle) = self.sync()? else {
+            return Ok(false);
         };
         match resolve(idle)? {
             turn::Resolved::Again => Ok(false),

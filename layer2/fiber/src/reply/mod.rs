@@ -33,7 +33,7 @@ pub use arena::{
 };
 pub use slot::Slot;
 pub(crate) use slot::State;
-pub(in crate::reply) use slot::{Drain, Failed, Failure, Fault, Item, Open};
+pub(in crate::reply) use slot::{Drain, Failed, Failure, Item, Open};
 
 /// Exact attachment state of one reply lane.
 #[must_use = "attachment state must be consumed"]

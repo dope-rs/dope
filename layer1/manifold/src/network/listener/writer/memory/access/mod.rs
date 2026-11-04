@@ -177,11 +177,11 @@ impl<'p, 's, 'd, ID: Identity, B> Direct<'p, 's, 'd, ID, B> {
         total: transfer::NonZero,
         source: Option<B>,
     ) -> Self {
-        let flight = slot.0.get_mut().project();
+        let flight = slot.get_mut().project();
         *flight.source = source;
         *flight.position = scatter::raw::Position::new();
         Self {
-            lease: slot.0,
+            lease: slot,
             head,
             progress: Progress::new(total),
         }

@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::tcp::Tcp,
     runtime::executor::drive,
 };
@@ -48,7 +48,7 @@ fn returns_owned_error() {
                 |port, sess| {
                     let handle = store.handle();
 
-                    let app = App { connector: port };
+                    let app = Host::new(port);
                     (((sess.with_quiesce(&mut finish, app, scenario::TIMEOUT, |mut app| {
                         let outcome = app.block_on(handle.connect(addr))?;
                         let error = outcome.err().expect("wire open must fail");
@@ -69,7 +69,7 @@ fn returns_owned_error() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        self::finish,
+        runtime::check_scope,
     );
     assert!(
         reports
@@ -101,7 +101,7 @@ fn keeps_unread_error() {
                 |sess| sess.driver(),
                 |port, sess| {
                     let handle = store.handle();
-                    let app = App { connector: port };
+                    let app = Host::new(port);
 
                     let exchange =
                         (sess.with_quiesce(&mut finish, app, scenario::TIMEOUT, |mut app| {
@@ -141,7 +141,7 @@ fn keeps_unread_error() {
             );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
-        self::finish,
+        runtime::check_scope,
     );
     assert!(
         reports
@@ -150,8 +150,4 @@ fn keeps_unread_error() {
             .is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

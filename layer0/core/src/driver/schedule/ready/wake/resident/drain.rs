@@ -19,13 +19,8 @@ pub(in crate::driver::schedule::ready::wake) fn one<'d>(
 ) -> Drain {
     loop {
         if !pending() {
-            return match next() {
-                None | Some(Step::Idle) => Drain::Empty,
-                Some(Step::Item(target)) => {
-                    target.wake(driver);
-                    Drain::Woke
-                }
-            };
+            let _ = next();
+            return Drain::Empty;
         }
         match work.run(&mut next) {
             quota::Admission::Item(Step::Idle) => {}

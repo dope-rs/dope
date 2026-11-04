@@ -6,7 +6,7 @@ use crate::client::{
     close,
     conn::{
         self,
-        closing::{Closing, Entry, Quarantine, RetireState, SettledState},
+        closing::{Closing, Quarantine, RetireState, SettledState},
         state,
     },
 };
@@ -28,15 +28,7 @@ impl<'a, 'd, ID: Identity> Retire<'a, 'd, ID> {
     }
 
     pub(in crate::client) fn enter(self, reason: close::Reason) -> Stage<'a, 'd, ID> {
-        match self.closing.enter(reason, self.proof) {
-            Entry::Started(state, reason, proof) => {
-                Stage::Started(Starting::new(state, reason, proof))
-            }
-            Entry::Retiring(state, proof) => Stage::Retiring(Retiring::new(state, proof)),
-            Entry::Settled(state) => Stage::Settled(Settled::new(state)),
-            Entry::Finalized => Stage::Finalized,
-            Entry::Claimed => Stage::Claimed,
-        }
+        self.closing.enter(reason, self.proof)
     }
 
     pub(in crate::client) fn transmit_failed(
@@ -56,8 +48,6 @@ pub(in crate::client) enum Stage<'a, 'd, ID: Identity> {
     Started(Starting<'a, 'd, ID>),
     Retiring(Retiring<'a, 'd, ID>),
     Settled(Settled<'a, 'd, ID>),
-    Finalized,
-    Claimed,
 }
 
 #[must_use = "starting close proof must run quarantine"]
@@ -68,7 +58,11 @@ pub(in crate::client) struct Starting<'a, 'd, ID: Identity> {
 }
 
 impl<'a, 'd, ID: Identity> Starting<'a, 'd, ID> {
-    fn new(state: Quarantine<'a>, reason: close::Reason, proof: state::Enter<'d, ID>) -> Self {
+    pub(super) fn new(
+        state: Quarantine<'a>,
+        reason: close::Reason,
+        proof: state::Enter<'d, ID>,
+    ) -> Self {
         Self {
             state,
             reason,
@@ -94,7 +88,7 @@ pub(in crate::client) struct Retiring<'a, 'd, ID: Identity> {
 }
 
 impl<'a, 'd, ID: Identity> Retiring<'a, 'd, ID> {
-    fn new(state: RetireState<'a>, _: state::Enter<'d, ID>) -> Self {
+    pub(super) fn new(state: RetireState<'a>, _: state::Enter<'d, ID>) -> Self {
         Self {
             state,
             brand: marker::PhantomData,
@@ -112,8 +106,8 @@ impl<'a, 'd, ID: Identity> Retiring<'a, 'd, ID> {
         self.state.reason()
     }
 
-    pub(in crate::client) fn settle(self, reason: close::Reason) -> Settled<'a, 'd, ID> {
-        Settled::new(self.state.settle(reason))
+    pub(in crate::client) fn settle(self) -> Settled<'a, 'd, ID> {
+        Settled::new(self.state.settle())
     }
 }
 
@@ -124,7 +118,7 @@ pub(in crate::client) struct Settled<'a, 'd, ID: Identity> {
 }
 
 impl<'a, 'd, ID: Identity> Settled<'a, 'd, ID> {
-    fn new(state: SettledState<'a>) -> Self {
+    pub(super) fn new(state: SettledState<'a>) -> Self {
         Self {
             state,
             brand: marker::PhantomData,

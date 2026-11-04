@@ -1,10 +1,8 @@
 pub mod common;
 
-use std::{convert::Infallible, fmt::Debug};
+use common::manifold::listener::{native, reached};
 
 use dope_core::driver::life::recovery;
-use dope_runtime::topology::error::Kind;
-use dope_test::fibers::{Run, Wait};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -97,38 +95,35 @@ fn bounded(event: BoundedEvent<'_>) {
     });
 }
 
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
-}
-
 #[test]
-fn owned_reaches_socket() {
+fn owned_releases_after_send_or_abort() {
     let mut finish = Completion::new();
-    for direct in [0, 1] {
+    for (direct, abort, expected) in [
+        (0, false, handler::Disposition::Sent),
+        (1, false, handler::Disposition::Sent),
+        (0, true, handler::Disposition::Closed),
+    ] {
         let closed = Gate::new();
         let released = Gate::new();
         let returned = Gate::new();
         let retired = Gate::new();
         let events = Rc::new(Trace::new());
-        let queue = egress::Config::shared(egress::Credit::new(
-            egress::Entries::new(4),
-            egress::Resident::new(64),
-        ));
-        assert!(
+        let queue = if abort {
+            egress::Config::DEFAULT
+        } else {
+            let queue = egress::Config::shared(egress::Credit::new(
+                egress::Entries::new(4),
+                egress::Resident::new(64),
+            ));
+            assert!(
+                queue
+                    .chunks(dope_core::io::transfer::NonZero::fixed_size::<
+                        { write::Prefix::CAPACITY },
+                    >())
+                    .is_none()
+            );
             queue
-                .chunks(dope_core::io::transfer::NonZero::fixed_size::<
-                    { write::Prefix::CAPACITY },
-                >())
-                .is_none()
-        );
+        };
         let prepared = Listener::new::<4>(Default::default())
             .direct(direct)
             .egress(queue)
@@ -138,7 +133,7 @@ fn owned_reaches_socket() {
                     released: released.clone(),
                     returned: returned.clone(),
                     retired: retired.clone(),
-                    abort: false,
+                    abort,
                     events: Rc::clone(&events),
                 },
                 Identity,
@@ -160,7 +155,11 @@ fn owned_reaches_socket() {
                                 .finish()
                                 .expect("finish client peer")
                                 .expect("client peer failed");
-                            assert_eq!(response, RESPONSE);
+                            if abort {
+                                assert!(response.is_empty());
+                            } else {
+                                assert_eq!(response, RESPONSE);
+                            }
                             assert_eq!(
                                 released.hits(),
                                 1,
@@ -175,75 +174,12 @@ fn owned_reaches_socket() {
                 native,
             )
             .expect("listener run");
-        observed(
-            &events.values().expect("egress observations"),
-            handler::Disposition::Sent,
-        );
+        observed(&events.values().expect("egress observations"), expected);
         assert!(
             reports.events().expect("reclaimed events").is_empty(),
             "unexpected reclaimed operations: {reports:?}"
         );
     }
-}
-
-#[test]
-fn abort_returns_owner() {
-    let mut finish = Completion::new();
-    let closed = Gate::new();
-    let released = Gate::new();
-    let returned = Gate::new();
-    let retired = Gate::new();
-    let events = Rc::new(Trace::new());
-    let prepared = Listener::new::<4>(Default::default())
-        .direct(0)
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
-            App {
-                closed: closed.clone(),
-                released: released.clone(),
-                returned: returned.clone(),
-                retired: retired.clone(),
-                abort: true,
-                events: Rc::clone(&events),
-            },
-            Identity,
-        ))
-        .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                peer::Peer::at(case.addr())
-                    .exchange(b"request".to_vec(), |peer| {
-                        reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                        reached(case.try_wait(&released, 1), released.hits(), 1);
-                        reached(case.try_wait(&returned, 1), returned.hits(), 1);
-                        reached(case.try_wait(&retired, 1), retired.hits(), 1);
-                        assert!(
-                            peer.finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed")
-                                .is_empty()
-                        );
-                        assert_eq!(released.hits(), 1, "payload owner must retire exactly once");
-                        assert_eq!(returned.hits(), 1, "owner must cross one release callback");
-                        assert_eq!(retired.hits(), 1, "retirement audit must run exactly once");
-                    })
-                    .expect("spawn egress peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    observed(
-        &events.values().expect("egress observations"),
-        handler::Disposition::Closed,
-    );
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
 }
 
 #[test]

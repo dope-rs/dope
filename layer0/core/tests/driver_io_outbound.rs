@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use crate::common::rt::{finish, recover};
 
 use dope_core::{
     driver,
@@ -8,7 +8,6 @@ use dope_core::{
     },
     io::fd::outbound::{Error, Reserved},
 };
-use dope_test::scope;
 use o3::depot::arena::slab::Vacancy;
 
 use crate::common::driver::{Scoped as _, support::Targets as _};
@@ -479,15 +478,4 @@ fn rolls_back_route() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), scope::Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(scope::Error::cause)
-        .expect("driver lifecycle");
 }

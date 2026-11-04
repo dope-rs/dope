@@ -34,13 +34,6 @@ pub(super) trait Index<'d, R: schedule::PlaneTree<'d>> {
     fn into_root(self) -> ready::TreeIndex<R>;
 }
 
-pub(super) trait Split<'d, R: schedule::PlaneTree<'d>>: Index<'d, R> {
-    type Left: Index<'d, R>;
-    type Right: Index<'d, R>;
-
-    fn split(self) -> Result<Self::Left, Self::Right>;
-}
-
 #[must_use = "dropping a selected task returns it to the ready set"]
 pub struct Item<'plane, 'turn, 'd, R, Q = quota::Physical, S = queue::Flat<'d>>
 where
@@ -183,7 +176,6 @@ where
     R: schedule::PlaneTree<'d>,
     Q: quota::State,
     S: queue::Backend<'d> + 'plane,
-    I: Index<'d, R>,
 {
     active: Borrowed<'plane, R, Q>,
     dequeued: S::Dequeued<'plane, I>,

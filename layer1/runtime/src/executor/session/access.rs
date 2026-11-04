@@ -97,7 +97,7 @@ where
         R: root::Root<'d>,
         C: clock::Time,
     {
-        self.with(|state| block::Block::new(state, source)?.run(root, tick))
+        self.with(|state| block::Block::new(state.driver_ref(), state, source)?.run(root, tick))
     }
 
     pub(super) fn drive_fixed<R, C>(
@@ -110,7 +110,9 @@ where
         R: root::Root<'d>,
         C: clock::Time,
     {
-        self.with(|state| block::Block::new(state, source)?.run_fixed(root, tick))
+        self.with(|state| {
+            block::Block::new(state.driver_ref(), state, source)?.run_fixed(root, tick)
+        })
     }
 
     pub(super) fn run(self) -> Result<(), drive::Error> {
@@ -126,7 +128,10 @@ where
     where
         R: root::Root<'d>,
     {
-        self.with(|state| block::Block::new(state, clock::wall())?.run_until(root, drive::tick))
+        self.with(|state| {
+            block::Block::new(state.driver_ref(), state, clock::wall())?
+                .run_until(root, drive::tick)
+        })
     }
 
     pub(super) fn run_drain(mut self, timeout: Positive) -> Result<drain::Outcome, drive::Error>
@@ -157,7 +162,7 @@ where
         D: executor::raw::Drain<'d>,
     {
         let source = clock::Bound::until(clock::wall(), timeout.get())?;
-        self.with(|state| drain::Run::new(state, source).run())
+        self.with(|state| drain::run(state, source))
     }
 
     fn with<T>(

@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope_core::driver::{
     life::{creation::Attempt, recovery},
     route::KeyTag,
@@ -70,7 +68,7 @@ fn manual_observes_drop() {
                         .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -136,7 +134,7 @@ fn terminal_drops_root() {
                         .is_ok()
                     );
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             )
             .as_ref()
             .map_err(|error| error.cause())
@@ -239,7 +237,7 @@ fn drain_orders_completion() {
                             .expect("application cleanup");
                         assert_eq!(result, if output.is_pending() { Ok(()) } else { Err(19) });
                     },
-                    recovery::Policy::new(|event| reports.push(event), recover),
+                    recovery::Policy::new(|event| reports.push(event), common::recover),
                 )
                 .as_ref()
                 .map_err(|error| error.cause())
@@ -254,8 +252,4 @@ fn drain_orders_completion() {
         assert_eq!(begun.get(), draining && output.is_pending());
         assert_eq!(forced.get(), left == usize::MAX);
     }
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

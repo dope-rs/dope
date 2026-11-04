@@ -22,7 +22,7 @@ impl<'driver, 'turn, 'root, 'd: 'root> Activate<'driver, 'turn, 'root, 'd> {
         driver: retained::Context<'driver, 'root, 'd>,
     ) -> Self {
         Self {
-            drive: executor::raw::Drive::new(turn, driver),
+            drive: executor::raw::Drive { turn, driver },
             target,
         }
     }
@@ -56,7 +56,7 @@ impl<'driver, 'turn, 'root, 'd: 'root> Activate<'driver, 'turn, 'root, 'd> {
         route::Erased<'d, kind::Any>,
         retained::Context<'driver, 'root, 'd>,
     ) {
-        (self.target, self.drive.into_driver())
+        (self.target, self.drive.driver)
     }
 
     pub fn map<R>(
@@ -67,7 +67,7 @@ impl<'driver, 'turn, 'root, 'd: 'root> Activate<'driver, 'turn, 'root, 'd> {
             retained::Context<'driver, 'root, 'd>,
         ) -> R,
     ) -> R {
-        let (turn, driver) = self.drive.into_parts();
+        let executor::raw::Drive { turn, driver } = self.drive;
         map(self.target, turn, driver)
     }
 }

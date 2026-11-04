@@ -40,53 +40,6 @@ pub(super) struct Target<'h> {
     health: health::Generation,
 }
 
-enum Impact {
-    Transport,
-    Connect,
-    Idle,
-    Protocol,
-    Remote,
-    Neutral,
-}
-
-impl From<close::Reason> for Impact {
-    fn from(reason: close::Reason) -> Self {
-        use close::{Capacity, LocalOrigin, Reason};
-
-        use crate::client::deadline;
-        match reason {
-            Reason::Transport | Reason::Timeout(deadline::Kind::Send) => Self::Transport,
-            Reason::Timeout(deadline::Kind::Connect) => Self::Connect,
-            Reason::Timeout(deadline::Kind::Inbound) => Self::Idle,
-            Reason::Protocol
-            | Reason::Ingress(
-                receive::Failure::Contract | receive::Failure::Hold(hold::Error::Range(_)),
-            ) => Self::Protocol,
-            Reason::Remote => Self::Remote,
-            Reason::Local(
-                LocalOrigin::ApiRequest
-                | LocalOrigin::SideComplete
-                | LocalOrigin::OperationCancelled
-                | LocalOrigin::Superseded
-                | LocalOrigin::ScheduledRotation
-                | LocalOrigin::RuntimeShutdown
-                | LocalOrigin::ResourceFailure,
-            )
-            | Reason::Capacity(
-                Capacity::IngressStaging
-                | Capacity::IngressRetention
-                | Capacity::Transport
-                | Capacity::IdentityExhausted,
-            )
-            | Reason::EndpointRetired
-            | Reason::Timeout(deadline::Kind::Lifetime)
-            | Reason::Receive(_)
-            | Reason::Ingress(_)
-            | Reason::Egress(_) => Self::Neutral,
-        }
-    }
-}
-
 pub struct Pool<
     'q,
     'h,
@@ -257,16 +210,44 @@ where
         reason: close::Reason,
         now: clock::Moment<'d>,
     ) -> Option<health::Cause> {
+        use close::{Capacity, LocalOrigin, Reason};
+
+        use crate::client::deadline;
+
         let present = self.is_present();
         let mut cause = None;
         let update = self.dials.recycle(key, present, |target| {
-            let next = match Impact::from(reason) {
-                Impact::Transport => health::Cause::Transport,
-                Impact::Connect => health::Cause::ConnectTimeout,
-                Impact::Idle => health::Cause::Idle,
-                Impact::Protocol => health::Cause::Protocol,
-                Impact::Remote => health::Cause::Remote,
-                Impact::Neutral => return self.membership.cancel(target),
+            let next = match reason {
+                Reason::Transport | Reason::Timeout(deadline::Kind::Send) => {
+                    health::Cause::Transport
+                }
+                Reason::Timeout(deadline::Kind::Connect) => health::Cause::ConnectTimeout,
+                Reason::Timeout(deadline::Kind::Inbound) => health::Cause::Idle,
+                Reason::Protocol
+                | Reason::Ingress(
+                    receive::Failure::Contract | receive::Failure::Hold(hold::Error::Range(_)),
+                ) => health::Cause::Protocol,
+                Reason::Remote => health::Cause::Remote,
+                Reason::Local(
+                    LocalOrigin::ApiRequest
+                    | LocalOrigin::SideComplete
+                    | LocalOrigin::OperationCancelled
+                    | LocalOrigin::Superseded
+                    | LocalOrigin::ScheduledRotation
+                    | LocalOrigin::RuntimeShutdown
+                    | LocalOrigin::ResourceFailure,
+                )
+                | Reason::Capacity(
+                    Capacity::IngressStaging
+                    | Capacity::IngressRetention
+                    | Capacity::Transport
+                    | Capacity::IdentityExhausted,
+                )
+                | Reason::EndpointRetired
+                | Reason::Timeout(deadline::Kind::Lifetime)
+                | Reason::Receive(_)
+                | Reason::Ingress(_)
+                | Reason::Egress(_) => return self.membership.cancel(target),
             };
             let update = self.membership.fail(target, &mut self.backoff, now);
             if let members::Update::Applied = update {

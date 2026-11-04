@@ -196,13 +196,6 @@ impl<'d> ReservedKey<'d> {
     pub(super) fn topology(self) -> TopologyKey<'d> {
         TopologyKey(self.0)
     }
-
-    pub(in crate::driver::schedule::ready) fn renew(
-        self,
-        slots: &'d ready::Slots,
-    ) -> ready::Renewal<'d> {
-        slots.mutation().renew(self)
-    }
 }
 
 impl<'d> DispatchKey<'d> {
@@ -252,7 +245,7 @@ impl<'d> TaskKey<'d> {
         slots: &'d ready::Slots,
     ) -> Detached<'d> {
         let root = ready::Topology::detach(slots, &self);
-        let task = slots.mutation().untask(self);
+        let task = slots.untask(self);
         Detached { task, root }
     }
 }

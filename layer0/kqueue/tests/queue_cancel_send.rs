@@ -1,21 +1,33 @@
 pub mod common;
 
-use std::{iter, num::NonZeroUsize, os::fd::AsRawFd as _};
+use std::{
+    env,
+    ffi::OsStr,
+    iter, mem, net,
+    num::NonZeroUsize,
+    os::fd::{AsFd as _, AsRawFd as _},
+    process::Command,
+    ptr,
+};
 
 use dope_kqueue::Kqueue;
 use dope_sys::{
     Errno,
     engine::admit,
-    io::reactor::{
-        complete::{self, Cancellation as _, Queue as _},
-        ready::{self, Poll as _},
-        retry::{self, Entry as _, Occupied as _, State as _, raw::Write as _},
+    io::{
+        reactor::{
+            complete::{self, Cancellation as _, Queue as _},
+            ready::{self, Poll as _},
+            retry::{self, Entry as _, Occupied as _, State as _, raw::Write as _},
+        },
+        socket::{self, Prepare as _, Socket as _, msg, raw::Open as _},
     },
     table::{
         Files as _,
         change::{self, Changes as _, Id as _},
     },
 };
+use o3::buffer::bytes;
 
 use crate::common::{
     Failure,
@@ -30,6 +42,67 @@ type Poll = <Kqueue as ready::Source>::Poll<Slots, Failure>;
 type Pending = <Kqueue as retry::Source>::Pending<Context>;
 type File = <Pending as retry::Entry>::File;
 type Retry<'a> = <Kqueue as retry::Source>::Retry<'a, Context, Write, Poll>;
+
+#[test]
+fn adopted_child_send_keeps_error() {
+    use retry::raw::Send as _;
+
+    let name = "adopted_child_send_keeps_error";
+    if env::var_os("O3_TEST_CHILD").as_deref() != Some(OsStr::new(name)) {
+        let output = Command::new(env::current_exe().expect("test executable"))
+            .args([name, "--exact"])
+            .env("O3_TEST_CHILD", name)
+            .output()
+            .expect("isolated send");
+        assert!(output.status.success(), "send child: {output:?}");
+        return;
+    }
+    // SAFETY: this isolated child executes only this test.
+    assert_ne!(
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) },
+        libc::SIG_ERR
+    );
+    let listener = net::TcpListener::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("listener");
+    Kqueue::set_option::<Errno>(listener.as_fd(), libc::SOL_SOCKET, libc::SO_NOSIGPIPE, &0)
+        .expect("unprepared listener");
+    let _peer =
+        net::TcpStream::connect(listener.local_addr().expect("address")).expect("prequeued peer");
+    let listener = Kqueue::adopt(listener.into()).expect("adopt listener");
+    // SAFETY: both optional address outputs are null.
+    let accepted = unsafe { listener.accept(ptr::null_mut(), ptr::null_mut()) }
+        .expect("accept prequeued peer");
+    let mut suppressed: libc::c_int = 1;
+    let mut len = mem::size_of_val(&suppressed) as libc::socklen_t;
+    // SAFETY: the owned descriptor and complete scalar output outlive this query.
+    assert_eq!(
+        unsafe {
+            libc::getsockopt(
+                accepted.as_fd().as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_NOSIGPIPE,
+                ptr::from_mut(&mut suppressed).cast(),
+                &mut len,
+            )
+        },
+        0,
+    );
+    assert_eq!(suppressed, 0);
+    Kqueue::shutdown::<Errno>(accepted.as_fd(), socket::How::WRITE).expect("close send half");
+    let input = [msg::Iovec::from_slice(b"x")];
+    let mut message = msg::Header::new();
+    message.bind(&input);
+    type Data = <Kqueue as retry::Source>::Send<Context>;
+    for data in [
+        Data::bytes(bytes::Prefix::new(b"x")),
+        Data::message(&message),
+    ] {
+        // SAFETY: the header and immutable input remain live through both synchronous attempts.
+        assert!(matches!(
+            unsafe { data.attempt(accepted.as_fd()) },
+            retry::Attempt::Ready(Err(error)) if error.code().get() == libc::EPIPE
+        ));
+    }
+}
 
 #[test]
 fn cancel_keeps_indices() {
@@ -47,7 +120,7 @@ fn cancel_keeps_indices() {
         .expect("blocked write must retain target and fd");
     {
         let owner = state.occupied_fd(raw).expect("original descriptor indexes");
-        assert_eq!(Pending::descriptor(owner.record()), raw);
+        assert_eq!(Pending::file(owner.record()).fd(), raw);
     }
     assert!(state.occupied_fd(peer.as_raw_fd()).is_none());
     assert!(state.first() == Some(target));

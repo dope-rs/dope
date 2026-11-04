@@ -1,5 +1,4 @@
 use dope::net::{
-    tcp::Tcp,
     wire,
     wire::{
         domain,
@@ -14,8 +13,7 @@ use dope::net::{
         terminal::Terminal,
     },
 };
-use dope_core::driver::route::{Identity, KeyTag};
-use dope_fiber::net::client::Machine;
+use dope_core::driver::route::Identity;
 
 use crate::common::network::rounds::client::fault::{Context, Error};
 
@@ -167,13 +165,4 @@ impl domain::Init<Wire> for Wire {
     {
         bind
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-pub struct App<'p, 'scope, 'd> {
-    #[pin]
-    #[manifold]
-    pub(crate) connector: Machine<'p, 'scope, 'd, 'd, KeyTag<0>, Tcp, Wire>,
 }

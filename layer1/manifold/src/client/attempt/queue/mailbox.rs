@@ -261,8 +261,9 @@ impl<'d, C, O, ID: Identity> Slot<'d, C, O, ID> {
         if !self.initialized.get() {
             return Err((Conflict::Busy(key), outcome));
         }
-        if current != key {
-            let cause = if self.settled.get() {
+        let settled = self.settled.get();
+        if current != key || settled {
+            let cause = if settled {
                 Conflict::Settled { key, current }
             } else {
                 Conflict::Pending { key, current }
@@ -270,19 +271,13 @@ impl<'d, C, O, ID: Identity> Slot<'d, C, O, ID> {
             return Err((cause, outcome));
         }
         self.initialized.set(false);
-        // SAFETY: exact generation and initialized state were admitted above.
-        // The cleared header excludes reentry until the transition is restored.
-        let value = unsafe { self.take() };
-        let (value, result) = match value {
-            State::Pending(context, waiter) => (State::Settled(outcome), Ok((context, waiter))),
-            state @ State::Settled(_) => {
-                (state, Err((Conflict::Settled { key, current }, outcome)))
-            }
-        };
-        // SAFETY: this checked transition owns the removed payload, and the
-        // transition produced its exact successor without user reentry.
-        unsafe { self.insert(value) };
-        result
+        // SAFETY: this exact generation's initialized Pending payload was
+        // admitted above. No callback intervenes, and the cleared header excludes reentry.
+        let (context, waiter) =
+            ManuallyDrop::into_inner(unsafe { (*self.value.get()).assume_init_read().pending });
+        // SAFETY: this checked transition owns the now-vacant payload storage.
+        unsafe { self.insert(State::Settled(outcome)) };
+        Ok((context, waiter))
     }
 
     unsafe fn take(&self) -> State<'d, C, O> {

@@ -33,14 +33,12 @@ use dope_sys::{
 };
 use driver::Engine;
 use o3::{base::num::bounded, buffer::bytes::bounded::MAX};
-pub(crate) use observed::Observed;
 use reactor::{
     buffers,
     ring::{Recover, Released, Resources},
     sq,
 };
 pub(crate) use reactor::{register::Register, ring::Ring};
-pub(crate) use sockets::Opened;
 pub use uring::Uring;
 
 use crate::{
@@ -68,12 +66,18 @@ mod reactor;
 mod driver;
 
 mod error;
-mod observed;
 mod system;
 
 mod sockets;
 
-type BufferBuild<L, P> = buffers::Build<L, P>;
+pub(crate) type Observed<T> = complete::Parts<T, cq::Outcome, cq::Flags>;
+
+const _: () = {
+    assert!(mem::size_of::<Observed<u64>>() == 2 * mem::size_of::<u64>());
+    assert!(mem::align_of::<Observed<u64>>() == mem::align_of::<u64>());
+};
+
+type BufferBuild<L, P> = o3::mem::Rejected<Cleanup<L>, P>;
 
 type Primary = create::Primary<
     create::Cause<kernel::Errno<error::Setup>, kernel::Errno<error::Map>>,

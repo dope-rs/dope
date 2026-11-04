@@ -4,7 +4,7 @@ use std::{mem, net, time::Duration};
 
 use common::{
     manifold::datagram::{
-        Receive, budget,
+        Receive,
         budget::{
             Packet,
             capacity::{Capacity, Stage},
@@ -15,10 +15,13 @@ use common::{
     scenario::Runtime,
 };
 use dope_core::driver::{
-    life::{creation::Attempt, recovery},
+    life::recovery,
     route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
 };
-use dope_manifold::network::datagram::{self, plan, plan::Config};
+use dope_manifold::{
+    app::Host,
+    network::datagram::{self, plan, plan::Config},
+};
 use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers,
@@ -30,7 +33,6 @@ use o3::buffer::{Residency as _, storage::NonEmpty};
 #[test]
 fn charges_complete_slot() {
     let mut finish = Completion::new();
-    let mut create = Attempt::new();
     const PAYLOAD_BYTES: u32 = 2048;
 
     let rejected = Gate::new();
@@ -39,71 +41,49 @@ fn charges_complete_slot() {
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
-    {
-        let result = runtime.try_executor(&mut create);
-        result
-            .as_ref()
-            .map_err(|error| error.kind())
-            .expect("native creation");
-        result.ok().expect("native creation")
-    }
-    .run(|executor| {
-        let result = executor.enter_with(
-            |mut session| {
-                let config = {
-                    let outcome = Config::new(1, bytes.into_nonzero().get() as usize - 1, 1);
-                    outcome.expect("valid send bounds rejected")
-                };
-                let endpoint = {
-                    let mut driver = session.driver();
-                    let plan = {
-                        let outcome = plan::Plan::<KeyTag<0>>::new(config).prepare(&mut driver);
-                        outcome.expect("endpoint preparation failed")
-                    };
-                    {
-                        let outcome = plan.bind(
-                            (net::Ipv4Addr::LOCALHOST, 0).into(),
-                            handler::Handler::new(
-                                Packet {
-                                    rejected: rejected.clone(),
-                                },
-                                check_packet,
-                            ),
-                            &mut driver,
-                        );
-                        outcome.expect("endpoint bind failed")
-                    }
-                };
-                let addr = endpoint.local_addr();
-                let sender = (net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)))
-                    .expect("sender bind failed");
-                assert!(matches!(sender.send_to(&[], addr), Ok(0)));
-
-                ({
-                    let outcome = session.with_quiesce(
-                        &mut finish,
-                        budget::App { endpoint },
-                        Duration::from_secs(2),
-                        |mut app| {
-                            assert_eq!(
-                                fibers::TEST
-                                    .try_wait(&mut app, &rejected, 1)
-                                    .expect("progress wait"),
-                                fibers::Wait::Reached
-                            );
+    runtime.with_scope(
+        |mut session| {
+            let config = Config::new(1, bytes.into_nonzero().get() as usize - 1, 1)
+                .expect("valid send bounds rejected");
+            let endpoint = {
+                let mut driver = session.driver();
+                let plan = plan::Plan::<KeyTag<0>>::new(config)
+                    .prepare(&mut driver)
+                    .expect("endpoint preparation failed");
+                plan.bind(
+                    (net::Ipv4Addr::LOCALHOST, 0).into(),
+                    handler::Handler::new(
+                        Packet {
+                            rejected: rejected.clone(),
                         },
+                        check_packet,
+                    ),
+                    &mut driver,
+                )
+                .expect("endpoint bind failed")
+            };
+            let addr = endpoint.local_addr();
+            let sender =
+                net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("sender bind failed");
+            assert!(matches!(sender.send_to(&[], addr), Ok(0)));
+
+            let outcome = session.with_quiesce(
+                &mut finish,
+                Host::new(endpoint),
+                Duration::from_secs(2),
+                |mut app| {
+                    assert_eq!(
+                        fibers::TEST
+                            .try_wait(&mut app, &rejected, 1)
+                            .expect("progress wait"),
+                        fibers::Wait::Reached
                     );
-                    assert!(outcome.is_ok(), "application teardown");
-                });
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-        );
-        result
-            .as_ref()
-            .map_err(|error| error.cause())
-            .expect("native retirement");
-        result.ok().expect("native retirement")
-    });
+                },
+            );
+            assert!(outcome.is_ok(), "application teardown");
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+    );
     assert!(
         reports
             .matches_one(&Receive::<KeyTag<0>>(Parts::new(
@@ -120,33 +100,26 @@ fn check_packet<'d>(this: &mut Packet, event: handler::Event<'_, '_, '_, '_, 'd>
             let (source, packet) = received.expect("receive a valid datagram");
 
             assert_eq!(packet.as_ref(), []);
-            let result = socket.as_mut().queue_packet(packet, source);
-            assert!(
-                result.is_err(),
-                "a packet retains its complete receive slot"
-            );
-            let Err(rejected) = result else {
-                return;
-            };
+            let rejected = socket
+                .as_mut()
+                .queue_packet(packet, source)
+                .err()
+                .expect("a packet retains its complete receive slot");
             let (packet, cause) = rejected.into_parts();
             assert!(matches!(cause, datagram::RejectCause::Resident { .. }));
             assert_eq!(packet.as_ref(), []);
             this.rejected.hit();
         }
-        other => assert!(
-            matches!(other, handler::Event::Access(..)),
-            "unexpected datagram callback"
-        ),
+        _ => panic!("unexpected datagram callback"),
     }
 }
 
 #[test]
 fn completion_releases() {
     let mut finish = Completion::new();
-    let mut create = Attempt::new();
     let receiver =
-        (net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0))).expect("receiver bind failed");
-    let addr = (receiver.local_addr()).expect("receiver address unavailable");
+        net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("receiver bind failed");
+    let addr = receiver.local_addr().expect("receiver address unavailable");
     let mut first = Vec::with_capacity(4096);
     first.push(1);
     let mut second = Vec::with_capacity(4096);
@@ -162,70 +135,47 @@ fn completion_releases() {
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
-    {
-        let result = runtime.try_executor(&mut create);
-        result
-            .as_ref()
-            .map_err(|error| error.kind())
-            .expect("native creation");
-        result.ok().expect("native creation")
-    }
-    .run(|executor| {
-        let result = executor.enter_with(
-            |mut session| {
-                let config = {
-                    let outcome = Config::new(2, bytes, 2);
-                    outcome.expect("send bounds must be valid")
-                };
-                let endpoint = {
-                    let mut driver = session.driver();
-                    let plan = {
-                        let outcome = plan::Plan::<KeyTag<0>>::new(config).prepare(&mut driver);
-                        outcome.expect("endpoint preparation failed")
-                    };
-                    {
-                        let outcome = plan.bind(
-                            (net::Ipv4Addr::LOCALHOST, 0).into(),
-                            handler::Handler::new(
-                                Capacity {
-                                    addr,
-                                    stage: Stage::Initial(first, second),
-                                    released: released.clone(),
-                                    received: received.clone(),
-                                },
-                                check_capacity,
-                            ),
-                            &mut driver,
-                        );
-                        outcome.expect("endpoint bind failed")
-                    }
-                };
-
-                ({
-                    let outcome = session.with_quiesce(
-                        &mut finish,
-                        budget::App { endpoint },
-                        Duration::from_secs(2),
-                        |mut app| {
-                            assert_eq!(
-                                fibers::TEST
-                                    .try_wait(&mut app, &released, 1)
-                                    .expect("progress wait"),
-                                fibers::Wait::Reached
-                            );
+    runtime.with_scope(
+        |mut session| {
+            let config = Config::new(2, bytes, 2).expect("send bounds must be valid");
+            let endpoint = {
+                let mut driver = session.driver();
+                let plan = plan::Plan::<KeyTag<0>>::new(config)
+                    .prepare(&mut driver)
+                    .expect("endpoint preparation failed");
+                plan.bind(
+                    (net::Ipv4Addr::LOCALHOST, 0).into(),
+                    handler::Handler::new(
+                        Capacity {
+                            addr,
+                            stage: Stage::Initial(first, second),
+                            released: released.clone(),
+                            received: received.clone(),
                         },
+                        check_capacity,
+                    ),
+                    &mut driver,
+                )
+                .expect("endpoint bind failed")
+            };
+
+            let outcome = session.with_quiesce(
+                &mut finish,
+                Host::new(endpoint),
+                Duration::from_secs(2),
+                |mut app| {
+                    assert_eq!(
+                        fibers::TEST
+                            .try_wait(&mut app, &released, 1)
+                            .expect("progress wait"),
+                        fibers::Wait::Reached
                     );
-                    assert!(outcome.is_ok(), "application teardown");
-                });
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-        );
-        result
-            .as_ref()
-            .map_err(|error| error.cause())
-            .expect("native retirement");
-        result.ok().expect("native retirement")
-    });
+                },
+            );
+            assert!(outcome.is_ok(), "application teardown");
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+    );
     assert!(
         reports
             .matches_one(&Receive::<KeyTag<0>>(Parts::new(
@@ -295,9 +245,6 @@ fn check_capacity<'d>(this: &mut Capacity, event: handler::Event<'_, '_, '_, '_,
                 }
             });
         }
-        other => assert!(
-            matches!(other, handler::Event::Access(..)),
-            "unexpected datagram callback"
-        ),
+        _ => panic!("unexpected datagram callback"),
     }
 }

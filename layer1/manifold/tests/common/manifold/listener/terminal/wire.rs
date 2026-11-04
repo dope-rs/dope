@@ -1,4 +1,4 @@
-use std::{cell::Cell, marker::PhantomData, rc::Rc};
+use std::{cell::Cell, rc::Rc};
 
 use dope_core::{
     driver::{route::Identity, schedule::ready::task::owner},
@@ -27,7 +27,7 @@ pub enum Fault {
     Closing,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Peer(socket::Error),
     Chunk(Vec<u8>),
@@ -47,12 +47,27 @@ pub enum Event {
     Retired,
 }
 
-pub trait FailureMode {
-    const DATA: Option<Fault>;
-    const EOF: Option<Fault>;
-    const CONTROL: Control;
-    const CLEAN_DATA: bool = false;
-    const EOF_DATA: bool = false;
+#[derive(Clone, Copy)]
+pub enum Mode {
+    FailOnEof,
+    FailOnData { closing: bool },
+    StallOnData,
+    CleanOnData,
+    CleanOnEof { control: bool },
+    EofOnData { control: bool },
+}
+
+impl Mode {
+    fn control(self) -> Control {
+        match self {
+            Self::FailOnData { closing: true } => Control::Fail,
+            Self::FailOnData { closing: false }
+            | Self::CleanOnEof { control: true }
+            | Self::EofOnData { control: true } => Control::Send,
+            Self::StallOnData => Control::Stall,
+            _ => Control::None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,6 +79,7 @@ pub enum Control {
 }
 
 pub struct Probe {
+    mode: Mode,
     pub(crate) eof: Cell<usize>,
     pub(crate) chunk: Gate,
     pub(crate) events: Rc<Cell<Vec<Event>>>,
@@ -72,8 +88,9 @@ pub struct Probe {
 }
 
 impl Probe {
-    pub fn new(events: Rc<Cell<Vec<Event>>>) -> Self {
+    pub fn new(events: Rc<Cell<Vec<Event>>>, mode: Mode) -> Self {
         Self {
+            mode,
             eof: Cell::new(0),
             chunk: Gate::new(),
             events,
@@ -108,19 +125,16 @@ impl Probe {
     }
 }
 
-impl<'w, 'd: 'w, M: FailureMode + 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire<M>, ID>
-    for Rc<Probe>
-{
+impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Rc<Probe> {
     fn open<C, T>(
         &mut self,
         context: C,
-        consume: impl FnOnce(C, Wire<M>, Buffer<64>) -> open::Disposition<T, Wire<M>, Buffer<64>>,
-    ) -> open::Outcome<C, T, open::Error<'w, Wire<M>>> {
+        consume: impl FnOnce(C, Wire, Buffer<64>) -> open::Disposition<T, Wire, Buffer<64>>,
+    ) -> open::Outcome<C, T, open::Error<'w, Wire>> {
         let wire = Wire {
             terminal_control: false,
             terminal_inflight: false,
             probe: Rc::clone(self),
-            mode: PhantomData,
         };
         let output = match consume(context, wire, Buffer::default()) {
             open::Disposition::Commit(output) | open::Disposition::Retry { output, .. } => output,
@@ -129,64 +143,13 @@ impl<'w, 'd: 'w, M: FailureMode + 'w, ID: Identity + 'w> open::Runtime<'w, 'd, W
     }
 }
 
-pub struct FailOnEof;
-
-impl FailureMode for FailOnEof {
-    const DATA: Option<Fault> = None;
-    const EOF: Option<Fault> = Some(Fault::Truncated);
-    const CONTROL: Control = Control::None;
-}
-
-pub struct FailOnData<const FAIL: bool = false>;
-
-impl<const FAIL: bool> FailureMode for FailOnData<FAIL> {
-    const DATA: Option<Fault> = Some(Fault::Protocol);
-    const EOF: Option<Fault> = None;
-    const CONTROL: Control = if FAIL { Control::Fail } else { Control::Send };
-}
-
-pub struct StallOnData;
-
-impl FailureMode for StallOnData {
-    const DATA: Option<Fault> = Some(Fault::Protocol);
-    const EOF: Option<Fault> = None;
-    const CONTROL: Control = Control::Stall;
-}
-
-pub struct CleanOnData;
-
-impl FailureMode for CleanOnData {
-    const DATA: Option<Fault> = None;
-    const EOF: Option<Fault> = None;
-    const CONTROL: Control = Control::None;
-    const CLEAN_DATA: bool = true;
-}
-
-pub struct CleanOnEof<const SEND: bool = false>;
-
-impl<const SEND: bool> FailureMode for CleanOnEof<SEND> {
-    const DATA: Option<Fault> = None;
-    const EOF: Option<Fault> = None;
-    const CONTROL: Control = if SEND { Control::Send } else { Control::None };
-}
-
-pub struct EofOnData<const SEND: bool = false>;
-
-impl<const SEND: bool> FailureMode for EofOnData<SEND> {
-    const DATA: Option<Fault> = None;
-    const EOF: Option<Fault> = None;
-    const CONTROL: Control = if SEND { Control::Send } else { Control::None };
-    const EOF_DATA: bool = true;
-}
-
-pub struct Wire<M> {
+pub struct Wire {
     pub(crate) terminal_control: bool,
     pub(crate) terminal_inflight: bool,
     pub(crate) probe: Rc<Probe>,
-    pub(crate) mode: PhantomData<M>,
 }
 
-impl<M: FailureMode> Wire<M> {
+impl Wire {
     pub(crate) fn receive<'d, T>(
         &mut self,
         output: T,
@@ -195,40 +158,37 @@ impl<M: FailureMode> Wire<M> {
     where
         Self: 'd,
     {
-        if M::EOF_DATA {
-            self.terminal_control = M::CONTROL != Control::None;
-            return end.eof(output);
-        }
-        if M::CLEAN_DATA {
-            return end.terminal(output, terminal::Terminal::Clean);
-        }
-        match M::DATA {
-            Some(cause) => {
-                self.terminal_control = M::CONTROL != Control::None;
+        match self.probe.mode {
+            Mode::EofOnData { control } => {
+                self.terminal_control = control;
+                end.eof(output)
+            }
+            Mode::CleanOnData => end.terminal(output, terminal::Terminal::Clean),
+            Mode::FailOnData { .. } | Mode::StallOnData => {
+                self.terminal_control = true;
                 end.terminal(
                     output,
-                    terminal::Terminal::Failed(terminal::Error::from_cause(cause)),
+                    terminal::Terminal::Failed(terminal::Error::from_cause(Fault::Protocol)),
                 )
             }
-            None => end.output(output),
+            Mode::FailOnEof | Mode::CleanOnEof { .. } => end.output(output),
         }
     }
 }
 
-pub struct Ingress<M>(pub(crate) PhantomData<M>);
+pub struct Ingress;
 
 pub struct Egress;
 
-impl<M: FailureMode> send::Policy<Wire<M>> for Egress {
+impl send::Policy<Wire> for Egress {
     type Reclaim = reclaim::OnSubmit;
 
     fn prepare<'a, 'd, ID: Identity + 'd>(
-        context: Context<'a, 'd, ID, Wire<M>, Storage<'a, Buffer<64>>>,
+        context: Context<'a, 'd, ID, Wire, Storage<'a, Buffer<64>>>,
         plain: Plain<'a>,
-        end: terminal::Send<'_, terminal::Error<'d, Wire<M>>>,
+        end: terminal::Send<'_, terminal::Error<'d, Wire>>,
     ) -> terminal::Processed<Prepared<'a, Self::Reclaim, impl Payload<'a>>>
     where
-        Wire<M>: 'd,
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
@@ -246,12 +206,11 @@ impl<M: FailureMode> send::Policy<Wire<M>> for Egress {
     }
 
     fn prepare_many<'a, 'd, ID: Identity + 'd, const N: usize>(
-        context: Context<'a, 'd, ID, Wire<M>, Storage<'a, Buffer<64>>>,
+        context: Context<'a, 'd, ID, Wire, Storage<'a, Buffer<64>>>,
         plain: Vectored<'a, N>,
-        end: terminal::Send<'_, terminal::Error<'d, Wire<M>>>,
+        end: terminal::Send<'_, terminal::Error<'d, Wire>>,
     ) -> terminal::Processed<Prepared<'a, Self::Reclaim, impl Payload<'a>>>
     where
-        Wire<M>: 'd,
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
@@ -271,11 +230,10 @@ impl<M: FailureMode> send::Policy<Wire<M>> for Egress {
     }
 
     fn after_send<'a, 'd, ID: Identity + 'd>(
-        context: Context<'a, 'd, ID, Wire<M>, Completion<'a, reclaim::OnSubmit, Buffer<64>>>,
-        end: terminal::Send<'_, terminal::Error<'d, Wire<M>>>,
+        context: Context<'a, 'd, ID, Wire, Completion<'a, reclaim::OnSubmit, Buffer<64>>>,
+        end: terminal::Send<'_, terminal::Error<'d, Wire>>,
     ) -> terminal::Processed<Transition<'a, Self::Reclaim, impl Payload<'a>>>
     where
-        Wire<M>: 'd,
         'd: 'a,
     {
         let (wire, done) = context.into_parts();
@@ -288,16 +246,15 @@ impl<M: FailureMode> send::Policy<Wire<M>> for Egress {
     }
 
     fn settle<'a, 'd, ID: Identity + 'd>(
-        context: Context<'a, 'd, ID, Wire<M>, Completion<'a, reclaim::OnSubmit, Buffer<64>>>,
-        end: Option<terminal::Drain<'_, 'd, Wire<M>>>,
+        context: Context<'a, 'd, ID, Wire, Completion<'a, reclaim::OnSubmit, Buffer<64>>>,
+        end: Option<terminal::Drain<'_, 'd, Wire>>,
     ) -> Transition<'a, Self::Reclaim, impl Payload<'a>>
     where
-        Wire<M>: 'd,
         'd: 'a,
     {
         let (wire, done) = context.into_parts();
         if end.is_some() {
-            wire.probe.admissions.push(M::CONTROL);
+            wire.probe.admissions.push(wire.probe.mode.control());
         }
         let send = done.consume_max();
         if wire.terminal_inflight && send.bytes.is_empty() {
@@ -308,18 +265,17 @@ impl<M: FailureMode> send::Policy<Wire<M>> for Egress {
     }
 
     fn flush<'a, 'd, ID: Identity + 'd>(
-        context: Context<'a, 'd, ID, Wire<M>, Storage<'a, Buffer<64>>>,
-        end: terminal::Send<'_, terminal::Error<'d, Wire<M>>>,
+        context: Context<'a, 'd, ID, Wire, Storage<'a, Buffer<64>>>,
+        end: terminal::Send<'_, terminal::Error<'d, Wire>>,
     ) -> terminal::Processed<Prepared<'a, Self::Reclaim, impl Payload<'a>>>
     where
-        Wire<M>: 'd,
         'd: 'a,
     {
         let (wire, mut send) = context.into_parts();
         if !wire.terminal_control {
             return end.output(send.buffered());
         }
-        if M::CONTROL == Control::Stall {
+        if wire.probe.mode.control() == Control::Stall {
             return end.output(send.buffered());
         }
         wire.probe.writes.push(send.bytes.write_slice(b"!"));
@@ -330,22 +286,21 @@ impl<M: FailureMode> send::Policy<Wire<M>> for Egress {
     }
 
     fn drain<'a, 'd, ID: Identity + 'd>(
-        context: Context<'a, 'd, ID, Wire<M>, Storage<'a, Buffer<64>>>,
-        end: Option<terminal::Drain<'_, 'd, Wire<M>>>,
+        context: Context<'a, 'd, ID, Wire, Storage<'a, Buffer<64>>>,
+        end: Option<terminal::Drain<'_, 'd, Wire>>,
     ) -> Prepared<'a, Self::Reclaim, impl Payload<'a>>
     where
-        Wire<M>: 'd,
         'd: 'a,
     {
         let (wire, mut send) = context.into_parts();
-        if !wire.terminal_control || M::CONTROL == Control::Stall {
+        if !wire.terminal_control || wire.probe.mode.control() == Control::Stall {
             return send.buffered();
         }
         wire.probe.writes.push(send.bytes.write_slice(b"!"));
         wire.terminal_control = false;
         wire.terminal_inflight = true;
         wire.probe.observe(Event::ControlPrepared);
-        if M::CONTROL == Control::Fail {
+        if wire.probe.mode.control() == Control::Fail {
             match end {
                 Some(end) => end.fail(Fault::Closing),
                 None => wire.probe.observe(Event::MissingAdmission),
@@ -355,15 +310,11 @@ impl<M: FailureMode> send::Policy<Wire<M>> for Egress {
     }
 }
 
-impl<M: FailureMode> receive::Policy<Wire<M>> for Ingress<M> {
-    type Batch<'a>
-        = batch::One<&'a [u8]>
-    where
-        Wire<M>: 'a;
+impl receive::Policy<Wire> for Ingress {
+    type Batch<'a> = batch::One<&'a [u8]>;
     type Cursor<'w, 'd>
         = recv::Shared<'d>
     where
-        Wire<M>: 'w,
         'd: 'w;
     type Access = access::Direct;
     type Eof = eof::State;
@@ -372,13 +323,12 @@ impl<M: FailureMode> receive::Policy<Wire<M>> for Ingress<M> {
     type Discard = mode::Disabled;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
-        txn: reserve::Transaction<'a, 'w, ID, Wire<M>>,
+        txn: reserve::Transaction<'a, 'w, ID, Wire>,
         bytes: &'input mut [u8],
-        capacity: batch::Grant<'id, 'd, Wire<M>>,
-        end: terminal::Both<'_, terminal::Error<'w, Wire<M>>>,
+        capacity: batch::Grant<'id, 'd, Wire>,
+        end: terminal::Both<'_, terminal::Error<'w, Wire>>,
     ) -> terminal::Processed<batch::Produced<'id, Self::Batch<'input>>>
     where
-        Wire<M>: 'w,
         'd: 'w,
         'w: 'a + 'input,
     {
@@ -387,12 +337,11 @@ impl<M: FailureMode> receive::Policy<Wire<M>> for Ingress<M> {
     }
 
     fn read_lease<'a, 'w, 'd, ID: Identity + 'w>(
-        txn: reserve::Transaction<'a, 'w, ID, Wire<M>>,
+        txn: reserve::Transaction<'a, 'w, ID, Wire>,
         bytes: recv::Lease<'d>,
-        end: terminal::Both<'_, terminal::Error<'w, Wire<M>>>,
+        end: terminal::Both<'_, terminal::Error<'w, Wire>>,
     ) -> terminal::Processed<Option<Self::Cursor<'w, 'd>>>
     where
-        Wire<M>: 'w,
         'd: 'w,
         'w: 'a,
     {
@@ -401,34 +350,31 @@ impl<M: FailureMode> receive::Policy<Wire<M>> for Ingress<M> {
     }
 }
 
-impl<M: FailureMode> eof::Eof<Wire<M>> for Ingress<M> {
+impl eof::Eof<Wire> for Ingress {
     fn eof<'w, ID: Identity + 'w>(
-        wire: &mut Wire<M>,
-        end: terminal::Send<'_, terminal::Error<'w, Wire<M>>>,
-    ) -> terminal::Processed<()>
-    where
-        Wire<M>: 'w,
-    {
+        wire: &mut Wire,
+        end: terminal::Send<'_, terminal::Error<'w, Wire>>,
+    ) -> terminal::Processed<()> {
         wire.probe.observe_eof();
-        wire.terminal_control = M::CONTROL != Control::None;
-        match M::EOF {
-            Some(cause) => end.terminal(
+        wire.terminal_control = wire.probe.mode.control() != Control::None;
+        match wire.probe.mode {
+            Mode::FailOnEof => end.terminal(
                 (),
-                terminal::Terminal::Failed(terminal::Error::from_cause(cause)),
+                terminal::Terminal::Failed(terminal::Error::from_cause(Fault::Truncated)),
             ),
-            None => end.terminal((), terminal::Terminal::Clean),
+            _ => end.terminal((), terminal::Terminal::Clean),
         }
     }
 }
 
-impl<M: FailureMode> failure::Errors<failure::Terminal> for Wire<M> {
+impl failure::Errors<failure::Terminal> for Wire {
     type Error<'d>
         = Fault
     where
         Self: 'd;
 }
 
-impl<M: FailureMode> wire::Spec for Wire<M> {
+impl wire::Spec for Wire {
     type Connection<'d, ID: Identity + 'd>
         = Self
     where
@@ -451,17 +397,16 @@ impl<M: FailureMode> wire::Spec for Wire<M> {
     type TerminalFailure = failure::Possible;
 
     type Bootstrap = Self;
-    type Receive = Ingress<M>;
+    type Receive = Ingress;
     type Send = Egress;
 }
 
-impl<M: FailureMode> domain::Init<Wire<M>> for Wire<M> {
+impl domain::Init<Wire> for Wire {
     fn runtime<'w, 'd, ID: Identity + 'w>(
         _: domain::Limits,
-        bind: <Wire<M> as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire<M> as wire::Spec>::Runtime<'w, 'd, ID>
+        bind: <Wire as wire::Spec>::Binding<'w, ID>,
+    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
     where
-        Wire<M>: 'w,
         'd: 'w,
     {
         bind

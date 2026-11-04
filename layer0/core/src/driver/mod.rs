@@ -10,11 +10,7 @@ use route::table;
 use crate::{
     Backend, Engine, driver,
     driver::{
-        life::{
-            domain::runtime::Runtime,
-            native,
-            native::{create, host::Host},
-        },
+        life::{domain::runtime::Runtime, native, native::host::Host},
         receive::access,
         result::poll,
         retained::{flight, flight::cancel},
@@ -53,7 +49,7 @@ use result::{IoOperation, Opcode, SubmitError};
 type Buffer = <Engine as engine::Buffer>::Token;
 
 /// Keeps every derived capability in the exact driver lifetime that issued it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
 pub(crate) struct Invariant<'d>(marker::PhantomData<fn(&'d ()) -> &'d ()>);
 
@@ -415,7 +411,7 @@ impl Shared {
         let (backend, buffer, receive) =
             match unsafe { <Backend as engine::raw::Create<Host<Backend>, _>>::try_new(&config) } {
                 Ok(created) => created,
-                Err(error) => return Err(failure.insert(create::Created::from(error).0)),
+                Err(error) => return Err(failure.insert(error.into())),
             };
         Ok((
             initialize(Self {

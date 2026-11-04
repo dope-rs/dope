@@ -148,7 +148,7 @@ where
         let Self { owner, id } = self;
         let target = id.key().target();
         // SAFETY: the caller retains this installed owner for the id's exact route.
-        unsafe { <A as handler::raw::Activate<'w, 'd, ID>>::activate(owner, target, turn, driver) }
+        unsafe { handler::raw::activate(owner, target, turn, driver) }
     }
 }
 
@@ -210,7 +210,6 @@ where
         let mut this = self;
         {
             let fields = this.as_mut().project();
-            fields.accept.stop_accept(driver);
             fields.schedule.shutdown();
         }
         control::shutdown(this.as_mut(), turn, driver);
@@ -342,6 +341,6 @@ where
         driver: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
     ) {
         // SAFETY: dispatch admitted this pinned listener and its canonical target together.
-        unsafe { <A as handler::raw::Activate<'w, 'd, ID>>::activate(self, target, turn, driver) }
+        unsafe { handler::raw::activate(self, target, turn, driver) }
     }
 }

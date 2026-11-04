@@ -25,7 +25,7 @@ impl<'d> Retained<'d> {
     /// Wakes this generation through its exact driver owner.
     pub fn wake(self, owner: driver::Reference<'d>) {
         let access = ready::Access::new(&owner);
-        owner.ready().arena().stored().complete(access, self);
+        owner.ready().arena().complete(access, self);
     }
 
     pub(in crate::driver::schedule::ready) const fn new(key: ready::Key<'d>) -> Self {

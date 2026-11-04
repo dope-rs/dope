@@ -157,12 +157,7 @@ pub struct Drained<
     B: data::raw::Payload<'d> + 'd = resident::Shared<'d>,
 > {
     slot: Slot<'a, 'w, 'd, ID, W, State<'p, 's, 'd, ID, C, B>>,
-    output: Output<'a, 'p, 's, 'e, 'd, ID, B>,
-}
-
-pub(super) enum Drain<T> {
-    Ready(T),
-    Pending,
+    output: marker::PhantomData<Output<'a, 'p, 's, 'e, 'd, ID, B>>,
 }
 
 impl<
@@ -293,10 +288,10 @@ impl<'p, 's, 'e, 'd, ID: Identity, B: data::raw::Payload<'d>> Output<'_, 'p, 's,
             Self::Open { queue, .. } => queue.pending(),
             Self::Sealed => egress::Pending::Absent,
         };
-        if slot.send_status().is_closing() || !matches!(slot.flow(pending), flow::Flow::Clear) {
-            egress::Pending::Present
-        } else {
+        if matches!(slot.flow(pending), flow::Flow::Clear) {
             egress::Pending::Absent
+        } else {
+            egress::Pending::Present
         }
     }
 }
@@ -378,15 +373,14 @@ impl<
     }
 
     /// Consumes a listener send callback at its exact egress-drain boundary.
-    pub(super) fn drain(self) -> Drain<Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>> {
-        let scope = Drained {
-            slot: self.slot,
-            output: self.output,
-        };
-        match scope.output.pending(&scope.slot) {
-            egress::Pending::Present => Drain::Pending,
-            egress::Pending::Absent => Drain::Ready(scope),
+    pub(super) fn drain(self) -> Option<Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>> {
+        if matches!(self.output.pending(&self.slot), egress::Pending::Present) {
+            return None;
         }
+        Some(Drained {
+            slot: self.slot,
+            output: marker::PhantomData,
+        })
     }
 
     /// Reborrows the exact application-turn capability carried by this

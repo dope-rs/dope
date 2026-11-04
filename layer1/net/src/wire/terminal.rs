@@ -96,22 +96,6 @@ pub enum Kind {
     Failed,
 }
 
-impl<E> Terminal<E> {
-    pub const fn kind(&self) -> Kind {
-        match self {
-            Self::Clean => Kind::Clean,
-            Self::Failed(_) => Kind::Failed,
-        }
-    }
-
-    pub fn map<F>(self, map: impl FnOnce(E) -> F) -> Terminal<F> {
-        match self {
-            Self::Clean => Terminal::Clean,
-            Self::Failed(cause) => Terminal::Failed(map(cause)),
-        }
-    }
-}
-
 enum Phase<E> {
     Open,
     Eof,

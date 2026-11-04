@@ -52,13 +52,13 @@ where
         match error {
             enter::Poll::Timeout { requested: span } => Self::Timeout { requested: span },
             enter::Poll::Submit(cause) => Self::Submit {
-                cause: Kernel::from(cause).0,
+                cause: Kernel::from(cause),
             },
             enter::Poll::Wait(cause) => Self::Wait {
-                cause: Kernel::from(cause).0,
+                cause: Kernel::from(cause),
             },
             enter::Poll::Cancel(cause) => Self::Cancel {
-                cause: Kernel::from(cause).0,
+                cause: Kernel::from(cause),
             },
         }
     }

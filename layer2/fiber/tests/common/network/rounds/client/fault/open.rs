@@ -17,7 +17,7 @@ use dope_fiber::{
     context::PollResult,
     net::{
         Io,
-        client::{Connect, ConnectError, Machine},
+        client::{Connect, ConnectError},
     },
 };
 
@@ -156,13 +156,4 @@ impl<'scope, 'd> Fiber<'d> for Reuse<'scope, 'd> {
             PollResult::Polled(other) => Poll::Ready(Err(Unexpected::First(other))),
         }
     }
-}
-
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-pub struct App<'p, 'scope, 'd> {
-    #[pin]
-    #[manifold]
-    pub(crate) connector: Machine<'p, 'scope, 'd, 'd, KeyTag<0>, Tcp, Wire>,
 }

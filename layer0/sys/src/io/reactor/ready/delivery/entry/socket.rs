@@ -34,6 +34,4 @@ pub trait Socket<'q, 'd, B>: Effects<'q, 'd, B> {
         error: socket::Create,
     ) -> Self::Output;
     fn fail_create(driver: Self::Driver, creation: Self::Creation);
-    fn complete(driver: Self::Driver, creation: Self::Creation) -> Option<Self::Outbound>;
-    fn discard(driver: Self::Driver, slot: Self::Outbound);
 }

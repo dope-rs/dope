@@ -154,7 +154,7 @@ where
     <M::Ingress as storage::raw::Mode>::Bound<'a, 'd>: Write<'d>,
 {
     pub(super) fn queue(self) -> Queued<'a, 'w, 'd, ID, W, S, M> {
-        let resident = self.connection.resident();
+        let key = &self.connection.key;
         let trails = match self.status.origin {
             arrival::Origin::Fresh => self.store.has_queued(),
             arrival::Origin::Replay => false,
@@ -165,7 +165,7 @@ where
         let parked = delivery::defer_completion::<ID, M::Ingress>(
             self.store,
             self.rearm,
-            resident,
+            key,
             self.status.cancel,
             self.event,
         );
@@ -180,7 +180,7 @@ where
     M: input::Mode<W, Ingress = mode::Enabled>,
 {
     pub(super) fn credit(&self) -> credit::Binding<'d, ID> {
-        let target = self.connection.resident().key().target().dispatch();
+        let target = self.connection.key.target().dispatch();
         let control = self.store.get();
         control.control().bind(target)
     }
@@ -197,8 +197,7 @@ where
     pub(super) fn try_reserve(
         self,
     ) -> event::Reservation<'d, ID, delivery::Data<'a, 'w, 'd, ID, W, M::Kind>> {
-        let resident = self.connection.resident();
-        let key = resident.key();
+        let key = self.connection.key;
         let ctl = self.store.get();
         match Reserve::<ID, W, mode::Waiting<R>, R>::try_new(
             self.connection,

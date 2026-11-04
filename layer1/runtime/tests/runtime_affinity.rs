@@ -8,60 +8,36 @@ use dope_runtime::{
     random, shutdown,
 };
 
-trait SendProof<A> {
-    const CHECK: ();
-}
-impl<T: ?Sized> SendProof<()> for T {
-    const CHECK: () = ();
-}
-impl<T: ?Sized + Send> SendProof<u8> for T {
+trait Ambiguous<A> {
     const CHECK: () = ();
 }
 
-trait SyncProof<A> {
-    const CHECK: ();
-}
-impl<T: ?Sized> SyncProof<()> for T {
-    const CHECK: () = ();
-}
-impl<T: ?Sized + Sync> SyncProof<u8> for T {
-    const CHECK: () = ();
-}
+impl<T: ?Sized> Ambiguous<()> for T {}
+impl<T: ?Sized + Send> Ambiguous<u8> for T {}
+impl<T: ?Sized + Sync> Ambiguous<u16> for T {}
 
 fn send<T: Send>() {}
 
 #[test]
 fn thread_traits() {
-    let () = <Executor as SendProof<_>>::CHECK;
-    let () = <Executor as SyncProof<_>>::CHECK;
-    let () = <session::Scope<'static, 'static, 'static, 'static> as SendProof<_>>::CHECK;
-    let () = <session::Scope<'static, 'static, 'static, 'static> as SyncProof<_>>::CHECK;
-    let () = <process::Context<'static> as SendProof<_>>::CHECK;
-    let () = <process::Context<'static> as SyncProof<_>>::CHECK;
+    let () = <Executor as Ambiguous<_>>::CHECK;
+    let () = <session::Scope<'static, 'static, 'static, 'static> as Ambiguous<_>>::CHECK;
+    let () = <process::Context<'static> as Ambiguous<_>>::CHECK;
     send::<process::Runtime<()>>();
-    let () = <process::Shutdown<'static> as SendProof<_>>::CHECK;
-    let () = <process::Shutdown<'static> as SyncProof<_>>::CHECK;
-    let () = <gate::Closed<'static> as SendProof<_>>::CHECK;
-    let () = <gate::Closed<'static> as SyncProof<_>>::CHECK;
-    let () = <gate::Open<'static> as SendProof<_>>::CHECK;
-    let () = <gate::Open<'static> as SyncProof<_>>::CHECK;
+    let () = <process::Shutdown<'static> as Ambiguous<_>>::CHECK;
+    let () = <gate::Closed<'static> as Ambiguous<_>>::CHECK;
+    let () = <gate::Open<'static> as Ambiguous<_>>::CHECK;
     send::<shutdown::Pair>();
     send::<shutdown::Source>();
     send::<shutdown::ReadySource>();
     send::<shutdown::Readiness>();
     send::<shutdown::Trigger>();
-    let () = <shutdown::Requested as SendProof<_>>::CHECK;
-    let () = <shutdown::Requested as SyncProof<_>>::CHECK;
-    let () = <random::HashState<'static> as SendProof<_>>::CHECK;
-    let () = <random::HashState<'static> as SyncProof<_>>::CHECK;
-    let () = <random::HashSeed as SendProof<_>>::CHECK;
-    let () = <random::HashSeed as SyncProof<_>>::CHECK;
-    let () = <random::OwnedHasher as SendProof<_>>::CHECK;
-    let () = <random::OwnedHasher as SyncProof<_>>::CHECK;
-    let () = <random::Hasher<'static> as SendProof<_>>::CHECK;
-    let () = <random::Hasher<'static> as SyncProof<_>>::CHECK;
-    let () = <random::Root<'static, Purpose> as SendProof<_>>::CHECK;
-    let () = <random::Root<'static, Purpose> as SyncProof<_>>::CHECK;
+    let () = <shutdown::Requested as Ambiguous<_>>::CHECK;
+    let () = <random::HashState<'static> as Ambiguous<_>>::CHECK;
+    let () = <random::HashSeed as Ambiguous<_>>::CHECK;
+    let () = <random::OwnedHasher as Ambiguous<_>>::CHECK;
+    let () = <random::Hasher<'static> as Ambiguous<_>>::CHECK;
+    let () = <random::Root<'static, Purpose> as Ambiguous<_>>::CHECK;
 }
 
 #[test]

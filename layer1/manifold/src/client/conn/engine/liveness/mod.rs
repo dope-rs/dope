@@ -156,10 +156,6 @@ impl<'d, ID: Identity> Deadlines<'d, ID> {
         })
     }
 
-    pub(in crate::client) fn is_armed(&self) -> bool {
-        self.alarm.is_armed()
-    }
-
     pub(in crate::client) fn poll(
         &mut self,
         now: clock::Moment<'d>,

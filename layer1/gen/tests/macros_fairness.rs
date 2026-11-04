@@ -1,14 +1,8 @@
-use std::{array, cell::Cell, convert::Infallible, rc::Rc};
+use std::{array, cell::Cell, rc::Rc};
 
 use dope_test::harness::scenario::TIMEOUT;
 use engine::{
-    core::{
-        driver::life::{
-            creation::Attempt,
-            recovery::{Policy, Recovery},
-        },
-        io::Reclaimed,
-    },
+    core::driver::life::{creation::Attempt, recovery::Policy},
     runtime::executor::{
         InstallError,
         session::{self, Completion},
@@ -69,7 +63,7 @@ fn sparse_admitted_turns() {
                     })
                     .expect("application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -114,7 +108,7 @@ fn coordinated_progress() {
                     })
                     .expect("application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -162,7 +156,7 @@ fn retained_plan_drop() {
                 );
                 assert!(!observed.repeated.get(), "plan dropped twice");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -197,7 +191,7 @@ fn refunded_coord_resumes() {
                     })
                     .expect("application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -246,7 +240,7 @@ fn idle_tree() {
                     })
                     .expect("application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -292,7 +286,7 @@ fn absent_tree() {
                     })
                     .expect("application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -346,7 +340,7 @@ fn reject_live_limit() {
                 assert!(!entered.get());
                 assert_eq!(drops.get(), 1);
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -396,7 +390,7 @@ fn unselected_tree() {
                     })
                     .expect("application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
@@ -440,19 +434,8 @@ fn native_coord_share() {
                     })
                     .expect("application teardown");
             },
-            Policy::new(shutdown, recover),
+            Policy::new(native::shutdown, native::recover),
         );
         assert!(result.is_ok(), "test runtime completed");
     });
-}
-
-fn shutdown(event: Reclaimed) {
-    assert!(
-        matches!(event, Reclaimed::Shutdown),
-        "unexpected operation: {event:?}"
-    );
-}
-
-fn recover(failure: Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
 }

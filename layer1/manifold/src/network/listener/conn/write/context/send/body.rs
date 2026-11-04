@@ -68,8 +68,7 @@ where
         .try_body(driver.region_token(), load)
     {
         Ok(send) => send,
-        Err(unsent) => {
-            let (cause, load) = unsent.into_parts();
+        Err((cause, load)) => {
             return match cause {
                 capacity::Unavailable::Deferred(cause) => Admit::Deferred { cause, load },
                 capacity::Unavailable::Closed => Admit::Closed(load),

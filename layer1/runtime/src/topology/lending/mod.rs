@@ -68,7 +68,7 @@ where
         Q: executor::Startup,
         B: lending::Execute<'life, 'd, O, Q>,
     {
-        session::Lent::new(stage.session.core).held(report, self.owner, build, None)
+        stage.session.core.held(report, self.owner, build, None)
     }
 
     /// Keeps provider destruction inside the final dependent storage callback.
@@ -87,7 +87,7 @@ where
         S: storage::Plan + 'd,
         Q: executor::Startup,
     {
-        session::Lent::new(stage.session.core).scope_held(report, self.owner, build)
+        stage.session.core.scope_held(report, self.owner, build)
     }
 }
 

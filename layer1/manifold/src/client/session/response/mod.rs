@@ -222,18 +222,12 @@ where
         _: bool,
         end: flow::End,
     ) -> Effect {
-        let direct = match delivery {
-            Delivery::Committed => Direct::Committed,
-            Delivery::RetryInput => Direct::RetryInput,
-            Delivery::Prepared(item) => {
-                owner.commit(Committed::new(item), ctx);
-                Direct::Committed
-            }
-        };
-        match direct {
-            Direct::Committed => Effect::from_end(end),
-            Direct::RetryInput => Effect::RetryInput,
+        match delivery {
+            Delivery::RetryInput => return Effect::RetryInput,
+            Delivery::Prepared(item) => owner.commit(Committed::new(item), ctx),
+            Delivery::Committed => {}
         }
+        Effect::from_end(end)
     }
 }
 

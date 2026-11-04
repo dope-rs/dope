@@ -2,7 +2,7 @@ use crate::shutdown;
 
 mod run;
 
-pub(crate) use run::Run;
+pub(crate) use run::run;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Outcome {

@@ -36,18 +36,21 @@ impl<H> Clock<H> {
 
     pub(in crate::process) fn wait<'worker, 'signal, S, M, R>(
         mut self,
-        poll: set::Set<'worker, 'signal, M>,
-        receive: impl FnMut(M::Ready<'worker>) -> (R, bool),
-    ) -> Result<(Self, set::Set<'worker, 'signal, M>, Option<R>), execute::Cause<S>>
+        mut poll: set::Set<'worker, 'signal, M>,
+        mut receive: impl FnMut(M::Ready<'worker>) -> (R, bool),
+    ) -> Result<(Self, set::Set<'worker, 'signal, M>, R), execute::Cause<S>>
     where
         H: watch::Heartbeat<S>,
         M: set::Mode,
     {
-        let (poll, ready) = poll.wait_until(self.next, receive)?;
-        if ready.is_none() {
+        loop {
+            let (polled, ready) = poll.wait_until(self.next, &mut receive)?;
+            poll = polled;
+            if let Some(ready) = ready {
+                return Ok((self, poll, ready));
+            }
             self.pulse(time::Instant::now())?;
         }
-        Ok((self, poll, ready))
     }
 
     pub(in crate::process) fn draining<S>(self) -> Result<Self, execute::Cause<S>>

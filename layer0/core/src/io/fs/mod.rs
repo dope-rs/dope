@@ -206,6 +206,29 @@ where
     }
 }
 
+impl<'a, 'd, Tag> Submission<'a, 'd, Tag, kind::Read>
+where
+    Tag: route::Tag,
+{
+    /// Reads one bounded prefix without changing the descriptor's current position.
+    /// A successful completion reports the exact short count; zero is EOF for
+    /// nonempty output. The native file backend may complete during submission.
+    pub fn read_at(
+        fd: fd::BorrowedFd<'a>,
+        output: bytes::bounded::Value<&'a mut [u8]>,
+        offset: Offset,
+        target: route::Target<'d, Tag>,
+    ) -> Self
+    where
+        Tag: route::Select<kind::Read>,
+    {
+        Self::bind(
+            Request::read(fd, output, offset.0),
+            target.operation::<kind::Read>(),
+        )
+    }
+}
+
 impl<'a, 'd, Tag> Submission<'a, 'd, Tag, kind::Sync>
 where
     Tag: route::Tag,

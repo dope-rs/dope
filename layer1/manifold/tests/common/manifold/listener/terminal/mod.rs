@@ -40,14 +40,14 @@ use o3::{
         write::consume::scope,
     },
 };
-use wire::{Event, FailureMode, Wire};
+use wire::{Event, Wire};
 
-pub struct Probe<W, I, F> {
+pub struct Probe<I, F> {
     pub(crate) close: Gate,
     pub(crate) retired: Gate,
     pub(crate) events: Rc<Cell<Vec<Event>>>,
     pub(crate) ingress: Ingress,
-    pub(crate) marker: PhantomData<fn() -> (W, I)>,
+    pub(crate) marker: PhantomData<fn() -> I>,
     pub(crate) observe: F,
 }
 
@@ -126,15 +126,14 @@ impl Mode for receive::Scoped {
     const CONNECTION: Self::Conn = Scope::First;
 }
 
-impl<'d, ID: Identity, M, I, F> Application<'d, ID> for Probe<Wire<M>, I, F>
+impl<'d, ID: Identity, I, F> Application<'d, ID> for Probe<I, F>
 where
-    M: FailureMode + 'd,
     F: for<'v> Fn(Observation<'v>) + Unpin,
-    I: Mode + receive::Mode<Wire<M>>,
+    I: Mode + receive::Mode<Wire>,
 {
     type Conn = I::Conn;
     type Build = convert::Infallible;
-    type Wire = Wire<M>;
+    type Wire = Wire;
     type WireFailure = Failure;
     type Retirement = Retirement;
     type Egress = Shared;
@@ -172,7 +171,7 @@ where
 
     fn accept(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
     ) -> Outcome {
         match &self.get_mut().ingress {
             Ingress::AcceptFailure(cause) => Outcome::Failed(*cause),
@@ -182,8 +181,8 @@ where
 
     fn close<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire<M>, I::Conn, Shared>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire<M>, I::Conn, Shared>
+        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, I::Conn, Shared>,
+    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, I::Conn, Shared>
     where
         'd: 'w,
     {
@@ -198,14 +197,14 @@ where
 
     fn is_blocked(
         self: Pin<&Self>,
-        _: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+        _: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
     ) -> bool {
         matches!(&self.get_ref().ingress, Ingress::Armed(probe) if probe.chunk.hits() != 0)
     }
 
     fn timeout(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> handler::Timeout<'d> {
         let this = self.get_mut();
@@ -259,7 +258,7 @@ where
 
     fn eof(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
         _: receive::End,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> handler::Eof {
@@ -283,7 +282,7 @@ where
 
     fn close_gate(
         self: Pin<&Self>,
-        _: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+        _: conn::Ref<'_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
     ) -> CloseGate {
         if matches!(
             self.ingress,
@@ -296,11 +295,10 @@ where
     }
 }
 
-impl<'d, ID: Identity, M, I, F> retire::Policy<'d, Probe<Wire<M>, I, F>, ID> for Retirement
+impl<'d, ID: Identity, I, F> retire::Policy<'d, Probe<I, F>, ID> for Retirement
 where
-    M: FailureMode + 'd,
     F: for<'v> Fn(Observation<'v>) + Unpin,
-    I: Mode + receive::Mode<Wire<M>>,
+    I: Mode + receive::Mode<Wire>,
 {
     fn select() -> Option<Self> {
         Some(Self)
@@ -308,8 +306,8 @@ where
 
     fn retire(
         self,
-        app: Pin<&mut Probe<Wire<M>, I, F>>,
-        conn: conn::Retired<'_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+        app: Pin<&mut Probe<I, F>>,
+        conn: conn::Retired<'_, '_, 'd, ID, Wire, I::Conn, Shared>,
     ) {
         let this = app.get_mut();
         if let Some(conn::Failure::Application(cause)) = conn.failure() {
@@ -323,27 +321,25 @@ where
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, M, I, F> failures::Policy<'w, 'd, Probe<Wire<M>, I, F>, ID>
-    for Failure
+impl<'w, 'd: 'w, ID: Identity, I, F> failures::Policy<'w, 'd, Probe<I, F>, ID> for Failure
 where
-    M: FailureMode + 'd,
     F: for<'v> Fn(Observation<'v>) + Unpin,
-    I: Mode + receive::Mode<Wire<M>>,
+    I: Mode + receive::Mode<Wire>,
 {
-    fn open_failed(_: Pin<&mut Probe<Wire<M>, I, F>>, cause: open::Error<'w, Wire<M>>) {
+    fn open_failed(_: Pin<&mut Probe<I, F>>, cause: open::Error<'w, Wire>) {
         cause.eliminate()
     }
 
-    fn peer() -> Option<impl for<'a> Call<(Pin<&'a mut Probe<Wire<M>, I, F>>, socket::Error)>> {
-        Some(|(app, cause): (Pin<&mut Probe<_, _, _>>, socket::Error)| {
+    fn peer() -> Option<impl for<'a> Call<(Pin<&'a mut Probe<I, F>>, socket::Error)>> {
+        Some(|(app, cause): (Pin<&mut Probe<_, _>>, socket::Error)| {
             app.get_mut().events.push(Event::Peer(cause));
         })
     }
 
     fn wire_failed<'e>(
-        app: Pin<&mut Probe<Wire<M>, I, F>>,
-        conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire<M>, I::Conn, Shared>,
-        cause: terminal::Error<'w, Wire<M>>,
+        app: Pin<&mut Probe<I, F>>,
+        conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire, I::Conn, Shared>,
+        cause: terminal::Error<'w, Wire>,
     ) {
         let this = app.get_mut();
         let (cause, closing) = cause.into_parts();
@@ -352,15 +348,14 @@ where
     }
 }
 
-impl<'d, ID: Identity, M, I, F> handler::Borrowed<'d, ID> for Probe<Wire<M>, I, F>
+impl<'d, ID: Identity, I, F> handler::Borrowed<'d, ID> for Probe<I, F>
 where
-    M: FailureMode + 'd,
     F: for<'v> Fn(Observation<'v>) + Unpin,
-    I: Borrow + receive::Mode<Wire<M>>,
+    I: Borrow + receive::Mode<Wire>,
 {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire<M>, I::Conn, Shared>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
         chunk: R,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
@@ -411,19 +406,19 @@ where
     }
 }
 
-impl<'d, ID: Identity, M: FailureMode + 'd, F: for<'v> Fn(Observation<'v>) + Unpin>
-    handler::Gated<'d, ID> for Probe<Wire<M>, receive::Gated, F>
+impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin> handler::Gated<'d, ID>
+    for Probe<receive::Gated, F>
 {
     fn send_drained(
         self: Pin<&mut Self>,
-        _: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Wire<M>, (), Shared>,
+        _: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Wire, (), Shared>,
     ) -> handler::PostDrain {
         handler::PostDrain::Idle
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, M: FailureMode + 'd, F: for<'v> Fn(Observation<'v>) + Unpin>
-    handler::Scoped<'w, 'd, ID> for Probe<Wire<M>, receive::Scoped, F>
+impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin> handler::Scoped<'w, 'd, ID>
+    for Probe<receive::Scoped, F>
 {
     fn retention(&self) -> Budget {
         Budget::new(limits::Bound::new(0), 4096)
@@ -431,8 +426,8 @@ impl<'w, 'd: 'w, ID: Identity, M: FailureMode + 'd, F: for<'v> Fn(Observation<'v
 
     fn scoped_chunk(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire<M>, Scope, Shared>,
-        chunk: scoped::Input<'_, 'w, 'd, Wire<M>>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, Scope, Shared>,
+        chunk: scoped::Input<'_, 'w, 'd, Wire>,
         _: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();

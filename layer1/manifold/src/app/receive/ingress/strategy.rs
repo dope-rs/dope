@@ -107,6 +107,12 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         let ready = item.ready();
         let mut first = true;
         loop {
+            if let ControlFlow::Break(wake) =
+                P::admit(policy.as_mut(), || Some(target), turn.reborrow(), driver)
+            {
+                wake.wake();
+                break;
+            }
             match Self::resume_tail(policy.as_mut(), &item, first, turn.reborrow(), driver) {
                 ControlFlow::Break(()) => break,
                 ControlFlow::Continue(true) => {

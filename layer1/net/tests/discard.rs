@@ -8,5 +8,4 @@ const EXPECTED: discard::Prefix =
 #[test]
 fn reuses_transfer_domain() {
     assert!(PREFIX == EXPECTED);
-    assert!(size_of::<discard::Prefix>() == size_of::<transfer::NonZero>());
 }

@@ -1,4 +1,4 @@
-use std::{convert::Infallible, pin};
+use std::pin;
 
 use dope_core::driver::{
     life::recovery,
@@ -10,11 +10,10 @@ use dope_core::driver::{
         },
     },
 };
-use dope_test::scope::Error;
 
 use crate::common::{
     driver::{Scoped as _, support::Targets as _, task::Index},
-    rt::Runtime,
+    rt::{Runtime, finish, recover},
 };
 
 pub mod common;
@@ -73,15 +72,4 @@ fn drain_carries_admission() {
         finish,
     );
     assert!(!reported);
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native retirement: {:?}", failure.cause())
-}
-
-fn finish(result: Result<(), Error<'_, ()>>) {
-    result
-        .as_ref()
-        .map_err(Error::cause)
-        .expect("driver lifecycle");
 }

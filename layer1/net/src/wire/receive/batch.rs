@@ -85,13 +85,6 @@ impl<'d, W: wire::Spec + 'd> Capacity<'d, W> {
             wire: marker::PhantomData,
         })
     }
-
-    pub fn full() -> Self {
-        Self {
-            items: Self::MAX,
-            wire: marker::PhantomData,
-        }
-    }
 }
 
 impl<W: wire::Spec> Capacity<'_, W> {
@@ -115,10 +108,6 @@ pub struct Produced<'id, B> {
 impl<'id, 'd, W: wire::Spec> Grant<'id, 'd, W> {
     pub(crate) fn new(bound: batch::Bound<'id, Capacity<'d, W>>) -> Self {
         Self { bound }
-    }
-
-    pub fn items(&self) -> num::NonZero<usize> {
-        self.bound.get().items()
     }
 
     /// Produces exactly one item, which every nonzero admission permits.

@@ -1,5 +1,3 @@
-use std::time;
-
 use dope_sys::{
     Errno,
     io::reactor::ready,
@@ -12,29 +10,20 @@ type Index = <Slots as change::raw::Slots>::Index;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Failure {
-    Timeout(time::Duration),
-    Wait(Errno),
-    Changes(Errno),
+    Ready(ready::Cause),
     Revoke {
         fd: usize,
         filter: Filter,
         errno: Errno,
     },
-    Backing {
-        index: Index,
-        filter: Filter,
-    },
+    Backing(change::Index<Index>),
     Missing(Missing),
     System(Errno),
 }
 
 impl From<ready::Cause> for Failure {
     fn from(cause: ready::Cause) -> Self {
-        match cause {
-            ready::Cause::Timeout(span) => Self::Timeout(span),
-            ready::Cause::Wait(errno) => Self::Wait(errno),
-            ready::Cause::Changes(errno) => Self::Changes(errno),
-        }
+        Self::Ready(cause)
     }
 }
 
@@ -47,8 +36,7 @@ impl ready::Failure for Failure {
         Self::Revoke { fd, filter, errno }
     }
     fn backing(error: change::Index<Index>) -> Self {
-        let (index, filter) = error.into_parts();
-        Self::Backing { index, filter }
+        Self::Backing(error)
     }
     fn missing((): (), cause: Missing) -> Self {
         Self::Missing(cause)

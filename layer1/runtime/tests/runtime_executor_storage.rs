@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use dope_core::driver::life::{creation::Attempt, recovery};
 pub mod common;
 
@@ -34,7 +32,7 @@ fn plan_failure() {
                 let (first, second) = session.storage();
                 (first.has_room(), second.has_room())
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
         );
         assert!(matches!(
             &result,
@@ -80,7 +78,7 @@ fn composed_plan() {
                 pair.0.record();
                 pair.1.record();
             },
-            recovery::Policy::new(|event| reports.push(event), recover),
+            recovery::Policy::new(|event| reports.push(event), common::recover),
         );
         assert!(
             reports.is_empty(),
@@ -108,7 +106,7 @@ fn pinned_drop() {
         .run(|executor| {
             let result = executor.enter_with(
                 |session| session.storage().record(),
-                recovery::Policy::new(|event| reports.push(event), recover),
+                recovery::Policy::new(|event| reports.push(event), common::recover),
             );
             assert!(
                 reports.is_empty(),
@@ -118,8 +116,4 @@ fn pinned_drop() {
             assert!(result.is_ok(), "pinned owner generation and finalization");
         });
     assert_eq!(dropped.get(), Some(true));
-}
-
-fn recover(failure: recovery::Recovery<'_, '_>) -> Infallible {
-    panic!("native recovery: {:?}", failure.cause());
 }

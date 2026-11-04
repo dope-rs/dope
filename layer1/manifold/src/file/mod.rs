@@ -1,5 +1,6 @@
 pub mod appender;
 mod locked;
+pub mod read;
 
 use dope_core::{
     Errno,

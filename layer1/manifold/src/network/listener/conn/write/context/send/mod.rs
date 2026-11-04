@@ -14,7 +14,8 @@ use egress::{
     data,
     reserve::{self, error::Full, limit::Limit},
 };
-use write::{context::modes, error};
+use o3::base::cell::region;
+use write::error;
 use writer::flow::SlotFlow as _;
 
 use crate::network::listener::{
@@ -32,7 +33,6 @@ type Bounded<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B> =
     Send<'a, 'p, 's, 'w, 'd, ID, W, C, B, memory::Bounded<'a, 'p, 's, 'e, 'd, ID, B>>;
 
 pub(super) mod body;
-pub(super) mod build;
 pub(super) mod capacity;
 
 pub(super) struct Send<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B, M>
@@ -59,13 +59,10 @@ where
     where
         F: FnOnce(&mut C, &mut [u8]) -> Result<write::Draft<B, R>, E>,
     {
-        self.try_header(driver, build::Buffer(call))
-            .map_err(|error| match error {
-                error::Error::Capacity(cause) => error::Error::Capacity(cause),
-                error::Error::Build(build::Failure::Build(cause)) => error::Error::Build(cause),
-                error::Error::Build(build::Failure::Check(cause))
-                | error::Error::Mismatch(cause) => error::Error::Mismatch(cause),
-            })
+        self.try_header(driver, |state, bytes, owner| {
+            let draft = call(state, bytes).map_err(error::Error::Build)?;
+            write::Commit::try_draft(owner, draft).map_err(error::Error::Mismatch)
+        })
     }
 
     pub(in crate::network::listener::conn::write::context) fn try_header<H, R, E>(
@@ -74,7 +71,14 @@ where
         call: H,
     ) -> Result<write::Outcome<R>, error::Error<B, R, E>>
     where
-        H: build::Build<C, B, Receipt = R, Error = E>,
+        H: for<'b, 'id> FnOnce(
+            &mut C,
+            &'b mut [u8; write::Prefix::CAPACITY],
+            region::Proof<region::Identity<'id>>,
+        ) -> Result<
+            write::Commit<region::Proof<region::Identity<'id>>, B, R>,
+            error::Error<B, R, E>,
+        >,
     {
         let Self {
             mut slot,
@@ -105,13 +109,13 @@ where
                         return Ok(write::Outcome::Deferred(write::Deferred::Capacity));
                     }
                 };
-                let commit = call.build(&mut slot.state.conn, header);
+                let commit = write::Commit::try_with(&mut slot.state.conn, header, call);
                 let commit = match commit {
                     Ok(commit) => commit,
                     Err(cause) => {
                         vacant.cancel();
                         slot.cancel_idle(queue.pending());
-                        return Err(error::Error::Build(cause));
+                        return Err(cause);
                     }
                 };
                 let (value, end, status) = match commit.try_publish(vacant) {
@@ -134,12 +138,12 @@ where
                 Ok(write::Outcome::Committed(value))
             }
             memory::Buffer::Direct(flight) => {
-                let commit = call.build(&mut slot.state.conn, flight);
+                let commit = write::Commit::try_with(&mut slot.state.conn, flight, call);
                 let commit = match commit {
                     Ok(commit) => commit,
                     Err(cause) => {
                         slot.cancel_send();
-                        return Err(error::Error::Build(cause));
+                        return Err(cause);
                     }
                 };
                 let (value, end, direct) = commit.direct();
@@ -217,6 +221,7 @@ where
             memory::Bounded::Queued {
                 slot: header,
                 queue,
+                ..
             } => {
                 let plan = match queue.plan(reserve::Bounds::one(Limit::at_most::<
                     { write::Prefix::CAPACITY },
@@ -261,8 +266,8 @@ where
         } = self;
         match buffer {
             memory::Bounded::Direct(flight) => {
-                let valid = match modes::Bounded::try_new(flight, draft) {
-                    Ok(valid) => valid.validate(),
+                let valid = match write::Commit::try_draft(flight, draft) {
+                    Ok(valid) => valid,
                     Err(cause) => {
                         slot.cancel_send();
                         return Err(error::Error::Mismatch(cause));
@@ -289,8 +294,9 @@ where
             memory::Bounded::Queued {
                 slot: header,
                 queue,
+                ..
             } => {
-                let checked = match modes::Bounded::try_new(header, draft) {
+                let checked = match write::Commit::try_draft(header, draft) {
                     Ok(checked) => checked,
                     Err(cause) => {
                         slot.cancel_idle(queue.pending());
@@ -324,7 +330,7 @@ where
                         )));
                     }
                 };
-                let (receipt, end, publish) = match checked.validate().try_publish(vacant) {
+                let (receipt, end, publish) = match checked.try_publish(vacant) {
                     Ok(effect) => effect,
                     Err(cause) => {
                         slot.cancel_idle(queue.pending());

@@ -143,7 +143,7 @@ impl How {
     pub const WRITE: Self = Self(libc::SHUT_WR);
     pub const BOTH: Self = Self(libc::SHUT_RDWR);
 
-    const fn raw(self) -> libc::c_int {
+    pub const fn raw(self) -> libc::c_int {
         self.0
     }
 }

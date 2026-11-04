@@ -1,44 +1,30 @@
 //! Backend-quiescent connection teardown.
-use dope_core::driver::{life::finish, route::Identity};
-use o3::base::cell::region;
+use dope_core::driver::{
+    life::finish,
+    receive::{Absent, Registration, credit},
+    route::Identity,
+};
+use o3::base::{Call as _, cell::region};
 
 use crate::{
     link::{
         egress::{self, reserve::demand},
+        event,
         pool::{
             Key,
-            change::{
-                self,
-                quiesce::{Entry, Strategy},
+            change::{self, drain, quiesce::Strategy},
+            recv::{
+                input,
+                storage::{queue::Ops as _, tail, tail::Slot},
             },
-            recv::{input, storage::tail::Slot},
+            send::Finish,
         },
     },
-    wire,
+    wire::{self, send::Store as _},
 };
 
-pub(in crate::link::pool::change) struct Plan<
-    'a,
-    'p,
-    'w,
-    'd,
-    ID: Identity + 'w,
-    T: crate::Transport,
-    W: wire::Spec + 'w + 'd,
-    S,
-    M: input::Mode<W>,
-    B,
-    const IOV: usize,
-    D: demand::Mode,
-> where
-    'd: 'w,
-{
-    pub(in crate::link::pool::change) prepared:
-        &'a mut change::raw::Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-}
-
-impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
-    Plan<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+    change::raw::Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     T: crate::Transport,
     W: wire::Spec + 'w + 'd,
@@ -46,12 +32,6 @@ where
     D: demand::Mode,
     'd: 'w,
 {
-    pub(in crate::link::pool::change) fn new(
-        prepared: &'a mut change::raw::Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-    ) -> Self {
-        Self { prepared }
-    }
-
     pub(in crate::link::pool::change) fn run(
         &mut self,
         finish: &mut finish::Finish<'_, 'd>,
@@ -87,31 +67,42 @@ where
     ) where
         M::Ingress: Strategy<W>,
     {
-        if let Some(storage) = <M::Ingress as Strategy<W>>::credits(self) {
+        if let Some(storage) = <M::Ingress as Strategy<W>>::credits(&self.slab) {
             finish.credit().detach(storage);
         }
-        if self.prepared.slab.view().is_empty() {
+        if self.slab.view().is_empty() {
             return;
         }
-        for index in self.prepared.slab.view().capacity() {
-            let Some((entry, storage)) = Slot::at::<M::Ingress>(&mut self.prepared.slab, index)
-            else {
-                continue;
+        for index in self.slab.view().capacity() {
+            let released = {
+                let Some((entry, mut recv)) = Slot::at::<M::Ingress>(&mut self.slab, index) else {
+                    continue;
+                };
+                if let Some(handle) = self.pending.handle(entry.get().key) {
+                    handle.wait_send(false);
+                }
+                let target = credit::Id::new(entry.get().key.target().dispatch());
+                if let Some(cancel) = <M::Ingress as drain::Strategy<W>>::cancel(&recv.storage) {
+                    cancel.call((&mut self.runtime, target));
+                }
+                while let Some(front) = recv.storage.prepare_pop() {
+                    match front.pop().classify() {
+                        event::Kind::Data(..) => {}
+                        event::Kind::Control(control) => finish.reclaim(control.retire()),
+                    }
+                }
+                let mut entry = tail::Store::clear(entry);
+                let target = entry.get().engine.ready_handle().target();
+                match Registration::try_acquire(target) {
+                    Ok(reg) => reg.retire(),
+                    Err(Absent) => entry.get_mut().engine.operations.recv.exhaustion().cancel(),
+                }
+                free(&mut self.egress, entry.get().key, finish);
+                entry.remove().send.release()
             };
-            if let Some(handle) = self.prepared.pending.handle(entry.get().key) {
-                handle.wait_send(false);
+            if let Some(release) = <M::Ingress as Finish<W>>::release::<ID>(released) {
+                release.call(&mut self.runtime);
             }
-            let plan = Entry::<ID, W, S, M, B, IOV, D> {
-                entry,
-                egress: &mut self.prepared.egress,
-                recv: storage,
-            };
-            <M::Ingress as Strategy<W>>::retire(
-                plan,
-                &mut self.prepared.runtime,
-                finish,
-                &mut free,
-            );
         }
     }
 }

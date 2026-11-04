@@ -37,6 +37,7 @@ pub enum Native {
     Tuning = 25,
     Write = 28,
     Sync = 29,
+    Read = 30,
 }
 
 /// Opaque operation-class code used only by the route encoder.
@@ -77,6 +78,7 @@ pub(crate) enum Shape {
     Recv(Witness<Recv>),
     Send(Witness<Send>),
     Write(Witness<Write>),
+    Read(Witness<Read>),
     Connect(Witness<Connect>),
     Sync(Witness<Sync>),
     Tuning(Witness<Tuning>),
@@ -98,6 +100,7 @@ pub enum Kind {
     Tuning = 25,
     Write = 28,
     Sync = 29,
+    Read = 30,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +133,8 @@ pub enum Tuning {}
 pub enum Write {}
 #[derive(Clone, Copy)]
 pub enum Sync {}
+#[derive(Clone, Copy)]
+pub enum Read {}
 impl Sealed for Any {}
 impl Sealed for Accept {}
 impl Sealed for Recv {}
@@ -143,6 +148,7 @@ impl Sealed for TaskQueue {}
 impl Sealed for Tuning {}
 impl Sealed for Write {}
 impl Sealed for Sync {}
+impl Sealed for Read {}
 impl Class for Any {
     const KIND: Kind = Kind::Unspecified;
 }
@@ -195,6 +201,10 @@ impl Class for Sync {
     const KIND: Kind = Kind::Sync;
 }
 
+impl Class for Read {
+    const KIND: Kind = Kind::Read;
+}
+
 impl<const ROUTE: u8> Select<Accept> for KeyTag<ROUTE, Accept> {}
 impl<const ROUTE: u8> Select<Recv> for KeyTag<ROUTE, Recv> {}
 impl<const ROUTE: u8> Select<Send> for KeyTag<ROUTE, Send> {}
@@ -207,6 +217,7 @@ impl<const ROUTE: u8> Select<TaskQueue> for KeyTag<ROUTE, TaskQueue> {}
 impl<const ROUTE: u8> Select<Tuning> for KeyTag<ROUTE, Tuning> {}
 impl<const ROUTE: u8> Select<Write> for KeyTag<ROUTE, Write> {}
 impl<const ROUTE: u8> Select<Sync> for KeyTag<ROUTE, Sync> {}
+impl<const ROUTE: u8> Select<Read> for KeyTag<ROUTE, Read> {}
 impl Select<Accept> for FrameworkTag<Accept> {}
 impl Select<Recv> for FrameworkTag<Recv> {}
 impl Select<Send> for FrameworkTag<Send> {}
@@ -219,6 +230,7 @@ impl Select<TaskQueue> for FrameworkTag<TaskQueue> {}
 impl Select<Tuning> for FrameworkTag<Tuning> {}
 impl Select<Write> for FrameworkTag<Write> {}
 impl Select<Sync> for FrameworkTag<Sync> {}
+impl Select<Read> for FrameworkTag<Read> {}
 
 impl Flight for Accept {
     const FLIGHT: Native = Native::Accept;
@@ -256,6 +268,10 @@ impl Flight for Sync {
     const FLIGHT: Native = Native::Sync;
 }
 
+impl Flight for Read {
+    const FLIGHT: Native = Native::Read;
+}
+
 impl Native {
     pub(crate) fn witness<C: Flight>(self) -> Option<Witness<C>> {
         (self == C::FLIGHT).then_some(Witness::NEW)
@@ -271,6 +287,7 @@ impl From<Native> for Shape {
             Native::Recv => Self::Recv(Witness::NEW),
             Native::Send => Self::Send(Witness::NEW),
             Native::Write => Self::Write(Witness::NEW),
+            Native::Read => Self::Read(Witness::NEW),
             Native::Connect => Self::Connect(Witness::NEW),
             Native::Sync => Self::Sync(Witness::NEW),
             Native::Tuning => Self::Tuning(Witness::NEW),

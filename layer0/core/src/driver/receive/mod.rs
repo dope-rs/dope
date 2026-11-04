@@ -76,18 +76,13 @@ impl Proof {
         driver: driver::Reference<'_>,
     ) {
         while let Some((index, key)) = store.grant_one(permit) {
-            let stale = match driver.ready().arena().stored().try_receive(Self::new(key)) {
+            let stale = match driver.ready().arena().try_receive(Self::new(key)) {
                 Ok(()) => continue,
                 Err(stale) => stale.key(),
             };
-            match store.take(permit, index, stale) {
-                permit::State::Granted(returned) => {
-                    if returned != stale {
-                        return;
-                    }
-                }
-                permit::State::Gone | permit::State::Waiting | permit::State::Stale => return,
-            }
+            // grant_one parked this exact key; try_receive invokes no callback
+            // and cannot mutate the permit store before its matching removal.
+            let _ = store.take(permit, index, stale);
         }
     }
 }
@@ -194,7 +189,7 @@ where
     }
 
     fn is_live(driver: driver::Reference<'_>, key: ready::Stored) -> bool {
-        driver.ready().arena().stored().is_dispatch(Proof::new(key))
+        driver.ready().arena().is_dispatch(Proof::new(key))
     }
 
     fn take(

@@ -22,15 +22,6 @@ impl IntoIterator for Capacity {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Owned(pub(super) Physical);
-
-impl From<Physical> for Owned {
-    fn from(slot: Physical) -> Self {
-        Self(slot)
-    }
-}
-
 #[derive(Debug)]
 pub struct Accepted(Physical);
 
@@ -102,11 +93,5 @@ impl From<Physical> for Index {
 impl From<Physical> for u32 {
     fn from(slot: Physical) -> Self {
         slot.0.get()
-    }
-}
-
-impl From<Owned> for Physical {
-    fn from(slot: Owned) -> Self {
-        slot.0
     }
 }

@@ -11,19 +11,16 @@ use crate::{
         life::{
             Local, Operation, Scope, State, domain,
             native::{drain, resolver::Reclaim},
-            recovery::{Attempt, Phase, Recovered},
+            recovery::{self, Phase, Recovered},
         },
         storage,
     },
     io,
 };
 
-/// Unforgeable witness that only this module can mint after native retirement.
-struct Seal;
-
 /// Native retirement has succeeded for the exact generation being ended.
 pub(super) struct Closed {
-    _seal: Seal,
+    _seal: (),
 }
 
 impl fixed::Release<Engine, driver::Buffer> for Closed {
@@ -49,8 +46,8 @@ impl<'a, 'd> Final<'a, 'd> {
 
     pub(super) fn start(mut ctx: driver::Context<'a, 'd>) -> Self {
         ctx.native().reclaim(usize::MAX);
-        drain::Final::new(&mut ctx).all();
-        let done = Attempt::new(ctx, Phase::Quiesce).resume();
+        drain::routes(&mut ctx);
+        let done = recovery::retire(ctx, Phase::Quiesce);
         Self {
             context: done.into_context(),
         }
@@ -71,16 +68,16 @@ impl<'a, 'd> Final<'a, 'd> {
 
     fn drain(mut self) -> Self {
         self.context.native().reclaim(usize::MAX);
-        drain::Final::new(&mut self.context).all();
+        drain::routes(&mut self.context);
         self
     }
 
     pub(in crate::driver::life) fn reap(self) -> Recovered<'a, 'd> {
-        Attempt::new(self.drain().context, Phase::Finish).resume()
+        recovery::retire(self.drain().context, Phase::Finish)
     }
 
     pub(super) fn resume(self) {
-        if let Err(failure) = Attempt::try_rearm(self.drain()) {
+        if let Err(failure) = recovery::try_rearm(self.drain()) {
             failure.terminate();
         }
     }
@@ -99,7 +96,7 @@ const _: () = {
 
 impl Closed {
     fn retired(_done: Recovered<'_, '_>) -> Self {
-        Self { _seal: Seal }
+        Self { _seal: () }
     }
 
     fn finish<'d>(mut state: State<'d>) -> (Self, fixed::Loan<'d, Engine>) {

@@ -1,10 +1,10 @@
-use crate::common::cleanup::schedule::Schedule;
+use crate::common::cleanup::schedule;
 
 /// # Safety
 /// The address and length satisfy the native unmap contract.
 #[unsafe(export_name = "munmap")]
 pub unsafe extern "C" fn release(address: *mut libc::c_void, length: usize) -> libc::c_int {
-    match Schedule::intercept(address, length) {
+    match schedule::intercept(address, length) {
         Some(code) => {
             // SAFETY: libc returns this thread's writable errno slot.
             unsafe { *libc::__errno_location() = code.get() };

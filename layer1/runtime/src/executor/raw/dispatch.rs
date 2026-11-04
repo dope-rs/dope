@@ -25,7 +25,7 @@ impl<'app, 'driver, 'turn, 'root, 'd: 'root, R> Dispatch<'app, 'driver, 'turn, '
     ) -> Self {
         Self {
             app,
-            drive: executor::raw::Drive::new(turn, driver),
+            drive: executor::raw::Drive { turn, driver },
             event,
         }
     }
@@ -43,7 +43,7 @@ impl<'app, 'driver, 'turn, 'root, 'd: 'root, R> Dispatch<'app, 'driver, 'turn, '
             retained::Context<'_, 'root, 'd>,
         ) -> ops::ControlFlow<io::Event<'d>>,
     ) -> ops::ControlFlow<Self> {
-        let (turn, driver) = self.drive.reborrow().into_parts();
+        let executor::raw::Drive { turn, driver } = self.drive.reborrow();
         match map(self.app.as_mut(), self.event, turn, driver) {
             ops::ControlFlow::Continue(()) => ops::ControlFlow::Continue(()),
             ops::ControlFlow::Break(event) => {

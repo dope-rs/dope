@@ -86,6 +86,24 @@ pub struct Session<'d, C: Codec> {
     pub(crate) gate: Gate,
 }
 
+impl<C: Codec> Session<'_, C> {
+    pub fn new(codec: C) -> Self {
+        Self {
+            audit: Rc::default(),
+            codec,
+            errors: Rc::default(),
+            events: Rc::default(),
+            gate: Gate::default(),
+        }
+    }
+}
+
+impl<C: Codec + Default> Default for Session<'_, C> {
+    fn default() -> Self {
+        Self::new(C::default())
+    }
+}
+
 impl<'d, C: Codec> session::Session<'d> for Session<'d, C> {
     type Codec = C;
     type Connect = Full;

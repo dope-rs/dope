@@ -13,7 +13,13 @@ use crate::common::file::Message;
 pub mod common;
 
 #[test]
-fn exact_rejects_overflow() {
+fn admission_bounds() {
+    assert_eq!(Len::try_new(0), Ok(Len::ZERO));
+    assert_eq!(Len::try_new(transfer::MAX_BYTES), Ok(Len::MAX));
+    assert_eq!(
+        std::mem::size_of::<Result<Len, o3::buffer::bytes::bounded::Overflow>>(),
+        2 * std::mem::size_of::<usize>()
+    );
     let observed = Len::try_new(transfer::MAX_BYTES + 1);
 
     assert!(matches!(observed, Err(cause) if cause.actual() == transfer::MAX_BYTES + 1));

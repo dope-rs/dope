@@ -5,7 +5,7 @@ use crate::link::egress::{
     self,
     load::credit,
     metadata::{self, batch},
-    reserve::guard::{Guard, Rollback},
+    reserve::guard::Rollback,
 };
 
 pub(in crate::link::egress) struct Draft<
@@ -17,7 +17,8 @@ pub(in crate::link::egress) struct Draft<
     M: credit::Access<'p, 'd> = metadata::Local,
 > {
     links: ends::Exclusive<Option<Index<'d>>>,
-    reservation: Guard<'token, 'd, credit::Reserve<'queue, 'p, 'd, T, M>>,
+    token: &'token mut region::Token<region::Identity<'d>>,
+    credit: credit::Reserve<'queue, 'p, 'd, T, M>,
 }
 
 impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token, 'p, 'd, T, M> {
@@ -29,7 +30,8 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token,
         let credit = queue.try_acquire(token, plan.amount())?;
         Ok(Self {
             links: ends::Exclusive::empty(),
-            reservation: Guard::new(token, credit),
+            token,
+            credit,
         })
     }
 
@@ -44,7 +46,7 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token,
                 return Err(batch::Error::Build(error));
             }
         };
-        let amount = self.reservation.parts_mut().1.amount();
+        let amount = self.credit.amount();
         if amount != credit::Amount::ZERO {
             let error = batch::Error::Mismatch {
                 remaining: egress::Credit::new(amount.entries(), amount.resident()),
@@ -52,7 +54,7 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token,
             self.cancel();
             return Err(error);
         }
-        let (token, credit) = self.reservation.into_parts();
+        let (token, credit) = (self.token, self.credit);
         let queue = credit.queue();
         let mut links = Chain::new(self.links);
         queue.state().append(&mut links, |prev, source| {
@@ -65,7 +67,7 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token,
         &mut self,
         load: egress::NonEmpty<T>,
     ) -> Result<(), batch::Rejected<T>> {
-        let (token, credit) = self.reservation.parts_mut();
+        let (token, credit) = (&mut *self.token, &mut self.credit);
         let queue = credit.queue();
         let split = credit.try_split(load)?;
         let vacancy = match queue.pool.store.vacancy() {
@@ -96,7 +98,7 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token,
     }
 
     fn cancel(mut self) {
-        let (token, credit) = self.reservation.into_parts();
+        let (token, credit) = (self.token, self.credit);
         let queue = credit.queue();
         if let Some(stored) = queue.pool.store.discard(token, &mut self.links) {
             let mut grant = stored.into_grant();

@@ -1,38 +1,23 @@
-use std::rc::Rc;
-
 use dope_core::driver::route::Identity;
 use dope_net::wire::{
     self, domain, failure, open, receive, receive::mode, send, send::reclaim, terminal,
 };
-use dope_test::harness::{
-    observe::Trace,
-    signals::{Gate, Progress as _},
-};
-use o3::buffer::write::{Sink as _, consume};
+use dope_test::harness::signals::{Gate, Progress as _};
+use o3::buffer::write::Sink as _;
 
 use crate::common::{Buffer, manifold::listener::finish::close::buffer};
 
 pub const BYE: &[u8] = b"<<BYE>>";
 
+#[derive(Clone, Default)]
 pub struct Wire {
-    writes: Rc<Trace<consume::Error, 16>>,
     waiting: Option<(Gate, Gate)>,
 }
 
 impl Wire {
-    pub fn waiting(writes: Rc<Trace<consume::Error, 16>>, entered: Gate, release: Gate) -> Self {
+    pub fn waiting(entered: Gate, release: Gate) -> Self {
         Self {
-            writes,
             waiting: Some((entered, release)),
-        }
-    }
-}
-
-impl From<Rc<Trace<consume::Error, 16>>> for Wire {
-    fn from(writes: Rc<Trace<consume::Error, 16>>) -> Self {
-        Self {
-            writes,
-            waiting: None,
         }
     }
 }
@@ -61,8 +46,7 @@ impl send::Policy<Wire> for Send {
         Wire: 'd,
         'd: 'a,
     {
-        let (wire, send) = context.into_parts();
-        end.output(buffer::Buffer::new(send, &wire.writes).plain(plain))
+        end.output(buffer::plain(context.into_state(), plain))
     }
 
     fn prepare_many<'a, 'd, ID: Identity + 'd, const N: usize>(
@@ -74,8 +58,7 @@ impl send::Policy<Wire> for Send {
         Wire: 'd,
         'd: 'a,
     {
-        let (wire, send) = context.into_parts();
-        end.output(buffer::Buffer::new(send, &wire.writes).vectored(plain))
+        end.output(buffer::vectored(context.into_state(), plain))
     }
 
     fn after_send<'a, 'd, ID: Identity + 'd>(
@@ -93,7 +76,7 @@ impl send::Policy<Wire> for Send {
         'd: 'a,
     {
         let done = context.into_state();
-        end.output(buffer::Buffer::complete(done))
+        end.output(buffer::complete(done))
     }
 
     fn settle<'a, 'd, ID: Identity + 'd>(
@@ -111,7 +94,7 @@ impl send::Policy<Wire> for Send {
         'd: 'a,
     {
         let done = context.into_state();
-        buffer::Buffer::complete(done)
+        buffer::complete(done)
     }
 
     fn flush<'a, 'd, ID: Identity + 'd>(
@@ -153,9 +136,7 @@ impl send::Policy<Wire> for Send {
             entered.hit();
             return end.output(send.buffer_wait());
         }
-        if let Err(error) = send.bytes.write_slice(BYE) {
-            wire.writes.record(error);
-        }
+        send.bytes.write_slice(BYE).expect("wire close bytes");
         end.output(send.buffered())
     }
 }
@@ -166,11 +147,7 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Wire {
         context: C,
         consume: impl FnOnce(C, Wire, Buffer<16384>) -> open::Disposition<T, Wire, Buffer<16384>>,
     ) -> open::Outcome<C, T, open::Error<'w, Wire>> {
-        let wire = Wire {
-            writes: Rc::clone(&self.writes),
-            waiting: self.waiting.clone(),
-        };
-        let output = match consume(context, wire, Buffer::default()) {
+        let output = match consume(context, self.clone(), Buffer::default()) {
             open::Disposition::Commit(output) | open::Disposition::Retry { output, .. } => output,
         };
         open::Outcome::Opened(output)

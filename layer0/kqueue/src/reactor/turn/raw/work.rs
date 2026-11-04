@@ -2,27 +2,20 @@ use dope_sys::io::reactor::ready::Backend as _;
 
 use crate::reactor::turn::{Engine, Quota, Work, ready, task, time};
 
-impl<C, Q> ready::raw::Work<C, Q> for Work<Q>
-where
-    C: ready::Driver<Context: ready::raw::Decode>,
-    Q: Quota,
-{
-    type Backend = Engine<C>;
-
-    unsafe fn new<'a>(_: &'a mut Self::Backend, quota: Q) -> Self
-    where
-        C::Context: 'a,
-    {
+impl<Q: Quota> Work<Q> {
+    pub(in crate::reactor) fn new(quota: Q) -> Self {
         Self { quota }
     }
 
-    unsafe fn commit<'a>(
+    /// # Safety
+    /// Registered storage and kernel identities remain valid for this driver's flights.
+    pub(in crate::reactor) unsafe fn commit<'a, C>(
         self,
-        backend: &'a mut Self::Backend,
+        backend: &'a mut Engine<C>,
         dirty: bool,
-    ) -> Result<task::Poll<()>, <Self::Backend as ready::Backend<C>>::Failure>
+    ) -> Result<task::Poll<()>, <Engine<C> as ready::Backend<C>>::Failure>
     where
-        C::Context: 'a,
+        C: ready::Driver<Context: ready::raw::Decode + 'a>,
     {
         if dirty && self.quota.remaining() != 0 {
             unsafe {
@@ -42,14 +35,16 @@ where
         })
     }
 
-    unsafe fn wait<'a>(
+    /// # Safety
+    /// Registered storage and kernel identities remain valid for this driver's flights.
+    pub(in crate::reactor) unsafe fn wait<'a, C>(
         self,
-        backend: &'a mut Self::Backend,
+        backend: &'a mut Engine<C>,
         span: Option<time::Duration>,
         busy: bool,
-    ) -> Result<(), <Self::Backend as ready::Backend<C>>::Failure>
+    ) -> Result<(), <Engine<C> as ready::Backend<C>>::Failure>
     where
-        C::Context: 'a,
+        C: ready::Driver<Context: ready::raw::Decode + 'a>,
     {
         let remaining = self.quota.remaining();
         if remaining == 0 {

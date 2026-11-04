@@ -10,7 +10,7 @@ use std::net::Shutdown;
 
 use dope::{
     core::driver::route::{Id, table::conn::Capacity},
-    manifold::timing::Balanced,
+    manifold::{app::Host, timing::Balanced},
     net::tcp::Tcp,
     runtime::executor::drive,
 };
@@ -51,7 +51,7 @@ fn submits_before_error() {
                         |sess| sess.driver(),
                         |port, sess| {
                             let conn = store.handle();
-                            let app = App { connector: port };
+                            let app = Host::new(port);
                             let driven = sess
                                 .with_quiesce(
                                     &mut finish,
@@ -116,7 +116,7 @@ fn submits_before_error() {
                         .expect("the send-failure peer thread must join");
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
-                self::finish,
+                runtime::check_scope,
             );
             assert!(
                 reports
@@ -128,8 +128,4 @@ fn submits_before_error() {
         },
     )
     .expect("the send-failure peer thread must start");
-}
-
-fn finish(result: Result<(), runtime::Error<'_>>) {
-    result.expect("driver lifecycle");
 }

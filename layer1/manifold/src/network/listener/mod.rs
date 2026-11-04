@@ -124,6 +124,7 @@ where
             | Kind::Socket(_)
             | Kind::Connect(_)
             | Kind::Open(_)
+            | Kind::Read(_)
             | Kind::Write(_)
             | Kind::Sync(_)
             | Kind::Shutdown) => return ControlFlow::Break(kind.into()),

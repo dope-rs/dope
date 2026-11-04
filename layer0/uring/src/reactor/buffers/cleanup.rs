@@ -30,21 +30,9 @@ pub struct Open<L> {
 
 /// Live mappings after a failure has been returned to their owning caller.
 #[derive(Debug)]
-pub struct Pending<L: memory::raw::Receive>(State<L>);
-
-#[derive(Debug)]
-enum State<L: memory::raw::Receive> {
-    Entries {
-        current: mappings::Mapping<Entry>,
-        context: buffers::raw::Context<L>,
-    },
-    Region(mappings::Region),
-    RegionContext {
-        current: mappings::Region,
-        context: buffers::raw::Context<L>,
-    },
-    Payload(mappings::Mapping<u8>),
-    Producer(mappings::Mapping<Entry>),
+pub struct Pending<L: memory::raw::Receive> {
+    current: mappings::Region,
+    context: Option<buffers::raw::Context<L>>,
 }
 
 impl<L: memory::raw::Receive> provided::Cleanup for Cleanup<L> {
@@ -55,27 +43,15 @@ impl<L: memory::raw::Receive> provided::Cleanup for Cleanup<L> {
         current: <mappings::Mapping<Entry> as Close>::State,
         context: buffers::raw::Context<L>,
     ) -> Self {
-        Self(current.map(|current| Pending(State::Entries { current, context })))
+        Self::with_region(current, context)
     }
 
     fn payload(current: <mappings::Mapping<u8> as Close>::State) -> Self {
-        Self(current.map(|current| Pending(State::Payload(current))))
+        Self::region(current)
     }
 
     fn producer(current: <mappings::Mapping<Entry> as Close>::State) -> Self {
-        Self(current.map(|current| Pending(State::Producer(current))))
-    }
-}
-
-impl<L: memory::raw::Receive>
-    From<Stopped<buffers::raw::Context<L>, <mappings::Mapping<Entry> as Close>::State>>
-    for Cleanup<L>
-{
-    fn from(
-        stopped: Stopped<buffers::raw::Context<L>, <mappings::Mapping<Entry> as Close>::State>,
-    ) -> Self {
-        use provided::Cleanup as _;
-        Self::entries(stopped.cause, stopped.state)
+        Self::region(current)
     }
 }
 
@@ -110,32 +86,33 @@ impl<L: memory::raw::Receive> Close for Pending<L> {
     fn try_close(self) -> Result<(), Self::State> {
         use provided::Cleanup as _;
 
-        match self.0 {
-            State::Entries { current, context } => {
-                let (context, ()) = Stopped::attach(context, current.try_close())?;
-                context.try_close().map_err(Cleanup::payload)
-            }
-            State::Region(current) => current.try_close().map_err(Cleanup::region),
-            State::RegionContext { current, context } => {
-                let (context, ()) = Stopped::attach(context, current.try_close())?;
-                context.try_close().map_err(Cleanup::payload)
-            }
-            State::Payload(current) => current.try_close().map_err(Cleanup::payload),
-            State::Producer(current) => current.try_close().map_err(Cleanup::producer),
+        let Self { current, context } = self;
+        match current.try_close() {
+            Ok(()) => match context {
+                Some(context) => context.try_close().map_err(Cleanup::payload),
+                None => Ok(()),
+            },
+            Err(current) => Err(Cleanup(current.map(|current| Self { current, context }))),
         }
     }
 }
 
 impl<L: memory::raw::Receive> Cleanup<L> {
     fn region(current: <mappings::Region as Close>::State) -> Self {
-        Self(current.map(|current| Pending(State::Region(current))))
+        Self(current.map(|current| Pending {
+            current,
+            context: None,
+        }))
     }
 
     fn with_region(
         current: <mappings::Region as Close>::State,
         context: buffers::raw::Context<L>,
     ) -> Self {
-        Self(current.map(|current| Pending(State::RegionContext { current, context })))
+        Self(current.map(|current| Pending {
+            current,
+            context: Some(context),
+        }))
     }
 
     pub(super) fn close(

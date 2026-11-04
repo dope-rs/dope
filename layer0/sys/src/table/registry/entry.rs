@@ -16,6 +16,5 @@ pub trait Entry: Sized {
     fn index(&self) -> u32;
     fn family(&self) -> Self::Family;
     fn operation(&self) -> Self::Call;
-    fn into_call(self) -> Self::Call;
     fn key(id: Self::Id) -> usize;
 }

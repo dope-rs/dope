@@ -9,7 +9,12 @@ use dope_core::{
     },
     io::socket::{self, install::Install},
 };
-use o3::{alloc::VecExt as _, base::num::bounded, buffer::pool, depot::queue::indexed::fifo};
+use o3::{
+    alloc::VecExt as _,
+    base::num::bounded,
+    buffer::pool,
+    depot::{capacity, queue::indexed::fifo},
+};
 
 use crate::{
     app::creation,
@@ -17,30 +22,23 @@ use crate::{
 };
 
 /// Exact startup admission failure for one group of datagram sockets.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Error {
-    Capacity(table::Invalid),
-    Files(demands::Overflow),
-}
+pub type Error = table::Invalid;
 
 /// One route with a fixed set of exclusively owned datagram sockets.
 #[must_use = "a datagram group plan must be declared and consumed once"]
 pub struct Plan<ID: Identity> {
     config: plan::Config,
     sockets: bounded::NonZeroU32<1, { route::SLOT_MASK as u32 + 1 }>,
-    files: demands::Outbound,
     route: marker::PhantomData<fn() -> ID>,
 }
 
 impl<ID: Identity> Plan<ID> {
     /// `sockets` includes the listener at slot zero.
     pub fn try_new(config: plan::Config, sockets: NonZero<u32>) -> Result<Self, Error> {
-        let sockets = table::Capacity::try_nonzero(sockets).map_err(Error::Capacity)?;
-        let files = demands::Outbound::try_from(sockets.into_usize()).map_err(Error::Files)?;
+        let sockets = table::Capacity::try_nonzero(sockets)?;
         Ok(Self {
             config,
             sockets,
-            files,
             route: marker::PhantomData,
         })
     }
@@ -51,7 +49,9 @@ impl<ID: Identity> Plan<ID> {
 
     pub const fn claim(&self) -> claim::Claim {
         claim::Claim::new(settings::Routes::singleton::<ID>())
-            .files(demands::Files::only_out(self.files))
+            .files(demands::Files::only_out(demands::Outbound::new(
+                capacity::Count::new(self.sockets.get()),
+            )))
             .domains(self.config.domains())
             .schedule(demands::Schedule::fixed::<1, 1>())
     }

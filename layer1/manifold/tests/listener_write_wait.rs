@@ -1,14 +1,13 @@
 pub mod common;
 
-use std::{convert::Infallible, fmt::Debug};
-
-use dope_runtime::topology::error::Kind;
+use common::manifold::listener::{native, reached};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
 use std::{
     iter,
+    net::Shutdown,
     time::{self, Duration},
 };
 
@@ -48,25 +47,13 @@ use dope_runtime::executor::{
 };
 use dope_test::{
     alloc::Tracker,
-    fibers::{Run, Wait},
     harness::{
+        GUARD,
         peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
 };
-
-fn native<R: Debug>(outcome: Result<R, Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
-
-fn reached(outcome: Result<Wait, Run>, actual: u32, want: u32) {
-    assert_eq!(
-        outcome.expect("drive progress"),
-        Wait::Reached,
-        "{actual} of {want} hits"
-    );
-}
 
 fn predecessor(event: app::Event<'_, '_>) {
     match event {
@@ -141,24 +128,15 @@ fn predecessor_wakes() {
         .with_run(
             &mut finish,
             |case| {
-                let request = b"open".to_vec();
-                Peer::at(case.addr())
-                    .with(
-                        move |socket| peer::Half::try_run(socket, &request),
-                        |peer| {
-                            reached(case.try_wait(&ordered, 1), ordered.hits(), 1);
-                            assert_eq!(done.hits(), 1);
-                            assert!(matches!(case.try_wait(&done, 2), Ok(Wait::Reached)));
-                            reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                            assert_eq!(
-                                peer.finish()
-                                    .expect("finish client peer")
-                                    .expect("client peer failed"),
-                                b"AbodyBbody"
-                            );
-                        },
-                    )
-                    .expect("peer spawn failed");
+                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+                reached(case.try_wait(&ordered, 1), ordered.hits(), 1);
+                assert_eq!(done.hits(), 1);
+                peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                peer.write_all(b"open").expect("open wire");
+                peer.shutdown(Shutdown::Write).expect("peer write shutdown");
+                reached(case.try_wait(&done, 2), done.hits(), 2);
+                reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                assert_eq!(Peer::try_read_all(&peer).expect("peer I/O"), b"AbodyBbody");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             native,

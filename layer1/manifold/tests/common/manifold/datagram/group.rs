@@ -72,15 +72,6 @@ impl<F, S> Drop for Handler<F, S> {
     }
 }
 
-#[pin_project::pin_project]
-#[derive(dope_gen::Application)]
-#[dispatcher(core = ::dope_core, manifold = ::dope_manifold, runtime = ::dope_runtime)]
-pub struct App<'d, H> {
-    #[pin]
-    #[manifold]
-    pub endpoint: group::raw::Endpoint<'d, KeyTag<0>, H>,
-}
-
 pub struct Read<'a> {
     pub socket: &'a peer::udp::Socket<'a>,
     pub bytes: &'a mut [u8],

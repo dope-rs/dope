@@ -161,10 +161,6 @@ where
     pub fn into_wire(self) -> &'a mut W::Connection<'w, ID> {
         self.wire
     }
-
-    pub(crate) fn new(wire: &'a mut W::Connection<'w, ID>) -> Self {
-        Self { wire }
-    }
 }
 
 const _: () = assert!(size_of::<Guard<KeyTag<0>, wire::Identity>>() == 0);

@@ -1,22 +1,18 @@
 use dope_sys::{
-    engine,
     io::{
         file,
-        file::Opened as _,
-        reactor::complete::{self, Decode, Outcome as _, Value as _, resolve::Reclaimed},
+        reactor::complete::{Decode, Outcome as _, Packet as _, Value as _, resolve::Reclaimed},
         socket,
     },
-    kernel::{self, Returned as _},
-    memory::buffer::provided,
+    kernel::Returned as _,
     probe::Stopped,
-    ring,
-    table::token::{self, host::Flight as _},
+    table::token::host::Flight as _,
 };
 use o3::base::num::bounded;
 
 use crate::{
+    Backend,
     driver::{
-        life::native,
         receive::tokens,
         result::poll::fault::{self, Violation},
         retained::flight,
@@ -34,41 +30,23 @@ use crate::{
         socket::Create,
         transfer,
     },
-    ring::cqe::{self, Envelope, Opened, Parts, Rejected, Returned, Selected, Value},
+    ring::cqe::{Envelope, Rejected, Returned, Selected, Value},
 };
 
 /// One native packet and its original validated flight, consumed together.
-pub(crate) struct Binding<'q, 'd, P> {
-    packet: Envelope<P>,
+pub(crate) struct Binding<'q, 'd> {
+    packet: Envelope<'d>,
     flight: flight::Complete<'q, 'd>,
 }
 
-pub(super) type Retired<'d, N, P> =
-    Reclaimed<tokens::Token<'d, Selected<N>>, native::Report, Rejected<P>>;
+pub(super) type Retired<'d> = Reclaimed<tokens::Token<'d, Selected>, io::Reclaimed, Rejected<'d>>;
 
-impl<'q, 'd, N, P> Binding<'q, 'd, P>
-where
-    P: ring::Packet<Native = N, Parts = Parts<N>, Buffer = tokens::Token<'d, Selected<N>>>,
-    N: ring::Source
-        + token::Source
-        + provided::Source
-        + file::Completion
-        + complete::Observe<cqe::Token<N>>,
-    cqe::Observation<N>: complete::Record<cqe::Token<N>, Outcome = cqe::Scalar<N>, Flags = cqe::Flags<N>>
-        + Into<<crate::Engine as complete::Observe>::Observation>,
-    Returned<N>: kernel::Returned<Value = Value<N>, Invalid = <cqe::Scalar<N> as complete::Outcome>::Invalid>
-        + Into<<crate::Backend as kernel::Source>::Returned>,
-    Opened<N>: file::raw::Completion<
-            Outcome = cqe::Scalar<N>,
-            Invalid = <cqe::Scalar<N> as complete::Outcome>::Invalid,
-        >,
-    cqe::Completed<N>: Into<<crate::Engine as engine::Buffer>::Token>,
-{
-    pub(super) const fn new(packet: Envelope<P>, flight: flight::Complete<'q, 'd>) -> Self {
+impl<'q, 'd> Binding<'q, 'd> {
+    pub(super) const fn new(packet: Envelope<'d>, flight: flight::Complete<'q, 'd>) -> Self {
         Self { packet, flight }
     }
 
-    pub(super) fn resolve(self) -> Result<Event<'d>, Rejected<P>> {
+    pub(super) fn resolve(self) -> Result<Event<'d>, Rejected<'d>> {
         match self.flight.kind().into() {
             Shape::Socket(proof) => {
                 let (this, creation) = self.plain()?.creation(proof)?;
@@ -94,7 +72,7 @@ where
             Shape::Open(proof) => {
                 let (this, opened) = self.opened()?;
                 let target = this.flight.complete().bind(proof);
-                Ok(match opened.deliver() {
+                Ok(match opened {
                     Ok(fd) => outputs::opened(target, fd),
                     Err(errno) => outputs::open_failed(target, errno),
                 })
@@ -118,6 +96,10 @@ where
                 let (this, value) = self.plain()?.check(Envelope::bytes)?;
                 Ok(outputs::written(this.flight.complete().bind(proof), value))
             }
+            Shape::Read(proof) => {
+                let (this, value) = self.plain()?.check(Envelope::bytes)?;
+                Ok(outputs::read(this.flight.complete().bind(proof), value))
+            }
             Shape::Connect(proof) => {
                 let (this, value) = self.plain()?.check(Envelope::unit)?;
                 Ok(outputs::connected(
@@ -136,7 +118,7 @@ where
         }
     }
 
-    pub(super) fn reclaim(self) -> Result<Retired<'d, N, P>, Rejected<P>> {
+    pub(super) fn reclaim(self) -> Result<Retired<'d>, Rejected<'d>> {
         let (packet, report) = match self.flight.kind().into() {
             Shape::Socket(proof) => return self.drop_socket(proof),
             Shape::Open(proof) => return self.drop_open(proof),
@@ -153,6 +135,14 @@ where
             Shape::Write(proof) => {
                 let (this, result) = self.plain()?.check(Envelope::bytes)?;
                 let report = io::Reclaimed::Write {
+                    echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
+                    result,
+                };
+                (this.packet, report)
+            }
+            Shape::Read(proof) => {
+                let (this, result) = self.plain()?.check(Envelope::bytes)?;
+                let report = io::Reclaimed::Read {
                     echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
                     result,
                 };
@@ -185,18 +175,18 @@ where
         };
         Ok(Reclaimed {
             buffer: packet.0.into_parts().1,
-            report: Some(native::Report(report)),
+            report: Some(report),
             result: Ok(()),
         })
     }
 
-    fn reject(self, cause: Violation) -> Rejected<P> {
+    fn reject(self, cause: Violation) -> Rejected<'d> {
         let flow = self.packet.flow();
         let target = self.flight.settle(flow).into_token();
         self.packet.reject(fault::Subject::Target(target), cause)
     }
 
-    fn invalid(self, cause: Returned<N>) -> Rejected<P> {
+    fn invalid(self, cause: Returned) -> Rejected<'d> {
         Stopped {
             state: (self.packet, self.flight),
             cause,
@@ -206,14 +196,14 @@ where
 
     fn check<R>(
         self,
-        decode: impl FnOnce(&Envelope<P>) -> Result<R, Returned<N>>,
-    ) -> Result<(Self, R), Rejected<P>> {
+        decode: impl FnOnce(&Envelope<'d>) -> Result<R, Returned>,
+    ) -> Result<(Self, R), Rejected<'d>> {
         let result = decode(&self.packet);
         let ((packet, flight), value) = Stopped::attach((self.packet, self.flight), result)?;
         Ok((Self { packet, flight }, value))
     }
 
-    fn plain(self) -> Result<Self, Rejected<P>> {
+    fn plain(self) -> Result<Self, Rejected<'d>> {
         if !self.packet.0.is_plain() {
             return Err(self.reject(Violation::Result));
         }
@@ -223,7 +213,7 @@ where
     fn creation(
         self,
         proof: kind::Witness<kind::Socket>,
-    ) -> Result<(Self, domain::Creation), Rejected<P>> {
+    ) -> Result<(Self, domain::Creation), Rejected<'d>> {
         let creation = self
             .flight
             .driver()
@@ -235,24 +225,24 @@ where
         }
     }
 
-    fn opened(self) -> Result<(Self, Opened<N>), Rejected<P>> {
-        use file::raw::Completion as _;
+    fn opened(self) -> Result<(Self, file::Opened), Rejected<'d>> {
         let this = self.plain()?;
         this.check(|packet| {
             // SAFETY: this original flight uniquely owns the packet's open result;
             // consuming the binding excludes another descriptor decode.
-            unsafe { Opened::<N>::open(packet.0.parts().outcome) }.map_err(Returned::<N>::invalid)
+            unsafe { <Backend as file::raw::Completion>::open(packet.0.parts().outcome) }
+                .map_err(Returned::invalid)
         })
     }
 
-    fn accepted(&self, value: Value<N>) -> Result<handles::Accepted, Violation> {
+    fn accepted(&self, value: Value) -> Result<handles::Accepted, Violation> {
         let value: bounded::U32<0, { i32::MAX as u32 }> = value.into();
         let slot = SlotIndex::try_from(value.get()).map_err(Violation::SlotIndex)?;
         let end = self.flight.driver().descriptors().domain().accept_cap();
         handles::Accepted::try_from((slot, end)).map_err(Violation::Descriptor)
     }
 
-    fn accepting(self) -> Result<(Self, Result<handles::Accepted, dope_sys::Errno>), Rejected<P>> {
+    fn accepting(self) -> Result<(Self, Result<handles::Accepted, dope_sys::Errno>), Rejected<'d>> {
         if self.packet.0.buffer().is_some() {
             return Err(self.reject(Violation::Buffer));
         }
@@ -262,18 +252,18 @@ where
                 Err(cause) => return Err(self.reject(cause)),
             },
             Decode::Error(errno) => Err(errno),
-            Decode::Invalid(invalid) => return Err(self.invalid(Returned::<N>::invalid(invalid))),
+            Decode::Invalid(invalid) => return Err(self.invalid(Returned::invalid(invalid))),
         };
         Ok((self, outcome))
     }
 
-    fn recv(mut self, proof: kind::Witness<kind::Recv>) -> Result<Event<'d>, Rejected<P>> {
+    fn recv(mut self, proof: kind::Witness<kind::Recv>) -> Result<Event<'d>, Rejected<'d>> {
         use dope_sys::memory::buffer::raw::Pending as _;
 
         let flow = self.packet.flow();
         let outcome = match self.packet.0.parts().outcome.decode() {
             Decode::Value(value) if !value.is_zero() => {
-                let vacant = match tokens::Vacant::try_new(self.flight.driver()) {
+                let vacant = match self.flight.driver().receive().owners().try_vacant() {
                     Ok(vacant) => vacant,
                     Err(cause) => return Err(self.reject(Violation::Provided(cause))),
                 };
@@ -296,23 +286,20 @@ where
                 ));
             }
             Decode::Value(_) if self.packet.0.buffer().is_none() => Ok(()),
-            Decode::Value(value) => return Err(self.invalid(Returned::<N>::value(value))),
+            Decode::Value(value) => return Err(self.invalid(Returned::value(value))),
             Decode::Error(errno) => {
                 if self.packet.0.buffer().is_some() {
                     return Err(self.reject(Violation::Buffer));
                 }
                 Err(errno)
             }
-            Decode::Invalid(invalid) => return Err(self.invalid(Returned::<N>::invalid(invalid))),
+            Decode::Invalid(invalid) => return Err(self.invalid(Returned::invalid(invalid))),
         };
         let driver = self.flight.driver();
         Ok(Completion::control(self.flight.settle(flow).bind(proof), outcome, flow, driver).into())
     }
 
-    fn drop_socket(
-        self,
-        proof: kind::Witness<kind::Socket>,
-    ) -> Result<Retired<'d, N, P>, Rejected<P>> {
+    fn drop_socket(self, proof: kind::Witness<kind::Socket>) -> Result<Retired<'d>, Rejected<'d>> {
         let this = self.plain()?;
         let (this, outcome) = this.check(|packet| packet.0.parts().outcome.unit())?;
         let (this, creation) = this.creation(proof)?;
@@ -334,23 +321,25 @@ where
         };
         Ok(Reclaimed {
             buffer: this.packet.0.into_parts().1,
-            report: Some(native::Report(io::Reclaimed::Socket {
+            report: Some(io::Reclaimed::Socket {
                 echo,
                 slot: slot.physical(),
                 result: result.map_err(Create::from_native),
                 close: None,
-            })),
+            }),
             result: Ok(()),
         })
     }
 
-    fn drop_open(self, proof: kind::Witness<kind::Open>) -> Result<Retired<'d, N, P>, Rejected<P>> {
-        use file::raw::Completion as _;
+    fn drop_open(self, proof: kind::Witness<kind::Open>) -> Result<Retired<'d>, Rejected<'d>> {
         let (this, opened) = self.opened()?;
         let subject = fault::Subject::Target(route::Erased::from(&this.flight).into_token());
         let echo = fault::Echo::new(this.flight.bind(proof).end(Flow::Last));
-        let (outcome, close) = match opened.deliver() {
-            Ok(file) => (Ok(()), Some(Opened::<N>::close(file))),
+        let (outcome, close) = match opened {
+            Ok(file) => (
+                Ok(()),
+                Some(<Backend as file::raw::Completion>::close(file)),
+            ),
             Err(errno) => (Err(errno), None),
         };
         let (buffer, result) = match close {
@@ -362,19 +351,16 @@ where
         };
         Ok(Reclaimed {
             buffer,
-            report: Some(native::Report(io::Reclaimed::Open {
+            report: Some(io::Reclaimed::Open {
                 echo,
                 result: outcome,
                 close,
-            })),
+            }),
             result,
         })
     }
 
-    fn drop_accept(
-        self,
-        proof: kind::Witness<kind::Accept>,
-    ) -> Result<Retired<'d, N, P>, Rejected<P>> {
+    fn drop_accept(self, proof: kind::Witness<kind::Accept>) -> Result<Retired<'d>, Rejected<'d>> {
         let (this, outcome) = self.accepting()?;
         let flow = this.packet.flow();
         let driver = this.flight.driver();
@@ -384,12 +370,12 @@ where
             .map_err(accept::Failure::from);
         Ok(Reclaimed {
             buffer: this.packet.0.into_parts().1,
-            report: Some(native::Report(io::Reclaimed::Accept { echo, result, flow })),
+            report: Some(io::Reclaimed::Accept { echo, result, flow }),
             result: Ok(()),
         })
     }
 
-    fn drop_recv(self, proof: kind::Witness<kind::Recv>) -> Result<Retired<'d, N, P>, Rejected<P>> {
+    fn drop_recv(self, proof: kind::Witness<kind::Recv>) -> Result<Retired<'d>, Rejected<'d>> {
         let empty = self.packet.0.buffer().is_none();
         let outcome = match self.packet.0.parts().outcome.decode() {
             Decode::Value(value) => {
@@ -404,7 +390,7 @@ where
                 }
                 Err(errno)
             }
-            Decode::Invalid(invalid) => return Err(self.invalid(Returned::<N>::invalid(invalid))),
+            Decode::Invalid(invalid) => return Err(self.invalid(Returned::invalid(invalid))),
         };
         let flow = self.packet.flow();
         let echo = fault::Echo::new(self.flight.bind(proof).end(flow));
@@ -414,7 +400,7 @@ where
         });
         Ok(Reclaimed {
             buffer: self.packet.0.into_parts().1,
-            report: Some(native::Report(io::Reclaimed::Recv { echo, result, flow })),
+            report: Some(io::Reclaimed::Recv { echo, result, flow }),
             result: Ok(()),
         })
     }
