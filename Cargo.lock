@@ -251,9 +251,9 @@ dependencies = [
 
 [[package]]
 name = "dope-test"
-version = "0.24.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b904c661aa8cc192b7bf2871b19c3387dd23b4e7faa72ca0f5f17cc82a7ae0de"
+checksum = "a90cebf16cda8baadefb18d1d1a52c2251ab629ef01be80929b0a7db48baebc9"
 dependencies = [
  "dope-core",
  "dope-fiber",
