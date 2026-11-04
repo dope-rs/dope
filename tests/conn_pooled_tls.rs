@@ -139,7 +139,9 @@ fn recycles_mux_leases() {
         Capture::options().expect("fixture transport options"),
     )
     .expect("pooled TLS configuration");
-    let limits = (builder::Plan::try_new(4, 64, 1 << 20)).expect("pooled mux limits");
+    let limits = (builder::Plan::try_new(4, 64, 1 << 20))
+        .expect("pooled mux limits")
+        .opening_lifetime(o3::base::time::Positive::from_millis::<100>());
     let server = builder::Builder::server_pool(Capture::default(), &servers);
     let mut server = server
         .limits(limits)

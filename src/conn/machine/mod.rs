@@ -39,6 +39,18 @@ pub(crate) struct Machine<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Seg
 }
 
 impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN, B, D> {
+    /// Called only by mux installation, before publishing the admitted slot.
+    pub(crate) fn try_open(
+        &mut self,
+        now: time::Instant,
+        lifetime: Option<o3::base::time::Positive>,
+    ) -> Result<(), conn::Timing> {
+        self.egress.lifecycle.deadline = lifetime
+            .map(|lifetime| conn::Timing::try_deadline(now, lifetime.get()))
+            .transpose()?;
+        Ok(())
+    }
+
     pub(in crate::conn) fn deadline(&self) -> Option<time::Instant> {
         if self.is_closing() {
             None
@@ -71,33 +83,35 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         self.peer.reconcile.set_ready(false);
     }
 
-    /// Admits one fixed terminal deadline independently of output availability.
+    /// Enforces the admission deadline or admits fixed terminal retention.
     pub(in crate::conn) fn try_terminal(
         &mut self,
         now: time::Instant,
     ) -> Result<bool, conn::Timing> {
-        if !self.is_closing() {
-            return Ok(false);
-        }
-        if self.egress.lifecycle.state == conn::State::Closed {
-            return Ok(true);
-        }
-        let deadline = match self.egress.lifecycle.close_deadline {
-            Some(deadline) => deadline,
-            None => {
-                let deadline = timer::Timer::new(self)
-                    .try_terminal(now)
-                    .map_err(|error| self.fail_timing(error))?;
-                self.egress.lifecycle.close_deadline = Some(deadline);
-                self.peer.reconcile.insert(conn::Effects::LIFECYCLE);
-                deadline
-            }
+        let deadline = match self.egress.lifecycle.state {
+            conn::State::Handshaking => match self.egress.lifecycle.deadline {
+                Some(deadline) => deadline,
+                None => return Ok(false),
+            },
+            conn::State::Established => return Ok(false),
+            conn::State::Closed => return Ok(true),
+            conn::State::Closing | conn::State::Draining => match self.egress.lifecycle.deadline {
+                Some(deadline) => deadline,
+                None => {
+                    let deadline = timer::Timer::new(self)
+                        .try_terminal(now)
+                        .map_err(|error| self.fail_timing(error))?;
+                    self.egress.lifecycle.deadline = Some(deadline);
+                    self.peer.reconcile.insert(conn::Effects::LIFECYCLE);
+                    deadline
+                }
+            },
         };
         if now >= deadline {
             self.close_now();
             self.peer.reconcile.insert(conn::Effects::LIFECYCLE);
         }
-        Ok(true)
+        Ok(self.is_closing())
     }
 
     pub(in crate::conn) fn drain(&mut self) -> Option<CloseChange> {
@@ -106,6 +120,9 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
             conn::State::Draining | conn::State::Closed
         ) {
             return None;
+        }
+        if !self.is_closing() {
+            self.egress.lifecycle.deadline = None;
         }
         self.discard_queued();
         self.egress.lifecycle.state = conn::State::Draining;
@@ -221,6 +238,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         }
         self.discard_queued();
         self.egress.lifecycle.pending_close = Some(close);
+        self.egress.lifecycle.deadline = None;
         self.egress.lifecycle.state = conn::State::Closing;
         self.set_deadline(None);
         self.peer.reconcile.set_ready(false);

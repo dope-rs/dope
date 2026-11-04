@@ -180,7 +180,8 @@ impl Datagram {
 
 pub(super) struct Lifecycle {
     pub(super) pending_close: Option<PendingClose>,
-    pub(super) close_deadline: Option<time::Instant>,
+    /// Fixed Opening or Closing/Draining deadline, selected by `state`.
+    pub(super) deadline: Option<time::Instant>,
     close_stride: NonZero<u32>,
     close_remaining: u32,
     pub(super) state: conn::State,
@@ -323,7 +324,7 @@ impl Egress {
             },
             lifecycle: Lifecycle {
                 pending_close: None,
-                close_deadline: None,
+                deadline: None,
                 close_stride: NonZero::<u32>::MIN,
                 close_remaining: 0,
                 state: conn::State::Handshaking,

@@ -152,6 +152,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Finish<'_, B, D> {
         let cids = self.path.local.issue_cids(id.cid_limit());
         *self.params = Some(peer);
         self.egress.lifecycle.state = conn::State::Established;
+        self.egress.lifecycle.deadline = None;
         if matches!(self.local, Initiator::Server) {
             self.egress.lifecycle.handshake_confirmed = true;
         }

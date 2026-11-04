@@ -32,6 +32,7 @@ pub(in crate::runtime::mux) struct Binding<A: auth::Mode<DOMAIN>, const DOMAIN: 
     pub(in crate::runtime::mux) domain: id::Domain<A::Identity, DOMAIN>,
     pub(in crate::runtime::mux) route: A::LocalRoute,
     pub(in crate::runtime::mux) issuer: A::Random,
+    pub(in crate::runtime::mux) opening_lifetime: Option<o3::base::time::Positive>,
 }
 
 pub(crate) struct State<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> {

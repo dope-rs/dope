@@ -5,6 +5,7 @@ use dope::core::driver::{self, schedule::clock, settings};
 use dope::core::io::datagram::payload;
 use dope::manifold::{self, network::datagram::plan};
 use dope_sys::io::socket::route::selector::PrefixPlan;
+use o3::base::time::Positive;
 
 use crate::proto::cid::{Rotation, Schedule};
 use crate::proto::datagram::Size;
@@ -18,6 +19,10 @@ pub struct Config {
     pub packet_buffer_slots: u32,
     pub packet_buffer_bytes: u32,
     pub cid_rotation: Rotation,
+    /// Optional absolute lifetime from each connection's initial admission to
+    /// authenticated TLS completion. Packets, progress and Retry cannot extend it.
+    /// `None` preserves the transport's existing idle-timeout policy.
+    pub opening_lifetime: Option<Positive>,
 }
 
 /// Invalid relationship in an endpoint capacity plan.
@@ -91,9 +96,12 @@ impl Config {
                 })?,
             None => self.outgoing_bytes_capacity,
         };
-        let capacity =
+        let mut capacity =
             builder::Plan::try_new(self.max_conns, self.outgoing_capacity, outgoing_bytes)
                 .map_err(Error::Capacity)?;
+        if let Some(lifetime) = self.opening_lifetime {
+            capacity = capacity.opening_lifetime(lifetime);
+        }
         if self.outgoing_bytes_capacity < 1200 {
             return Err(Error::OutgoingBytes {
                 got: self.outgoing_bytes_capacity,

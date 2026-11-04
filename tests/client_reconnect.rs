@@ -202,6 +202,7 @@ fn borrowed_attempt_context() {
         packet_buffer_slots: 8,
         packet_buffer_bytes: 2048,
         cid_rotation: cid::Rotation::disabled(),
+        opening_lifetime: None,
     };
     let dial =
         Plan::<CLIENT_ROUTE>::new(BIND, limits).expect("bounded client endpoint config is valid");

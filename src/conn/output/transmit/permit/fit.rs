@@ -44,11 +44,14 @@ pub(in crate::conn) fn timer_deadline<
         permit.connection.egress.lifecycle.state,
         conn::State::Closing | conn::State::Draining
     ) {
-        return permit.connection.egress.lifecycle.close_deadline;
+        return permit.connection.egress.lifecycle.deadline;
     }
     super::earliest(
-        loss_deadline(permit),
-        permit.connection.egress.recovery.timer.idle,
+        super::earliest(
+            loss_deadline(permit),
+            permit.connection.egress.recovery.timer.idle,
+        ),
+        permit.connection.egress.lifecycle.deadline,
     )
 }
 

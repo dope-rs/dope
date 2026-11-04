@@ -11,6 +11,7 @@ pub const CONFIG: Config = Config {
     packet_buffer_slots: 2,
     packet_buffer_bytes: 1200,
     cid_rotation: cid::Rotation::disabled(),
+    opening_lifetime: None,
 };
 
 pub fn capture<'d>() -> Capture<'d, 0> {

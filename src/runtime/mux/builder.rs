@@ -4,6 +4,7 @@ use core::driver;
 use dope::core;
 use dope::core::driver::schedule::ready::task::owner;
 use o3::alloc;
+use o3::base::time::Positive;
 use o3::depot::capacity;
 
 use crate::conn::id;
@@ -36,12 +37,13 @@ pub enum Failure {
     },
 }
 
-/// Validated scalar capacity plan shared by mux construction and driver claims.
+/// Validated capacities and admission policy shared by mux construction and driver claims.
 #[derive(Clone, Copy)]
 pub struct Plan {
     conns: capacity::Limit<{ mux::MAX_CONNECTIONS }>,
     queue: capacity::Limit<{ mux::MAX_OUTGOING_CAPACITY }>,
     bytes: capacity::Limit<{ mux::MAX_OUTGOING_BYTES }>,
+    opening_lifetime: Option<Positive>,
 }
 
 impl Plan {
@@ -53,6 +55,7 @@ impl Plan {
             conns,
             queue,
             bytes,
+            opening_lifetime: None,
         }
     }
 
@@ -79,7 +82,16 @@ impl Plan {
             conns,
             queue,
             bytes,
+            opening_lifetime: None,
         })
+    }
+
+    /// Bounds each opening from its initial admission until authenticated TLS completion.
+    /// Activity, handshake progress and Retry never extend this absolute lifetime.
+    /// Unconfigured muxes retain their existing idle-timeout policy.
+    pub const fn opening_lifetime(mut self, lifetime: Positive) -> Self {
+        self.opening_lifetime = Some(lifetime);
+        self
     }
 
     pub const fn connections(self) -> usize {
@@ -105,7 +117,7 @@ impl Plan {
 
 const _: () = {
     assert!(mux::MAX_CONNECTIONS < usize::MAX);
-    assert!(std::mem::size_of::<Plan>() == 3 * std::mem::size_of::<u32>());
+    assert!(std::mem::size_of::<Plan>() == std::mem::size_of::<([u32; 3], Option<Positive>)>());
 };
 
 pub struct Builder<A, H, const DOMAIN: u8, B>
@@ -292,6 +304,7 @@ where
                     domain: id,
                     route: self.route,
                     issuer: rng,
+                    opening_lifetime: plan.opening_lifetime,
                 },
                 plan.conns(),
                 capacity::Count::new(plan.queue.count().get()),

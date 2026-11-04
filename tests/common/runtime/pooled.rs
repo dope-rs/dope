@@ -31,6 +31,7 @@ const ENDPOINT: Config = Config {
     packet_buffer_slots: 64,
     packet_buffer_bytes: 65_535,
     cid_rotation: cid::Rotation::disabled(),
+    opening_lifetime: None,
 };
 
 pub fn endpoint() -> Config {

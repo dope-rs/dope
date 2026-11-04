@@ -29,7 +29,7 @@ impl<'a, A: auth::Mode<DOMAIN>, H, const DOMAIN: u8> Install<'a, A, H, DOMAIN> {
         Self { handler, binding }
     }
 
-    pub(in crate::runtime::mux) fn attach<'storage, 'id, 'scope, B, R>(
+    pub(in crate::runtime::mux) fn try_attach<'storage, 'id, 'scope, B, R>(
         &mut self,
         scope: brand::Token<'scope>,
         plan: plan::Plan<'storage, 'id, H::Connection, A::Session, DOMAIN, B, A::Send>,
@@ -40,7 +40,7 @@ impl<'a, A: auth::Mode<DOMAIN>, H, const DOMAIN: u8> Install<'a, A, H, DOMAIN> {
             registry::Key<'id>,
             id::Handle<A::Identity, DOMAIN>,
         ) -> R,
-    ) -> Outcome<R>
+    ) -> Result<Outcome<R>, conn::Timing>
     where
         B: stream::Recv,
         H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
@@ -53,12 +53,14 @@ impl<'a, A: auth::Mode<DOMAIN>, H, const DOMAIN: u8> Install<'a, A, H, DOMAIN> {
             now,
             routes,
         } = plan;
+        conn.machine_mut()
+            .try_open(now, self.binding.opening_lifetime)?;
         conn.scope_in(scope.reborrow(), |mut conn| {
             conn.routing().bind_peer(peer);
         });
         let binding = &mut *self.binding;
         let mut handler = self.handler.as_mut();
-        routes
+        Ok(routes
             .claim(binding.domain)
             .map(|entry| {
                 let handle = entry.handle();
@@ -82,6 +84,6 @@ impl<'a, A: auth::Mode<DOMAIN>, H, const DOMAIN: u8> Install<'a, A, H, DOMAIN> {
                     Outcome::Installed(apply(handler, binding, slots, exact, handle))
                 })
             })
-            .unwrap_or(Outcome::Unavailable)
+            .unwrap_or(Outcome::Unavailable))
     }
 }

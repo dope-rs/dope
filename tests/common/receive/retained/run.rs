@@ -53,6 +53,7 @@ pub const ENDPOINT: Config = Config {
     packet_buffer_slots: 16,
     packet_buffer_bytes: 2048,
     cid_rotation: Rotation::disabled(),
+    opening_lifetime: None,
 };
 
 #[derive(Debug)]

@@ -55,6 +55,7 @@ pub const ENDPOINT: Config = Config {
     packet_buffer_slots: 64,
     packet_buffer_bytes: u16::MAX as u32,
     cid_rotation: cid::Rotation::disabled(),
+    opening_lifetime: None,
 };
 pub const SERVER_ROUTE: u8 = 0;
 pub const CLIENT_ROUTE: u8 = 1;
