@@ -17,7 +17,7 @@ use crate::{
     app::env,
     client::{
         app, attempt,
-        close::Reason,
+        close::{Directive, Reason},
         conn::{
             self,
             engine::{self, liveness},
@@ -150,7 +150,7 @@ where
                 Expiry::Ignore => {}
                 Expiry::Close(key, kind) => self.machine.as_mut().cut_close(
                     key,
-                    Reason::Timeout(kind),
+                    Directive::cut_retry(Reason::Timeout(kind)),
                     turn.reborrow(),
                     driver,
                 ),

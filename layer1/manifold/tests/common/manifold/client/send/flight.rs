@@ -40,6 +40,7 @@ pub struct Flight<'a> {
     pub(crate) closed: LocalGateRef<'a>,
     pub(crate) reason: &'a Cell<Option<Reason>>,
     closing: Option<(LocalGateRef<'a>, LocalGateRef<'a>, bool)>,
+    blocked: Option<LocalGateRef<'a>>,
 }
 
 impl<'a> Flight<'a> {
@@ -57,7 +58,13 @@ impl<'a> Flight<'a> {
             closed,
             reason,
             closing: None,
+            blocked: None,
         }
+    }
+
+    pub fn blocked(mut self, flushed: LocalGateRef<'a>) -> Self {
+        self.blocked = Some(flushed);
+        self
     }
 
     pub fn closing(
@@ -81,6 +88,13 @@ impl<'d> Session<'d> for Flight<'_> {
 
     fn codec(&self) -> &Self::Codec {
         &codec::Pending
+    }
+
+    fn mode(&self, _: conn::Id<'d, KeyTag<0>>, _: &()) -> session::ReceiveMode {
+        match self.blocked {
+            Some(_) => session::ReceiveMode::Paused,
+            None => session::ReceiveMode::Framed,
+        }
     }
 }
 
@@ -132,18 +146,34 @@ impl<'d> Plain<'d> for Flight<'_> {
 }
 
 impl<'d> Output<'d> for Flight<'_> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
-        output::Flush::<_>::Ready(|owner: &mut Self| {
-            if let Some(payload) = &owner.payload {
-                owner
-                    .audit
-                    .faults
-                    .record(Send(Error::FlushPayload(payload.len())));
-            }
-        })
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            session::Input,
+        )>,
+    > {
+        Some(output::Flush::<Infallible, _>::Context(
+            |(owner, context, input): (
+                &mut Self,
+                &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
+                session::Input,
+            )| {
+                if let Some(payload) = &owner.payload {
+                    owner
+                        .audit
+                        .faults
+                        .record(Send(Error::FlushPayload(payload.len())));
+                }
+                if let Some(blocked) = owner.blocked
+                    && matches!(input, session::Input::Blocked)
+                    && matches!(context.close_status(), conn::CloseStatus::Open)
+                {
+                    assert!(!context.sink.is_empty(), "native send retains the payload");
+                    blocked.hit();
+                }
+            },
+        ))
     }
 
     fn sent() -> impl for<'a, 't> Call<(

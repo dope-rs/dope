@@ -31,7 +31,6 @@ use crate::common::{
     contract::Report,
     manifold::client::{
         error::{self, Error::Switch},
-        flush,
         switch::{
             Error,
             decode::{self, Decode, Head, State},
@@ -53,6 +52,7 @@ pub struct Retry<'d> {
 }
 
 pub struct Stages {
+    pub(crate) input: Rc<Cell<Option<session::Input>>>,
     pub(crate) blocked: signals::Gate,
     pub(crate) commit: signals::Gate,
     pub(crate) cleared: signals::Gate,
@@ -219,18 +219,28 @@ impl<'d> Retry<'d> {
 }
 
 impl<'d> Output<'d> for Retry<'d> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
-        flush(|owner: &mut Self, context| {
-            if owner.target.get().is_none() {
-                owner.audit.faults.record(Switch(Error::Unregistered));
-            }
-            if !context.sink.is_empty() {
-                owner.audit.faults.record(Switch(Error::PendingOutput));
-            }
-        })
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            session::Input,
+        )>,
+    > {
+        Some(
+            |(owner, context, input): (
+                &mut Self,
+                &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
+                session::Input,
+            )| {
+                owner.stages.input.set(Some(input));
+                if owner.target.get().is_none() {
+                    owner.audit.faults.record(Switch(Error::Unregistered));
+                }
+                if !context.sink.is_empty() {
+                    owner.audit.faults.record(Switch(Error::PendingOutput));
+                }
+            },
+        )
     }
 
     fn sent() -> impl for<'a, 't> Call<(

@@ -1,13 +1,16 @@
 pub mod common;
 
-use std::{fmt::Debug, rc::Rc, time::Duration};
+use std::{fmt::Debug, net::Shutdown, rc::Rc, time::Duration};
 
-use dope_core::driver::{
-    life::recovery,
-    route::{Id, KeyTag},
+use dope_core::{
+    driver::{
+        life::recovery,
+        route::{Id, KeyTag},
+    },
+    platform::wake,
 };
 use dope_manifold::{app::env::Bundle, client::close, timing::Balanced};
-use dope_net::tcp::Tcp;
+use dope_net::{tcp::Tcp, wire::Identity};
 use dope_runtime::{executor::session::Completion, topology::error::Kind};
 use dope_test::{
     fibers::Wait,
@@ -54,6 +57,7 @@ fn plaintext_precedes_failure() {
                         Plaintext {
                             mode,
                             events: events.clone(),
+                            parsed: None,
                             closed: closed.clone(),
                         },
                     ))
@@ -123,6 +127,80 @@ fn plaintext_precedes_failure() {
         )
         .expect("spawn terminal plaintext peer");
     }
+}
+
+#[test]
+fn plain_parse_preserves_partial_and_retry() {
+    let mut finish = Completion::new();
+    let (next, resume) = wake::Ends::blocking().expect("peer input release").split();
+    peer::TcpScript::with(
+        move |stream| {
+            stream.write_all(b"P").expect("write partial input");
+            next.wait_timeout(Duration::from_secs(2))
+                .expect("partial input parsed");
+            stream.write_all(b"H").expect("complete input");
+            next.wait_timeout(Duration::from_secs(2))
+                .expect("input committed");
+            stream.shutdown(Shutdown::Write).expect("input EOF");
+            assert_eq!(stream.read(&mut [0]).expect("wait for close"), 0);
+        },
+        |peer| {
+            let events = Rc::new(Trace::new());
+            let parsed = Gate::new();
+            let closed = Gate::new();
+            let planned = Connector::<1>::new(
+                peer.addr(),
+                Duration::from_millis(10),
+                Duration::from_millis(50),
+            )
+            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Balanced>>(Value::new(Plaintext {
+                mode: Mode::Ready,
+                events: events.clone(),
+                parsed: Some(parsed.clone()),
+                closed: closed.clone(),
+            }))
+            .expect("prepare plain client");
+            let mut reclaimed = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
+            planned
+                .with_run(
+                    &mut finish,
+                    |case| {
+                        assert!(matches!(case.try_wait(&parsed, 1), Ok(Wait::Reached)));
+                        assert!(matches!(
+                            &*events.values().expect("partial input events"),
+                            [Event::Parse { len: 1, .. }]
+                        ));
+                        resume.notify().expect("release full input");
+                        assert!(matches!(case.try_wait(&parsed, 4), Ok(Wait::Reached)));
+                        resume.notify().expect("release EOF");
+                        assert!(matches!(case.try_wait(&closed, 1), Ok(Wait::Reached)));
+                    },
+                    recovery::Policy::new(|event| reclaimed.push(event), recover),
+                    native,
+                )
+                .expect("plain parse scenario");
+            assert!(matches!(reclaimed.events(), Ok(events) if events.is_empty()));
+            let events = events.values().expect("plain parse events");
+            assert!(
+                matches!(
+                    &*events,
+                    [
+                        Event::Parse { len: 1, .. },
+                        Event::Parse { pointer: first, len: 2 },
+                        Event::Parse { pointer: retry, len: 2 },
+                        Event::Head(b'P'),
+                        Event::Parse { len: 1, .. },
+                        Event::Head(b'H'),
+                        Event::Quarantined,
+                        Event::Closed(close::Reason::Remote)
+                    ] if first == retry
+                ),
+                "plain parse order: {events:?}"
+            );
+            peer.finish().expect("finish plain parse peer");
+        },
+    )
+    .expect("spawn plain parse peer");
 }
 
 fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {

@@ -5,7 +5,7 @@ use dope_core::driver::{
     settings::{claim::Needs, errors},
 };
 use dope_manifold::{
-    client::session::{Output, policy::output, turns},
+    client::session::{Input, Output, policy::output, turns},
     timing,
 };
 use o3::base::Call;
@@ -18,20 +18,24 @@ use crate::common::contract::Report;
 /// assertion about the flushing owner differs, so the fixture supplies that.
 pub(crate) fn flush<'d, S, O>(
     observe: O,
-) -> impl for<'a, 'c, 't, 'e> Call<(
-    &'a mut S,
-    &'c mut turns::Context<'t, 'e, 'd, S::ConnState, S::Send>,
-)>
+) -> Option<
+    impl for<'a, 'c, 't, 'e> Call<(
+        &'a mut S,
+        &'c mut turns::Context<'t, 'e, 'd, S::ConnState, S::Send>,
+        Input,
+    )>,
+>
 where
     S: Output<'d>,
     O: for<'a, 'c, 't, 'e> Fn(&'a mut S, &'c mut turns::Context<'t, 'e, 'd, S::ConnState, S::Send>),
 {
-    output::Flush::<Infallible, _>::Context(
-        move |(owner, context): (
+    Some(output::Flush::<Infallible, _>::Context(
+        move |(owner, context, _): (
             &mut S,
             &mut turns::Context<'_, '_, 'd, S::ConnState, S::Send>,
+            Input,
         )| observe(owner, context),
-    )
+    ))
 }
 
 impl Report<error::Error, 16> {
@@ -46,6 +50,7 @@ impl Report<error::Error, 16> {
     }
 }
 
+pub mod backoff;
 pub mod error;
 pub mod kind;
 pub mod probe;

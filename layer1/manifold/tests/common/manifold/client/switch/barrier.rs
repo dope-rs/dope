@@ -34,7 +34,6 @@ use crate::common::{
     contract::Report,
     manifold::client::{
         error::{self, Error::Switch},
-        flush,
         switch::{
             Error,
             decode::{self, Decode, Head, State},
@@ -70,6 +69,8 @@ impl Bytes {
 pub struct Gates<'d> {
     pub(crate) target: Rc<Cell<Option<ready::Target<'d>>>>,
     pub(crate) settlements: Rc<Cell<usize>>,
+    pub(crate) input: Rc<Cell<Option<session::Input>>>,
+    pub(crate) pending_input: Rc<Cell<Option<session::Input>>>,
     pub(crate) head: signals::Gate,
     pub(crate) duplex: signals::Gate,
     pub(crate) quarantine: signals::Gate,
@@ -259,21 +260,34 @@ impl<'d> Resume<'d, Head, Pending> for Barrier<'d> {
 }
 
 impl<'d> Output<'d> for Barrier<'d> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
-        flush(|owner: &mut Self, context| {
-            if owner.attempt.get().is_none() {
-                owner.audit.faults.record(Switch(Error::Unregistered));
-            }
-            if !context.sink.is_empty() {
-                owner.audit.faults.record(Switch(Error::PendingOutput));
-            }
-            if owner.pending && matches!(owner.behavior, Mode::Yield | Mode::Blocked) {
-                context.request(close::Directive::cut_final(close::Reason::Protocol));
-            }
-        })
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            session::Input,
+        )>,
+    > {
+        Some(
+            |(owner, context, input): (
+                &mut Self,
+                &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
+                session::Input,
+            )| {
+                owner.gates.input.set(Some(input));
+                if owner.pending && owner.gates.pending_input.get().is_none() {
+                    owner.gates.pending_input.set(Some(input));
+                }
+                if owner.attempt.get().is_none() {
+                    owner.audit.faults.record(Switch(Error::Unregistered));
+                }
+                if !context.sink.is_empty() {
+                    owner.audit.faults.record(Switch(Error::PendingOutput));
+                }
+                if owner.pending && matches!(owner.behavior, Mode::Yield | Mode::Blocked) {
+                    context.request(close::Directive::cut_final(close::Reason::Protocol));
+                }
+            },
+        )
     }
 
     fn sent() -> impl for<'a, 't> Call<(

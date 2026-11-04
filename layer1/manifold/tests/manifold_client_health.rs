@@ -66,6 +66,98 @@ use crate::common::{
 };
 
 #[test]
+fn due_backoff_survives_exhausted_maintenance() {
+    use dope_core::driver::settings;
+    use dope_runtime::topology::{self, lending};
+
+    use crate::common::manifold::client::backoff::Exhausted;
+
+    let mut finish = Completion::new();
+    let (end_rx, end_tx) = wake::Ends::blocking()
+        .expect("peer release channel")
+        .split();
+    AcceptScript::with(
+        move |acceptor| {
+            drop(acceptor.accept()?);
+            let recovered = acceptor.accept()?;
+            assert!(end_rx.wait_timeout(GUARD).is_ok());
+            drop(recovered);
+            Ok::<_, peer::Error>(())
+        },
+        |server| {
+            let conn = Gate::new();
+            let closed = Gate::new();
+            let injected = Cell::new(false);
+            let audit = Rc::new(Report::default());
+            let backoff = Duration::from_millis(100);
+            let plan =
+                Plan::<KeyTag<0>, 2>::new(1, Spec::new(backoff, backoff).expect("retry bounds"))
+                    .expect("one connection");
+            let prepared = topology::Plan::new((), plan)
+                .with_install(settings::Config::for_profile::<Balanced>())
+                .expect("client layout");
+            let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
+            prepared.with_local(
+                |scope| {
+                    let result = scope.lend(|plan, stage| {
+                        let setup = Setup::new(
+                            Epoch {
+                                audit: audit.clone(),
+                                conn: conn.clone(),
+                                closed: closed.clone(),
+                            },
+                            ingress::Plan::none(),
+                        );
+                        let addr = server.addr();
+                        let snapshot =
+                            Snapshot::from_one(Revision::new(1), Endpoint::new(addr, addr));
+                        let hash = stage.hash_state(Domain::DEFAULT);
+                        plan.bind(Local::new(Identity), hash)
+                            .install::<_, _, Preserve, _, Bundle<Tcp, Identity, Balanced>, 1, _, _>(
+                                setup,
+                                snapshot,
+                                stage,
+                                lending::Stage::driver,
+                                |pool, stage| {
+                                    stage.with_quiesce(
+                                        &mut finish,
+                                        Host::new(Exhausted {
+                                            inner: pool,
+                                            closed: &closed,
+                                            injected: &injected,
+                                            due: None,
+                                        }),
+                                        Duration::from_secs(2),
+                                        |mut app| fibers::TEST.try_wait(&mut app, &conn, 2),
+                                    )
+                                },
+                            )
+                    });
+                    assert!(
+                        injected.get(),
+                        "due backoff reached without maintenance quota"
+                    );
+                    assert_eq!(
+                        result
+                            .expect("install client")
+                            .expect("client teardown")
+                            .expect("client progress"),
+                        fibers::Wait::Reached,
+                    );
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                |entered| assert!(entered.is_ok()),
+            );
+            assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+            audit.checked((0, 0));
+            assert!(end_tx.notify().is_ok());
+            assert!(server.finish().expect("finish retry endpoint").is_ok());
+        },
+    )
+    .expect("spawn retry endpoint");
+}
+
+#[test]
 fn stale_epoch_is_ignored() {
     let mut finish = Completion::new();
     const BACKOFF: Duration = Duration::from_secs(3);

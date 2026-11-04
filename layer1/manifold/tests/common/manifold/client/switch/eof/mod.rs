@@ -241,10 +241,13 @@ impl<'d> Resume<'d, Head, Pending> for State<'d> {
 }
 
 impl<'d> Output<'d> for State<'d> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             if owner.target.get().is_none() {
                 owner.audit.faults.record(Switch(Error::Unregistered));

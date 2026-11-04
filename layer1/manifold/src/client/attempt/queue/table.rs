@@ -91,6 +91,11 @@ impl<'d, T: dope_net::Transport, ID: Identity> Table<'d, T, ID> {
         Some(Linked::<_, _, 1>::front(self)?.cancel())
     }
 
+    pub(super) fn is_runnable(&self, retry: impl FnOnce() -> bool) -> bool {
+        self.heads[1].first().is_some()
+            || (self.deferred.get().is_none() && self.heads[0].first().is_some() && !retry())
+    }
+
     pub(super) fn poll(&self) -> attempt::Action<'d, T, ID> {
         let Some(slot) = Linked::front(self) else {
             return attempt::Action::Idle;

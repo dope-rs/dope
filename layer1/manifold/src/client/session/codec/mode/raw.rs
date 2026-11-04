@@ -42,6 +42,21 @@ impl<'d, B: Buffer<'d>, C: buffer::Cursor + buffer::raw::Consume> Source<'d, B, 
         }
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        match &self.received {
+            Received::Vacant(_) => true,
+            Received::Staged { proof, pending } => {
+                buffer::Source::remaining(self.stage.staged(proof)) == 0
+                    && pending
+                        .as_ref()
+                        .is_none_or(|chunk| buffer::Source::remaining(chunk) == 0)
+            }
+            Received::Pending(chunk) | Received::Direct(chunk) => {
+                buffer::Source::remaining(chunk) == 0
+            }
+        }
+    }
+
     /// Releases a fully consumed direct owner while preserving the empty stage.
     pub(super) fn direct(&mut self) {
         if let Received::Direct(chunk) = &self.received

@@ -58,7 +58,9 @@ unsafe impl<'d, M: raw::Manifold<'d>> raw::Manifold<'d> for Limited<M> {
     where
         Self: 'root,
     {
-        M::shutdown(self.as_mut().project().inner, turn, driver);
+        turn.reborrow().maint().share::<{ schedule::LIMIT }, _>(|| {
+            M::shutdown(self.as_mut().project().inner, turn, driver);
+        });
         self
     }
 }

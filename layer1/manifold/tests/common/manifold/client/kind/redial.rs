@@ -1,14 +1,10 @@
 use std::{cell::Cell, convert::Infallible, rc::Rc, time::Duration};
 
-use dope_core::{
-    driver,
-    driver::{result::SubmitError, route::KeyTag},
-    io::socket,
-};
+use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
     app::{admit::Automatic, connect::Full, failure::Observed, request},
     attempt,
-    close::{Directive, LocalOrigin, Reason},
+    close::{Capacity, Directive, LocalOrigin, Reason},
     conn,
     session::{
         self, Output, Parser, Plain, Retirement, Scheduling, Session, Target,
@@ -50,7 +46,7 @@ pub const BACKOFF: Duration = Duration::from_millis(20);
 pub enum Mode {
     Reconnect,
     Permanent,
-    Exhausted(SubmitError),
+    Exhausted(opening::Exhaustion),
 }
 
 pub struct Redial<'test> {
@@ -122,10 +118,13 @@ impl<'d, 'test> Plain<'d> for Redial<'test> {
 }
 
 impl<'d, 'test> Output<'d> for Redial<'test> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             let pending = owner.pending.get();
             let empty = context.sink.is_empty();
@@ -182,7 +181,10 @@ impl<'d, 'test> Source<'d> for Redial<'test> {
             turn.close(match self.kind {
                 Mode::Reconnect => Directive::reconnect(Reason::Local(LocalOrigin::ApiRequest)),
                 Mode::Permanent => Directive::permanent(Reason::Local(LocalOrigin::ApiRequest)),
-                Mode::Exhausted(error) => {
+                Mode::Exhausted(opening::Exhaustion::Identity) => {
+                    Directive::cut_final(Reason::Capacity(Capacity::IdentityExhausted))
+                }
+                Mode::Exhausted(opening::Exhaustion::Submission(error)) => {
                     Directive::cut_final(Reason::Receive(event::ParkError::Submit(error)))
                 }
             });

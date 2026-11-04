@@ -45,6 +45,62 @@ pub enum Cause {
 
 pub struct Wire;
 
+pub struct First;
+
+pub struct Opening(bool);
+
+impl failure::Errors<failure::Open> for First {
+    type Error<'d> = Cause;
+}
+
+impl wire::Spec for First {
+    type Connection<'d, ID: Identity + 'd> = wire::Identity;
+    type Storage<ID: Identity> = ();
+    type Binding<'d, ID: Identity + 'd> = ();
+    type Runtime<'w, 'd, ID: Identity + 'w>
+        = Opening
+    where
+        'd: 'w;
+    type SendStorage<'d> = ();
+    type OpenFailure = failure::Possible;
+    type TerminalFailure = failure::Never;
+    type Bootstrap = Self;
+    type Receive = Transparent;
+    type Send = send::Direct;
+}
+
+impl domain::Init<First> for First {
+    fn runtime<'w, 'd, ID: Identity + 'w>(_: Limits, _: ()) -> Opening
+    where
+        'd: 'w,
+    {
+        Opening(true)
+    }
+}
+
+impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, First, ID> for Opening {
+    fn open<C, T>(
+        &mut self,
+        context: C,
+        consume: impl FnOnce(C, wire::Identity, ()) -> open::Disposition<T, wire::Identity, ()>,
+    ) -> open::Outcome<C, T, open::Error<'w, First>> {
+        if self.0 {
+            let output = match consume(context, wire::Identity, ()) {
+                open::Disposition::Commit(output) => {
+                    self.0 = false;
+                    output
+                }
+                open::Disposition::Retry { output, .. } => output,
+            };
+            return open::Outcome::Opened(output);
+        }
+        open::Outcome::Failed {
+            context,
+            cause: open::Error::from_cause(Cause::Permanent),
+        }
+    }
+}
+
 impl failure::Errors<failure::Open> for Wire {
     type Error<'d>
         = Cause

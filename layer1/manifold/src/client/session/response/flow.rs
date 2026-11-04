@@ -42,6 +42,8 @@ pub enum Record {
 
 /// Response-flow state consumed by the session parser and wake path.
 pub trait Policy: Default {
+    /// Observes pending work without waking or consuming its owner.
+    fn settlement(&self) -> session::Settlement;
     fn record(&mut self, eof: bool, record: Record);
     fn wake(&mut self) -> Wake;
     fn cancel_eof(&mut self);
@@ -114,6 +116,14 @@ where
 }
 
 impl Policy for State {
+    fn settlement(&self) -> session::Settlement {
+        match self {
+            Self::Idle | Self::EofFinished => session::Settlement::Ready,
+            Self::InputReady | Self::EofInputReady => session::Settlement::Yield,
+            Self::InputBlocked | Self::EofInputBlocked => session::Settlement::Blocked,
+        }
+    }
+
     fn record(&mut self, eof: bool, record: Record) {
         *self = match (eof, record) {
             (false, Record::Done) => Self::Idle,
@@ -276,6 +286,22 @@ where
 }
 
 impl<P> Policy for Pending<P> {
+    fn settlement(&self) -> session::Settlement {
+        match self {
+            Self::Idle | Self::EofFinished => session::Settlement::Ready,
+            Self::InputReady
+            | Self::Ready(_)
+            | Self::CloseReady(_)
+            | Self::EofInputReady
+            | Self::EofReady(_) => session::Settlement::Yield,
+            Self::InputBlocked
+            | Self::Blocked(_)
+            | Self::CloseBlocked(_)
+            | Self::EofInputBlocked
+            | Self::EofBlocked(_) => session::Settlement::Blocked,
+        }
+    }
+
     fn record(&mut self, eof: bool, record: Record) {
         *self = match (eof, record) {
             (false, Record::Done) => Self::Idle,

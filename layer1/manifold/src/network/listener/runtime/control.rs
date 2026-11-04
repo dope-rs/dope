@@ -202,7 +202,7 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                                 Timeout::CloseAfter
                             }
                             handler::Timeout::Continue(update) => {
-                                let arm = egress.connection.apply(update);
+                                let arm = egress.connection.apply(update, now);
                                 match arm {
                                     Arm::Armed => Timeout::Continue,
                                     Arm::Disabled | Arm::Sealed | Arm::Overflow(_) => {

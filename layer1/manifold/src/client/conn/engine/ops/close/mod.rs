@@ -43,7 +43,7 @@ where
     fn cut_close(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        reason: close::Reason,
+        rule: Directive,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
     );
@@ -70,7 +70,7 @@ where
     fn cut_close(
         mut self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        reason: close::Reason,
+        rule: Directive,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
@@ -79,13 +79,13 @@ where
             let Some(slot) = this.links.pool_mut().get_mut(key) else {
                 return;
             };
-            match State::apply(slot, close::Directive::cut_retry(reason)) {
+            match State::apply(slot, rule) {
                 flow::Apply::Applied(flow::Flow::Continue(()))
                 | flow::Apply::Applied(flow::Flow::Discarded(())) => {}
                 flow::Apply::Sealed => return,
             }
         }
-        self.close_slot(key, reason, turn, driver);
+        self.close_slot(key, rule.reason(), turn, driver);
     }
 
     fn close_slot(

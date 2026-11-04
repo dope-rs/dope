@@ -40,6 +40,7 @@ pub(super) enum Selection<'a, 'h, 'd, A> {
     Ready { target: Target<'h>, addr: &'a A },
     Idle,
     Backoff(clock::Deadline<'d>),
+    Exhausted,
 }
 
 const _: () = assert!(mem::size_of::<Selection<'static, 'static, 'static, ()>>() == 32);
@@ -98,9 +99,19 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         member: MemberKey<'h>,
         retained: impl FnOnce(&I) -> bool,
     ) -> bool {
-        self.records
-            .try_entry(member.0)
-            .is_ok_and(|entry| retained(&entry.get().id))
+        self.records.try_entry(member.0).is_ok_and(|mut entry| {
+            if !retained(&entry.get().id) {
+                return false;
+            }
+            if let Some(demand) = &mut entry.get_mut().health.demand {
+                *demand = match *demand {
+                    Demand::Absent => Demand::Retained,
+                    Demand::Eligible => Demand::Both,
+                    current => current,
+                };
+            }
+            true
+        })
     }
 
     pub(in crate::service::pool) fn is_empty(&self) -> bool {
@@ -251,24 +262,23 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         Update::Applied
     }
 
-    fn promote(&mut self, now: clock::Moment<'d>) {
-        while let Some(retry) = self.queue.first() {
-            if retry.priority().retry_at > now {
-                return;
-            }
-            let key = retry.key();
-            // SAFETY: only an admitted failure consumes an unlinked resident to create a retry.
-            // Recovery, prune, and reuse remove that retry before retiring the resident.
-            // This exclusive joint owner retains both the retry and its idle source.
-            let (entry, retry) = Unlinked::from_live(unsafe {
-                depot::raw::Proof::new(((&mut self.records, retry), key))
-            });
-            retry.remove();
-            if Record::try_resume(entry, Ready::Probe).is_err() {
-                continue;
-            }
-            return;
+    fn try_promote(&mut self, now: clock::Moment<'d>) -> Result<(), Exhausted> {
+        let Some(retry) = self.queue.first() else {
+            return Ok(());
+        };
+        if retry.priority().retry_at > now {
+            return Ok(());
         }
+        let key = retry.key();
+        // SAFETY: only an admitted failure consumes an unlinked resident to create a retry.
+        // Recovery, prune, and reuse remove that retry before retiring the resident.
+        // This exclusive joint owner retains both the retry and its idle source.
+        let (entry, retry) = Unlinked::from_live(unsafe {
+            depot::raw::Proof::new(((&mut self.records, retry), key))
+        });
+        retry.remove();
+        Record::try_resume(entry, Ready::Probe)?;
+        Ok(())
     }
 
     pub(in crate::service::pool) fn choose(
@@ -276,7 +286,9 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         now: clock::Moment<'d>,
         mut eligible: impl FnMut(&I) -> bool,
     ) -> Selection<'_, 'h, 'd, A> {
-        self.promote(now);
+        if let Err(Exhausted) = self.try_promote(now) {
+            return Selection::Exhausted;
+        }
         let mut left = self.desired;
         while left != 0 {
             let Some(turn) = self.records.turn() else {

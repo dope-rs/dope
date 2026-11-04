@@ -62,7 +62,7 @@ impl Codec for Decode {
     type Staging = Buffered;
 
     fn staging(&self) -> Result<staging::Plan, staging::Error> {
-        staging::Plan::new(1, 1)
+        staging::Plan::new(2, 2)
     }
 }
 
@@ -111,17 +111,21 @@ impl Stateful for Decode {
     {
         let emit = |result, state| super::accepted(result, state, admit);
         codec::Input::commit(&mut storage.source, budget, limit, |input| {
-            if input.as_slice() == b"P" {
+            if input.as_slice() == b"P" || input.as_slice() == b"Q" {
                 if storage.partials != 0 {
                     return Err(emit(Err(Error::Prefix(storage.partials)), state));
                 }
                 storage.partials += 1;
-                let used = match input.try_consumed(NonZero::<usize>::MIN) {
-                    Ok(used) => used,
-                    Err(cause) => return Err(emit(Err(Error::Consume(cause)), state)),
+                let used = if input.as_slice() == b"P" {
+                    match input.try_consumed(NonZero::<usize>::MIN) {
+                        Ok(used) => Some(used),
+                        Err(cause) => return Err(emit(Err(Error::Consume(cause)), state)),
+                    }
+                } else {
+                    None
                 };
                 self.prefix.hit();
-                return Ok(match input.need_more(Some(used)) {
+                return Ok(match input.need_more(used) {
                     Some(need) => {
                         self.growth.hit();
                         Parse::More(need)
@@ -155,15 +159,17 @@ impl Stateful for Decode {
                     None => Parse::CapacityExhausted,
                 });
             };
-            if byte != b'H' {
-                return Err(emit(Err(Error::Head(byte)), state));
-            }
-            let consumed = match input.try_consumed(NonZero::<usize>::MIN) {
+            let count = match byte {
+                b'H' => NonZero::<usize>::MIN,
+                b'Q' if input.as_slice() == b"QQ" => NonZero::<usize>::MIN.saturating_add(1),
+                _ => return Err(emit(Err(Error::Head(byte)), state)),
+            };
+            let consumed = match input.try_consumed(count) {
                 Ok(consumed) => consumed,
                 Err(cause) => return Err(emit(Err(Error::Consume(cause)), state)),
             };
             let head = Head {
-                suffix: input.as_ptr().wrapping_add(1),
+                suffix: input.as_ptr().wrapping_add(count.get()),
             };
             Ok(Parse::Item {
                 head: emit(Ok(head), state),

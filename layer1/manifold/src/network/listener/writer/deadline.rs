@@ -1,6 +1,6 @@
 //! One-allocation exact deadline authority for a listener lane.
 
-use std::{mem, ops};
+use std::{mem, ops, time};
 
 use dope_core::driver::{
     route::{Identity, KeyTag},
@@ -40,9 +40,9 @@ struct Deadline<'d> {
 pub(in crate::network::listener) enum Kind {
     Inbound,
     Send,
-    Application,
     Absolute,
     Drain,
+    Application,
 }
 
 impl Kind {
@@ -50,9 +50,9 @@ impl Kind {
     const ALL: [Self; Self::COUNT] = [
         Self::Inbound,
         Self::Send,
-        Self::Application,
         Self::Absolute,
         Self::Drain,
+        Self::Application,
     ];
 
     const fn index(self) -> usize {
@@ -221,6 +221,16 @@ impl<'d, ID: Identity> Entry<'_, 'd, ID> {
     }
 }
 
+fn try_after<'d>(
+    now: clock::Moment<'d>,
+    window: time::Duration,
+) -> Result<clock::Deadline<'d>, Overflow<'d>> {
+    now.try_add(window).map_err(|range| Overflow {
+        now,
+        window: range.duration(),
+    })
+}
+
 enum Mode<'a, 'd, ID: Identity> {
     Open(&'a mut Schedule<'d, ID>),
     Sealed,
@@ -317,15 +327,12 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
             if entry.is_armed(Kind::Application) {
                 return Arm::Armed;
             }
-            match now.try_add(window) {
+            match try_after(now, window) {
                 Ok(at) => {
                     entry.arm_at(Kind::Application, at);
                     Arm::Armed
                 }
-                Err(range) => Arm::Overflow(Overflow {
-                    now,
-                    window: range.duration(),
-                }),
+                Err(cause) => Arm::Overflow(cause),
             }
         })
     }
@@ -347,10 +354,35 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
         });
     }
 
-    pub(in crate::network::listener) fn apply(&mut self, update: handler::Deadline<'d>) -> Arm<'d> {
+    pub(in crate::network::listener) fn apply(
+        &mut self,
+        update: handler::Deadline<'d>,
+        now: clock::Moment<'d>,
+    ) -> Arm<'d> {
         match update {
-            handler::Deadline::Ensure(now) => self.try_ensure(now),
-            handler::Deadline::Arm(at) => self.try_arm(at),
+            handler::Deadline::Ensure(since) => self.with(Arm::Sealed, |entry| {
+                let Some(window) = entry.policy.application.delay() else {
+                    return Arm::Disabled;
+                };
+                let stored = match &entry.entry {
+                    resident::Entry::Occupied(current) => {
+                        current.resident().deadlines[Kind::Application.index()]
+                    }
+                    resident::Entry::Vacant(_) | resident::Entry::Conflict(_) => None,
+                };
+                let at = match stored {
+                    Some(at) => at,
+                    None => match try_after(since, window) {
+                        Ok(at) => at,
+                        Err(cause) => return Arm::Overflow(cause),
+                    },
+                };
+                // Keep overdue application work due without preceding this
+                // turn's built-in bounds, which also win equal-time ties.
+                entry.arm_at(Kind::Application, at.max(now.into()));
+                Arm::Armed
+            }),
+            handler::Deadline::Arm(at) => self.try_arm(at.max(now.into())),
             handler::Deadline::Clear => {
                 self.cancel_app();
                 Arm::Armed

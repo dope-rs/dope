@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, net::SocketAddr, rc::Rc, task::Poll};
+use std::{cell::Cell, convert::Infallible, net::SocketAddr, num::NonZero, rc::Rc, task::Poll};
 
 use dope_core::{
     driver::schedule::clock,
@@ -179,5 +179,67 @@ impl<'d> discover::Demand<'d> for Demand {
             self.0.withdrawn.set(true);
         }
         retained
+    }
+}
+
+pub struct LimitedDemand {
+    pub(crate) inner: Demand,
+    pub(crate) chosen: Rc<Trace<SocketAddr, 4>>,
+    pub(crate) limit: Rc<Cell<NonZero<usize>>>,
+}
+
+impl<'d> discover::Demand<'d> for LimitedDemand {
+    type Endpoint = u32;
+
+    fn is_needed(&self, token: &region::Token<region::Identity<'d, 1>>) -> bool {
+        self.inner.is_needed(token)
+    }
+
+    fn is_eligible(
+        &self,
+        endpoint: &Self::Endpoint,
+        token: &region::Token<region::Identity<'d, 1>>,
+    ) -> bool {
+        self.inner.is_eligible(endpoint, token)
+            && self
+                .chosen
+                .values()
+                .is_ok_and(|chosen| chosen.len() < self.limit.get().get())
+    }
+
+    fn is_retained(
+        &self,
+        endpoint: &Self::Endpoint,
+        token: &region::Token<region::Identity<'d, 1>>,
+    ) -> bool {
+        self.inner.is_retained(endpoint, token)
+    }
+}
+
+pub struct Renewal<'a> {
+    pub(crate) demand: &'a DemandState,
+    pub(crate) limit: &'a Cell<NonZero<usize>>,
+    pub(crate) step: &'a Cell<u8>,
+}
+
+impl<'d> root::Root<'d> for Renewal<'_> {
+    type Output = ();
+
+    fn poll(context: root::Context<'_, 'd, Self>) -> Poll<()> {
+        let (this, wake, _, _) = context.into_parts();
+        match this.step.get() {
+            0 => {
+                this.demand.needed.set(false);
+                this.limit.set(NonZero::<usize>::MIN.saturating_add(1));
+                this.step.set(1);
+                wake.wake();
+            }
+            1 => {
+                this.demand.needed.set(true);
+                this.step.set(2);
+            }
+            _ => {}
+        }
+        Poll::Pending
     }
 }

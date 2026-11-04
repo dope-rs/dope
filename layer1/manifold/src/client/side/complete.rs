@@ -126,7 +126,6 @@ where
         let target = machine.as_ref().backoff();
         let this = machine.as_mut().project();
         this.links.liveness_mut().resume_retry(target);
-        this.side.registry.retry();
         <A::Continuation as Flush<'p, 'w, 'd, ID, A, S, E, Self>>::flush(machine, turn, driver);
     }
 

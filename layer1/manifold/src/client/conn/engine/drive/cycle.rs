@@ -69,6 +69,10 @@ impl<'d, ID: Identity, P> Cycle<'d, ID, P> {
         self.slot.target()
     }
 
+    pub(in crate::client::conn::engine) fn activate(&self) {
+        self.slot.activate();
+    }
+
     pub(in crate::client::conn::engine) fn poll_backoff(
         &mut self,
         now: clock::Moment<'d>,

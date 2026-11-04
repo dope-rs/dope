@@ -86,6 +86,9 @@ where
                 let result = match rule.policy() {
                     close::Policy::Permanent | close::Policy::ImmediatePermanent => {
                         let cause = match rule.reason() {
+                            close::Reason::Capacity(close::Capacity::IdentityExhausted) => {
+                                Some(opening::Exhaustion::Identity)
+                            }
                             close::Reason::Receive(event::ParkError::Submit(error))
                                 if error.cause() == result::SubmitCause::IdentityExhausted =>
                             {

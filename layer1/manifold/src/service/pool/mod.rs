@@ -173,14 +173,14 @@ where
             self.dials.refresh(false);
             return self.dials.terminal();
         }
-        if F::WATCHED {
-            self.dials.reset_front(|target| {
-                self.membership
-                    .cancel_if(target, |endpoint| {
-                        !self.feedback.is_eligible(endpoint, driver.state_token())
-                    })
-                    .is_some()
-            });
+        if F::WATCHED
+            && let Some(key) = self.dials.reset_front(|target| {
+                self.membership.cancel_if(target, |endpoint| {
+                    !self.feedback.is_eligible(endpoint, driver.state_token())
+                })
+            })
+        {
+            self.reject(key, opening::Exhaustion::Identity);
         }
         self.dials.poll::<_, _, _, R>(
             &mut self.membership,
@@ -198,11 +198,12 @@ where
         cap: table::Capacity,
     ) -> Result<service::Change, service::Reconcile> {
         let change = self.membership.try_apply(set)?;
-        if R::AUTHORITATIVE {
-            self.dials.reset_front(|target| {
-                self.membership.cancel(target);
-                true
-            });
+        if R::AUTHORITATIVE
+            && let Some(key) = self
+                .dials
+                .reset_front(|target| Some(self.membership.cancel(target)))
+        {
+            self.reject(key, opening::Exhaustion::Identity);
         }
         if change.retired != 0
             && let Some(scan) = self.retirements.scan()
@@ -258,28 +259,30 @@ where
     ) -> Option<health::Cause> {
         let present = self.is_present();
         let mut cause = None;
-        self.dials.recycle(key, present, |target| {
+        let update = self.dials.recycle(key, present, |target| {
             let next = match Impact::from(reason) {
                 Impact::Transport => health::Cause::Transport,
                 Impact::Connect => health::Cause::ConnectTimeout,
                 Impact::Idle => health::Cause::Idle,
                 Impact::Protocol => health::Cause::Protocol,
                 Impact::Remote => health::Cause::Remote,
-                Impact::Neutral => {
-                    self.membership.cancel(target);
-                    return;
-                }
+                Impact::Neutral => return self.membership.cancel(target),
             };
-            if let members::Update::Applied = self.membership.fail(target, &mut self.backoff, now) {
+            let update = self.membership.fail(target, &mut self.backoff, now);
+            if let members::Update::Applied = update {
                 cause = Some(next);
             }
+            update
         });
+        if let Some(members::Update::Exhausted) = update {
+            self.reject(key, opening::Exhaustion::Identity);
+        }
         cause
     }
 
     /// Applies one failed connection attempt to its member, returning the exact
     /// health update the membership recorded; `None` reports a lane that had no
-    /// submitted attempt left to update.
+    /// active attempt left to update.
     fn failed(
         &mut self,
         key: attempt::Id<'d, ID>,
@@ -292,11 +295,9 @@ where
             return self.exhaust(key, opening::Exhaustion::Submission(error));
         }
         let present = self.is_present();
-        let mut update = None;
-        self.dials.retry(key, present, |target| {
-            update = Some(self.membership.fail(target, &mut self.backoff, now));
-        });
-        update
+        self.dials.recycle(key, present, |target| {
+            self.membership.fail(target, &mut self.backoff, now)
+        })
     }
 
     fn exhaust(
@@ -398,13 +399,18 @@ where
         key: attempt::Id<'d, ID>,
         token: &region::Token<region::Identity<'d, 1>>,
     ) -> bool {
-        use discover::Eligibility as _;
+        use discover::{Access as _, Eligibility as _};
 
         let Some(member) = self.dials.active(key) else {
             return false;
         };
-        !self.membership.is_retained(member, |endpoint| {
+        let retained = self.membership.is_retained(member, |endpoint| {
             self.feedback.is_retained(endpoint, token)
-        })
+        });
+        if retained && !self.feedback.is_enabled() {
+            self.feedback.set(true);
+            self.dials.resume_active();
+        }
+        !retained
     }
 }

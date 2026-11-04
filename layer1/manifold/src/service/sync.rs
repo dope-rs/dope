@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, num::NonZero};
 
 use dope_core::driver::route::{indices, table};
 
@@ -16,7 +16,8 @@ pub struct Frozen;
 /// Active table scan for authoritative snapshot retirement.
 #[derive(Default)]
 pub struct Scan {
-    slots: Option<table::Iter>,
+    next: indices::SlotIndex,
+    remaining: Option<(table::Capacity, NonZero<u32>)>,
 }
 
 /// Retirement state selected by one snapshot synchronization policy.
@@ -33,7 +34,8 @@ pub trait State {
 
 impl Scan {
     pub(crate) fn arm(&mut self, cap: table::Capacity) {
-        self.slots = Some(cap.into_iter());
+        // The owning table keeps its capacity; rearming owes a lap from the current slot.
+        self.remaining = NonZero::new(cap.count().raw()).map(|left| (cap, left));
     }
 }
 
@@ -57,16 +59,15 @@ impl State for Scan {
     }
 
     fn next(&mut self) -> Option<indices::SlotIndex> {
-        let slots = self.slots.as_mut()?;
-        let slot = slots.next();
-        if slots.len() == 0 {
-            self.slots = None;
-        }
-        slot
+        let (cap, left) = self.remaining?;
+        let slot = self.next;
+        self.next = cap.next(slot).unwrap_or(indices::SlotIndex::ZERO);
+        self.remaining = NonZero::new(left.get() - 1).map(|left| (cap, left));
+        Some(slot)
     }
 
     fn is_pending(&self) -> bool {
-        self.slots.is_some()
+        self.remaining.is_some()
     }
 }
 
@@ -94,4 +95,4 @@ impl Policy for Replace {
 }
 
 const _: () = assert!(mem::size_of::<Frozen>() == 0);
-const _: () = assert!(mem::size_of::<Scan>() <= 2 * mem::size_of::<usize>());
+const _: () = assert!(mem::size_of::<Scan>() == 3 * mem::size_of::<u32>());

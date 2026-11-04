@@ -126,21 +126,18 @@ where
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        codec::Input::commit(
-            storage,
-            budget,
-            limit,
-            |input| match codec::Stateless::parse(owner.codec(), input) {
-                Ok(codec::Parse::More(need)) => Ok(codec::Parse::More(need)),
-                Ok(codec::Parse::Blocked) => Ok(codec::Parse::Blocked),
-                Ok(codec::Parse::CapacityExhausted) => Ok(codec::Parse::CapacityExhausted),
-                Ok(codec::Parse::Item { head, consumed }) => Ok(codec::Parse::Item {
-                    head: session::Plain::deliver(owner, head, ctx),
-                    consumed,
-                }),
-                Err(error) => Err(session::Plain::reject(owner, error, ctx)),
-            },
-        )
+        codec::Input::commit(storage, budget, limit, |input| match session::Plain::parse(
+            owner, input, ctx,
+        ) {
+            Ok(codec::Parse::More(need)) => Ok(codec::Parse::More(need)),
+            Ok(codec::Parse::Blocked) => Ok(codec::Parse::Blocked),
+            Ok(codec::Parse::CapacityExhausted) => Ok(codec::Parse::CapacityExhausted),
+            Ok(codec::Parse::Item { head, consumed }) => Ok(codec::Parse::Item {
+                head: session::Plain::deliver(owner, head, ctx),
+                consumed,
+            }),
+            Err(error) => Err(session::Plain::reject(owner, error, ctx)),
+        })
     }
     fn finish<'slot, 'id, S>(
         owner: &mut N,

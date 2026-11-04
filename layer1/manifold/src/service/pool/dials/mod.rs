@@ -34,7 +34,6 @@ enum State<'h> {
     Submitted(pool::Target<'h>),
     Connected(pool::Target<'h>),
     Closed,
-    Exhausted,
 }
 
 struct Dial<'q, 'h, 'd, ID: Identity> {
@@ -72,8 +71,8 @@ enum Tail<'a, 'q, 'h, 'd, ID: Identity> {
 pub(super) struct Dials<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> {
     records: &'q [Dial<'q, 'h, 'd, ID>],
     ready: Queue<'q, 'h, 'd, ID, T>,
-    capacity: conn::Capacity,
-    depleted: bool,
+    active: u32,
+    depleted: Option<attempt::Id<'d, ID>>,
     pub(super) needs_poll: bool,
 }
 
@@ -90,14 +89,16 @@ impl<ID: Identity> Default for Dial<'_, '_, '_, ID> {
 }
 
 impl<'q, 'h, 'd, ID: Identity> Dial<'q, 'h, 'd, ID> {
-    fn requeue(&'q self, ready: Tail<'_, 'q, 'h, 'd, ID>) {
+    fn try_requeue(&'q self, ready: Tail<'_, 'q, 'h, 'd, ID>) -> Result<(), attempt::Id<'d, ID>> {
         if let Some(epoch) = self.generation.get().checked_add(1) {
             self.generation.set(epoch);
             self.state.set(State::Ready);
             self.next.set(None);
             ready.push_back(Ready(self));
+            Ok(())
         } else {
-            self.state.set(State::Exhausted);
+            self.state.set(State::Closed);
+            Err(attempt::Id::from_epoch(self.slot, self.generation.get()))
         }
     }
 
@@ -170,8 +171,8 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
         Ok(build(Dials {
             records: &records,
             ready: Queue::Open(ready),
-            capacity: cap,
-            depleted: false,
+            active: 0,
+            depleted: None,
             needs_poll: false,
         }))
     }
@@ -182,7 +183,8 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
     }
 
     pub(super) const fn capacity(&self) -> capacity::Count {
-        self.capacity.scale::<1>()
+        // The fixed slice retains the admitted connection capacity, bounded by SLOT_MASK.
+        capacity::Count::new(self.records.len() as u32)
     }
 
     pub(super) fn active(&self, key: attempt::Id<'d, ID>) -> Option<pool::MemberKey<'h>> {
@@ -227,6 +229,14 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
                             self.needs_poll = false;
                             return Opening::Backoff(at);
                         }
+                        members::Selection::Exhausted => {
+                            let dial = chain.front.0;
+                            let key = attempt::Id::from_epoch(dial.slot, dial.generation.get());
+                            self.reject(key, opening::Exhaustion::Identity, |target| {
+                                members.cancel(target);
+                            });
+                            return self.terminal();
+                        }
                     };
                 let plan = attempt::Plan::new(addr, options);
                 let dial = chain.front.0;
@@ -241,6 +251,8 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
         match submit(key, plan, context) {
             opening::Attempt::Submitted { key: _, output: () } => {
                 dial.state.set(State::Submitted(target));
+                // This admitted ready dial adds one owner within the fixed record capacity.
+                self.active += 1;
                 let next = dial.next.take().map(|front| Chain {
                     front,
                     back: chain.back,
@@ -298,36 +310,20 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
         Connection::Pending(connect::Connect { dial, target })
     }
 
-    pub(super) fn recycle(
+    pub(super) fn recycle<O>(
         &mut self,
         key: attempt::Id<'d, ID>,
         present: bool,
-        update: impl FnOnce(pool::Target<'h>),
-    ) {
-        let Some(dial) = self.get(key) else {
-            return;
-        };
+        update: impl FnOnce(pool::Target<'h>) -> O,
+    ) -> Option<O> {
+        let dial = self.get(key)?;
         let (State::Submitted(target) | State::Connected(target)) = dial.state.get() else {
-            return;
+            return None;
         };
-        update(target);
+        let output = update(target);
+        self.active -= 1;
         self.requeue(dial, present);
-    }
-
-    pub(super) fn retry(
-        &mut self,
-        key: attempt::Id<'d, ID>,
-        present: bool,
-        update: impl FnOnce(pool::Target<'h>),
-    ) {
-        let Some(dial) = self.get(key) else {
-            return;
-        };
-        let State::Submitted(target) = dial.state.get() else {
-            return;
-        };
-        update(target);
-        self.requeue(dial, present);
+        Some(output)
     }
 
     /// Member admission has finished; every terminal attempt releases its own dial slot.
@@ -341,8 +337,9 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
                 return;
             }
         };
-        dial.requeue(ready);
-        self.depleted |= matches!(dial.state.get(), State::Exhausted);
+        if let Err(key) = dial.try_requeue(ready) {
+            self.depleted = Some(key);
+        }
         self.refresh(present);
     }
 
@@ -353,38 +350,48 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
             return None;
         };
         dial.state.set(State::Closed);
+        self.active -= 1;
         Some(target)
     }
 
-    pub(super) fn reset_front(&mut self, removed: impl FnOnce(pool::Target<'h>) -> bool) {
+    pub(super) fn reset_front(
+        &mut self,
+        removed: impl FnOnce(pool::Target<'h>) -> Option<members::Update>,
+    ) -> Option<attempt::Id<'d, ID>> {
+        let mut exhausted = None;
         self.ready = match mem::replace(&mut self.ready, Queue::EMPTY) {
-            Queue::Deferred(held) if removed(held.target) => Queue::Open(Some(held.chain)),
+            Queue::Deferred(held) => match removed(held.target) {
+                Some(update) => {
+                    if let members::Update::Exhausted = update {
+                        let dial = held.chain.front.0;
+                        exhausted = Some(attempt::Id::from_epoch(dial.slot, dial.generation.get()));
+                    }
+                    Queue::Open(Some(held.chain))
+                }
+                None => Queue::Deferred(held),
+            },
             queue => queue,
         };
+        exhausted
     }
 
     pub(super) fn refresh(&mut self, present: bool) {
         self.needs_poll = match self.ready {
             Queue::Open(Some(_)) | Queue::Deferred(_) => present,
-            Queue::Rejected(Some(_)) => !self.records.iter().any(|dial| dial.active().is_some()),
+            Queue::Rejected(Some(_)) => self.active == 0,
             Queue::Open(None) | Queue::Rejected(None) => false,
         };
-        if self.depleted && matches!(self.ready, Queue::Open(None)) {
-            let mut retired = None;
-            for dial in self.records {
-                match dial.state.get() {
-                    State::Exhausted => {
-                        retired = Some(attempt::Id::from_epoch(dial.slot, dial.generation.get()));
-                    }
-                    State::Closed => {}
-                    State::Ready | State::Submitted(_) | State::Connected(_) => return,
-                }
-            }
-            if let Some(key) = retired {
-                self.ready = Queue::Rejected(Some((key, opening::Exhaustion::Identity)));
-                self.needs_poll = true;
-            }
+        if self.active == 0
+            && let Some(key) = self.depleted
+            && matches!(self.ready, Queue::Open(None))
+        {
+            self.ready = Queue::Rejected(Some((key, opening::Exhaustion::Identity)));
+            self.needs_poll = true;
         }
+    }
+
+    pub(super) fn resume_active(&mut self) {
+        self.needs_poll = matches!(self.ready, Queue::Open(Some(_)) | Queue::Deferred(_));
     }
 
     /// Retain the first permanent opening failure until every issued connection retires.
@@ -452,5 +459,5 @@ const _: () = {
         mem::size_of::<Tail<'static, 'static, 'static, 'static, KeyTag<0>>>()
             == 2 * mem::size_of::<usize>()
     );
-    assert!(mem::size_of::<Dials<'static, 'static, 'static, KeyTag<0>, tcp::Tcp>>() == 120);
+    assert!(mem::size_of::<Dials<'static, 'static, 'static, KeyTag<0>, tcp::Tcp>>() == 128);
 };

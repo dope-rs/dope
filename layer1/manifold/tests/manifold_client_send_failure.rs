@@ -12,10 +12,12 @@ use std::{
 
 use dope_core::{
     Errno,
+    dope_sys::io::socket::record::Record,
     driver::{
         life::recovery,
         route::{Id, KeyTag},
     },
+    platform::channel::Channel,
 };
 use dope_manifold::{
     app::env::Bundle,
@@ -132,15 +134,23 @@ fn impossible_send() {
 }
 
 #[test]
-fn cancels_kernel_flight() {
-    let mut finish = Completion::new();
-    peer::TcpScript::try_gated::<1>(
-        |_| {},
-        |address, release| {
+fn flushes_input_during_kernel_flight() {
+    let (release, hold) = Channel::pair().expect("peer completion channel");
+    peer::TcpScript::with(
+        move |stream| {
+            let mut byte = [0; 1];
+            assert_eq!(stream.peek(&mut byte).expect("native send began"), 1);
+            stream.write_all(b"x").expect("write blocked input");
+            hold.recv()
+        },
+        move |peer| {
+            let mut finish = Completion::new();
             let cancel = LocalGate::new();
             let canceled = cancel.handle();
             let state = LocalGate::new();
             let closed = state.handle();
+            let input = LocalGate::new();
+            let flushed = input.handle();
             let reason = Cell::new(None);
             let payload = (storage::Shared::try_from(&mut vec![0; PAYLOAD_BYTES]))
                 .expect("owned payload retains its allocation");
@@ -148,7 +158,7 @@ fn cancels_kernel_flight() {
             let audit = Rc::new(Report::default());
 
             let planned = Connector::<{ wait::MAX }>::new(
-                address,
+                peer.addr(),
                 Duration::from_secs(1),
                 Duration::from_secs(1),
             )
@@ -156,8 +166,8 @@ fn cancels_kernel_flight() {
                 egress::Entries::new(4),
                 egress::Resident::new(PAYLOAD_BYTES as u32),
             )))
-            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, profile::Fast>>(Value::new(
-                Flight::new(payload, canceled, closed, &reason, audit.clone()),
+            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, profile::Slow>>(Value::new(
+                Flight::new(payload, canceled, closed, &reason, audit.clone()).blocked(flushed),
             ))
             .expect("prepare actual client layout");
             let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
@@ -166,6 +176,12 @@ fn cancels_kernel_flight() {
                 .with_run(
                     &mut finish,
                     |case| {
+                        assert_eq!(
+                            case.try_wait(&flushed, 1).expect("input flush wait"),
+                            fibers::Wait::Reached
+                        );
+                        assert_eq!(canceled.hits(), 0);
+                        assert_eq!(closed.hits(), 0);
                         assert_eq!(
                             case.try_wait(&closed, 1).expect("progress wait"),
                             fibers::Wait::Reached
@@ -184,10 +200,14 @@ fn cancels_kernel_flight() {
             assert_eq!(canceled.hits(), 1);
             assert_eq!(closed.hits(), 1);
             assert!((reason.get()) == (Some(Reason::Timeout(deadline::Kind::Send))));
-            release.try_fire().expect("release scripted peers");
+            release.send(0).expect("release scripted peer");
+            assert!(matches!(
+                peer.finish().expect("scripted peer"),
+                Record::Value(0)
+            ));
         },
     )
-    .expect("gated peers");
+    .expect("scripted peer");
 }
 
 #[test]

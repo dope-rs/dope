@@ -105,10 +105,13 @@ impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Plain<'d> for Reject<'_, F> {
 }
 
 impl<'d, F: Fn() -> egress::NonEmpty<Shared>> Output<'d> for Reject<'_, F> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             let pending = owner.pending.get();
             let empty = context.sink.is_empty();

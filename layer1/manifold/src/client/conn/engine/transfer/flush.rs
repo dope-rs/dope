@@ -17,7 +17,7 @@ use crate::{
     },
     client::{
         app, attempt,
-        close::Reason,
+        close::{Directive, Reason},
         conn::{
             self, State,
             engine::{
@@ -310,9 +310,12 @@ where
                 engine.as_mut().maybe_close(key, turn.reborrow(), driver);
             }
             receive::Outcome::Failed(error) => {
-                engine
-                    .as_mut()
-                    .cut_close(key, error.into(), turn.reborrow(), driver);
+                engine.as_mut().cut_close(
+                    key,
+                    Directive::cut_retry(error.into()),
+                    turn.reborrow(),
+                    driver,
+                );
             }
             receive::Outcome::CloseAfter => {
                 engine

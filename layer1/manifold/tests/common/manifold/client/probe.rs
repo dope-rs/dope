@@ -5,7 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dope_core::{driver, driver::route::KeyTag, io::socket};
+use dope_core::{
+    driver,
+    driver::{route::KeyTag, schedule::ready},
+    io::socket,
+};
 use dope_manifold::client::{
     app,
     app::{admit::Automatic, connect::Full, failure::Observed, request},
@@ -22,9 +26,9 @@ use dope_manifold::client::{
 };
 use dope_net::{
     link::{egress, event, pool::change::opening},
-    wire::Identity,
+    wire::{Identity, failure, open},
 };
-use dope_test::harness::signals::{LocalGateRef, Progress as _};
+use dope_test::harness::signals::{Gate, LocalGateRef, Progress as _};
 use o3::{
     base::{Call, cell::region, time::Positive},
     buffer,
@@ -33,7 +37,7 @@ use o3::{
 
 use crate::common::{
     contract::{Report, codec, codec::errors},
-    manifold::client::{error, flush},
+    manifold::client::{connect::open::First, error, flush},
 };
 
 pub const MAX: usize = 1;
@@ -55,9 +59,11 @@ pub struct Probe<'test, F> {
     pub(crate) gate: LocalGateRef<'test>,
     pub(crate) start: Instant,
     pub(crate) redial: &'test Cell<Option<Duration>>,
+    pub(crate) rejected: Option<&'test dyn Fn()>,
+    pub(crate) expired: Option<&'test Gate>,
 }
 
-impl<'d, F: Fn(socket::Addr)> Session<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Session<'d> for Probe<'_, F> {
     type Codec = codec::Pending;
     type Connect = Full;
     type ConnState = ();
@@ -70,8 +76,8 @@ impl<'d, F: Fn(socket::Addr)> Session<'d> for Probe<'_, F> {
     }
 }
 
-impl<'test, 'd, F: Fn(socket::Addr)> policy::Compatible<'d, 'd, Identity, KeyTag<0>>
-    for Probe<'test, F>
+impl<'test, 'd, F: Fn(socket::Addr, ready::Target<'d>)>
+    policy::Compatible<'d, 'd, Identity, KeyTag<0>> for Probe<'test, F>
 {
     type Open = Self;
     type Terminal = Self;
@@ -85,12 +91,40 @@ impl<'test, 'd, F: Fn(socket::Addr)> policy::Compatible<'d, 'd, Identity, KeyTag
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> Parser<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> policy::Compatible<'d, 'd, First, KeyTag<0>>
+    for Probe<'_, F>
+{
+    type Open = Self;
+    type Terminal = Self;
+
+    fn open(&self) -> &Self::Open {
+        self
+    }
+
+    fn terminal(&self) -> &Self::Terminal {
+        self
+    }
+}
+
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)>
+    policy::start::Sink<'d, 'd, First, KeyTag<0>, failure::Possible> for Probe<'_, F>
+{
+    fn fail(
+        &self,
+        _: attempt::Completion<'_, 'd>,
+        _: open::Error<'d, First>,
+        _: &mut driver::Context<'_, 'd>,
+    ) {
+        self.rejected.expect("opening rejection observer")();
+    }
+}
+
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Parser<'d> for Probe<'_, F> {
     type Mode = mode::Plain;
     type Response = response::Immediate;
 }
 
-impl<'d, F: Fn(socket::Addr)> Plain<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Plain<'d> for Probe<'_, F> {
     type Delivery = response::Direct;
 
     fn reject(
@@ -116,11 +150,14 @@ impl<'d, F: Fn(socket::Addr)> Plain<'d> for Probe<'_, F> {
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> Output<'d> for Probe<'_, F> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Output<'d> for Probe<'_, F> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             let conn = owner.gate.hits();
             let empty = context.sink.is_empty();
@@ -160,16 +197,16 @@ impl<'d, F: Fn(socket::Addr)> Output<'d> for Probe<'_, F> {
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> session::Connected<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> session::Connected<'d> for Probe<'_, F> {
     type Activation = Automatic;
 
     fn connect(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
         peer: socket::Addr,
-        _: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
+        context: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
-        (self.peer)(peer);
+        (self.peer)(peer, context.ready);
         self.gate.hit();
         if self.gate.hits() == 2 {
             self.redial.set(Some(self.start.elapsed()));
@@ -177,7 +214,7 @@ impl<'d, F: Fn(socket::Addr)> session::Connected<'d> for Probe<'_, F> {
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> session::Failed<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> session::Failed<'d> for Probe<'_, F> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -188,7 +225,7 @@ impl<'d, F: Fn(socket::Addr)> session::Failed<'d> for Probe<'_, F> {
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> session::Exhausted<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> session::Exhausted<'d> for Probe<'_, F> {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -199,7 +236,7 @@ impl<'d, F: Fn(socket::Addr)> session::Exhausted<'d> for Probe<'_, F> {
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> Retirement<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Retirement<'d> for Probe<'_, F> {
     type Drain = Ready;
 
     fn io_fail(
@@ -214,12 +251,20 @@ impl<'d, F: Fn(socket::Addr)> Retirement<'d> for Probe<'_, F> {
         &self,
         _: conn::Id<'d, KeyTag<0>>,
         _: &mut (),
-        _: Reason,
+        reason: Reason,
         _: &mut (
             region::Token<region::Identity<'d>>,
             region::Token<region::Identity<'d, 1>>,
         ),
     ) {
+        if let Some(expired) = self.expired
+            && matches!(
+                reason,
+                Reason::Timeout(dope_manifold::client::deadline::Kind::Inbound)
+            )
+        {
+            expired.hit();
+        }
         if self.gate.hits() == 0 {
             self.audit
                 .faults
@@ -244,7 +289,7 @@ impl<'d, F: Fn(socket::Addr)> Retirement<'d> for Probe<'_, F> {
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> Scheduling<'d> for Probe<'_, F> {
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Scheduling<'d> for Probe<'_, F> {
     fn inbound(
         &self,
         _: conn::Id<'d, KeyTag<0>>,
@@ -257,4 +302,4 @@ impl<'d, F: Fn(socket::Addr)> Scheduling<'d> for Probe<'_, F> {
     }
 }
 
-impl<'d, F: Fn(socket::Addr)> Target<'d, KeyTag<0>, MAX> for Probe<'_, F> {}
+impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Target<'d, KeyTag<0>, MAX> for Probe<'_, F> {}

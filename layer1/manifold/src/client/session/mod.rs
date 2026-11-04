@@ -89,6 +89,15 @@ impl<'w, 'd: 'w, ID: Identity, N: Parser<'d, ID>, W: wire::Spec + 'd> Connection
         &mut self.conn_state
     }
 
+    fn input(&self) -> Input {
+        match self.continuation.settlement() {
+            Settlement::Ready if self.ingress.is_empty() => Input::Empty,
+            Settlement::Ready => Input::Partial,
+            Settlement::Yield => Input::Yield,
+            Settlement::Blocked => Input::Blocked,
+        }
+    }
+
     pub(super) fn activate(&mut self, codec: &N::Codec) -> &mut N::ConnState {
         self.ingress.discard(codec);
         self.continuation.reset();
@@ -112,6 +121,20 @@ where
 pub enum Settlement {
     Ready,
     Yield,
+    Blocked,
+}
+
+/// Processing state of all retained input and response continuation work.
+/// This does not establish a protocol's request-to-response association.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Input {
+    /// No retained bytes or unfinished response work remain.
+    Empty,
+    /// The inspected prefix needs more input; no hidden native suffix remains.
+    Partial,
+    /// Owned input or response work still needs an execution permit.
+    Yield,
+    /// Owned input or response work is waiting for application readiness.
     Blocked,
 }
 
@@ -227,6 +250,21 @@ where
 {
     type Delivery: response::Outcome;
 
+    /// Parses input with access to its connection state.
+    fn parse<'id, 'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
+        &mut self,
+        input: codec::Input<'id, 'input, 'd, R>,
+        _: &mut turns::Context<'_, 'e, 'd, Self::ConnState, Self::Send, ID>,
+    ) -> Result<
+        codec::Parse<'id, <Self::Codec as codec::Codec>::Head<'input, 'd, R>>,
+        <Self::Codec as codec::Codec>::Error,
+    >
+    where
+        'd: 'input,
+    {
+        codec::Stateless::parse(self.codec(), input)
+    }
+
     fn deliver<'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
         &mut self,
         head: <Self::Codec as codec::Codec>::Head<'input, 'd, R>,
@@ -292,10 +330,17 @@ pub trait Parser<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
 
 /// Owns connection-scoped egress callbacks.
 pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send, ID>,
-    )>;
+    /// Prepares output and publishes input progress before send submission.
+    /// An earlier send may still be in flight; its retained owners stay borrowed.
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send, ID>,
+            Input,
+        )>,
+    > {
+        None::<Infallible>
+    }
 
     fn sent() -> impl for<'a, 't> Call<(
         &'a mut Self,

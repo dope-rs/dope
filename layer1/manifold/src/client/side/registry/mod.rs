@@ -130,8 +130,8 @@ impl<'d, I: Intent<'d, ID>, ID: Identity> Registry<'d, I, ID> {
         self.slots.pending()
     }
 
-    pub(in crate::client) fn retry(&self) {
-        self.slots.retry();
+    pub(in crate::client) fn retry(&self, work: maint::Work<'_, 'd>) {
+        while let quota::Admission::Item(()) = work.run(|| self.slots.retry()) {}
     }
 
     pub(in crate::client) fn start(&self, target: ready::Target<'d>) {
@@ -143,6 +143,7 @@ impl<'d, I: Intent<'d, ID>, ID: Identity> Registry<'d, I, ID> {
         work: app::Work<'turn, 'd>,
     ) -> quota::Admission<side::Request<'d, I::Payload, ID>> {
         work.run(|| {
+            self.ready.get()?;
             let (ticket, source) = self.slots.take_request()?;
             let payload = match source {
                 Source::Intent(intent) => intent.into_payload(),

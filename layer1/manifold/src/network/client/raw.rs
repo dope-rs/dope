@@ -60,18 +60,19 @@ where
         <<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::COORDS;
 
     unsafe fn pre_park<'a, 'turn, 'root>(
-        self: pin::Pin<&'a mut Self>,
+        mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
     ) -> pin::Pin<&'a mut Self>
     where
         Self: 'root,
     {
-        let mut owner = Cycle::prepare(self, turn.reborrow(), driver.state_token());
-        // SAFETY: `Cycle::prepare` keeps the connector pinned, so the projected
-        // engine stays installed for this dispatch.
-        unsafe { dispatch::raw::Manifold::pre_park(owner.as_mut().project().engine, turn, driver) };
-        owner
+        if self.as_ref().project_ref().engine.is_open() {
+            self = Cycle::prepare(self, turn.reborrow(), driver.state_token());
+        }
+        // SAFETY: the pinned connector keeps its engine installed through this dispatch.
+        unsafe { dispatch::raw::Manifold::pre_park(self.as_mut().project().engine, turn, driver) };
+        self
     }
 
     fn shutdown<'a, 'turn, 'root>(
@@ -169,9 +170,6 @@ where
     }
 
     fn stop(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
-        if call.owner().project_ref().engine.control().is_retiring() {
-            return schedule::Progress::Runnable;
-        }
         <engine::Machine<'_, '_, '_, ID, _, _, E, _> as dispatch::raw::Probe<'d>>::stop(
             call.map_owner(|owner| owner.project_ref().engine),
         )

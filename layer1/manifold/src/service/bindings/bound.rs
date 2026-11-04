@@ -190,6 +190,20 @@ where
 {
     type Delivery = <L::Response as response::Plan>::Delivery;
 
+    fn parse<'id, 'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
+        &mut self,
+        input: codec::Input<'id, 'input, 'd, R>,
+        ctx: &mut Context<'_, 'e, 'd, Self, ID>,
+    ) -> Result<
+        codec::Parse<'id, <Self::Codec as codec::Codec>::Head<'input, 'd, R>>,
+        <Self::Codec as codec::Codec>::Error,
+    >
+    where
+        'd: 'input,
+    {
+        protocol::Plain::parse(&mut self.endpoint, input, ctx)
+    }
+
     fn deliver<'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
         &mut self,
         head: <Self::Codec as codec::Codec>::Head<'input, 'd, R>,
@@ -315,11 +329,23 @@ impl<'life, 'd: 'life, P: ?Sized, L, F, ID: Identity, const MAX: usize> session:
 where
     L: policy::Output<'life, 'd, P, ID, MAX>,
 {
-    fn flush()
-    -> impl for<'a, 'c, 't, 'e> Call<(&'a mut Self, &'c mut Context<'t, 'e, 'd, Self, ID>)> {
-        |(owner, ctx): (&mut Self, &mut Context<'_, '_, 'd, Self, ID>)| {
-            L::flush().call((&mut owner.endpoint, ctx));
-        }
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut Context<'t, 'e, 'd, Self, ID>,
+            session::Input,
+        )>,
+    > {
+        let flush = L::flush()?;
+        Some(
+            move |(owner, ctx, input): (
+                &mut Self,
+                &mut Context<'_, '_, 'd, Self, ID>,
+                session::Input,
+            )| {
+                flush.call((&mut owner.endpoint, ctx, input));
+            },
+        )
     }
 
     fn sent() -> impl for<'a, 't> Call<(

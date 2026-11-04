@@ -291,8 +291,12 @@ where
         egress: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Self::Send>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
+        let Some(flush) = N::flush() else {
+            return;
+        };
         let (id, conn, close, ready) = entry.into_io();
-        N::flush().call((
+        let input = conn.input();
+        flush.call((
             &mut self.session,
             &mut turns::Context::new(
                 id,
@@ -302,6 +306,7 @@ where
                 driver.reborrow(),
                 close,
             ),
+            input,
         ));
     }
 

@@ -5,13 +5,14 @@ use std::{cell::Cell, fmt::Debug, net::SocketAddr, rc::Rc, time::Duration};
 use dope_core::{
     driver::{
         life::recovery,
-        route::{Id, KeyTag},
+        route::{Id, KeyTag, table::conn::Capacity},
         settings,
     },
     io::socket,
 };
 use dope_manifold::{
-    app::env::Bundle,
+    app::{Host, env::Bundle},
+    client::{attempt::StreamTarget, conn::engine},
     network::client::topology::{Install, plan},
     service::{Endpoint, Revision, Snapshot, sync},
     timing::Throughput,
@@ -19,10 +20,13 @@ use dope_manifold::{
 use dope_net::{
     link::{event::ConnectFault, pool::change::opening},
     tcp::Tcp,
-    wire::{Identity, open},
+    wire::{Identity, domain::Local, open},
 };
 use dope_runtime::{
-    executor::session::Completion,
+    executor::{
+        drive,
+        session::{Completion, Scope},
+    },
     topology::{self, error::Kind, lending},
 };
 use dope_test::{
@@ -34,13 +38,16 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-use o3::mem::rc;
+use o3::{depot::capacity, mem::rc};
 
 use crate::common::{
     contract::Report,
     manifold::client::{
         connect::{
-            dial::empty::{self, Empty},
+            dial::{
+                Exhausted,
+                empty::{self, Empty},
+            },
             open::{
                 Cause, Counts, DeferredWire, Failed, Wire,
                 deferred::Deferred,
@@ -52,7 +59,10 @@ use crate::common::{
         error,
     },
     recover,
-    scenario::case::attempt::Attempt,
+    scenario::{
+        Runtime,
+        case::attempt::{Attempt, Attempts},
+    },
 };
 
 #[test]
@@ -201,6 +211,157 @@ fn fatal_open_reports_once() {
         ],
         [0; 5]
     );
+    audit.checked((0, 0));
+}
+
+#[test]
+fn queued_fatal_opens_preserve_progress_after_connection_limit() {
+    let mut finish = Completion::new();
+    let mut create = dope_core::driver::life::creation::Attempt::new();
+    let runtime = Runtime::throughput();
+    let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
+    let failures = Rc::new(Cell::new(0));
+    let audit = Rc::new(Report::default());
+    let executor = runtime.try_executor(&mut create).ok().expect("executor");
+    executor
+        .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(16)))
+        .run(|executor| {
+            let result = executor.try_create(
+                |mut session| {
+                    let source = session.storage();
+                    let attempts = [(); 16].map(|()| {
+                        source
+                            .try_reserve()
+                            .expect("queued attempt")
+                            .start(StreamTarget::new(
+                                SocketAddr::from(([127, 0, 0, 1], 9)),
+                                Default::default(),
+                            ))
+                    });
+                    engine::Startup::new(
+                        Failed {
+                            check: |cause: opening::Failure<open::Error<'_, Wire>>| {
+                                let error = cause.into_wire().expect("wire failure");
+                                assert_eq!(error.cause(), &Cause::Permanent);
+                            },
+                            audit: audit.clone(),
+                            counts: Rc::new(Counts::default()),
+                            gate: Gate::new(),
+                            failures: failures.clone(),
+                        },
+                        source,
+                        Capacity::fixed::<1>(),
+                        Default::default(),
+                        Local::new(()),
+                    )
+                    .try_with::<Bundle<Tcp, Wire, Throughput>, _, _>(
+                        &mut session,
+                        Scope::driver,
+                        |engine, session| {
+                            session
+                                .with_quiesce(
+                                    &mut finish,
+                                    Host::new(engine),
+                                    Duration::from_secs(2),
+                                    |app| {
+                                        assert!(matches!(
+                                            app.run_for(Duration::from_millis(100)),
+                                            Err(drive::Error::Timeout)
+                                        ));
+                                        assert_eq!(failures.get(), 16, "all queued opens complete");
+                                    },
+                                )
+                                .expect("application teardown");
+                        },
+                    )
+                    .expect("connector installation");
+                    for attempt in attempts {
+                        attempt.cancel();
+                    }
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+            );
+            result.as_ref().map_err(Kind::from).expect("attempt source");
+        });
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+    audit.checked((0, 0));
+}
+
+#[test]
+fn fresh_open_survives_shared_maintenance() {
+    let mut finish = Completion::new();
+    let mut create = dope_core::driver::life::creation::Attempt::new();
+    let runtime = Runtime::throughput();
+    let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
+    let failures = Rc::new(Cell::new(0));
+    let audit = Rc::new(Report::default());
+    let exhaust = Cell::new(false);
+    let executor = runtime.try_executor(&mut create).ok().expect("executor");
+    executor
+        .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(1)))
+        .run(|executor| {
+            let result = executor.try_create(
+                |mut session| {
+                    let source = session.storage();
+                    engine::Startup::new(
+                        Failed {
+                            check: |cause: opening::Failure<open::Error<'_, Wire>>| {
+                                let error = cause.into_wire().expect("wire failure");
+                                assert_eq!(error.cause(), &Cause::Permanent);
+                            },
+                            audit: audit.clone(),
+                            counts: Rc::new(Counts::default()),
+                            gate: Gate::new(),
+                            failures: failures.clone(),
+                        },
+                        source,
+                        Capacity::fixed::<1>(),
+                        Default::default(),
+                        Local::new(()),
+                    )
+                    .try_with::<Bundle<Tcp, Wire, Throughput>, _, _>(
+                        &mut session,
+                        Scope::driver,
+                        |engine, session| {
+                            session
+                                .with_quiesce(
+                                    &mut finish,
+                                    Host::new(Exhausted {
+                                        inner: engine,
+                                        exhaust: &exhaust,
+                                    }),
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        fibers::TEST
+                                            .try_pause(&mut app, Duration::from_millis(100))
+                                            .expect("quiet empty engine");
+                                        let attempt = source
+                                            .try_reserve()
+                                            .expect("fresh attempt")
+                                            .start(StreamTarget::new(
+                                                SocketAddr::from(([127, 0, 0, 1], 9)),
+                                                Default::default(),
+                                            ));
+                                        exhaust.set(true);
+                                        assert!(matches!(
+                                            app.run_for(Duration::from_millis(100)),
+                                            Err(drive::Error::Timeout)
+                                        ));
+                                        assert!(!exhaust.get());
+                                        assert_eq!(failures.get(), 1, "fresh opening must run");
+                                        attempt.cancel();
+                                    },
+                                )
+                                .expect("application teardown");
+                        },
+                    )
+                    .expect("connector installation");
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+            );
+            result.as_ref().map_err(Kind::from).expect("attempt source");
+        });
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
     audit.checked((0, 0));
 }
 

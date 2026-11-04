@@ -228,7 +228,9 @@ where
 
     fn is_runnable(&self, state: &State<'d, ID, P, Self>) -> bool {
         let pending = self.registry.pending();
-        pending.ready || pending.cancel || (state.io.retry.is_none() && state.io.io.has_retries())
+        pending.ready
+            || pending.cancel
+            || (state.io.retry.is_none() && (pending.deferred || state.io.io.has_retries()))
     }
 
     fn has_io(state: &State<'d, ID, P, Self>) -> bool {

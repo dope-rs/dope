@@ -141,6 +141,8 @@ where
         let (mut owner, install, proof) = finish.into_parts();
         let this = owner.as_mut().project();
         if proof.is_forced() {
+            this.side.registry.close_intake();
+            while let registry::Rejection::Settled = this.side.registry.reject() {}
             this.links.liveness_mut().finish(proof, |ticket| {
                 this.side
                     .registry
@@ -196,12 +198,16 @@ where
         self.project().controller
     }
 
+    pub(crate) fn is_open(self: pin::Pin<&Self>) -> bool {
+        self.project_ref().shutdown.is_open()
+    }
+
     pub(crate) fn capacity(self: pin::Pin<&Self>) -> table::Capacity {
         self.project_ref().links.pool().inspect().capacity()
     }
 
     pub(crate) fn wake_control(self: pin::Pin<&Self>) {
-        self.project_ref().drive.target().wake();
+        self.project_ref().drive.activate();
     }
 
     pub(crate) fn attempt_at(
@@ -225,6 +231,9 @@ where
                 return;
             };
             if !retired(self.as_mut().control_mut(), owner) {
+                if self.as_ref().control().is_pending() {
+                    self.as_ref().wake_control();
+                }
                 return;
             }
             self.as_mut().close_at(lane, owner, Reason::EndpointRetired);

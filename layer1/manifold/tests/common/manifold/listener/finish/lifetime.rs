@@ -1,4 +1,4 @@
-use std::{convert, pin::Pin, time};
+use std::{convert, num::NonZero, pin::Pin, rc::Rc, time};
 
 use dope_core::{
     driver::{retained, route, schedule::clock},
@@ -12,7 +12,7 @@ use dope_manifold::{
     },
 };
 use dope_net::{link::slot::types::CloseGate, wire::Identity};
-use dope_test::harness::signals::Gate;
+use dope_test::harness::{observe::Trace, signals::Gate};
 use o3::buffer::{bytes::TryRetain, resident};
 
 pub struct Lifetime<F> {
@@ -26,14 +26,29 @@ pub struct Lifetime<F> {
     pub(crate) deadline: F,
 }
 
-#[derive(Clone, Copy)]
 pub enum Expiry {
     Discard,
     Clear,
+    Rearm {
+        slot: usize,
+        count: Option<NonZero<u32>>,
+        events: Rc<Trace<Event, 4>>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    Drain(usize),
+    Close(usize),
+}
+
+pub struct Connection<'d> {
+    deadline: Option<clock::Deadline<'d>>,
+    remaining: Option<NonZero<u32>>,
 }
 
 impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, ID> for Lifetime<F> {
-    type Conn = ();
+    type Conn = Connection<'d>;
     type Build = convert::Infallible;
     type Wire = Identity;
     type WireFailure = failures::Close;
@@ -47,13 +62,20 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
     }
 
     fn connection(self: Pin<&Self>, _: &Seed) -> Result<Self::Conn, Self::Build> {
-        Ok(())
+        Ok(Connection {
+            deadline: None,
+            remaining: match &self.expiry {
+                Expiry::Rearm { count, .. } => *count,
+                Expiry::Discard | Expiry::Clear => None,
+            },
+        })
     }
 
     fn timing(&self) -> handler::Timing {
-        match self.expiry {
+        match &self.expiry {
             Expiry::Clear => handler::Timing::timeout(time::Duration::from_millis(20)),
             Expiry::Discard => handler::Timing::default(),
+            Expiry::Rearm { .. } => handler::Timing::managed(),
         }
     }
 
@@ -63,33 +85,48 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
 
     fn timeout(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
         _: &mut retained::Context<'_, '_, 'd>,
     ) -> handler::Timeout<'d> {
         let this = self.as_ref().get_ref();
         this.expire.hit();
-        match this.expiry {
+        match &this.expiry {
             Expiry::Discard => handler::Timeout::Discard,
             Expiry::Clear => handler::Timeout::Continue(handler::Deadline::Clear),
+            Expiry::Rearm { .. } => {
+                let state = conn.state_mut();
+                if let Some(remaining) = state.remaining {
+                    state.remaining = NonZero::new(remaining.get() - 1);
+                    if state.remaining.is_none() {
+                        return handler::Timeout::Continue(handler::Deadline::Clear);
+                    }
+                }
+                handler::Timeout::Continue(handler::Deadline::Arm(
+                    state.deadline.expect("initial application deadline"),
+                ))
+            }
         }
     }
 
     fn drain(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
+        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
         _: &mut retained::Context<'_, '_, 'd>,
     ) -> handler::Drain {
         let this = self.as_ref().get_ref();
+        if let Expiry::Rearm { events, .. } = &this.expiry {
+            events.record(Event::Drain(conn.id().index().into_usize()));
+        }
         this.begun.hit();
         this.drain
     }
 
     fn accept(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
+        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
     ) -> Outcome {
         let this = self.as_ref().get_ref();
-        if matches!(this.expiry, Expiry::Clear) {
+        if matches!(this.expiry, Expiry::Clear | Expiry::Rearm { .. }) {
             conn.wake_target().wake();
         } else {
             this.accept.hit();
@@ -99,9 +136,9 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
 
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>,
+        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>,
         driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>
+    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>
     where
         'd: 'w,
     {
@@ -114,25 +151,38 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
                 (this.deadline)(conn.deadline().try_arm(at));
             }
             this.accept.hit();
+        } else if let Expiry::Rearm { slot, .. } = &this.expiry
+            && conn.state().deadline.is_none()
+        {
+            let at = driver.driver_ref().clock().now().into();
+            conn.state_mut().deadline = Some(at);
+            if conn.id().index().into_usize() == *slot {
+                (this.deadline)(conn.deadline().try_arm(at));
+            }
+            this.accept.hit();
         }
         conn
     }
 
     fn close_gate(
         self: Pin<&Self>,
-        _: conn::Ref<'_, '_, '_, '_, 'd, ID, Identity, ()>,
+        _: conn::Ref<'_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
     ) -> CloseGate {
         self.gate
     }
 
     fn close<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>
+        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>,
+    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>
     where
         'd: 'w,
     {
-        self.as_ref().get_ref().closed.hit();
+        let this = self.as_ref().get_ref();
+        if let Expiry::Rearm { events, .. } = &this.expiry {
+            events.record(Event::Close(conn.id().index().into_usize()));
+        }
+        this.closed.hit();
         conn
     }
 }
@@ -140,7 +190,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Application<'d, I
 impl<'d, ID: route::Identity, F: for<'a> Fn(Arm<'a>)> handler::Borrowed<'d, ID> for Lifetime<F> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
+        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
         _: R,
         _: &mut retained::Context<'_, '_, 'd>,
     ) -> Outcome {

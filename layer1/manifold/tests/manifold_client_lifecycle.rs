@@ -12,6 +12,7 @@ use dope_core::{
     driver::{
         life::recovery,
         route::{Id, KeyTag},
+        schedule::ready,
     },
     io::socket,
 };
@@ -167,6 +168,91 @@ fn drains_over_turn_limit() {
 }
 
 #[test]
+fn shutdown_does_not_poll_ready_discovery() {
+    use dope_core::driver::{life::creation::Attempt, schedule};
+    use dope_manifold::{
+        app::Host,
+        client::session::{Setup, ingress},
+        network::client::topology::plan::{Plan, Spec},
+        service::{Endpoint, Revision, Snapshot, health::Domain, sync::Replace},
+    };
+    use dope_net::wire::domain::Local;
+    use dope_runtime::executor::{Executor, session::Scope};
+
+    use crate::common::{
+        contract::codec,
+        manifold::client::{
+            Configure as _,
+            finish::close::{
+                members::{Source, Watch},
+                observe::{Events, Session},
+            },
+            side::limited::Limited,
+        },
+    };
+
+    let plan = Plan::<KeyTag<0>, { schedule::LIMIT + 2 }>::new(
+        schedule::LIMIT + 2,
+        Spec::new(Duration::from_secs(1), Duration::from_secs(1)).expect("retry bounds"),
+    )
+    .expect("empty connection capacity");
+    let config = plan.configured().expect("client resources");
+    let mut create = Attempt::new();
+    let executor = Executor::new(&mut create, config).ok().expect("executor");
+    let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let mut finish = Completion::new();
+    let pending = Rc::new(Cell::new(None));
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut runtime| {
+                let setup = Setup::new(
+                    Session {
+                        audit: Rc::new(Report::default()),
+                        codec: codec::Outbound,
+                        errors: Rc::new(Trace::new()),
+                        events: Rc::new(Cell::new(Events::default())),
+                        gate: Gate::new(),
+                    },
+                    ingress::Plan::none(),
+                );
+                let hash = runtime.hash_state(Domain::DEFAULT);
+                plan.bind(Local::new(Identity), hash)
+                    .discover::<_, _, _, Replace, _, _, Bundle<Tcp, Identity, Balanced>, 1, _, _>(
+                        setup,
+                        Source {
+                            pending: pending.clone(),
+                            failures: Gate::new(),
+                        },
+                        Watch(Rc::new(Trace::new())),
+                        &mut runtime,
+                        Scope::driver,
+                        |pool, runtime| {
+                            let now = runtime.driver().driver_ref().clock().now();
+                            let snapshot = Snapshot::<Endpoint<u32, net::SocketAddr>, 1>::empty(
+                                Revision::new(1),
+                            );
+                            runtime
+                                .with_at_for(
+                                    &mut finish,
+                                    Host::new(Limited { inner: pool }),
+                                    now.into(),
+                                    Duration::from_secs(2),
+                                    |_| pending.set(Some(snapshot)),
+                                )
+                                .expect("shutdown completes with ready discovery");
+                        },
+                    )
+                    .expect("install discovery connector");
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(result.is_ok(), "executor teardown");
+    });
+    assert!(pending.take().is_some(), "shutdown preserves source work");
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+}
+
+#[test]
 fn idle_redials() {
     let (reached, hits, redial) = run(Some(IDLE_TIMEOUT), 2);
     assert!((reached) == (Wait::Reached));
@@ -204,12 +290,14 @@ fn run(timeout: Option<Positive>, want: u32) -> (Wait, u32, Option<Duration>) {
                     audit: audit.clone(),
 
                     timeout,
-                    peer: move |peer: socket::Addr| {
+                    peer: move |peer: socket::Addr, _: ready::Target<'_>| {
                         assert_eq!(peer.into_std().expect("TCP peer address"), addr)
                     },
                     gate,
                     start: Instant::now(),
                     redial: &redial,
+                    rejected: None,
+                    expired: None,
                 }))
                 .expect("prepare actual client layout");
             let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);

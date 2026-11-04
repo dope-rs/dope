@@ -174,10 +174,13 @@ impl<'d> Plain<'d> for Half {
 }
 
 impl<'d> Output<'d> for Half {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             let conn = owner.conn.hits();
             let closed = owner.closed.hits();

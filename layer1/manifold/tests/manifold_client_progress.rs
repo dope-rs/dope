@@ -123,90 +123,235 @@ fn permanent_stops() {
 }
 
 #[test]
-fn exhaustion_waits() {
-    let mut finish = Completion::new();
-    let cause = SubmitError::from(Vacancy::IdentityExhausted);
-    let (wait, release) = wake::Ends::blocking().expect("held peer release").split();
-    AcceptScript::with(
-        move |acceptor| {
-            let held = [acceptor.accept()?, acceptor.accept()?];
-            assert!(wait.wait_timeout(GUARD).is_ok(), "release held peers");
-            drop(held);
-            let mut extra = Vec::new();
-            loop {
-                match acceptor.accept() {
-                    Ok(stream) => extra.push(stream),
-                    Err(peer::Error::Cancelled) => {
-                        return Ok(2 + extra.len());
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
+fn exhausted_activations_preserve_liveness_phase() {
+    use std::time::{Duration, Instant};
+
+    use dope_core::{driver::route::table::conn::Capacity, io::socket};
+    use dope_manifold::{
+        app::Host,
+        client::{attempt::StreamTarget, conn::engine, session},
+        network::client::topology::plan,
+    };
+    use dope_net::wire::domain::Local;
+    use dope_runtime::executor::session::Scope;
+    use o3::{base::time::Positive, depot::capacity};
+
+    use crate::common::{
+        manifold::client::{connect::open::First, finish::close::members::Until, probe::Probe},
+        scenario::{Runtime, case::attempt::Attempts},
+    };
+
+    TcpScript::with(
+        |stream| {
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).expect("close held connection");
         },
         |server| {
-            let conn_g = LocalGate::new();
-            let conn = conn_g.handle();
-            let begin_g = LocalGate::new();
-            let step_g = LocalGate::new();
-            let close_g = LocalGate::new();
-            let closed = close_g.handle();
-            let notice_g = LocalGate::new();
-            let notice = notice_g.handle();
-            let events = Trace::<Exhaustion, 2>::new();
+            let mut finish = Completion::new();
+            let mut create = dope_core::driver::life::creation::Attempt::new();
+            let layout = plan::Layout::<KeyTag<0>, { schedule::LIMIT + 1 }>::new(schedule::LIMIT + 1)
+                .expect("client layout");
+            let runtime = Runtime::try_for_plan::<Throughput, _>(&layout).expect("client resources");
+            let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
             let audit = Rc::new(Report::default());
-            let planned = Connector::<2>::new(server.addr(), BACKOFF, BACKOFF)
-                .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(Redial {
-                    audit: Rc::clone(&audit),
-                    kind: Mode::Exhausted(cause),
-                    conn,
-                    begun: begin_g.handle(),
-                    steps: step_g.handle(),
-                    closed,
-                    exhausted: Some((notice, &events)),
-                    pending: Cell::new(false),
-                }))
-                .expect("prepare two live connections");
-            let mut reclaim = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        reached(case.try_wait(&conn, 2), &audit);
-                        reached(case.try_wait(&closed, 1), &audit);
-                        case.try_pause(BACKOFF.saturating_mul(4))
-                            .expect("retain the healthy connection");
-                        checked(&audit);
-                        assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 1, 0));
-
-                        release.notify().expect("retire the remaining peer");
-                        reached(case.try_wait(&notice, 1), &audit);
-                        case.try_pause(BACKOFF.saturating_mul(4))
-                            .expect("observe terminal admission");
-                    },
-                    recovery::Policy::new(|event| reclaim.push(event), recover),
-                    native,
-                )
-                .expect("identity exhaustion scenario");
-            assert!(
-                matches!(reclaim.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim:?}"
-            );
-            checked(&audit);
-            assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 2, 1));
-            assert_eq!(
-                &*events.values().expect("exhaustion observation"),
-                &[(opening::Exhaustion::Submission(cause), 2, 2)]
-            );
-            assert_eq!(
-                server
-                    .stop()
-                    .expect("finish held peer")
-                    .expect("accept connections"),
-                2
-            );
+            let connected = LocalGate::new();
+            let expired = Gate::new();
+            let redial = Cell::new(None);
+            let executor = runtime.try_executor(&mut create)
+                .ok()
+                .expect("executor");
+            executor
+                .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(
+                    (schedule::LIMIT + 1) as u32,
+                )))
+                .run(|executor| {
+                    let result = executor.try_create(
+                        |mut runtime| {
+                            let source = runtime.storage();
+                            let target = || StreamTarget::new(server.addr(), Default::default());
+                            let primary = source.try_reserve().expect("primary attempt").start(target());
+                            let hot = Cell::new(None);
+                            let ready = Cell::new(None);
+                            let running = Cell::new(true);
+                            let refills = Cell::new(0);
+                            let refill = || {
+                                drop(hot.take());
+                                if running.get() {
+                                    refills.set(refills.get() + 1);
+                                    hot.set(Some(source.try_reserve().expect("recycled attempt").start(target())));
+                                }
+                            };
+                            let protocol = session::app::State::<'_, '_, KeyTag<0>, _, First>::try_new(
+                                session::Setup::new(
+                                    Probe {
+                                        audit: audit.clone(),
+                                        timeout: Some(Positive::from_millis::<20>()),
+                                        peer: |peer: socket::Addr, target| {
+                                            assert_eq!(peer.into_std().expect("TCP peer"), server.addr());
+                                            ready.set(Some(target));
+                                        },
+                                        gate: connected.handle(),
+                                        start: Instant::now(),
+                                        redial: &redial,
+                                        rejected: Some(&refill),
+                                        expired: Some(&expired),
+                                    },
+                                    session::ingress::Plan::none(),
+                                ),
+                                Capacity::fixed::<{ schedule::LIMIT + 1 }>(),
+                                &mut runtime.driver(),
+                            )
+                            .expect("client session");
+                            engine::Startup::new(
+                                protocol,
+                                source,
+                                Capacity::fixed::<{ schedule::LIMIT + 1 }>(),
+                                Default::default(),
+                                Local::new(()),
+                            )
+                            .try_with::<Bundle<Tcp, First, Throughput>, _, _>(
+                                &mut runtime,
+                                Scope::driver,
+                                |engine, runtime| {
+                                    let now = runtime.driver().driver_ref().clock().now();
+                                    runtime.with_at_for(
+                                        &mut finish,
+                                        Host::new(engine),
+                                        now.into(),
+                                        Duration::from_secs(2),
+                                        |mut app| {
+                                            app.drive_for(now.into(), Duration::from_secs(1), Until(|| connected.handle().hits() == 1))
+                                                .expect("primary connected")
+                                                .into_output();
+                                            refill();
+                                            ready.get().expect("connection wake").wake();
+                                            let result = app.drive_for(
+                                                now.clamp_add(Duration::from_millis(20)),
+                                                Duration::from_millis(150),
+                                                Until(|| {
+                                                    if expired.hits() != 1 {
+                                                        return false;
+                                                    }
+                                                    running.set(false);
+                                                    drop(hot.take());
+                                                    true
+                                                }),
+                                            );
+                                            running.set(false);
+                                            drop(hot.take());
+                                            assert!(refills.get() >= schedule::LIMIT);
+                                            assert_eq!(expired.hits(), 1, "zero-budget activations preserve the pending liveness phase");
+                                            assert!(result.is_ok(), "inbound timeout progresses");
+                                        },
+                                    ).expect("application teardown");
+                                },
+                            )
+                            .expect("connector installation");
+                            primary.cancel();
+                        },
+                        recovery::Policy::new(|event| reports.push(event), recover),
+                    );
+                    result.as_ref().map_err(Kind::from).expect("attempt source");
+                });
+            assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+            audit.checked((0, 0));
+            server.finish().expect("finish held peer");
         },
     )
-    .expect("spawn held peers");
+    .expect("spawn held peer");
+}
+
+#[test]
+fn exhaustion_waits() {
+    for cause in [
+        opening::Exhaustion::Submission(SubmitError::from(Vacancy::IdentityExhausted)),
+        opening::Exhaustion::Identity,
+    ] {
+        let mut finish = Completion::new();
+        let (wait, release) = wake::Ends::blocking().expect("held peer release").split();
+        AcceptScript::with(
+            move |acceptor| {
+                let held = [acceptor.accept()?, acceptor.accept()?];
+                assert!(wait.wait_timeout(GUARD).is_ok(), "release held peers");
+                drop(held);
+                let mut extra = Vec::new();
+                loop {
+                    match acceptor.accept() {
+                        Ok(stream) => extra.push(stream),
+                        Err(peer::Error::Cancelled) => {
+                            return Ok(2 + extra.len());
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            },
+            |server| {
+                let conn_g = LocalGate::new();
+                let conn = conn_g.handle();
+                let begin_g = LocalGate::new();
+                let step_g = LocalGate::new();
+                let close_g = LocalGate::new();
+                let closed = close_g.handle();
+                let notice_g = LocalGate::new();
+                let notice = notice_g.handle();
+                let events = Trace::<Exhaustion, 2>::new();
+                let audit = Rc::new(Report::default());
+                let planned = Connector::<2>::new(server.addr(), BACKOFF, BACKOFF)
+                    .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(
+                        Redial {
+                            audit: Rc::clone(&audit),
+                            kind: Mode::Exhausted(cause),
+                            conn,
+                            begun: begin_g.handle(),
+                            steps: step_g.handle(),
+                            closed,
+                            exhausted: Some((notice, &events)),
+                            pending: Cell::new(false),
+                        },
+                    ))
+                    .expect("prepare two live connections");
+                let mut reclaim = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
+                planned
+                    .with_run(
+                        &mut finish,
+                        |case| {
+                            reached(case.try_wait(&conn, 2), &audit);
+                            reached(case.try_wait(&closed, 1), &audit);
+                            case.try_pause(BACKOFF.saturating_mul(4))
+                                .expect("retain the healthy connection");
+                            checked(&audit);
+                            assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 1, 0));
+
+                            release.notify().expect("retire the remaining peer");
+                            reached(case.try_wait(&notice, 1), &audit);
+                            case.try_pause(BACKOFF.saturating_mul(4))
+                                .expect("observe terminal admission");
+                        },
+                        recovery::Policy::new(|event| reclaim.push(event), recover),
+                        native,
+                    )
+                    .expect("identity exhaustion scenario");
+                assert!(
+                    matches!(reclaim.events(), Ok(events) if events.is_empty()),
+                    "unexpected reclaimed operations: {reclaim:?}"
+                );
+                checked(&audit);
+                assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 2, 1));
+                assert_eq!(
+                    &*events.values().expect("exhaustion observation"),
+                    &[(cause, 2, 2)]
+                );
+                assert_eq!(
+                    server
+                        .stop()
+                        .expect("finish held peer")
+                        .expect("accept connections"),
+                    2
+                );
+            },
+        )
+        .expect("spawn held peers");
+    }
 }
 
 fn run(kind: Mode) -> Result<Run, peer::Spawn> {

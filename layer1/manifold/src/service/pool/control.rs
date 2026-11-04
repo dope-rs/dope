@@ -6,7 +6,7 @@ use o3::{base::cell::region, depot::capacity};
 
 use crate::{
     client::attempt::{self, mode},
-    service::{self, discover, sync},
+    service::{self, discover, pool::members, sync},
 };
 
 impl<'q, 'h, 'd, T, R, I, const N: usize, F, ID: Identity> attempt::Control<'d, T, ID>
@@ -53,10 +53,15 @@ where
         if let Some(cause) = cause {
             let _ = self.exhaust(key, cause);
         } else {
-            if let Some(target) = self.dials.close(key) {
-                self.membership.cancel(target);
+            let update = self
+                .dials
+                .close(key)
+                .map(|target| self.membership.cancel(target));
+            if let Some(members::Update::Exhausted) = update {
+                self.reject(key, opening::Exhaustion::Identity);
+            } else {
+                self.refresh();
             }
-            self.refresh();
         }
         Ok(())
     }

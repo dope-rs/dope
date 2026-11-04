@@ -55,20 +55,29 @@ use crate::common::{
 
 #[test]
 fn owner_survives_barrier() {
-    for (behavior, bytes) in [
-        (Mode::Duplex, b"RAW".as_slice()),
-        (Mode::Duplex, b"".as_slice()),
-        (Mode::Yield, b"RAW".as_slice()),
-        (Mode::Blocked, b"RAW".as_slice()),
+    for (behavior, bytes, staged) in [
+        (Mode::Duplex, b"RAW".as_slice(), false),
+        (Mode::Duplex, b"".as_slice(), false),
+        (Mode::Yield, b"RAW".as_slice(), false),
+        (Mode::Blocked, b"RAW".as_slice(), false),
+        (Mode::Yield, b"".as_slice(), false),
+        (Mode::Blocked, b"".as_slice(), false),
+        (Mode::Yield, b"RAW".as_slice(), true),
     ] {
         let mut finish = Completion::new();
+        let (next, resume) = wake::Ends::blocking().expect("peer resume channel").split();
 
-        peer::TcpScript::with(|stream| {
+        peer::TcpScript::with(move |stream| {
+                if staged {
+                    stream.write_all(b"Q").expect("write retained prefix");
+                    next.wait_timeout(Duration::from_secs(2))
+                        .expect("prefix retained");
+                }
                 assert!(
-                    stream.write_all(if bytes.is_empty() { b"H" } else { b"HRAW" }).is_ok(),
+                    stream.write_all(if staged { b"QRAW" } else if bytes.is_empty() { b"H" } else { b"HRAW" }).is_ok(),
                     "write head and raw suffix"
                 );
-                if bytes.is_empty() {
+                if bytes.is_empty() && matches!(behavior, Mode::Duplex) {
                     stream.shutdown(Shutdown::Write).expect("native EOF after head");
                 }
                 let mut closed = Vec::new();
@@ -112,6 +121,8 @@ fn owner_survives_barrier() {
                 let prefix = signals::Gate::new();
                 let growth = signals::Gate::new();
                 let settled = Rc::new(Cell::new(0));
+                let input = Rc::new(Cell::new(None));
+                let pending_input = Rc::new(Cell::new(None));
                 let audit = Rc::new(Report::default());
                 let app = Barrier {
                     audit: Rc::clone(&audit),
@@ -127,6 +138,8 @@ fn owner_survives_barrier() {
                     gates: Gates {
                         target: target.clone(),
                         settlements: settled.clone(),
+                        input: input.clone(),
+                        pending_input: pending_input.clone(),
                         head: head.clone(),
                         duplex: duplex.clone(),
                         quarantine: held.clone(),
@@ -151,6 +164,11 @@ fn owner_survives_barrier() {
                     Scope::driver,
                     |host, runtime| {
             let result = runtime.with_quiesce(&mut finish, Host::new(host), Duration::from_secs(2), |mut running| {
+                if staged {
+                    reached(fibers::TEST.try_wait(&mut running, &prefix, 1), &audit);
+                    assert_eq!(input.get(), Some(session::Input::Partial));
+                    resume.notify().expect("release staged suffix");
+                }
                 if matches!(behavior, Mode::Blocked) {
                     reached(fibers::TEST.try_wait(&mut running, &held, 1), &audit);
                     assert_eq!(head.hits(), 0);
@@ -181,12 +199,16 @@ fn owner_survives_barrier() {
             });
             assert!(result.is_ok(), "application teardown");
             audit.checked((0, 0));
+            assert_eq!(pending_input.get(), Some(match behavior {
+                Mode::Duplex | Mode::Yield => session::Input::Yield,
+                Mode::Blocked => session::Input::Blocked,
+            }));
             match behavior {
                 Mode::Duplex => assert_eq!(bytes.snapshot().as_slice(), bytes.expected),
                 Mode::Yield | Mode::Blocked => assert_eq!(retired.hits(), 1),
             }
-            assert_eq!(prefix.hits(), 0);
-            assert_eq!(growth.hits(), 0);
+            assert_eq!(prefix.hits(), u32::from(staged));
+            assert_eq!(growth.hits(), u32::from(staged));
                     },
                 );
                 assert!(result.is_ok(), "create transition connector");
@@ -349,6 +371,7 @@ fn run<W>(
                         let cleared = signals::Gate::new();
                         let partial = signals::Gate::new();
                         let growth = signals::Gate::new();
+                        let input = Rc::new(Cell::new(None));
                         let audit = Rc::new(Report::default());
                         let app = Retry {
                             audit: Rc::clone(&audit),
@@ -364,6 +387,7 @@ fn run<W>(
                             released: released.clone(),
                             closing,
                             stages: Stages {
+                                input: input.clone(),
                                 blocked: blocked.clone(),
                                 commit: commit.clone(),
                                 cleared: cleared.clone(),
@@ -404,6 +428,10 @@ fn run<W>(
                                                     &audit,
                                                 );
                                                 assert_eq!(growth.hits(), 1);
+                                                assert_eq!(
+                                                    input.get(),
+                                                    Some(session::Input::Empty)
+                                                );
                                                 resume.notify().expect("release next chunk");
                                             }
                                             reached(
@@ -422,6 +450,7 @@ fn run<W>(
                                                 assert_eq!(commit.hits(), 0);
                                                 return;
                                             }
+                                            assert_eq!(input.get(), Some(session::Input::Blocked));
                                             if let Some(terminal) = &terminal {
                                                 reached(
                                                     fibers::TEST.try_wait(
@@ -457,6 +486,12 @@ fn run<W>(
                                                 &audit,
                                             );
                                             assert_eq!(tries.get(), attempts.get());
+                                            if terminal.is_none() {
+                                                assert_eq!(
+                                                    input.get(),
+                                                    Some(session::Input::Empty)
+                                                );
+                                            }
                                             if let Some(retired) = &retired {
                                                 reached(
                                                     fibers::TEST.try_wait(&mut running, retired, 1),

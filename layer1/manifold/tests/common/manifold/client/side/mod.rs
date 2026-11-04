@@ -56,6 +56,7 @@ use crate::common::{
 
 pub mod app;
 pub mod limited;
+pub mod retry;
 
 #[derive(Debug)]
 pub enum Error {
@@ -88,7 +89,7 @@ impl<'d> registry::Intent<'d> for Intent<'d> {
     }
 }
 
-pub struct Storage;
+pub struct Storage(pub(crate) Capacity);
 
 impl settings::Resource for Storage {
     fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, Claim> {
@@ -130,7 +131,7 @@ impl storage::Build for Storage {
         Self: 'd,
         'd: 'p,
     {
-        registry::Registry::try_new(Capacity::fixed::<1>())
+        registry::Registry::try_new(self.0)
     }
 }
 
@@ -212,10 +213,13 @@ impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d
 impl<'d, F: Fn() -> Shared, G: Fn(Option<ready::Target<'d>>) -> ready::Target<'d>> Output<'d>
     for Session<'_, '_, 'd, F, G>
 {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             let conn = owner.conn.hits();
             let empty = context.sink.is_empty();

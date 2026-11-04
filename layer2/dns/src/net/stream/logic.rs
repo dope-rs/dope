@@ -11,7 +11,7 @@ use dope::{
         client::{
             app::{self, connect::Peer, failure, request},
             attempt, close, conn,
-            session::{app::drain::Ready, codec::mode, policy, protocol, response, turns},
+            session::{self, app::drain::Ready, codec::mode, policy, protocol, response, turns},
         },
         service::bindings,
     },
@@ -224,14 +224,18 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
         )
     }
 
-    fn flush() -> impl for<'a, 'x, 'y, 'z> Call<(
-        &'a mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
-        &'x mut Context<'y, 'z, 'd, ID>,
-    )> {
-        output::Flush::<Infallible, _>::Context(
-            |(owner, ctx): (
+    fn flush() -> Option<
+        impl for<'a, 'x, 'y, 'z> Call<(
+            &'a mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
+            &'x mut Context<'y, 'z, 'd, ID>,
+            session::Input,
+        )>,
+    > {
+        Some(output::Flush::<Infallible, _>::Context(
+            |(owner, ctx, _): (
                 &mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
                 &mut Context<'_, '_, 'd, ID>,
+                session::Input,
             )| {
                 let logic = owner.logic();
                 if let Some(bind) = logic.bind(ctx.conn_id)
@@ -241,7 +245,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
                     ctx.request(close::Directive::reconnect(reason));
                 }
             },
-        )
+        ))
     }
 
     fn cancel() -> impl for<'a, 'x> Call<(

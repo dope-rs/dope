@@ -63,6 +63,10 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
         }
     }
 
+    pub(in crate::client::session) fn is_empty(&self) -> bool {
+        N::Mode::source(self.slot.parts().0).is_empty()
+    }
+
     pub(in crate::client::session) fn with<R>(
         &mut self,
         run: impl for<'slot, 'id> FnOnce(

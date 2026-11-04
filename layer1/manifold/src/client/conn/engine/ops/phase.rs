@@ -16,7 +16,7 @@ use crate::{
     app::env,
     client::{
         app, attempt,
-        close::Reason,
+        close::{Capacity, Directive, Reason},
         conn::{
             self, State,
             engine::{self, liveness, ops::close},
@@ -173,11 +173,18 @@ where
                     .close_slot(key, Reason::Transport, turn.reborrow(), driver);
                 return Disposition::Stale;
             }
-            Ok(attempt::Connection::Disabled)
-            | Ok(attempt::Connection::Retired)
-            | Ok(attempt::Connection::Exhausted) => {
+            Ok(attempt::Connection::Disabled) | Ok(attempt::Connection::Retired) => {
                 self.as_mut()
                     .close_slot(key, Reason::EndpointRetired, turn.reborrow(), driver);
+                return Disposition::Stale;
+            }
+            Ok(attempt::Connection::Exhausted) => {
+                self.as_mut().cut_close(
+                    key,
+                    Directive::cut_final(Reason::Capacity(Capacity::IdentityExhausted)),
+                    turn.reborrow(),
+                    driver,
+                );
                 return Disposition::Stale;
             }
         }
@@ -305,11 +312,18 @@ where
                     .close_slot(key, Reason::Transport, turn.reborrow(), driver);
                 return Disposition::Stale;
             }
-            attempt::Connection::Disabled
-            | attempt::Connection::Retired
-            | attempt::Connection::Exhausted => {
+            attempt::Connection::Disabled | attempt::Connection::Retired => {
                 self.as_mut()
                     .close_slot(key, Reason::EndpointRetired, turn.reborrow(), driver);
+                return Disposition::Stale;
+            }
+            attempt::Connection::Exhausted => {
+                self.as_mut().cut_close(
+                    key,
+                    Directive::cut_final(Reason::Capacity(Capacity::IdentityExhausted)),
+                    turn.reborrow(),
+                    driver,
+                );
                 return Disposition::Stale;
             }
         };

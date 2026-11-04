@@ -49,10 +49,15 @@ where
 pub trait Output<'life, 'd: 'life, P: ?Sized + 'life, ID: Identity, const MAX: usize>:
     protocol::Spec<'life, 'd, P, ID, MAX> + Sized
 {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut State<'life, 'd, P, Self, ID, MAX>,
-        &'c mut session::Context<'t, 'e, 'life, 'd, P, Self, ID, MAX>,
-    )>;
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut State<'life, 'd, P, Self, ID, MAX>,
+            &'c mut session::Context<'t, 'e, 'life, 'd, P, Self, ID, MAX>,
+            session::Input,
+        )>,
+    > {
+        None::<Infallible>
+    }
 
     fn sent() -> impl for<'a, 't> Call<(
         &'a mut State<'life, 'd, P, Self, ID, MAX>,

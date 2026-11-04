@@ -106,6 +106,9 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
         for _ in 0..phase::Local::COUNT {
+            if work.reborrow().maint().remaining() == 0 {
+                return;
+            }
             let step = self.as_mut().project().drive.as_mut().advance();
             match step {
                 phase::Local::Dirty => {
@@ -125,9 +128,6 @@ where
                 phase::Local::Liveness => {
                     turn::Turn::new(self.as_mut()).poll(work.reborrow(), driver);
                 }
-            }
-            if work.reborrow().maint().remaining() == 0 {
-                return;
             }
         }
     }
@@ -178,6 +178,9 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
         for _ in 0..phase::Local::COUNT {
+            if work.reborrow().maint().remaining() == 0 {
+                return;
+            }
             let step = self.as_mut().project().drive.as_mut().advance();
             match step {
                 phase::Local::Dirty => {
@@ -205,9 +208,6 @@ where
                 phase::Local::Liveness => {
                     turn::Turn::new(self.as_mut()).poll(work.reborrow(), driver);
                 }
-            }
-            if work.reborrow().maint().remaining() == 0 {
-                return;
             }
         }
     }
@@ -259,6 +259,9 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
         for _ in 0..phase::Service::COUNT {
+            if work.reborrow().maint().remaining() == 0 {
+                return;
+            }
             let step = self.as_mut().project().drive.as_mut().advance();
             match step {
                 phase::Service::Dirty => {
@@ -275,9 +278,6 @@ where
                 phase::Service::Liveness => {
                     turn::Turn::new(self.as_mut()).poll(work.reborrow(), driver);
                 }
-            }
-            if work.reborrow().maint().remaining() == 0 {
-                return;
             }
         }
     }
@@ -331,6 +331,9 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
         for _ in 0..phase::Local::COUNT {
+            if work.reborrow().maint().remaining() == 0 {
+                return;
+            }
             let step = self.as_mut().project().drive.as_mut().advance();
             match step {
                 phase::Local::Dirty => {
@@ -357,9 +360,6 @@ where
                 phase::Local::Liveness => {
                     turn::Turn::new(self.as_mut()).poll(work.reborrow(), driver);
                 }
-            }
-            if work.reborrow().maint().remaining() == 0 {
-                return;
             }
         }
     }

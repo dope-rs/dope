@@ -158,6 +158,7 @@ where
             || this.links.pool().inspect().has_rearm()
             || this.links.pool().inspect().has_credit()
             || X::is_runnable(this.side, this.links.liveness())
+            || (this.shutdown.is_open() && this.controller.is_runnable(|| this.drive.has_retry()))
         {
             return schedule::Progress::Runnable;
         }
@@ -170,20 +171,11 @@ where
     }
 
     fn stop(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, ()>) -> schedule::Progress<'d> {
-        let this = call.owner().project_ref();
-        if !this.shutdown.is_draining() {
-            return Self::run(call);
+        if call.owner().project_ref().shutdown.is_draining() {
+            schedule::Progress::Runnable
+        } else {
+            Self::run(call)
         }
-        if !pending::Pending::of(this.links.pool()).is_empty()
-            || this.links.pool().inspect().has_rearm()
-            || this.links.pool().inspect().has_credit()
-            || X::is_runnable(this.side, this.links.liveness())
-        {
-            return schedule::Progress::Runnable;
-        }
-        this.app
-            .progress(call.region(), call.clock())
-            .reduce(schedule::Progress::waiting(call.region()))
     }
 }
 

@@ -20,12 +20,15 @@ use dope_manifold::client::{
 };
 use dope_net::{
     link::{egress, event, pool::change::opening},
-    wire::{failure, terminal},
+    wire::{Identity, failure, terminal},
 };
-use dope_test::harness::{observe::Trace, signals::Gate};
+use dope_test::harness::{
+    observe::Trace,
+    signals::{Gate, Progress as _},
+};
 use o3::{
     base::{Call, cell::region},
-    buffer::{self, resident::staging, storage::Shared, write::consume::scope},
+    buffer::{self, hold, resident::staging, storage::Shared, write::consume::scope},
 };
 
 use crate::common::manifold::client::flush;
@@ -44,7 +47,7 @@ impl Codec for Decode {
     type Staging = Buffered;
 
     fn staging(&self) -> Result<staging::Plan, staging::Error> {
-        staging::Plan::new(1, 1)
+        staging::Plan::new(2, 2)
     }
 }
 
@@ -56,11 +59,14 @@ impl Stateless for Decode {
     where
         'd: 'input,
     {
-        let Some(&head) = input.first() else {
-            return Ok(match input.need_more(None) {
-                Some(need) => codec::Parse::More(need),
-                None => codec::Parse::CapacityExhausted,
-            });
+        let head = match input.first() {
+            Some(&head) if input.as_slice() != b"P" => head,
+            _ => {
+                return Ok(match input.need_more(None) {
+                    Some(need) => codec::Parse::More(need),
+                    None => codec::Parse::CapacityExhausted,
+                });
+            }
         };
         let consumed = input.try_consumed(NonZero::<usize>::MIN)?;
         Ok(codec::Parse::Item { head, consumed })
@@ -89,6 +95,10 @@ pub enum Mode {
 
 #[derive(Debug)]
 pub enum Event {
+    Parse {
+        pointer: *const u8,
+        len: usize,
+    },
     Head(u8),
     Settled {
         byte: u8,
@@ -107,6 +117,7 @@ pub enum Event {
 pub struct Plaintext {
     pub(crate) mode: Mode,
     pub(crate) events: Rc<Trace<Event, 8>>,
+    pub(crate) parsed: Option<Gate>,
     pub(crate) closed: Gate,
 }
 
@@ -131,14 +142,40 @@ impl<'d> Parser<'d> for Plaintext {
 impl<'d> Plain<'d> for Plaintext {
     type Delivery = response::Delivery<u8>;
 
+    fn parse<'id, 'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
+        &mut self,
+        input: codec::Input<'id, 'input, 'd, R>,
+        _: &mut turns::Context<'_, 'e, 'd, Self::ConnState, Self::Send>,
+    ) -> Result<codec::Parse<'id, u8>, scope::Error>
+    where
+        'd: 'input,
+    {
+        if let Some(parsed) = &self.parsed {
+            self.events.record(Event::Parse {
+                pointer: input.as_ptr(),
+                len: input.len(),
+            });
+            parsed.hit();
+        }
+        self.codec().parse(input)
+    }
+
     fn deliver<'input, R: buffer::Cursor>(
         &mut self,
         head: u8,
-        _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
+        ctx: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) -> Self::Delivery
     where
         'd: 'input,
     {
+        if self
+            .parsed
+            .as_ref()
+            .is_some_and(|parsed| parsed.hits() == 2)
+        {
+            ctx.wake_target().wake();
+            return response::Delivery::RetryInput;
+        }
         response::Delivery::Prepared(head)
     }
 
@@ -194,15 +231,31 @@ impl<'d> Resume<'d, u8, u8> for Plaintext {
 }
 
 impl<'d> Output<'d> for Plaintext {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|_: &mut Self, _| {})
     }
 }
 
 impl<'d> policy::Compatible<'d, 'd, Fault, KeyTag<0>> for Plaintext {
+    type Open = Self;
+    type Terminal = Self;
+
+    fn open(&self) -> &Self {
+        self
+    }
+
+    fn terminal(&self) -> &Self {
+        self
+    }
+}
+
+impl<'d> policy::Compatible<'d, 'd, Identity, KeyTag<0>> for Plaintext {
     type Open = Self;
     type Terminal = Self;
 

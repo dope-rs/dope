@@ -60,7 +60,11 @@ where
             .retry_ready(now, target)
             .is_ready();
         if retry {
-            self.machine.as_ref().project_ref().side.registry.retry();
+            let registry = self.machine.as_ref().project_ref().side.registry;
+            registry.retry(turn.maint());
+            if registry.pending().deferred {
+                return;
+            }
         }
         loop {
             let admit = self

@@ -120,10 +120,13 @@ impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Plain<'d> for Lane<F> {
 }
 
 impl<'d, F: Fn(Option<usize>) -> (usize, Request)> Output<'d> for Lane<F> {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             let actual = context.conn_id.index().into_usize();
             let capacity = owner.requests.pending.get_mut().len();

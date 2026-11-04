@@ -77,6 +77,20 @@ pub trait Plain<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>:
 where
     Self::Codec: codec::Stateless,
 {
+    fn parse<'id, 'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
+        owner: &mut State<'life, 'd, P, Self, ID, MAX>,
+        input: codec::Input<'id, 'input, 'd, R>,
+        _: &mut session::Context<'_, 'e, 'life, 'd, P, Self, ID, MAX>,
+    ) -> Result<
+        codec::Parse<'id, <Self::Codec as codec::Codec>::Head<'input, 'd, R>>,
+        <Self::Codec as codec::Codec>::Error,
+    >
+    where
+        'd: 'input,
+    {
+        codec::Stateless::parse(Self::codec(owner), input)
+    }
+
     fn deliver<'e, 'input, R: buffer::Cursor + hold::raw::Retain<'d>>(
         owner: &mut State<'life, 'd, P, Self, ID, MAX>,
         head: <Self::Codec as codec::Codec>::Head<'input, 'd, R>,

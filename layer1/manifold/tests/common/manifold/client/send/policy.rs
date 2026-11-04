@@ -243,26 +243,32 @@ impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
 impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
     policy::Output<'life, 'd, Probe<'d>, KeyTag<0>, 1> for Logic<TAKE, REPORT>
 {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Owner<'life, 'd, TAKE, REPORT>,
-        &'c mut Context<'t, 'e, 'd>,
-    )> {
-        |(owner, context): (
-            &mut Owner<'life, 'd, TAKE, REPORT>,
-            &mut Context<'_, '_, 'd>,
-        )| {
-            if owner.root().eof.hits() == 0 || owner.root().release.hits() == 0 {
-                return;
-            }
-            let Some(payload) = owner.logic_mut().pending.take() else {
-                return;
-            };
-            let mut parts = context.parts();
-            assert!(matches!(
-                parts.sink.try_enqueue(parts.driver.region_token(), payload),
-                egress::Enqueue::Committed
-            ));
-        }
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Owner<'life, 'd, TAKE, REPORT>,
+            &'c mut Context<'t, 'e, 'd>,
+            session::Input,
+        )>,
+    > {
+        Some(
+            |(owner, context, _): (
+                &mut Owner<'life, 'd, TAKE, REPORT>,
+                &mut Context<'_, '_, 'd>,
+                session::Input,
+            )| {
+                if owner.root().eof.hits() == 0 || owner.root().release.hits() == 0 {
+                    return;
+                }
+                let Some(payload) = owner.logic_mut().pending.take() else {
+                    return;
+                };
+                let mut parts = context.parts();
+                assert!(matches!(
+                    parts.sink.try_enqueue(parts.driver.region_token(), payload),
+                    egress::Enqueue::Committed
+                ));
+            },
+        )
     }
 
     fn sent() -> impl for<'a, 't> Call<(

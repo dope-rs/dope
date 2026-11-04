@@ -69,7 +69,7 @@ where
         if !this.as_ref().project_ref().shutdown.is_open() {
             return Source::Idle;
         }
-        let woke = {
+        let mut woke = {
             let target = this.as_ref().backoff();
             let wake = wake::Waker::from(target);
             this.as_mut()
@@ -94,10 +94,24 @@ where
             let action = match step {
                 quota::Admission::Item(action) => action,
                 quota::Admission::Empty => break,
-                quota::Admission::Exhausted => return Source::Deferred,
+                quota::Admission::Exhausted => {
+                    let target = this.as_ref().backoff();
+                    if woke {
+                        // The consumed alarm still owns the unadmitted opening.
+                        this.as_mut()
+                            .project()
+                            .drive
+                            .as_mut()
+                            .arm_backoff(now.into(), target.into());
+                    }
+                    if woke || this.as_ref().project_ref().controller.is_pending() {
+                        target.wake();
+                    }
+                    return Source::Deferred;
+                }
             };
             match action {
-                Step::Continue => {}
+                Step::Continue => woke = false,
                 Step::Stop => return Source::Idle,
                 Step::Retry => {
                     return Dial { machine: this }.defer_retry(now);

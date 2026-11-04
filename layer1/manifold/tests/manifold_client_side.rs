@@ -5,7 +5,7 @@ use std::{net::SocketAddr, rc::Rc, time::Duration};
 use dope_core::{
     driver::{
         life::recovery,
-        route::{Id, KeyTag},
+        route::{Id, KeyTag, table::conn::Capacity},
         schedule::ready,
         settings,
     },
@@ -141,7 +141,7 @@ fn startup_hides_target() {
         events: &events,
         eager: false,
     };
-    let prepared = Plan::new(Storage, (plan, app))
+    let prepared = Plan::new(Storage(Capacity::fixed::<1>()), (plan, app))
         .with_install(settings::Config::for_profile::<Balanced>())
         .expect("prepare side connector topology");
     let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
@@ -207,7 +207,7 @@ fn empty_side_preserves_primary_timeout_quota() {
                     .with_ttl(lifetime::LIMIT),
             )
             .expect("side connector plan");
-            let prepared = Plan::new(Storage, plan)
+            let prepared = Plan::new(Storage(Capacity::fixed::<1>()), plan)
                 .with_install(settings::Config::for_profile::<Balanced>())
                 .expect("side connector layout");
             let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
@@ -257,6 +257,206 @@ fn empty_side_preserves_primary_timeout_quota() {
     .expect("spawn peers");
 }
 
+#[test]
+fn forced_finish_settles_queued_side_requests() {
+    use std::{cell::Cell, task::Poll};
+
+    use dope_runtime::executor::{drive, session::Error as SessionError};
+    use dope_test::harness::signals::Gate;
+
+    use crate::common::{
+        contract::codec,
+        manifold::client::{
+            finish::close::observe::{Events, Session},
+            side::Intent,
+        },
+    };
+
+    let (end_rx, end_tx) = wake::Ends::blocking()
+        .expect("peer release channel")
+        .split();
+    peer::TcpScript::with_many::<2, _>(
+        move |_streams| end_rx.wait_timeout(GUARD).expect("release peers"),
+        |server| {
+            let mut finish = Completion::new();
+            let audit = Rc::new(Report::default());
+            let connected = Gate::new();
+            let plan = plan::Plan::<KeyTag<0>, 2, plan::Side>::try_new(
+                2,
+                plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
+                    .expect("retry bounds"),
+            )
+            .expect("two side slots");
+            let prepared = Plan::new(Storage(Capacity::fixed::<2>()), plan)
+                .with_install(settings::Config::for_profile::<Balanced>())
+                .expect("side shutdown layout");
+            prepared.try_scoped(
+                |scope| {
+                    scope.lend(|plan, stage| {
+                        let registry = stage.storage();
+                        let events = Rc::new(Cell::new(Events::default()));
+                        let setup = session::Setup::new(
+                            Session {
+                                audit: Rc::clone(&audit),
+                                codec: codec::Pending::<1>,
+                                errors: Rc::new(Trace::new()),
+                                events: Rc::clone(&events),
+                                gate: connected.clone(),
+                            },
+                            ingress::Plan::none(),
+                        );
+                        let addr = server.addr();
+                        let snapshot = service::Snapshot::from_one(
+                            service::Revision::new(1),
+                            service::Endpoint::new(addr, addr),
+                        );
+                        let hash = stage.hash_state(health::Domain::for_id(0));
+                        let result = plan.bind(domain::Local::new(wire::Identity), hash)
+                            .install::<_, _, _, sync::Preserve, _, env::Bundle<tcp::Tcp, wire::Identity, Balanced>, 16, _, _>(
+                                setup, Enabled::new(registry), snapshot, stage, lending::Stage::driver,
+                                |pool, stage| stage.with_quiesce(
+                                    &mut finish,
+                                    app::Host::new(Limited { inner: pool }),
+                                    Duration::ZERO,
+                                    |mut app| {
+                                        assert_eq!(
+                                            dope_test::fibers::TEST.try_wait(&mut app, &connected, 2)
+                                                .expect("primary connections"),
+                                            dope_test::fibers::Wait::Reached,
+                                        );
+                                        let observed = Events::snapshot(&events);
+                                        let [first, second] = observed.conn.as_slice() else {
+                                            panic!("two primary targets");
+                                        };
+                                        let targets = [*first, *second];
+                                        let ready = registry.ready_target().expect("side registry ready");
+                                        for target in targets {
+                                            assert!(registry.try_reserve(
+                                                Intent {
+                                                    target,
+                                                    payload: Shared::try_copy(b"cancel").expect("side payload"),
+                                                },
+                                                ready.into(),
+                                            ).is_ok());
+                                        }
+                                        (targets, ready)
+                                    },
+                                ),
+                            )
+                            .expect("install side client");
+                        let (targets, ready) = match result {
+                            Err(SessionError::Quiesce { output, drive, disarm: None }) => {
+                                assert!(matches!(drive, drive::Error::QuiescenceTimeout));
+                                output
+                            }
+                            _ => panic!("forced quiescence timeout"),
+                        };
+                        for target in targets {
+                            assert!(matches!(
+                                registry.poll(target, ready.into()),
+                                Poll::Ready(Err(Error::IntakeClosed)),
+                            ), "forced finish must settle every queued side request");
+                        }
+                    });
+                },
+                recovery::Policy::new(drop, recover),
+                |entered| assert!(entered.is_ok()),
+            );
+            audit.checked((0, 0));
+            end_tx.notify().expect("release peers");
+            server.finish().expect("finish peers");
+        },
+    )
+    .expect("spawn peers");
+}
+
+#[test]
+fn cancelled_native_slots_bound_retry_promotion() {
+    use std::cell::Cell;
+
+    use dope_test::harness::signals::Gate;
+
+    use crate::common::{
+        contract::codec,
+        manifold::client::{
+            finish::close::observe::{Events, Session},
+            side::retry::Retry,
+        },
+    };
+
+    // Linux creation cancellation retains the slot until its native CQE.
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+    let (end_rx, end_tx) = wake::Ends::blocking()
+        .expect("peer release channel")
+        .split();
+    peer::AcceptScript::with(
+        move |acceptor| {
+            let _primary = [acceptor.accept().expect("first primary"), acceptor.accept().expect("second primary")];
+            for _ in 0..2 {
+                let side = acceptor.accept().expect("replacement side connection");
+                let mut payload = [0; 6];
+                side.read_exact(&mut payload).expect("replacement side payload");
+                assert_eq!(payload, *b"cancel");
+            }
+            end_rx.wait_timeout(GUARD).expect("release primary connections");
+        },
+        |server| {
+            let mut finish = Completion::new();
+            let audit = Rc::new(Report::default());
+            let done = LocalGate::new();
+            let plan = plan::Plan::<KeyTag<0>, 2, plan::Side>::try_new(
+                2,
+                plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1)).expect("retry bounds"),
+            ).expect("two side slots");
+            let prepared = Plan::new(Storage(Capacity::fixed::<2>()), plan)
+                .with_install(settings::Config::for_profile::<Balanced>()
+                    .with_queues(settings::QueueLayout::fixed::<64, 128>()))
+                .expect("side retry layout");
+            let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
+            prepared.try_scoped(
+                |scope| {
+                    let result = scope.lend(|plan, stage| {
+                        let registry = stage.storage();
+                        let events = Rc::new(Cell::new(Events::default()));
+                        let errors = Rc::new(Trace::new());
+                        let setup = session::Setup::new(Session {
+                            audit: Rc::clone(&audit),
+                            codec: codec::Pending::<1>,
+                            errors: Rc::clone(&errors),
+                            events: Rc::clone(&events),
+                            gate: Gate::new(),
+                        }, ingress::Plan::none());
+                        let addr = server.addr();
+                        let snapshot = service::Snapshot::from_one(service::Revision::new(1), service::Endpoint::new(addr, addr));
+                        let hash = stage.hash_state(health::Domain::for_id(0));
+                        let result = plan.bind(domain::Local::new(wire::Identity), hash)
+                            .install::<_, _, _, sync::Preserve, _, env::Bundle<tcp::Tcp, wire::Identity, Balanced>, 16, _, _>(
+                                setup, Enabled::new(registry), snapshot, stage, lending::Stage::driver,
+                                |pool, stage| stage.with_quiesce(
+                                    &mut finish,
+                                    app::Host::new(Retry::new(pool, registry, &events, done.handle())),
+                                    Duration::from_secs(2),
+                                    |mut app| dope_test::fibers::TEST.try_wait(&mut app, &done.handle(), 4),
+                                ),
+                            );
+                        assert!(errors.values().expect("codec observations").is_empty());
+                        result
+                    });
+                    assert_eq!(result.expect("install side retry").expect("side teardown").expect("side progress"), dope_test::fibers::Wait::Reached);
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                |entered| assert!(entered.is_ok()),
+            );
+            assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+            audit.checked((0, 0));
+            end_tx.notify().expect("release peers");
+            server.finish().expect("finish peers");
+        },
+    ).expect("spawn peers");
+}
+
 fn run(
     addr: SocketAddr,
     eager: bool,
@@ -288,7 +488,7 @@ fn run(
         eager,
     };
     let baseline = settings::Config::for_profile::<Balanced>();
-    let prepared = Plan::new(Storage, (plan, app)).with_install(baseline);
+    let prepared = Plan::new(Storage(Capacity::fixed::<1>()), (plan, app)).with_install(baseline);
     let prepared = (prepared).expect("prepare side connector topology");
     let mut reclaim1 = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
 

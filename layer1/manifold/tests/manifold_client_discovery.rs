@@ -3,6 +3,7 @@ pub mod common;
 use std::{
     cell::Cell,
     net::{SocketAddr, TcpListener},
+    num::NonZero,
     rc::Rc,
     time::Duration,
 };
@@ -16,7 +17,7 @@ use dope_core::{
 };
 use dope_manifold::{
     app::{Host, env::Bundle},
-    client::session::Setup,
+    client::{close::Reason, session::Setup},
     network::client::topology::plan::{Plan, Spec},
     service::{
         self, Endpoint, Revision, Snapshot,
@@ -30,7 +31,7 @@ use dope_net::{
     wire::{Identity, domain::Local},
 };
 use dope_runtime::executor::{
-    Executor,
+    Executor, drive,
     session::{Completion, Scope},
 };
 use dope_test::{
@@ -54,7 +55,10 @@ use crate::common::{
         Configure as _,
         connect::resolve::deferred_revision,
         finish::close::{
-            members::{Address, Demand, DemandState, Net, Notice, Source, Until, Watch},
+            members::{
+                Address, Demand, DemandState, LimitedDemand, Net, Notice, Renewal, Source, Until,
+                Watch,
+            },
             observe::{Events, Session},
         },
         side::limited::Limited,
@@ -74,6 +78,131 @@ fn withdrawn_epoch_connects() {
 fn updated_deferred_epoch_connects() {
     let prior = TcpListener::bind("127.0.0.1:0").expect("prior endpoint");
     deferred_revision::<Replace>(Some(prior.local_addr().expect("prior address")));
+}
+
+/// New snapshots cannot restart a budgeted retirement scan ahead of a live slot.
+#[test]
+fn repeated_replacement_retires_every_connection() {
+    let listeners = [0; 3].map(|_| TcpListener::bind("127.0.0.1:0").expect("endpoint"));
+    let addresses = listeners
+        .each_ref()
+        .map(|listener| listener.local_addr().expect("address"));
+    let snapshot = |revision, endpoint| {
+        Snapshot::<_, 1>::from_one(
+            Revision::new(revision),
+            Endpoint::new(endpoint, addresses[endpoint as usize]),
+        )
+    };
+    let pending = Rc::new(Cell::new(Some(snapshot(1, 0))));
+    let changes = Rc::new(Trace::new());
+    let plan = Plan::<KeyTag<0>, 2>::new(
+        2,
+        Spec::new(Duration::from_secs(2), Duration::from_secs(2)).expect("retry bounds"),
+    )
+    .expect("two connections");
+    let config = plan.configured().expect("discovery resources");
+    let mut create = dope_core::driver::life::creation::Attempt::new();
+    let executor = Executor::new(&mut create, config).ok().expect("executor");
+    let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let mut finish = Completion::new();
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut runtime| {
+                let events = Rc::new(Cell::new(Events::default()));
+                let audit = Rc::new(Report::default());
+                let errors = Rc::new(Trace::new());
+                let setup = Setup::new(
+                    Session {
+                        audit: audit.clone(),
+                        codec: codec::Outbound,
+                        errors: errors.clone(),
+                        events: events.clone(),
+                        gate: Gate::new(),
+                    },
+                    dope_manifold::client::session::ingress::Plan::none(),
+                );
+                let hash = runtime.hash_state(Domain::DEFAULT);
+                let installed = plan
+                    .bind(Local::new(Identity), hash)
+                    .discover::<_, _, _, Replace, _, _, Bundle<Tcp, Identity, Balanced>, 1, _, _>(
+                        setup,
+                        Source {
+                            pending: pending.clone(),
+                            failures: Gate::new(),
+                        },
+                        Watch(changes.clone()),
+                        &mut runtime,
+                        Scope::driver,
+                        |host, runtime| {
+                            let now = runtime.driver().driver_ref().clock().now();
+                            runtime
+                                .with_at_for(
+                                    &mut finish,
+                                    Host::new(Limited { inner: host }),
+                                    now.into(),
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        app.drive_for(
+                                            now.into(),
+                                            Duration::from_secs(2),
+                                            Until(|| Events::snapshot(&events).conn.len() == 2),
+                                        )
+                                        .expect("both original connections")
+                                        .into_output();
+                                        let original = Events::snapshot(&events).conn;
+                                        let retired = || {
+                                            let observed = Events::snapshot(&events);
+                                            original.iter().all(|id| {
+                                                observed.closed.iter().any(|(closed, reason)| {
+                                                    closed == id
+                                                        && *reason == Reason::EndpointRetired
+                                                })
+                                            })
+                                        };
+                                        let revision = Cell::new(2);
+                                        app.drive_for(
+                                            now.into(),
+                                            Duration::from_secs(2),
+                                            Until(|| {
+                                                if retired() {
+                                                    return true;
+                                                }
+                                                let last = revision.get();
+                                                let ready = pending.take();
+                                                if ready.is_some() {
+                                                    pending.set(ready);
+                                                } else if last == 8 {
+                                                    return true;
+                                                } else {
+                                                    pending.set(Some(snapshot(
+                                                        last,
+                                                        1 + (last as u32 % 2),
+                                                    )));
+                                                    revision.set(last + 1);
+                                                }
+                                                false
+                                            }),
+                                        )
+                                        .expect("bounded replacement progress")
+                                        .into_output();
+                                        assert!(
+                                            retired(),
+                                            "every original connection retires during replacement"
+                                        );
+                                    },
+                                )
+                                .expect("application teardown");
+                        },
+                    );
+                assert!(installed.is_ok(), "install connector");
+                audit.checked((0, 0));
+                assert!(errors.values().expect("codec observations").is_empty());
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(result.is_ok(), "executor teardown");
+    });
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
 }
 
 /// An installed endpoint may relinquish its submitted epoch while another remains needed.
@@ -321,6 +450,243 @@ fn renewed_demand_preserves_submitted_and_waiting_epochs() {
             recovery::Policy::new(|event| reports.push(event), recover),
         );
         assert!(result.is_ok(), "watched executor teardown");
+    });
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+}
+
+/// A fresh retention observation cannot hide the next withdrawal of either demand bit.
+#[test]
+fn withdrawal_after_retirement_renewal_is_observed() {
+    for global in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("endpoint");
+        let address = listener.local_addr().expect("endpoint address");
+        let demand = Rc::new(DemandState {
+            needed: Cell::new(true),
+            pending: Cell::new(Some(0)),
+            live: Cell::new(Some(0)),
+            withdrawn: Cell::new(false),
+        });
+        let plan = Plan::<KeyTag<0>, 1>::new(
+            1,
+            Spec::new(Duration::from_secs(2), Duration::from_secs(2)).expect("retry bounds"),
+        )
+        .expect("one connection");
+        let config = plan.configured().expect("watched connector resources");
+        let mut create = dope_core::driver::life::creation::Attempt::new();
+        let executor = Executor::new(&mut create, config).ok().expect("executor");
+        let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+        let mut finish = Completion::new();
+        executor.run(|executor| {
+            let result = executor.enter_with(
+                |mut runtime| {
+                    let events = Rc::new(Cell::new(Events::default()));
+                    let audit = Rc::new(Report::default());
+                    let errors = Rc::new(Trace::new());
+                    let opened = Gate::new();
+                    let setup = Setup::new(
+                        Session {
+                            audit: audit.clone(),
+                            codec: codec::Outbound,
+                            errors: errors.clone(),
+                            events: events.clone(),
+                            gate: opened.clone(),
+                        },
+                        dope_manifold::client::session::ingress::Plan::none(),
+                    );
+                    let set =
+                        Snapshot::<_, 1>::from_one(Revision::new(1), Endpoint::new(0, address));
+                    let hash = runtime.hash_state(Domain::DEFAULT);
+                    let installed = plan
+                        .bind(Local::new(Identity), hash)
+                        .watch::<_, _, _, Replace, _, Bundle<Tcp, Identity, Balanced>, 1, _, _>(
+                            setup,
+                            set,
+                            Demand(demand.clone()),
+                            &mut runtime,
+                            Scope::driver,
+                            |host, runtime| {
+                                let now = runtime.driver().driver_ref().clock().now();
+                                runtime
+                                    .with_at_for(
+                                        &mut finish,
+                                        Host::new(Limited { inner: host }),
+                                        now.into(),
+                                        Duration::from_secs(2),
+                                        |mut app| {
+                                            app.drive_for(
+                                                now.into(),
+                                                Duration::from_secs(2),
+                                                Until(|| opened.hits() == 1),
+                                            )
+                                            .expect("connected endpoint")
+                                            .into_output();
+                                            demand.pending.set(None);
+                                            app.drive(now.into(), Until(|| true))
+                                                .expect("settled demand")
+                                                .into_output();
+                                            let step = Cell::new(0);
+                                            app.drive_for(
+                                                now.into(),
+                                                Duration::from_secs(2),
+                                                Until(|| {
+                                                    if let Some(&retained) =
+                                                        [false, true, false].get(step.get())
+                                                    {
+                                                        assert!(
+                                                            Events::snapshot(&events)
+                                                                .closed
+                                                                .is_empty(),
+                                                            "renewal must preserve the first epoch"
+                                                        );
+                                                        demand.needed.set(!global || retained);
+                                                        demand
+                                                            .live
+                                                            .set((global || retained).then_some(0));
+                                                        step.set(step.get() + 1);
+                                                    }
+                                                    Events::snapshot(&events).closed.iter().any(
+                                                        |(_, reason)| {
+                                                            *reason == Reason::EndpointRetired
+                                                        },
+                                                    )
+                                                }),
+                                            )
+                                            .expect("second withdrawal remains observable")
+                                            .into_output();
+                                            assert_eq!(step.get(), 3);
+                                            assert_eq!(opened.hits(), 1);
+                                        },
+                                    )
+                                    .expect("application teardown");
+                            },
+                        );
+                    assert!(installed.is_ok(), "install watched connector");
+                    audit.checked((0, 0));
+                    assert!(errors.values().expect("codec observations").is_empty());
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+            );
+            assert!(result.is_ok(), "executor teardown");
+        });
+        assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+    }
+}
+
+/// Renewing an active epoch also resumes an already ready dial.
+#[test]
+fn retirement_renewal_resumes_ready_dial() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("endpoint");
+    let address = listener.local_addr().expect("endpoint address");
+    let chosen = Rc::new(Trace::new());
+    let limit = Rc::new(Cell::new(NonZero::<usize>::MIN));
+    let demand = Rc::new(DemandState {
+        needed: Cell::new(true),
+        pending: Cell::new(Some(0)),
+        live: Cell::new(Some(0)),
+        withdrawn: Cell::new(false),
+    });
+    let plan = Plan::<KeyTag<0>, 2>::new(
+        2,
+        Spec::new(Duration::from_secs(2), Duration::from_secs(2)).expect("retry bounds"),
+    )
+    .expect("two connections");
+    let config = plan.configured().expect("watched connector resources");
+    let mut create = dope_core::driver::life::creation::Attempt::new();
+    let executor = Executor::new(&mut create, config).ok().expect("executor");
+    let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let mut finish = Completion::new();
+    executor.run(|executor| {
+        let result = executor.enter_with(
+            |mut runtime| {
+                let events = Rc::new(Cell::new(Events::default()));
+                let audit = Rc::new(Report::default());
+                let errors = Rc::new(Trace::new());
+                let opened = Gate::new();
+                let setup = Setup::new(
+                    Session {
+                        audit: audit.clone(),
+                        codec: codec::Outbound,
+                        errors: errors.clone(),
+                        events: events.clone(),
+                        gate: opened.clone(),
+                    },
+                    dope_manifold::client::session::ingress::Plan::none(),
+                );
+                let set = Snapshot::<_, 1>::from_one(
+                    Revision::new(1),
+                    Endpoint::new(
+                        0,
+                        Address {
+                            addr: address,
+                            chosen: chosen.clone(),
+                        },
+                    ),
+                );
+                let hash = runtime.hash_state(Domain::DEFAULT);
+                let installed = plan
+                    .bind(Local::new(Identity), hash)
+                    .watch::<_, _, _, Replace, _, Bundle<Net, Identity, Balanced>, 1, _, _>(
+                        setup,
+                        set,
+                        LimitedDemand {
+                            inner: Demand(demand.clone()),
+                            chosen: chosen.clone(),
+                            limit: limit.clone(),
+                        },
+                        &mut runtime,
+                        Scope::driver,
+                        |host, runtime| {
+                            let now = runtime.driver().driver_ref().clock().now();
+                            runtime
+                                .with_at_for(
+                                    &mut finish,
+                                    Host::new(Limited { inner: host }),
+                                    now.into(),
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        app.drive_for(
+                                            now.into(),
+                                            Duration::from_secs(2),
+                                            Until(|| opened.hits() == 1),
+                                        )
+                                        .expect("one active and one ready dial")
+                                        .into_output();
+                                        let step = Cell::new(0);
+                                        assert!(matches!(
+                                            app.drive_for(
+                                                now.into(),
+                                                Duration::from_millis(100),
+                                                Renewal {
+                                                    demand: &demand,
+                                                    limit: &limit,
+                                                    step: &step,
+                                                },
+                                            ),
+                                            Err(drive::Error::Timeout)
+                                        ));
+                                        assert_eq!(step.get(), 2);
+                                        assert_eq!(
+                                            opened.hits(),
+                                            2,
+                                            "renewal resumes the ready dial"
+                                        );
+                                        assert_eq!(
+                                            &*chosen.values().expect("selected endpoints"),
+                                            &[address, address]
+                                        );
+                                        assert!(Events::snapshot(&events).closed.is_empty());
+                                    },
+                                )
+                                .expect("application teardown");
+                        },
+                    );
+                assert!(installed.is_ok(), "install watched connector");
+                audit.checked((0, 0));
+                assert!(errors.values().expect("codec observations").is_empty());
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(result.is_ok(), "executor teardown");
     });
     assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
 }

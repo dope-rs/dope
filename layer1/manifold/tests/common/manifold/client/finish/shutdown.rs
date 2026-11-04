@@ -100,10 +100,13 @@ impl<'d> Plain<'d> for Shutdown {
 }
 
 impl<'d> Output<'d> for Shutdown {
-    fn flush() -> impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut Self,
-        &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
-    )> {
+    fn flush() -> Option<
+        impl for<'a, 'c, 't, 'e> Call<(
+            &'a mut Self,
+            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,
+            dope_manifold::client::session::Input,
+        )>,
+    > {
         flush(|owner: &mut Self, context| {
             if !context.sink.is_empty() {
                 owner.audit.faults.record(Finish(Error::Flush {

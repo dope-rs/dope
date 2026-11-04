@@ -20,6 +20,10 @@ impl<T: dope_net::Transport, ID: Identity> attempt::Contract for Control<'_, '_,
     fn identity(&self) -> Option<ptr::NonNull<()>> {
         Some(ptr::NonNull::from(self.table).cast())
     }
+
+    fn is_runnable(&self, retry: impl FnOnce() -> bool) -> bool {
+        self.table.is_runnable(retry)
+    }
 }
 
 impl<'a, 'd, T: dope_net::Transport, ID: Identity> Control<'a, 'd, T, ID> {
