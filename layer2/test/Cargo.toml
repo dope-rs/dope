@@ -2,7 +2,7 @@
 name = "dope-test"
 edition.workspace = true
 rust-version.workspace = true
-version.workspace = true
+version = "0.24.1"
 repository.workspace = true
 readme.workspace = true
 license.workspace = true
