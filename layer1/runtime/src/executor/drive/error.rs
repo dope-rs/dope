@@ -81,6 +81,15 @@ impl From<fault::Dispatch> for Error {
     }
 }
 
+impl From<poll::Failure> for Error {
+    fn from(failure: poll::Failure) -> Self {
+        match failure {
+            poll::Failure::Native(error) => Self::Poll(error),
+            poll::Failure::Completion(fault) => Self::Completion(fault),
+        }
+    }
+}
+
 impl From<clock::Range> for Error {
     fn from(range: clock::Range) -> Self {
         Self::Deadline(range)

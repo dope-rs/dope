@@ -14,7 +14,7 @@ use crate::{
     },
     io,
     io::{
-        event::{Kind, batch::Flow},
+        event::{Kind, batch::Flow, net::connect},
         outputs,
         socket::option,
     },
@@ -39,20 +39,25 @@ pub(crate) enum Failure<'q, 'd, S> {
 impl<'q, 'd, S: tuning::Occupied<flight::raw::Echo>> Tuned<'q, 'd, S> {
     pub(super) fn complete(self, outcome: Result<(), Errno>) -> io::Event<'d> {
         let Self { state, flight } = self;
+        let option_failed = state.option_failed();
         state.clear();
         match flight {
-            Terminal::Connect(bound) => outputs::connected(bound.complete(), outcome),
+            Terminal::Connect(bound) => outputs::connected(
+                bound.complete(),
+                outcome.map_err(|errno| classify(errno, option_failed)),
+            ),
             Terminal::Tuning(bound) => Kind::Tuning((bound, outcome).into()).into(),
         }
     }
 
     pub(super) fn reclaim(self, result: Result<(), Errno>) -> native::Report {
         let Self { state, flight } = self;
+        let option_failed = state.option_failed();
         state.clear();
         native::Report(match flight {
             Terminal::Connect(bound) => io::Reclaimed::Connect {
                 echo: fault::Echo::new(bound.end(Flow::Last)),
-                result,
+                result: result.map_err(|errno| classify(errno, option_failed)),
             },
             Terminal::Tuning(bound) => io::Reclaimed::Tuning {
                 echo: fault::Echo::new(bound.end(Flow::Last)),
@@ -87,5 +92,13 @@ impl<'q, 'd, S: tuning::Occupied<flight::raw::Echo>> Tuned<'q, 'd, S> {
             }
         };
         Ok(Tuned { state, flight })
+    }
+}
+
+fn classify(errno: Errno, option_failed: bool) -> connect::Error {
+    if option_failed {
+        connect::Error::Option(errno)
+    } else {
+        connect::Error::Connect(errno)
     }
 }

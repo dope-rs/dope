@@ -2,5 +2,6 @@
 pub enum Outcome {
     Rearm,
     Yield,
+    Blocked,
     Terminal,
 }

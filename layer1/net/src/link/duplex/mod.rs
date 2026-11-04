@@ -89,7 +89,7 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
     pub(in crate::link) fn complete(
         &mut self,
         done: connect::Completion<'d>,
-    ) -> setup::Completion<connect::Completion<'d>> {
+    ) -> setup::Completion<connect::Completion<'d>, connect::Error> {
         let (next, step) = self.establish.take().complete(done);
         self.establish = next;
         step

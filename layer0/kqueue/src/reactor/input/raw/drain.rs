@@ -113,7 +113,7 @@ where
     ) -> Result<Outcome, <C::Slots as table::raw::Slots>::Missing> {
         let file = files.try_socket(file)?;
         let Some(mut buffer) = pool.take() else {
-            return Ok(Outcome::Yield);
+            return Ok(Outcome::Blocked);
         };
         let received = if MESSAGE {
             // SAFETY: the caller proves the datagram layout for this specialization.

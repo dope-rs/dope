@@ -2,6 +2,7 @@ mod budget;
 pub mod cancel;
 pub mod event;
 mod failure;
+pub mod reactor;
 pub mod slots;
 pub mod socket;
 

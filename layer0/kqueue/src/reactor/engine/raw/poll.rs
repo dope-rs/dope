@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use dope_sys::{
     io::reactor::{
         complete::Queue as _,
@@ -15,25 +17,34 @@ impl<C: ready::Driver> ready::raw::Poll<C> for Engine<C>
 where
     C::Context: ready::raw::Decode,
 {
-    unsafe fn resume<'a>(&'a mut self, budget: &mut impl Budget)
+    unsafe fn resume<'a>(
+        &'a mut self,
+        budget: &mut impl Budget,
+    ) -> Result<ControlFlow<()>, Self::Failure>
     where
         C::Context: 'a,
     {
         loop {
-            if self.state.view().poll.is_failed() {
-                break;
-            }
-            let Some(vacant) = self.pending.vacant() else {
-                break;
+            self.check()?;
+            let blocked = {
+                let Some(vacant) = self.pending.vacant() else {
+                    break;
+                };
+                let item = match budget.admit(|| self.state.edit().reads.pop_resume()) {
+                    Admission::Item(item) => item,
+                    Admission::Empty | Admission::Exhausted => break,
+                };
+                match self.state.poll(Query::Exact(item)) {
+                    Some(poll) => unsafe { read::raw::Poll::resume(poll, vacant) }.is_break(),
+                    None => false,
+                }
             };
-            let item = match budget.admit(|| self.state.edit().reads.pop_resume()) {
-                Admission::Item(item) => item,
-                Admission::Empty | Admission::Exhausted => break,
-            };
-            if let Some(poll) = self.state.poll(Query::Exact(item)) {
-                unsafe { read::raw::Poll::resume(poll, vacant) };
+            if blocked {
+                self.check()?;
+                return Ok(ControlFlow::Break(()));
             }
         }
+        Ok(ControlFlow::Continue(()))
     }
 
     unsafe fn wait<'a>(

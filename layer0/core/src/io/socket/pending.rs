@@ -206,8 +206,10 @@ impl<'d, State> Connection<'d, State> {
     pub fn complete(
         self,
         done: connect::Completion<'d>,
-    ) -> Result<(handles::Descriptor<'d>, Result<(), Errno>), Mismatch<Self, connect::Completion<'d>>>
-    {
+    ) -> Result<
+        (handles::Descriptor<'d>, Result<(), connect::Error>),
+        Mismatch<Self, connect::Completion<'d>>,
+    > {
         let outcome = match done.resolve(self.flight.target()) {
             Ok(outcome) => outcome,
             Err(done) => return Err(Mismatch { item: self, done }),

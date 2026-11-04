@@ -54,6 +54,60 @@ finish,
 }
 
 #[test]
+fn cancelled_notification_wakes_successor() {
+    let mut reports = Vec::new();
+    Runtime::throughput().with_turn(
+        |turn, driver| {
+            let driver = driver.driver_ref();
+            let targets = driver.targets::<KeyTag<0>>();
+            let first_target = targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch();
+            let second_target = targets
+                .bind(SlotIndex::from(1_u16), Epoch::INITIAL)
+                .dispatch();
+            let first_ready = driver
+                .ready()
+                .make_slot(first_target)
+                .expect("first ready slot");
+            let second_ready = driver
+                .ready()
+                .make_slot(second_target)
+                .expect("second ready slot");
+            queue::Queue::try_with(driver, 2, TWO_LANES, (), |_, queue| {
+                let lane = queue.try_index(1).expect("second lane");
+                let mut first = queue::Registration::new();
+                let mut second = queue::Registration::new();
+                queue
+                    .try_register(lane, &mut first, &wake::Waker::from(first_ready.target()))
+                    .expect("first registration");
+                queue
+                    .try_register(lane, &mut second, &wake::Waker::from(second_ready.target()))
+                    .expect("second registration");
+                assert!(matches!(queue.wake_one(lane), wake::Once::Woke));
+                assert_eq!(
+                    turn.ready_round(|ready| assert!(first_target.matches(ready))),
+                    1
+                );
+                assert!(matches!(queue.cancel(&mut first), wake::Once::Woke));
+                assert_eq!(
+                    turn.ready_round(|ready| assert!(second_target.matches(ready))),
+                    1
+                );
+                assert!(matches!(queue.cancel(&mut first), wake::Once::Empty));
+                assert!(matches!(queue.cancel(&mut second), wake::Once::Empty));
+                assert_eq!(turn.ready_round(|_| panic!("duplicate wake")), 0);
+            })
+            .expect("scoped queue");
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        finish,
+    );
+    assert!(
+        reports.is_empty(),
+        "unexpected reclaimed operations: {reports:?}"
+    );
+}
+
+#[test]
 fn lanes_keep_fifo() {
     let mut reports = Vec::new();
 

@@ -107,7 +107,7 @@ where
                 let tick = self.source.tick();
                 let ready = match scope::Roots::next_root(&mut self.state, &self.slot, tick) {
                     Ok(ready) => ready,
-                    Err(source) => return Attempt::Cancel(root, source.into()),
+                    Err(source) => return Attempt::Cancel(root, source),
                 };
                 let polled = if matches!(cause, boot::Cause::Start) || ready.is_root() {
                     let (polled, output) = ready.poll_boot(root, wake, cause);
@@ -161,7 +161,7 @@ where
             let tick = self.source.tick();
             polled = match self.state.next_root(&self.slot, tick) {
                 Ok(ready) => ready.skip(),
-                Err(error) => break Err(error.into()),
+                Err(error) => break Err(error),
             };
         })
     }

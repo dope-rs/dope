@@ -4,6 +4,13 @@ use crate::{
     io::event::entry::Entry,
 };
 
+/// Exact native stage that rejected one connection establishment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    Option(Errno),
+    Connect(Errno),
+}
+
 /// A connection completion and its affine driver target.
 ///
 /// Safe code cannot mint completion authority.
@@ -12,12 +19,12 @@ use crate::{
 /// Completion authority is consumed exactly once.
 ///
 #[repr(transparent)]
-pub struct Completion<'d>(Entry<'d, kind::Connect, Result<(), Errno>>);
+pub struct Completion<'d>(Entry<'d, kind::Connect, Result<(), Error>>);
 
 impl<'d> Completion<'d> {
     pub(in crate::io) const fn new(
         target: route::Erased<'d, kind::Connect>,
-        outcome: Result<(), Errno>,
+        outcome: Result<(), Error>,
     ) -> Self {
         Self(Entry::new(target, outcome))
     }
@@ -29,7 +36,7 @@ impl<'d> Completion<'d> {
     pub(in crate::io) fn resolve(
         self,
         expected: route::Erased<'d, kind::Connect>,
-    ) -> Result<Result<(), Errno>, Self> {
+    ) -> Result<Result<(), Error>, Self> {
         self.0.resolve(expected).map_err(Self)
     }
 }

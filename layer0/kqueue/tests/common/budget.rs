@@ -4,7 +4,11 @@ pub struct Budget<'a>(quota::Lease<'a, ()>);
 
 impl<'a> Budget<'a> {
     pub fn new(source: &'a quota::Ledger) -> Self {
-        Self(quota::Lease::reserve_all(source))
+        Self::limited(source, usize::MAX)
+    }
+
+    pub fn limited(source: &'a quota::Ledger, limit: usize) -> Self {
+        Self(quota::Lease::reserve_up(source, limit))
     }
 }
 

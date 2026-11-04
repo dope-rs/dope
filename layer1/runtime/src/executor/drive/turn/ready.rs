@@ -10,7 +10,6 @@ use dope_core::{
     io::{Event, event::Kind},
 };
 use drive::turn;
-use poll::fault;
 use turn::{modes, routes, scope::Core};
 
 use crate::executor::{self, boot, drive, root};
@@ -35,7 +34,7 @@ where
 {
     pub(super) fn new(
         core: Core<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
-    ) -> Result<Self, fault::Dispatch> {
+    ) -> Result<Self, drive::Error> {
         let mut ready = Self::observe(core)?;
         ready.activate(None);
         Ok(ready)
@@ -43,7 +42,7 @@ where
 
     fn observe(
         mut core: Core<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
-    ) -> Result<Self, fault::Dispatch> {
+    ) -> Result<Self, drive::Error> {
         let mut status = turn::Status::Active;
         let events = {
             let (lane, work) = core.turn.split();
@@ -78,7 +77,7 @@ where
                             *core.pending = retained;
                             drain
                         }
-                        poll::Dispatch::Fault(fault) => return Err(fault),
+                        poll::Dispatch::Fault(fault) => return Err(fault.into()),
                     }
                 }
             }
@@ -194,7 +193,7 @@ where
     pub(super) fn new_app(
         core: Core<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
         root: &ready::Slot<'d, routes::Wake>,
-    ) -> Result<Self, fault::Dispatch> {
+    ) -> Result<Self, drive::Error> {
         let mut ready = Ready::observe(core)?;
         let mut observed = root.take();
         ready.activate(Some((root, &mut observed)));
@@ -209,7 +208,7 @@ impl<'turn, 'd> RootReady<'turn, 'd, modes::Boot> {
     pub(super) fn new_boot(
         mut core: Core<'turn, 'd, modes::Boot>,
         root: &ready::Slot<'d, routes::Wake>,
-    ) -> Result<Self, fault::Dispatch> {
+    ) -> Result<Self, drive::Error> {
         let mut status = turn::Status::Active;
         let events = {
             let lane = core.turn.reactor();
@@ -227,7 +226,7 @@ impl<'turn, 'd> RootReady<'turn, 'd, modes::Boot> {
                     *core.pending = retained;
                     drain
                 }
-                poll::Dispatch::Fault(fault) => return Err(fault),
+                poll::Dispatch::Fault(fault) => return Err(fault.into()),
             }
         };
         let root = root.take();

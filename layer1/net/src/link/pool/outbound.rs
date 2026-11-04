@@ -118,9 +118,7 @@ where
         B: data::raw::Payload<'d>,
     {
         let egress = self.storage.sender(key)?;
-        if egress.connection.engine.operations.lifecycle.is_closing()
-            || egress.connection.engine.operations.sending.is_inflight()
-        {
+        if egress.connection.engine.operations.lifecycle.is_closing() {
             return None;
         }
         Some(egress)
@@ -305,7 +303,10 @@ where
             setup::Completion::Failed(error) => event::Connect::Failed {
                 key,
                 attempt: peek(entry.get()),
-                cause: event::ConnectError::Connect(error),
+                cause: match error {
+                    connect::Error::Option(errno) => event::ConnectError::Option(errno),
+                    connect::Error::Connect(errno) => event::ConnectError::Connect(errno),
+                },
             },
             setup::Completion::Cancelled => event::Connect::Cancelled { key },
             setup::Completion::Ready => {

@@ -79,6 +79,8 @@ where
         port.retain_error(self.as_ref().get_ref().inner.accept_error());
         if port.accept_error.get().is_some() {
             let _ = port.waiters.wake(work);
+        } else if !port.accepts.is_empty::<0>() {
+            let _ = port.waiters.wake_one(work);
         }
         self
     }

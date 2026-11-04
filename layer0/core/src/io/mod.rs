@@ -104,7 +104,7 @@ pub enum Reclaimed {
     },
     Connect {
         echo: Echo,
-        result: Result<(), Errno>,
+        result: Result<(), event::net::connect::Error>,
     },
     Socket {
         echo: Echo,

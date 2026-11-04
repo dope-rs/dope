@@ -10,7 +10,7 @@ mod error;
 pub mod fault;
 
 pub use cause::Cause;
-pub use dispatch::Dispatch;
+pub use dispatch::{Dispatch, Failure};
 pub use error::Error;
 
 /// Exact reactor operation that failed on a readiness-queue backend.

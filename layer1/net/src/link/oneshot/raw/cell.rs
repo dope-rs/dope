@@ -119,12 +119,12 @@ where
                         }
                         Err(range) => Progress::Failed(Error::SendDeadlineOverflow(range), fd),
                     },
-                    Err(errno) => Progress::Failed(Error::Connect(errno), fd),
+                    Err(error) => Progress::Failed(error.into(), fd),
                 }
             }
             Phase::ConnectingCancelled(pending) => match pending.complete(done) {
                 Ok((fd, Ok(()))) => Progress::Cancelled(fd),
-                Ok((fd, Err(errno))) => Progress::Failed(Error::Connect(errno), fd),
+                Ok((fd, Err(error))) => Progress::Failed(error.into(), fd),
                 Err(cause) => {
                     let (pending, done) = cause.into_parts();
                     self.phase = Phase::ConnectingCancelled(pending);

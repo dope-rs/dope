@@ -12,7 +12,7 @@ use crate::{
     driver::{
         life::native::{self, host::poll::events, resolver::Resolver},
         receive::tokens,
-        result::poll::fault,
+        result::poll::{self, fault},
         retained::flight,
     },
     io,
@@ -20,6 +20,12 @@ use crate::{
 
 type Buffer<'d> = tokens::Token<'d, <Engine as Complete>::Pending>;
 type Rejected<'d> = Stopped<Option<Buffer<'d>>, fault::Fault>;
+
+impl From<native::host::poll::Failure> for poll::Dispatch<'_> {
+    fn from(error: native::host::poll::Failure) -> Self {
+        Self::Fault(poll::Failure::Native(poll::Error::from_backend(error)))
+    }
+}
 
 pub(crate) fn resolve<'d, S>(
     root: &mut Resolver<'_, 'd, S>,

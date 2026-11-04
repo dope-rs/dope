@@ -51,9 +51,9 @@ pub(crate) enum Close<'d, ID: Identity> {
     Connected(Targeted<'d, ID, handles::Descriptor<'d>>),
 }
 
-pub(crate) enum Completion<C> {
+pub(crate) enum Completion<C, E = dope_core::Errno> {
     Ready,
-    Failed(dope_core::Errno),
+    Failed(E),
     Cancelled,
     Stale(C),
 }
@@ -168,7 +168,7 @@ impl<'d, ID: Identity> Setup<'d, ID> {
     pub(crate) fn complete(
         self,
         done: connect::Completion<'d>,
-    ) -> (Self, Completion<connect::Completion<'d>>) {
+    ) -> (Self, Completion<connect::Completion<'d>, connect::Error>) {
         if let Self::Connecting(targeted, intent) = self {
             let (item, stored) = targeted.into_parts();
             let (fd, result) = match item.complete(done) {

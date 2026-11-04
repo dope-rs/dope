@@ -110,7 +110,7 @@ pub(crate) fn sent<'d>(
 
 pub(crate) fn connected<'d>(
     token: route::Erased<'d, kind::Connect>,
-    outcome: Result<(), Errno>,
+    outcome: Result<(), connect::Error>,
 ) -> Event<'d> {
     Event(event::Kind::Connect(connect::Completion::new(
         token, outcome,

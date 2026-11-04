@@ -39,6 +39,7 @@ use dope_fiber::{
     abi::Task,
     context::Context,
     net::server::{Config, Listener, Plan, accept::Error},
+    task::storage::{scope::Scope, set::Set},
     wait,
 };
 use dope_test::{
@@ -51,21 +52,22 @@ use dope_test::{
         },
     },
 };
+use o3::depot::capacity::Count;
 
 pub mod common;
 use common::recover;
 
 use common::{
     network::{
-        accept::{App, Native},
+        accept::{App, CancelFirst, Native},
         reserve::Reservation,
     },
     runtime::{self, Setup},
 };
 
 #[test]
-fn accepts_after_exhaustion() {
-    for no_delay in [None, Some(Switch::On)] {
+fn accepts_after_exhaustion_and_cancellation() {
+    for (no_delay, cancel_first) in [(None, false), (Some(Switch::On), false), (None, true)] {
         let held = Reservation::bind().expect("listener address");
         let addr = held.addr();
         let (wait, start) = wake::Ends::blocking().expect("accept release").split();
@@ -79,7 +81,12 @@ fn accepts_after_exhaustion() {
         let ((), reply) = peer
             .with(|| {
                 let mut report = None;
-                let plan = Plan::<Identity>::new(Capacity::fixed::<1>(), Identity);
+                let capacity = if cancel_first {
+                    Capacity::fixed::<2>()
+                } else {
+                    Capacity::fixed::<1>()
+                };
+                let plan = Plan::<Identity>::new(capacity, Identity);
                 Setup::try_for_plan::<Balanced, _>(&plan)
                     .expect("driver configuration")
                     .with_input(
@@ -87,6 +94,7 @@ fn accepts_after_exhaustion() {
                         |mut sess| {
                             let seen = Cell::new(0);
                             let failure = Cell::new(None);
+                            let accepted = Cell::new(false);
                             let mut finish = Completion::new();
                             let hash = sess.hash_state(Domain::DEFAULT);
                             let plan = sess.storage();
@@ -114,9 +122,38 @@ fn accepts_after_exhaustion() {
                                     let handle = storage.handle();
                                     sess.with_quiesce(
                                         &mut finish,
-                                        App::new(listener, &seen, &failure),
+                                        App::new(
+                                            listener,
+                                            &seen,
+                                            &failure,
+                                            cancel_first.then_some(&accepted),
+                                        ),
                                         scenario::TIMEOUT,
                                         |mut app| {
+                                            if cancel_first {
+                                                let mut tasks = pin!(
+                                                    Set::try_new(Count::new(2))
+                                                        .expect("accept task storage")
+                                                );
+                                                let mut io = Scope::with(tasks.as_mut(), |tasks| {
+                                                    app.drive_for(
+                                                        scenario::TIMEOUT,
+                                                        CancelFirst {
+                                                            tasks,
+                                                            handle,
+                                                            accepted: &accepted,
+                                                            start: Some(start),
+                                                            first: None,
+                                                        },
+                                                    )
+                                                })
+                                                .expect("surviving waiter must wake after cancellation")
+                                                .ok()
+                                                .expect("surviving waiter must accept the connection");
+                                                return app.block_on(dope_fiber::fiber!('_ => async move {
+                                                    assert!(io.write_all(b"x").await.is_ok(), "surviving reply");
+                                                }));
+                                            }
                                             app.block_on(dope_fiber::fiber!('_ => async move {
                                     start.notify().expect("release peer");
                                     let mut io = handle.accept().await.ok().expect("accept");
@@ -237,7 +274,7 @@ fn completion_failure() {
                         let handle = storage.handle();
                         sess.with_quiesce(
                             &mut finish,
-                            App::new(listener, &seen, &failure),
+                            App::new(listener, &seen, &failure, None),
                             scenario::TIMEOUT,
                             |mut app| {
                                 let timeout = fibers::Harness::new(scenario::TIMEOUT);

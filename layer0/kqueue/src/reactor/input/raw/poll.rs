@@ -69,10 +69,10 @@ where
             fail(self.call.key(), self.call.family(), errno, vacant);
             return;
         }
-        unsafe { self.resume(vacant) };
+        let _ = unsafe { self.resume(vacant) };
     }
 
-    unsafe fn resume(self, vacant: impl Vacancy<Event = E>) {
+    unsafe fn resume(self, vacant: impl Vacancy<Event = E>) -> ControlFlow<()> {
         let Self {
             mut arm,
             pool,
@@ -85,7 +85,7 @@ where
             |cause| P::Failure::missing(op, cause),
         ) {
             ControlFlow::Continue(outcome) => outcome,
-            ControlFlow::Break(()) => return,
+            ControlFlow::Break(()) => return ControlFlow::Break(()),
         };
         match outcome {
             Outcome::Rearm => match arm.enable(call.file(), call.key()) {
@@ -94,7 +94,12 @@ where
                 Enabled::Failed => {}
             },
             Outcome::Yield => arm.reads.queue_resume(id),
+            Outcome::Blocked => {
+                arm.reads.queue_resume(id);
+                return ControlFlow::Break(());
+            }
             Outcome::Terminal => arm.finish(id),
         }
+        ControlFlow::Continue(())
     }
 }

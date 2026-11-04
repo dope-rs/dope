@@ -28,7 +28,7 @@ use crate::{
     io::{
         event::{
             batch::Flow,
-            net::{accept, recv::Completion},
+            net::{accept, connect, recv::Completion},
         },
         fd::{
             domain,
@@ -80,7 +80,7 @@ impl<N: Prepare> From<entry::Retired<Context<N>>> for native::Report {
             },
             entry::Retired::Connect { key, result } => io::Reclaimed::Connect {
                 echo: fault::Echo::new(key),
-                result,
+                result: result.map_err(connect::Error::Connect),
             },
             entry::Retired::Create {
                 key,
@@ -215,7 +215,7 @@ where
 
     fn connected(bound: Self::Connect, result: Result<(), Errno>) -> Self::Output {
         let token = bound.complete();
-        outputs::connected(token, result)
+        outputs::connected(token, result.map_err(connect::Error::Connect))
     }
 
     fn opened(bound: Self::Open, result: Result<fd::OwnedFd, Errno>) -> Self::Output {

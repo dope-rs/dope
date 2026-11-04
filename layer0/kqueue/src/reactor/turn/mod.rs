@@ -1,20 +1,22 @@
 use std::{ops, task, time};
 
 use dope_sys::{
-    engine,
+    Budget as _, engine,
     io::reactor::ready::{self, Backend as _, delivery, store::Quota},
 };
 pub(in crate::reactor) use lanes::{Change, Completion, Resume};
 use o3::mem::quota::Admission;
 
-use crate::{Kqueue, reactor::Engine};
+use crate::{
+    Kqueue,
+    reactor::{CAPACITY, Engine},
+};
 
 mod lanes;
 
 #[derive(Debug)]
 pub struct Work<Q> {
     quota: Q,
-    floor: usize,
 }
 
 impl<Q: Quota> Work<Q> {
@@ -22,30 +24,23 @@ impl<Q: Quota> Work<Q> {
         &self,
         backend: &'a mut Engine<C>,
         span: Option<time::Duration>,
-    ) -> Result<(), <Engine<C> as ready::Backend<C>>::Failure>
+        changes: usize,
+        done: usize,
+    ) -> Result<bool, <Engine<C> as ready::Backend<C>>::Failure>
     where
         C: ready::Driver<Context: ready::raw::Decode + 'a>,
     {
-        let cap = backend
-            .change_len()
-            .min(self.quota.remaining().saturating_sub(self.floor));
-        {
-            let mut edits = self.quota.budget::<Change>(cap);
-            let cap = self.quota.remaining().min(backend.available());
-            let mut done = self.quota.budget::<Completion>(cap);
-            unsafe { ready::raw::Poll::wait(backend, span, &mut edits, &mut done) }?;
-        }
-        unsafe { self.resume(backend, self.quota.remaining()) };
-        Ok(())
-    }
-
-    unsafe fn resume<'a, C>(&self, backend: &'a mut Engine<C>, limit: usize)
-    where
-        C: ready::Driver<Context: ready::raw::Decode + 'a>,
-    {
-        let limit = limit.min(backend.available());
-        let mut budget = self.quota.budget::<Resume>(limit);
-        unsafe { ready::raw::Poll::resume(backend, &mut budget) };
+        let mut edits = self
+            .quota
+            .budget::<Change>(changes.min(backend.change_len()));
+        let cap = done
+            .min(self.quota.remaining())
+            .min(backend.available())
+            .min(CAPACITY);
+        let mut done = self.quota.budget::<Completion>(cap);
+        unsafe { ready::raw::Poll::wait(backend, span, &mut edits, &mut done) }?;
+        // A zero cap leaves readiness unobserved; a full batch may retain more.
+        Ok(cap == 0 || done.remaining() == 0)
     }
 }
 

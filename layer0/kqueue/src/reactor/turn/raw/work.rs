@@ -1,6 +1,6 @@
-use dope_sys::io::reactor::ready::{Backend as _, Source as _};
+use dope_sys::io::reactor::ready::Backend as _;
 
-use crate::reactor::turn::{Engine, Kqueue, Quota, Work, ready, task, time};
+use crate::reactor::turn::{Engine, Quota, Work, ready, task, time};
 
 impl<C, Q> ready::raw::Work<C, Q> for Work<Q>
 where
@@ -9,16 +9,11 @@ where
 {
     type Backend = Engine<C>;
 
-    unsafe fn new<'a>(backend: &'a mut Self::Backend, quota: Q) -> Self
+    unsafe fn new<'a>(_: &'a mut Self::Backend, quota: Q) -> Self
     where
         C::Context: 'a,
     {
-        let cursor = backend.cursor();
-        let share = quota.share::<{ Kqueue::LANES.get() as usize }, 0>(cursor);
-        let floor = quota.share::<{ Kqueue::LANES.get() as usize }, 2>(cursor);
-        let work = Self { quota, floor };
-        unsafe { work.resume(backend, share) };
-        work
+        Self { quota }
     }
 
     unsafe fn commit<'a>(
@@ -29,8 +24,15 @@ where
     where
         C::Context: 'a,
     {
-        if dirty {
-            unsafe { self.poll(backend, Some(time::Duration::ZERO)) }?;
+        if dirty && self.quota.remaining() != 0 {
+            unsafe {
+                self.poll(
+                    backend,
+                    Some(time::Duration::ZERO),
+                    self.quota.remaining(),
+                    0,
+                )
+            }?;
         }
         backend.check()?;
         Ok(if backend.has_changes() {
@@ -49,13 +51,35 @@ where
     where
         C::Context: 'a,
     {
-        let poll =
-            backend.has_pending() || busy || (self.quota.remaining() == 0 && backend.can_resume());
+        let remaining = self.quota.remaining();
+        if remaining == 0 {
+            return backend.check();
+        }
+        let cursor = backend.cursor();
+        let poll = backend.has_pending() || busy || backend.can_resume();
         let span = if poll {
             Some(time::Duration::ZERO)
         } else {
             span
         };
-        unsafe { self.poll(backend, span) }
+        if cursor == 2 {
+            let span = if backend.has_changes() {
+                Some(time::Duration::ZERO)
+            } else {
+                span
+            };
+            unsafe { self.poll(backend, span, 0, remaining) }?;
+            unsafe {
+                self.poll(
+                    backend,
+                    Some(time::Duration::ZERO),
+                    self.quota.remaining(),
+                    0,
+                )
+            }?;
+        } else {
+            unsafe { self.poll(backend, span, remaining, remaining) }?;
+        }
+        Ok(())
     }
 }

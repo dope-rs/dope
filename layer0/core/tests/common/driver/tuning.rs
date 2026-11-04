@@ -3,10 +3,7 @@ use std::{ops::ControlFlow, task, time::Duration};
 use dope_core::{
     driver,
     driver::{
-        result::{
-            poll,
-            poll::{Dispatch, fault},
-        },
+        result::{poll, poll::Dispatch},
         schedule::state::scope,
     },
     io::event::{
@@ -19,7 +16,7 @@ use crate::common::driver::polling::{Deadline, Error, Source};
 
 pub enum Failure<'d> {
     Wait(poll::Error),
-    Dispatch(fault::Dispatch),
+    Dispatch(poll::Failure),
     Event(Kind<'d>),
 }
 

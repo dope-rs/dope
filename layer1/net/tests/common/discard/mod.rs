@@ -8,7 +8,7 @@ use std::{
 use dope_core::{
     driver::{
         life::{self, recovery},
-        result::{self, poll, poll::fault},
+        result::{self, poll},
         retained::{self, flight},
         route::{Epoch, KeyTag, indices::SlotIndex, kind, lease, table::conn},
         settings::Config,
@@ -60,7 +60,7 @@ pub enum Error {
     Rejected(SendFailure<result::SubmitError>),
     Invalid(transmit::Invalid),
     Peer(peer::Error),
-    Dispatch(fault::Dispatch),
+    Dispatch(poll::Failure),
     Wait(poll::Error),
     Deadline {
         duration: Duration,

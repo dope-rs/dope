@@ -130,6 +130,7 @@ impl<'a, C, H> engine::Dispatch<'a, C, H> for Kqueue
 where
     C: ready::Driver<Context: ready::raw::Decode + 'a>
         + delivery::Context<H, Backend = reactor::Engine<C>>,
+    C::Dispatch: From<<reactor::Engine<C> as ready::Backend<C>>::Failure>,
     H: 'a,
 {
     type Turn<Q: delivery::Quota<H>> = reactor::Dispatch<'a, H, Q>;
@@ -310,7 +311,7 @@ impl socket::Prepare for Kqueue {
 }
 
 impl ready::Source for Kqueue {
-    const LANES: num::NonZero<u8> = num::NonZero::<u8>::MIN.saturating_add(2);
+    const LANES: num::NonZero<u8> = num::NonZero::<u8>::MIN.saturating_add(3);
 
     type Work<C, Q>
         = reactor::Work<Q>

@@ -23,10 +23,7 @@ use dope_core::{
     driver::{
         Context, life,
         life::domain,
-        result::{
-            poll,
-            poll::{Drain, fault},
-        },
+        result::{poll, poll::Drain},
         route,
         route::{Epoch, Operation, Tag, Target, indices::SlotIndex, kind, kind::Class},
         schedule::state::scope,
@@ -388,7 +385,7 @@ fn dispatch_all<'d>(
     driver: &mut driver::Context<'_, 'd>,
     work: scope::Reactor<'_, 'd>,
     mut dispatch: impl FnMut(Event<'d>),
-) -> Result<poll::Drain, fault::Dispatch> {
+) -> Result<poll::Drain, poll::Failure> {
     let out = driver::Context::dispatch(driver, work, |event, _source| {
         let event = event;
         dispatch(event);

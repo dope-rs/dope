@@ -1,7 +1,7 @@
 use std::task::Poll;
 
 use dope_core::{
-    driver::{result::poll::fault, route::Identity},
+    driver::route::Identity,
     io::{Event, socket::install::Install},
 };
 use o3::alloc;
@@ -37,7 +37,7 @@ pub enum Failure<'d> {
 pub enum Cause<'a> {
     Bind(&'a install::Error),
     Wait(&'a poll::Error),
-    Dispatch(&'a fault::Dispatch),
+    Dispatch(&'a poll::Failure),
     Retained {
         drain: poll::Drain,
         route: Option<route::Route>,

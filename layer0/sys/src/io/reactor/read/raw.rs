@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use libc::socklen_t;
 
 use crate::{
@@ -52,7 +54,9 @@ pub trait Poll<'a, C: Context, L: memory::raw::Layout, E: Complete<Key = C::Key,
         vacant: impl complete::Vacancy<Event = E>,
     );
 
+    /// A blocked receive remains queued and ends the current resume pass.
+    ///
     /// # Safety
     /// The registered read retains its submitted storage and admitted datagram layout.
-    unsafe fn resume(self, vacant: impl complete::Vacancy<Event = E>);
+    unsafe fn resume(self, vacant: impl complete::Vacancy<Event = E>) -> ControlFlow<()>;
 }

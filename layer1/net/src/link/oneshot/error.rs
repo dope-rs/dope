@@ -3,7 +3,7 @@ use std::time;
 use dope_core::{
     Errno,
     driver::{result, retained::flight::cancel, schedule::clock},
-    io::{socket, transfer},
+    io::{event::net::connect, socket, transfer},
 };
 use o3::base::time::Positive;
 
@@ -43,6 +43,15 @@ impl From<Cancellation> for Error {
             Cancellation::Cancelled => Self::Cancelled,
             Cancellation::ConnectTimeout { late_by } => Self::ConnectTimeout { late_by },
             Cancellation::SendTimeout { late_by } => Self::SendTimeout { late_by },
+        }
+    }
+}
+
+impl From<connect::Error> for Error {
+    fn from(error: connect::Error) -> Self {
+        match error {
+            connect::Error::Option(errno) => Self::Option(errno),
+            connect::Error::Connect(errno) => Self::Connect(errno),
         }
     }
 }

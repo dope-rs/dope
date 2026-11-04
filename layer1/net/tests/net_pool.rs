@@ -171,6 +171,121 @@ fn retries_creation_cancel() {
 }
 
 #[test]
+fn oneshot_option_failure() {
+    use std::time::Duration;
+
+    use dope_core::{
+        Errno,
+        driver::{
+            retained,
+            route::indices::{Edge, SlotIndex},
+        },
+        io::{event::Kind, socket},
+    };
+    use dope_net::link::oneshot::{self, Busy, Dispatch, Progress, Unsent};
+    use o3::base::time::Positive;
+
+    let interval = option::Period::try_from(Duration::from_secs(i32::MAX as u64))
+        .expect("ABI-representable period");
+    let options = option::Set::new(None, None, None, None, None, Some(interval), None);
+    let config = settings::Config::default()
+        .with_queues(settings::QueueLayout::fixed::<64, 128>())
+        .with_files(settings::FileSlots::fixed::<0, 2>());
+    let mut reports = Vec::new();
+    let mut observed = None;
+    Driver::new(config).with_scope(
+        |scope| {
+            let (_held, mut pool) = {
+                let mut driver = scope.context();
+                let cap = settings::FileSlots::fixed::<0, 1>().outbound();
+                let held = Reserved::<Route>::try_new(
+                    &driver,
+                    settings::FileSlots::fixed::<0, 2>().outbound(),
+                )
+                .expect("oneshot descriptor reservation");
+                let mut pool = oneshot::Pool::<Route, (), socket::Inet, Shared>::prepare(
+                    Edge::from(conn::Capacity::fixed::<1>()),
+                    cap,
+                    &mut driver,
+                )
+                .expect("oneshot storage");
+                let window = Positive::from_secs::<5>();
+                let until = driver.driver_ref().clock().now().clamp_add(window);
+                let request = oneshot::Request::new(
+                    socket::Inet::from_std(([127, 0, 0, 1], 0).into()),
+                    options,
+                    (),
+                    Shared::try_copy(b"option").expect("payload"),
+                    until,
+                    window,
+                );
+                match pool.try_send(&held, SlotIndex::ZERO, request, &mut driver) {
+                    Dispatch::Sent => {}
+                    Dispatch::Unsent(Unsent::Busy {
+                        cause: Busy::Slot, ..
+                    }) => {
+                        panic!("oneshot slot busy");
+                    }
+                    Dispatch::Unsent(Unsent::Busy {
+                        cause: Busy::Descriptor,
+                        ..
+                    }) => {
+                        panic!("oneshot descriptor busy");
+                    }
+                    Dispatch::Unsent(Unsent::Busy {
+                        cause: Busy::Submit(cause),
+                        ..
+                    }) => {
+                        panic!("oneshot submission busy: {cause:?}");
+                    }
+                    Dispatch::Unsent(Unsent::Rejected { cause, .. }) => {
+                        panic!("oneshot submission rejected: {cause:?}");
+                    }
+                    Dispatch::Unsent(Unsent::Outside { cause, .. }) => {
+                        panic!("oneshot route outside: {cause:?}");
+                    }
+                    Dispatch::Unsent(Unsent::Exhausted(..)) => {
+                        panic!("oneshot identity exhausted");
+                    }
+                }
+                (held, pool)
+            };
+            for _ in 0..2 {
+                let event = common::discard::next(scope).expect("socket establishment");
+                let progress = {
+                    let driver = scope.context();
+                    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
+                    let mut driver = retained::Context::new(driver, owner);
+                    // SAFETY: the original pool remains installed through completion
+                    // and the explicit quiescence below, retaining address and payload.
+                    let mut io = unsafe { oneshot::raw::Io::new(&mut pool, &mut driver) };
+                    match event.into_kind() {
+                        Kind::Socket(done) => io.socket(done),
+                        Kind::Connect(done) => io.connect(done).ok().expect("connect owner"),
+                        _ => panic!("unexpected establishment event"),
+                    }
+                };
+                if let Progress::Complete { result, .. } = progress {
+                    observed = Some(result);
+                    break;
+                }
+            }
+            scope.finish(true, |_, finish| pool.finish(finish, |_| {}));
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        finish,
+    );
+    assert!(reports.is_empty(), "unexpected reclamation: {reports:?}");
+    match observed.expect("terminal option rejection") {
+        Err(oneshot::Error::Option(errno)) => assert_eq!(errno, Errno::INVALID_ARGUMENT),
+        Err(oneshot::Error::Connect(errno)) => {
+            panic!("option rejection classified as connect: {errno:?}");
+        }
+        _ => panic!("missing option rejection"),
+    }
+}
+
+#[test]
 fn mode_resources() {
     use std::mem::size_of;
 

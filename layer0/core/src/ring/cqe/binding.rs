@@ -27,7 +27,7 @@ use crate::{
         event::{
             Kind,
             batch::Flow,
-            net::{accept, recv::Completion},
+            net::{accept, connect, recv::Completion},
         },
         fd::{domain, handles},
         outputs, recv,
@@ -122,7 +122,7 @@ where
                 let (this, value) = self.plain()?.check(Envelope::unit)?;
                 Ok(outputs::connected(
                     this.flight.complete().bind(proof),
-                    value,
+                    value.map_err(connect::Error::Connect),
                 ))
             }
             Shape::Sync(proof) => {
@@ -162,7 +162,7 @@ where
                 let (this, result) = self.plain()?.check(Envelope::unit)?;
                 let report = io::Reclaimed::Connect {
                     echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
-                    result,
+                    result: result.map_err(connect::Error::Connect),
                 };
                 (this.packet, report)
             }

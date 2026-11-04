@@ -4,7 +4,10 @@ use common::contract::reclaim::Canceled;
 use dope_core::{
     driver,
     driver::life::recovery,
-    io::{fd::handles::Descriptor, socket::install::Install},
+    io::{
+        fd::handles::Descriptor,
+        socket::{Listener, install::Install},
+    },
 };
 use dope_test::scope::Error;
 
@@ -16,7 +19,7 @@ pub mod common;
 static ALLOCATOR: Tracker = Tracker::new();
 
 use std::{
-    net::{SocketAddr, UdpSocket},
+    net::{SocketAddr, TcpStream, UdpSocket},
     num,
     ops::ControlFlow,
     time::Duration,
@@ -25,12 +28,18 @@ use std::{
 use dope_core::{
     driver::{
         result::poll::{Dispatch, Drain},
+        retained::flight,
         route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind},
         schedule::state::scope,
+        settings,
         storage::Resident,
     },
     io::{
-        event::{Kind, batch::Flow, net::recv::Outcome},
+        event::{
+            Kind,
+            batch::Flow,
+            net::{accept, recv::Outcome},
+        },
         recv::Lease,
     },
 };
@@ -315,6 +324,106 @@ fn account_recycles_owner() {
         finish,
     );
     reclaimed(&reports);
+}
+
+#[test]
+fn retained_receive_buffers_allow_accept() {
+    let runtime = Runtime::quic::<2, 8>().file_slots(settings::FileSlots::fixed::<1, 2>());
+    let mut reports =
+        Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    runtime.with_scope(
+        |scope| {
+            scope.with_driver(|mut driver, mut schedule| {
+                let (socket, address) =
+                    Install::bind_udp(driver.reborrow(), common::LOCALHOST, common::DATAGRAM)
+                        .expect("bind datagram");
+                let target = driver
+                    .driver_ref()
+                    .targets::<KeyTag<1>>()
+                    .bind(SlotIndex::ZERO, Epoch::INITIAL);
+                driver.submit_recv(&socket, target).expect("receive");
+                let peer = UdpSocket::bind(common::LOCALHOST).expect("datagram peer");
+                let held = [
+                    receive_payload(&mut schedule, &mut driver, &peer, address, b"first")
+                        .expect("first buffer"),
+                    receive_payload(&mut schedule, &mut driver, &peer, address, b"second")
+                        .expect("second buffer"),
+                ];
+
+                let listener = Listener::bind(common::LOCALHOST).expect("listener");
+                let (listener, address) =
+                    Install::adopt_bound(driver.reborrow(), listener).expect("install listener");
+                let target = driver
+                    .driver_ref()
+                    .targets::<KeyTag<2, kind::Accept>>()
+                    .bind(SlotIndex::ZERO, Epoch::INITIAL);
+                let flights = driver
+                    .storage
+                    .reborrow()
+                    .try_flights(flight::Need::<KeyTag<2, kind::Accept>>::new(
+                        flight::Capacity::fixed::<1>(),
+                    ))
+                    .expect("accept storage")
+                    .slots();
+                let accept = flights
+                    .accept(
+                        driver.reborrow(),
+                        &listener,
+                        target.operation::<kind::Accept>(),
+                    )
+                    .expect("accept");
+                let peer = TcpStream::connect(address).expect("connect peer");
+                let mut accepted = None;
+                for _ in 0..16 {
+                    let mut turn = schedule.begin();
+                    let result = driver.dispatch(turn.reactor(), |event, _| {
+                        match event.into_kind() {
+                            Kind::Accept(done) => match done.into_parts().2 {
+                                accept::Outcome::Accepted(slot) => {
+                                    accepted = Some(slot.bind());
+                                }
+                                accept::Outcome::Failed(error) => panic!("accept: {error:?}"),
+                            },
+                            Kind::Recv(done) => {
+                                let (_, flow, outcome) = done.into_parts();
+                                assert!(matches!(outcome, Outcome::Exhausted(_)));
+                                assert_eq!(flow, Flow::Last);
+                            }
+                            event => {
+                                panic!("unexpected event: {:?}", std::mem::discriminant(&event))
+                            }
+                        }
+                        ControlFlow::Continue(())
+                    });
+                    assert!(matches!(result, Dispatch::Ready { retained: None, .. }));
+                    if accepted.is_some() {
+                        break;
+                    }
+                    driver
+                        .wait(turn.reactor(), Some(Duration::from_millis(50)))
+                        .expect("accept progress");
+                }
+                accepted
+                    .expect("accept with held receive buffers")
+                    .close(&mut driver);
+                drop(held);
+                drop(accept);
+                listener.close(&mut driver);
+                Descriptor::from(socket).close(&mut driver);
+                drop(peer);
+            });
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        finish,
+    );
+    for event in reports.events().expect("valid reclamation") {
+        assert!(matches!(event,
+            dope_core::io::Reclaimed::Recv { result: Err(error), flow: Flow::Last, .. }
+            | dope_core::io::Reclaimed::Accept {
+                result: Err(accept::Failure::Syscall(error)), flow: Flow::Last, ..
+            } if *error == dope_core::Errno::CANCELED
+        ));
+    }
 }
 
 #[test]

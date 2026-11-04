@@ -1,4 +1,4 @@
-use std::{task, time};
+use std::{ops::ControlFlow, task, time};
 
 use crate::{
     Budget,
@@ -17,9 +17,14 @@ pub trait Decode: Exec {
 }
 
 pub trait Poll<C: Driver>: Backend<C> {
+    /// A blocked receive consumes its admission and ends this pass without being removed.
+    ///
     /// # Safety
     /// Registered operations retain their submitted storage and admitted layouts.
-    unsafe fn resume<'a>(&'a mut self, budget: &mut impl Budget)
+    unsafe fn resume<'a>(
+        &'a mut self,
+        budget: &mut impl Budget,
+    ) -> Result<ControlFlow<()>, Self::Failure>
     where
         C::Context: 'a;
 

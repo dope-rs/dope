@@ -71,7 +71,9 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w, ID: Identity> ListenerPort<'w, 'd, W, ID> {
     }
 
     fn progress(&self) -> schedule::Progress<'d> {
-        if self.accept_error.get().is_some() && self.waiters.len() != wait::Length::ZERO {
+        if self.waiters.len() != wait::Length::ZERO
+            && (self.accept_error.get().is_some() || !self.accepts.is_empty::<0>())
+        {
             return schedule::Progress::Runnable;
         }
         self.connections.progress()

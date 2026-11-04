@@ -217,6 +217,10 @@ impl<E: Copy, const N: usize> tuning::Occupied<E> for Occupied<'_, E, N> {
         self.target
     }
 
+    fn option_failed(&self) -> bool {
+        self.state.status.error.is_some()
+    }
+
     /// Only the aggregated option terminal or the later CONNECT terminal reaches
     /// the host. Every option CQE is counted even when submission splits links.
     fn clear(self) {

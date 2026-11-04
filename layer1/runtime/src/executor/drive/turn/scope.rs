@@ -3,9 +3,7 @@ use std::{mem, time};
 use dope_core::{
     driver,
     driver::{
-        life,
-        result::poll::fault,
-        schedule,
+        life, schedule,
         schedule::{clock, ready, state},
     },
     io::Event,
@@ -60,7 +58,7 @@ pub(crate) trait Roots<'d> {
         &'turn mut self,
         root: &ready::Slot<'d, routes::Wake>,
         tick: clock::Sample,
-    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, fault::Dispatch>;
+    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, drive::Error>;
 }
 
 impl<'run, 'driver, 'app, 'd: 'app, D, S> Scope<'run, 'driver, 'app, 'd, D, S>
@@ -86,7 +84,7 @@ where
     pub(crate) fn next_app(
         &mut self,
         tick: clock::Sample,
-    ) -> Result<Ready<'_, 'd, modes::App<'_, 'app, 'd, D, S>>, fault::Dispatch> {
+    ) -> Result<Ready<'_, 'd, modes::App<'_, 'app, 'd, D, S>>, drive::Error> {
         Ready::new(self.begin(tick))
     }
 
@@ -121,7 +119,7 @@ where
         &'turn mut self,
         root: &ready::Slot<'d, routes::Wake>,
         tick: clock::Sample,
-    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, fault::Dispatch> {
+    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, drive::Error> {
         RootReady::new_app(self.begin(tick), root)
     }
 }
@@ -169,7 +167,7 @@ impl<'d> Roots<'d> for Boot<'_, '_, 'd> {
         &'turn mut self,
         root: &ready::Slot<'d, routes::Wake>,
         tick: clock::Sample,
-    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, fault::Dispatch> {
+    ) -> Result<RootReady<'turn, 'd, Self::Mode<'turn>>, drive::Error> {
         RootReady::new_boot(self.begin(tick), root)
     }
 }

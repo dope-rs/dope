@@ -4,6 +4,7 @@ use std::{
     net::{SocketAddr, TcpListener},
     ops::ControlFlow,
     pin::Pin,
+    task::Poll,
 };
 
 use dope::{
@@ -15,10 +16,21 @@ use dope::{
             fd::handles,
             socket::{self, install::Install, option::Set},
         },
+        platform::wake,
     },
     manifold::app::dispatch::{self, event},
-    net::{self, tcp::Tcp},
-    runtime::executor,
+    net::{self, tcp::Tcp, wire::Identity},
+    runtime::executor::{self, root},
+};
+use dope_fiber::{
+    abi,
+    context::wake::RootWaker,
+    net::server::{self, accept::Accept},
+    task::storage::{
+        phase,
+        scope::{Scope, Scoped},
+        set::{self, Access as _},
+    },
 };
 
 pub struct Native;
@@ -72,12 +84,18 @@ impl<'a, 'd, L> App<'a, 'd, L>
 where
     L: dispatch::raw::Manifold<'d> + event::Turn<'d, Access = dispatch::raw::Retained>,
 {
-    pub fn new(inner: L, seen: &'a Cell<u8>, failure: &'a Cell<Option<Error>>) -> Self {
+    pub fn new(
+        inner: L,
+        seen: &'a Cell<u8>,
+        failure: &'a Cell<Option<Error>>,
+        accepted: Option<&'a Cell<bool>>,
+    ) -> Self {
         Self {
             listener: Exhaust {
                 inner,
                 seen,
                 failure,
+                accepted,
             },
             domain: PhantomData,
         }
@@ -96,6 +114,7 @@ pub struct Exhaust<'a, L> {
     inner: L,
     seen: &'a Cell<u8>,
     failure: &'a Cell<Option<Error>>,
+    accepted: Option<&'a Cell<bool>>,
 }
 
 impl<'d, L: dispatch::raw::Manifold<'d>> dispatch::raw::Projection<'d> for Exhaust<'_, L> {
@@ -199,6 +218,68 @@ where
                 Error::Tuning
             }));
         }
+        if bit == 1
+            && !blocked
+            && matches!(&result, ControlFlow::Continue(()))
+            && let Some(accepted) = this.accepted
+        {
+            accepted.set(true);
+        }
         result
+    }
+}
+
+pub struct CancelFirst<'s, 'a, 'w, 'd: 'w> {
+    pub tasks: Scope<'s, Pin<&'s mut set::Set<'d, Accept<'a, 'w, 'd, Identity>, bool, ()>>>,
+    pub handle: server::Handle<'a, 'w, 'd, Identity>,
+    pub accepted: &'a Cell<bool>,
+    pub start: Option<wake::Notify>,
+    pub first: Option<Scoped<'s, 'd, ()>>,
+}
+
+impl<'a, 'w, 'd: 'w> root::Root<'d> for CancelFirst<'_, 'a, 'w, 'd> {
+    type Output = <Accept<'a, 'w, 'd, Identity> as abi::Fiber<'d>>::Output;
+
+    fn poll(context: root::Context<'_, 'd, Self>) -> Poll<Self::Output> {
+        let (this, target, work, mut driver) = context.into_parts();
+        let this = this.get_mut();
+        if this.accepted.get()
+            && let Some(first) = this.first.take()
+        {
+            assert!(this.tasks.remove(first).is_ok(), "cancel woken accept");
+        }
+        if let Some(start) = this.start.take() {
+            let parent = RootWaker::from(target);
+            let first = this
+                .tasks
+                .try_insert(this.handle.accept(), false, parent)
+                .expect("first accept task");
+            let second = this
+                .tasks
+                .try_insert(this.handle.accept(), true, parent)
+                .expect("second accept task");
+            this.tasks.poll_ready(work, &mut driver);
+            for id in [&first, &second] {
+                assert!(
+                    this.tasks
+                        .inspect(id, |_, state| state == phase::State::Running)
+                        == Some(true),
+                    "both accepts must be pending before connecting"
+                );
+            }
+            this.first = Some(first);
+            start
+                .notify()
+                .expect("release peer after waiter registration");
+        } else {
+            this.tasks.poll_ready(work, &mut driver);
+        }
+        match this.tasks.take_done() {
+            Some((second, result)) => {
+                assert!(second, "only the surviving accept may complete");
+                Poll::Ready(result)
+            }
+            None => Poll::Pending,
+        }
     }
 }
