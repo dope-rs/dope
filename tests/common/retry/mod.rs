@@ -6,7 +6,7 @@ use dope::{
         driver::{
             life::{self, recovery},
             receive::credit::error::Arm,
-            result::{self, poll, poll::fault},
+            result::{self, poll},
             retained::{self, flight},
             route::{Epoch, KeyTag, indices::SlotIndex, kind, lease, table::conn},
             settings,
@@ -87,7 +87,7 @@ pub enum Error {
     Invalid(transmit::Invalid),
     Accept(accept::Failure),
     Tuning(Cause),
-    Dispatch(fault::Dispatch),
+    Dispatch(poll::Failure),
     Commit(poll::Error),
     Wait(poll::Error),
     Spawn(peer::Spawn),
