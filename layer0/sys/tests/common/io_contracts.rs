@@ -1,4 +1,4 @@
-pub const CASES: [(&str, Option<&str>); 10] = [
+pub const CASES: [(&str, Option<&str>); 17] = [
     (
         r#"fn sequential<S: dope_sys::io::file::raw::Directory>(entries: &mut dope_sys::io::file::Entries<'_, S>) {
     let first = entries.try_next::<dope_sys::Errno>()
@@ -110,5 +110,49 @@ fn release<R: buffer::raw::Release<T>, T>() {
 }
 "#,
         Some("error[E0133]:"),
+    ),
+    (
+        r#"use dope_sys::io::socket::route::{Plan, count::Count, selector::{Bootstrap, Selector}};
+pub const PLAN: Plan = Plan::new(Count::MIN, Selector::fixed::<0, 128, 1, 10, 5, 9, 6, 16>())
+    .with_bootstrap(Bootstrap::fixed::<1, 1, 224, 192, 8, 20>());
+pub const EDGE: Bootstrap = Bootstrap::fixed::<255, {u32::MAX}, 255, 255, 1, 20>();
+"#,
+        None,
+    ),
+    (
+        r#"pub fn rejected() {
+    let _ = dope_sys::io::socket::route::selector::Bootstrap::fixed::<1, 0, 224, 192, 8, 20>();
+}"#,
+        Some("error[E0080]:"),
+    ),
+    (
+        r#"pub fn rejected() {
+    let _ = dope_sys::io::socket::route::selector::Bootstrap::fixed::<1, 1, 0, 0, 8, 20>();
+}"#,
+        Some("error[E0080]:"),
+    ),
+    (
+        r#"pub fn rejected() {
+    let _ = dope_sys::io::socket::route::selector::Bootstrap::fixed::<1, 1, 224, 193, 8, 20>();
+}"#,
+        Some("error[E0080]:"),
+    ),
+    (
+        r#"pub fn rejected() {
+    let _ = dope_sys::io::socket::route::selector::Bootstrap::fixed::<1, 1, 224, 192, 0, 20>();
+}"#,
+        Some("error[E0080]:"),
+    ),
+    (
+        r#"pub fn rejected() {
+    let _ = dope_sys::io::socket::route::selector::Bootstrap::fixed::<1, 1, 224, 192, 9, 8>();
+}"#,
+        Some("error[E0080]:"),
+    ),
+    (
+        r#"pub fn rejected() {
+    let _ = dope_sys::io::socket::route::selector::Bootstrap::fixed::<1, 1, 224, 192, 8, 21>();
+}"#,
+        Some("error[E0080]:"),
     ),
 ];

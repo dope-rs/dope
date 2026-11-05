@@ -10,9 +10,19 @@ const STX_W_MEM: u8 = 0x63;
 const ALU64_ADD_K: u8 = 0x07;
 const ALU64_MOV_X: u8 = 0xbf;
 const ALU64_MOV_K: u8 = 0xb7;
+const ALU32_MUL_K: u8 = 0x24;
+const ALU32_OR_X: u8 = 0x4c;
+const ALU32_AND_K: u8 = 0x54;
+const ALU32_LSH_K: u8 = 0x64;
+const ALU32_MOD_K: u8 = 0x94;
+const ALU32_XOR_X: u8 = 0xac;
+const ALU32_XOR_K: u8 = 0xa4;
 const JMP_JGT_X: u8 = 0x2d;
+const JMP_JGT_K: u8 = 0x25;
 const JMP_JGE_K: u8 = 0x35;
+const JMP_JLT_K: u8 = 0xa5;
 const JMP_JEQ_K: u8 = 0x15;
+const JMP32_JEQ_K: u8 = 0x16;
 const JMP_JNE_K: u8 = 0x55;
 const JMP_JSET_K: u8 = 0x45;
 const JMP_JA: u8 = 0x05;
@@ -37,7 +47,13 @@ const MAP_HANDLE: usize = 17;
 /// Additional instructions before the shared selector body in a prefixed plan.
 const PREFIX_LEN: usize = 14;
 const PREFIX_BODY: usize = PREFIX_LEN + 2;
-const PREFIX_DROP: usize = PREFIX_LEN + DROP;
+
+const HASH: usize = 62;
+const HASH_STEP: usize = 7;
+const FNV_BASIS: i32 = 0x811c9dc5_u32 as i32;
+const FNV_PRIME: i32 = 0x01000193;
+const REDUCE: usize = HASH + selector::Bootstrap::MAX as usize * HASH_STEP;
+const BOOTSTRAP_LEN: usize = REDUCE + 2;
 
 /// The displacement of the instruction at slot `at` to the label at slot `target`.
 const fn link(at: usize, target: usize) -> i16 {
@@ -61,6 +77,8 @@ pub(super) struct Program<'a> {
 enum Instructions {
     Direct([Instruction; Program::LEN]),
     Prefixed([Instruction; Program::LEN + PREFIX_LEN]),
+    Bootstrap([Instruction; BOOTSTRAP_LEN]),
+    PrefixedBootstrap([Instruction; BOOTSTRAP_LEN + PREFIX_LEN]),
 }
 
 impl<'a> Program<'a> {
@@ -68,9 +86,16 @@ impl<'a> Program<'a> {
 
     pub(super) fn compile(map: &'a Map, plan: Plan) -> Self {
         let body = shape(plan.selector(), plan.count(), map);
-        let instructions = match plan.prefix() {
-            Some(prefix) => Instructions::Prefixed(prefixed(prefix, body)),
-            None => Instructions::Direct(body),
+        let instructions = match (plan.bootstrap(), plan.prefix()) {
+            (None, None) => Instructions::Direct(body),
+            (None, Some(prefix)) => Instructions::Prefixed(prefixed(prefix, body)),
+            (Some(config), None) => {
+                Instructions::Bootstrap(bootstrap(plan.selector(), config, plan.count(), body))
+            }
+            (Some(config), Some(prefix)) => Instructions::PrefixedBootstrap(prefixed(
+                prefix,
+                bootstrap(plan.selector(), config, plan.count(), body),
+            )),
         };
         Self {
             instructions,
@@ -82,17 +107,21 @@ impl<'a> Program<'a> {
         match &self.instructions {
             Instructions::Direct(instructions) => instructions,
             Instructions::Prefixed(instructions) => instructions,
+            Instructions::Bootstrap(instructions) => instructions,
+            Instructions::PrefixedBootstrap(instructions) => instructions,
         }
     }
 }
 
 /// Selects the payload base before entering the unchanged selector body.
 /// All of that body's relative branches retain their displacement when moved together.
-fn prefixed(
+fn prefixed<const BODY: usize, const LENGTH: usize>(
     prefix: selector::PrefixPlan,
-    body: [Instruction; Program::LEN],
-) -> [Instruction; Program::LEN + PREFIX_LEN] {
-    let mut program = [EMPTY; Program::LEN + PREFIX_LEN];
+    body: [Instruction; BODY],
+) -> [Instruction; LENGTH] {
+    const { assert!(BODY >= Program::LEN && LENGTH == BODY + PREFIX_LEN) };
+    let mut program = [EMPTY; LENGTH];
+    let drop = PREFIX_LEN + DROP;
     program[..2].copy_from_slice(&body[..2]);
     program[PREFIX_BODY..].copy_from_slice(&body[2..]);
     let [first, second] = prefix.tags();
@@ -100,18 +129,18 @@ fn prefixed(
     let raw_mask = i32::from(prefix.raw_mask().get());
     program[2] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
     program[3] = instruction(ALU64_ADD_K, 4, 0, 0, UDP_HEADER_LEN + 1);
-    program[4] = instruction(JMP_JGT_X, 4, 3, link(4, PREFIX_DROP), 0);
+    program[4] = instruction(JMP_JGT_X, 4, 3, link(4, drop), 0);
     program[5] = instruction(LDX_B_MEM, 7, 2, UDP_HEADER_LEN as i16, 0);
     program[6] = instruction(JMP_JSET_K, 7, 0, link(6, PREFIX_BODY), raw_mask);
     program[7] = instruction(JMP_JEQ_K, 7, 0, link(7, 9), i32::from(first));
-    program[8] = instruction(JMP_JNE_K, 7, 0, link(8, PREFIX_DROP), i32::from(second));
+    program[8] = instruction(JMP_JNE_K, 7, 0, link(8, drop), i32::from(second));
     program[9] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
     program[10] = instruction(ALU64_ADD_K, 4, 0, 0, UDP_HEADER_LEN + extent + 1);
-    program[11] = instruction(JMP_JGT_X, 4, 3, link(11, PREFIX_DROP), 0);
+    program[11] = instruction(JMP_JGT_X, 4, 3, link(11, drop), 0);
     program[12] = instruction(ALU64_ADD_K, 2, 0, 0, extent);
     program[13] = instruction(LDX_B_MEM, 7, 2, UDP_HEADER_LEN as i16, 0);
     program[14] = instruction(JMP_JSET_K, 7, 0, link(14, PREFIX_BODY), raw_mask);
-    program[15] = instruction(JMP_JA, 0, 0, link(15, PREFIX_DROP), 0);
+    program[15] = instruction(JMP_JA, 0, 0, link(15, drop), 0);
     program
 }
 
@@ -172,6 +201,120 @@ fn shape(selector: selector::Selector, count: Count, map: &Map) -> [Instruction;
     program[25] = instruction(JMP_EXIT, 0, 0, 0, 0);
     program[DROP] = instruction(ALU64_MOV_K, 0, 0, 0, SK_DROP);
     program[27] = instruction(JMP_EXIT, 0, 0, 0, 0);
+    program
+}
+
+fn bootstrap(
+    selector: selector::Selector,
+    config: selector::Bootstrap,
+    count: Count,
+    body: [Instruction; Program::LEN],
+) -> [Instruction; BOOTSTRAP_LEN] {
+    let mut program = [EMPTY; BOOTSTRAP_LEN];
+    program[..Program::LEN].copy_from_slice(&body);
+    // Only rejection edges enter bootstrap; the original selection tail always exits.
+    for at in [4, 11, 13, 15] {
+        program[at].off = link(at, Program::LEN);
+    }
+    program[28] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+    program[29] = instruction(
+        ALU64_ADD_K,
+        4,
+        0,
+        0,
+        i32::from(payload_offset(selector.branch_at())) + 1,
+    );
+    program[30] = instruction(JMP_JGT_X, 4, 3, link(30, DROP), 0);
+    program[31] = instruction(LDX_B_MEM, 8, 2, payload_offset(selector.branch_at()), 0);
+    program[32] = instruction(
+        JMP_JSET_K,
+        8,
+        0,
+        link(32, 34),
+        i32::from(selector.branch_mask().get()),
+    );
+    program[33] = instruction(JMP_JA, 0, 0, link(33, DROP), 0);
+
+    program[34] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+    program[35] = instruction(
+        ALU64_ADD_K,
+        4,
+        0,
+        0,
+        i32::from(payload_offset(config.version_at())) + 4,
+    );
+    program[36] = instruction(JMP_JGT_X, 4, 3, link(36, DROP), 0);
+    program[37] = instruction(LDX_B_MEM, 5, 2, payload_offset(config.version_at()), 0);
+    for byte in 1..4 {
+        let at = 38 + (byte - 1) * 3;
+        program[at] = instruction(ALU32_LSH_K, 5, 0, 0, 8);
+        program[at + 1] = instruction(
+            LDX_B_MEM,
+            6,
+            2,
+            payload_offset(config.version_at()) + byte as i16,
+            0,
+        );
+        program[at + 2] = instruction(ALU32_OR_X, 5, 6, 0, 0);
+    }
+    program[47] = instruction(JMP_JEQ_K, 5, 0, link(47, DROP), 0);
+    program[48] = instruction(
+        JMP32_JEQ_K,
+        5,
+        0,
+        link(48, 51),
+        config.version().get() as i32,
+    );
+    program[49] = instruction(ALU64_MOV_K, 7, 0, 0, 0);
+    program[50] = instruction(JMP_JA, 0, 0, link(50, SELECT + 1), 0);
+
+    program[51] = instruction(ALU32_AND_K, 8, 0, 0, i32::from(config.mask().get()));
+    program[52] = instruction(JMP_JNE_K, 8, 0, link(52, DROP), i32::from(config.value()));
+    program[53] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+    program[54] = instruction(
+        ALU64_ADD_K,
+        4,
+        0,
+        0,
+        i32::from(payload_offset(selector.length_at())) + 1,
+    );
+    program[55] = instruction(JMP_JGT_X, 4, 3, link(55, DROP), 0);
+    program[56] = instruction(LDX_B_MEM, 6, 2, payload_offset(selector.length_at()), 0);
+    program[57] = instruction(
+        JMP_JLT_K,
+        6,
+        0,
+        link(57, DROP),
+        i32::from(config.min().get()),
+    );
+    program[58] = instruction(
+        JMP_JGT_K,
+        6,
+        0,
+        link(58, DROP),
+        i32::from(config.max().get()),
+    );
+    program[59] = instruction(ALU64_MOV_X, 7, 6, 0, 0);
+    program[60] = instruction(ALU32_XOR_K, 7, 0, 0, FNV_BASIS);
+    program[61] = instruction(ALU32_MUL_K, 7, 0, 0, FNV_PRIME);
+    for byte in 0..selector::Bootstrap::MAX as usize {
+        let at = HASH + byte * HASH_STEP;
+        let offset = payload_offset(selector.set_key()) + byte as i16;
+        program[at] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+        program[at + 1] = instruction(ALU64_ADD_K, 4, 0, 0, i32::from(offset) + 1);
+        program[at + 2] = instruction(JMP_JGT_X, 4, 3, link(at + 2, DROP), 0);
+        program[at + 3] = instruction(LDX_B_MEM, 8, 2, offset, 0);
+        program[at + 4] = instruction(ALU32_XOR_X, 7, 8, 0, 0);
+        program[at + 5] = instruction(ALU32_MUL_K, 7, 0, 0, FNV_PRIME);
+        program[at + 6] = instruction(JMP_JEQ_K, 6, 0, link(at + 6, REDUCE), byte as i32 + 1);
+    }
+    let count = count.encode();
+    program[REDUCE] = if count.is_power_of_two() {
+        instruction(ALU32_AND_K, 7, 0, 0, i32::from(count - 1))
+    } else {
+        instruction(ALU32_MOD_K, 7, 0, 0, i32::from(count))
+    };
+    program[REDUCE + 1] = instruction(JMP_JA, 0, 0, link(REDUCE + 1, SELECT + 1), 0);
     program
 }
 

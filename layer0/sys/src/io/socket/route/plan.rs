@@ -2,7 +2,7 @@ use std::mem;
 
 use crate::io::socket::route::{
     count::Count,
-    selector::{PrefixPlan, Selector},
+    selector::{Bootstrap, PrefixPlan, Selector},
 };
 
 /// A selector bound to the dense routing domain it selects from.
@@ -11,6 +11,7 @@ pub struct Plan {
     count: Count,
     selector: Selector,
     prefix: Option<PrefixPlan>,
+    bootstrap: Option<Bootstrap>,
 }
 
 impl Plan {
@@ -19,12 +20,20 @@ impl Plan {
             count,
             selector,
             prefix: None,
+            bootstrap: None,
         }
     }
 
     pub const fn with_prefix(self, prefix: PrefixPlan) -> Self {
         Self {
             prefix: Some(prefix),
+            ..self
+        }
+    }
+
+    pub const fn with_bootstrap(self, bootstrap: Bootstrap) -> Self {
+        Self {
+            bootstrap: Some(bootstrap),
             ..self
         }
     }
@@ -40,13 +49,15 @@ impl Plan {
     pub const fn prefix(self) -> Option<PrefixPlan> {
         self.prefix
     }
+
+    pub const fn bootstrap(self) -> Option<Bootstrap> {
+        self.bootstrap
+    }
 }
 
 const _: () = {
     assert!(
         mem::size_of::<Plan>()
-            == mem::size_of::<Count>()
-                + mem::size_of::<Selector>()
-                + mem::size_of::<Option<PrefixPlan>>()
+            == mem::size_of::<(Count, Selector, Option<PrefixPlan>, Option<Bootstrap>)>()
     );
 };

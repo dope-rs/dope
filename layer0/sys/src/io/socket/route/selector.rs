@@ -15,6 +15,18 @@ pub struct Selector {
     set_min: num::NonZero<u8>,
 }
 
+/// Hashes a bounded variable key when the set shape has no direct route.
+/// Zero versions retain strict routing; unmatched nonzero versions select route zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Bootstrap {
+    version: num::NonZero<u32>,
+    version_at: u8,
+    mask: num::NonZero<u8>,
+    value: u8,
+    min: num::NonZero<u8>,
+    max: num::NonZero<u8>,
+}
+
 /// An optional fixed prefix whose tags cannot be mistaken for a direct packet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrefixPlan {
@@ -106,6 +118,60 @@ impl Selector {
 
     pub const fn set_min(self) -> num::NonZero<u8> {
         self.set_min
+    }
+}
+
+impl Bootstrap {
+    /// Native variable-key capacity, independent of the caller's wire format.
+    pub const MAX: u8 = 20;
+
+    /// Matches a network-order version and the selector's masked branch byte.
+    /// Hash input is the declared length followed by bytes at `Selector::set_key`.
+    pub const fn fixed<
+        const VERSION_AT: u8,
+        const VERSION: u32,
+        const MASK: u8,
+        const VALUE: u8,
+        const MIN: u8,
+        const MAX: u8,
+    >() -> Self {
+        const {
+            assert!(VERSION > 0);
+            assert!(MASK > 0 && VALUE & !MASK == 0);
+            assert!(MIN > 0 && MIN <= MAX && MAX <= Bootstrap::MAX);
+        }
+        Self {
+            version: num::NonZero::<u32>::MIN.saturating_add(VERSION - 1),
+            version_at: VERSION_AT,
+            mask: num::NonZero::<u8>::MIN.saturating_add(MASK - 1),
+            value: VALUE,
+            min: num::NonZero::<u8>::MIN.saturating_add(MIN - 1),
+            max: num::NonZero::<u8>::MIN.saturating_add(MAX - 1),
+        }
+    }
+
+    pub const fn version(self) -> num::NonZero<u32> {
+        self.version
+    }
+
+    pub const fn version_at(self) -> u8 {
+        self.version_at
+    }
+
+    pub const fn mask(self) -> num::NonZero<u8> {
+        self.mask
+    }
+
+    pub const fn value(self) -> u8 {
+        self.value
+    }
+
+    pub const fn min(self) -> num::NonZero<u8> {
+        self.min
+    }
+
+    pub const fn max(self) -> num::NonZero<u8> {
+        self.max
     }
 }
 

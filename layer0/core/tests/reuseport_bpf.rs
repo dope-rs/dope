@@ -1,7 +1,10 @@
 use std::{io, mem, net, os::fd, time};
 
 use dope_core::io::datagram;
-use dope_sys::io::socket::route::{Plan, count, selector::PrefixPlan};
+use dope_sys::io::socket::route::{
+    Plan, count,
+    selector::{Bootstrap, PrefixPlan},
+};
 
 pub mod common;
 use common::rt::route::{self, SELECTOR};
@@ -176,6 +179,110 @@ fn dual_framing_routes_packets() {
             receiver.recv_from(&mut received),
             Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
         ));
+    }
+}
+
+#[test]
+fn bootstrap_routes_variable_keys() {
+    let bootstrap = Bootstrap::fixed::<1, 1, 0xe0, 0xc0, 8, 20>();
+    let prefix = PrefixPlan::fixed::<31, 0xc0, 0x14, 0x16>();
+    let cid = [0xa5; 255];
+    let issued = [1; 9];
+    let mut tail = [0xa5; 20];
+    tail[19] = 0xa4;
+    for (width, workers) in [(2_u16, [1, 1, 1, 0]), (3, [1, 1, 2, 0])] {
+        let count = count::Count::try_from(width).expect("dense route count");
+        let outside = [width as u8; 9];
+        for framing in [None, Some(prefix)] {
+            let mut plan = Plan::new(count, SELECTOR).with_bootstrap(bootstrap);
+            if let Some(prefix) = framing {
+                plan = plan.with_prefix(prefix);
+            }
+            let address = net::SocketAddr::from(([127, 0, 0, 1], 0));
+            let group = datagram::Group::bind(address, plan);
+            if !route::is_available(&group, address, plan) {
+                return;
+            }
+            let receivers: Vec<_> = group
+                .expect("bootstrap group")
+                .into_entries()
+                .map(|(_, lease)| net::UdpSocket::from(lease.into_fd()))
+                .collect();
+            let address = receivers[0].local_addr().expect("bound address");
+            for receiver in &receivers {
+                receiver
+                    .set_read_timeout(Some(time::Duration::from_millis(100)))
+                    .expect("receive deadline");
+            }
+            let senders = [(); 2].map(|()| net::UdpSocket::bind("127.0.0.1:0").expect("sender"));
+            assert_ne!(
+                senders[0].local_addr().unwrap(),
+                senders[1].local_addr().unwrap()
+            );
+            for (first, version, key, expected, missing) in [
+                (0x40, 0_u32, issued.as_slice(), Some(1), 0),
+                (0x80, 0, issued.as_slice(), Some(1), 0),
+                (0xc0, 1, issued.as_slice(), Some(1), 0),
+                (0xd0, 1, issued.as_slice(), Some(1), 0),
+                (0xe0, 1, issued.as_slice(), Some(1), 0),
+                (0x80, 0x87654321, issued.as_slice(), Some(1), 0),
+                (0xc0, 1, &cid[..8], Some(workers[0]), 0),
+                (0xd0, 1, &cid[..8], Some(workers[0]), 0),
+                (0xc0, 1, &cid[..9], Some(workers[1]), 0),
+                (0xd0, 1, &cid[..9], Some(workers[1]), 0),
+                (0xc0, 1, &cid[..20], Some(workers[2]), 0),
+                (0xd0, 1, &cid[..20], Some(workers[2]), 0),
+                (0xc0, 1, tail.as_slice(), Some(workers[3]), 0),
+                (0x80, 0x87654321, &cid[..0], Some(0), 0),
+                (0x90, 2, &cid[..7], Some(0), 0),
+                (0xa0, 2, &cid[..21], Some(0), 0),
+                (0xb0, 2, cid.as_slice(), Some(0), 0),
+                (0x40, 0, outside.as_slice(), None, 0),
+                (0x40, 0, issued.as_slice(), None, 1),
+                (0xc0, 0, &cid[..8], None, 0),
+                (0x80, 1, &cid[..8], None, 0),
+                (0xe0, 1, &cid[..8], None, 0),
+                (0xc0, 1, &cid[..7], None, 0),
+                (0xc0, 1, &cid[..21], None, 0),
+                (0xc0, 1, &cid[..20], None, 2),
+                (0x80, 2, &cid[..0], None, 3),
+            ] {
+                let mut packet = [0; 293];
+                let base = framing.map_or(0, |prefix| {
+                    packet[0] = prefix.tags()[0];
+                    usize::from(prefix.extent().get())
+                });
+                packet[base] = first;
+                let start = if first & 0x80 != 0 {
+                    packet[base + 1..base + 5].copy_from_slice(&version.to_be_bytes());
+                    packet[base + 5] = key.len() as u8;
+                    base + 6
+                } else {
+                    base + 1
+                };
+                packet[start..start + key.len()].copy_from_slice(key);
+                let end = start + key.len() + usize::from(first & 0x80 != 0) - missing;
+                for sender in &senders {
+                    sender
+                        .send_to(&packet[..end], address)
+                        .expect("send packet");
+                    if let Some(index) = expected {
+                        let mut received = [0; 293];
+                        let (length, peer) = receivers[index]
+                            .recv_from(&mut received)
+                            .expect("selected worker");
+                        assert_eq!(&received[..length], &packet[..end]);
+                        assert_eq!(peer, sender.local_addr().expect("sender address"));
+                    }
+                }
+            }
+            for receiver in &receivers {
+                assert!(matches!(
+                    receiver.recv_from(&mut [0; 293]),
+                    Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+                ));
+            }
+        }
     }
 }
 
