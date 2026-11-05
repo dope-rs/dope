@@ -21,10 +21,8 @@ impl Derived {
 
     pub(super) fn is_sendable(&self, path: &path::State, control: &control::Pending) -> bool {
         let room = control.available();
-        let done = control.done_slots();
-        let cids = path.local.work(control);
-        self.0 & HANDSHAKE_DONE != 0 && done.raw() != 0 && done <= room
-            || self.0 & NEW_CONNECTION_IDS != 0 && cids.fits(room)
+        self.0 & HANDSHAKE_DONE != 0 && room.raw() != 0 && control.done_slots().raw() != 0
+            || self.0 & NEW_CONNECTION_IDS != 0 && path.local.work(control).fits(room)
     }
 
     pub(in crate::conn) fn establish(&mut self, local: Initiator, cids: Count) {

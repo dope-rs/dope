@@ -87,7 +87,6 @@ fn retains_stage_receipt() {
                             retry_budget: 1,
                         },
                     )
-                    .expect("client builder")
                     .bind(dial, &mut driver)
                     .expect("client endpoint");
                     (client, now.into(), timeout)

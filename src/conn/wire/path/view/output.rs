@@ -46,7 +46,8 @@ impl<'a> Output<'a> {
         self.path
             .address
             .active
-            .map_or(num::NonZero::<u16>::MAX, Peer::max_payload)
+            .as_ref()
+            .map_or(num::NonZero::<u16>::MAX, |peer| peer.max_payload())
     }
 
     pub(in crate::conn) fn permit(
@@ -119,6 +120,7 @@ impl<'a> Output<'a> {
         (ceiling >= minimum).then_some(path::OutputPermit { route, ceiling })
     }
 
+    #[inline]
     pub(in crate::conn) fn target(&self, route: path::OutputRoute) -> Option<Option<Peer>> {
         match route.path() {
             Some(path) => self

@@ -13,8 +13,10 @@ use crate::runtime::routing;
 use crate::stream;
 pub use config::Config;
 pub use control::Control;
+use dope::core::driver;
 use dope::core::driver::retained;
 use dope::core::driver::route;
+use dope::core::driver::route::indices;
 use dope::core::driver::schedule;
 use dope::core::driver::schedule::app;
 use dope::core::driver::schedule::app::step;
@@ -38,6 +40,15 @@ pub mod link;
 pub mod plan;
 mod raw;
 pub mod server;
+
+fn try_ready<'d, const ID: u8>(
+    driver: driver::Reference<'d>,
+) -> Result<ready::Slot<'d, route::KeyTag<ID>>, ready::Capacity> {
+    let target = driver
+        .targets::<route::KeyTag<ID>>()
+        .bind(indices::SlotIndex::ZERO, route::Epoch::INITIAL);
+    driver.ready().make_slot(target.dispatch())
+}
 
 pub struct Idle;
 

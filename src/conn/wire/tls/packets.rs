@@ -59,16 +59,14 @@ impl<'key> Read<'key> {
         });
         let (key, opened) = match opened {
             Ok(opened) => opened,
-            Err(error) => {
-                if matches!(error.error, crypto::Error::Decrypt(Error::DecryptError))
+            Err(rejected) => {
+                let (packet, error) = rejected.into_parts();
+                if matches!(error, crypto::Error::Decrypt(Error::DecryptError))
                     && let Err(limit) = self.fails.record()
                 {
-                    return Err(Rejected::new(error.packet, limit));
+                    return Err(Rejected::new(packet, limit));
                 }
-                return Err(Rejected::new(
-                    error.packet,
-                    conn::Error::Crypto(error.error),
-                ));
+                return Err(Rejected::new(packet, conn::Error::Crypto(error)));
             }
         };
         let pn = opened.number().get();

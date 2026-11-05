@@ -34,7 +34,7 @@ impl<B: Recv> Resolved<'_, B> {
         segs: &'a mut Vec<ops::Range<u64>>,
         parts: &'a mut Vec<inserts::Part>,
     ) -> Result<plan::Plan<'a>, detail::Ranges> {
-        Read::new(&self.entry.value().buffer, self.arena).try_plan(segs, parts, |_| {})
+        Read::new(&self.entry.value().buffer, self.arena).try_plan(segs, parts)
     }
 
     pub(in crate::conn) fn has_event(&self) -> bool {

@@ -5,7 +5,6 @@ use dope::core::io::{
     Reclaimed,
     datagram::payload::{self, Len},
 };
-use dope::core::platform::wake;
 use dope::runtime::executor::{create, drive, session};
 use dope_quic::conn::life::options::{Options, builder::Invalid};
 use dope_quic::conn::life::tls::clients;
@@ -60,7 +59,7 @@ pub const ENDPOINT: Config = Config {
 pub enum Setup {
     Parameters(param::Error),
     Options(Invalid),
-    Shutdown(wake::CreateError),
+    Shutdown(shutdown::CreateError),
     Register(domain::Register),
     Plan(endpoint::PlanError),
     Config(config::Error),

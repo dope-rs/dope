@@ -1,13 +1,13 @@
 use dope::core::driver::settings::errors::Claim;
 use std::{net, num};
 
-use dope::core::driver::{self, schedule::clock, settings};
+use dope::core::driver::settings;
 use dope::core::io::datagram::payload;
 use dope::manifold::{self, network::datagram::plan};
 use dope_sys::io::socket::route::selector::PrefixPlan;
 use o3::base::time::Positive;
 
-use crate::proto::cid::{Rotation, Schedule};
+use crate::proto::cid::Rotation;
 use crate::proto::datagram::Size;
 use crate::runtime::mux::builder;
 
@@ -59,12 +59,11 @@ pub(crate) struct Validated {
     cid_rotation: Rotation,
 }
 
-/// Single-use validation result carrying one datagram plan's construction inputs.
+/// Validated endpoint settings paired with their datagram construction inputs.
 #[derive(Clone, Copy)]
 pub(crate) struct Validation {
     config: Validated,
     datagram: plan::Config,
-    slots: num::NonZero<usize>,
 }
 
 impl Config {
@@ -110,7 +109,6 @@ impl Config {
         }
         let ring =
             settings::Ring::try_round(self.packet_buffer_slots.max(2)).map_err(Error::Receive)?;
-        let entries = ring.buffers().into_nonzero();
         let Some(packet) = Size::new(self.packet_buffer_bytes) else {
             return Err(Error::PacketBytes {
                 got: self.packet_buffer_bytes,
@@ -137,7 +135,6 @@ impl Config {
                 cid_rotation: self.cid_rotation,
             },
             datagram,
-            slots: entries.into(),
         })
     }
 }
@@ -163,19 +160,13 @@ impl Validated {
         self.framing
     }
 
-    pub(crate) fn cid_rotation<'d>(
-        self,
-        driver: &mut driver::Context<'_, 'd>,
-    ) -> clock::Bound<'d, Schedule> {
-        driver
-            .driver_ref()
-            .clock()
-            .attach(|now| self.cid_rotation.schedule_at(now))
+    pub(crate) const fn cid_rotation(self) -> Rotation {
+        self.cid_rotation
     }
 }
 
 impl Validation {
-    pub(super) const fn into_parts(self) -> (Validated, plan::Config, num::NonZero<usize>) {
-        (self.config, self.datagram, self.slots)
+    pub(super) const fn into_parts(self) -> (Validated, plan::Config) {
+        (self.config, self.datagram)
     }
 }

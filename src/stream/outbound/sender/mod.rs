@@ -248,11 +248,12 @@ impl Position {
             if left == 0 {
                 break;
             }
-            if skip >= segment.len() {
-                skip -= segment.len();
+            let segment_len = segment.len();
+            if skip >= segment_len {
+                skip -= segment_len;
                 continue;
             }
-            let take = left.min(segment.len() - skip);
+            let take = left.min(segment_len - skip);
             let Some(chunk::Copied) = segment.copy(skip, take, out)? else {
                 return Ok(None);
             };

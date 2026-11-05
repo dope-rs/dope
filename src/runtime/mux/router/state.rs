@@ -165,8 +165,10 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
         ) -> R,
     ) -> R {
         for &key in keys {
-            slots
-                .access::<false>(key, brand.reborrow())
+            let mut entry = slots.entry(key);
+            entry.unlink::<{ mux::FLUSH_QUEUE }>();
+            entry
+                .access::<false>(brand.reborrow())
                 .conn
                 .events()
                 .mark(conn::Effects::TRANSMIT);
@@ -195,7 +197,7 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
         now: time::Instant,
     ) -> Result<(), errors::Access> {
         self.external(handle, now, (), |mut slot, ()| {
-            *slot.notified_established = true;
+            *slot.notification = registry::Notification::Ready;
             slot.conn.events().mark(conn::Effects::NOTIFY);
         })
         .map_err(|(error, ())| error)
@@ -213,9 +215,7 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
         let (dirty, notify, flush, app, retry, input) = {
             let mut slot = slots.access::<false>(key, brand.reborrow());
             let retry = slot.conn.events().retry(now);
-            if slot.conn.view().lifecycle().is_closing()
-                || !slot.conn.view().lifecycle().is_opening()
-            {
+            if !slot.conn.view().lifecycle().is_opening() {
                 *slot.tls = None;
             }
             let dirty = slot.conn.events().take();
@@ -240,11 +240,9 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
                 if slot.conn.view().lifecycle().is_closing() {
                     return slot.connection.is_some();
                 }
-                let notify = {
-                    let events = slot.conn.events();
-                    events.has_datagram() || events.has_stream()
-                };
-                notify || (slot.conn.view().lifecycle().is_ready() && !*slot.notified_established)
+                input.is_some_and(|(stream, datagram)| stream || datagram)
+                    || (slot.conn.view().lifecycle().is_ready()
+                        && *slot.notification != registry::Notification::Ready)
             });
             let flush = dirty.contains(conn::Effects::OUTPUT).then(|| {
                 if slot.conn.view().lifecycle().is_closed() {
@@ -261,9 +259,7 @@ impl<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> State<A, C, DO
                     }
                 }
             });
-            if dirty.contains(conn::Effects::ROUTING)
-                && let Some(active) = active
-            {
+            if let Some(active) = active {
                 *slot.peer_addr = active;
             }
             (dirty, notify, flush, app, retry, input)

@@ -1,5 +1,5 @@
 use crate::wire::packet::header::widths;
-use o3::{alloc, buffer::write};
+use o3::{alloc, buffer::write, mem::Rejected};
 use write::Sink as _;
 
 use crate::wire::packet::{cid, header, kind, long};
@@ -11,31 +11,20 @@ pub enum Reject {
     Fixed { first: u8 },
 }
 
-pub(crate) struct Rejected<P> {
-    packet: P,
-    error: Reject,
-}
-
-impl<P> Rejected<P> {
-    pub(crate) fn into_parts(self) -> (P, Reject) {
-        (self.packet, self.error)
-    }
-}
-
 pub(crate) struct Protected<P: long::Buffer> {
     packet: P,
     cid: cid::Len,
 }
 
 impl<P: long::Buffer> Protected<P> {
-    pub(crate) fn parse(packet: P, cid_len: cid::Len) -> Result<Self, Rejected<P>> {
+    pub(crate) fn parse(packet: P, cid_len: cid::Len) -> Result<Self, Rejected<P, Reject>> {
         let result = Self::validate(packet.as_ref(), cid_len);
         match result {
             Ok(()) => Ok(Self {
                 packet,
                 cid: cid_len,
             }),
-            Err(error) => Err(Rejected { packet, error }),
+            Err(error) => Err(Rejected::new(packet, error)),
         }
     }
 

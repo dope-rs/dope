@@ -167,9 +167,6 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         changed: bool,
         admitted: Option<(time::Duration, time::Duration)>,
     ) -> Result<(), conn::Timing> {
-        if self.try_terminal(now)? {
-            return Ok(());
-        }
         let timer = timer::Timer::new(self)
             .try_prepare(now, changed, admitted)
             .map_err(|error| self.fail_timing(error))?;

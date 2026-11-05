@@ -31,10 +31,6 @@ pub(super) enum Connection {
 }
 
 /// Pinned client retaining its packet pool, driver, and TLS owners.
-///
-/// A pooled auth cannot be widened to `'static`:
-///
-/// Retained packets cannot outlive their pool:
 #[pin_project::pin_project]
 pub struct Dialer<
     'pool,
@@ -167,15 +163,6 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    pub fn is_connected(&self, slot: client::SlotId) -> bool {
-        self.inner
-            .endpoint
-            .handler()
-            .lifecycle()
-            .handle(slot)
-            .is_some()
     }
 
     pub fn smoothed_rtt(&self, slot: client::SlotId) -> Option<time::Duration> {

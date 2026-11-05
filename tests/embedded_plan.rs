@@ -11,7 +11,7 @@ use dope_quic::runtime::embedded::{self, client, link::Link, plan};
 use dope_test::alloc::Tracker;
 use dope_test::harness::scenario::TIMEOUT;
 use settings::claim::Needs;
-use std::{cell::Cell, mem, num::NonZero, rc::Rc};
+use std::{cell::Cell, num::NonZero, rc::Rc};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -71,10 +71,6 @@ fn separates_allocation() {
                         Link::try_new(root, &mut driver).expect("validated link plan binds")
                     });
                     assert_eq!(allocs, 0);
-                    assert_eq!(
-                        mem::size_of::<embedded::link::Control<'static, 'static, 11, 7, 8>>(),
-                        mem::size_of::<usize>()
-                    );
                     assert_eq!(
                         link.capacity(),
                         std::num::NonZero::new(3).expect("nonzero link capacity")

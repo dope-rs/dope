@@ -1,8 +1,7 @@
-use crate::common::peer;
 pub mod common;
 
 use common::suite::{
-    mux::{dispatch, install},
+    mux::{install, retry},
     retry::Capture,
 };
 use dope_quic::proto::epoch;
@@ -12,17 +11,7 @@ use std::{net::SocketAddr, pin::Pin, time::Instant};
 
 #[test]
 fn server_negotiates() {
-    let mut server = dispatch::Capture::server(
-        Capture { certificates: 0 },
-        peer::raw(0x72)
-            .expect("raw identity")
-            .0
-            .server()
-            .expect("server TLS"),
-        Default::default(),
-        Plan::standard(),
-    )
-    .expect("retry server");
+    let mut server = retry::try_server(Default::default(), Plan::standard()).expect("retry server");
     let peer: SocketAddr = "192.0.2.10:44321"
         .parse()
         .expect("test peer address must be valid");
@@ -58,17 +47,7 @@ fn server_negotiates() {
 
 #[test]
 fn undersized_probe_is_discarded() {
-    let mut server = dispatch::Capture::server(
-        Capture { certificates: 0 },
-        peer::raw(0x73)
-            .expect("raw identity")
-            .0
-            .server()
-            .expect("server TLS"),
-        Default::default(),
-        Plan::standard(),
-    )
-    .expect("retry server");
+    let mut server = retry::try_server(Default::default(), Plan::standard()).expect("retry server");
     let peer: SocketAddr = "192.0.2.11:44321"
         .parse()
         .expect("test peer address must be valid");

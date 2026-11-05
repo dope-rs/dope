@@ -45,8 +45,8 @@ where
 
 const _: () = assert!(mem::size_of::<Pooled<'static>>() == 0);
 
-use crate::proto::cid;
-use crate::runtime::endpoint::{BindError, Bound, Endpoint, config, reactor};
+use crate::proto::{cid, datagram::Size};
+use crate::runtime::endpoint::{BindError, Bound, Endpoint, reactor};
 use crate::runtime::receive;
 use dope::core::{
     driver::{self, schedule::clock},
@@ -62,7 +62,7 @@ pub(super) struct Prepared<
     R: receive::Policy,
     Q: buffer::Residency + buffer::raw::Source,
 > {
-    pub(super) config: config::Validated,
+    pub(super) packet: Size,
     pub(super) datagram: datagram::Prepared<'d, route::KeyTag<ID>, Payload<Q>>,
     pub(super) rotation: clock::Bound<'d, cid::Schedule>,
     pub(super) receive: marker::PhantomData<fn() -> R>,
@@ -90,7 +90,7 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
             .map_err(BindError::Datagram)?;
         Ok(Endpoint {
             udp,
-            packet: self.config.packet(),
+            packet: self.packet,
             rotation: self.rotation,
         })
     }
@@ -114,7 +114,7 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
             .map_err(BindError::Datagram)?;
         Ok(Endpoint {
             udp,
-            packet: self.config.packet(),
+            packet: self.packet,
             rotation: self.rotation,
         })
     }

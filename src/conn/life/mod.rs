@@ -47,10 +47,7 @@ impl<'pool, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
     ) -> R {
         let result = self.core.with_scope(run);
         let core = self.core.machine();
-        if core.is_closing()
-            || core.egress.lifecycle.state != conn::State::Handshaking
-            || !core.handshake.is_pending()
-        {
+        if core.egress.lifecycle.state != conn::State::Handshaking || !core.handshake.is_pending() {
             self.permit.take();
         }
         result

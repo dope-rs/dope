@@ -139,7 +139,6 @@ fn connects_before_stream_delivery() {
                                 retry_budget: 2,
                             },
                         )
-                        .expect("client builder")
                         .bind(plan, &mut driver)
                         .expect("bound client");
                         (client, timeout, now.into())

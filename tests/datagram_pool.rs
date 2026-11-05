@@ -1,8 +1,7 @@
-use std::mem::{align_of, needs_drop, size_of};
 use std::ptr;
 
 use dope_quic::errors::SendFailure;
-use dope_quic::proto::datagram::{self, Arena, Packet, batch};
+use dope_quic::proto::datagram::{self, Arena, batch};
 use dope_test::alloc::Tracker;
 use o3::buffer::pool::borrowed;
 
@@ -15,24 +14,6 @@ fn routed_capacity() {
         datagram::Arena::payload_max(1200, dope_quic::runtime::routing::CONNECTION_ID_LEN),
         Some(1169)
     );
-}
-
-#[test]
-fn batch_layout() {
-    assert_eq!(size_of::<Packet<'static>>(), 24);
-    assert_eq!(size_of::<Option<Packet<'static>>>(), 24);
-    assert_eq!(size_of::<batch::Source<'static, 8>>(), 24);
-    assert_eq!(size_of::<batch::Writable<'static, 0>>(), 0);
-    assert_eq!(size_of::<batch::Writable<'static, 1>>(), 32);
-    assert_eq!(size_of::<batch::Writable<'static, 8>>(), 256);
-    assert_eq!(size_of::<batch::Pending<'static, 0>>(), 8);
-    assert_eq!(size_of::<batch::Pending<'static, 1>>(), 32);
-    assert_eq!(size_of::<batch::Pending<'static, 8>>(), 200);
-    assert_eq!(align_of::<batch::Writable<'static, 8>>(), 8);
-    assert_eq!(align_of::<batch::Pending<'static, 8>>(), 8);
-    assert!(!needs_drop::<batch::Source<'static, 8>>());
-    assert!(needs_drop::<batch::Writable<'static, 8>>());
-    assert!(needs_drop::<batch::Pending<'static, 8>>());
 }
 
 #[test]

@@ -60,7 +60,7 @@ impl<O: buffer::raw::Segment> Node<O> {
             Self::Buffer(buffer) => buffer.as_slice(),
             Self::One(owner) => owner.as_ref().as_ref(),
             Self::Segments(segments) => {
-                if end > segments.as_chain().len() {
+                if end > segments.len().get() {
                     return Ok(None);
                 }
                 let mut skip = offset;

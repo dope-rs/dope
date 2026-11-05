@@ -32,7 +32,7 @@ fn short_new_dcid_is_discarded() {
 
 #[test]
 fn same_dcid_reuses_conn() {
-    let mut mux = install::alias().expect("install alias");
+    let mut mux = retry::try_server(Default::default(), Plan::standard()).expect("server");
     let from: SocketAddr = "127.0.0.1:55555"
         .parse()
         .expect("test peer address must be valid");
@@ -54,7 +54,7 @@ fn same_dcid_reuses_conn() {
 
 #[test]
 fn dcids_open_conns() {
-    let mut mux = install::alias().expect("install alias");
+    let mut mux = retry::try_server(Default::default(), Plan::standard()).expect("server");
     let from: SocketAddr = "127.0.0.1:55556"
         .parse()
         .expect("test peer address must be valid");

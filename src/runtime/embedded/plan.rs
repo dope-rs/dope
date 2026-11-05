@@ -1,8 +1,8 @@
 use std::{net, num};
 
 use dope::core::driver::schedule::ready::task::owner;
-use dope::core::driver::settings;
-use settings::demands;
+use dope::core::driver::{route, settings};
+use settings::{claim, demands};
 
 use crate::runtime::embedded::{Config, link};
 use crate::runtime::mux::builder;
@@ -55,18 +55,8 @@ impl Plan {
         Ok(Self { mux, link })
     }
 
-    pub(super) const fn capacity(self) -> owner::Capacity {
-        self.mux.owners()
-    }
-
     pub(super) const fn limits(self) -> builder::Plan {
         self.mux
-    }
-
-    pub(super) fn schedule(self) -> demands::Schedule {
-        let conns = self.mux.owners();
-        let tasks = owner::Capacity::new(conns.count().saturating_add(1));
-        demands::Schedule::new(tasks.into(), conns.into())
     }
 
     pub fn link<const ROUTE: u8, const FROM: u8, const TO: u8>(
@@ -76,4 +66,11 @@ impl Plan {
     ) -> link::Plan<ROUTE, FROM, TO> {
         link::Plan::new(self.link, local, peer)
     }
+}
+
+pub(super) fn claim<const ID: u8>(mux: builder::Plan) -> claim::Claim {
+    let conns = mux.owners();
+    let tasks = owner::Capacity::new(conns.count().saturating_add(1));
+    claim::Claim::new(settings::Routes::singleton::<route::KeyTag<ID>>())
+        .schedule(demands::Schedule::new(tasks.into(), conns.into()))
 }

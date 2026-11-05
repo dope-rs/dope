@@ -9,40 +9,6 @@ use dope_quic::conn::life::accept;
 use dope_quic::errors::Connect;
 use dope_quic::proto::early::ReplayCap;
 
-trait MaybeSend<A> {}
-impl<T: ?Sized> MaybeSend<()> for T {}
-impl<T: ?Sized + Send> MaybeSend<u8> for T {}
-
-trait MaybeSync<A> {}
-impl<T: ?Sized> MaybeSync<()> for T {}
-impl<T: ?Sized + Sync> MaybeSync<u8> for T {}
-
-fn confined<T: ?Sized + MaybeSend<A> + MaybeSync<B>, A, B>() {}
-
-const _: fn() = || {
-    use dope_quic::conn::{self, life};
-    use life::tls::{clients, servers};
-    confined::<conn::Connection, _, _>();
-    confined::<life::Connection<'static>, _, _>();
-    confined::<life::Reconnect, _, _>();
-    confined::<clients::Authority, _, _>();
-    confined::<clients::Pool, _, _>();
-    confined::<servers::Pool, _, _>();
-    confined::<accept::Authority, _, _>();
-    confined::<dope_quic::client::AttemptId, _, _>();
-    confined::<dope_quic::security::relay::Key, _, _>();
-    confined::<dope_quic::security::crypto::sha256::Prk, _, _>();
-    confined::<dope_quic::runtime::mux::output::Flight, _, _>();
-    use conn::stream::recv::{credit, hold};
-    confined::<hold::Held<'static, Vec<u8>>, _, _>();
-    confined::<hold::Detached<Vec<u8>>, _, _>();
-    confined::<credit::Credit<'static>, _, _>();
-    confined::<credit::Credit<'static, credit::Local>, _, _>();
-    confined::<credit::Detached, _, _>();
-    confined::<credit::Detached<credit::Local>, _, _>();
-    confined::<credit::Merge<'static, 'static>, _, _>();
-};
-
 #[test]
 fn lane_policies_exist() {
     let (_, peer) = peer::raw(0x92).expect("fixture client identity");

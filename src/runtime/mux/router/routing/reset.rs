@@ -130,8 +130,7 @@ where
             }
         };
         if accepted {
-            let (timer, entry) = entries.select(key);
-            registry::Set::refresh(timer, entry, now, conn::DeadlineMode::Exact, None);
+            entries.refresh(key, now, conn::DeadlineMode::Exact, None);
             matched = true;
         }
     }

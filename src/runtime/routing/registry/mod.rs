@@ -5,7 +5,7 @@ mod set;
 mod table;
 
 pub(in crate::runtime) use key::Key;
-pub(in crate::runtime) use records::{Access, Epoch, Slot};
+pub(in crate::runtime) use records::{Access, Epoch, Notification, Slot};
 use seed::Seed;
 pub(in crate::runtime) use set::Set;
 pub(in crate::runtime) use set::routes::claims::Reservation;

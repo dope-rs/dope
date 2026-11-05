@@ -205,16 +205,6 @@ impl cert::Sink<0, id::Static> for Counter {
     }
 }
 
-pub fn alias() -> Result<router::Router<Capture>, Setup> {
-    let (key, _) = peer::raw(0x11).map_err(Setup::Identity)?;
-    dispatch::Capture::server(
-        Capture { certificates: 0 },
-        key.server().map_err(Setup::Tls)?,
-        Options::default(),
-        Plan::standard(),
-    )
-}
-
 pub fn alias_admit(
     mux: &mut router::Router<Capture>,
     from: SocketAddr,

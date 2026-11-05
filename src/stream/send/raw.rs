@@ -26,7 +26,7 @@ unsafe impl<O: buffer::raw::Segment> Batch<O> for send::Parts<O> {
             None => send::Demand::default(),
             Some(send::Tail::Buffer(buffer)) => send::Demand::buffer(buffer),
             Some(send::Tail::Chain(chain)) => send::Demand::new(
-                chain.as_chain().len(),
+                chain.len().get(),
                 chain.as_chain().resident(),
                 chain.as_chain().count().into_raw() as usize,
                 capacity::Count::new(1),

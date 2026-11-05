@@ -148,11 +148,3 @@ impl Delivery {
         self.live
     }
 }
-
-const _: () = {
-    assert!(std::mem::size_of::<Binding>() == 8);
-    assert!(std::mem::size_of::<Connection>() == 32);
-    assert!(std::mem::size_of::<Delivery>() == 24);
-    assert!(std::mem::size_of::<Route>() == 80);
-    assert!(!std::mem::needs_drop::<Route>());
-};

@@ -62,12 +62,7 @@ impl<
     }
 
     pub(crate) fn begin(&mut self) {
-        let state = self.mux.as_mut().project().state;
-        if state.lifecycle.shutting_down {
-            return;
-        }
-        state.lifecycle.shutting_down = true;
-        state.lifecycle.cursor.reset();
+        self.mux.as_mut().project().state.lifecycle.shutting_down = true;
     }
 
     pub(crate) fn is_complete(&self) -> bool {

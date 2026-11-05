@@ -1,4 +1,3 @@
-use dope::core::driver::route;
 use dope::core::driver::settings::claim;
 use dope::core::driver::settings::errors::Claim;
 use dope::core::driver::{self, settings};
@@ -14,12 +13,14 @@ use crate::stream;
 #[derive(Clone, Copy)]
 #[must_use = "an embedded client plan must be bound to one driver"]
 pub struct Plan<const ID: u8> {
-    proto: plan::Plan,
+    proto: builder::Plan,
 }
 
 impl<const ID: u8> Plan<ID> {
     pub const fn new(plan: plan::Plan) -> Self {
-        Self { proto: plan }
+        Self {
+            proto: plan.limits(),
+        }
     }
 
     pub fn bind<'d, H, B>(
@@ -35,19 +36,17 @@ impl<const ID: u8> Plan<ID> {
             builder::Builder::<auth::Owned<routing::Plain, id::Driver<'d>>, _, ID, B>::client_in(
                 handler,
                 routing::Plain,
-                self.proto.limits(),
+                self.proto,
             )
             .bind(driver)
             .map_err(server::BindError::Mux)?;
-        server::Plan::<ID>::finish(mux, embedded::Idle, driver)
+        let ready = embedded::try_ready(driver.driver_ref()).map_err(server::BindError::Ready)?;
+        Ok(embedded::Endpoint::new(mux, embedded::Idle, ready))
     }
 }
 
 impl<const ID: u8> settings::Resource for Plan<ID> {
     fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, Claim> {
-        needs.include(
-            claim::Claim::new(settings::Routes::singleton::<route::KeyTag<ID>>())
-                .schedule(self.proto.schedule()),
-        )
+        needs.include(plan::claim::<ID>(self.proto))
     }
 }

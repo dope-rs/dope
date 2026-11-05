@@ -73,7 +73,6 @@ fn retains_terminal_socket_failure() {
                             retry_budget: 1,
                         },
                     )
-                    .expect("client topology")
                     .bind(plan, &mut driver)
                     .expect("bound client");
                     let mut client = pin::pin!(client);
@@ -182,7 +181,6 @@ fn reports_native_send_failure() {
                                 retry_budget: 1,
                             },
                         )
-                        .expect("client topology")
                         .bind(plan, &mut driver)
                         .expect("bound client");
                         (client, timeout)

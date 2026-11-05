@@ -53,13 +53,6 @@ impl<'body, B: stream::Recv> Piece<'body, B> {
             },
         })
     }
-
-    pub(crate) fn bytes(&self) -> &[u8] {
-        match self {
-            Self::Ready { bytes, .. } => bytes.as_ref(),
-            Self::Gap { bytes, .. } => bytes.as_ref(),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -117,12 +110,6 @@ impl<'body, B: stream::Recv> Prepared<'body, B> {
             Self::One(piece) => slice::from_ref(piece),
             Self::Many(pieces) => pieces,
         }
-    }
-
-    pub(crate) fn has_ready(&self) -> bool {
-        self.pieces()
-            .iter()
-            .any(|piece| matches!(piece, Piece::Ready { .. }))
     }
 
     pub(crate) fn consume(self, mut consume: impl FnMut(Piece<'body, B>)) {
@@ -201,18 +188,6 @@ impl<'body, B: stream::Recv> Prepared<'body, B> {
                 <B::Ready as ready::raw::Queue<B>>::SEGMENTED || matches!(piece, Piece::Gap { .. })
             })
             .count()
-    }
-
-    pub(crate) fn bytes(&self) -> Result<usize, stream::Capacity> {
-        self.pieces().iter().try_fold(0usize, |current, piece| {
-            let extra = piece.bytes().len();
-            current
-                .checked_add(extra)
-                .ok_or(stream::Capacity::Overflow {
-                    current,
-                    additional: extra,
-                })
-        })
     }
 }
 
@@ -337,6 +312,10 @@ impl Plan<'_> {
 
     pub(crate) fn len(&self) -> usize {
         self.segments.len()
+    }
+
+    pub(crate) fn next(&self) -> u64 {
+        self.next
     }
 
     fn has_overlap(&self, end: u64) -> bool {

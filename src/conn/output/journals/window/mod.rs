@@ -22,8 +22,6 @@ pub(in crate::conn::output) struct Window {
 }
 
 impl Window {
-    pub(in crate::conn::output::journals) const EMPTY: Self = Self::new(Count::EMPTY);
-
     pub(in crate::conn::output::journals) const fn with_limit(
         limit: capacity::Capacity<capacity::Packet>,
     ) -> Self {

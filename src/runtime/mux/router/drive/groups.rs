@@ -83,10 +83,6 @@ pub(super) fn flush_group<
     if len < MIN_GSO_PACKETS {
         return Ok(Step::Idle);
     }
-    for &key in picks.iter().skip(1) {
-        slots.entry(key).unlink::<{ mux::FLUSH_QUEUE }>();
-    }
-
     let bytes = outgoing
         .bytes_capacity
         .saturating_sub(outgoing.pending.bytes());

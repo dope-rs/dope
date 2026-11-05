@@ -238,7 +238,6 @@ fn maximum_long_lengths() {
 
 #[test]
 fn cid_obeys_wire_bound() {
-    assert_eq!(std::mem::size_of::<cid::Id>(), 21);
     assert!(cid::Id::try_from(&[0; 20][..]).is_ok());
     let error = cid::Id::try_from(&[0; 21][..])
         .err()

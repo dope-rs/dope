@@ -214,35 +214,24 @@ impl PeerRoute for Shard {
 /// One unsharded socket intent admitting direct packets and one return ticket.
 pub struct Single {
     address: net::SocketAddr,
-    prefix: PrefixPlan,
 }
 
 impl Single {
     pub const fn new(address: net::SocketAddr) -> Self {
-        Self {
-            address,
-            prefix: PREFIX,
-        }
+        Self { address }
     }
 
     pub(crate) const fn framing(&self) -> (PrefixPlan, net::SocketAddr) {
-        (self.prefix, self.address)
+        (PREFIX, self.address)
     }
 
     pub(crate) fn into_parts(self) -> (net::SocketAddr, SingleRoute) {
-        (
-            self.address,
-            SingleRoute {
-                prefix: self.prefix,
-            },
-        )
+        (self.address, SingleRoute(()))
     }
 }
 
 /// Local packet framing recovered by consuming one unsharded socket intent.
-pub struct SingleRoute {
-    prefix: PrefixPlan,
-}
+pub struct SingleRoute(());
 
 impl Sealed for SingleRoute {}
 
@@ -254,7 +243,7 @@ impl LocalRoute for SingleRoute {
     }
 
     fn prefix(&self) -> Option<PrefixPlan> {
-        Some(self.prefix)
+        Some(PREFIX)
     }
 }
 
@@ -359,7 +348,7 @@ const _: () = {
     assert!(mem::size_of::<Result<Count, count::Error>>() == 2 * mem::size_of::<u16>());
     assert!(mem::size_of::<Shard>() == 1);
     assert!(mem::size_of::<Plain>() == 0);
-    assert!(mem::size_of::<SingleRoute>() == mem::size_of::<PrefixPlan>());
+    assert!(mem::size_of::<SingleRoute>() == 0);
     assert!(!mem::needs_drop::<SingleRoute>());
     assert!(mem::size_of::<Routed>() == mem::size_of::<(Shard, Option<PrefixPlan>)>());
     assert!(!mem::needs_drop::<Routed>());

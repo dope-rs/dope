@@ -79,7 +79,7 @@ impl<'loan, 'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw:
         self.owner.scope.cids.hash(value)
     }
     pub(in crate::runtime) fn len(&self) -> usize {
-        *self.owner.scope.active as usize
+        self.owner.scope.entries.counts.active as usize
     }
     pub(in crate::runtime) fn contains(&self, value: &[u8], hash: u64) -> bool {
         unsafe { scan(self.owner.scope, value, hash) }.is_some()

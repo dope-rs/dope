@@ -71,20 +71,12 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
         due: due::Due<A, R>,
         handle: id::Handle<id::Driver<'d>, DOMAIN>,
     ) {
-        let due::Due {
-            slot,
-            attempt,
-            addr,
-            ..
-        } = due;
+        let due::Due { slot, attempt, .. } = due;
         let index = slot.index() as usize;
         let Some(resident::Entry::Scheduled(endpoint)) = self.endpoints.entry(index) else {
             return;
         };
-        let Some(expected) = self.topology.address(index) else {
-            return;
-        };
-        if endpoint.get().0.attempt != attempt || expected != addr {
+        if endpoint.get().0.attempt != attempt {
             return;
         }
         let Some(reverse) = self.handle_to_endpoint.get_mut(handle.index() as usize) else {
@@ -107,15 +99,13 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
             domain,
             slot,
             attempt,
-            addr,
             ..
         } = due;
         let index = slot.index() as usize;
-        let expected = self.topology.address(index);
         let Some(resident::Entry::Scheduled(endpoint)) = self.endpoints.entry(index) else {
             return;
         };
-        if endpoint.get().0.attempt != attempt || expected != Some(addr) {
+        if endpoint.get().0.attempt != attempt {
             return;
         }
         match Retry::try_new(

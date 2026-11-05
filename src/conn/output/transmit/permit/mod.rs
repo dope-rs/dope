@@ -302,7 +302,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         if conn.is_closing() {
             return self.has_close();
         }
-        if self.has_close() || conn.egress.recovery.probe.allowance.is_armed() {
+        if conn.egress.recovery.probe.allowance.is_armed() {
             return true;
         }
         if conn.handshake.keys.long.initial().is_some()

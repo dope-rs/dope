@@ -53,10 +53,12 @@ where
 
     fn establish(&mut self) -> ops::ControlFlow<()> {
         <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Established::call(move || {
-            if !self.slot.conn.view().lifecycle().is_ready() || *self.slot.notified_established {
+            if !self.slot.conn.view().lifecycle().is_ready()
+                || *self.slot.notification == registry::Notification::Ready
+            {
                 return None;
             }
-            *self.slot.notified_established = true;
+            *self.slot.notification = registry::Notification::Ready;
             Some(move || {
                 let this = self;
                 let Some(app) = this.slot.connection.as_mut() else {
@@ -67,7 +69,7 @@ where
                     handler::Slot::new(app, this.slot.conn.reborrow::<true>()),
                     this.handle,
                     this.at,
-                    this.slot.notified_established,
+                    this.slot.notification,
                 )
             })
         })
@@ -110,7 +112,7 @@ where
             return ops::ControlFlow::Continue(());
         };
         *self.slot.stream_first = false;
-        let ready = *self.slot.notified_established;
+        let ready = *self.slot.notification == registry::Notification::Ready;
         let owner = &mut *self;
         let bound = &lease;
         let event = move || {
@@ -143,7 +145,8 @@ where
     }
 
     fn data(&mut self) -> ops::ControlFlow<()> {
-        let first = *self.slot.notified_established && *self.slot.stream_first;
+        let first =
+            *self.slot.notification == registry::Notification::Ready && *self.slot.stream_first;
         if !first {
             self.datagram()?;
         }
@@ -183,7 +186,7 @@ where
             return;
         }
         if self.establish().is_break() {
-            if *self.slot.notified_established {
+            if *self.slot.notification == registry::Notification::Ready {
                 self.slot.conn.events().mark(conn::Effects::NOTIFY);
             }
             return;

@@ -24,7 +24,7 @@ use dope_quic::runtime::receive;
 
 use crate::common::retry::{
     BIND, CLIENT_ROUTE, Causal, Close, Context, ENDPOINT, Events, Pooled, SERVER_ROUTE,
-    traces::{Backoff, CausalConfig, CauseBackoff, Config, History, Immediate, Observed},
+    traces::{Backoff, CausalConfig, CauseBackoff, Config, History, Immediate},
 };
 
 #[test]
@@ -191,7 +191,7 @@ fn immediate_reuses_slot() {
 #[test]
 fn borrowed_attempt_context() {
     let (_, pubkey) = peer::raw(0x3a).expect("fixture raw public key must construct");
-    let trace = Observed::default();
+    let trace = History::default();
     let (source, stop) = shutdown::Pair::new()
         .expect("shutdown trigger pair has capacity")
         .split();
@@ -295,8 +295,8 @@ fn borrowed_attempt_context() {
             .verify(reports)
             .expect("exact endpoint receive retirement");
     };
-    let attempts = trace.history.attempts.take();
-    let retries = trace.history.retries.take();
+    let attempts = trace.attempts.take();
+    let retries = trace.retries.take();
     assert_eq!(attempts.len(), 1);
     assert_eq!(retries.len(), 1);
     let attempt = attempts[0];
@@ -304,7 +304,6 @@ fn borrowed_attempt_context() {
     assert!(attempt.id.slot() == SlotId::from_index(0));
     assert_eq!(attempt.id.generation(), 1);
     assert_eq!(attempt.ordinal, 1);
-    assert!(trace.observed_start.get());
     assert!(retry.cause == client::RetryCause::AttemptFailed);
     assert!(retry.previous == attempt.id);
     assert_eq!(retry.previous_ordinal, attempt.ordinal);
@@ -395,7 +394,6 @@ fn pool_recycles() {
                                 retry_budget: 64,
                             },
                         )
-                        .expect("pooled client construction accepts one matching pool")
                         .bind(dial, &mut driver)
                         .expect("pooled client plan binds to the session driver");
                         (server, client, timeout)

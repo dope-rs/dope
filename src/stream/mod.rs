@@ -8,9 +8,7 @@ use o3::mem::Rejected;
 use o3::{
     alloc,
     buffer::{
-        self,
-        bytes::bounded,
-        resident,
+        self, resident,
         storage::{self, inline},
     },
     depot::capacity,
@@ -215,7 +213,6 @@ enum RecvStorage<'d> {
     Owned(Vec<u8>),
     Compact(storage::Shared),
     Retained(storage::Shared<Option<provided::Account<'d>>>),
-    Bound(bounded::Value<storage::Shared<Option<provided::Account<'d>>>>),
 }
 
 impl<'d, const ADAPTIVE: bool> RecvBuffer<'d, ADAPTIVE> {
@@ -228,14 +225,6 @@ impl<'d, const ADAPTIVE: bool> RecvBuffer<'d, ADAPTIVE> {
     pub(crate) fn retained(bytes: storage::Shared<Option<provided::Account<'d>>>) -> Self {
         Self {
             storage: RecvStorage::Retained(bytes),
-        }
-    }
-
-    pub(crate) fn bounded(
-        bytes: bounded::Value<storage::Shared<Option<provided::Account<'d>>>>,
-    ) -> Self {
-        Self {
-            storage: RecvStorage::Bound(bytes),
         }
     }
 
@@ -252,7 +241,6 @@ impl<'d, const ADAPTIVE: bool> RecvBuffer<'d, ADAPTIVE> {
             RecvStorage::Owned(bytes) => Ok(mem::take(bytes)),
             RecvStorage::Compact(bytes) => Vec::<u8>::try_copy(bytes.as_ref()),
             RecvStorage::Retained(bytes) => Vec::<u8>::try_copy(bytes.as_ref()),
-            RecvStorage::Bound(bytes) => Vec::<u8>::try_copy(bytes.as_ref()),
         }
     }
 
@@ -267,16 +255,9 @@ impl<'d, const ADAPTIVE: bool> RecvBuffer<'d, ADAPTIVE> {
             return 0;
         }
         match &mut self.storage {
-            RecvStorage::Owned(bytes) => {
-                let count = max.min(bytes.len());
-                let left = bytes.len() - count;
-                bytes.copy_within(count.., 0);
-                bytes.truncate(left);
-                count
-            }
+            RecvStorage::Owned(bytes) => buffer::raw::Store::advance_max(bytes, max),
             RecvStorage::Compact(bytes) => bytes.consume_max(max),
             RecvStorage::Retained(bytes) => bytes.consume_max(max),
-            RecvStorage::Bound(bytes) => bytes.consume_max(max),
         }
     }
 }
@@ -287,7 +268,6 @@ impl<const ADAPTIVE: bool> AsRef<[u8]> for RecvBuffer<'_, ADAPTIVE> {
             RecvStorage::Owned(bytes) => bytes,
             RecvStorage::Compact(bytes) => bytes.as_ref(),
             RecvStorage::Retained(bytes) => bytes.as_ref(),
-            RecvStorage::Bound(bytes) => bytes.as_ref(),
         }
     }
 }
@@ -305,7 +285,6 @@ impl<const ADAPTIVE: bool> buffer::Residency for RecvBuffer<'_, ADAPTIVE> {
             RecvStorage::Owned(bytes) => bytes.capacity(),
             RecvStorage::Compact(bytes) => bytes.resident(),
             RecvStorage::Retained(bytes) => bytes.resident(),
-            RecvStorage::Bound(bytes) => bytes.resident(),
         }
     }
 }
@@ -316,9 +295,7 @@ impl<'d, const ADAPTIVE: bool> Recv for RecvBuffer<'d, ADAPTIVE> {
     fn layout(&self) -> Layout {
         match self.storage {
             RecvStorage::Compact(_) => Layout::Compact,
-            RecvStorage::Owned(_) | RecvStorage::Retained(_) | RecvStorage::Bound(_) => {
-                Layout::Full
-            }
+            RecvStorage::Owned(_) | RecvStorage::Retained(_) => Layout::Full,
         }
     }
 
@@ -350,13 +327,6 @@ impl<'d, const ADAPTIVE: bool> Recv for RecvBuffer<'d, ADAPTIVE> {
                     storage: RecvStorage::Retained(bytes),
                 }
             }
-            RecvStorage::Bound(bytes) => {
-                let bytes = bytes.try_clone().map_err(Capacity::Retain)?;
-                let bytes = bytes.project(range).map_err(Capacity::rejected)?;
-                Self {
-                    storage: RecvStorage::Bound(bytes),
-                }
-            }
         }))
     }
 
@@ -372,12 +342,6 @@ impl<'d, const ADAPTIVE: bool> Recv for RecvBuffer<'d, ADAPTIVE> {
                 let bytes = bytes.project(range).map_err(Capacity::rejected)?;
                 Self {
                     storage: RecvStorage::Retained(bytes),
-                }
-            }
-            RecvStorage::Bound(bytes) => {
-                let bytes = bytes.project(range).map_err(Capacity::rejected)?;
-                Self {
-                    storage: RecvStorage::Bound(bytes),
                 }
             }
         }))
@@ -412,10 +376,6 @@ unsafe impl<const ADAPTIVE: bool> buffer::raw::Store for &mut RecvBuffer<'_, ADA
                 // SAFETY: the variant exposes the unchanged bytes and driver lifetime.
                 Store::project(unsafe { Slice::from_parts(bytes, range) });
             }
-            RecvStorage::Bound(bytes) => {
-                // SAFETY: the variant exposes the unchanged bytes and driver lifetime.
-                Store::project(unsafe { Slice::from_parts(bytes, range) });
-            }
         }
     }
 }
@@ -429,7 +389,6 @@ impl<'d, const ADAPTIVE: bool> Retain<'d> for RecvBuffer<'d, ADAPTIVE> {
                 bytes,
                 storage::Shared::<Option<provided::Account<'d>>>::new(),
             ))),
-            RecvStorage::Bound(bytes) => Ok(resident::Shared::from(mem::take(bytes))),
         }
     }
 }

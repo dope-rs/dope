@@ -15,7 +15,6 @@ use crate::client::protocol;
 use crate::conn::id;
 use crate::conn::life::options;
 use crate::conn::life::tls::clients;
-use crate::errors;
 use crate::runtime::endpoint;
 use crate::runtime::endpoint::owner;
 use crate::runtime::mux;
@@ -30,7 +29,6 @@ use life::topology;
 pub enum Error {
     Storage(planes::Error<capacity::Limit<{ mux::MAX_CONNECTIONS }>>),
     Reverse(alloc::Error),
-    Connection(errors::Connect),
     EmptyTopology,
     EventBudget,
     RetryBudget,
@@ -75,14 +73,8 @@ impl<P, B> Builder<P, auth::Owned, B, client::StaticConfig, routing::Plain> {
         protocol: P,
         backoff: B,
         config: client::Config,
-    ) -> Result<Self, Error> {
-        Ok(Self::owned_with(
-            specs,
-            client::StaticConfig(opts),
-            protocol,
-            backoff,
-            config,
-        ))
+    ) -> Self {
+        Self::owned_with(specs, client::StaticConfig(opts), protocol, backoff, config)
     }
 }
 
@@ -119,14 +111,22 @@ impl<'tls, P, B> Builder<P, auth::Pooled<'tls>, B, client::StaticConfig, routing
         protocol: P,
         backoff: B,
         config: client::Config,
-    ) -> Result<Self, Error> {
-        Ok(Self::pooled_with(
-            specs,
-            client::StaticConfig(opts),
+    ) -> Self {
+        let peers = specs
+            .into_iter()
+            .map(|endpoint| topology::Peer {
+                addr: endpoint.addr,
+                auth: auth::Pooled::new(endpoint.pool),
+                route: routing::Plain,
+            })
+            .collect::<Vec<_>>();
+        Self {
+            topology: topology::Topology::Flat(peers.into_boxed_slice()),
+            config_provider: client::StaticConfig(opts),
             protocol,
             backoff,
             config,
-        ))
+        }
     }
 
     /// Builds a plain client topology with one shared TLS auth and one
@@ -172,32 +172,6 @@ impl<'tls, P, B> Builder<P, auth::Pooled<'tls>, B, client::StaticConfig, routing
             backoff,
             config,
         })
-    }
-}
-
-impl<'tls, P, B, C> Builder<P, auth::Pooled<'tls>, B, C, routing::Plain> {
-    pub fn pooled_with(
-        specs: Vec<client::PooledSpec<'tls>>,
-        configs: C,
-        protocol: P,
-        backoff: B,
-        config: client::Config,
-    ) -> Self {
-        let peers = specs
-            .into_iter()
-            .map(|endpoint| topology::Peer {
-                addr: endpoint.addr,
-                auth: auth::Pooled::new(endpoint.pool),
-                route: routing::Plain,
-            })
-            .collect::<Vec<_>>();
-        Self {
-            topology: topology::Topology::Flat(peers.into_boxed_slice()),
-            config_provider: configs,
-            protocol,
-            backoff,
-            config,
-        }
     }
 }
 

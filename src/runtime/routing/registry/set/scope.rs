@@ -66,7 +66,6 @@ pub(in crate::runtime) struct Scope<
     pub(super) resets: Tokens<'storage, 'id>,
     pub(super) cids: &'storage mut registry::Table,
     pub(super) tokens: &'storage reset::Reset,
-    pub(super) active: &'storage mut u32,
     pub(super) flush: &'storage mut super::Flush,
 }
 
@@ -81,7 +80,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             entries,
             cids,
             reset,
-            active,
+            counts,
             flush,
         } = set;
         bound::Scope::with(entries, |root| {
@@ -89,11 +88,11 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             apply(Scope {
                 entries: Entries {
                     source: entries.resident::<{ mux::FREE_QUEUE }>(),
+                    counts,
                 },
                 resets,
                 cids,
                 tokens: reset,
-                active,
                 flush,
             })
         })
@@ -202,8 +201,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         update: conn::DeadlineMode,
         retry: Option<time::Instant>,
     ) {
-        let (timer, entry) = self.entries.select(key);
-        Set::refresh(timer, entry, now, update, retry);
+        self.entries.refresh(key, now, update, retry);
     }
 
     pub(in crate::runtime) fn resets(
@@ -247,12 +245,10 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         let handle = self.handle(domain, key);
         node::detach(&mut self, key);
         let Self {
-            entries,
-            resets,
-            active,
-            ..
+            entries, resets, ..
         } = self;
-        let (timer, mut entry) = entries.source.into_select(key.0, resets);
+        let Entries { source, counts } = entries;
+        let (timer, mut entry) = source.into_select(key.0, resets);
         if let indexed::Entry::Occupied(timer) = timer {
             timer.retire();
         }
@@ -263,7 +259,11 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         entry.unlink::<{ mux::STREAM_QUEUE }>();
         entry.unlink::<{ mux::DATAGRAM_QUEUE }>();
         let (slot, entry) = entry.take();
-        *active -= 1;
+        if slot.flags.notification == registry::Notification::Retained {
+            // The consumed slot owns the matching contribution from refresh.
+            counts.retained -= 1;
+        }
+        counts.active -= 1;
         Taken {
             handle,
             slot,

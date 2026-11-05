@@ -111,28 +111,25 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Progress<'a
             ..
         } = &mut *self.machine;
         let mut delivery = delivery::Delivery::new(
-            delivery::Graph::new(
-                egress,
-                control,
-                tls,
-                &mut streams.state,
-                &mut streams.events,
-            ),
+            control,
+            tls,
+            &mut streams.state,
+            &mut streams.events,
             release::Ignore,
         );
-        let outcome = losses::Detector::new(&mut delivery).try_run(now)?;
+        let outcome = losses::try_run(egress, &mut delivery, now)?;
         if matches!(outcome, losses::Outcome::Clear)
-            && let Some(epoch) = delivery.egress.recovery.timer.pto_epoch
+            && let Some(epoch) = egress.recovery.timer.pto_epoch
         {
-            delivery.egress.recovery.probe.epoch = Some(epoch);
-            delivery.egress.recovery.probe.allowance.arm();
+            egress.recovery.probe.epoch = Some(epoch);
+            egress.recovery.probe.allowance.arm();
             delivery.handshake.crypto.arm_probes(epoch);
             if epoch == conn::Epoch::Application {
                 probes::Probes::new(&mut *delivery.control).arm(epoch);
                 delivery.streams.transmit.arm_probes();
             }
-            delivery.egress.recovery.probe.count.increment();
+            egress.recovery.probe.count.increment();
         }
-        delivery.try_update(now)
+        delivery.try_update(egress, now)
     }
 }

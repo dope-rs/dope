@@ -77,7 +77,7 @@ pub(super) struct Applied<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'cry
 
 pub(super) enum Control<'row, 'wire, 'id> {
     Crypto(Crypto<'row, 'wire, 'id>),
-    Frame(record::Operation<'row, 'id>),
+    Frame(record::View<'row, 'id>),
 }
 
 /// An actual row loan coupled to the cursor which prepared it.
@@ -265,21 +265,23 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
     ) {
         let body = self.input.body;
         let crypto = &mut self.input.crypto;
-        let mut result = Ok(frames::Disposition::Commit);
-        for control in self.input.records.controls() {
-            let control = match control {
-                record::Control::Crypto(step) => Control::Crypto(Crypto {
-                    cursor: crypto.borrow(),
-                    step,
-                    body,
-                }),
-                record::Control::Frame(op) => Control::Frame(op),
-            };
-            result = run(control);
-            if !matches!(result, Ok(frames::Disposition::Commit)) {
-                break;
+        let result = 'controls: {
+            for control in self.input.records.controls() {
+                let control = match control {
+                    record::Control::Crypto(step) => Control::Crypto(Crypto {
+                        cursor: crypto.borrow(),
+                        step,
+                        body,
+                    }),
+                    record::Control::Frame(frame) => Control::Frame(frame),
+                };
+                match run(control) {
+                    Ok(frames::Disposition::Commit) => {}
+                    stop => break 'controls stop,
+                }
             }
-        }
+            Ok(frames::Disposition::Commit)
+        };
         (
             Applied {
                 _backing: self.backing,
@@ -291,7 +293,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
 }
 
 impl<'id, S> Applied<'_, '_, '_, '_, 'id, '_, '_, '_, '_, '_, S> {
-    pub(super) fn operations(&self) -> impl Iterator<Item = record::Operation<'_, 'id>> {
+    pub(super) fn operations(&self) -> impl Iterator<Item = record::Operation<'_>> {
         self.input
             .records
             .as_slice()

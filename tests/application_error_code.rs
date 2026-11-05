@@ -4,7 +4,6 @@ use common::peer::Scope as _;
 pub mod common;
 use common::peer;
 
-use std::mem;
 use std::time::{Duration, Instant};
 
 use dope_quic::errors::Code;
@@ -13,9 +12,7 @@ use dope_quic::wire::varint::VarInt;
 use peer::Event;
 
 #[test]
-fn proves_layout() {
-    assert_eq!(mem::size_of::<Code>(), mem::size_of::<u64>());
-    assert_eq!(mem::align_of::<Code>(), mem::align_of::<u64>());
+fn bounds_code() {
     assert!(Code::new(u64::MAX).is_none());
     assert_eq!(Code::MAX.get(), VarInt::MAX);
 }

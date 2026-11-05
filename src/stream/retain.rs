@@ -39,6 +39,6 @@ impl<'d> Retain<'d> for bounded::Value<storage::Shared<Option<provided::Account<
             .try_get(range)
             .map_err(detail::Retention::Range)?;
         let bytes = view.try_retain().map_err(detail::Retention::Retain)?;
-        Ok(stream::RecvBuffer::bounded(bytes))
+        Ok(stream::RecvBuffer::retained(bytes.into_inner()))
     }
 }

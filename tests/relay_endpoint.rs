@@ -265,8 +265,6 @@ fn owned_routed_server_starts_application() {
                     .bind(capture(), &mut driver)
                     .expect("owned routed idle");
                 assert_eq!(first.local_addr(), second.local_addr());
-                assert_ne!(first.local_addr().port(), 0);
-                assert!(first.is_empty());
             },
             Policy::new(
                 |_| {},

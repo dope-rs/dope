@@ -2,10 +2,11 @@ use crate::{security, wire};
 use o3::{
     base::num::bounded,
     buffer::{bytes::scope, write},
+    mem::Rejected,
 };
 use rustls::quic;
 use security::{
-    crypto::{Dimensions, Error, KeyOperation, Opened, Plain, op, output, plain},
+    crypto::{Dimensions, Error, KeyOperation, Opened, Plain, op, output},
     qkdf::{self, origin},
 };
 use std::{marker, mem, num::NonZero, ops};
@@ -141,7 +142,7 @@ impl<O: qkdf::KeyOrigin> Key<kind::OneRtt, O, op::Open> {
         sealed: Protected<P>,
         next: u64,
         select: impl FnOnce(Number, bool) -> (C, &'key cipher::Packet<op::Open>),
-    ) -> Result<(C, Opened<P>), plain::Failure<P>> {
+    ) -> Result<(C, Opened<P>), Rejected<P, Error>> {
         let (mut packet, cid) = sealed.into_parts();
         let pn_at = NonZero::<usize>::MIN.saturating_add(usize::from(cid.get()));
         let result = self.unmask(packet.as_mut(), pn_at, next).and_then(|plain| {
@@ -159,7 +160,7 @@ impl<O: qkdf::KeyOrigin> Key<kind::OneRtt, O, op::Open> {
                     cid,
                 },
             )),
-            Err(error) => Err(plain::Failure { packet, error }),
+            Err(error) => Err(Rejected::new(packet, error)),
         }
     }
 
@@ -218,10 +219,8 @@ impl<K: kind::Kind, O: qkdf::KeyOrigin> Key<K, O, op::Open> {
         let first = *first;
         let width = widths::Width::from_first(first);
         let pn_len = width.get();
-        let short = number
-            .iter()
-            .take(pn_len)
-            .fold(0u64, |short, byte| (short << 8) | u64::from(*byte));
+        let short =
+            u64::from(u32::from_be_bytes(*number) >> ((header::SAMPLE_OFFSET - pn_len) * 8));
         let Some(number) = Number::decode(next, short, width) else {
             return Err(Error::Number {
                 next,

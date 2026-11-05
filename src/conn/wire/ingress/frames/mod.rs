@@ -104,8 +104,7 @@ pub(super) enum Disposition {
 pub(super) struct CommitState {
     lifecycle: conn::State,
     has_non_padding: bool,
-    has_datagram: bool,
-    notification_reserved: bool,
+    notify: bool,
     pub(super) early_data_rejected: bool,
     pub(super) path_migrated: bool,
     pub(super) recovery_deadline_changed: bool,
@@ -117,8 +116,7 @@ impl CommitState {
         Self {
             lifecycle: state,
             has_non_padding: false,
-            has_datagram: false,
-            notification_reserved: false,
+            notify: false,
             early_data_rejected: false,
             path_migrated: false,
             recovery_deadline_changed: false,
@@ -128,10 +126,7 @@ impl CommitState {
 
     pub(super) fn applied(&mut self, frames: &[record::FrameRecord<'_>], notified: bool) {
         self.has_non_padding = !frames.is_empty();
-        self.has_datagram = frames
-            .iter()
-            .any(|frame| frame.admission() == record::Admission::Datagram);
-        self.notification_reserved = notified;
+        self.notify = notified;
     }
 
     pub(super) fn finish(self, state: conn::State) -> conn::Effects {
@@ -139,7 +134,7 @@ impl CommitState {
         if self.has_non_padding {
             effects.insert(conn::Effects::OUTPUT);
         }
-        if self.notification_reserved || self.has_datagram {
+        if self.notify {
             effects.insert(conn::Effects::NOTIFY);
         }
         if state != self.lifecycle {

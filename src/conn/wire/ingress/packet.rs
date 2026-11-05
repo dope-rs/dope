@@ -59,10 +59,15 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         (&mut *self.connection, &mut self.discard)
     }
 
-    fn effects(&self, mut effects: conn::Effects) -> conn::Effects {
-        if self.connection.path.ingress().peer() != self.peer
-            || self.connection.path.local.is_dirty()
-            || self.connection.path.peer.is_dirty()
+    #[inline]
+    fn effects(
+        machine: &conn::Machine<DOMAIN, B, D>,
+        peer: &Option<Peer>,
+        mut effects: conn::Effects,
+    ) -> conn::Effects {
+        if machine.path.ingress().peer() != *peer
+            || machine.path.local.is_dirty()
+            || machine.path.peer.is_dirty()
         {
             effects.insert(conn::Effects::ROUTING);
         }
@@ -94,7 +99,7 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         if matches!(error, conn::Error::Timing(_)) {
             effects.insert(conn::Effects::LIFECYCLE);
         }
-        self.effects(effects)
+        Self::effects(self.connection, &self.peer, effects)
     }
 
     pub(in crate::conn::wire::ingress) fn try_drop(
@@ -104,7 +109,7 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         self.discard
             .apply(&mut self.connection.receive.packet_numbers);
         let effects = self.pending.take();
-        Ok(self.effects(effects))
+        Ok(Self::effects(self.connection, &self.peer, effects))
     }
 
     pub(in crate::conn::wire::ingress) fn try_commit(
@@ -157,12 +162,6 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             .egress
             .activity
             .ack_eliciting_sent_since_last_receive = false;
-        if machine.path.ingress().peer() != peer
-            || machine.path.local.is_dirty()
-            || machine.path.peer.is_dirty()
-        {
-            effects.insert(conn::Effects::ROUTING);
-        }
-        Ok(effects)
+        Ok(Self::effects(machine, &peer, effects))
     }
 }

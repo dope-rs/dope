@@ -56,19 +56,21 @@ impl<'storage, 'id, C, I: Copy, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
             resets,
             cids,
             tokens,
-            active,
+            counts,
             flush,
         } = self.owner;
         let (entries, key) = entries.install::<{ mux::FREE_QUEUE }>(self.key, slot);
-        *active += 1;
+        counts.active += 1;
         let key = Key(key);
         use o3::depot::raw::TagEntry as _;
         let mut scope = Scope {
-            entries: Entries { source: entries },
+            entries: Entries {
+                source: entries,
+                counts,
+            },
             resets,
             cids,
             tokens,
-            active,
             flush,
         };
         scope.reset_flush();

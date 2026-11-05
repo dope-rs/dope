@@ -184,19 +184,8 @@ impl<'a, 'b, 'c, 'body, B: stream::Recv> Input<'a, 'b, 'c, 'body, B> {
         source: impl Iterator<Item = Result<Option<recv::Pending<'body, B>>, E>>,
     ) -> Result<recv::Prepared<'body, B>, E> {
         let old = target.entry.buffer.ranges;
-        let mut buffered = Ok(0usize);
         let plan = Read::new(&target.entry.buffer, target.arena)
-            .try_plan(segs, parts, |bytes| {
-                buffered = buffered.and_then(|current| {
-                    let added = bytes.as_ref().len();
-                    current
-                        .checked_add(added)
-                        .ok_or(stream::Capacity::Overflow {
-                            current,
-                            additional: added,
-                        })
-                });
-            })
+            .try_plan(segs, parts)
             .map_err(stream::Capacity::from)
             .map_err(ranges::Error::from)?;
         let mut input = Self {
@@ -214,7 +203,7 @@ impl<'a, 'b, 'c, 'body, B: stream::Recv> Input<'a, 'b, 'c, 'body, B> {
                 input.try_push(value)?;
             }
         }
-        Ok(input.try_finish(buffered)?)
+        Ok(input.try_finish()?)
     }
 
     fn try_push(&mut self, input: recv::Pending<'body, B>) -> Result<(), ranges::Error> {
@@ -233,31 +222,19 @@ impl<'a, 'b, 'c, 'body, B: stream::Recv> Input<'a, 'b, 'c, 'body, B> {
         Ok(())
     }
 
-    /// Original gap owners and their lengths stay unchanged during preparation.
-    /// The captured sum's error follows source and slot checks, preserving failure order.
-    fn try_finish(
-        self,
-        buffered: Result<usize, stream::Capacity>,
-    ) -> Result<recv::Prepared<'body, B>, ranges::Error> {
+    fn try_finish(self) -> Result<recv::Prepared<'body, B>, ranges::Error> {
         let slots = capacity::Count::try_from(if <B::Ready as ready::raw::Queue<B>>::SEGMENTED {
             self.ranges.slots()
         } else {
             self.peak - self.old
         })
         .map_err(stream::Capacity::Count)?;
-        let buffered = buffered?;
-        let accepted = self.ranges.bytes()?;
-        let bytes = buffered
-            .checked_add(accepted)
-            .ok_or(stream::Capacity::Overflow {
-                current: buffered,
-                additional: accepted,
-            })?;
-        let ready = !<B::Ready as ready::raw::Queue<B>>::SEGMENTED && self.ranges.has_ready();
+        // Replay advances this same contiguous prefix; admitted frame and gap
+        // widths bound its growth by the usize proof below.
+        let bytes = (self.plan.next() - self.target.entry.buffer.next) as usize;
         <B::Ready as ready::raw::Queue<B>>::try_reserve(
             &mut self.target.entry.buffer.assembled,
             bytes,
-            ready,
         )?;
         Ok(recv::Prepared {
             ranges: self.ranges,
@@ -286,7 +263,6 @@ impl<'a, B: stream::Recv> Read<'a, B> {
         &self,
         segs: &'b mut Vec<ops::Range<u64>>,
         parts: &'b mut Vec<inserts::Part>,
-        mut record: impl FnMut(&B),
     ) -> Result<plan::Plan<'b>, detail::Ranges> {
         use o3::alloc::raw::VecExt as _;
 
@@ -301,7 +277,6 @@ impl<'a, B: stream::Recv> Read<'a, B> {
             }
             // SAFETY: the current exclusive owner admitted this exact next slot.
             unsafe { segs.vacancy() }.insert(node.start()..node.end());
-            record(node.bytes());
         }
         parts.clear();
         Ok(plan::Plan::new(self.buffer.next, segs, parts))
@@ -309,3 +284,7 @@ impl<'a, B: stream::Recv> Read<'a, B> {
 }
 
 const _: () = assert!(mem::size_of::<Read<'static, Vec<u8>>>() == 2 * mem::size_of::<usize>());
+
+// Each old gap and each admitted frame contributes at most u16::MAX bytes.
+const _: () =
+    assert!(ranges::MAX + crate::conn::MAX_FRAMES_PER_PACKET <= usize::MAX / u16::MAX as usize);

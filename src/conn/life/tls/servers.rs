@@ -10,7 +10,6 @@ use life::{accept, initial};
 pub struct Pool<const DOMAIN: u8 = 0> {
     auth: accept::Authority<DOMAIN>,
     permits: quota::Ledger,
-    capacity: NonZero<usize>,
 }
 
 impl<const DOMAIN: u8> Pool<DOMAIN> {
@@ -18,16 +17,11 @@ impl<const DOMAIN: u8> Pool<DOMAIN> {
         Self {
             auth,
             permits: quota::Ledger::new(capacity.get()),
-            capacity,
         }
     }
 
     pub const fn authority(&self) -> &accept::Authority<DOMAIN> {
         &self.auth
-    }
-
-    pub const fn capacity(&self) -> usize {
-        self.capacity.get()
     }
 
     pub fn accept(

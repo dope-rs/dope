@@ -1,9 +1,4 @@
-use crate::{security::crypto, wire::packet::header};
-
-pub(crate) struct Failure<P> {
-    pub(crate) packet: P,
-    pub(crate) error: crypto::Error,
-}
+use crate::wire::packet::header;
 
 /// The adjacent header and body borrowed from one admitted packet.
 pub(crate) struct Plain<'packet> {

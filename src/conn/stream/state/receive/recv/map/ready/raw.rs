@@ -28,7 +28,7 @@ pub unsafe trait Queue<B: stream::Recv<Ready = Self>>: Default {
     ) where
         B: 'a;
     fn clear(view: &mut views::Write<'_, '_, B>);
-    fn try_reserve(&mut self, bytes: usize, ready: bool) -> Result<(), stream::Capacity>;
+    fn try_reserve(&mut self, bytes: usize) -> Result<(), stream::Capacity>;
     fn push_back<'a>(
         view: &mut views::Write<'a, '_, B>,
         permit: &frames::CommitPermit<'_>,
@@ -81,10 +81,7 @@ unsafe impl Queue<Vec<u8>> for Vec<u8> {
         view.entry.buffer.assembled.clear();
     }
 
-    fn try_reserve(&mut self, bytes: usize, ready: bool) -> Result<(), stream::Capacity> {
-        if self.is_empty() && !ready {
-            return Ok(());
-        }
+    fn try_reserve(&mut self, bytes: usize) -> Result<(), stream::Capacity> {
         self.try_grow(bytes)
             .map_err(|error| stream::Capacity::Allocation {
                 error,
@@ -179,7 +176,7 @@ unsafe impl<'d, const ADAPTIVE: bool> Queue<stream::RecvBuffer<'d, ADAPTIVE>> fo
         ready.bytes = 0;
     }
 
-    fn try_reserve(&mut self, bytes: usize, _: bool) -> Result<(), stream::Capacity> {
+    fn try_reserve(&mut self, bytes: usize) -> Result<(), stream::Capacity> {
         self.bytes
             .checked_add(bytes as u64)
             .ok_or(stream::Capacity::Overflow {

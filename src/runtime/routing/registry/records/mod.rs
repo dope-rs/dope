@@ -18,13 +18,20 @@ pub(in crate::runtime) struct Slot<C, const DOMAIN: u8, B: stream::Recv, D: buff
     pub(in crate::runtime) connection: Option<C>,
     pub(in crate::runtime) peer_addr: Peer,
     pub(in crate::runtime) max_packet_bytes: Size,
-    flags: Flags,
+    pub(in crate::runtime::routing::registry) flags: Flags,
 }
 
-struct Flags {
-    notified_established: bool,
+pub(in crate::runtime::routing::registry) struct Flags {
+    pub(in crate::runtime::routing::registry) notification: Notification,
     first_flush: bool,
     stream_first: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(in crate::runtime) enum Notification {
+    Pending,
+    Ready,
+    Retained,
 }
 
 impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Slot<C, DOMAIN, B, D, T> {
@@ -47,7 +54,7 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Slot<C, D
             peer_addr: peer,
             max_packet_bytes: limit,
             flags: Flags {
-                notified_established: false,
+                notification: Notification::Pending,
                 first_flush: true,
                 stream_first: false,
             },
@@ -63,7 +70,7 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Slot<C, D
             tls: &mut self.tls,
             connection: &mut self.connection,
             peer_addr: &mut self.peer_addr,
-            notified_established: &mut self.flags.notified_established,
+            notification: &mut self.flags.notification,
             max_packet_bytes: &mut self.max_packet_bytes,
             first_flush: &mut self.flags.first_flush,
             stream_first: &mut self.flags.stream_first,
@@ -84,7 +91,7 @@ pub(in crate::runtime) struct Access<
     pub(in crate::runtime) tls: &'loan mut Option<T>,
     pub(in crate::runtime) connection: &'loan mut Option<C>,
     pub(in crate::runtime) peer_addr: &'loan mut Peer,
-    pub(in crate::runtime) notified_established: &'loan mut bool,
+    pub(in crate::runtime) notification: &'loan mut Notification,
     pub(in crate::runtime) max_packet_bytes: &'loan mut Size,
     pub(in crate::runtime) first_flush: &'loan mut bool,
     pub(in crate::runtime) stream_first: &'loan mut bool,

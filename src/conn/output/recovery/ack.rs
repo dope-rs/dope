@@ -1,9 +1,10 @@
 use crate::stream::release;
 use o3::buffer;
 
-use std::{mem, time};
+use std::time;
 
 use crate::conn::output::recovery::{delivery, losses, timer};
+use crate::conn::output::{self, cc};
 use crate::{conn, stream, wire::frame::ack::ranges};
 
 pub(in crate::conn) struct Receipt<'a> {
@@ -12,64 +13,60 @@ pub(in crate::conn) struct Receipt<'a> {
     pub(in crate::conn) advanced: bool,
 }
 
-pub(in crate::conn) struct Ack<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E> {
-    delivery: delivery::Delivery<'a, DOMAIN, B, D, E>,
-}
-
-impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E: release::Sink>
-    Ack<'a, DOMAIN, B, D, E>
+pub(in crate::conn) fn try_apply<'a, const DOMAIN: u8, B, D, E>(
+    egress: &'a mut output::Egress,
+    mut delivery: delivery::Delivery<'a, DOMAIN, B, D, E>,
+    epoch: conn::Epoch,
+    receipt: Receipt<'_>,
+    now: time::Instant,
+) -> Result<(), conn::Error>
+where
+    B: stream::Recv,
+    D: buffer::raw::Segment,
+    E: release::Sink,
 {
-    pub(in crate::conn) fn new(graph: delivery::Graph<'a, DOMAIN, B, D>, proof: E) -> Self {
-        Self {
-            delivery: delivery::Delivery::new(graph, proof),
-        }
+    let Receipt {
+        delay,
+        ranges,
+        advanced: mut changed,
+    } = receipt;
+    let largest = ranges.largest();
+    let valid = timer::Timer::is_validated(egress, delivery.streams.local());
+    let mut sample = None;
+    let mut elicits = false;
+    let (result, boundary) = egress.recovery.packet_journals.space_mut(epoch).try_ack(
+        ranges,
+        |journal, controls, streams| {
+            changed = true;
+            let elicit = journal.transmission.is_eliciting();
+            elicits |= elicit;
+            if journal.pn.get() == largest {
+                sample = Some(now.saturating_duration_since(journal.sent_time));
+            }
+            egress.cc.packet_acked(
+                journal.bytes_sent as u64,
+                journal.sent_time,
+                journal.transmission.is_flight(),
+                cc::Packet::from_epoch(epoch, journal.pn),
+            );
+            delivery.ack(journal, controls, streams)
+        },
+    );
+    if valid && elicits {
+        egress.recovery.probe.count.reset();
     }
-
-    pub(in crate::conn) fn try_apply(
-        &mut self,
-        epoch: conn::Epoch,
-        receipt: Receipt<'_>,
-        now: time::Instant,
-    ) -> Result<(), conn::Error> {
-        let Receipt {
-            delay,
-            ranges,
-            advanced: mut changed,
-        } = receipt;
-        let largest = ranges.largest();
-        let valid = timer::Timer::is_validated(self.delivery.egress, self.delivery.streams.local());
-        let mut sample = None;
-        let mut elicits = false;
-        let mut journals = mem::take(&mut self.delivery.egress.recovery.packet_journals);
-        let (result, boundary) =
-            journals
-                .space_mut(epoch)
-                .try_ack(ranges, |journal, controls, streams| {
-                    changed = true;
-                    let elicit = journal.transmission.is_eliciting();
-                    elicits |= elicit;
-                    if journal.pn.get() == largest {
-                        sample = Some(now.saturating_duration_since(journal.sent_time));
-                    }
-                    if valid && elicit {
-                        self.delivery.egress.recovery.probe.count.reset();
-                    }
-                    self.delivery.acknowledge(epoch, journal, controls, streams)
-                });
-        self.delivery.egress.recovery.packet_journals = journals;
-        if let Some(boundary) = boundary {
-            epoch
-                .bind_mut(&mut self.delivery.egress.recovery.streaks)
-                .acknowledged(boundary);
-        }
-        result?;
-        if elicits && let Some(sample) = sample {
-            self.delivery.egress.recovery.rtt.update(sample, delay);
-        }
-        let outcome = losses::Detector::new(&mut self.delivery).try_run(now)?;
-        if changed || matches!(outcome, losses::Outcome::Lost) {
-            self.delivery.try_update(now)?;
-        }
-        Ok(())
+    if let Some(boundary) = boundary {
+        epoch
+            .bind_mut(&mut egress.recovery.streaks)
+            .acknowledged(boundary);
     }
+    result?;
+    if elicits && let Some(sample) = sample {
+        egress.recovery.rtt.update(sample, delay);
+    }
+    let outcome = losses::try_run(egress, &mut delivery, now)?;
+    if changed || matches!(outcome, losses::Outcome::Lost) {
+        delivery.try_update(egress, now)?;
+    }
+    Ok(())
 }

@@ -1,4 +1,3 @@
-use dope::core::driver::schedule::clock;
 use dope_quic::client::{
     self, AttemptId, AttemptScope, ConfigSource, RetryCause, RetryScope, SlotId,
 };
@@ -21,31 +20,23 @@ impl client::Backoff for Immediate {
     }
 }
 
-#[derive(Default)]
-pub struct Observed {
-    pub history: History,
-    pub observed_start: Cell<bool>,
-}
-
-pub struct Config<'state>(pub &'state Observed);
+pub struct Config<'state>(pub &'state History);
 
 impl ConfigSource for Config<'_> {
     fn config<'scope, 'd>(&'scope mut self, attempt: AttemptScope<'scope, 'd>) -> Option<Options> {
-        self.0.history.attempts.push(Attempt {
+        self.0.attempts.push(Attempt {
             id: attempt.id(),
             ordinal: attempt.attempt(),
         });
-        let _: clock::Moment<'d> = attempt.started_at();
-        self.0.observed_start.set(true);
         None
     }
 }
 
-pub struct Backoff<'state>(pub &'state Observed);
+pub struct Backoff<'state>(pub &'state History);
 
 impl client::Backoff for Backoff<'_> {
     fn retry_after<'scope>(&'scope self, retry: RetryScope<'scope>) -> Duration {
-        self.0.history.retries.push(Transition::from(retry));
+        self.0.retries.push(Transition::from(retry));
         Duration::from_secs(1)
     }
 }

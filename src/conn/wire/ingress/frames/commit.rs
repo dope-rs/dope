@@ -204,7 +204,7 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                 }
             }
             state.receive.connection_window.record(token, credit);
-            done.applied(frames, evcap != 0);
+            done.applied(frames, evcap != 0 || dgrams.size_hint().0 != 0);
             for record in frames.iter() {
                 if let frame::View::PathChallenge { data } = record.view() {
                     use path::probe::Error;
@@ -228,17 +228,17 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                             let step =
                                 hs.read(epoch, msg, &mut |error| proof.certificate(error), |hs| {
                                     done.early_data_rejected = true;
-                                    early::EarlyData::new(
-                                        delivery::Graph::new(
-                                            egress,
+                                    early::try_reject(
+                                        egress,
+                                        delivery::Delivery::new(
                                             ctrl,
                                             hs,
                                             state,
                                             events.events(),
+                                            release::Ignore,
                                         ),
-                                        release::Ignore,
+                                        now,
                                     )
-                                    .try_reject(now)
                                 })?;
                             if let Some(finish) = step.done {
                                 (tls::Finish {
@@ -259,7 +259,7 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                             Ok(())
                         })?;
                     }
-                    sources::Control::Frame(record::Operation::Drop(parsed)) => match parsed {
+                    sources::Control::Frame(parsed) => match parsed {
                         frame::View::Ack {
                             delay,
                             additional_ranges: ranges,
@@ -292,11 +292,15 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                                 Duration::ZERO
                             };
                             done.recovery_deadline_changed = true;
-                            ack::Ack::new(
-                                delivery::Graph::new(egress, ctrl, hs, state, events.events()),
-                                release::Forward::new(proof),
-                            )
-                            .try_apply(
+                            ack::try_apply(
+                                egress,
+                                delivery::Delivery::new(
+                                    ctrl,
+                                    hs,
+                                    state,
+                                    events.events(),
+                                    release::Forward::new(proof),
+                                ),
                                 epoch,
                                 ack::Receipt {
                                     delay: wait,
@@ -395,13 +399,6 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                         | frame::View::DataBlocked { .. }
                         | frame::View::StreamsBlocked { .. } => {}
                     },
-                    sources::Control::Frame(
-                        record::Operation::Datagram
-                        | record::Operation::Stream { .. }
-                        | record::Operation::StreamTransient { .. }
-                        | record::Operation::Reset(_)
-                        | record::Operation::Stop { .. },
-                    ) => {}
                 }
                 Ok::<_, conn::Error>(frames::Disposition::Commit)
             });
@@ -410,7 +407,7 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             }
             for op in applied.operations() {
                 match op {
-                    record::Operation::Drop(_) => {}
+                    record::Operation::Drop => {}
                     record::Operation::Datagram => {
                         let Some(bytes) = dgrams.next() else {
                             return Ok(frames::Disposition::Drop);
@@ -476,11 +473,11 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                 done.path_migrated = true;
             }
             if done.path_migrated {
-                shift::Shift::new(
-                    delivery::Graph::new(egress, ctrl, hs, &mut state.state, queue),
-                    release::Ignore,
-                )
-                .try_commit(now)?;
+                shift::try_commit(
+                    egress,
+                    delivery::Delivery::new(ctrl, hs, &mut state.state, queue, release::Ignore),
+                    now,
+                )?;
             }
             Ok::<_, conn::Error>(())
         })();

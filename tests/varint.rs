@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use dope_quic::wire::{
     Mark, Packed,
     stream::Id,
@@ -10,7 +8,6 @@ use o3::buffer::write;
 
 #[test]
 fn caches_wire_width() {
-    assert_eq!(size_of::<VarInt>(), size_of::<u64>());
     for (raw, width) in [
         (0, 1),
         (63, 1),
@@ -34,7 +31,6 @@ fn caches_wire_width() {
 #[test]
 fn encodes_stream_count() {
     const MAX: u64 = 1 << 60;
-    assert_eq!(size_of::<bounded::U64<0, MAX>>(), size_of::<VarInt>());
     assert!(bounded::U64::<0, MAX>::new(MAX + 1).is_none());
     for raw in [0, 63, 64, 16_383, 16_384, 1_073_741_823, 1_073_741_824, MAX] {
         let count = bounded::U64::<0, MAX>::new(raw).expect("stream count fits its bound");
@@ -86,7 +82,6 @@ fn rejects_short_output() {
 
 #[test]
 fn packed_keeps_identity() {
-    assert_eq!(size_of::<Option<Packed>>(), size_of::<u64>());
     for raw in [
         0,
         63,

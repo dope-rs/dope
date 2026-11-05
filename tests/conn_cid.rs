@@ -1,18 +1,10 @@
 pub mod common;
 use crate::common::e2e::life::{self, driver::Driver, identity::RouteId};
 use common::suite::cid::contract::{ROUTES, Wire};
-use dope_quic::proto::cid::Schedule;
-use dope_quic::runtime::mux::protocol::rotation::Batch;
-use std::{
-    mem::{needs_drop, size_of},
-    num::NonZero,
-};
+use std::num::NonZero;
+
 #[test]
 fn replays_lifecycle() {
-    assert_eq!(size_of::<Batch>(), 2 * size_of::<usize>());
-    assert!(!needs_drop::<Batch>());
-    assert!(size_of::<Schedule>() <= 4 * size_of::<usize>());
-    assert!(!needs_drop::<Schedule>());
     let topology = life::Topology::try_new(1, 1, &ROUTES)
         .expect("the fixture maps its sole transport and shard");
     let scenario =

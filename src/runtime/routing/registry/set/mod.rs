@@ -20,7 +20,7 @@ use crate::runtime::mux::manage::config::ResizeError;
 use crate::runtime::mux::router;
 use crate::runtime::mux::router::drive::Step;
 use crate::{conn, stream};
-use conn::{id, life::status::schedule, wire::path::reset::Token};
+use conn::{id, wire::path::reset::Token};
 use router::reset;
 use router::routing::issuer;
 
@@ -87,13 +87,19 @@ impl Flush {
     }
 }
 
+#[derive(Default)]
+struct Counts {
+    active: u32,
+    retained: u32,
+}
+
 /// Owns every initialized slot, current routing extent and lifecycle transition.
 pub(in crate::runtime) struct Set<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T>
 {
     entries: Root<C, DOMAIN, B, D, T>,
     cids: registry::Table,
     reset: reset::Reset,
-    active: u32,
+    counts: Counts,
     flush: Flush,
 }
 
@@ -121,13 +127,13 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
             entries,
             cids,
             reset: reset::Reset::new(hash),
-            active: 0,
+            counts: Counts::default(),
             flush: Flush::default(),
         })
     }
 
     pub(in crate::runtime) fn try_resize(&mut self, max: usize) -> Result<(), ResizeError> {
-        if let Some(actual) = NonZero::new(self.active as usize) {
+        if let Some(actual) = NonZero::new(self.counts.active as usize) {
             return Err(ResizeError::Active { actual });
         }
         let max = match capacity::Limit::<{ mux::MAX_CONNECTIONS }>::new(max) {
@@ -189,7 +195,7 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
     }
 
     pub(in crate::runtime) fn len(&self) -> usize {
-        self.active as usize
+        self.counts.active as usize
     }
 
     pub(in crate::runtime) fn capacity(&self) -> usize {
@@ -232,39 +238,13 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
         Some(entry)
     }
 
-    fn is_retained(
-        entry: &slot::Storage<registry::Slot<C, DOMAIN, B, D, T>, registry::Epoch>,
-    ) -> bool {
-        entry.metadata().next().is_some()
-            && entry
-                .get()
-                .is_some_and(|slot| slot.conn.view().lifecycle().is_closing())
-    }
-
-    pub(in crate::runtime) fn is_waiting<I: Copy>(
-        &self,
-        domain: id::Domain<I, DOMAIN>,
-        handle: id::Handle<I, DOMAIN>,
-    ) -> bool {
-        self.entries.len_in::<{ mux::FREE_QUEUE }>() == 0
-            && self.bound(domain, handle).is_some_and(Self::is_retained)
-    }
-
     /// Only a reusable terminal owner makes full capacity temporary.
-    pub(in crate::runtime) fn admission<I: Copy>(
-        &self,
-        domain: id::Domain<I, DOMAIN>,
-    ) -> router::Admission<I, DOMAIN> {
+    pub(in crate::runtime) fn admission(&self) -> router::Admission {
         if self.entries.len_in::<{ mux::FREE_QUEUE }>() != 0 {
             return router::Admission::Available;
         }
-        for index in 0..self.entries.len() {
-            let Some((index, entry)) = self.entries.resolve(index) else {
-                continue;
-            };
-            if Self::is_retained(entry) {
-                return router::Admission::Retained(domain.handle(index, entry.metadata().get()));
-            }
+        if self.counts.retained != 0 {
+            return router::Admission::Retained;
         }
         router::Admission::Full
     }
@@ -281,45 +261,6 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
             entry.get()?;
             Some(domain.handle(index, entry.metadata().get()))
         })
-    }
-
-    pub(in crate::runtime) fn refresh(
-        timer: indexed::Entry<'_, time::Instant, capacity::Limit<{ mux::MAX_CONNECTIONS }>>,
-        mut entry: Entry<'_, C, DOMAIN, B, D, T>,
-        now: time::Instant,
-        update: conn::DeadlineMode,
-        retry: Option<time::Instant>,
-    ) {
-        entry.unlink::<{ mux::REAP_QUEUE }>();
-        let slot = entry.get();
-        if slot.conn.view().lifecycle().is_closed() {
-            entry.link_back::<{ mux::REAP_QUEUE }>();
-            if let indexed::Entry::Occupied(timer) = timer {
-                timer.retire();
-            }
-            return;
-        }
-        let flush = entry.is_linked::<{ mux::FLUSH_QUEUE }>();
-        let due = schedule::deadline_with_retry(slot.conn.machine(), now, !flush, retry);
-        match (timer, due, update) {
-            (indexed::Entry::Vacant(timer), Some(due), _) => {
-                timer.set(due);
-            }
-            (indexed::Entry::Occupied(timer), Some(due), conn::DeadlineMode::Earlier)
-                if due < *timer.priority() =>
-            {
-                timer.set(due);
-            }
-            (indexed::Entry::Occupied(timer), Some(due), conn::DeadlineMode::Exact)
-                if due != *timer.priority() =>
-            {
-                timer.set(due);
-            }
-            (indexed::Entry::Occupied(timer), None, conn::DeadlineMode::Exact) => {
-                timer.retire();
-            }
-            _ => {}
-        }
     }
 
     pub(in crate::runtime) fn promote(&mut self, now: time::Instant) -> Step {

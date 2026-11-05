@@ -32,10 +32,10 @@ pub(in crate::runtime) mod routing;
 mod state;
 mod turn;
 
-/// Capacity pressure qualified by the exact transport that can release it.
-pub(crate) enum Admission<I, const DOMAIN: u8> {
+/// Capacity pressure qualified by resident transports that can release it.
+pub(crate) enum Admission {
     Available,
-    Retained(id::Handle<I, DOMAIN>),
+    Retained,
     Full,
 }
 
@@ -104,19 +104,11 @@ impl<
         self.state.registry.len()
     }
 
-    pub(crate) fn admission(&self) -> Admission<A::Identity, DOMAIN> {
+    pub(crate) fn admission(&self) -> Admission {
         if self.state.lifecycle.shutting_down {
             return Admission::Full;
         }
-        self.state.registry.admission(self.state.binding.domain)
-    }
-
-    pub(crate) fn is_waiting(&self, handle: id::Handle<A::Identity, DOMAIN>) -> bool {
-        !self.state.lifecycle.shutting_down
-            && self
-                .state
-                .registry
-                .is_waiting(self.state.binding.domain, handle)
+        self.state.registry.admission()
     }
 
     #[doc(hidden)]

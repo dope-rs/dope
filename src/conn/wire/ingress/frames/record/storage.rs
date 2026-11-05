@@ -15,7 +15,7 @@ use crate::wire::{
 };
 
 use crate::conn::wire::ingress::frames::record::{
-    Admission, FrameRecord, Kind, Operation, Receive, Stored,
+    Admission, FrameRecord, Kind, Receive, Stored, View,
 };
 
 type Rows<'a, 'slots, 'id> =
@@ -315,19 +315,17 @@ impl<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> Records<'a, 'f, 'slots, 'id, 'r,
         self.frames
             .as_mut_slice()
             .iter_mut()
-            .map(|record| match record {
-                FrameRecord {
-                    kind: Kind::Crypto(record),
-                    ..
-                } => Control::Crypto(record.step.borrow()),
-                record => Control::Frame(record.operation()),
+            .filter_map(|record| match &mut record.kind {
+                Kind::Crypto(record) => Some(Control::Crypto(record.step.borrow())),
+                Kind::Other(wire) => Some(Control::Frame(wire.view())),
+                _ => None,
             })
     }
 }
 
 pub(in super::super) enum Control<'a, 'id> {
     Crypto(chunks::Access<'a, 'id>),
-    Frame(Operation<'a, 'id>),
+    Frame(View<'a, 'id>),
 }
 
 /// # Safety

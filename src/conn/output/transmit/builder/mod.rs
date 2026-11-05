@@ -117,16 +117,10 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a,
 
     fn long_limit<K: kind::Long>(fixed: usize, max: usize, pn_len: u8) -> usize {
         let minimum = K::MIN_LENGTH_WIDTH.into_usize();
-        let mut payload = max.saturating_sub(fixed + conn::TAG_LEN + minimum);
-        loop {
-            let length = usize::from(pn_len) + payload + conn::TAG_LEN;
-            let width = varint::VarInt::width(length).max(minimum);
-            let next = max.saturating_sub(fixed + conn::TAG_LEN + width);
-            if next >= payload {
-                return payload;
-            }
-            payload = next;
-        }
+        let payload = max.saturating_sub(fixed + conn::TAG_LEN + minimum);
+        let length = usize::from(pn_len) + payload + conn::TAG_LEN;
+        let width = varint::VarInt::width(length).max(minimum);
+        max.saturating_sub(fixed + conn::TAG_LEN + width)
     }
 
     pub(in crate::conn) fn initial_for(

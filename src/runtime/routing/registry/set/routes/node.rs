@@ -67,10 +67,10 @@ pub(super) fn pack(
         assert!(conn::MAX_ACTIVE_CONNECTION_IDS < 16);
     };
     let value = ((key.0.active().index() << 4) | ordinal.index()) as u32;
-    let value = unsafe {
-        bounded::raw::Proof::<0, { (mux::MAX_CONNECTIONS * 16 - 1) as u32 }>::assume(value)
-    };
-    value.retain().into()
+    // SAFETY: admitted slot and ordinal indices occupy disjoint bounded fields.
+    let value =
+        unsafe { bounded::raw::u32::<0, { (mux::MAX_CONNECTIONS * 16 - 1) as u32 }>(value) };
+    value.into()
 }
 
 pub(super) fn remove<

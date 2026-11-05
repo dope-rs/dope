@@ -54,7 +54,6 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
             routing::Plain,
             source,
             opts,
-            None,
             ep,
         ))
     }
@@ -92,14 +91,7 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
     ) -> Result<Plan<ID, R, routing::Routed>, endpoint::PlanError> {
         let ep = endpoint::Plan::routed(config, &bind).map_err(endpoint::PlanError::Config)?;
         let (lease, route) = bind.into_parts();
-        Ok(Plan::prepare(
-            Socket::Adopt(lease),
-            route,
-            source,
-            opts,
-            None,
-            ep,
-        ))
+        Ok(Plan::prepare(Socket::Adopt(lease), route, source, opts, ep))
     }
 }
 
@@ -109,7 +101,6 @@ impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
         route: L,
         source: rustls::ServerConfig,
         mut opts: options::Options,
-        early: Option<early::ReplayCap>,
         ep: endpoint::Plan<ID, R>,
     ) -> Self {
         opts.cap_udp(ep.packet());
@@ -118,13 +109,9 @@ impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
             route,
             source,
             connection: opts,
-            early,
+            early: None,
             endpoint: ep,
         }
-    }
-
-    pub const fn capacity(&self) -> usize {
-        self.endpoint.len()
     }
 }
 

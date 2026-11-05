@@ -52,7 +52,7 @@ impl PayloadPlan {
 }
 
 type Parsed<'id> = Repr<ops::Range<usize>, ranges::Proof<'id>, cid::Id>;
-type View<'a, 'id> = frame::View<'a, ops::Range<usize>, ranges::Proof<'id>, cid::Id>;
+pub(super) type View<'a, 'id> = frame::View<'a, ops::Range<usize>, ranges::Proof<'id>, cid::Id>;
 
 /// A row's kind, immutable identity, and kind-specific admission remain together.
 pub(in crate::conn) struct FrameRecord<'id> {
@@ -227,8 +227,8 @@ impl<'id> Admitted<'id> {
     }
 }
 
-pub(in crate::conn) enum Operation<'record, 'id> {
-    Drop(View<'record, 'id>),
+pub(in crate::conn) enum Operation<'record> {
+    Drop,
     Datagram,
     Stream {
         key: Option<resident::Key>,
@@ -411,12 +411,12 @@ impl<'id> FrameRecord<'id> {
         start..start + payload.record().bytes()
     }
 
-    pub(in crate::conn) fn operation(&self) -> Operation<'_, 'id> {
+    pub(in crate::conn) fn operation(&self) -> Operation<'_> {
         let id = self.id;
         match &self.kind {
             Kind::Datagram(record) if record.payload.is_some() => Operation::Datagram,
             Kind::Stream(record) => match record.admission {
-                Status::Drop => Operation::Drop(self.view()),
+                Status::Drop => Operation::Drop,
                 Status::Stream => Operation::Stream {
                     key: record.key,
                     id,
@@ -441,16 +441,14 @@ impl<'id> FrameRecord<'id> {
                     end: record.end.get(),
                     free,
                 }),
-                None => Operation::Drop(self.view()),
+                None => Operation::Drop,
             },
             Kind::Stop(record) if record.admitted => Operation::Stop {
                 key: record.key,
                 id,
                 error_code: record.code,
             },
-            Kind::Datagram(_) | Kind::Stop(_) | Kind::Other(_) | Kind::Crypto(_) => {
-                Operation::Drop(self.view())
-            }
+            Kind::Datagram(_) | Kind::Stop(_) | Kind::Other(_) | Kind::Crypto(_) => Operation::Drop,
         }
     }
 

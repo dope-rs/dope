@@ -1,5 +1,3 @@
-use dope::core::driver::route;
-use dope::core::driver::route::indices;
 use dope::core::driver::settings::claim;
 use dope::core::driver::settings::errors::Claim;
 use dope::core::driver::{self, settings};
@@ -17,7 +15,7 @@ use crate::stream;
 #[must_use = "an embedded server plan must be bound to one driver"]
 pub struct Plan<const ID: u8> {
     auth: accept::Authority<ID>,
-    proto: plan::Plan,
+    proto: builder::Plan,
 }
 
 impl<const ID: u8> Plan<ID> {
@@ -27,7 +25,10 @@ impl<const ID: u8> Plan<ID> {
         plan: plan::Plan,
     ) -> Result<Self, errors::Connect> {
         let auth = accept::Authority::new(source, opts)?;
-        Ok(Self { auth, proto: plan })
+        Ok(Self {
+            auth,
+            proto: plan.limits(),
+        })
     }
 
     pub fn bind<'d, H, B>(
@@ -40,7 +41,8 @@ impl<const ID: u8> Plan<ID> {
         B: stream::Recv,
     {
         let mux = self.build(handler, driver)?;
-        Self::finish(mux, embedded::Idle, driver)
+        let ready = embedded::try_ready(driver.driver_ref()).map_err(server::BindError::Ready)?;
+        Ok(embedded::Endpoint::new(mux, embedded::Idle, ready))
     }
 
     pub fn bind_with<'d, H, B, A, F, E>(
@@ -54,7 +56,7 @@ impl<const ID: u8> Plan<ID> {
         A: app::Driver<'d, H, ID, B, resident::Shared<'d>>,
         F: FnOnce(driver::Binding<'d>) -> Result<(H, A), E>,
     {
-        let binding = driver::Binding::new(driver.driver_ref().timer(), self.proto.capacity());
+        let binding = driver::Binding::new(driver.driver_ref().timer(), self.proto.owners());
         let (handler, app) = bind(binding).map_err(server::BindFailure::Application)?;
         let mux = self
             .build(handler, driver)
@@ -63,7 +65,10 @@ impl<const ID: u8> Plan<ID> {
             app,
             work: embedded::WorkGraph::new(),
         };
-        Self::finish(mux, schedule, driver).map_err(server::BindFailure::Endpoint)
+        let ready = embedded::try_ready(driver.driver_ref())
+            .map_err(server::BindError::Ready)
+            .map_err(server::BindFailure::Endpoint)?;
+        Ok(embedded::Endpoint::new(mux, schedule, ready))
     }
 
     fn build<'d, H, B>(
@@ -83,38 +88,15 @@ impl<const ID: u8> Plan<ID> {
             handler,
             auth,
             routing::Plain,
-            plan.limits(),
+            plan,
         )
         .bind(driver)
         .map_err(server::BindError::Mux)
-    }
-
-    pub(in crate::runtime::embedded) fn finish<'d, H, B, S>(
-        mux: router::Router<H, ID, B, auth::Owned<routing::Plain, id::Driver<'d>>>,
-        schedule: S,
-        driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<embedded::Endpoint<'d, ID, H, B, S>, server::BindError>
-    where
-        H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
-        B: stream::Recv,
-    {
-        let access = driver.driver_ref();
-        let target = access
-            .targets::<route::KeyTag<ID>>()
-            .bind(indices::SlotIndex::ZERO, route::Epoch::INITIAL);
-        let ready = access
-            .ready()
-            .make_slot(target.dispatch())
-            .map_err(server::BindError::Ready)?;
-        Ok(embedded::Endpoint::new(mux, schedule, ready))
     }
 }
 
 impl<const ID: u8> settings::Resource for Plan<ID> {
     fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, Claim> {
-        needs.include(
-            claim::Claim::new(settings::Routes::singleton::<route::KeyTag<ID>>())
-                .schedule(self.proto.schedule()),
-        )
+        needs.include(plan::claim::<ID>(self.proto))
     }
 }

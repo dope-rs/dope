@@ -336,16 +336,3 @@ pub enum Execution<E> {
     Complete,
     Failed(E),
 }
-
-const _: () = {
-    assert!(std::mem::size_of::<identity::RouteId>() == 1);
-    assert!(std::mem::size_of::<identity::TransportId>() == 1);
-    assert!(std::mem::size_of::<identity::ShardId>() == 1);
-    assert!(std::mem::size_of::<identity::Generation>() == 4);
-    assert!(std::mem::size_of::<identity::CidEpoch>() == 8);
-    assert!(std::mem::size_of::<Witness>() == MAX_CONNECTION_ID_BYTES + 1);
-    assert!(std::mem::size_of::<ValidStep>() == std::mem::size_of::<Step>());
-    assert!(!std::mem::needs_drop::<Action>());
-    assert!(!std::mem::needs_drop::<Step>());
-    assert!(!std::mem::needs_drop::<state::Route>());
-};

@@ -344,6 +344,14 @@ fn out_of_order_ack() {
     result.expect("fresh client journals must admit fragmented out-of-order stream packets");
     assert!(packets.len() >= 3);
     let mut first = packets.remove(0);
+    server
+        .with_scope(|mut scope| {
+            scope
+                .input(&mut work)
+                .recv_packet(&mut first, now, |_: &rustls::Error| {})
+        })
+        .expect("initial stream prefix must pass server ingress");
+    let mut missing = packets.remove(0);
 
     let mut split = false;
     for packet in packets.iter_mut() {
@@ -399,10 +407,10 @@ fn out_of_order_ack() {
             .with_scope(|mut scope| {
                 scope
                     .input(&mut work)
-                    .recv_packet(&mut first, now, |_: &rustls::Error| {})
+                    .recv_packet(&mut missing, now, |_: &rustls::Error| {})
             })
             .is_ok(),
-        "missing stream prefix must pass server ingress"
+        "missing stream range must pass server ingress"
     );
     let (prefix, result) =
         server.with_scope(|mut scope| scope.output().send(now + Duration::from_millis(2)));

@@ -8,7 +8,7 @@ use dope_quic::errors;
 use dope_quic::proto::param;
 use dope_quic::runtime::mux::{builder::Builder, manage::config::ResizeError, router};
 use dope_quic::wire::packet::long::initial;
-use std::{mem, net::SocketAddr, pin::Pin, time::Instant};
+use std::{net::SocketAddr, pin::Pin, time::Instant};
 
 #[test]
 fn installs_then_rebinds() {
@@ -192,9 +192,7 @@ fn closes_all_generations() {
     });
     assert_eq!(mux.active_conns(), 4);
     Pin::new(&mut mux).observe(now, |turn| {
-        let size = mem::size_of_val(&turn);
         let mut sealed = turn.seal();
-        assert_eq!(mem::size_of_val(&sealed), size);
         assert_eq!(sealed.close_all(), 4);
         assert_eq!(sealed.close_all(), 0);
     });

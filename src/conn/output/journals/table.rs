@@ -21,17 +21,6 @@ pub(in crate::conn) struct Table {
     flight: u128,
 }
 
-impl Default for Table {
-    fn default() -> Self {
-        Self {
-            rings: [const { journals::Window::EMPTY }; 3],
-            pools: journals::Pools::new(0, 0),
-            len: 0,
-            flight: 0,
-        }
-    }
-}
-
 /// Read-only journal state for one QUIC packet-number space.
 pub(in crate::conn) struct Space<'a> {
     table: &'a Table,

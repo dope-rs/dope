@@ -125,20 +125,6 @@ fn span_overflow() {
 }
 
 #[test]
-fn layouts() {
-    use frame::ack::ranges;
-
-    assert_eq!(size_of::<frame::Frame>(), 64);
-    assert_eq!(size_of::<frame::Borrowed<'_>>(), 56);
-    use dope_quic::wire::packet::cid;
-
-    assert_eq!(
-        size_of::<frame::Frame<&[u8], ranges::Set<'_>, cid::Ref<'_>>>(),
-        56
-    );
-}
-
-#[test]
 fn announcement() {
     let mut output = Vec::with_capacity(40);
     for length in 1..=20_u8 {

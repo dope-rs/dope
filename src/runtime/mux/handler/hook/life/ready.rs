@@ -3,6 +3,7 @@ use std::pin;
 
 use crate::conn::id;
 use crate::runtime::mux::handler::{Handler, Slot};
+use crate::runtime::routing::registry::Notification;
 use crate::stream;
 
 type Observation<I> = <I as id::Temporal>::Observation;
@@ -18,7 +19,7 @@ where
     slot: Slot<'scope, H::Connection, DOMAIN, B, D>,
     handle: id::Handle<I, DOMAIN>,
     at: Observation<I>,
-    notified: &'scope mut bool,
+    notified: &'scope mut Notification,
 }
 
 impl<'scope, H, const DOMAIN: u8, B, D, I> Event<'scope, H, DOMAIN, B, D, I>
@@ -28,12 +29,12 @@ where
     D: buffer::raw::Segment,
     I: id::Temporal,
 {
-    pub(crate) fn new(
+    pub(in crate::runtime) fn new(
         handler: pin::Pin<&'scope mut H>,
         slot: Slot<'scope, H::Connection, DOMAIN, B, D>,
         handle: id::Handle<I, DOMAIN>,
         at: Observation<I>,
-        notified: &'scope mut bool,
+        notified: &'scope mut Notification,
     ) -> Self {
         Self {
             handler,
@@ -46,7 +47,7 @@ where
 
     /// The client retains this notification until its bounded callback drain.
     pub(crate) fn defer(&mut self) {
-        *self.notified = false;
+        *self.notified = Notification::Pending;
     }
 }
 

@@ -26,9 +26,6 @@ impl<A, R: routing::PeerRoute> Topology<A, R> {
         auth: A,
         shards: routing::Count,
     ) -> Option<Self> {
-        if paths.is_empty() {
-            return None;
-        }
         let capacity = shards.dense_len(paths.len())?;
         let last = routing::Shard::from_index((shards.get() - 1) as u8);
         R::from_shard(last)?;
@@ -69,16 +66,6 @@ impl<A, R: routing::PeerRoute> Topology<A, R> {
                     auth: auth.try_clone(),
                     route: R::from_shard(shard)?,
                 })
-            }
-        }
-    }
-
-    pub(super) fn address(&self, index: usize) -> Option<net::SocketAddr> {
-        match self {
-            Self::Flat(peers) => peers.get(index).map(|peer| peer.addr),
-            Self::Dense { paths, shards, .. } => {
-                let (_, path) = shards.resolve(paths.len(), index)?;
-                paths.get(path).copied()
             }
         }
     }

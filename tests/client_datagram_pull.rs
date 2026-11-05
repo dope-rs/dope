@@ -114,7 +114,7 @@ fn retains_datagrams_until_pull_and_rotates_ready_sources() {
                         }),
                         retry.clone(),
                         client::Config { event_budget: 8, retry_budget: 8 },
-                    ).expect("builder").bind(dial, &mut driver).expect("client");
+                    ).bind(dial, &mut driver).expect("client");
                     (client, timeout, now.into())
                 };
                 let mut stop = Some(stop);

@@ -2,7 +2,6 @@ use crate::runtime::Transit;
 use crate::runtime::mux::output;
 use dope::core::driver;
 use dope::core::driver::route;
-use dope::core::driver::route::indices;
 use dope::core::driver::schedule::ready;
 use dope::core::driver::settings;
 use dope::core::driver::settings::claim;
@@ -119,11 +118,7 @@ impl<'d, const ROUTE: u8, const FROM: u8, const TO: u8> Link<'d, ROUTE, FROM, TO
         arena: provided::Root<'d, output::Flight, Plan<ROUTE, FROM, TO>>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<Self, bind::Error> {
-        let handle = driver.driver_ref();
-        let target = handle
-            .targets::<route::KeyTag<FROM>>()
-            .bind(indices::SlotIndex::ZERO, route::Epoch::INITIAL);
-        let ready = handle.ready().make_slot(target.dispatch())?;
+        let ready = super::try_ready(driver.driver_ref())?;
         let receive = driver
             .storage
             .allocator()

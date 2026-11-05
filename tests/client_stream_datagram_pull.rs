@@ -130,7 +130,6 @@ fn mixed_pull_preserves_fragments_and_independent_readiness() {
                                 retry_budget: 1,
                             },
                         )
-                        .expect("client builder")
                         .bind(plan, &mut driver)
                         .expect("client endpoint");
                         (client, timeout, now.into())

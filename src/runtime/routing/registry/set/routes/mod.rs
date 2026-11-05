@@ -35,7 +35,7 @@ pub(in crate::runtime) struct Directory<
     resets: Tokens<'storage, 'id>,
     cids: &'storage mut registry::Table,
     tokens: &'storage reset::Reset,
-    active: &'storage mut u32,
+    counts: &'storage mut super::Counts,
     flush: &'storage mut super::Flush,
 }
 
@@ -64,7 +64,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             entries,
             cids,
             reset,
-            active,
+            counts,
             flush,
         } = set;
         bound::Scope::with(entries, |root| {
@@ -74,7 +74,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
                 resets,
                 cids,
                 tokens: reset,
-                active,
+                counts,
                 flush,
             })
         })
@@ -85,7 +85,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
     }
 
     pub(in crate::runtime) fn len(&self) -> usize {
-        *self.active as usize
+        self.counts.active as usize
     }
 
     pub(in crate::runtime) fn contains(&self, bytes: &[u8], hash: u64) -> bool {
@@ -146,7 +146,7 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             resets,
             cids,
             tokens,
-            active,
+            counts,
             flush,
         } = self.owner;
         let index = parent(self.index);
@@ -158,11 +158,13 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         let (entries, key) = source.into();
         (
             Scope {
-                entries: Entries { source: entries },
+                entries: Entries {
+                    source: entries,
+                    counts,
+                },
                 resets,
                 cids,
                 tokens,
-                active,
                 flush,
             },
             Key(key),
@@ -218,8 +220,9 @@ pub(super) fn parent(index: links::Index) -> links::Index {
         assert!(crate::conn::MAX_ACTIVE_CONNECTION_IDS < 16);
     };
     let row = (index.get() >> 4) as u32;
-    let row = unsafe { bounded::raw::Proof::<0, { mux::MAX_CONNECTIONS as u32 - 1 }>::assume(row) };
-    row.retain().into()
+    // SAFETY: every private chain index was packed from an admitted slot by node::pack.
+    let row = unsafe { bounded::raw::u32::<0, { mux::MAX_CONNECTIONS as u32 - 1 }>(row) };
+    row.into()
 }
 
 /// This private caller retains the same nonempty power-of-two heads and freezes

@@ -50,8 +50,6 @@ fn recycles_direct_leases() {
     .expect("pooled TLS configuration");
     let (servers, clients, cid) = &pools;
     let cid = *cid;
-    assert_eq!(clients.capacity(), 1);
-    assert_eq!(servers.capacity(), 1);
     let mut server =
         (servers.accept(accept::Ids::initial(cid, cid, cid))).expect("first server lease");
     let mut client = clients

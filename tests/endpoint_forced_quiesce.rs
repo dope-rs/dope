@@ -75,7 +75,6 @@ fn forced_finish_returns_owners_and_delivers_close() {
                                 retry_budget: 1,
                             },
                         )
-                        .expect("client topology")
                         .bind(client, &mut driver)
                         .expect("client");
                         (server, client)

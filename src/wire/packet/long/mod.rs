@@ -133,56 +133,29 @@ fn measure<'wire, T>(
     })
 }
 
-fn finish<'wire, T>(
-    prefix: Prefix<'wire>,
-    pos: usize,
-    token: T,
-) -> Result<Layout<'wire, T>, decode::Error> {
-    let layout = measure(prefix, pos, token)?;
+fn finish<'wire, T>(layout: Layout<'wire, T>) -> Result<Layout<'wire, T>, decode::Error> {
     consume::Error::check(layout.packet_len.get(), layout.ids.input.len())
         .map_err(decode::Error::Packet)?;
     Ok(layout)
 }
 
-fn take(
-    input: &[u8],
-    pos: &mut usize,
-    size: varint::VarInt,
-) -> Result<ops::Range<usize>, decode::Error> {
-    let start = *pos;
-    let length = size.get() as usize;
-    let Some(left) = input.len().checked_sub(start) else {
-        return Err(decode::Error::Underflow {
-            actual: input.len(),
-            required: start,
-        });
-    };
-    if length > left {
-        let required = start + length;
-        return Err(decode::Error::Underflow {
-            actual: input.len(),
-            required,
-        });
-    }
-    let end = start + length;
-    *pos = end;
-    Ok(start..end)
-}
-
 fn initial(prefix: Prefix<'_>) -> Result<Layout<'_, ops::Range<usize>>, decode::Error> {
-    let input = prefix.ids.input;
-    let mut pos = prefix.ids.end();
-    let size = decode_length(input, &mut pos)?;
-    let token = take(input, &mut pos, size)?;
-    finish(prefix, pos, token)
+    finish(initial_head(prefix)?)
 }
 
+#[inline(always)]
 fn initial_head(prefix: Prefix<'_>) -> Result<Layout<'_, ops::Range<usize>>, decode::Error> {
     let input = prefix.ids.input;
     let mut pos = prefix.ids.end();
     let size = decode_length(input, &mut pos)?;
-    let token = take(input, &mut pos, size)?;
-    measure(prefix, pos, token)
+    let end = pos + size.get() as usize;
+    if end > input.len() {
+        return Err(decode::Error::Underflow {
+            actual: input.len(),
+            required: end,
+        });
+    }
+    measure(prefix, end, pos..end)
 }
 
 pub(super) fn decode_initial(input: &[u8]) -> Result<Layout<'_, ops::Range<usize>>, decode::Error> {
@@ -191,10 +164,10 @@ pub(super) fn decode_initial(input: &[u8]) -> Result<Layout<'_, ops::Range<usize
 }
 
 fn plain(prefix: Prefix<'_>) -> Result<Layout<'_>, decode::Error> {
-    let pos = prefix.ids.end();
-    finish(prefix, pos, ())
+    finish(plain_head(prefix)?)
 }
 
+#[inline]
 fn plain_head(prefix: Prefix<'_>) -> Result<Layout<'_>, decode::Error> {
     let pos = prefix.ids.end();
     measure(prefix, pos, ())
@@ -473,12 +446,6 @@ impl Read {
         }
     }
 
-    fn decode(input: &[u8]) -> Result<Self, decode::Error> {
-        let read = Self::first(input)?;
-        consume::Error::check(read.len.get(), input.len()).map_err(decode::Error::Packet)?;
-        Ok(read)
-    }
-
     fn first(input: &[u8]) -> Result<Self, decode::Error> {
         let prefix = Prefix::decode(input)?;
         match prefix.kind {
@@ -515,10 +482,11 @@ impl<T> Layout<'_, T> {
 impl<P: buffer::raw::Source> Parsed<P> {
     pub fn parse(packet: P) -> Result<Self, decode::Error> {
         let input = packet.as_ref();
-        let read = Read::decode(input)?;
+        let read = Read::first(input)?;
         let wire = input.len();
         let total = read.len;
         if total.get() != wire {
+            consume::Error::check(total.get(), wire).map_err(decode::Error::Packet)?;
             return Err(decode::Error::Trailing {
                 packet: total,
                 datagram: wire,

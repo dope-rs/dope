@@ -151,6 +151,7 @@ fn returns_timeout_leases() {
     let peer_at =
         (conn.view().recovery().next_timer()).expect("timed server connection has a deadline");
     let expired = local_at.max(peer_at) + Duration::from_secs(3);
+    assert!(expired < started + Duration::from_secs(30));
     Pin::new(&mut client).observe(expired, |mut turn| {
         assert!(
             turn.output().drive().is_ok(),

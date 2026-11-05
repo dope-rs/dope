@@ -91,7 +91,6 @@ fn resumes_buffered_owners() {
                             retry_budget: 8,
                         },
                     )
-                    .expect("client builder")
                     .bind(dial, &mut driver)
                     .expect("client endpoint");
                     (client, now.into(), timeout)

@@ -123,7 +123,6 @@ impl Authority {
 pub struct Pool {
     auth: Authority,
     permits: quota::Ledger,
-    capacity: NonZero<usize>,
 }
 
 impl Pool {
@@ -131,7 +130,6 @@ impl Pool {
         Self {
             auth,
             permits: quota::Ledger::new(capacity.get()),
-            capacity,
         }
     }
 
@@ -180,10 +178,6 @@ impl Pool {
             .try_direct(auth, route, Some(token))
             .map_err(errors::Reconnect::consumed)?;
         Ok(life::Connection::new(core, permit))
-    }
-
-    pub const fn capacity(&self) -> usize {
-        self.capacity.get()
     }
 
     pub(crate) fn reserve(&self) -> Result<super::Permit<'_>, errors::Preflight> {

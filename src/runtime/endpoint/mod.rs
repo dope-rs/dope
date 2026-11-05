@@ -232,9 +232,9 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
     }
 
     fn from_validated(validation: config::Validation) -> Self {
-        let (config, datagram, slots) = validation.into_parts();
+        let (config, datagram) = validation.into_parts();
         let datagram = if <R::Buffer<'_> as Storage<'_>>::RETAINS {
-            datagram.retain_slots(slots)
+            datagram.retain_slots(config.receive().receive().buffers().into_nonzero().into())
         } else {
             datagram
         };
@@ -285,9 +285,12 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
             config, datagram, ..
         } = self;
         let datagram = datagram.prepare(driver).map_err(BindError::Datagram)?;
-        let rotation = config.cid_rotation(driver);
+        let rotation = driver
+            .driver_ref()
+            .clock()
+            .attach(|now| config.cid_rotation().schedule_at(now));
         Ok(owner::Prepared {
-            config,
+            packet: config.packet(),
             datagram,
             rotation,
             receive: marker::PhantomData,
@@ -431,12 +434,8 @@ where
         self.udp.handler().mux.domain()
     }
 
-    pub(crate) fn admission(&self) -> router::Admission<id::Driver<'d>, ID> {
+    pub(crate) fn admission(&self) -> router::Admission {
         self.udp.handler().mux.admission()
-    }
-
-    pub(crate) fn is_waiting(&self, handle: id::Handle<id::Driver<'d>, ID>) -> bool {
-        self.udp.handler().mux.is_waiting(handle)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -498,7 +497,7 @@ const _: () = {
         mem::align_of::<Plan<0, receive::Copied>>()
             == mem::align_of::<(config::Validated, plan::Plan<route::KeyTag<0>>)>()
     );
-    assert!(mem::size_of::<Plan<0, receive::Copied>>() < mem::size_of::<config::Validation>());
+    assert!(mem::size_of::<Plan<0, receive::Copied>>() == mem::size_of::<config::Validation>());
     assert!(
         mem::size_of::<Plan<0, receive::Copied>>() == mem::size_of::<Plan<0, receive::Retained>>()
     );

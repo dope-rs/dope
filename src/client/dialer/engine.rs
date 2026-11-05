@@ -5,7 +5,6 @@ use dope::core::driver::schedule::clock;
 use o3::mem::Rejected;
 
 use crate::client::{self, auth, control::Sender, life, protocol};
-use crate::conn::id;
 use crate::errors;
 use crate::proto::datagram;
 use crate::runtime::brand;
@@ -40,7 +39,6 @@ pub(in crate::client) struct Engine<
     #[pin]
     pub(in crate::client) endpoint: Connection<'pool, 'd, ID, P, B, A, R>,
     config: C,
-    retained: Option<id::Handle<id::Driver<'d>, ID>>,
 }
 
 impl<'pool, 'd, const ID: u8, P, B, A, C, R> Engine<'pool, 'd, ID, P, B, A, C, R>
@@ -56,22 +54,16 @@ where
         endpoint: Connection<'pool, 'd, ID, P, B, A, R>,
         config: C,
     ) -> Self {
-        Self {
-            endpoint,
-            config,
-            retained: None,
-        }
+        Self { endpoint, config }
     }
 
-    /// The retained transport's existing deadline owns capacity wakeup.
+    /// Existing transport deadlines own capacity wakeup.
     pub(in crate::client) fn next_retry(&self) -> Option<time::Instant> {
-        if self
-            .retained
-            .is_some_and(|handle| self.endpoint.is_waiting(handle))
-        {
-            return None;
+        let retry = self.endpoint.handler().lifecycle().next_retry()?;
+        match self.endpoint.admission() {
+            Admission::Retained => None,
+            Admission::Available | Admission::Full => Some(retry),
         }
-        self.endpoint.handler().lifecycle().next_retry()
     }
 
     pub(in crate::client) fn try_due(
@@ -82,16 +74,6 @@ where
         let retry = self.as_ref().get_ref().next_retry()?;
         if now.at(retry).apply(|retry, raw| retry > raw) {
             return None;
-        }
-        let this = self.as_ref().get_ref();
-        match this.endpoint.admission() {
-            Admission::Retained(handle) => {
-                *self.project().retained = Some(handle);
-                return None;
-            }
-            Admission::Available | Admission::Full => {
-                *self.as_mut().project().retained = None;
-            }
         }
         let due = now.at(self.as_ref()).apply(|core, raw| {
             let endpoint = &core.get_ref().endpoint;
