@@ -114,3 +114,24 @@ where
         self.inner.source.try_spawn(parent)
     }
 }
+
+impl<'s, 'a, 'd, R, P, Q, S, M> Route<'s, schedule::Route<'a, 'd, R, P, Q, S>>
+where
+    R: tree::At<'d, P, Member = M>,
+    M: schedule::StreamOps<'d>,
+    Q: quota::State,
+    S: queue::Backend<'d>,
+{
+    pub fn try_update<I, O>(
+        &mut self,
+        id: &Scoped<'s, 'd, M::Domain>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut M::Fiber>, I) -> O,
+    ) -> Result<O, schedule::result::Update<I>> {
+        self.inner.source.try_update(&id.original(), input, update)
+    }
+
+    pub fn resume(&mut self, id: &Scoped<'s, 'd, M::Domain>) -> schedule::result::Resume {
+        self.inner.source.resume(&id.original())
+    }
+}

@@ -219,6 +219,16 @@ where
     Q: State,
     'd: 'a,
 {
+    fn try_update<I, O>(
+        self: pin::Pin<&mut Self>,
+        id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> O,
+    ) -> Result<O, I> {
+        let plane = self.get_mut().plane.as_mut().project();
+        local::Next::try_update(R::project(plane.routes), id, input, update)
+    }
+
     fn poll_next(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,

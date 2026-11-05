@@ -49,6 +49,7 @@ pub trait Fiber<'d>: Sized {
 /// A pinned sequence whose owner stops polling after `Ready(None)`.
 /// Each admitted call may yield one item while retaining the same stream owner.
 /// `PollCall` admits work; it does not track stream completion.
+/// [`Task`] releases the child at end and retains that terminal result.
 #[must_use = "a stream does nothing unless it is driven"]
 pub trait Stream<'d>: Sized {
     type Item;

@@ -1,4 +1,4 @@
-use std::{marker, num, pin, task::Poll};
+use std::{marker, num, ops::ControlFlow, pin, task::Poll};
 
 use o3::{alloc, depot::capacity};
 use queue::Backend as _;
@@ -26,29 +26,39 @@ use crate::{
     },
 };
 
+mod poll;
 mod proof;
 mod slab;
 
 pub(crate) use proof::Proof;
 use slab::Slab;
 
+pub type Pool<'d, F, const N: usize, D, T = (), const MAX: u32 = { u32::MAX }> =
+    Storage<'d, F, N, D, T, MAX, ()>;
+
+/// Scheduled stream retaining its slot until EOF or explicit removal.
+pub type Stream<'d, F, const N: usize, D, T = (), const MAX: u32 = { u32::MAX }> =
+    Storage<'d, F, N, D, T, MAX, poll::Stream>;
+
 #[pin_project::pin_project]
-struct Entry<'d, F, T: Copy> {
+struct Entry<'d, F, T: Copy, M> {
     #[pin]
     fiber: F,
     binding: task::raw::Root<'d>,
     #[pin]
     ready: linked::Entry,
     target: T,
+    mode: M,
 }
 
-impl<'d, F, T: Copy> Entry<'d, F, T> {
+impl<'d, F, T: Copy, M: poll::Mode<'d, F>> Entry<'d, F, T, M> {
     const fn new(fiber: F, target: T, binding: task::raw::Root<'d>, index: Global) -> Self {
         Self {
             fiber,
             binding,
             ready: linked::Entry::new(index),
             target,
+            mode: M::INITIAL,
         }
     }
 }
@@ -57,18 +67,15 @@ impl<'d, F, T: Copy> Entry<'d, F, T> {
 /// The queue binding, target, and driver lease are fiber lifecycle concerns, so
 /// only the slots and their pinned access are delegated to o3.
 #[pin_project::pin_project(!Unpin)]
-pub struct Pool<'d, F, const N: usize, D, T: Copy = (), const MAX: u32 = { u32::MAX }>
-where
-    F: abi::Fiber<'d>,
-{
+pub struct Storage<'d, F, const N: usize, D, T: Copy, const MAX: u32, M> {
     #[pin]
-    inner: Slab<Entry<'d, F, T>, D, N, MAX>,
+    inner: Slab<Entry<'d, F, T, M>, D, N, MAX>,
     driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32> Pool<'d, F, N, D, T, MAX>
+impl<'d, F, const N: usize, D, T, const MAX: u32, M> Storage<'d, F, N, D, T, MAX, M>
 where
-    F: abi::Fiber<'d>,
+    M: poll::Mode<'d, F>,
     T: Copy,
 {
     pub fn try_new() -> Result<Self, alloc::Error> {
@@ -84,11 +91,15 @@ where
     }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32> schedule::Ops<'d> for Pool<'d, F, N, D, T, MAX>
+impl<'d, F, const N: usize, D, T, const MAX: u32, M> schedule::Ops<'d>
+    for Storage<'d, F, N, D, T, MAX, M>
 where
-    F: abi::Fiber<'d>,
+    M: poll::Mode<'d, F>,
     T: Copy,
 {
+    type Output = M::Output;
+    type Item = M::Item;
+
     fn target_index(entry: EntryRef<'_, Self>) -> T {
         Slab::selected(entry).target
     }
@@ -153,7 +164,7 @@ where
         work: app::Work<'turn, 'd>,
         permit: step::Delegated<'_, 'turn, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> Outcome<T, F::Output>
+    ) -> Outcome<T, M::Output, M::Item>
     where
         S: queue::Backend<'d> + 'queue,
     {
@@ -167,7 +178,9 @@ where
         let (result, wake) =
             context::Context::with_waker(waker, parent, work, driver.reborrow(), |mut cx| {
                 let result =
-                    context::PollCall::delegated(fields.fiber, cx.as_mut(), permit, F::poll);
+                    context::PollCall::delegated(fields.fiber, cx.as_mut(), permit, |call| {
+                        fields.mode.poll(call)
+                    });
                 let wake = cx.as_ref().get_ref().take_requeue();
                 (result, wake)
             });
@@ -180,7 +193,11 @@ where
                 S::commit(dequeued, fields.ready.into_ref(), queue::Disposition::Idle);
                 Outcome::Pending { target }
             }
-            (Poll::Ready(output), context::Requeue::Idle | context::Requeue::Requested) => {
+            (Poll::Ready(ControlFlow::Continue(output)), _) => {
+                S::commit(dequeued, fields.ready.into_ref(), queue::Disposition::Idle);
+                Outcome::Yielded { target, output }
+            }
+            (Poll::Ready(ControlFlow::Break(output)), _) => {
                 S::commit(
                     dequeued,
                     fields.ready.into_ref(),
@@ -219,21 +236,67 @@ where
     }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32> tree::Build<'d>
-    for tree::Leaf<Pool<'d, F, N, D, T, MAX>>
+impl<'d, F, const N: usize, D, T, const MAX: u32, M> tree::Build<'d>
+    for tree::Leaf<Storage<'d, F, N, D, T, MAX, M>>
 where
-    F: abi::Fiber<'d>,
+    M: poll::Mode<'d, F>,
     T: Copy,
 {
     fn try_build_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
-        Ok(Self::new(Pool::try_new_with_capacity(physical)?))
+        Ok(Self::new(Storage::try_new_with_capacity(physical)?))
     }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32> schedule::PlaneTree<'d>
-    for tree::Leaf<Pool<'d, F, N, D, T, MAX>>
+impl<'d, F, const N: usize, D, T: Copy, const MAX: u32> Stream<'d, F, N, D, T, MAX> {
+    fn get(
+        self: pin::Pin<&mut Self>,
+        id: &Id<'d, D>,
+    ) -> Option<pin::Pin<&mut Entry<'d, F, T, poll::Stream>>> {
+        let key = id.key_for(Owner::of(self.as_ref().get_ref()))?;
+        self.project().inner.parts_mut(key.parts())
+    }
+}
+
+impl<'d, F, const N: usize, D, T, const MAX: u32> schedule::StreamOps<'d>
+    for Stream<'d, F, N, D, T, MAX>
 where
-    F: abi::Fiber<'d>,
+    F: abi::Stream<'d>,
+    T: Copy,
+{
+    fn try_update<I, R>(
+        self: pin::Pin<&mut Self>,
+        id: &Id<'d, D>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut F>, I) -> R,
+    ) -> Result<R, schedule::result::Update<I>> {
+        let Some(entry) = self.get(id) else {
+            return Err(schedule::result::Update::Absent(input));
+        };
+        let fields = entry.project();
+        if !fields.mode.held {
+            return Err(schedule::result::Update::Active(input));
+        }
+        Ok(update(fields.fiber, input))
+    }
+
+    fn resume(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> schedule::result::Resume {
+        let Some(entry) = self.get(id) else {
+            return schedule::result::Resume::Absent;
+        };
+        let fields = entry.project();
+        if !fields.mode.held {
+            return schedule::result::Resume::Active;
+        }
+        fields.mode.held = false;
+        wake::Waker::from_parent(fields.binding.poll().1).wake();
+        schedule::result::Resume::Resumed
+    }
+}
+
+impl<'d, F, const N: usize, D, T, const MAX: u32, M> schedule::PlaneTree<'d>
+    for tree::Leaf<Storage<'d, F, N, D, T, MAX, M>>
+where
+    M: poll::Mode<'d, F>,
     T: Copy,
 {
     fn wake_global(access: Access<'_, Self>) {
@@ -259,14 +322,15 @@ where
     }
 }
 
-impl<'d, F: abi::Fiber<'d>, const N: usize, D, T: Copy, const MAX: u32> Proof
-    for Pool<'d, F, N, D, T, MAX>
+impl<'d, F, const N: usize, D, T: Copy, const MAX: u32, M> Proof
+    for Storage<'d, F, N, D, T, MAX, M>
 {
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32> tree::Member<'d> for Pool<'d, F, N, D, T, MAX>
+impl<'d, F, const N: usize, D, T, const MAX: u32, M> tree::Member<'d>
+    for Storage<'d, F, N, D, T, MAX, M>
 where
-    F: abi::Fiber<'d>,
+    M: poll::Mode<'d, F>,
     T: Copy,
 {
     type Fiber = F;

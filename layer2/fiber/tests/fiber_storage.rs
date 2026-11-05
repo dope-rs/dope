@@ -13,7 +13,7 @@ use crate::common::runtime::profile;
 pub mod common;
 use common::recover;
 
-use std::{cell::Cell, mem::size_of, pin::pin, rc::Rc, task};
+use std::{cell::Cell, mem::size_of, pin::pin, ptr::NonNull, rc::Rc, task};
 
 use dope::core::driver::{
     life::recovery,
@@ -24,7 +24,11 @@ use dope_fiber::{
     context::Context,
     task::storage::{
         Id, fixed,
-        fixed::{local, local::Store, staged},
+        fixed::{
+            local,
+            local::{Store, Stream as _},
+            staged,
+        },
     },
 };
 use dope_test::alloc::Tracker;
@@ -38,6 +42,66 @@ use crate::common::{
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
+
+#[test]
+fn updates_pinned_stream() {
+    let observed = Rc::new(Cell::new((0, true)));
+    let updated = Rc::new(Cell::new((0, true)));
+    let calls = Cell::new(0);
+    let mut stores = pin!(Plane::new(Branch::new(
+        Leaf::new(fixed::Slab::<'_, Pinned, 1, Domain>::new()),
+        Leaf::new(fixed::Slab::<'_, Pinned, 1, Domain>::new()),
+    )));
+    let allocations = Tracker::during(|| {
+        Scope::with(stores.as_mut(), |mut stores| {
+            let task = stores
+                .as_mut()
+                .route::<Left<Here>>()
+                .insert(Pinned {
+                    address: Cell::new(None),
+                    observed: observed.clone(),
+                })
+                .expect("stream slot");
+            let other = stores
+                .as_mut()
+                .route::<Right<Here>>()
+                .insert(Pinned {
+                    address: Cell::new(None),
+                    observed: observed.clone(),
+                })
+                .expect("foreign stream slot");
+            let input = stores
+                .as_mut()
+                .route::<Right<Here>>()
+                .as_mut()
+                .try_update(&task, updated.clone(), |_, input| {
+                    calls.set(calls.get() + 1);
+                    input
+                })
+                .expect_err("foreign owner");
+            assert!(Rc::ptr_eq(&input, &updated));
+            let result = stores
+                .as_mut()
+                .route::<Left<Here>>()
+                .as_mut()
+                .try_update(&task, input, |fiber, input| {
+                    calls.set(calls.get() + 1);
+                    let address = NonNull::from(fiber.as_ref().get_ref());
+                    let fields = fiber.project();
+                    fields.address.set(Some(address));
+                    *fields.observed = input;
+                    41
+                })
+                .expect("live stream");
+            assert_eq!(result, 41);
+            assert_eq!(calls.get(), 1);
+            assert!(stores.as_mut().route::<Left<Here>>().remove(task) == Removal::Removed);
+            assert!(stores.as_mut().route::<Right<Here>>().remove(other) == Removal::Removed);
+        });
+    });
+    assert_eq!(allocations, (0, 0));
+    assert_eq!(updated.get(), (1, true));
+}
 
 #[test]
 fn keeps_pinned_on_drop() {

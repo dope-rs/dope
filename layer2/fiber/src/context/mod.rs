@@ -51,6 +51,33 @@ impl<'call, 'turn, 'd: 'turn> Admission<'call, 'turn, 'd> {
         });
         (result, self.context)
     }
+
+    /// Transfers the existing credit to one child stream and returns the same
+    /// context. End drops the child; later admitted calls return `Ready(None)`
+    /// without polling it again.
+    pub fn poll_next<S: abi::Stream<'d>>(
+        mut self,
+        stream: pin::Pin<&mut abi::Task<S>>,
+    ) -> (
+        task::Poll<Option<S::Item>>,
+        pin::Pin<&'call mut Context<'turn, 'd>>,
+    ) {
+        let result = <abi::Task<S> as abi::Stream<'d>>::poll_next(PollCall {
+            fiber: stream,
+            context: self.context.as_mut(),
+        });
+        (result, self.context)
+    }
+
+    pub(crate) fn delegate_next<S: abi::Stream<'d>>(
+        self,
+        stream: pin::Pin<&mut S>,
+    ) -> task::Poll<Option<S::Item>> {
+        S::poll_next(PollCall {
+            fiber: stream,
+            context: self.context,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

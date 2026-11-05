@@ -66,6 +66,13 @@ impl<'d, F, const N: usize, D> Slab<'d, F, N, D, storage::Heap> {
     }
 }
 
+impl<'d, F, const N: usize, D, S: storage::Storage> Slab<'d, F, N, D, S> {
+    fn get(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> Option<pin::Pin<&mut F>> {
+        let key = id.key_for(Owner::of(&self.inner))?;
+        self.project().inner.parts_mut(key.parts())
+    }
+}
+
 /// One reserved stream slot retaining the identity of the store that issued it.
 struct Admit<'a, 'd, F, const N: usize, D, S: storage::Storage> {
     slot: store::Vacant<'a, F, N, D, S>,
@@ -118,13 +125,24 @@ impl<'d, F: abi::Stream<'d>, const N: usize, D, S: storage::Storage> direct::Cor
 impl<'d, F: abi::Stream<'d>, const N: usize, D, S: storage::Storage> local::Next<'d, D>
     for Slab<'d, F, N, D, S>
 {
+    fn try_update<I, R>(
+        self: pin::Pin<&mut Self>,
+        id: &Id<'d, D>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut F>, I) -> R,
+    ) -> Result<R, I> {
+        match self.get(id) {
+            Some(fiber) => Ok(update(fiber, input)),
+            None => Err(input),
+        }
+    }
+
     fn poll_next(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, D>,
         mut context: pin::Pin<&mut context::Context<'_, 'd>>,
     ) -> Option<task::Poll<Option<<F as abi::Stream<'d>>::Item>>> {
-        let key = id.key_for(Owner::of(&self.inner))?;
-        let slot = self.project().inner.parts_mut(key.parts())?;
+        let slot = self.get(id)?;
         Some(
             match context::PollCall::try_poll(slot, context.as_mut(), F::poll_next) {
                 context::PollResult::Polled(poll) => poll,

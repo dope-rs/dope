@@ -80,3 +80,27 @@ where
         })
     }
 }
+
+impl<'a, 'd, R, P, Q, S, M> Route<'a, 'd, R, P, Q, S>
+where
+    R: tree::At<'d, P, Member = M>,
+    M: schedule::StreamOps<'d>,
+    Q: State,
+    S: queue::Backend<'d>,
+{
+    /// Updates a held stream without waking it or releasing its item backpressure.
+    pub fn try_update<I, O>(
+        &mut self,
+        id: &schedule::Identity<'d, M>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut M::Fiber>, I) -> O,
+    ) -> Result<O, schedule::result::Update<I>> {
+        let (routes, _, _) = self.plane.as_mut().split();
+        R::project(routes).try_update(id, input, update)
+    }
+
+    pub fn resume(&mut self, id: &schedule::Identity<'d, M>) -> schedule::result::Resume {
+        let (routes, _, _) = self.plane.as_mut().split();
+        R::project(routes).resume(id)
+    }
+}

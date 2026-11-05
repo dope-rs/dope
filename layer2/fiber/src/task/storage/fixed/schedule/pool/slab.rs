@@ -11,11 +11,11 @@ use o3::{
     },
 };
 
-use crate::{
-    abi,
-    task::storage::{
-        caps,
-        fixed::schedule::{Pool, pool::Entry, ready, selected},
+use crate::task::storage::{
+    caps,
+    fixed::schedule::{
+        pool::{Entry, Storage, poll},
+        ready, selected,
     },
 };
 
@@ -66,6 +66,14 @@ impl<T, Tag, const N: usize, const MAX: u32> Slab<T, Tag, N, MAX> {
         })
     }
 
+    pub(super) fn parts_mut(
+        self: pin::Pin<&mut Self>,
+        parts: key::Parts,
+    ) -> Option<pin::Pin<&mut T>> {
+        let parts = key::Parts::<MAX>::from_raw(parts.into_raw())?;
+        self.project().inner.parts_mut(parts)
+    }
+
     /// Narrows a full-domain schedule identity to this extent's live generation.
     pub(super) fn remove_with<R>(
         self: pin::Pin<&mut Self>,
@@ -81,13 +89,14 @@ impl<T, Tag, const N: usize, const MAX: u32> Slab<T, Tag, N, MAX> {
     }
 }
 
-impl<'d, F: abi::Fiber<'d>, D, const N: usize, T: Copy, const MAX: u32>
-    Slab<Entry<'d, F, T>, D, N, MAX>
+impl<'d, F, D, const N: usize, T: Copy, const MAX: u32, M> Slab<Entry<'d, F, T, M>, D, N, MAX>
+where
+    M: poll::Mode<'d, F>,
 {
     /// Borrows the admitted index while its selected plane excludes removal.
     pub(super) fn selected<'a>(
-        entry: selected::EntryRef<'a, Pool<'d, F, N, D, T, MAX>>,
-    ) -> &'a Entry<'d, F, T> {
+        entry: selected::EntryRef<'a, Storage<'d, F, N, D, T, MAX, M>>,
+    ) -> &'a Entry<'d, F, T, M> {
         let (member, index) = entry.into_parts();
         let index = index.local(caps::Tasks::<N>::new());
         // SAFETY: selection retains this exact pool's initialized entry and
@@ -98,8 +107,8 @@ impl<'d, F: abi::Fiber<'d>, D, const N: usize, T: Copy, const MAX: u32>
 
     /// Claims the admitted index until this occupied loan is consumed.
     pub(super) fn selected_mut<'a>(
-        entry: selected::Entry<'a, Pool<'d, F, N, D, T, MAX>>,
-    ) -> Anchored<'a, Entry<'d, F, T>, D, MAX> {
+        entry: selected::Entry<'a, Storage<'d, F, N, D, T, MAX, M>>,
+    ) -> Anchored<'a, Entry<'d, F, T, M>, D, MAX> {
         let (member, index) = entry.into_parts();
         let index = index.local(caps::Tasks::<N>::new());
         let owner = member.project().inner.project().inner;

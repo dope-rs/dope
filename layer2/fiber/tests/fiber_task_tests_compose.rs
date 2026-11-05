@@ -1,4 +1,4 @@
-use std::{cell::Cell, pin::pin, rc::Rc, task::Poll};
+use std::{cell::Cell, marker::PhantomPinned, pin::pin, ptr, rc::Rc, task::Poll};
 
 use dope::core::driver::{
     life::recovery,
@@ -257,6 +257,61 @@ fn pins_preserve_admission() {
             Context::with_target(root.target(), turn.turn().app(), driver, |mut context| {
                 assert_eq!(context.as_mut().poll(borrowed.as_mut()), Poll::Ready(7));
             });
+        },
+        recovery::Policy::new(|_| {}, recover),
+        runtime::check_scope,
+    );
+}
+
+#[test]
+fn stream_admission_retires_once() {
+    Setup::throughput().with_turn(
+        |turn, mut driver| {
+            let core = driver.driver_ref();
+            let root = core
+                .ready()
+                .make_slot(
+                    core.targets::<KeyTag<0>>()
+                        .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                        .dispatch(),
+                )
+                .expect("ready slot");
+            let polls = Cell::new(0);
+            let drops = Cell::new(0);
+            {
+                let mut stream = pin!(dope_fiber::abi::Task::new(StreamOnce {
+                    polls: &polls,
+                    drops: &drops,
+                    _pin: PhantomPinned,
+                }));
+                for (expected, count, dropped) in [
+                    (Poll::Pending, 1, 0),
+                    (Poll::Ready(Some(7)), 2, 0),
+                    (Poll::Ready(None), 3, 1),
+                    (Poll::Ready(None), 3, 1),
+                ] {
+                    let mut parent = pin!(dope_fiber::abi::Task::new(
+                        dope_fiber::abi::PollFn::admitted(|mut admit| {
+                            let original = ptr::from_ref(admit.context().as_ref().get_ref());
+                            let (poll, context) = admit.poll_next(stream.as_mut());
+                            assert!(ptr::eq(original, context.as_ref().get_ref()));
+                            Poll::Ready(poll)
+                        })
+                    ));
+                    turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                        let result = Context::with_target(
+                            root.target(),
+                            share.work(),
+                            driver.reborrow(),
+                            |context| context.poll(parent.as_mut()),
+                        );
+                        assert_eq!(result, Poll::Ready(expected));
+                        assert_eq!(share.work().remaining(), 0);
+                    });
+                    assert_eq!((polls.get(), drops.get()), (count, dropped));
+                }
+            }
+            assert_eq!(drops.get(), 1);
         },
         recovery::Policy::new(|_| {}, recover),
         runtime::check_scope,

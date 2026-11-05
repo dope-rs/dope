@@ -3,7 +3,6 @@ use std::pin;
 use o3::mem::{Lease, Return, lease};
 
 use crate::{
-    abi,
     core::driver::{
         retained,
         schedule::{app, app::step},
@@ -25,7 +24,8 @@ pub mod route;
 
 type Completed<'d, M> = Outcome<
     <M as tree::Member<'d>>::Target,
-    <<M as tree::Member<'d>>::Fiber as abi::Fiber<'d>>::Output,
+    <M as schedule::Ops<'d>>::Output,
+    <M as schedule::Ops<'d>>::Item,
 >;
 
 type Borrowed<'a, R, Q> = pin::Pin<&'a mut Active<R, Q>>;

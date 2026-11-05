@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+
 use schedule::selected;
 
 use crate::task::storage::fixed::{
@@ -5,10 +7,24 @@ use crate::task::storage::fixed::{
     schedule::{self, queue},
 };
 
-pub enum Outcome<T, O> {
+pub enum Outcome<T, O, I = Infallible> {
     Pending { target: T },
     PendingReady { target: T },
     Complete { target: T, output: O },
+    Yielded { target: T, output: I },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Resume {
+    Resumed,
+    Active,
+    Absent,
+}
+
+#[derive(Debug)]
+pub enum Update<I> {
+    Active(I),
+    Absent(I),
 }
 
 #[must_use = "a selection must be handled before the application turn ends"]

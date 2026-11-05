@@ -6,6 +6,13 @@ use crate::{
 };
 
 pub trait Next<'d, D>: local::Core<'d, D, Fiber: abi::Stream<'d>> {
+    fn try_update<I, R>(
+        self: pin::Pin<&mut Self>,
+        id: &Id<'d, D>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> R,
+    ) -> Result<R, I>;
+
     fn poll_next(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, D>,
@@ -14,6 +21,15 @@ pub trait Next<'d, D>: local::Core<'d, D, Fiber: abi::Stream<'d>> {
 }
 
 impl<'d, D, S: Next<'d, D>> Next<'d, D> for pin::Pin<&mut S> {
+    fn try_update<I, R>(
+        self: pin::Pin<&mut Self>,
+        id: &Id<'d, D>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> R,
+    ) -> Result<R, I> {
+        S::try_update(self.get_mut().as_mut(), id, input, update)
+    }
+
     fn poll_next(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, D>,

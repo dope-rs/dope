@@ -5,7 +5,7 @@ use crate::{
     context::{self, PollCall, PollResult},
 };
 
-/// Owns a fiber until completion, then releases it and remains terminal.
+/// Owns a pinned fiber or stream until completion, then releases it and remains terminal.
 #[pin_project::pin_project]
 #[repr(transparent)]
 #[must_use = "a task does nothing unless it is driven"]
@@ -48,5 +48,22 @@ impl<'d, F: abi::Fiber<'d>> abi::Fiber<'d> for Task<F> {
             PollResult::Polled(poll) => poll,
             PollResult::Exhausted => Poll::Pending,
         }
+    }
+}
+
+impl<'d, S: abi::Stream<'d>> abi::Stream<'d> for Task<S> {
+    type Item = S::Item;
+
+    fn poll_next(call: PollCall<'_, '_, 'd, Self>) -> Poll<Option<Self::Item>> {
+        let (this, admit) = call.into_admit();
+        let mut state = this.project().state;
+        let Some(stream) = state.as_mut().as_pin_mut() else {
+            return Poll::Ready(None);
+        };
+        let result = admit.delegate_next(stream);
+        if matches!(result, Poll::Ready(None)) {
+            state.set(None);
+        }
+        result
     }
 }

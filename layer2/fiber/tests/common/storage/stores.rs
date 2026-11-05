@@ -1,6 +1,9 @@
 use std::{cell::Cell, pin::Pin, ptr, ptr::NonNull, rc::Rc, task::Poll};
 
-use dope_fiber::{abi::Fiber, context::PollCall};
+use dope_fiber::{
+    abi::{Fiber, Stream},
+    context::PollCall,
+};
 
 pub struct Domain;
 
@@ -22,6 +25,14 @@ impl Fiber<'_> for Pinned {
             this.observed.set((drops, stable && bound == address));
         }
         Poll::Pending
+    }
+}
+
+impl Stream<'_> for Pinned {
+    type Item = ();
+
+    fn poll_next(call: PollCall<'_, '_, '_, Self>) -> Poll<Option<()>> {
+        Self::poll(call).map(Some)
     }
 }
 

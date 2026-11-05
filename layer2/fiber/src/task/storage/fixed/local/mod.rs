@@ -39,6 +39,14 @@ pub(in crate::task::storage) use next::Next;
 pub(in crate::task::storage) use crate::task::storage::fixed::local::core::Core;
 
 pub trait Stream<'d, D>: Store<'d, D, Fiber: abi::Stream<'d>> {
+    /// Updates a live pinned stream, or returns the input without calling `update`.
+    fn try_update<I, R>(
+        self: pin::Pin<&mut Self>,
+        id: &Id<'d, D>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> R,
+    ) -> Result<R, I>;
+
     fn poll_next(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, D>,
@@ -74,6 +82,15 @@ impl<'s, 'd, D, F, S: local::Core<'d, D, Fiber = F> + Unpin> local::Store<'d, Do
 }
 
 impl<'s, 'd, D, S: local::Next<'d, D> + Unpin> Stream<'d, Domain<'s, D>> for Scope<'s, S> {
+    fn try_update<I, R>(
+        self: pin::Pin<&mut Self>,
+        id: &Scoped<'s, 'd, D>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> R,
+    ) -> Result<R, I> {
+        pin::Pin::new(&mut self.get_mut().source).try_update(&id.original(), input, update)
+    }
+
     fn poll_next(
         self: pin::Pin<&mut Self>,
         id: &Scoped<'s, 'd, D>,

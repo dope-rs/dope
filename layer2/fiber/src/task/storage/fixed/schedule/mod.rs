@@ -4,7 +4,6 @@ use ready::{Global, Path};
 use storage::fixed::{local::Removal, tree};
 
 use crate::{
-    abi,
     context::wake,
     core::driver::{
         retained,
@@ -27,7 +26,7 @@ pub mod selected;
 
 pub use plan::Plan;
 pub use plane::Plane;
-pub use pool::Pool;
+pub use pool::{Pool, Stream};
 pub use route::Route;
 
 pub(in crate::task::storage) type Input<'d, M> = (
@@ -38,7 +37,9 @@ pub(in crate::task::storage) type Input<'d, M> = (
 type Identity<'d, M> = Id<'d, <M as tree::Member<'d>>::Domain>;
 
 /// Operations supplied by one fixed scheduler leaf.
-pub trait Ops<'d>: tree::Member<'d, Fiber: abi::Fiber<'d>> + pool::Proof + Sized {
+pub trait Ops<'d>: tree::Member<'d> + pool::Proof + Sized {
+    type Output;
+    type Item;
     fn target_index(entry: selected::EntryRef<'_, Self>) -> Self::Target;
 
     fn try_admit<'a, S, R, P>(
@@ -65,7 +66,7 @@ pub trait Ops<'d>: tree::Member<'d, Fiber: abi::Fiber<'d>> + pool::Proof + Sized
         work: app::Work<'turn, 'd>,
         permit: step::Delegated<'_, 'turn, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> result::Outcome<Self::Target, <Self::Fiber as abi::Fiber<'d>>::Output>
+    ) -> result::Outcome<Self::Target, Self::Output, Self::Item>
     where
         S: queue::Backend<'d> + 'queue;
 
@@ -77,6 +78,18 @@ pub trait Ops<'d>: tree::Member<'d, Fiber: abi::Fiber<'d>> + pool::Proof + Sized
     where
         S: queue::Backend<'d>,
         R: tree::At<'d, P, Member = Self>;
+}
+
+/// Access to a yielded stream while its original slot remains occupied.
+pub trait StreamOps<'d>: Ops<'d> {
+    fn try_update<I, R>(
+        self: pin::Pin<&mut Self>,
+        id: &Identity<'d, Self>,
+        input: I,
+        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> R,
+    ) -> Result<R, result::Update<I>>;
+
+    fn resume(self: pin::Pin<&mut Self>, id: &Identity<'d, Self>) -> result::Resume;
 }
 
 /// Recursive operations over a fixed scheduler tree.
