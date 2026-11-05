@@ -1,7 +1,6 @@
 mod form;
 mod role;
 
-use form::{Form, Kind};
 use proc_macro2::TokenTree;
 use role::Role;
 use syn::ext::IdentExt as _;
@@ -70,7 +69,8 @@ fn options(
 
 pub(crate) struct Owner {
     name: syn::Ident,
-    form: Form,
+    inner: syn::Type,
+    optional: bool,
     role: Role,
 }
 
@@ -131,12 +131,12 @@ impl Owner {
             }
         };
 
-        let form = if optional {
-            Form::optional(&field.ty)?
+        let inner = if optional {
+            form::parse_option(&field.ty)?
         } else {
-            Form::required(&field.ty)
+            &field.ty
         };
-        if drain.is_some() && form.kind() != Kind::Required {
+        if drain.is_some() && optional {
             return Err(Failure::new(field, App::DrainOwned));
         }
         let role = if app {
@@ -150,7 +150,8 @@ impl Owner {
         Ok((
             Self {
                 name: name.clone(),
-                form,
+                inner: inner.clone(),
+                optional,
                 role,
             },
             drain.is_some(),
@@ -162,11 +163,11 @@ impl Owner {
     }
 
     pub(crate) fn inner(&self) -> &syn::Type {
-        self.form.inner()
+        &self.inner
     }
 
     pub(crate) const fn is_optional(&self) -> bool {
-        matches!(self.form.kind(), Kind::Optional)
+        self.optional
     }
 
     pub(crate) const fn is_app(&self) -> bool {

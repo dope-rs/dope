@@ -16,13 +16,8 @@ use crate::{
 /// A destination and its once-selected source, retained for every datagram.
 #[derive(Clone, Copy)]
 pub struct Source {
-    local: Local,
+    local: net::SocketAddr,
     peer: net::SocketAddr,
-}
-
-#[derive(Clone, Copy)]
-struct Local {
-    address: net::SocketAddr,
     control: Control,
 }
 
@@ -40,17 +35,15 @@ impl Source {
     pub fn try_new(bind: net::SocketAddr, peer: net::SocketAddr) -> Result<Self, source::Error> {
         let (local, control) = Backend::source(bind, peer)?;
         Ok(Self {
-            local: Local {
-                address: local.get(),
-                control: Control(control),
-            },
+            local: local.get(),
             peer,
+            control: Control(control),
         })
     }
 
     /// The selected IP and scope, retaining the port supplied at construction.
     pub const fn local(&self) -> net::SocketAddr {
-        self.local.address
+        self.local
     }
 
     pub const fn peer(&self) -> net::SocketAddr {
@@ -58,7 +51,7 @@ impl Source {
     }
 
     pub const fn control(&self) -> Control {
-        self.local.control
+        self.control
     }
 }
 

@@ -14,7 +14,6 @@ use dope::{
             route::{Epoch, Id, KeyTag, indices::SlotIndex, table::conn::Capacity},
         },
         io::socket::{self, Backlog, option::Switch},
-        platform::wake,
     },
     manifold::{
         network::listener::{AcceptError, Domain},
@@ -44,13 +43,7 @@ use dope_fiber::{
 };
 use dope_test::{
     fibers,
-    harness::{
-        peer::Peer,
-        scenario::{
-            self,
-            run::{Entry, Task as _},
-        },
-    },
+    harness::{peer::Peer, scenario},
     reclaim::Reports,
 };
 use o3::depot::capacity::Count;
@@ -68,115 +61,106 @@ fn accepts_after_exhaustion_and_cancellation() {
     for (no_delay, cancel_first) in [(None, false), (Some(Switch::On), false), (None, true)] {
         let held = socket::Listener::bind(([127, 0, 0, 1], 0).into()).expect("listener address");
         let addr = held.local_addr();
-        let (wait, start) = wake::Ends::blocking().expect("accept release").split();
-        let peer = Entry(move || {
-            wait.wait_timeout(scenario::TIMEOUT).expect("accept waiter");
-            let stream = Peer::at(addr).try_read(scenario::TIMEOUT).expect("connect");
-            let mut byte = [0];
-            stream.read_exact(&mut byte).expect("accepted reply");
-            byte
-        });
-        let ((), reply) = peer
-            .with(|| {
-                let capacity = if cancel_first {
-                    Capacity::fixed::<2>()
-                } else {
-                    Capacity::fixed::<1>()
-                };
-                let plan = Plan::<Identity>::new(capacity, Identity);
-                let setup = Setup::try_for_plan::<Balanced, _>(&plan).expect("driver configuration");
-                let mut reports = Reports::new(setup.config(), [Id::fixed::<0>()]);
-                setup.with_input(
-                        plan,
-                        |mut sess| {
-                            let seen = Cell::new(0);
-                            let failure = Cell::new(None);
-                            let accepted = Cell::new(false);
-                            let mut finish = Completion::new();
-                            let hash = sess.hash_state(Domain::DEFAULT);
-                            let plan = sess.storage();
-                            let storage = plan.try_build(sess.driver().storage).expect("port");
-                            let result = Listener::<KeyTag<0>, Tcp, Identity, _>::adopt(
-                                &storage,
-                                Config {
-                                    direct_flights: 0.into(),
-                                    bind: addr,
-                                    backlog: Backlog::fixed::<1>(),
-                                    stream: StreamConfig {
-                                        no_delay,
-                                        ..Default::default()
-                                    },
-                                    transport: Default::default(),
-                                    egress: Default::default(),
-                                    bound: held,
-                                    wire: domain::Local::new(Identity),
-                                },
-                                |cause| cause.eliminate(),
-                                hash,
-                                &mut sess,
-                                |sess| sess.driver(),
-                                |listener, sess| {
-                                    let handle = storage.handle();
-                                    sess.with_quiesce(
-                                        &mut finish,
-                                        App::new(
-                                            listener,
-                                            &seen,
-                                            &failure,
-                                            cancel_first.then_some(&accepted),
-                                        ),
-                                        scenario::TIMEOUT,
-                                        |mut app| {
-                                            if cancel_first {
-                                                let mut tasks = pin!(
-                                                    Set::try_new(Count::new(2))
-                                                        .expect("accept task storage")
-                                                );
-                                                let mut io = Scope::with(tasks.as_mut(), |tasks| {
-                                                    app.drive_for(
-                                                        scenario::TIMEOUT,
-                                                        CancelFirst {
-                                                            tasks,
-                                                            handle,
-                                                            accepted: &accepted,
-                                                            start: Some(start),
-                                                            first: None,
-                                                        },
-                                                    )
-                                                })
-                                                .expect("surviving waiter must wake after cancellation")
-                                                .ok()
-                                                .expect("surviving waiter must accept the connection");
-                                                return app.block_on(dope_fiber::fiber!('_ => async move {
-                                                    assert!(io.write_all(b"x").await.is_ok(), "surviving reply");
-                                                }));
-                                            }
-                                            app.block_on(dope_fiber::fiber!('_ => async move {
-                                    start.notify().expect("release peer");
-                                    let mut io = handle.accept().await.ok().expect("accept");
-                                    assert!(io.write_all(b"x").await.is_ok(), "reply");
-                                }))
-                                        },
-                                    )
-                                    .expect("drive listener")
-                                    .expect("accept progresses");
-                                },
-                            );
-                            assert!(result.is_ok(), "install listener");
-                            assert_eq!(failure.get(), None, "retain exhausted completion");
-                            assert_ne!(
-                                seen.get() & 1,
-                                0,
-                                "accept credit exhausted before dispatch"
-                            );
+        let capacity = if cancel_first {
+            Capacity::fixed::<2>()
+        } else {
+            Capacity::fixed::<1>()
+        };
+        let plan = Plan::<Identity>::new(capacity, Identity);
+        let setup = Setup::try_for_plan::<Balanced, _>(&plan).expect("driver configuration");
+        let mut reports = Reports::new(setup.config(), [Id::fixed::<0>()]);
+        setup.with_input(
+            plan,
+            |mut sess| {
+                let seen = Cell::new(0);
+                let failure = Cell::new(None);
+                let accepted = Cell::new(false);
+                let mut finish = Completion::new();
+                let hash = sess.hash_state(Domain::DEFAULT);
+                let plan = sess.storage();
+                let storage = plan.try_build(sess.driver().storage).expect("port");
+                let result = Listener::<KeyTag<0>, Tcp, Identity, _>::adopt(
+                    &storage,
+                    Config {
+                        direct_flights: 0.into(),
+                        bind: addr,
+                        backlog: Backlog::fixed::<1>(),
+                        stream: StreamConfig {
+                            no_delay,
+                            ..Default::default()
                         },
-                        recovery::Policy::new(|event| reports.push(event), recover),
-                        runtime::check_scope,
-                    );
-                assert!(reports.events().expect("native reclamation").is_empty(), "unexpected reclamation: {reports:?}");
-            })
-            .expect("peer worker");
-        assert_eq!(reply, *b"x");
+                        transport: Default::default(),
+                        egress: Default::default(),
+                        bound: held,
+                        wire: domain::Local::new(Identity),
+                    },
+                    |cause| cause.eliminate(),
+                    hash,
+                    &mut sess,
+                    |sess| sess.driver(),
+                    |listener, sess| {
+                        let handle = storage.handle();
+                        sess.with_quiesce(
+                            &mut finish,
+                            App::new(listener, &seen, &failure, cancel_first.then_some(&accepted)),
+                            scenario::TIMEOUT,
+                            |mut app| {
+                                let (mut io, peer) = if cancel_first {
+                                    let mut tasks = pin!(
+                                        Set::try_new(Count::new(2)).expect("accept task storage")
+                                    );
+                                    let (result, peer) = Scope::with(tasks.as_mut(), |tasks| {
+                                        app.drive_for(
+                                            scenario::TIMEOUT,
+                                            CancelFirst {
+                                                tasks,
+                                                handle,
+                                                accepted: &accepted,
+                                                addr,
+                                                peer: None,
+                                                first: None,
+                                            },
+                                        )
+                                    })
+                                    .expect("surviving waiter must wake after cancellation");
+                                    (
+                                        result
+                                            .ok()
+                                            .expect("surviving waiter must accept the connection"),
+                                        peer,
+                                    )
+                                } else {
+                                    app.block_on(dope_fiber::fiber!('_ => async move {
+                                        let peer = Peer::at(addr)
+                                            .try_read(scenario::TIMEOUT)
+                                            .expect("connect");
+                                        let io = handle.accept().await.ok().expect("accept");
+                                        (io, peer)
+                                    }))?
+                                };
+                                app.block_on(dope_fiber::fiber!('_ => async move {
+                                    assert!(io.write_all(b"x").await.is_ok(), "reply");
+                                    let mut reply = [0];
+                                    peer.read_exact(&mut reply).expect("accepted reply");
+                                    assert_eq!(reply, *b"x");
+                                }))
+                            },
+                        )
+                        .expect("drive listener")
+                        .expect("accept progresses");
+                    },
+                );
+                assert!(result.is_ok(), "install listener");
+                assert_eq!(failure.get(), None, "retain exhausted completion");
+                assert_ne!(seen.get() & 1, 0, "accept credit exhausted before dispatch");
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+            runtime::check_scope,
+        );
+        assert!(
+            reports.events().expect("native reclamation").is_empty(),
+            "unexpected reclamation: {reports:?}"
+        );
     }
 }
 

@@ -63,6 +63,7 @@ pub(in crate::client) trait Run<'d> {
         self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
+        active: bool,
     );
 }
 
@@ -92,12 +93,13 @@ where
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
+        mut active: bool,
     ) {
         for _ in 0..phase::Local::COUNT {
-            if work.reborrow().maint().remaining() == 0 {
+            let Some(step) = self.as_mut().project().drive.advance(work.maint(), active) else {
                 return;
-            }
-            let step = self.as_mut().project().drive.as_mut().advance();
+            };
+            active = true;
             match step {
                 phase::Local::Dirty => {
                     A::Continuation::flush(self.as_mut(), work.reborrow(), driver)
@@ -157,12 +159,13 @@ where
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
+        mut active: bool,
     ) {
         for _ in 0..phase::Local::COUNT {
-            if work.reborrow().maint().remaining() == 0 {
+            let Some(step) = self.as_mut().project().drive.advance(work.maint(), active) else {
                 return;
-            }
-            let step = self.as_mut().project().drive.as_mut().advance();
+            };
+            active = true;
             match step {
                 phase::Local::Dirty => {
                     A::Continuation::flush(self.as_mut(), work.reborrow(), driver)
@@ -231,12 +234,13 @@ where
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
+        mut active: bool,
     ) {
         for _ in 0..phase::Service::COUNT {
-            if work.reborrow().maint().remaining() == 0 {
+            let Some(step) = self.as_mut().project().drive.advance(work.maint(), active) else {
                 return;
-            }
-            let step = self.as_mut().project().drive.as_mut().advance();
+            };
+            active = true;
             match step {
                 phase::Service::Dirty => {
                     A::Continuation::flush(self.as_mut(), work.reborrow(), driver)
@@ -296,12 +300,13 @@ where
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
         driver: &mut retained::Context<'_, '_, 'd>,
+        mut active: bool,
     ) {
         for _ in 0..phase::Local::COUNT {
-            if work.reborrow().maint().remaining() == 0 {
+            let Some(step) = self.as_mut().project().drive.advance(work.maint(), active) else {
                 return;
-            }
-            let step = self.as_mut().project().drive.as_mut().advance();
+            };
+            active = true;
             match step {
                 phase::Local::Dirty => {
                     A::Continuation::flush(self.as_mut(), work.reborrow(), driver)

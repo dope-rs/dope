@@ -1,27 +1,8 @@
-use std::{
-    cell::Cell,
-    iter,
-    net::SocketAddr,
-    num,
-    os::fd::{AsFd as _, OwnedFd},
-    pin,
-    rc::Rc,
-    task::Poll,
-};
+use std::{cell::Cell, mem, net::SocketAddr, rc::Rc, task::Poll};
 
 use dope::{
-    core::{
-        driver::{
-            self,
-            route::KeyTag,
-            schedule::{Turn, clock, ready},
-        },
-        platform::{poll, thread, wake},
-    },
-    manifold::{
-        app::{creation, dispatch},
-        service::discover::{self, RefreshAt as _},
-    },
+    core::driver::{self, route::KeyTag, schedule::clock},
+    manifold::service::discover::{self, RefreshAt as _},
     runtime::{
         client,
         executor::{root, session},
@@ -35,283 +16,183 @@ use dope_dns::{
     topology::Plan,
 };
 use dope_test::harness::{
-    peer::{self, TcpAcceptor, udp},
+    peer::{self, Stream, TcpAcceptor, udp},
     scenario::TIMEOUT,
 };
-use o3::alloc;
 
-use crate::common::Owner;
-use crate::common::refresh::{
-    ADDRESSES, Advance, DATAGRAM_ROUTE, Failure, LANES, OUTBOUND, Resolution, Run, STREAM_ROUTE,
-    server::{self, Stub},
+use crate::common::{
+    Owner,
+    refresh::{
+        ADDRESSES, Advance, App, DATAGRAM_ROUTE, Failure, LANES, OUTBOUND, Resolution, Run,
+        STREAM_ROUTE,
+        server::{Failure as PeerFailure, Stub},
+    },
 };
 
-#[derive(Debug)]
-pub enum Error {
-    Io(peer::Error),
-    Packet,
-    Source,
-    Length(num::TryFromIntError),
-    Create(wake::CreateError),
-    Wait(wake::WaitError),
-    Notify(wake::NotifyError),
-    Peer,
+#[derive(Clone, Copy)]
+enum Stage {
+    Datagrams(u8),
+    Queries(SocketAddr, bool),
+    Waiting,
+    Replies(bool),
+    Done,
 }
 
 pub struct Server {
     pub address: SocketAddr,
     pub other: SocketAddr,
-    listener: OwnedFd,
-    udp: OwnedFd,
-    fallback: OwnedFd,
-    socket: OwnedFd,
-    waiting: wake::Notify,
-    released: wake::Wait,
+    listener: TcpAcceptor<'static>,
+    udp: udp::Socket<'static>,
+    fallback: TcpAcceptor<'static>,
+    socket: udp::Socket<'static>,
+    stream: Option<Connection>,
+    queries: [Vec<u8>; 2],
+    stage: Stage,
 }
 
 impl Server {
-    pub fn new() -> Result<(Self, Signals), Error> {
-        let (address, listener, udp) = crate::common::socket::bind().map_err(Error::Io)?;
-        let (other, fallback, socket) = crate::common::socket::bind().map_err(Error::Io)?;
-        let (observed, waiting) = wake::Ends::blocking().map_err(Error::Create)?.split();
-        let (released, release) = wake::Ends::blocking().map_err(Error::Create)?.split();
-        Ok((
-            Self {
-                address,
-                other,
-                listener,
-                udp,
-                fallback,
-                socket,
-                waiting,
-                released,
-            },
-            Signals {
-                waiting: observed,
-                release,
-            },
-        ))
-    }
-}
-
-impl thread::Task for Server {
-    type Output = Result<(), Error>;
-
-    fn run(self) -> Self::Output {
-        let Self {
-            listener,
+    pub fn new() -> Result<Self, PeerFailure> {
+        let (address, listener, udp) = crate::common::socket::bind().map_err(PeerFailure::Io)?;
+        let (other, fallback, socket) = crate::common::socket::bind().map_err(PeerFailure::Io)?;
+        let udp = udp::Socket::try_adopt(udp).map_err(PeerFailure::Io)?;
+        let socket = udp::Socket::try_adopt(socket).map_err(PeerFailure::Io)?;
+        udp.nonblock(true);
+        socket.nonblock(true);
+        Ok(Self {
+            address,
+            other,
+            listener: TcpAcceptor::try_adopt(listener).map_err(PeerFailure::Io)?,
             udp,
-            fallback: other,
+            fallback: TcpAcceptor::try_adopt(fallback).map_err(PeerFailure::Io)?,
             socket,
-            waiting,
-            released,
-            ..
-        } = self;
-        let listener = TcpAcceptor::try_adopt(listener).map_err(Error::Io)?;
-        let other = TcpAcceptor::try_adopt(other).map_err(Error::Io)?;
-        let udp = udp::Socket::try_adopt(udp).map_err(Error::Io)?;
-        udp.read_wait(Some(TIMEOUT)).map_err(Error::Io)?;
-        let socket = udp::Socket::try_adopt(socket).map_err(Error::Io)?;
-        socket.read_wait(Some(TIMEOUT)).map_err(Error::Io)?;
-        let mut packet = [0; 512];
-        for _ in 0..2 {
-            let (len, source) = socket.recv_from(&mut packet).map_err(Error::Io)?;
-            let mut reply = Stub::truncated(&packet[..len]).ok_or(Error::Packet)?;
-            reply[2..4].copy_from_slice(&0x8185u16.to_be_bytes());
-            socket.send_to(&reply, source).map_err(Error::Io)?;
-        }
-        let mut peer = None;
-        for _ in 0..2 {
-            let (len, source) = udp.recv_from(&mut packet).map_err(Error::Io)?;
-            let reply = Stub::truncated(&packet[..len]).ok_or(Error::Packet)?;
-            udp.send_to(&reply, source).map_err(Error::Io)?;
-            peer = Some(source);
-        }
-        let stream = listener.accept().map_err(Error::Io)?;
-        stream.read_wait(Some(TIMEOUT)).map_err(Error::Io)?;
-        let mut queries = Vec::new();
-        for _ in 0..2 {
-            let mut prefix = [0; 2];
-            stream.read_exact(&mut prefix).map_err(Error::Io)?;
-            let mut query = vec![0; usize::from(u16::from_be_bytes(prefix))];
-            stream.read_exact(&mut query).map_err(Error::Io)?;
-            queries.push(query);
-        }
-        waiting.notify().map_err(Error::Notify)?;
-        udp.send_to(&[0], peer.ok_or(Error::Source)?)
-            .map_err(Error::Io)?;
-        released.wait_timeout(TIMEOUT).map_err(Error::Wait)?;
-        for query in queries {
-            let reply = Stub::answer(&query, 0, &[30], false).ok_or(Error::Packet)?;
-            let length = u16::try_from(reply.len()).map_err(Error::Length)?;
-            stream.write_all(&length.to_be_bytes()).map_err(Error::Io)?;
-            stream.write_all(&reply).map_err(Error::Io)?;
-        }
-        match other.try_accept().map_err(Error::Io)? {
-            None => Ok(()),
-            Some(_) => Err(Error::Peer),
-        }
-    }
-}
-
-pub struct Signals {
-    waiting: wake::Wait,
-    release: wake::Notify,
-}
-
-impl Signals {
-    pub fn tail<'report, 'a>(
-        &'a self,
-        finish: &'report mut session::Completion,
-    ) -> Result<Tail<'report, 'a>, alloc::Error> {
-        Ok(Tail {
-            finish,
-            waiting: &self.waiting,
-            release: &self.release,
-            events: poll::Set::try_new(iter::once(self.waiting.as_fd()), iter::empty())?,
+            stream: None,
+            queries: [Vec::new(), Vec::new()],
+            stage: Stage::Datagrams(0),
         })
     }
+
+    fn poll(&mut self) -> Result<bool, PeerFailure> {
+        match self.stage {
+            Stage::Datagrams(round) => {
+                let socket = if round < 2 { &self.socket } else { &self.udp };
+                let mut packet = [0; 512];
+                let (len, peer) = match socket.recv_from(&mut packet) {
+                    Ok(value) => value,
+                    Err(peer::Error::Syscall(error)) if error.is_block() || error.is_intr() => {
+                        return Ok(false);
+                    }
+                    Err(error) => return Err(PeerFailure::Io(error)),
+                };
+                let mut reply = Stub::truncated(&packet[..len]).ok_or(PeerFailure::Packet)?;
+                if round < 2 {
+                    reply[2..4].copy_from_slice(&0x8185u16.to_be_bytes());
+                }
+                socket.send_to(&reply, peer).map_err(PeerFailure::Io)?;
+                self.stage = if round == 3 {
+                    Stage::Queries(peer, false)
+                } else {
+                    Stage::Datagrams(round + 1)
+                };
+                return Ok(false);
+            }
+            Stage::Waiting => return Ok(true),
+            Stage::Done => return Ok(false),
+            Stage::Queries(_, _) | Stage::Replies(_) => {}
+        }
+        if self.stream.is_none() {
+            let Some(stream) = self.listener.try_accept().map_err(PeerFailure::Io)? else {
+                return Ok(false);
+            };
+            self.stream = Some(Connection::new(stream));
+        }
+        let Some(stream) = &mut self.stream else {
+            unreachable!("stream")
+        };
+        match stream.poll()? {
+            Poll::Pending => {}
+            Poll::Ready(Event::Closed(error)) => return Err(PeerFailure::Io(error)),
+            Poll::Ready(Event::Query(query)) => {
+                let Stage::Queries(peer, second) = self.stage else {
+                    unreachable!("query")
+                };
+                self.queries[usize::from(second)] = query;
+                if second {
+                    self.udp.send_to(&[0], peer).map_err(PeerFailure::Io)?;
+                    self.stage = Stage::Waiting;
+                    return Ok(true);
+                }
+                self.stage = Stage::Queries(peer, true);
+            }
+            Poll::Ready(Event::Written) => {
+                let Stage::Replies(second) = self.stage else {
+                    unreachable!("reply")
+                };
+                self.stage = if second {
+                    Stage::Done
+                } else {
+                    stream.reply(mem::take(&mut self.queries[1]))?;
+                    Stage::Replies(true)
+                };
+            }
+        }
+        Ok(false)
+    }
 }
 
-pub struct Tail<'report, 'a> {
-    finish: &'report mut session::Completion,
-    waiting: &'a wake::Wait,
-    release: &'a wake::Notify,
-    events: poll::Set<'a>,
+pub struct Tail<'report> {
+    pub finish: &'report mut session::Completion,
+    pub server: Server,
 }
 
-struct Observe<'a, 'd> {
-    waiting: &'a wake::Wait,
-    release: Option<&'a wake::Notify>,
-    events: poll::Set<'a>,
-    complete: Rc<Cell<u32>>,
-    fault: Rc<Cell<Option<Advance>>>,
-    root: Rc<Cell<Option<ready::Target<'d>>>>,
+struct Until<'a> {
+    server: &'a mut Server,
+    run: &'a Run,
 }
 
-#[pin_project::pin_project]
-#[derive(dope::Application)]
-#[dispatcher(driver = 'd)]
-struct App<'app, 's, 'd, 'signal, B> {
-    #[pin]
-    #[manifold]
-    resolution: Resolution<'app, 's, 'd, B>,
-    #[pin]
-    #[manifold]
-    observe: Observe<'signal, 'd>,
-}
-
-struct Until<'d> {
-    complete: Rc<Cell<u32>>,
-    fault: Rc<Cell<Option<Advance>>>,
-    wake: Rc<Cell<Option<ready::Target<'d>>>>,
-}
-
-impl<'d> root::Root<'d> for Until<'d> {
-    type Output = Result<(), Advance>;
+impl<'d> root::Root<'d> for Until<'_> {
+    type Output = Result<bool, Advance>;
 
     fn poll(context: root::Context<'_, 'd, Self>) -> Poll<Self::Output> {
         let (this, wake, _, _) = context.into_parts();
         let this = this.get_mut();
-        this.wake.set(Some(wake));
-        if let Some(error) = this.fault.take() {
-            Poll::Ready(Err(error))
-        } else if this.complete.get() != 0 {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
+        if let Some(error) = this.run.fault.take() {
+            return Poll::Ready(Err(error));
         }
-    }
-}
-
-// SAFETY: the observer has no retained operations or pinned fields.
-unsafe impl<'d> dispatch::raw::Manifold<'d> for Observe<'_, 'd> {
-    const COORDS: usize = 0;
-
-    type Route = KeyTag<5>;
-    type Dispatch = dispatch::raw::Omit;
-    type Install = dispatch::raw::Omit;
-    type Finish = dispatch::raw::Omit;
-    type Activate = dispatch::raw::Omit;
-    type Probe = dispatch::raw::Omit;
-    type PrePark = dispatch::raw::Plain;
-    type Shutdown = dispatch::raw::Omit;
-
-    unsafe fn pre_park<'a, 'turn, 'root>(
-        self: pin::Pin<&'a mut Self>,
-        _: Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
-        let this = self.get_mut();
-        if let Some(release) = this.release
-            && !driver.driver_ref().ready().has_ready()
-        {
-            let ready = loop {
-                match this.events.poll(0) {
-                    Err(error) if error.is_intr() => {}
-                    Ok(ready) => break ready.is_some(),
-                    Err(error) => {
-                        Advance::Signal(server::Failure::Poll(error)).record(&this.fault);
-                        break false;
-                    }
-                }
-            };
-            if ready {
-                let result = match this.waiting.wait() {
-                    Ok(()) => release.notify().map_err(Advance::Notify),
-                    Err(error) => Err(Advance::Wait(error)),
-                };
-                if let Err(error) = result {
-                    error.record(&this.fault);
-                }
-                this.release = None;
+        if this.run.changes.get() != 0 {
+            return Poll::Ready(if matches!(this.server.stage, Stage::Done) {
+                Ok(true)
+            } else {
+                Err(Advance::Signal(PeerFailure::Phase))
+            });
+        }
+        match this.server.poll() {
+            Ok(true) => Poll::Ready(Ok(false)),
+            Err(error) => Poll::Ready(Err(Advance::Signal(error))),
+            Ok(false) => {
+                wake.wake();
+                Poll::Pending
             }
         }
-        let fault = this.fault.take();
-        let failed = fault.is_some();
-        this.fault.set(fault);
-        if (this.complete.get() != 0 || failed)
-            && let Some(wake) = this.root.get()
-        {
-            wake.wake();
-        }
-        pin::Pin::new(this)
-    }
-
-    fn shutdown<'a, 'turn, 'root>(
-        self: pin::Pin<&'a mut Self>,
-        _: Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
-        self
     }
 }
 
-struct Start<'a, 'd> {
+struct Start<'d> {
     target: Target,
     now: clock::Moment<'d>,
     run: Run,
-    waiting: &'a wake::Wait,
-    release: &'a wake::Notify,
-    events: poll::Set<'a>,
+    server: Server,
 }
 
-impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
-    lending::Build<'d, Owner<'q, 'h, 'p, 'life, 's, 'd, R>> for Start<'a, 'd>
+impl<'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
+    lending::Build<'d, Owner<'q, 'h, 'p, 'life, 's, 'd, R>> for Start<'d>
 {
     type App<'app>
-        = App<'app, 's, 'd, 'a, client::Bound<'app, 'd, Owner<'q, 'h, 'p, 'life, 's, 'd, R>>>
+        = App<'app, 's, 'd, client::Bound<'app, 'd, Owner<'q, 'h, 'p, 'life, 's, 'd, R>>>
     where
         Self: 'app,
         Owner<'q, 'h, 'p, 'life, 's, 'd, R>: 'app,
         'd: 'app;
-    type Data = Until<'d>;
+    type Data = (Server, Run, clock::Deadline<'d>);
     type Error = create::Error;
 
     fn build<'app>(
@@ -327,38 +208,25 @@ impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
         let mut query =
             resolver.discovery::<refresh::Transport>(driver.state_token(), self.target)?;
         query.refresh_at(self.now, discover::Reason::Startup);
-        let until = Until {
-            complete: self.run.changes.clone(),
-            fault: self.run.fault.clone(),
-            wake: Rc::new(Cell::new(None)),
-        };
         let app = App {
             resolution: Resolution {
                 discovery: query,
-                run: self.run,
+                run: self.run.clone(),
                 next: Rc::new(Cell::new(Some(self.now.into()))),
             },
-            observe: Observe {
-                waiting: self.waiting,
-                release: Some(self.release),
-                events: self.events,
-                complete: until.complete.clone(),
-                fault: until.fault.clone(),
-                root: until.wake.clone(),
-            },
         };
-        Ok((app, until))
+        Ok((app, (self.server, self.run, self.now.into())))
     }
 }
 
-impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
-    lending::Execute<'life, 'd, Owner<'q, 'h, 'p, 'life, 's, 'd, R>, ()> for Start<'a, 'd>
+impl<'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
+    lending::ExecuteAt<'life, 'd, Owner<'q, 'h, 'p, 'life, 's, 'd, R>, ()> for Start<'d>
 {
     type Output = Result<(), Advance>;
 
     fn run<'app, 'run>(
-        data: Self::Data,
-        mut app: session::App<
+        (mut server, run, now): Self::Data,
+        mut app: session::Manual<
             'run,
             'life,
             'd,
@@ -373,15 +241,49 @@ impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
         'app: 'run,
         'life: 'run,
     {
-        app.drive_for(TIMEOUT, data).map_err(Advance::Drive)?
+        loop {
+            let done = app
+                .drive_for(
+                    now,
+                    TIMEOUT,
+                    Until {
+                        server: &mut server,
+                        run: &run,
+                    },
+                )
+                .map_err(Advance::Drive)?
+                .into_output()?;
+            if let Some(error) = run.fault.take() {
+                return Err(error);
+            }
+            if done {
+                break;
+            }
+            let Some(stream) = &mut server.stream else {
+                unreachable!("stream")
+            };
+            stream
+                .reply(mem::take(&mut server.queries[0]))
+                .map_err(Advance::Signal)?;
+            server.stage = Stage::Replies(false);
+        }
+        match server
+            .fallback
+            .try_accept()
+            .map_err(PeerFailure::Io)
+            .map_err(Advance::Signal)?
+        {
+            None => Ok(()),
+            Some(_) => Err(Advance::Signal(PeerFailure::Peer)),
+        }
     }
 }
 
 pub fn compose<'report, 'scope, 'life: 'scope, 'e: 'life, 'd: 'e, R: Report + 'd>(
-    tail: Tail<'report, '_>,
+    tail: Tail<'report>,
     install: Plan<KeyTag<DATAGRAM_ROUTE>, KeyTag<STREAM_ROUTE>, OUTBOUND, LANES, ADDRESSES, R>,
     stage: &mut lending::Stage<'_, 'scope, 'life, 'e, 'd, storage::Plan<LANES, ADDRESSES>, ()>,
-    outcome: &mut Option<Result<Result<(), Failure<'report>>, creation::Error>>,
+    outcome: &mut Option<Result<(), Failure<'report>>>,
 ) {
     let installed = lending::Installer::install(
         install,
@@ -399,22 +301,21 @@ pub fn compose<'report, 'scope, 'life: 'scope, 'e: 'life, 'd: 'e, R: Report + 'd
             let target = match Target::parse("service.example:443") {
                 Ok(target) => target,
                 Err(error) => {
-                    *outcome = Some(Ok(Err(Failure::Target(error))));
+                    *outcome = Some(Err(Failure::Target(error)));
                     return;
                 }
             };
             let run = Run::new(false, 1);
             let fault = run.fault.clone();
+            let now = stage.driver().driver_ref().clock().now();
             let build = Start {
                 target,
-                now: stage.driver().driver_ref().clock().now(),
+                now,
                 run,
-                waiting: tail.waiting,
-                release: tail.release,
-                events: tail.events,
+                server: tail.server,
             };
-            *outcome = Some(Ok(
-                match stage.lend_for(tail.finish, owner, build, TIMEOUT) {
+            *outcome = Some(
+                match stage.lend_at(tail.finish, owner, build, now.into(), TIMEOUT) {
                     Ok(Ok(())) => match fault.take() {
                         Some(error) => Err(Failure::Advance(error)),
                         None => Ok(()),
@@ -422,10 +323,118 @@ pub fn compose<'report, 'scope, 'life: 'scope, 'e: 'life, 'd: 'e, R: Report + 'd
                     Ok(Err(error)) => Err(Failure::Advance(error)),
                     Err(error) => Err(Failure::from(error)),
                 },
-            ));
+            );
         },
     );
     if let Err(error) = installed {
-        *outcome = Some(Err(error));
+        *outcome = Some(Err(Failure::Install(error)));
+    }
+}
+
+enum Frame {
+    Prefix([u8; 2], usize),
+    Query(Vec<u8>, usize),
+    Reply([u8; 2], Vec<u8>, usize),
+}
+
+pub(super) enum Event {
+    Query(Vec<u8>),
+    Written,
+    Closed(peer::Error),
+}
+
+pub(super) struct Connection {
+    stream: Stream<'static>,
+    frame: Frame,
+}
+
+impl Connection {
+    pub(super) fn new(stream: Stream<'static>) -> Self {
+        stream.nonblock(true);
+        Self {
+            stream,
+            frame: Frame::Prefix([0; 2], 0),
+        }
+    }
+
+    pub(super) fn reply(&mut self, query: Vec<u8>) -> Result<(), PeerFailure> {
+        let reply = Stub::answer(&query, 0, &[30], false).ok_or(PeerFailure::Packet)?;
+        let len = u16::try_from(reply.len()).map_err(PeerFailure::Length)?;
+        self.frame = Frame::Reply(len.to_be_bytes(), reply, 0);
+        Ok(())
+    }
+
+    pub(super) fn poll(&mut self) -> Result<Poll<Event>, PeerFailure> {
+        match self.advance() {
+            Err(PeerFailure::Io(peer::Error::Syscall(error)))
+                if error.is_block() || error.is_intr() =>
+            {
+                Ok(Poll::Pending)
+            }
+            result => result,
+        }
+    }
+
+    fn advance(&mut self) -> Result<Poll<Event>, PeerFailure> {
+        match &mut self.frame {
+            Frame::Prefix(prefix, read) => {
+                let count = self
+                    .stream
+                    .read(&mut prefix[*read..])
+                    .map_err(PeerFailure::Io)?;
+                if count == 0 {
+                    return Ok(Poll::Ready(Event::Closed(peer::Error::UnexpectedEof)));
+                }
+                *read += count;
+                if *read == prefix.len() {
+                    let len = usize::from(u16::from_be_bytes(*prefix));
+                    if len == 0 {
+                        return Err(PeerFailure::Packet);
+                    }
+                    self.frame = Frame::Query(vec![0; len], 0);
+                }
+            }
+            Frame::Query(query, read) => {
+                let count = self
+                    .stream
+                    .read(&mut query[*read..])
+                    .map_err(PeerFailure::Io)?;
+                if count == 0 {
+                    return Err(PeerFailure::Io(peer::Error::UnexpectedEof));
+                }
+                *read += count;
+                if *read == query.len() {
+                    let query = mem::take(query);
+                    self.frame = Frame::Prefix([0; 2], 0);
+                    return Ok(Poll::Ready(Event::Query(query)));
+                }
+            }
+            Frame::Reply(prefix, reply, sent) => {
+                let write = if *sent < prefix.len() {
+                    self.stream.write_vectored(&[&prefix[*sent..], reply])
+                } else {
+                    self.stream.write(&reply[*sent - prefix.len()..])
+                };
+                let count = match write {
+                    Ok(0) => return Err(PeerFailure::Io(peer::Error::WriteZero)),
+                    Ok(count) => count,
+                    Err(peer::Error::Syscall(error))
+                        if error.is_pipe()
+                            || error.is_aborted()
+                            || error.is_reset()
+                            || error.is_not_connected() =>
+                    {
+                        return Ok(Poll::Ready(Event::Closed(peer::Error::Syscall(error))));
+                    }
+                    Err(error) => return Err(PeerFailure::Io(error)),
+                };
+                *sent += count;
+                if *sent == prefix.len() + reply.len() {
+                    self.frame = Frame::Prefix([0; 2], 0);
+                    return Ok(Poll::Ready(Event::Written));
+                }
+            }
+        }
+        Ok(Poll::Pending)
     }
 }

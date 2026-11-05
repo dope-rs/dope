@@ -28,10 +28,22 @@ pub(crate) enum Phase<I, R> {
 /// Exact phase of the value retained by one task slot.
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(u8)]
-pub enum State {
+enum State {
     Live,
     Staged,
     Vacant,
+}
+
+/// One pinned task that retains its completed output until consumption.
+pub struct Task<F, O> {
+    state: State,
+    value: raw::Value<F, O>,
+}
+
+impl<F, O> Task<F, O> {
+    pub(in crate::task::storage) fn is_staged(&self) -> bool {
+        self.state == State::Staged
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -50,7 +62,7 @@ pub(crate) struct Table<'d, F, O, const N: usize> {
     #[pin]
     bindings: Bindings<'d, N>,
     #[pin]
-    slots: [raw::Entry<F, O>; N],
+    slots: [Task<F, O>; N],
 }
 
 impl<const N: usize> Index<N> {
@@ -191,21 +203,21 @@ impl<'d, F, O, const N: usize> Table<'d, F, O, N> {
     pub(crate) fn vacant() -> Self {
         Self {
             bindings: Bindings::new(),
-            slots: [const { raw::Entry::vacant() }; N],
+            slots: [const { Task::vacant() }; N],
         }
     }
 
     pub(crate) fn from_map<P>(input: [P; N], mut make: impl FnMut(P) -> F) -> Self {
         Self {
             bindings: Bindings::new(),
-            slots: input.map(|value| raw::Entry::live(make(value))),
+            slots: input.map(|value| Task::new(make(value))),
         }
     }
 
     pub(crate) fn from_fn(mut make: impl FnMut(batch::Index<N>) -> F) -> Self {
         Self {
             bindings: Bindings::new(),
-            slots: batch::Index::map(|index| raw::Entry::live(make(index))),
+            slots: batch::Index::map(|index| Task::new(make(index))),
         }
     }
 
@@ -235,7 +247,7 @@ impl<'d, F, O, const N: usize> Table<'d, F, O, N> {
     fn parts(
         self: pin::Pin<&mut Self>,
         index: Index<N>,
-    ) -> (pin::Pin<&mut raw::Entry<F, O>>, pin::Pin<&Bindings<'d, N>>) {
+    ) -> (pin::Pin<&mut Task<F, O>>, pin::Pin<&Bindings<'d, N>>) {
         let this = self.project();
         let bindings = this.bindings.into_ref();
         let slots = this.slots;

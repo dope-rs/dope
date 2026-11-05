@@ -3,7 +3,6 @@ use crate::common::file::cleanup;
 use std::{
     env, fs,
     os::{fd::AsFd as _, unix::ffi::OsStrExt as _},
-    time,
 };
 
 use dope_core::Backend;
@@ -113,97 +112,4 @@ fn open_keeps_failure() {
         .expect("missing child must fail");
     Backend::clear();
     assert_eq!(failure, Errno::try_from(libc::ENOENT).expect("errno"));
-}
-
-#[test]
-fn polls_records_and_eof() {
-    use std::iter;
-
-    use dope_core::{
-        dope_sys::io::socket::record::Record,
-        platform::{channel::Channel, poll},
-    };
-
-    let (left, right) = Channel::pair().expect("connected records");
-    let mut polls =
-        poll::Set::try_new(iter::once(right.as_fd()), iter::empty()).expect("poll storage");
-    assert_eq!(
-        polls.poll(0).expect("idle poll").map(|ready| ready.index()),
-        None
-    );
-    left.send(0x12345678).expect("send record");
-    assert_eq!(
-        polls
-            .poll(0)
-            .expect("ready poll")
-            .map(|ready| ready.index()),
-        Some(0)
-    );
-    assert!(matches!(right.recv(), Record::Value(0x12345678)));
-    left.shutdown().expect("shutdown writer");
-    assert!(matches!(right.recv(), Record::Closed));
-}
-
-#[test]
-fn close_releases_endpoint() {
-    use dope_core::{dope_sys::io::socket::record::Record, platform::channel::Channel};
-    let right = {
-        let pair = Channel::pair().expect("connected records");
-        pair.1
-    };
-    assert!(matches!(right.recv(), Record::Closed));
-}
-
-#[test]
-fn pipe_keeps_nonblocking() {
-    use std::os::fd::AsRawFd as _;
-
-    use dope_core::{dope_sys::io::fd::Fd as _, platform::wake::Ends};
-
-    let mut output = [0; 16];
-    let read = {
-        let (read, write) = Ends::event().expect("open nonblocking pipe").split();
-        for file in [read.as_fd(), write.as_fd()] {
-            // SAFETY: descriptor flags are read from a live borrowed pipe endpoint.
-            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
-            assert!(flags >= 0);
-            assert_ne!(flags & libc::O_NONBLOCK, 0);
-        }
-        let empty = Backend::read::<Errno>(read.as_fd(), &mut output)
-            .err()
-            .map(Errno::is_block);
-        assert_eq!(empty, Some(true), "empty live pipe would block");
-        write.notify().expect("write notification");
-        assert_eq!(
-            Backend::read::<Errno>(read.as_fd(), &mut output)
-                .expect("read pipe")
-                .len(),
-            1
-        );
-        assert_eq!(output[0], 1);
-        read
-    };
-    assert!(
-        Backend::read::<Errno>(read.as_fd(), &mut output)
-            .expect("closed pipe reports EOF")
-            .is_empty()
-    );
-}
-
-#[test]
-fn wake_precedes_timeout() {
-    use dope_core::platform::wake::{Ends, WaitError};
-
-    let (wait, notify) = Ends::blocking().expect("notification pipe").split();
-    for timeout in [time::Duration::ZERO, time::Duration::MAX] {
-        notify.notify().expect("queued notification");
-        assert_eq!(wait.wait_timeout(timeout), Ok(()));
-    }
-    assert!(matches!(
-        wait.wait_timeout(time::Duration::ZERO),
-        Err(WaitError::Timeout {
-            timeout: time::Duration::ZERO,
-            ..
-        })
-    ));
 }

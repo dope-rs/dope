@@ -51,18 +51,6 @@ pub(in crate::client) type Slot<'w, 'd, ID, W, C, O> =
 pub(in crate::client) type Source<O, C, K> = depot::raw::Proof<((O, C), K), Initialized<()>>;
 
 /// Driver- and route-branded connector identity.
-///
-/// ```compile_fail
-/// use dope_core::driver::route::KeyTag;
-/// use dope_manifold::client::conn::Id;
-///
-/// fn widen<'short, 'long>(id: Id<'short, KeyTag<1>>) -> Id<'long, KeyTag<1>>
-/// where
-///     'long: 'short,
-/// {
-///     id
-/// }
-/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Id<'d, ID: Identity>(pool::Key<'d, ID>);

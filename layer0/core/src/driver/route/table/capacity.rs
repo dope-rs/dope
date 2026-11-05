@@ -25,7 +25,7 @@ impl Capacity {
     ) -> Result<bounded::NonZeroU32<1, { route::SLOT_MASK as u32 + 1 }>, super::Invalid> {
         Self::try_from(count.get() as usize)?;
         // SAFETY: the input retains nonzero and admission proved the unchanged upper bound.
-        Ok(unsafe { bounded::raw::NonZeroProof::assume(count) }.retain())
+        Ok(unsafe { bounded::raw::nonzero_u32(count) })
     }
 
     pub const fn count(self) -> capacity::Count {

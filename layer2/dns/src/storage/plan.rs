@@ -64,7 +64,7 @@ impl<const LANES: usize, const ADDRESSES: usize> storage::Build for Plan<LANES, 
         let clock = civil::System::NEW.anchor(&now).map_err(Error::Clock)?;
         let Self { layout, config } = self;
         store.config = config;
-        let inner = ledger::Ledger::try_new(layout, store)?;
+        let inner = ledger::Ledger::try_new(store)?;
         let lanes = set::State::try_disjoint(layout.lanes(), set::Id::at::<1>())
             .map_err(Error::Allocation)?;
         let queries = queries::Queries {

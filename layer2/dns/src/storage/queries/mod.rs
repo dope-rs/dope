@@ -253,10 +253,7 @@ impl<'s, 'd, const LANES: usize, const N: usize> Queries<'s, 'd, LANES, N> {
     }
 
     pub(crate) fn has_stream(&self, token: &region::Token<region::Identity<'d, 1>>) -> bool {
-        let inner = token.borrow(&self.inner);
-        inner.reg.pending.has_stream()
-            || inner.reg.live.any()
-            || !self.lanes.is_empty(set::Id::at::<0>())
+        token.borrow(&self.inner).reg.live.any()
     }
 
     pub(crate) fn has_pending(

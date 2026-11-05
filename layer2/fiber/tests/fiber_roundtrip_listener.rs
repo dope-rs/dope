@@ -3,12 +3,12 @@ use dope::{
     manifold::{app::Host, network::listener::Domain},
     runtime::executor::{Executor, session::Completion},
 };
-use dope_core::{driver::route::KeyTag, platform::wake};
+use dope_core::driver::route::KeyTag;
 use dope_test::harness::scenario;
 pub mod common;
 use common::recover;
 
-use std::time::Duration;
+use std::task::Poll;
 
 use dope::{
     core::{
@@ -27,13 +27,21 @@ use dope::{
 };
 use dope_fiber::{
     BlockOn as _,
+    abi::poll_fn,
     net::{
         error::read::Read,
         read::Lease,
         server::{Config, Listener, Plan},
     },
 };
-use dope_test::{fibers, harness::peer::Peer, reclaim::Reports};
+use dope_test::{
+    fibers,
+    harness::{
+        GUARD,
+        peer::{self, Peer},
+    },
+    reclaim::Reports,
+};
 use o3::buffer::Source as _;
 
 use crate::common::network::rounds::listener::*;
@@ -83,29 +91,11 @@ fn fiber_listener_roundtrip() {
                     |sess| sess.driver(),
                     |listener, sess| {
                         let pool = storage.handle();
-                        let (sent, reset) = wake::Ends::blocking().expect("reset release").split();
-                        Peer::at(addr)
-                            .with(move |stream| {
-                                stream
-                                    .write_all(b"abcdefg")
-                                    .expect("client prefix must be written");
-                                let mut ack = [0; 1];
-                                stream
-                                    .read_exact(&mut ack)
-                                    .expect("client acknowledgement must be read");
-                                stream
-                                    .write_all(b"xyz")
-                                    .expect("client tail must be written");
-                                let mut reply = [0; 4];
-                                stream
-                                    .read_exact(&mut reply)
-                                    .expect("client reply must be read");
-                                sent.wait_timeout(scenario::TIMEOUT)
-                                    .expect("server send must finish before reset");
-                                Peer::try_reset(*stream)
-                                    .expect("client must reset the connection on close");
-                                (ack, reply)
-                            }, |client| {
+                        let peer = Peer::at(addr).try_connect().expect("client connect");
+                        peer.set_nodelay(true).expect("client nodelay");
+                        peer.read_wait(Some(GUARD)).expect("client read timeout");
+                        peer.write_wait(Some(GUARD)).expect("client write timeout");
+                        peer.write_all(b"abcdefg").expect("client prefix must be written");
                         let app = Host::new(listener);
                         let driven = (sess.with_quiesce(&mut finish, app, scenario::TIMEOUT, |mut app| -> Result<(), drive::Error> {
                                 let accepted = app.block_on(pool.accept())?;
@@ -146,6 +136,10 @@ fn fiber_listener_roundtrip() {
                                     assert!(output.is_none());
                                     let sent = stream.write_all(b"!").await;
                                     (sent).ok().expect("acknowledgement write must succeed");
+                                    let mut ack = [0; 1];
+                                    peer.read_exact(&mut ack).expect("client acknowledgement must be read");
+                                    assert_eq!(ack, *b"!");
+                                    peer.write_all(b"xyz").expect("client tail must be written");
                                     let mut retained: Option<Lease<'_, '_, '_, Identity>> = None;
                                     let mut reused = Vec::with_capacity(3);
                                     while reused.len() < 3 {
@@ -167,7 +161,11 @@ fn fiber_listener_roundtrip() {
                                     }
                                     let sent = stream.write_all(b"pong").await;
                                     (sent).ok().expect("reply write must succeed");
-                                    reset.notify().expect("client must await reset");
+                                    let mut reply = [0; 4];
+                                    peer.read_exact(&mut reply).expect("client reply must be read");
+                                    assert_eq!(reply, *b"pong");
+                                    Peer::try_reset(&peer).expect("client reset on close");
+                                    drop(peer);
                                     assert!(matches!(
                                         stream.read().await,
                                         Err(Read::Transport(error))
@@ -179,11 +177,6 @@ fn fiber_listener_roundtrip() {
                                 }))
                             })).expect("listener test application must finish");
                         ((driven).expect("listener fiber stalled"));
-                        assert_eq!(
-                            client.finish().expect("listener peer must finish"),
-                            (*b"!", *b"pong")
-                        );
-                        }).expect("listener peer must start");
                     },
                 );
                 assert!(result.is_ok(), "listener pool must be adopted");
@@ -249,45 +242,41 @@ fn cancelled_inflight_reuses_slot() {
                                 Host::new(listener),
                                 scenario::TIMEOUT,
                                 |mut app| -> Result<(), drive::Error> {
-                                    let (entered, sent) = wake::Ends::blocking().expect("send gate").split();
-                                    let (reset, release) = wake::Ends::blocking().expect("reset gate").split();
-                                    let old = Peer::at(addr).with(
-                                        move |peer| {
-                                            peer.shutdown(Shutdown::Write).expect("peer EOF");
-                                            let mut byte = [0];
-                                            peer.read_exact(&mut byte).expect("submitted payload");
-                                            assert_eq!(byte, [b'x']);
-                                            sent.notify().expect("native send observed");
-                                            reset.wait_timeout(scenario::TIMEOUT).expect("write cancelled");
-                                            Peer::try_reset(*peer).expect("reset on close");
-                                        },
-                                        |peer| {
-                                            let mut io = Some(app.block_on(handle.accept())?.ok().expect("first accept"));
-                                            assert!(matches!(app.block_on(io.as_mut().expect("first owner").read())?, Ok(None)));
+                                    let peer = Peer::at(addr).try_connect().expect("first peer connect");
+                                    peer.set_nodelay(true).expect("peer nodelay");
+                                    peer.read_wait(Some(GUARD)).expect("peer read timeout");
+                                    peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                                    peer.shutdown(Shutdown::Write).expect("peer EOF");
+                                    peer.nonblock(true);
+                                    let mut old = Some(app.block_on(handle.accept())?.ok().expect("first accept"));
+                                    assert!(matches!(app.block_on(old.as_mut().expect("first owner").read())?, Ok(None)));
                                             {
-                                                let mut write = pin!(Task::new(io.as_mut().expect("first owner").write_all(payload)));
+                                                let mut write = pin!(Task::new(old.as_mut().expect("first owner").write_all(payload)));
                                                 assert!(app.block_on(fibers::TEST.poll_once(write.as_mut()))?.is_none());
-                                                fibers::TEST.try_run(&mut app, dope_fiber::fiber!('_ => async move {
-                                                    loop {
-                                                        match entered.wait_timeout(Duration::ZERO) {
-                                                            Ok(()) => break,
-                                                            Err(wake::WaitError::Timeout { .. }) => fibers::Yield::new().await,
-                                                            Err(error) => panic!("native send gate: {error:?}"),
+                                                let mut byte = [0];
+                                                fibers::TEST.try_run(&mut app, poll_fn(|context| {
+                                                    match peer.read(&mut byte) {
+                                                        Ok(0) => Poll::Ready(Err(peer::Error::UnexpectedEof)),
+                                                        Err(peer::Error::Syscall(error)) if error.is_block() || error.is_intr() => {
+                                                            context.wake();
+                                                            Poll::Pending
                                                         }
+                                                        result => Poll::Ready(result),
                                                     }
-                                                })).expect("native send progress");
+                                                })).expect("native send progress").expect("submitted payload");
+                                                assert_eq!(byte, [b'x']);
                                                 assert!(app.block_on(fibers::TEST.poll_once(write.as_mut()))?.is_none(), "the backend must still own the incomplete send");
                                             }
                                             {
-                                                let waiting = io.as_mut().expect("first owner").write_all(b"waiting");
+                                                let waiting = old.as_mut().expect("first owner").write_all(b"waiting");
                                                 assert!(app.block_on(fibers::TEST.poll_once(waiting))?.is_none(), "the cancelled native send still owns the slot");
                                             }
                                             if drop_first {
-                                                drop(io.take());
+                                                drop(old.take());
                                             }
-                                            release.notify().expect("release peer reset");
-                                            peer.finish().expect("peer reset completed");
-                                            if let Some(io) = io.as_mut() {
+                                            Peer::try_reset(&peer).expect("reset on close");
+                                            drop(peer);
+                                            if let Some(io) = old.as_mut() {
                                                 fibers::TEST.try_run(&mut app, dope_fiber::fiber!('_ => async move {
                                                     loop {
                                                         match io.read().await {
@@ -301,24 +290,17 @@ fn cancelled_inflight_reuses_slot() {
                                                     }
                                                 })).expect("late send failure");
                                             }
-                                            Ok::<_, drive::Error>(io)
-                                        },
-                                    ).expect("first peer worker")?;
-                                    Peer::at(addr).with(
-                                        |peer| {
-                                            let mut response = [0; 2];
-                                            peer.read_exact(&mut response).expect("replacement reply");
-                                            assert_eq!(&response, b"ok");
-                                        },
-                                        |peer| -> Result<(), drive::Error> {
+                                    let peer = Peer::at(addr).try_connect().expect("replacement connect");
+                                    peer.set_nodelay(true).expect("replacement nodelay");
+                                    peer.read_wait(Some(GUARD)).expect("replacement read timeout");
+                                    peer.write_wait(Some(GUARD)).expect("replacement write timeout");
                                             let mut io = app.block_on(handle.accept())?.ok().expect("capacity one must accept again");
                                             drop(old);
                                             app.block_on(io.write_all(b"ok"))?.ok().expect("replacement write");
                                             drop(io);
-                                            peer.finish().expect("replacement peer");
-                                            Ok(())
-                                        },
-                                    ).expect("replacement peer worker")?;
+                                    let mut response = [0; 2];
+                                    peer.read_exact(&mut response).expect("replacement reply");
+                                    assert_eq!(&response, b"ok");
                                     Ok(())
                                 },
                             )

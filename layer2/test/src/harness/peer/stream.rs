@@ -11,10 +11,11 @@ use dope_core::{
         },
     },
 };
+use dope_runtime::process::lifecycle::Control;
 use fd::AsFd as _;
 use o3::base::marker::ThreadBound;
 
-use crate::harness::peer::{Error, IO_TIMEOUT, scripts, scripts::Control};
+use crate::harness::peer::{Error, IO_TIMEOUT, scripts};
 
 mod raw;
 
@@ -22,7 +23,7 @@ mod raw;
 #[derive(Debug)]
 pub struct Stream<'a> {
     socket: fd::OwnedFd,
-    control: Option<&'a Control>,
+    control: Option<Control<'a>>,
     read: Cell<Option<time::Duration>>,
     write: Cell<Option<time::Duration>>,
     nonblocking: Cell<bool>,
@@ -30,7 +31,7 @@ pub struct Stream<'a> {
 }
 
 impl<'a> Stream<'a> {
-    pub(super) fn new(socket: fd::OwnedFd, control: Option<&'a Control>) -> Result<Self, Error> {
+    pub(super) fn new(socket: fd::OwnedFd, control: Option<Control<'a>>) -> Result<Self, Error> {
         Backend::update::<Nonblock>(socket.as_fd())
             .map_err(socket::Setup::nonblock)
             .map_err(Error::Setup)?;

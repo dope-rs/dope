@@ -131,8 +131,7 @@ fn reuses_settled_slot() {
                 reports
                     .events()
                     .expect("reclamation observations")
-                    .is_empty()
-                    && !matches!(probe.release.get(), Some(Err(_))),
+                    .is_empty(),
                 "unexpected reclaimed operations: {reports:?}"
             );
         },

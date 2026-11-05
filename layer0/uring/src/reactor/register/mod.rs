@@ -99,8 +99,8 @@ impl<'a, T> Register<'a, T> {
         // SAFETY: the successful registration above replaced the
         // FILE_INDEX_ALLOC sentinel with the kernel-allocated fixed-file index,
         // and a ring's file table indexes from zero, so it never holds u32::MAX.
-        let index = unsafe { bounded::raw::Proof::<0, { u32::MAX - 1 }>::assume(payload.offset) };
-        Ok(Authority(index.retain()))
+        let index = unsafe { bounded::raw::u32::<0, { u32::MAX - 1 }>(payload.offset) };
+        Ok(Authority(index))
     }
 
     fn prepare(address: u64, flags: u32) -> ring::ffi::SyncCancel {

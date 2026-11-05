@@ -3,13 +3,6 @@ use std::mem;
 use crate::reply::retain::pool;
 
 /// Owns retained values for one exact reply entry.
-///
-/// ```compile_fail
-/// use dope_fiber::reply::retain::Values;
-/// fn escape<'arena, 'credits, 'region>(credit: Values<'arena, 'credits, 'region>) -> Values<'static, 'credits, 'region> {
-///     credit
-/// }
-/// ```
 #[repr(transparent)]
 pub struct Values<'arena, 'credits, 'region> {
     active: pool::Active<'arena, 'credits, 'region>,

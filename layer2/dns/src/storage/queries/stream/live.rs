@@ -6,7 +6,7 @@ use crate::{
 };
 
 pub(in crate::storage::queries) struct Live {
-    counts: [usize; config::MAX_SERVERS],
+    counts: [u16; config::MAX_SERVERS],
 }
 
 impl Live {
@@ -49,4 +49,4 @@ impl Live {
     }
 }
 
-const _: () = assert!(mem::size_of::<Live>() == mem::size_of::<[usize; config::MAX_SERVERS]>());
+const _: () = assert!(mem::size_of::<Live>() == mem::size_of::<[u16; config::MAX_SERVERS]>());

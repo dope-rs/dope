@@ -45,7 +45,7 @@ type Stream<'q, 'h, 'p, 'life, 's, 'd, ID, const LANES: usize, const N: usize> =
         'life,
         'd,
         storage::State<'s, 'd, LANES, N>,
-        stream::Logic<'life, 's, 'd, ID, { stream::TRANSACTION_IDS }, LANES, N>,
+        stream::Logic<'life, 's, 'd, ID, LANES, N>,
         ID,
         { stream::CONNECTIONS },
     >,

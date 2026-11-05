@@ -27,8 +27,9 @@ use dope_test::{
     fibers,
     fibers::Wait,
     harness::{
+        GUARD,
         observe::Trace,
-        peer::{self, TcpScript},
+        peer,
         signals::{Gate, LocalGate, Progress as _},
     },
     reclaim::Reports,
@@ -50,56 +51,51 @@ use crate::common::{
 #[test]
 fn age_timeout_is_typed() {
     let mut finish = Completion::new();
+    let server = peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("bind peers");
+    let addr = server.local_addr().expect("peer address");
+    let ready_g = LocalGate::new();
+    let ready = ready_g.handle();
+    let events = Trace::<lifetime::Event, 16>::new();
+    let audit = Rc::new(Report::default());
 
-    TcpScript::with_many::<2, _>(
-        |_| {},
-        |server| {
-            let addr = server.addr();
-            let ready_g = LocalGate::new();
-            let ready = ready_g.handle();
-            let events = Trace::<lifetime::Event, 16>::new();
-            let audit = Rc::new(Report::default());
+    let planned = Connector::<{ lifetime::MAX }>::new(
+        addr,
+        Duration::from_millis(20),
+        Duration::from_millis(200),
+    )
+    .lifetime(LIMIT)
+    .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Profile>>(Value::new(Lifetime {
+        audit: audit.clone(),
 
-            let planned = Connector::<{ lifetime::MAX }>::new(
-                addr,
-                Duration::from_millis(20),
-                Duration::from_millis(200),
-            )
-            .lifetime(LIMIT)
-            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Profile>>(Value::new(Lifetime {
-                audit: audit.clone(),
+        ready,
+        events: &events,
+    }))
+    .expect("prepare actual client layout");
+    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-                ready,
-                events: &events,
-            }))
-            .expect("prepare actual client layout");
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        assert_eq!(
-                            case.try_wait(&ready, 2).expect("progress wait"),
-                            fibers::Wait::Reached
-                        )
-                    },
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    native,
+    planned
+        .with_run(
+            &mut finish,
+            |case| {
+                assert_eq!(
+                    case.try_wait(&ready, 2).expect("progress wait"),
+                    fibers::Wait::Reached
                 )
-                .expect("application scenario");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+            },
+            recovery::Policy::new(|event| reclaim1.push(event), recover),
+            native,
+        )
+        .expect("application scenario");
+    assert!(
+        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim1:?}"
+    );
 
-            let finish = server.finish();
-            assert!(finish.is_ok(), "finish held peers");
-            audit.checked((0, 0));
-            assert_eq!(ready.hits(), 2);
-            let events = events.values().expect("lifetime lifecycle observations");
-            assert!(
-                matches!(events.as_ref(), [
+    audit.checked((0, 0));
+    assert_eq!(ready.hits(), 2);
+    let events = events.values().expect("lifetime lifecycle observations");
+    assert!(
+        matches!(events.as_ref(), [
                     lifetime::Event::Connected(Some(first)),
                     lifetime::Event::Quarantined(1),
                     lifetime::Event::Closed(Reason::Timeout(deadline::Kind::Lifetime)),
@@ -107,28 +103,22 @@ fn age_timeout_is_typed() {
                     lifetime::Event::Quarantined(2),
                     lifetime::Event::Closed(_),
                 ] if first.is_none_or(|left| left <= LIMIT.get()) && second.is_none_or(|left| left <= LIMIT.get())),
-                "{events:?}"
-            );
-        },
-    )
-    .expect("spawn held peers");
+        "{events:?}"
+    );
 }
 
 #[test]
 fn drains_over_turn_limit() {
     let mut finish = Completion::new();
-    peer::TcpScript::try_gated::<CONNECTIONS>(
-        |_| {},
-        |address, release| {
-            let ready = Gate::new();
-            let closed = Gate::new();
-            let audit = Rc::new(Report::default());
+    let listener = peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
+    let address = listener.local_addr().expect("listener address");
+    let mut held = [const { None }; CONNECTIONS];
+    let ready = Gate::new();
+    let closed = Gate::new();
+    let audit = Rc::new(Report::default());
 
-            let planned = Connector::<CONNECTIONS>::new(
-                address,
-                Duration::from_millis(1),
-                Duration::from_millis(1),
-            )
+    let planned =
+        Connector::<CONNECTIONS>::new(address, Duration::from_millis(1), Duration::from_millis(1))
             .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Balanced>>(Value::new(Shutdown {
                 audit: audit.clone(),
 
@@ -136,34 +126,38 @@ fn drains_over_turn_limit() {
                 closed: closed.clone(),
             }))
             .expect("prepare actual client layout");
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
+    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        assert_eq!(
-                            case.try_wait(&ready, CONNECTIONS as u32)
-                                .expect("progress wait"),
-                            fibers::Wait::Reached
-                        )
-                    },
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    native,
-                )
-                .expect("application scenario");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+    planned
+        .with_run(
+            &mut finish,
+            |case| {
+                for (index, slot) in held.iter_mut().enumerate() {
+                    assert_eq!(
+                        case.try_wait(&ready, index as u32 + 1).expect("connect"),
+                        fibers::Wait::Reached
+                    );
+                    *slot = Some(
+                        listener
+                            .accept_for(GUARD)
+                            .expect("accept")
+                            .expect("connected peer"),
+                    );
+                }
+            },
+            recovery::Policy::new(|event| reclaim1.push(event), recover),
+            native,
+        )
+        .expect("application scenario");
+    assert!(
+        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim1:?}"
+    );
 
-            assert_eq!(closed.hits(), CONNECTIONS as u32);
-            assert_eq!(ready.hits(), CONNECTIONS as u32);
-            audit.checked((0, 0));
-            release.try_fire().expect("release scripted peers");
-        },
-    )
-    .expect("gated peers");
+    assert_eq!(closed.hits(), CONNECTIONS as u32);
+    assert_eq!(ready.hits(), CONNECTIONS as u32);
+    audit.checked((0, 0));
+    drop(held);
 }
 
 #[test]
@@ -246,69 +240,57 @@ fn shutdown_does_not_poll_ready_discovery() {
 fn idle_timeout_controls_redial() {
     for timeout in [Some(IDLE_TIMEOUT), None] {
         let mut finish = Completion::new();
+        let listener =
+            peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
+        let addr = listener.local_addr().expect("listener address");
+        let gate_g = LocalGate::new();
+        let gate = gate_g.handle();
+        let redial = Cell::new(None);
+        let audit = Rc::new(Report::default());
 
-        TcpScript::with_many::<2, _>(
-            |_| {},
-            |server| {
-                let addr = server.addr();
-                let gate_g = LocalGate::new();
-                let gate = gate_g.handle();
-                let redial = Cell::new(None);
-                let audit = Rc::new(Report::default());
+        let planned = Connector::<{ probe::MAX }>::new(addr, REDIAL_BACKOFF, REDIAL_BACKOFF)
+            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(Probe {
+                audit: audit.clone(),
 
-                let planned =
-                    Connector::<{ probe::MAX }>::new(addr, REDIAL_BACKOFF, REDIAL_BACKOFF)
-                        .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(
-                            Probe {
-                                audit: audit.clone(),
+                timeout,
+                peer: move |peer: socket::Addr, _: ready::Target<'_>| {
+                    assert_eq!(peer.into_std().expect("TCP peer address"), addr)
+                },
+                gate,
+                start: Instant::now(),
+                redial: &redial,
+                rejected: None,
+                expired: None,
+            }))
+            .expect("prepare actual client layout");
+        let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-                                timeout,
-                                peer: move |peer: socket::Addr, _: ready::Target<'_>| {
-                                    assert_eq!(peer.into_std().expect("TCP peer address"), addr)
-                                },
-                                gate,
-                                start: Instant::now(),
-                                redial: &redial,
-                                rejected: None,
-                                expired: None,
-                            },
-                        ))
-                        .expect("prepare actual client layout");
-                let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
+        let reached = planned
+            .with_run(
+                &mut finish,
+                |case| case.try_wait(&gate, 2),
+                recovery::Policy::new(|event| reclaim1.push(event), recover),
+                native,
+            )
+            .expect("liveness scenario")
+            .expect("wait for liveness scenario");
+        assert!(
+            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+            "unexpected reclaimed operations: {reclaim1:?}"
+        );
 
-                let reached = planned
-                    .with_run(
-                        &mut finish,
-                        |case| case.try_wait(&gate, 2),
-                        recovery::Policy::new(|event| reclaim1.push(event), recover),
-                        native,
-                    )
-                    .expect("liveness scenario")
-                    .expect("wait for liveness scenario");
-                assert!(
-                    matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                    "unexpected reclaimed operations: {reclaim1:?}"
-                );
-
-                if matches!(reached, Wait::Deadline) {
-                    net::TcpStream::connect(addr).expect("release liveness peer");
-                }
-                server.finish().expect("finish liveness peer");
-                audit.checked((0, 0));
-                if let Some(timeout) = timeout {
-                    assert_eq!(reached, Wait::Reached);
-                    assert_eq!(gate.hits(), 2);
-                    let dt = redial.get().expect("must reconnect after silence");
-                    assert!(dt >= timeout.get() - Duration::from_millis(30));
-                    assert!(dt < timeout.get() * 8, "reconnect at {dt:?}");
-                } else {
-                    assert_eq!(reached, Wait::Deadline);
-                    assert_eq!(gate.hits(), 1);
-                    assert_eq!(redial.get(), None);
-                }
-            },
-        )
-        .expect("spawn liveness peer");
+        audit.checked((0, 0));
+        if let Some(timeout) = timeout {
+            assert_eq!(reached, Wait::Reached);
+            assert_eq!(gate.hits(), 2);
+            let dt = redial.get().expect("must reconnect after silence");
+            assert!(dt >= timeout.get() - Duration::from_millis(30));
+            assert!(dt < timeout.get() * 8, "reconnect at {dt:?}");
+        } else {
+            assert_eq!(reached, Wait::Deadline);
+            assert_eq!(gate.hits(), 1);
+            assert_eq!(redial.get(), None);
+        }
     }
 }
 

@@ -20,7 +20,7 @@ pub fn with_harness(deadline: time::Duration, run: impl FnOnce(Pair)) {
     run(harness);
 }
 
-pub fn serve(source: shutdown::ReadySource) {
+pub fn serve(source: shutdown::ReadySource<'_>) {
     let mut finish = Completion::new();
     let config = settings::Config::new(
         settings::QueueLayout::fixed::<256, 1024>(),

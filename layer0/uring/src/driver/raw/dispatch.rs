@@ -28,46 +28,38 @@ where
         let Self { host, quota } = self;
         quota.reclaim(host);
         C::with(host, |backend| backend.ring.acquire());
-        let mut held = None;
-        let mut fault = None;
-        {
+        let result = {
             let limit = quota.remaining();
             let mut budget = quota.budget::<Completion>(limit);
             loop {
                 let item = match budget.admit(|| C::resolve(host)) {
                     Admission::Item(item) => item,
-                    Admission::Empty | Admission::Exhausted => break,
+                    Admission::Empty | Admission::Exhausted => break Ok(None),
                 };
                 let event = match item {
                     Ok(Some(event)) => event,
                     Ok(None) => continue,
-                    Err(error) => {
-                        fault = Some(error);
-                        break;
-                    }
+                    Err(error) => break Err(error),
                 };
-                match emit(event, host) {
-                    ops::ControlFlow::Continue(()) => {}
-                    ops::ControlFlow::Break(event) => {
-                        held = Some(event);
-                        break;
-                    }
+                if let ops::ControlFlow::Break(event) = emit(event, host) {
+                    break Ok(Some(event));
                 }
             }
-        }
+        };
         let pending = C::with(host, |backend| {
             let complete = backend.ring.refresh();
             backend.ring.flush();
             complete.get() != 0 || backend.tuning.has_pending()
         });
-        if let Some(error) = fault {
-            return (task::Poll::Pending, error).into();
-        }
-        let state = if pending || held.is_some() {
+        let state = if pending {
             task::Poll::Pending
         } else {
             task::Poll::Ready(())
         };
-        (state, held).into()
+        match result {
+            Err(error) => (task::Poll::Pending, error).into(),
+            Ok(Some(event)) => (task::Poll::Pending, Some(event)).into(),
+            Ok(None) => (state, None::<C::Event>).into(),
+        }
     }
 }

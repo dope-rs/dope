@@ -166,6 +166,7 @@ impl<W> Registry<W> {
         if self.cursor.get() == Some(*view.key()) {
             self.cursor.set(view.hook().next_index());
         }
+        let last = view.hook().prev_index().is_none() && view.hook().next_index().is_none();
         let vacant = unsafe {
             depot::raw::Hooks::chain_unlink(
                 resident::raw::Slice::new(self.entries.as_ref()),
@@ -173,6 +174,9 @@ impl<W> Registry<W> {
                 *view.key(),
             )
         };
+        if last {
+            self.draining.set(self.epoch.get());
+        }
         self.free.recycle(vacant);
         view.retire();
     }

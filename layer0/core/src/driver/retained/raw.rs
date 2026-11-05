@@ -111,12 +111,8 @@ where
         Tag: route::Tag,
         C: kind::Flight,
     {
-        // SAFETY: try_submit requires the exact pinned owner to retain every
-        // resource borrowed by this entry through quiescence.
-        let request::raw::Submission {
-            submission: raw,
-            target,
-        } = unsafe { request::raw::Submission::bind(context.token(), self) };
+        let (raw, target) = self.into_parts();
+        let raw = bound::Captured::new(raw, context.token());
         let (permit, space) = slots.try_admit(&mut context.driver, target)?;
         let entry = bound::Bound::new(raw, space);
         Ok(permit.retain(entry))

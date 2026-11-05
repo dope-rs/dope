@@ -197,24 +197,13 @@ impl<'arena, 'credits, 'region> Key<'arena, 'credits, 'region> {
         self.parts().core.lanes.cancel_entry(lane, key);
     }
 
-    fn try_acquire<A>(
-        self,
-        lane: LaneIndex,
-        key: EntryKey,
-        sum: &mut payload::raw::Sum<'credits>,
-        amount: A,
-    ) -> Result<(), Acquire>
+    fn release_data<A>(self, lane: LaneIndex, grant: payload::Grant<'credits, A>)
     where
-        A: mem::raw::Amount<3, usize> + Into<payload::Returned> + Into<payload::Requested>,
+        A: mem::raw::Amount<3, usize>,
     {
-        self.parts().core.lanes.take_waiting(lane, key, sum, amount)
-    }
-
-    fn release_data<A>(self, grant: payload::Grant<'credits, A>)
-    where
-        A: mem::raw::Amount<3, usize> + Into<payload::Returned>,
-    {
-        self.parts().core.lanes.release_data(grant);
+        let lanes = &self.parts().core.lanes;
+        lanes.release_data(grant);
+        lanes.wake_local(lane, self.entry());
     }
 
     fn parts(self) -> Parts<'arena, 'credits, 'region> {
@@ -302,11 +291,7 @@ impl<'arena, 'credits, 'region> LeaseEdge<'arena, 'credits, 'region> {
     }
 
     pub(in crate::reply::retain) fn returned(&self, value: payload::Value) {
-        self.active
-            .parts()
-            .core
-            .lanes
-            .returned(payload::Returned::Value(value));
+        self.active.parts().core.lanes.returned(value);
     }
 
     pub(in crate::reply::retain) fn wake(&self) {

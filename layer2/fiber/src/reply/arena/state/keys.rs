@@ -69,7 +69,7 @@ unsafe impl depot::raw::Compact for Index {
 
     unsafe fn from_raw(raw: u32) -> Self {
         // SAFETY: Compact requires raw within this exact inclusive bound.
-        Self(unsafe { bounded::raw::Proof::assume(raw) }.retain())
+        Self(unsafe { bounded::raw::u32(raw) })
     }
 }
 

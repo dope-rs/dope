@@ -11,7 +11,7 @@ use crate::{
 
 struct Config {
     driver: syn::Lifetime,
-    fiber: paths::Fiber,
+    abi: TokenStream,
 }
 
 impl Config {
@@ -23,13 +23,12 @@ impl Config {
         if body.capture.is_none() {
             return Err(Failure::new(&body.async_token, Fiber::Move));
         }
-        let Self { driver, fiber } = self;
-        let abi = fiber.abi();
-        let brand_ty = fiber.brand();
+        let Self { driver, abi } = self;
+        let brand_ty = quote::quote!(#abi::future::raw::Brand);
         let source = quote::quote!(#source #abi #driver);
         let brand = crate::tokens::ident(&source, "__dope_brand");
         let scope = crate::tokens::ident(&source, "__DopeScope");
-        fiber::Lower::try_lower(&brand, brand_ty, &mut body.block)?;
+        fiber::Lower::try_lower(&brand, &brand_ty, &mut body.block)?;
         // The local helper shields generated bindings from unseen outer const names.
         Ok(quote::quote! {
             struct #scope;
@@ -73,8 +72,8 @@ impl Config {
             source,
             kind: failure::Kind::Fiber(Fiber::Driver),
         })?;
-        let fiber = paths::Fiber::resolve(facade);
-        Ok(Self { driver, fiber })
+        let abi = paths::fiber(facade);
+        Ok(Self { driver, abi })
     }
 
     fn facade(comma: Span, tokens: TokenStream) -> Result<TokenStream, Failure> {
@@ -231,8 +230,7 @@ impl Attribute {
             ReturnType::Default => (Default::default(), parse_quote! { () }),
             ReturnType::Type(arrow, ty) => (arrow, *ty),
         };
-        let Config { driver, fiber } = config;
-        let abi = fiber.abi();
+        let Config { driver, abi } = config;
         sig.output = ReturnType::Type(
             arrow,
             Box::new(parse_quote! { impl #abi::Fiber<#driver, Output = #output> }),

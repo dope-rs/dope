@@ -227,9 +227,7 @@ impl<'d, P: Purpose> Root<'d, P> {
 
 const _: () = assert!(mem::size_of::<HashState<'static>>() == 2 * mem::size_of::<u64>());
 const _: () = assert!(mem::size_of::<HashSeed>() == 2 * mem::size_of::<u64>());
-const _: () = assert!(
-    mem::size_of::<OwnedHasher>() == 2 * mem::size_of::<usize>() + 5 * mem::size_of::<u64>()
-);
+const _: () = assert!(mem::size_of::<OwnedHasher>() == mem::size_of::<(usize, [u64; 5])>());
 const _: () = assert!(mem::size_of::<Hasher<'static>>() == mem::size_of::<SipHasher13>());
 
 /// Secret key retained by one runtime authority.

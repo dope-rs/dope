@@ -190,7 +190,15 @@ fn bootstrap_routes_variable_keys() {
     let issued = [1; 9];
     let mut tail = [0xa5; 20];
     tail[19] = 0xa4;
-    for (width, workers) in [(2_u16, [1, 1, 1, 0]), (3, [1, 1, 2, 0])] {
+    for (width, workers, bootstrap) in [
+        (2_u16, [Some(1), Some(1), Some(1), Some(0)], bootstrap),
+        (3, [Some(1), Some(1), Some(2), Some(0)], bootstrap),
+        (
+            2,
+            [Some(1), None, None, None],
+            Bootstrap::fixed::<1, 1, 0xe0, 0xc0, 8, 8>(),
+        ),
+    ] {
         let count = count::Count::try_from(width).expect("dense route count");
         let outside = [width as u8; 9];
         for framing in [None, Some(prefix)] {
@@ -226,13 +234,13 @@ fn bootstrap_routes_variable_keys() {
                 (0xd0, 1, issued.as_slice(), Some(1), 0),
                 (0xe0, 1, issued.as_slice(), Some(1), 0),
                 (0x80, 0x87654321, issued.as_slice(), Some(1), 0),
-                (0xc0, 1, &cid[..8], Some(workers[0]), 0),
-                (0xd0, 1, &cid[..8], Some(workers[0]), 0),
-                (0xc0, 1, &cid[..9], Some(workers[1]), 0),
-                (0xd0, 1, &cid[..9], Some(workers[1]), 0),
-                (0xc0, 1, &cid[..20], Some(workers[2]), 0),
-                (0xd0, 1, &cid[..20], Some(workers[2]), 0),
-                (0xc0, 1, tail.as_slice(), Some(workers[3]), 0),
+                (0xc0, 1, &cid[..8], workers[0], 0),
+                (0xd0, 1, &cid[..8], workers[0], 0),
+                (0xc0, 1, &cid[..9], workers[1], 0),
+                (0xd0, 1, &cid[..9], workers[1], 0),
+                (0xc0, 1, &cid[..20], workers[2], 0),
+                (0xd0, 1, &cid[..20], workers[2], 0),
+                (0xc0, 1, tail.as_slice(), workers[3], 0),
                 (0x80, 0x87654321, &cid[..0], Some(0), 0),
                 (0x90, 2, &cid[..7], Some(0), 0),
                 (0xa0, 2, &cid[..21], Some(0), 0),

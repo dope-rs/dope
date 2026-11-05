@@ -31,7 +31,7 @@ unsafe impl depot::raw::Compact for LaneIndex {
 
     unsafe fn from_raw(raw: u32) -> Self {
         // SAFETY: Compact requires raw within this exact inclusive bound.
-        Self::from(unsafe { bounded::raw::Proof::assume(raw) }.retain())
+        Self::from(unsafe { bounded::raw::u32(raw) })
     }
 }
 

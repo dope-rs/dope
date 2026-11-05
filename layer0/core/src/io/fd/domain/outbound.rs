@@ -1,4 +1,4 @@
-use std::{cell, mem};
+use std::{cell, mem, num::NonZero};
 
 use o3::depot::arena::slab::Vacancy;
 
@@ -10,7 +10,7 @@ use crate::{
     },
     io::{
         fd::{
-            domain::{Domain, Lease, Prefix, State, resident, state},
+            domain::{Domain, Lease, Prefix, State, resident},
             handles, identity, outbound,
             outbound::Error,
             states,
@@ -116,17 +116,20 @@ impl<'a> Outbound<'a> {
     }
 
     pub(crate) fn begin_create(&self, slot: handles::OutboundSlot) {
-        state::get(self.0, slot.physical()).set(states::SlotState::route(
-            states::Phase::CREATING_ONE,
-            slot.owner(),
-        ));
+        self.0
+            .resident
+            .lifecycle(slot.physical())
+            .set(states::SlotState::route(
+                states::Phase::CREATING_ONE,
+                slot.owner(),
+            ));
     }
 
     pub(crate) fn created(&self, creation: Creation) -> Create {
         let slot = creation.0;
         let owner = slot.owner();
         let physical = slot.physical();
-        let state = state::get(self.0, physical);
+        let state = self.0.resident.lifecycle(physical);
         if state.get().phase() == states::Phase::CREATING_ONE {
             state.set(states::SlotState::route(states::Phase::OPEN_TWO, owner));
             Create::Deliver
@@ -140,7 +143,7 @@ impl<'a> Outbound<'a> {
     pub(crate) fn failed(&self, creation: Creation) {
         let slot = creation.0;
         let owner = slot.owner();
-        let state = state::get(self.0, slot.physical());
+        let state = self.0.resident.lifecycle(slot.physical());
         if state.get().phase() == states::Phase::CREATING_ONE {
             state.set(states::SlotState::route(states::Phase::FAILED_ONE, owner));
         } else {
@@ -149,25 +152,31 @@ impl<'a> Outbound<'a> {
     }
 
     pub(crate) fn activate(&self, slot: handles::OutboundSlot) {
-        state::get(self.0, slot.physical()).set(states::SlotState::route(
-            states::Phase::OPEN_ONE,
-            slot.owner(),
-        ));
+        self.0
+            .resident
+            .lifecycle(slot.physical())
+            .set(states::SlotState::route(
+                states::Phase::OPEN_ONE,
+                slot.owner(),
+            ));
     }
 }
 
 impl Closures<'_> {
     pub(crate) fn direct(self, slot: handles::OutboundSlot) {
-        state::get(self.0, slot.physical()).set(states::SlotState::route(
-            states::Phase::CLOSING_ZERO,
-            slot.owner(),
-        ));
+        self.0
+            .resident
+            .lifecycle(slot.physical())
+            .set(states::SlotState::route(
+                states::Phase::CLOSING_ZERO,
+                slot.owner(),
+            ));
     }
 
     pub(crate) fn creating(self, id: identity::Identity<'_, handles::OutboundSlot>) -> Close {
         let slot = id.slot();
         let owner = slot.owner();
-        let state = state::get(self.0, slot.physical());
+        let state = self.0.resident.lifecycle(slot.physical());
         let phase = state.get().phase();
         if phase == states::Phase::CREATING_ONE {
             state.set(states::SlotState::route(
@@ -181,7 +190,7 @@ impl Closures<'_> {
 
     pub(crate) fn created(self, slot: handles::OutboundSlot) -> Close {
         let owner = slot.owner();
-        let state = state::get(self.0, slot.physical());
+        let state = self.0.resident.lifecycle(slot.physical());
         let phase = state.get().phase();
         Self::close(state, phase, owner)
     }
@@ -203,7 +212,7 @@ impl Closures<'_> {
     }
 
     pub(crate) fn complete(self, slot: handles::PhysicalSlot) {
-        let state = state::get(self.0, slot);
+        let state = self.0.resident.lifecycle(slot);
         let Some(owner) = state.get().owner() else {
             return;
         };
@@ -259,7 +268,10 @@ impl<'a> Outbound<'a> {
         let entry = unsafe { table.mapping.get_unchecked(prefix.allocated as usize) };
         entry.set(Index(released.0.into()));
         table.prefix.set(prefix);
-        state::get(self.0, released.0).set(states::SlotState::FREE);
+        self.0
+            .resident
+            .lifecycle(released.0)
+            .set(states::SlotState::FREE);
     }
 
     /// Admits a disjoint nonempty interval and both bounded prefix successors.
@@ -307,7 +319,9 @@ impl<'a> Outbound<'a> {
             .skip(lease.start as usize)
             .take(len.get() as usize)
         {
-            state::get_index(self.0, entry.get())
+            self.0
+                .resident
+                .mapped(entry.get())
                 .set(states::SlotState::route(states::Phase::MAPPED, owner));
         }
         route.set(Some(lease));
@@ -324,11 +338,11 @@ impl<'a> Outbound<'a> {
         let lease = table.routes[owner.raw() as usize]
             .get()
             .ok_or(Vacancy::Full)?;
-        if lease.state == State::Retired {
+        if matches!(lease.state, State::Retired(_)) {
             return Err(Vacancy::Full);
         }
         let index = table.get(lease, local).ok_or(Vacancy::Full)?;
-        let state = state::get_index(self.0, index);
+        let state = self.0.resident.mapped(index);
         if state.is_exhausted() {
             return Err(Vacancy::IdentityExhausted);
         }
@@ -346,47 +360,44 @@ impl<'a> Outbound<'a> {
     }
 
     pub(crate) fn retire(&self, owner: route::OutboundKey) {
-        let cell = &self.0.outbound.routes[owner.raw() as usize];
-        if let Some(mut lease) = cell.get() {
-            lease.state = State::Retired;
+        let table = &self.0.outbound;
+        let cell = &table.routes[owner.raw() as usize];
+        let Some(mut lease) = cell.get() else {
+            return;
+        };
+        let slots = lease.range();
+        let remaining = table
+            .mapping
+            .iter()
+            .skip(slots.start)
+            .take(slots.len())
+            .filter(|entry| {
+                let state = self.0.resident.mapped(entry.get());
+                !state.get().is_state(states::Phase::MAPPED, owner)
+            })
+            .count();
+        if let Some(remaining) = NonZero::new(remaining as u32) {
+            lease.state = State::Retired(remaining);
             cell.set(Some(lease));
+        } else {
+            self.reclaim(owner, lease);
         }
-        self.reclaim(owner);
     }
 
     fn has_retiring(&self) -> bool {
         self.0.outbound.routes.iter().any(|route| {
             route
                 .get()
-                .is_some_and(|route| route.state == State::Retired)
+                .is_some_and(|route| matches!(route.state, State::Retired(_)))
         }) || self.0.resident.has_retiring()
     }
 
     /// Removes a retired interval; backward compaction preserves unread entries.
     /// Exhausted slots retain anonymous allocations; only reusable slots enter the free suffix.
-    pub(super) fn reclaim(&self, owner: route::OutboundKey) {
+    pub(super) fn reclaim(&self, owner: route::OutboundKey, removed: Lease) {
         let table = &self.0.outbound;
         let cell = &table.routes[owner.raw() as usize];
-        let Some(removed) = cell.get() else {
-            return;
-        };
-        if removed.state == State::Live {
-            return;
-        }
         let slots = removed.range();
-        if !table
-            .mapping
-            .iter()
-            .skip(slots.start)
-            .take(slots.len())
-            .all(|entry| {
-                state::get_index(self.0, entry.get())
-                    .get()
-                    .is_state(states::Phase::MAPPED, owner)
-            })
-        {
-            return;
-        }
         let prefix = table.prefix.get();
         let mut next = Prefix {
             mapped: prefix.mapped - removed.len.get(),
@@ -400,7 +411,7 @@ impl<'a> Outbound<'a> {
             .skip((prefix.allocated - removed.len.get()) as usize);
         let reusable = released.clone().rev().filter_map(|entry| {
             let index = entry.get();
-            let state = state::get_index(self.0, index);
+            let state = self.0.resident.mapped(index);
             if state.is_exhausted() {
                 state.set(states::SlotState::STANDALONE);
                 None

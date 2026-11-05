@@ -24,36 +24,11 @@ use fibers::{BlockOn as _, abi::Ready};
 use crate::common::macros::{fairness::tree::Branch, *};
 
 #[test]
-fn path_modes() {
-    fn require<T: executor::raw::App<'static>>() {}
-
-    require::<Facade>();
-    require::<Parts>();
-}
-
-#[test]
 fn forward_layout() {
     assert!((<Forward as dispatch::raw::Manifold<'static>>::ID) == (route::Id::fixed::<6>()));
     assert!(
         <Defaulted<'static> as dispatch::raw::Manifold<'static>>::ID == route::Id::fixed::<9>()
     );
-}
-
-#[test]
-fn retained_lifetime() {
-    fn assert_forward<'d>()
-    where
-        Retained<'d>: dispatch::raw::Manifold<'d>,
-    {
-    }
-    fn assert_dispatcher<'d>()
-    where
-        Lifetime<'d>: executor::raw::App<'d>,
-    {
-    }
-
-    assert_forward::<'static>();
-    assert_dispatcher::<'static>();
 }
 
 #[test]
@@ -76,22 +51,6 @@ fn explicit_lifetime() {
 
 #[test]
 fn selected_lifetime() {
-    fn assert_lifetime<'scope, 'd>(
-        app: &Selected<'scope, 'd>,
-        brand: PhantomData<fn(&'d ()) -> &'d ()>,
-    ) {
-        fn assert_application<'d>(
-            _: &impl executor::raw::App<'d>,
-            _: PhantomData<fn(&'d ()) -> &'d ()>,
-        ) {
-        }
-        assert_application(app, brand);
-    }
-
-    let app = Selected {
-        inner: Counter::default(),
-    };
-    assert_lifetime(&app, PhantomData);
     assert!((Selected::<'_, '_>::INNER_ROUTE) == (route::Id::fixed::<8>()));
 }
 
@@ -102,12 +61,6 @@ fn state_routing() {
 
 #[test]
 fn forward_lifetime() {
-    fn assert_manifold<'d>(_: &impl dispatch::raw::Manifold<'d>) {}
-
-    let app = Scoped {
-        inner: Counter::default(),
-    };
-    assert_manifold(&app);
     assert!(
         <Scoped<'static, 'static> as dispatch::raw::Manifold<'static>>::ID
             == route::Id::fixed::<7>()

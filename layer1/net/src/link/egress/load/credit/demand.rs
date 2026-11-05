@@ -38,7 +38,7 @@ impl Demand<2> {
         // SAFETY: o3 Lane::demand subtracts protected credit with per-component
         // saturation, so each demand is <= the original Queued request (<= 2
         // entries). ZERO is the only other constructor of Demand<2>.
-        unsafe { bounded::raw::Proof::assume(self.entries().raw()) }.retain()
+        unsafe { bounded::raw::u32(self.entries().raw()) }
     }
 }
 

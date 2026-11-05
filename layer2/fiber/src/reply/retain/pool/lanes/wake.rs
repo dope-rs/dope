@@ -11,7 +11,7 @@ use crate::reply::{
 #[derive(Clone, Copy)]
 pub(super) struct Wait {
     pub(super) key: EntryKey,
-    pub(super) request: payload::Requested,
+    pub(super) request: Option<payload::Requested>,
 }
 
 pub(super) struct Wake<'region> {

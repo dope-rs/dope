@@ -284,7 +284,7 @@ fn owner_holds_credits() {
                                 &mut finish,
                                 Empty {},
                                 scenario::TIMEOUT,
-                                |mut app| app.drive(Once::new(response)),
+                                |mut app| app.drive_for(scenario::TIMEOUT, Once::new(response)),
                             );
                             assert!(
                                 outcome.is_ok(),
@@ -302,7 +302,9 @@ fn owner_holds_credits() {
                                 &mut finish,
                                 Maintenance::new(state, &releases),
                                 scenario::TIMEOUT,
-                                |mut app| app.drive(Once::new(Drain::new(state))),
+                                |mut app| {
+                                    app.drive_for(scenario::TIMEOUT, Once::new(Drain::new(state)))
+                                },
                             );
                             assert!(
                                 matches!(result, Ok(Ok(()))),
@@ -335,7 +337,9 @@ fn owner_holds_credits() {
                             &mut finish,
                             Maintenance::new(state, &releases),
                             scenario::TIMEOUT,
-                            |mut app| app.drive(Once::new(Drain::new(state))),
+                            |mut app| {
+                                app.drive_for(scenario::TIMEOUT, Once::new(Drain::new(state)))
+                            },
                         );
                         assert!(
                             matches!(result, Ok(Ok(()))),

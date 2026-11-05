@@ -4,6 +4,7 @@ use dope_core::driver::{
     route::Identity,
     schedule::{
         clock::{self, timer},
+        maint,
         ready::{self, wake},
     },
 };
@@ -45,8 +46,18 @@ impl Attempts {
 }
 
 impl<'d, ID: Identity, P: phase::Sequence> Cycle<'d, ID, P> {
-    pub(in crate::client::conn::engine) fn advance(&mut self) -> P::Step {
-        self.phase.advance()
+    pub(in crate::client::conn::engine) fn advance(
+        &mut self,
+        work: maint::Work<'_, 'd>,
+        active: bool,
+    ) -> Option<P::Step> {
+        if work.remaining() == 0 {
+            if active {
+                self.slot.activate();
+            }
+            return None;
+        }
+        Some(self.phase.advance())
     }
 }
 

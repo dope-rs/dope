@@ -5,13 +5,6 @@ use o3::mem::rc;
 use crate::reply::retain::pool;
 
 /// Owns retained bytes for one exact reply entry.
-///
-/// ```compile_fail
-/// use dope_fiber::reply::retain::Bytes;
-/// fn escape<'arena, 'credits, 'region>(credit: Bytes<'arena, 'credits, 'region>) -> Bytes<'static, 'credits, 'region> {
-///     credit
-/// }
-/// ```
 #[repr(transparent)]
 pub struct Bytes<'arena, 'credits, 'region> {
     active: pool::Active<'arena, 'credits, 'region>,

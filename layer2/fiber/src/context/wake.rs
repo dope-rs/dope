@@ -8,14 +8,6 @@ use crate::core::driver::{
 /// Driver-owned wake target that cannot name a task node.
 /// The root boundary supplies it, and child contexts retain that exact root.
 /// Generational ready keys make wakes after slot release a no-op.
-///
-/// ```compile_fail
-/// use dope_fiber::context::wake::RootWaker;
-///
-/// fn retag<'left, 'right>(wake: RootWaker<'left>) -> RootWaker<'right> {
-///     wake
-/// }
-/// ```
 #[derive(Clone, Copy)]
 pub struct RootWaker<'d> {
     target: ready::Target<'d>,

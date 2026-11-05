@@ -7,6 +7,7 @@ use dope_core::{
         socket::{self, Socket as _, addr},
     },
 };
+use dope_runtime::process::lifecycle::Control;
 use fd::AsFd as _;
 use o3::base::marker::ThreadBound;
 
@@ -54,7 +55,7 @@ impl<T> Script<'_, T> {
 /// Worker-owned UDP operations with a retained cancellation endpoint.
 pub struct Socket<'a> {
     socket: fd::OwnedFd,
-    control: Option<&'a scripts::Control>,
+    control: Option<Control<'a>>,
     read: Cell<Option<time::Duration>>,
     write: Cell<Option<time::Duration>>,
     nonblocking: Cell<bool>,
@@ -73,7 +74,7 @@ impl Socket<'static> {
 }
 
 impl<'a> Socket<'a> {
-    fn new(socket: fd::OwnedFd, control: Option<&'a scripts::Control>) -> Self {
+    fn new(socket: fd::OwnedFd, control: Option<Control<'a>>) -> Self {
         Self {
             socket,
             control,

@@ -129,7 +129,7 @@ impl<'q, 'd> From<Stopped<(Envelope<'d>, flight::Complete<'q, 'd>), Returned>> f
             state: (packet, bound),
             cause,
         } = stopped;
-        let flow = packet.0.flow().into();
+        let flow = packet.0.flow();
         let subject = bound.settle(flow).into();
         packet.reject(subject, Violation::Outcome(cause))
     }
@@ -137,7 +137,7 @@ impl<'q, 'd> From<Stopped<(Envelope<'d>, flight::Complete<'q, 'd>), Returned>> f
 
 impl<'d> Envelope<'d> {
     pub(super) fn flow(&self) -> Flow {
-        self.0.flow().into()
+        self.0.flow()
     }
 
     pub(super) fn bytes(&self) -> Result<Result<transfer::Len, Errno>, Returned> {

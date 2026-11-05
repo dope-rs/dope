@@ -2,37 +2,50 @@ use std::{cell::Cell, pin::Pin};
 
 use dope_core::driver::{route, schedule, schedule::clock};
 use dope_manifold::app::dispatch::raw;
-use dope_test::harness::signals::{Gate, Progress as _};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Injection {
+    Waiting,
+    Queued {
+        slot: route::indices::SlotIndex,
+        control: bool,
+        connection: bool,
+    },
+    Done,
+}
 
 #[pin_project::pin_project]
-pub struct Exhausted<'a, 'd, M> {
+pub struct Exhausted<'a, 'd, M, F> {
     #[pin]
     pub(crate) inner: M,
-    pub(crate) closed: &'a Gate,
-    pub(crate) injected: &'a Cell<bool>,
-    pub(crate) due: Option<clock::Deadline<'d>>,
+    injected: &'a Cell<Injection>,
+    due: clock::Deadline<'d>,
+    wake: Option<F>,
 }
 
-fn exhaust<'d>(
-    due: Option<clock::Deadline<'d>>,
-    injected: &Cell<bool>,
-    turn: schedule::Turn<'_, 'd>,
-    mut run: impl FnMut(),
-) {
-    if due.is_some_and(|at| at <= turn.clock().now()) && !injected.replace(true) {
-        turn.maint().share::<{ schedule::LIMIT }, _>(|| {
-            while turn.maint().permit().is_some() {}
-            // Visit every service phase without a permit, including Submission.
-            for _ in 0..4 {
-                run();
-            }
-        });
-        return;
+impl<'a, 'd, M, F> Exhausted<'a, 'd, M, F>
+where
+    F: FnOnce(Pin<&mut M>) -> route::indices::SlotIndex,
+{
+    pub fn new(inner: M, due: clock::Deadline<'d>, injected: &'a Cell<Injection>, wake: F) -> Self {
+        Self {
+            inner,
+            injected,
+            due,
+            wake: Some(wake),
+        }
     }
-    run();
 }
 
-impl<'d, M> raw::Projection<'d> for Exhausted<'_, 'd, M> {
+fn exhaust(turn: schedule::Turn<'_, '_>, run: impl FnOnce()) {
+    turn.maint().share::<{ schedule::LIMIT }, _>(|| {
+        assert_eq!(turn.maint().remaining(), 1);
+        let _permit = turn.maint().permit().expect("activation share");
+        run();
+    });
+}
+
+impl<'d, M, F> raw::Projection<'d> for Exhausted<'_, 'd, M, F> {
     type Inner = M;
 
     fn inner(self: Pin<&Self>) -> Pin<&M> {
@@ -45,10 +58,11 @@ impl<'d, M> raw::Projection<'d> for Exhausted<'_, 'd, M> {
 }
 
 // SAFETY: every operation retains the same installed, pinned connector and engine.
-unsafe impl<'d, M> raw::Manifold<'d> for Exhausted<'_, 'd, M>
+unsafe impl<'d, M, F> raw::Manifold<'d> for Exhausted<'_, 'd, M, F>
 where
     M: raw::Manifold<'d, PrePark = raw::Retained> + raw::Projection<'d>,
     M::Inner: raw::Activate<'d, M::Route, Access = raw::Retained>,
+    F: FnOnce(Pin<&mut M>) -> route::indices::SlotIndex,
 {
     type Route = M::Route;
     type Dispatch = raw::Projected<Self>;
@@ -70,12 +84,43 @@ where
         Self: 'root,
     {
         let mut this = self.as_mut().project();
-        exhaust(*this.due, this.injected, turn.reborrow(), || {
-            // SAFETY: projection retains the exact installed connector and its loans.
-            unsafe { M::pre_park(this.inner.as_mut(), turn.reborrow(), driver) };
-        });
-        if this.closed.hits() == 1 && this.due.is_none() && !this.injected.get() {
-            *this.due = driver.driver_ref().timer().earliest();
+        match this.injected.get() {
+            Injection::Waiting if *this.due <= turn.clock().now() => {
+                let slot = this.wake.take().expect("survivor wake")(this.inner.as_mut());
+                this.injected.set(Injection::Queued {
+                    slot,
+                    control: false,
+                    connection: false,
+                });
+                exhaust(turn.reborrow(), || {
+                    // SAFETY: projection retains the installed connector and its loans.
+                    unsafe { M::pre_park(this.inner.as_mut(), turn.reborrow(), driver) };
+                });
+            }
+            Injection::Queued {
+                control,
+                connection,
+                ..
+            } => {
+                assert!(control && connection, "both ready targets were consumed");
+                let before = turn.maint().remaining();
+                turn.maint().share::<{ schedule::LIMIT }, _>(|| {
+                    assert_eq!(turn.maint().remaining(), 1);
+                    // SAFETY: the exact installed owner receives one real maintenance permit.
+                    unsafe { M::pre_park(this.inner.as_mut(), turn.reborrow(), driver) };
+                    assert_eq!(turn.maint().remaining(), 0, "quiet dirty head consumed");
+                });
+                assert_eq!(turn.maint().remaining(), before - 1);
+                assert!(
+                    turn.maint().remaining() > 0,
+                    "unused sibling share refunded"
+                );
+                this.injected.set(Injection::Done);
+            }
+            _ => {
+                // SAFETY: projection retains the exact installed connector and its loans.
+                unsafe { M::pre_park(this.inner.as_mut(), turn.reborrow(), driver) };
+            }
         }
         self
     }
@@ -94,10 +139,11 @@ where
 }
 
 // SAFETY: activation retains the canonical route and the same pinned engine.
-unsafe impl<'d, M> raw::Activate<'d, M::Route> for Exhausted<'_, 'd, M>
+unsafe impl<'d, M, F> raw::Activate<'d, M::Route> for Exhausted<'_, 'd, M, F>
 where
     M: raw::Manifold<'d, PrePark = raw::Retained> + raw::Projection<'d>,
     M::Inner: raw::Activate<'d, M::Route, Access = raw::Retained>,
+    F: FnOnce(Pin<&mut M>) -> route::indices::SlotIndex,
 {
     type Access = raw::Retained;
 
@@ -108,7 +154,7 @@ where
         driver: &mut raw::Context<'_, '_, 'd, Self::Access>,
     ) {
         let mut this = self.project();
-        exhaust(*this.due, this.injected, turn.reborrow(), || {
+        let mut run = || {
             // SAFETY: projection preserves the canonical target and exact installed engine.
             unsafe {
                 M::Inner::activate(
@@ -118,6 +164,27 @@ where
                     driver,
                 );
             }
-        });
+        };
+        if let Injection::Queued {
+            slot,
+            mut control,
+            mut connection,
+        } = this.injected.get()
+        {
+            if target.slot() == slot {
+                connection = true;
+            } else {
+                assert_eq!(target.slot(), route::indices::SlotIndex::fixed::<2>());
+                control = true;
+            }
+            exhaust(turn.reborrow(), run);
+            this.injected.set(Injection::Queued {
+                slot,
+                control,
+                connection,
+            });
+        } else {
+            run();
+        }
     }
 }

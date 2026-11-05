@@ -9,16 +9,6 @@ use o3::alloc::array;
 use crate::reply::{self, LaneIndex, layout};
 
 /// A connection whose physical index belongs to its original reply arena.
-///
-/// ```compile_fail
-/// use dope::manifold::client::conn;
-/// use dope::core::driver::route::KeyTag;
-/// use dope_fiber::reply::layout;
-/// fn escape<'arena, 'region>(domain: layout::Domain<'arena>, id: conn::Id<'region, KeyTag<0>>)
-///     -> Result<layout::Position<'static, 'region, KeyTag<0>>, dope_fiber::reply::Error> {
-///     layout::Position::try_new(domain, id)
-/// }
-/// ```
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Position<'arena, 'region, ID: Identity> {

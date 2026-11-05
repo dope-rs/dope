@@ -2,18 +2,15 @@ pub mod common;
 
 use std::{
     cell::Cell,
-    net::{SocketAddr, TcpListener},
+    net::{Ipv4Addr, SocketAddr, TcpListener},
     num::NonZero,
     rc::Rc,
     time::Duration,
 };
 
-use dope_core::{
-    driver::{
-        life::recovery,
-        route::{Id, KeyTag},
-    },
-    platform::wake,
+use dope_core::driver::{
+    life::recovery,
+    route::{Id, KeyTag},
 };
 use dope_manifold::{
     app::{Host, env::Bundle},
@@ -39,7 +36,7 @@ use dope_test::{
     harness::{
         GUARD,
         observe::Trace,
-        peer::{self, AcceptScript},
+        peer,
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -613,54 +610,40 @@ fn retirement_renewal_resumes_ready_dial() {
 #[test]
 fn retired_retries() {
     let mut finish = Completion::new();
-    let (close_rx, close_tx) = wake::Ends::blocking()
-        .expect("peer release channel")
-        .split();
-    let (end_rx, end_tx) = wake::Ends::blocking()
-        .expect("peer release channel")
-        .split();
     let refused = TcpListener::bind("127.0.0.1:0").expect("reserve refused address");
     let bad = refused.local_addr().expect("refused address");
-    AcceptScript::with(move |acceptor| {
-                let first = acceptor.accept()?;
-                close_rx
-                    .wait_timeout(GUARD)
-                    .expect("close connected endpoint");
-                drop(first);
-                let second = acceptor.accept()?;
-                end_rx.wait_timeout(GUARD).expect("release reused endpoint");
-                drop(second);
-                Ok::<_, peer::Error>(())
-            }, |server| {
-        drop(refused);
-        let good = server.addr();
-        let pending = Rc::new(Cell::new(Some(
-            Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
-                Revision::new(1),
-                Endpoint::new(10, bad),
-            ),
-        )));
-        let failures = Gate::new();
-        let changes = Rc::new(Trace::new());
-        let plan = Plan::<KeyTag<0>, 1>::new(
-            1,
-            Spec::new(Duration::from_secs(2), Duration::from_secs(4)).expect("valid retry bounds"),
-        )
-        .expect("single connection");
-        let config = plan.configured().expect("discovery resources");
-        let mut reclaim2 = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let listener = peer::TcpAcceptor::bind((Ipv4Addr::LOCALHOST, 0).into()).expect("endpoint");
+    drop(refused);
+    let good = listener.local_addr().expect("endpoint address");
+    let pending = Rc::new(Cell::new(Some(
+        Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
+            Revision::new(1),
+            Endpoint::new(10, bad),
+        ),
+    )));
+    let failures = Gate::new();
+    let changes = Rc::new(Trace::new());
+    let plan = Plan::<KeyTag<0>, 1>::new(
+        1,
+        Spec::new(Duration::from_secs(2), Duration::from_secs(4)).expect("valid retry bounds"),
+    )
+    .expect("single connection");
+    let config = plan.configured().expect("discovery resources");
+    let mut reclaim2 = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-        Runtime::new(config).with_scope(
-            |mut runtime| {
-                use dope_manifold::client::session::ingress::Plan;
+    Runtime::new(config).with_scope(
+        |mut runtime| {
+            use dope_manifold::client::session::ingress::Plan;
 
-                let target = Session::<codec::Outbound>::default();
-                let events = target.events.clone();
-                let errors = target.errors.clone();
-                let audit = target.audit.clone();
-                let opened = target.gate.clone();
-                let hash = runtime.hash_state(Domain::DEFAULT);
-                let result = plan.bind(Local::new(Identity), hash).discover::<_, _, _, Preserve, _, _, Bundle<Tcp, Identity, Balanced>, 1, _, _>(
+            let target = Session::<codec::Outbound>::default();
+            let events = target.events.clone();
+            let errors = target.errors.clone();
+            let audit = target.audit.clone();
+            let opened = target.gate.clone();
+            let hash = runtime.hash_state(Domain::DEFAULT);
+            let result = plan
+                .bind(Local::new(Identity), hash)
+                .discover::<_, _, _, Preserve, _, _, Bundle<Tcp, Identity, Balanced>, 1, _, _>(
                     Setup::new(target, Plan::none()),
                     Source {
                         pending: pending.clone(),
@@ -672,7 +655,8 @@ fn retired_retries() {
                     |host, runtime| {
                         let now = runtime.driver().driver_ref().clock().now();
                         let timer = runtime.driver().driver_ref().timer();
-                        let result = runtime.with_at_for(&mut finish,
+                        let result = runtime.with_at_for(
+                            &mut finish,
                             Host::new(host),
                             now.into(),
                             Duration::from_secs(2),
@@ -686,44 +670,65 @@ fn retired_retries() {
                                     .into_output();
                                 let later = timer.earliest().expect("second backoff is armed");
                                 assert!(at(4000) <= later && later < at(6000));
-                                pending.set(Some(Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
+                                pending.set(Some(
+                                    Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
                                         Revision::new(2),
                                         Endpoint::new(11, bad),
-                                    )));
+                                    ),
+                                ));
                                 app.drive(at(2000), Until(|| failures.hits() == 3))
                                     .expect("new endpoint starts its own backoff")
                                     .into_output();
-                                let earlier = timer.earliest().expect("replacement backoff is armed");
+                                let earlier =
+                                    timer.earliest().expect("replacement backoff is armed");
                                 assert!(at(3000) <= earlier && earlier < at(4000));
-                                pending.set(Some(Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
+                                pending.set(Some(
+                                    Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
                                         Revision::new(3),
                                         Endpoint::new(20, good),
-                                    )));
+                                    ),
+                                ));
                                 app.drive(at(2001), Until(|| opened.hits() == 1))
                                     .expect("replacement connects before old retry")
                                     .into_output();
-                                close_tx.notify().expect("fail replacement endpoint");
+                                drop(
+                                    listener
+                                        .accept_for(GUARD)
+                                        .expect("accept replacement")
+                                        .expect("connected endpoint"),
+                                );
                                 app.drive(at(2002), Until(|| failures.hits() == 4))
                                     .expect("replacement enters backoff")
                                     .into_output();
                                 pending.set(Some(Snapshot::<Endpoint<u32, SocketAddr>, 1>::empty(
-                                        Revision::new(4),
-                                    )));
-                                app.drive(at(2003), Until(|| changes.values().expect("discovery observations").len() == 8))
-                                    .expect("withdraw backed-off endpoint")
-                                    .into_output();
+                                    Revision::new(4),
+                                )));
+                                app.drive(
+                                    at(2003),
+                                    Until(|| {
+                                        changes.values().expect("discovery observations").len() == 8
+                                    }),
+                                )
+                                .expect("withdraw backed-off endpoint")
+                                .into_output();
                                 app.drive(at(5000), Until(|| true))
                                     .expect("removed retry deadlines are quiescent")
                                     .into_output();
                                 assert_eq!(failures.hits(), 4);
                                 assert_eq!(opened.hits(), 1);
-                                pending.set(Some(Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
+                                pending.set(Some(
+                                    Snapshot::<Endpoint<u32, SocketAddr>, 1>::from_one(
                                         Revision::new(5),
                                         Endpoint::new(30, good),
-                                    )));
+                                    ),
+                                ));
                                 app.drive(at(5001), Until(|| opened.hits() == 2))
                                     .expect("withdrawn slot accepts a fresh endpoint")
                                     .into_output();
+                                let second = listener
+                                    .accept_for(GUARD)
+                                    .expect("accept fresh endpoint")
+                                    .expect("connected endpoint");
                                 assert_eq!(failures.hits(), 4);
                                 assert!(
                                     Events::snapshot(&events)
@@ -735,60 +740,83 @@ fn retired_retries() {
                                 );
                                 assert_eq!(Events::snapshot(&events).closed.len(), 1);
                                 pending.set(Some(Snapshot::<Endpoint<u32, SocketAddr>, 1>::empty(
-                                        Revision::new(6),
-                                    )));
-                                app.drive(at(5002), Until(|| changes.values().expect("discovery observations").len() == 12))
-                                    .expect("withdraw connected endpoint").into_output();
-                                end_tx.notify().expect("fail retired endpoint");
-                                app.drive(at(5003), Until(|| {
-                                    let observed = events.take();
-                                    let closed = observed.closed.len();
-                                    events.set(observed);
-                                    closed == 2
-                                }))
-                                    .expect("retired epoch closes without health feedback").into_output();
+                                    Revision::new(6),
+                                )));
+                                app.drive(
+                                    at(5002),
+                                    Until(|| {
+                                        changes.values().expect("discovery observations").len()
+                                            == 12
+                                    }),
+                                )
+                                .expect("withdraw connected endpoint")
+                                .into_output();
+                                drop(second);
+                                app.drive(
+                                    at(5003),
+                                    Until(|| {
+                                        let observed = events.take();
+                                        let closed = observed.closed.len();
+                                        events.set(observed);
+                                        closed == 2
+                                    }),
+                                )
+                                .expect("retired epoch closes without health feedback")
+                                .into_output();
                                 pending.set(Some(Snapshot::<Endpoint<u32, SocketAddr>, 1>::empty(
-                                        Revision::new(7),
-                                    )));
-                                app.drive(at(5004), Until(|| changes.values().expect("discovery observations").len() == 14))
-                                    .expect("observe discovery after retired failure").into_output();
+                                    Revision::new(7),
+                                )));
+                                app.drive(
+                                    at(5004),
+                                    Until(|| {
+                                        changes.values().expect("discovery observations").len()
+                                            == 14
+                                    }),
+                                )
+                                .expect("observe discovery after retired failure")
+                                .into_output();
                                 assert_eq!(failures.hits(), 4);
                             },
                         );
                         assert!(result.is_ok(), "discovery application teardown");
                     },
                 );
-                assert!(result.is_ok(), "install discovery connector");
-                audit.checked((0, 0));
-                assert!(errors.values().expect("codec observations").is_empty());
-                let observed = Events::snapshot(&events);
-                assert_eq!(opened.hits() as usize, observed.conn.len());
-                assert!(observed.is_ordered(), "{:?}", (&observed.conn, &observed.closed, &observed.quarantined));
-            },
-            recovery::Policy::new(|event| reclaim2.push(event), recover),
-        );
-        assert!(
-            matches!(reclaim2.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim2:?}"
-        );
-
-        let changes = changes.values().expect("discovery observations");
-        assert_eq!(changes.len(), 14);
-        for (index, id) in [Some(10), Some(11), Some(20), None, Some(30), None, None].into_iter().enumerate() {
-            let rev = Revision::new(index as u64 + 1);
-            assert!(changes[index * 2] == Notice::Resolved(rev, id));
+            assert!(result.is_ok(), "install discovery connector");
+            audit.checked((0, 0));
+            assert!(errors.values().expect("codec observations").is_empty());
+            let observed = Events::snapshot(&events);
+            assert_eq!(opened.hits() as usize, observed.conn.len());
             assert!(
-                changes[index * 2 + 1]
-                    == Notice::Reconciled(
-                        rev,
-                        service::Change {
-                            retained: 0,
-                            added: usize::from(id.is_some()),
-                            retired: usize::from(index == 1 || index == 2 || index == 3 || index == 5),
-                        },
-                    )
+                observed.is_ordered(),
+                "{:?}",
+                (&observed.conn, &observed.closed, &observed.quarantined)
             );
-        }
-        assert!(server.finish().expect("join discovery peer").is_ok());
-    }).expect("bind discovery endpoint");
+        },
+        recovery::Policy::new(|event| reclaim2.push(event), recover),
+    );
+    assert!(
+        matches!(reclaim2.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim2:?}"
+    );
+
+    let changes = changes.values().expect("discovery observations");
+    assert_eq!(changes.len(), 14);
+    for (index, id) in [Some(10), Some(11), Some(20), None, Some(30), None, None]
+        .into_iter()
+        .enumerate()
+    {
+        let rev = Revision::new(index as u64 + 1);
+        assert!(changes[index * 2] == Notice::Resolved(rev, id));
+        assert!(
+            changes[index * 2 + 1]
+                == Notice::Reconciled(
+                    rev,
+                    service::Change {
+                        retained: 0,
+                        added: usize::from(id.is_some()),
+                        retired: usize::from(index == 1 || index == 2 || index == 3 || index == 5),
+                    },
+                )
+        );
+    }
 }

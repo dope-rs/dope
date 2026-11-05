@@ -2,7 +2,11 @@ pub mod common;
 
 use common::manifold::listener::{native, reached};
 
-use std::{net::Shutdown, rc::Rc, time::Duration};
+use std::{
+    net::Shutdown,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use common::{
     manifold::listener::coupled::{
@@ -17,7 +21,6 @@ use dope_core::{
         route::{FrameworkTag, KeyTag, Tag, kind},
     },
     io::socket::option,
-    platform::wake,
 };
 use dope_manifold::{
     app::{env::Bundle, receive},
@@ -27,7 +30,9 @@ use dope_manifold::{
 use dope_net::{link::egress, tcp, wire::Identity};
 use dope_runtime::executor::session::Completion;
 use dope_test::{
+    fibers,
     harness::{
+        GUARD,
         observe::Trace,
         peer::{self, Peer},
         signals::{Gate, Progress as _},
@@ -66,9 +71,6 @@ fn send_replays_receive() {
         let second = Gate::new();
         let closed = Gate::new();
         let seen = Rc::new(Trace::new());
-        let (wait, next) = wake::Ends::blocking().expect("input release pipe").split();
-        let (done, sent) = wake::Ends::blocking().expect("peer write pipe").split();
-        let (start, read) = wake::Ends::blocking().expect("read release pipe").split();
         let prepared = Listener::<receive::Coupled>::new::<4>(Default::default())
             .direct(direct)
             .egress(egress::Config::shared(egress::Credit::fixed::<
@@ -102,46 +104,45 @@ fn send_replays_receive() {
             .with_run(
                 &mut finish,
                 |case| {
-                    Peer::at(case.addr())
-                        .with(
-                            move |socket| -> Result<Vec<u8>, peer::Error> {
-                                socket.write_all(b"A")?;
-                                assert!(wait.wait().is_ok(), "release second coupled byte");
-                                socket.write_all(b"B")?;
-                                socket.shutdown(Shutdown::Write)?;
-                                assert!(sent.notify().is_ok(), "signal coupled peer write");
-                                assert!(start.wait().is_ok(), "release coupled peer read");
-                                let mut body = Vec::new();
-                                socket.read_to_end(&mut body)?;
-                                Ok(body)
-                            },
-                            |peer| {
-                                reached(case.try_wait(&first, 1), first.hits(), 1);
-                                assert!(next.notify().is_ok(), "release coupled input");
+                    let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+                    peer.set_nodelay(true).expect("peer nodelay");
+                    peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                    peer.write_all(b"A").expect("first input");
+                    reached(case.try_wait(&first, 1), first.hits(), 1);
+                    peer.write_all(b"B").expect("second input");
+                    peer.shutdown(Shutdown::Write).expect("peer half-close");
+                    case.try_pause(Duration::from_millis(100))
+                        .expect("drive pause");
+                    assert_eq!(
+                        &*seen.values().expect("coupled observations"),
+                        &[b"A".to_vec()],
+                        "a fresh completion overtook the live send owner"
+                    );
+                    peer.nonblock(true);
+                    let started = Instant::now();
+                    let mut received = 0;
+                    let mut bytes = [0; 4096];
+                    loop {
+                        assert!(started.elapsed() < GUARD, "peer drain timeout");
+                        match peer.read(&mut bytes) {
+                            Ok(0) => break,
+                            Ok(count) => {
+                                assert!(bytes[..count].iter().all(|byte| *byte == 0x5a));
+                                received += count;
+                            }
+                            Err(error) => {
                                 assert!(
-                                    done.wait_timeout(Duration::from_secs(1)).is_ok(),
-                                    "observe coupled peer write"
+                                    matches!(error, peer::Error::Syscall(error)
+                                        if error.is_block() || error.is_intr()),
+                                    "read peer: {error:?}"
                                 );
-                                case.try_pause(Duration::from_millis(100))
-                                    .expect("drive pause");
-                                assert_eq!(
-                                    &*seen.values().expect("coupled observations"),
-                                    &[b"A".to_vec()],
-                                    "a fresh completion overtook the live send owner"
-                                );
-
-                                assert!(read.notify().is_ok(), "release coupled response read");
-                                reached(case.try_wait(&second, 1), second.hits(), 1);
-                                reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                                let body = peer
-                                    .finish()
-                                    .expect("finish client peer")
-                                    .expect("client peer failed");
-                                assert_eq!(body.len(), BODY_LEN);
-                                assert!(body.iter().all(|byte| *byte == 0x5a));
-                            },
-                        )
-                        .expect("spawn coupled peer");
+                                case.try_drive(fibers::Yield::new()).expect("drive peer");
+                            }
+                        }
+                    }
+                    assert_eq!(received, BODY_LEN);
+                    reached(case.try_wait(&second, 1), second.hits(), 1);
+                    reached(case.try_wait(&closed, 1), closed.hits(), 1);
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
                 native,
@@ -173,8 +174,6 @@ fn gate_drains_before_tail() {
     let second = Gate::new();
     let closed = Gate::new();
     let seen = Rc::new(Trace::new());
-    let (wait, next) = wake::Ends::blocking().expect("input release pipe").split();
-    let (start, read) = wake::Ends::blocking().expect("read release pipe").split();
     let prepared = Listener::<receive::GatedScoped>::new::<4>(Default::default())
         .direct(0)
         .stream(tcp::StreamConfig {
@@ -201,46 +200,50 @@ fn gate_drains_before_tail() {
         .with_run(
             &mut finish,
             move |case| {
-                Peer::at(case.addr())
-                    .with(
-                        move |socket| -> Result<Vec<u8>, peer::Error> {
-                            socket.write_all(b"A")?;
-                            assert!(wait.wait().is_ok(), "release second gated byte");
-                            socket.write_all(b"B")?;
-                            assert!(start.wait().is_ok(), "release gated peer read");
-                            let mut body = Vec::new();
-                            socket.read_to_end(&mut body)?;
-                            Ok(body)
-                        },
-                        |peer| {
-                            reached(case.try_wait(&first, 1), first.hits(), 1);
-                            assert!(next.notify().is_ok(), "release gated input");
-                            reached(case.try_wait(&prefix, 1), prefix.hits(), 1);
-                            case.try_pause(Duration::from_millis(100))
-                                .expect("drive pause");
-                            assert_eq!(
-                                &*seen.values().expect("gated observations"),
-                                &[b"A".to_vec()]
+                let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+                peer.set_nodelay(true).expect("peer nodelay");
+                peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                peer.write_all(b"A").expect("first input");
+                reached(case.try_wait(&first, 1), first.hits(), 1);
+                peer.write_all(b"B").expect("second input");
+                reached(case.try_wait(&prefix, 1), prefix.hits(), 1);
+                case.try_pause(Duration::from_millis(100))
+                    .expect("drive pause");
+                assert_eq!(
+                    &*seen.values().expect("gated observations"),
+                    &[b"A".to_vec()]
+                );
+                assert_eq!(drain.hits(), 0, "prefix progress forged a drain proof");
+                peer.nonblock(true);
+                let started = Instant::now();
+                let mut received = 0;
+                let mut bytes = [0; 4096];
+                loop {
+                    assert!(started.elapsed() < GUARD, "peer drain timeout");
+                    match peer.read(&mut bytes) {
+                        Ok(0) => break,
+                        Ok(count) => {
+                            assert!(bytes[..count].iter().all(|byte| *byte == 0x6b));
+                            received += count;
+                        }
+                        Err(error) => {
+                            assert!(
+                                matches!(error, peer::Error::Syscall(error)
+                                    if error.is_block() || error.is_intr()),
+                                "read peer: {error:?}"
                             );
-                            assert_eq!(drain.hits(), 0, "prefix progress forged a drain proof");
-
-                            assert!(read.notify().is_ok(), "release gated response read");
-                            reached(case.try_wait(&drain, 1), drain.hits(), 1);
-                            reached(case.try_wait(&second, 1), second.hits(), 1);
-                            reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                            let body = peer
-                                .finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed");
-                            assert_eq!(body.len(), BODY_LEN);
-                            assert!(body.iter().all(|byte| *byte == 0x6b));
-                            assert_eq!(
-                                &*seen.values().expect("gated observations"),
-                                &[b"A".to_vec(), b"A".to_vec(), b"B".to_vec()]
-                            );
-                        },
-                    )
-                    .expect("spawn gated peer");
+                            case.try_drive(fibers::Yield::new()).expect("drive peer");
+                        }
+                    }
+                }
+                assert_eq!(received, BODY_LEN);
+                reached(case.try_wait(&drain, 1), drain.hits(), 1);
+                reached(case.try_wait(&second, 1), second.hits(), 1);
+                reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                assert_eq!(
+                    &*seen.values().expect("gated observations"),
+                    &[b"A".to_vec(), b"A".to_vec(), b"B".to_vec()]
+                );
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             native,
@@ -264,9 +267,6 @@ fn borrowed_reservation_tracks_native_send() {
     let written = Rc::new(Trace::new());
     let released = Rc::new(Trace::new());
     let reservations = Rc::new(Trace::new());
-    let (wait, next) = wake::Ends::blocking().expect("second input pipe").split();
-    let (start, read) = wake::Ends::blocking().expect("read release pipe").split();
-    let (done, complete) = wake::Ends::blocking().expect("completion pipe").split();
     let prepared = Listener::<receive::Borrowed>::new::<4>(Default::default())
         .direct(0)
         .stream(tcp::StreamConfig {
@@ -293,62 +293,75 @@ fn borrowed_reservation_tracks_native_send() {
         .with_run(
             &mut finish,
             |case| {
-                Peer::at(case.addr())
-                    .with(
-                        move |socket| -> Result<Vec<u8>, peer::Error> {
-                            socket.write_all(b"A")?;
+                let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+                peer.set_nodelay(true).expect("peer nodelay");
+                peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                peer.write_all(b"A").expect("first input");
+                reached(case.try_wait(&first, 1), first.hits(), 1);
+                assert_eq!(&*written.values().expect("write result"), &[true]);
+                case.try_pause(Duration::from_millis(100))
+                    .expect("drive blocked send");
+                peer.write_all(b"B").expect("second input");
+                reached(case.try_wait(&second, 1), second.hits(), 1);
+                assert_eq!(
+                    &*reservations.values().expect("receive reservations"),
+                    &[true, false],
+                    "native send storage was exposed during its retained flight"
+                );
+                assert_eq!(sent.hits(), 0, "peer has not drained the output");
+                peer.nonblock(true);
+                let started = Instant::now();
+                let mut received = 0;
+                let mut bytes = [0; 4096];
+                while received < BODY_LEN {
+                    assert!(started.elapsed() < GUARD, "peer drain timeout");
+                    let remaining = bytes.len().min(BODY_LEN - received);
+                    match peer.read(&mut bytes[..remaining]) {
+                        Ok(count) => {
+                            assert_ne!(count, 0, "truncated reply");
+                            assert!(bytes[..count].iter().all(|byte| *byte == 0x6b));
+                            received += count;
+                        }
+                        Err(error) => {
                             assert!(
-                                wait.wait_timeout(Duration::from_secs(5)).is_ok(),
-                                "release second input"
+                                matches!(error, peer::Error::Syscall(error)
+                                    if error.is_block() || error.is_intr()),
+                                "read peer: {error:?}"
                             );
-                            socket.write_all(b"B")?;
+                            case.try_drive(fibers::Yield::new()).expect("drive peer");
+                        }
+                    }
+                }
+                reached(case.try_wait(&sent, 1), sent.hits(), 1);
+                assert_eq!(
+                    &*released.values().expect("send release"),
+                    &[true],
+                    "only the exact completed payload may release the next input"
+                );
+                peer.nonblock(false);
+                peer.write_all(b"C").expect("completed input");
+                peer.shutdown(Shutdown::Write).expect("peer half-close");
+                reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                peer.nonblock(true);
+                let started = Instant::now();
+                loop {
+                    assert!(started.elapsed() < GUARD, "peer EOF timeout");
+                    match peer.read(&mut bytes) {
+                        Ok(count) => {
+                            assert_eq!(count, 0, "unexpected reply tail");
+                            break;
+                        }
+                        Err(error) => {
                             assert!(
-                                start.wait_timeout(Duration::from_secs(5)).is_ok(),
-                                "release response read"
+                                matches!(error, peer::Error::Syscall(error)
+                                    if error.is_block() || error.is_intr()),
+                                "read peer EOF: {error:?}"
                             );
-                            let mut body = vec![0; BODY_LEN];
-                            socket.read_exact(&mut body)?;
-                            assert!(
-                                done.wait_timeout(Duration::from_secs(5)).is_ok(),
-                                "observe exact send completion"
-                            );
-                            socket.write_all(b"C")?;
-                            socket.shutdown(Shutdown::Write)?;
-                            socket.read_to_end(&mut body)?;
-                            Ok(body)
-                        },
-                        |peer| {
-                            reached(case.try_wait(&first, 1), first.hits(), 1);
-                            assert_eq!(&*written.values().expect("write result"), &[true]);
-                            case.try_pause(Duration::from_millis(100))
-                                .expect("drive blocked send");
-                            assert!(next.notify().is_ok(), "release borrowed input");
-                            reached(case.try_wait(&second, 1), second.hits(), 1);
-                            assert_eq!(
-                                &*reservations.values().expect("receive reservations"),
-                                &[true, false],
-                                "native send storage was exposed during its retained flight"
-                            );
-                            assert_eq!(sent.hits(), 0, "peer has not drained the output");
-
-                            assert!(read.notify().is_ok(), "release borrowed response read");
-                            reached(case.try_wait(&sent, 1), sent.hits(), 1);
-                            assert_eq!(
-                                &*released.values().expect("send release"),
-                                &[true],
-                                "only the exact completed payload may release the next input"
-                            );
-                            assert!(complete.notify().is_ok(), "release completed input");
-                            reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                            let body = peer
-                                .finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed");
-                            assert_eq!(body.len(), BODY_LEN);
-                            assert!(body.iter().all(|byte| *byte == 0x6b));
-                        },
-                    )
-                    .expect("spawn borrowed peer");
+                            case.try_drive(fibers::Yield::new())
+                                .expect("drive peer EOF");
+                        }
+                    }
+                }
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             native,

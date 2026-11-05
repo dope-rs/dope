@@ -6,10 +6,7 @@ pub mod common;
 use std::{cell::RefCell, hint, mem, time::Duration};
 
 use dope_core::driver::schedule::{self, clock};
-use dope_runtime::{
-    client::Bound,
-    executor::{InstallError, drive},
-};
+use dope_runtime::executor::{InstallError, drive};
 use dope_test::alloc::Tracker;
 
 use crate::common::{runtime::executor::client::*, scenario::rt::Configured};
@@ -386,12 +383,6 @@ fn custom_issue_is_owned() {
         "unexpected reclaimed operations: {reports:?}"
     );
     assert_eq!(polls, Some(1));
-}
-
-#[test]
-fn bound_is_copy() {
-    fn assert_copy<T: Copy>() {}
-    assert_copy::<Bound<'static, 'static, App>>();
 }
 
 #[test]

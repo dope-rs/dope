@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, rc::Rc};
+use std::{cell::Cell, convert::Infallible, net::SocketAddr, rc::Rc};
 
 use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
@@ -37,9 +37,10 @@ type Request = egress::NonEmpty<Shared>;
 
 pub struct Requests {
     pub(crate) pending: [(Cell<Option<usize>>, Cell<Option<Request>>); 4],
+    pub(crate) peers: [Option<SocketAddr>; 4],
     pub(crate) next: Rc<Cell<usize>>,
     pub(crate) order: Rc<Trace<usize, 4>>,
-    pub(crate) admitted: Rc<Trace<usize, 4>>,
+    pub(crate) admitted: Rc<Trace<SocketAddr, 4>>,
 }
 
 pub struct Lane {
@@ -181,7 +182,9 @@ impl<'d> Source<'d> for Lane {
             request::Admission::Ready(ready) => {
                 ready.push();
                 self.requests.order.record(length);
-                self.requests.admitted.record(index);
+                self.requests
+                    .admitted
+                    .record(self.requests.peers[index].expect("connected endpoint"));
                 self.moved.hit();
             }
             request::Admission::Saturated(load) => {
@@ -203,9 +206,11 @@ impl<'d> session::Connected<'d> for Lane {
     fn connect(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        _: socket::Addr,
-        _: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
+        peer: socket::Addr,
+        context: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
+        self.requests.peers[context.connection().index().into_usize()] =
+            Some(peer.into_std().expect("TCP peer address"));
         self.conn.hit();
     }
 }

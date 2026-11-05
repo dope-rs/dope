@@ -36,10 +36,6 @@ impl Addr {
 
     pub(crate) const STORAGE_CAPACITY: usize = addr::CAPACITY;
 
-    pub(crate) const fn storage(&self) -> &addr::Storage<addr::Socklen> {
-        &self.0
-    }
-
     pub(crate) fn try_parse(name: &[u8]) -> Result<net::SocketAddr, socket::Error> {
         addr::Internet::try_parse(name).map_err(socket::Error::from)
     }

@@ -4,10 +4,11 @@ use common::runtime::Setup;
 use dope::core::driver::{
     life::recovery,
     route::{Epoch, KeyTag, indices::SlotIndex},
+    schedule,
 };
 use dope_fiber::{
     context::Context,
-    wait::{Capacity, Queue, Registration, Waiter},
+    wait::{Capacity, Notifier, Queue, Registration, Waiter},
 };
 use dope_test::alloc::Tracker;
 
@@ -29,6 +30,7 @@ fn wakes_after_cancellation() {
             });
             let [first, second] = keys.map(|key| site.ready().make_slot(key).expect("ready slot"));
             let queue = Queue::new(site, Capacity::new(3));
+            let notifier = Notifier::new(site, Capacity::new(2));
             let left = pin!(Waiter::new());
             let right = pin!(Waiter::new());
             for _ in 0..2 {
@@ -64,6 +66,50 @@ fn wakes_after_cancellation() {
                     2
                 );
             }
+            let work = turn.turn().app();
+            Context::with_target(first.target(), work, driver.reborrow(), |cx| {
+                for waiter in [left.as_ref(), right.as_ref()] {
+                    assert!(notifier.try_register(waiter, cx.as_ref()).is_ok());
+                }
+                notifier.notify();
+                let before = work.remaining();
+                notifier.flush(work);
+                assert_eq!(work.remaining(), before - 1);
+                assert!(notifier.is_pending());
+                assert!(matches!(left.registration(), Registration::Vacant));
+                assert!(matches!(right.registration(), Registration::Active));
+
+                assert!(notifier.try_register(left.as_ref(), cx.as_ref()).is_ok());
+                work.share::<{ schedule::LIMIT }, _>(|share| {
+                    share.work().permit().expect("one credit").run(|| ());
+                    notifier.flush(share.work());
+                    assert_eq!(share.work().remaining(), 0);
+                    assert!(notifier.is_pending());
+                    assert!(matches!(left.registration(), Registration::Active));
+                    assert!(matches!(right.registration(), Registration::Active));
+                });
+                notifier.flush(work);
+                assert!(!notifier.is_pending());
+                assert!(matches!(right.registration(), Registration::Vacant));
+                let before = work.remaining();
+                notifier.flush(work);
+                assert_eq!(work.remaining(), before);
+                assert!(matches!(left.registration(), Registration::Active));
+
+                assert!(notifier.try_register(right.as_ref(), cx.as_ref()).is_ok());
+                notifier.notify();
+                left.as_ref().unregister();
+                notifier.notify();
+                assert!(notifier.try_register(left.as_ref(), cx.as_ref()).is_ok());
+                notifier.flush(work);
+                assert!(!notifier.is_pending());
+                assert!(matches!(left.registration(), Registration::Active));
+
+                notifier.notify();
+                left.as_ref().unregister();
+                notifier.flush(work);
+                assert!(!notifier.is_pending());
+            });
         },
         recovery::Policy::new(
             |event| {

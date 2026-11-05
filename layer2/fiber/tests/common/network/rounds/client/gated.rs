@@ -1,7 +1,8 @@
-use std::{cell::Cell, net::SocketAddr, ops, rc::Rc};
+use std::{cell::Cell, ops, pin::pin, rc::Rc};
 
 use dope::{
     core::io::{recv, recv::Lease, transfer, transfer::Length},
+    manifold::client::conn,
     net::{
         wire,
         wire::{
@@ -20,9 +21,14 @@ use dope::{
             terminal::Terminal,
         },
     },
+    runtime::executor::{self, session},
 };
-use dope_core::{driver::route::Identity, platform::wake};
-use dope_test::harness::{peer, peer::TcpScript, signals};
+use dope_core::driver::route::{Identity, KeyTag};
+use dope_fiber::{BlockOn as _, abi::Task, net::Io, task::done};
+use dope_test::{
+    fibers,
+    harness::{GUARD, peer, signals},
+};
 use o3::{
     buffer,
     buffer::{
@@ -34,9 +40,7 @@ use o3::{
 
 #[derive(Default)]
 pub struct Probe {
-    pub(crate) release: Cell<Option<Result<(), wake::NotifyError>>>,
-    pub(crate) attempts: Cell<usize>,
-    pub(crate) server: Cell<Option<peer::Release>>,
+    pub(crate) attempts: signals::LocalGate,
     pub(crate) released: Cell<usize>,
     pub(crate) established: signals::Gate,
     pub(crate) eof: signals::Gate,
@@ -51,10 +55,7 @@ pub struct Wire {
 
 impl Wire {
     pub fn attempt(&mut self) {
-        self.probe.attempts.set(self.probe.attempts.get() + 1);
-        if let Some(server) = self.probe.server.take() {
-            self.probe.release.set(Some(server.try_fire()));
-        }
+        self.probe.attempts.handle().hit();
     }
 }
 
@@ -348,27 +349,45 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Rc<Probe
 }
 
 impl Probe {
-    pub fn try_reply(
-        reply: &[u8],
-        run: impl FnOnce(SocketAddr, Rc<Probe>),
-    ) -> Result<Result<[u8; 4], peer::Error>, peer::Finish> {
-        TcpScript::try_gated::<1>(
-            |[stream]| {
-                stream.write_all(b"H")?;
-                let mut request = [0; 4];
-                stream.read_exact(&mut request)?;
-                stream.write_all(reply)?;
-                Ok(request)
-            },
-            |address, release| {
-                run(
-                    address,
-                    Rc::new(Probe {
-                        server: Cell::new(Some(release)),
-                        ..Probe::default()
-                    }),
-                );
-            },
-        )
+    pub fn start<'a, 'w, 'd: 'w, D: executor::raw::App<'d>>(
+        &self,
+        app: &mut session::App<'_, '_, 'd, D>,
+        listener: &peer::TcpAcceptor<'a>,
+        io: &mut Io<'_, 'w, 'd, Wire, conn::Id<'d, KeyTag<0>>>,
+    ) -> peer::Stream<'a> {
+        let stream = listener
+            .accept_for(GUARD)
+            .expect("accept")
+            .expect("connected peer");
+        stream.set_nodelay(true).expect("nodelay");
+        stream.read_wait(Some(GUARD)).expect("read timeout");
+        stream.write_wait(Some(GUARD)).expect("write timeout");
+        let mut write = pin!(Task::new(io.write_all(b"ping")));
+        assert!(
+            app.block_on(fibers::TEST.poll_once(write.as_mut()))
+                .expect("first write poll")
+                .is_none()
+        );
+        assert_eq!(
+            fibers::TEST
+                .try_wait(app, &self.attempts.handle(), 1)
+                .expect("first prepare"),
+            fibers::Wait::Reached,
+        );
+        assert!(
+            app.block_on(fibers::TEST.poll_once(write.as_mut()))
+                .expect("deferred write poll")
+                .is_none()
+        );
+        stream.write_all(b"H").expect("handshake");
+        assert!(
+            app.drive_for(GUARD, done::Once::new(write.as_mut()))
+                .expect("resumed write")
+                .is_ok()
+        );
+        let mut request = [0; 4];
+        stream.read_exact(&mut request).expect("request");
+        assert_eq!(request, *b"ping");
+        stream
     }
 }

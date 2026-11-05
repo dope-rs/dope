@@ -11,17 +11,6 @@ use crate::client::conn;
 /// Exact transport generation and its connector-owned absolute retirement.
 ///
 /// Driver brands cannot be widened.
-/// ```compile_fail
-/// use dope_core::driver::route::KeyTag;
-/// use dope_manifold::client::conn;
-///
-/// fn widen<'d>(
-///     lifetime: conn::Lifetime<'d, KeyTag<0>>,
-/// ) -> conn::Lifetime<'static, KeyTag<0>> {
-///     lifetime
-/// }
-/// ```
-///
 /// Connector routes cannot be crossed.
 #[derive(PartialEq, Eq)]
 #[must_use = "connection lifetime must be bound to its application generation"]

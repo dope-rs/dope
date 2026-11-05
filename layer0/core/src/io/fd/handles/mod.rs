@@ -19,7 +19,7 @@ use crate::{
     },
     io::{
         event::net::recv,
-        fd::{domain, identity, lease, slots},
+        fd::{domain, identity, lease},
         socket::{install::receive, pending},
     },
 };
@@ -63,8 +63,8 @@ impl From<OutboundSlot> for OwnedSlot {
     }
 }
 
-impl From<&slots::ReservedSlot<'_>> for OwnedSlot {
-    fn from(slot: &slots::ReservedSlot<'_>) -> Self {
+impl From<&domain::Solo<identity::Identity<'_>>> for OwnedSlot {
+    fn from(slot: &domain::Solo<identity::Identity<'_>>) -> Self {
         Self(slot.physical())
     }
 }
@@ -241,7 +241,10 @@ impl<'d> Descriptor<'d> {
         driver.native().resolve().retire();
     }
 
-    pub(crate) fn from_slot(slot: slots::ReservedSlot<'d>, driver: driver::Reference<'d>) -> Self {
+    pub(crate) fn from_slot(
+        slot: domain::Solo<identity::Identity<'d>>,
+        driver: driver::Reference<'d>,
+    ) -> Self {
         Self {
             lease: lease::Lease::from_slot(slot, driver),
         }

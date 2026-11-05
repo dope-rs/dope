@@ -2,8 +2,8 @@ use std::{
     cell::Cell, convert::Infallible, os::unix::process::ExitStatusExt as _, thread::sleep, time,
 };
 
-use dope_core::platform::{thread, wake};
-use dope_runtime::process::STACK;
+use dope_core::platform::thread;
+use dope_runtime::process::{STACK, lifecycle};
 use dope_test::harness::{
     scenario::{process::Test, run},
     server::Pair,
@@ -16,7 +16,7 @@ use common::harness::{
 
 fn assert_startup_timeout<E>(error: run::Error<E>) {
     let (timeout, elapsed) = match error {
-        run::Error::Readiness(wake::WaitError::Timeout { timeout, elapsed }) => {
+        run::Error::Readiness(lifecycle::WaitError::Timeout { timeout, elapsed }) => {
             Some((timeout, elapsed))
         }
         _ => None,
@@ -47,13 +47,13 @@ fn late_install_times_out() {
 fn timeout_beats_failure() {
     with_harness(E2E_DEADLINE, |harness| {
         let started = Cell::new(false);
-        let error = harness.verify(
+        let error = harness.run_unbound(
             |source| {
                 sleep(LATE_STARTUP);
-                Err::<(), _>((LateFailure, source))
+                drop(source);
+                Err::<(), _>(LateFailure)
             },
             |_| started.set(true),
-            |result| assert!(result.is_err(), "late server failure"),
         );
         assert_startup_timeout(
             error.expect_err("late server failure must retain the startup deadline"),
@@ -135,10 +135,8 @@ fn watchdog_kills_hang() {
                 harness
                     .run_unbound(
                         |source| {
-                            let (wait, notify) =
-                                wake::Ends::blocking().expect("stalled server gate").split();
-                            wait.wait().expect("stalled server gate remains connected");
-                            drop((notify, source));
+                            sleep(E2E_DEADLINE);
+                            drop(source);
                             Ok::<_, Infallible>(())
                         },
                         |addr| addr,

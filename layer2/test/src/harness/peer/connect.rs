@@ -1,4 +1,4 @@
-use std::{net, os::fd::AsFd as _};
+use std::{net, os::fd::AsFd as _, time};
 
 use dope_core::{
     Backend, Errno,
@@ -7,19 +7,18 @@ use dope_core::{
         socket::{self, Prepare as _, addr},
     },
 };
+use dope_runtime::process::lifecycle::Control;
 
 use crate::harness::{
     GUARD,
     peer::{Error, Stream, scripts},
 };
 
-pub(super) fn open(
+pub(super) fn open<'a>(
     address: net::SocketAddr,
-    control: Option<&scripts::Control>,
-) -> Result<Stream<'_>, Error> {
-    if let Some(control) = control {
-        control.check()?;
-    }
+    control: Option<Control<'a>>,
+) -> Result<Stream<'a>, Error> {
+    scripts::check(control)?;
     let address = addr::Internet::from_std::<Backend>(address);
     let socket = Backend::open(address.domain(), socket::Kind::Stream).map_err(Error::Create)?;
     let stream = Stream::new(Backend::into_fd(socket), control)?;
@@ -29,9 +28,13 @@ pub(super) fn open(
     {
         Ok(()) => {}
         Err(error) if error == Errno::IN_PROGRESS => {
-            let ready =
-                scripts::ready(control, poll::Entry::writable(stream.as_fd()), Some(GUARD))?
-                    .ok_or(Error::TimedOut)?;
+            let ready = scripts::ready(
+                control,
+                poll::Entry::writable(stream.as_fd()),
+                time::Instant::now(),
+                Some(GUARD),
+            )?
+            .ok_or(Error::TimedOut)?;
             raw::finish(stream.as_fd())?;
             if ready & (libc::POLLHUP | libc::POLLERR) != 0 {
                 return Err(Error::ConnectEvents(ready));

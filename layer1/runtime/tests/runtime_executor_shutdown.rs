@@ -1,19 +1,16 @@
-use dope_core::{
-    driver::{
-        life::{creation::Attempt, recovery},
-        route::KeyTag,
-    },
-    platform::wake,
+use dope_core::driver::{
+    life::{creation::Attempt, recovery},
+    route::KeyTag,
 };
 use dope_runtime::executor::session::Completion;
 use dope_test::harness::scenario::{TIMEOUT, run, run::Task as _};
 use o3::base::time::Positive;
 pub mod common;
 
-use std::{cell::Cell, pin, rc::Rc, task, time};
+use std::{cell::Cell, convert::Infallible, pin, rc::Rc, task, time};
 
 use dope_core::driver::{route, route::indices::SlotIndex, schedule::ready::wake::Waker};
-use dope_runtime::{executor::drain, shutdown};
+use dope_runtime::{executor::drain, process::lifecycle, shutdown};
 
 use crate::common::{
     runtime::executor::shutdown::*,
@@ -144,9 +141,60 @@ fn quiescent_precedes_park() {
 
 #[test]
 fn ready_install_shutdown() {
-    let pair = (shutdown::ReadyPair::new()).expect("ready shutdown pair");
-    let (source, trig, ready) = pair.split();
-    let ((ready, fired), ()) = run::Entry(move || {
+    let (main, worker) = lifecycle::Main::try_pair().expect("ready shutdown pair");
+    let ((ready, stopped), outcome) = run::Entry(move || {
+        worker.run(|source| {
+            let mut finish = Completion::new();
+            let mut create = Attempt::new();
+            let mut reports = Vec::new();
+
+            let executor = Configured::quic::<2, 8>().try_source(&mut create, source);
+            executor
+                .as_ref()
+                .map_err(|error| error.kind())
+                .expect("executor creation");
+            executor.ok().expect("validated executor").run(|executor| {
+                executor
+                    .enter_with(
+                        |mut sess| {
+                            sess.run_quiesce(&mut finish, Empty {}, TIMEOUT)
+                                .expect("application teardown")
+                                .expect("application drive");
+                        },
+                        recovery::Policy::new(|event| reports.push(event), common::recover),
+                    )
+                    .as_ref()
+                    .map_err(|error| error.cause())
+                    .expect("executor completion");
+            });
+            assert!(
+                reports.is_empty(),
+                "unexpected reclaimed operations: {reports:?}"
+            );
+            Ok::<_, Infallible>(())
+        })
+    })
+    .with(|| main.run(TIMEOUT, || ()))
+    .expect("runtime shutdown worker");
+
+    assert!(ready.is_ok(), "runtime readiness");
+    assert!(stopped.is_ok(), "runtime shutdown");
+    assert!(matches!(outcome, lifecycle::Outcome::Done(())));
+}
+
+#[test]
+fn cancelled_ready() {
+    let (main, worker) = lifecycle::Main::try_pair().expect("ready shutdown pair");
+    assert!(matches!(
+        main.wait_ready(time::Duration::ZERO),
+        Err(lifecycle::WaitError::Timeout { .. })
+    ));
+    let main = main.stop().expect("pre-install shutdown");
+    let outcome = worker.run(|source| {
+        source
+            .control()
+            .wait_stop_until(time::Instant::now())
+            .expect("queued shutdown");
         let mut finish = Completion::new();
         let mut create = Attempt::new();
         let mut reports = Vec::new();
@@ -174,53 +222,13 @@ fn ready_install_shutdown() {
             reports.is_empty(),
             "unexpected reclaimed operations: {reports:?}"
         );
-    })
-    .with(|| {
-        let ready = ready.wait_timeout(TIMEOUT);
-        (ready, trig.fire())
-    })
-    .expect("runtime shutdown worker");
-
-    assert!(ready.is_ok(), "runtime readiness");
-    assert!(fired.is_ok(), "eventfd shutdown wake");
-}
-
-#[test]
-fn cancelled_ready() {
-    let mut finish = Completion::new();
-    let mut create = Attempt::new();
-    let pair = (shutdown::ReadyPair::new()).expect("ready shutdown pair");
-    let (source, trig, ready) = pair.split();
-    assert!(matches!(
-        ready.wait_timeout(time::Duration::ZERO),
-        Err(wake::WaitError::Timeout { .. })
-    ));
-    assert!(trig.fire().is_ok(), "pre-install shutdown wake");
-    let mut reports = Vec::new();
-
-    let executor = Configured::quic::<2, 8>().try_source(&mut create, source);
-    executor
-        .as_ref()
-        .map_err(|error| error.kind())
-        .expect("executor creation");
-    executor.ok().expect("validated executor").run(|executor| {
-        executor
-            .enter_with(
-                |mut sess| {
-                    sess.run_quiesce(&mut finish, Empty {}, TIMEOUT)
-                        .expect("application teardown")
-                        .expect("application drive");
-                },
-                recovery::Policy::new(|event| reports.push(event), common::recover),
-            )
-            .as_ref()
-            .map_err(|error| error.cause())
-            .expect("executor completion");
+        Ok::<_, Infallible>(())
     });
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    assert!(matches!(outcome, lifecycle::Outcome::Done(())));
+    main.wait_ready(time::Duration::MAX)
+        .expect("late installation");
+    main.wait_done(time::Duration::ZERO)
+        .expect("completed worker");
 }
 
 #[test]

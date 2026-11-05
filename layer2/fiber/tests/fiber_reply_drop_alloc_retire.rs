@@ -80,7 +80,7 @@ fn retry_after_cancel() {
                         &mut finish,
                         Maintenance::new(&state, &releases),
                         scenario::TIMEOUT,
-                        |mut app| app.drive(Once::new(Drain::new(&state))),
+                        |mut app| app.drive_for(scenario::TIMEOUT, Once::new(Drain::new(&state))),
                     );
                     assert!(matches!(result, Ok(Ok(()))), "retire blocked reply");
                     let error = lane

@@ -145,15 +145,15 @@ impl<'s, const N: usize> Slot<'s, N> {
     }
 
     pub(in crate::storage::queries::ledger) fn retire(&mut self, reg: &mut ledger::Registry<'s>) {
-        let idle = Self::Idle {
+        if let Self::Query(query) = self {
+            for family in family::Version::ALL {
+                reg.retire(query.branch_mut(family));
+            }
+        }
+        *self = Self::Idle {
             entries: self.entries(),
             completion: None,
         };
-        if let Self::Query(query) = mem::replace(self, idle) {
-            for mut branch in query.into_iter() {
-                reg.retire(&mut branch);
-            }
-        }
     }
 }
 

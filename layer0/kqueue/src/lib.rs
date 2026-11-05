@@ -244,7 +244,6 @@ impl table::Source for Kqueue {
 impl socket::Socket for Kqueue {
     const MAX_IOVECS: usize = libc::IOV_MAX as usize;
     type Error = socket::Failure;
-    type Records = record::Stream;
 
     fn socket(domain: libc::c_int, kind: libc::c_int) -> Result<OwnedFd, Self::Error> {
         let file = Self::try_open::<Self::Error>(domain, kind, 0)?;

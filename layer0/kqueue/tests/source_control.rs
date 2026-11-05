@@ -152,3 +152,68 @@ fn datagram_plain() {
     );
     assert_eq!(&received, message);
 }
+
+#[test]
+fn pair_keeps_shutdown() {
+    let (left, right) = Kqueue::pair().expect("socket pair");
+    for file in [left.as_fd(), right.as_fd()] {
+        // SAFETY: F_GETFD reads flags from this live descriptor.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+    }
+    assert_eq!(
+        Kqueue::send_quiet::<Errno>(left.as_fd(), b"x").expect("send byte"),
+        b"x"
+    );
+    let mut output = [0];
+    assert_eq!(
+        Kqueue::recv::<{ libc::MSG_DONTWAIT }, Errno>(right.as_fd(), &mut output)
+            .expect("receive byte"),
+        b"x"
+    );
+    Kqueue::shutdown::<Errno>(left.as_fd(), socket::How::WRITE).expect("shutdown writer");
+    assert!(
+        Kqueue::recv::<{ libc::MSG_DONTWAIT }, Errno>(right.as_fd(), &mut output)
+            .expect("closed socket")
+            .is_empty()
+    );
+}
+
+#[test]
+fn pipe_keeps_nonblocking() {
+    use dope_sys::io::{fd::Fd as _, pipe::Pipe as _};
+
+    let (read, write) = Kqueue::nonblocking().expect("nonblocking pipe");
+    for file in [read.as_fd(), write.as_fd()] {
+        // SAFETY: both commands read flags from this live descriptor.
+        let (flags, status) = unsafe {
+            (
+                libc::fcntl(file.as_raw_fd(), libc::F_GETFD),
+                libc::fcntl(file.as_raw_fd(), libc::F_GETFL),
+            )
+        };
+        assert!(flags >= 0 && status >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        assert_ne!(status & libc::O_NONBLOCK, 0);
+    }
+    let mut output = [0];
+    assert!(matches!(
+        Kqueue::read::<Errno>(read.as_fd(), &mut output),
+        Err(error) if error.is_block()
+    ));
+    assert_eq!(
+        Kqueue::write::<Errno>(write.as_fd(), b"x").expect("write byte"),
+        b"x"
+    );
+    assert_eq!(
+        Kqueue::read::<Errno>(read.as_fd(), &mut output).expect("read byte"),
+        b"x"
+    );
+    drop(write);
+    assert!(
+        Kqueue::read::<Errno>(read.as_fd(), &mut output)
+            .expect("closed pipe")
+            .is_empty()
+    );
+}

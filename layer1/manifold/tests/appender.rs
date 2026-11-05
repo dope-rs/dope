@@ -15,10 +15,21 @@ use dope_manifold::{
     timing,
 };
 use dope_runtime::executor::session::Completion;
-use dope_test::{alloc::Tracker, harness::support::file};
+use dope_test::{
+    alloc::Tracker,
+    fibers::{TEST, Wait},
+    harness::{
+        scenario::process::{self, Limit, Resource as _, Test},
+        support::file,
+    },
+};
 use o3::alloc;
 
-use crate::common::{manifold::appender::Observed, recover, scenario::Runtime};
+use crate::common::{
+    manifold::appender::{FileSize, Native, Observed, Request},
+    recover,
+    scenario::Runtime,
+};
 
 #[test]
 fn storage_releases_prefix() {
@@ -204,7 +215,7 @@ fn drains_reused_blocks_after_truncation() {
             }
             {
                 let checked = Cell::new(None);
-                let observed = Observed { writer, checked: &checked };
+                let observed = Observed { writer, checked: &checked, native: None };
                 let result = session.with_quiesce(&mut finish, Host::new(observed), Duration::from_secs(2), |_| ());
                 assert!(result.is_ok(), "shutdown drains both owned blocks");
                 assert_eq!(checked.get(), Some(true), "submitted write waits before completion");
@@ -221,4 +232,126 @@ fn drains_reused_blocks_after_truncation() {
     expected.extend_from_slice(&[b'a'; 64]);
     expected.extend_from_slice(&[b'b'; 64]);
     assert_eq!(bytes, expected);
+}
+
+#[test]
+fn retains_native_failure_and_rotates() {
+    let child = Test { name: "retains_native_failure_and_rotates" }.run(
+        &env::current_exe().expect("test executable"),
+        env::var_os(process::CHILD).as_deref(),
+        || {
+            let dir = file::Directory::try_with(&env::temp_dir(), "appender_failure", |result| {
+                result.expect("remove appender fixture")
+            }).expect("temporary directory");
+            for (name, retry) in [("dropped", false), ("retried", true)] {
+                let path = dir.path().join(name);
+                let old = dir.path().join(format!("{name}.old"));
+                let candidate = dir.path().join(format!("{name}.candidate"));
+                let torn = dir.path().join(format!("{name}.torn"));
+                fs::write(&torn, b"{").expect("invalid candidate tail");
+                let mut storage = appender::Storage::<3, 8>::try_new().expect("three blocks");
+                let limit = Limit::<FileSize, _>::try_zero(|result| result.expect("restore limit"))
+                    .expect("isolated file-size limit");
+                FileSize::soft(&FileSize::limits().expect("current limit"), 3)
+                    .expect("three-byte prefix");
+                let mut reports = Vec::new();
+                Runtime::try_for_plan::<timing::Throughput, _>(
+                    &appender::Layout::<KeyTag<37>>::default(),
+                ).expect("appender layout").with_scope(|mut session| {
+                    let mut writer = appender::Appender::<KeyTag<37>, 3, 8>::open(
+                        &path, None, &mut storage, &mut session.driver(),
+                    ).expect("initial generation");
+                    let mut record = pin::Pin::new(&mut writer).record(8).expect("first block");
+                    record.try_extend(b"abcdefgh").expect("first bytes");
+                    record.commit();
+                    let checked = Cell::new(None);
+                    let native = Native::default();
+                    let done = native.done.handle();
+                    native.request.set(Some(Request::Fill(&candidate)));
+                    let mut finish = Completion::new();
+                    session.with_quiesce(
+                        &mut finish,
+                        Host::new(Observed { writer, checked: &checked, native: Some(&native) }),
+                        Duration::from_secs(2),
+                        |mut app| {
+                            assert_eq!(TEST.try_wait(&mut app, &done, 1).expect("native failure"), Wait::Reached);
+                            assert_eq!(fs::read(&path).expect("partial generation"), b"abc");
+                            let contender = dope_core::io::fs::File::from(
+                                fs::OpenOptions::new().write(true).open(&path).expect("contending descriptor"),
+                            );
+                            assert!(contender.try_lock().is_err(), "failed writer retains its lock");
+                            drop(contender);
+
+                            native.request.set(Some(Request::Rotate(&candidate, None)));
+                            assert_eq!(TEST.try_wait(&mut app, &done, 2).expect("failed rotation"), Wait::Reached);
+                            assert!(matches!(native.rotated.take(), Some(Err(appender::RotateError::Failed(appender::Failure::System(errno)))) if errno.code().get() == libc::EFBIG));
+                            assert!(!candidate.exists());
+                            limit.try_restore().expect("restore before another native turn");
+                            native.request.set(Some(Request::Paused));
+                            assert_eq!(TEST.try_wait(&mut app, &done, 3).expect("paused native turn"), Wait::Reached);
+                            assert_eq!(fs::read(&path).expect("paused generation"), b"abc");
+                            if !retry {
+                                return;
+                            }
+
+                            fs::rename(&path, &old).expect("rename retained inode");
+                            fs::write(&path, []).expect("replacement pathname");
+                            native.request.set(Some(Request::Retry));
+                            assert_eq!(TEST.try_wait(&mut app, &done, 4).expect("explicit retry drain"), Wait::Reached);
+                            assert_eq!(fs::read(&old).expect("retained inode"), b"abcdefghIJKLMNOPqrst");
+                            assert!(fs::read(&path).expect("unselected inode").is_empty());
+
+                            native.request.set(Some(Request::Rotate(&torn, Some(b'\n'))));
+                            assert_eq!(TEST.try_wait(&mut app, &done, 5).expect("candidate tail rejection"), Wait::Reached);
+                            assert!(matches!(native.rotated.take(), Some(Err(appender::RotateError::Open(appender::OpenError::Tail { expected: b'\n', observed: Some(b'{') })))));
+                            let candidate_owner = dope_core::io::fs::File::from(
+                                fs::OpenOptions::new().write(true).open(&torn).expect("rejected candidate"),
+                            );
+                            candidate_owner.try_lock().expect("candidate lock released");
+                            drop(candidate_owner);
+                            native.request.set(Some(Request::Append(b"uv")));
+                            assert_eq!(TEST.try_wait(&mut app, &done, 6).expect("old generation remains writable"), Wait::Reached);
+                            assert_eq!(fs::read(&old).expect("unchanged generation"), b"abcdefghIJKLMNOPqrstuv");
+
+                            native.request.set(Some(Request::Rotate(&path, None)));
+                            assert_eq!(TEST.try_wait(&mut app, &done, 7).expect("healthy rotation"), Wait::Reached);
+                            native.rotated.take().expect("rotation result").expect("new locked generation");
+                            let previous = dope_core::io::fs::File::from(
+                                fs::OpenOptions::new().write(true).open(&old).expect("previous generation"),
+                            );
+                            previous.try_lock().expect("old descriptor closed");
+                            drop(previous);
+                            let contender = dope_core::io::fs::File::from(
+                                fs::OpenOptions::new().write(true).open(&path).expect("current generation"),
+                            );
+                            assert!(contender.try_lock().is_err(), "new generation stays locked");
+                            drop(contender);
+                            native.request.set(Some(Request::Append(b"new\n")));
+                            assert_eq!(TEST.try_wait(&mut app, &done, 8).expect("new generation drain"), Wait::Reached);
+                        },
+                    ).expect("native appender retirement");
+                    if retry {
+                        assert!(storage.failure().is_none());
+                    } else {
+                        assert!(matches!(storage.failure(), Some(appender::Failure::System(errno)) if errno.code().get() == libc::EFBIG));
+                    }
+                }, recovery::Policy::new(|event| reports.push(event), recover));
+                assert!(reports.is_empty(), "unexpected native reclamation: {reports:?}");
+                if retry {
+                    assert_eq!(fs::read(&old).expect("old bytes after retirement"), b"abcdefghIJKLMNOPqrstuv");
+                    assert_eq!(fs::read(&path).expect("new bytes after retirement"), b"new\n");
+                } else {
+                    assert_eq!(fs::read(&path).expect("failed bytes after retirement"), b"abc");
+                }
+                let released = dope_core::io::fs::File::from(
+                    fs::OpenOptions::new().write(true).open(&path).expect("retired generation"),
+                );
+                released.try_lock().expect("retirement closes the owner");
+            }
+        },
+    );
+    if let Some(mut child) = child {
+        let output = child.output().expect("isolated appender child");
+        assert!(output.status.success(), "{output:?}");
+    }
 }

@@ -4,7 +4,6 @@ use dope_manifold::client::{
     close::Reason,
     session::codec::{Codec, Finish, Input, Parse, Stateless, eof, staging::Buffered},
 };
-use dope_test::harness::peer;
 use o3::{buffer, buffer::resident::staging};
 
 pub struct Exhausted;
@@ -58,13 +57,4 @@ pub struct Run<C: Codec> {
     pub codec: C,
     pub error: Option<C::Error>,
     pub reason: Reason,
-}
-
-pub fn serve(acceptor: &mut peer::TcpAcceptor<'_>) -> Result<(), peer::Error> {
-    let first = acceptor.accept()?;
-    first.write_all(&[0xff])?;
-    let second = acceptor.accept()?;
-    let release = acceptor.accept()?;
-    drop((second, release));
-    Ok(())
 }

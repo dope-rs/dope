@@ -16,11 +16,7 @@ use crate::{
         route,
         route::{indices, indices::SlotIndex},
     },
-    io::fd::{
-        domain,
-        domain::{resident, state},
-        handles, identity,
-    },
+    io::fd::{domain, domain::resident, handles, identity},
 };
 
 const GENERATION_SHIFT: u32 = route::SLOT_BITS;
@@ -196,7 +192,7 @@ impl<'a> View<'a> {
         if self.domain.accept.contains(SlotIndex::from(slot)) {
             return handles::Retirement::Close;
         }
-        let state = state::get(self.domain, slot).get();
+        let state = self.domain.resident.lifecycle(slot).get();
         if state.owner().is_some() {
             handles::Retirement::Close
         } else {

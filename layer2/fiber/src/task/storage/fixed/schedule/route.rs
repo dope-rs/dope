@@ -88,18 +88,22 @@ where
     Q: State,
     S: queue::Backend<'d>,
 {
-    /// Updates a held stream without waking it or releasing its item backpressure.
-    pub fn try_update<I, O>(
-        &mut self,
+    /// Borrows a held stream without waking it or releasing its item backpressure.
+    pub fn get_mut<'b>(
+        &'b mut self,
         id: &schedule::Identity<'d, M>,
-        input: I,
-        update: impl FnOnce(pin::Pin<&mut M::Fiber>, I) -> O,
-    ) -> Result<O, schedule::result::Update<I>> {
+    ) -> Result<pin::Pin<&'b mut M::Fiber>, schedule::result::Error>
+    where
+        M: 'b,
+    {
         let (routes, _, _) = self.plane.as_mut().split();
-        R::project(routes).try_update(id, input, update)
+        schedule::StreamOps::get_mut(R::project(routes), id)
     }
 
-    pub fn resume(&mut self, id: &schedule::Identity<'d, M>) -> schedule::result::Resume {
+    pub fn resume(
+        &mut self,
+        id: &schedule::Identity<'d, M>,
+    ) -> Result<(), schedule::result::Error> {
         let (routes, _, _) = self.plane.as_mut().split();
         R::project(routes).resume(id)
     }

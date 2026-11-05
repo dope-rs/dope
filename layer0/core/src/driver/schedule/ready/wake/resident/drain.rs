@@ -29,7 +29,10 @@ pub(in crate::driver::schedule::ready::wake) fn one<'d>(
                 return Drain::Woke;
             }
             quota::Admission::Empty => return Drain::Empty,
-            quota::Admission::Exhausted => return Drain::Exhausted,
+            quota::Admission::Exhausted => {
+                work.defer();
+                return Drain::Exhausted;
+            }
         }
     }
 }

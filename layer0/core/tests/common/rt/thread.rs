@@ -1,9 +1,6 @@
 use std::{cell::Cell, num::NonZero};
 
-use dope_core::{
-    dope_sys::io::socket::record::{Fault, Record},
-    platform::{channel, thread},
-};
+use dope_core::platform::thread;
 
 pub const STACK: NonZero<usize> = NonZero::<usize>::MIN.saturating_add(8 * 1024 * 1024 - 1);
 
@@ -18,29 +15,6 @@ impl thread::Task for Write<'_> {
     fn run(self) -> u64 {
         *self.target = self.value;
         self.value
-    }
-}
-
-pub struct Gated<'a> {
-    pub channel: channel::Channel,
-    pub task: Write<'a>,
-}
-
-#[derive(Debug)]
-pub enum Error {
-    Send(Fault),
-    Receive(Record),
-}
-
-impl thread::Task for Gated<'_> {
-    type Output = Result<u64, Error>;
-
-    fn run(self) -> Self::Output {
-        self.channel.send(1).map_err(Error::Send)?;
-        match self.channel.recv() {
-            Record::Value(2) => Ok(thread::Task::run(self.task)),
-            record => Err(Error::Receive(record)),
-        }
     }
 }
 

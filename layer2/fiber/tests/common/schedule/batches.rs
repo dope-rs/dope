@@ -7,6 +7,7 @@ use dope_fiber::{abi::Fiber, context::PollCall, wait, wait::Waiter};
 
 pub struct FanIn<'cells, 'd, const N: usize> {
     pub(crate) index: usize,
+    pub(crate) first: usize,
     pub(crate) polls: &'cells Cell<Option<usize>>,
     pub(crate) ready: &'cells Cell<bool>,
     pub(crate) wakes: &'cells Cell<Vec<wake::Waker<'d>>>,
@@ -21,6 +22,11 @@ impl<'cells, 'd, const N: usize> Fiber<'d> for FanIn<'cells, 'd, N> {
         this.polls
             .set(this.polls.get().and_then(|count| count.checked_add(1)));
         if this.ready.get() {
+            let mut wakes = this.wakes.take();
+            for wake in wakes.drain(..) {
+                wake.wake();
+            }
+            this.wakes.set(wakes);
             return Poll::Ready(this.index);
         }
 
@@ -28,7 +34,7 @@ impl<'cells, 'd, const N: usize> Fiber<'d> for FanIn<'cells, 'd, N> {
         wakes.push(context.as_ref().completion());
         if wakes.len() == N {
             this.ready.set(true);
-            for wake in wakes.drain(..) {
+            for wake in wakes.drain(N - this.first..) {
                 wake.wake();
             }
         }

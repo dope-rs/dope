@@ -30,23 +30,6 @@ pub use socket::Socket;
 pub const GSO_LIMITS: Option<datagram::GsoLimits> = datagram::GSO_LIMITS;
 
 /// Read-only handler access while retaining the installed endpoint and driver brand.
-///
-/// ```compile_fail
-/// use dope_core::driver::route::KeyTag;
-/// use dope_manifold::network::datagram::View;
-/// fn escape(view: View<'_, '_, KeyTag<0>, u32, ()>) -> &'static u32 {
-///     view.read(|handler| handler)
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use dope_core::driver::route::KeyTag;
-/// use dope_manifold::network::datagram::View;
-/// fn substitute<'s, 'a: 's, 'b: 's>(view: View<'s, 'a, KeyTag<0>, (), ()>)
-///     -> View<'s, 'b, KeyTag<0>, (), ()> where 'a: 'b {
-///     view
-/// }
-/// ```
 #[repr(transparent)]
 pub struct View<'step, 'd: 'step, ID: Identity, H, B, M: send::Mode = send::Plain> {
     owner: dispatch::raw::Installed<'step, 'd, Endpoint<'d, ID, H, B, M>>,

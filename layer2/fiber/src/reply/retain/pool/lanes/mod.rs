@@ -19,7 +19,7 @@ use wake::{Wait, Wake};
 use crate::reply::{
     LaneIndex, Length,
     arena::state::EntryKey,
-    layout, retain,
+    layout, recv, retain,
     retain::{
         grant::{entries, payload},
         pool,
@@ -68,15 +68,38 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         self.credits.waiters.state(lane).cancel(key);
     }
 
+    pub(super) fn wait_local(&self, lane: LaneIndex, key: EntryKey) {
+        self.credits
+            .waiters
+            .state(lane)
+            .waiting
+            .set(Some(Wait { key, request: None }));
+    }
+
+    pub(super) fn wake_local(&self, lane: LaneIndex, key: EntryKey) {
+        let wake = self.credits.waiters.state(lane);
+        if wake
+            .waiting
+            .get()
+            .is_some_and(|wait| wait.key == key && wait.request.is_none())
+        {
+            wake.waiting.set(None);
+            if let Some(target) = wake.target.get() {
+                target.wake();
+            }
+        }
+    }
+
     pub(super) fn take_waiting<A>(
         &self,
         lane: LaneIndex,
         key: EntryKey,
         sum: &mut payload::raw::Sum<'credits>,
         amount: A,
+        acceptance: recv::Acceptance,
     ) -> Result<(), Acquire>
     where
-        A: mem::raw::Amount<3, usize> + Into<payload::Returned> + Into<payload::Requested>,
+        A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     {
         let wake = self.credits.waiters.state(lane);
         match sum.try_acquire(amount) {
@@ -85,15 +108,24 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
                 Ok(())
             }
             Err(cause) => {
+                let cause = match Acquire::new(cause) {
+                    Acquire::Backpressure(cause) if acceptance == recv::Acceptance::Collected => {
+                        Acquire::Capacity(usage::Capacity::Unavailable(cause))
+                    }
+                    cause => cause,
+                };
                 match cause {
-                    fair::Cause::Overflow { .. } => wake.cancel(key),
-                    fair::Cause::Exhausted { .. } => {
+                    Acquire::Capacity(_) => wake.cancel(key),
+                    Acquire::Backpressure(_) => {
                         let request = amount.into();
-                        wake.waiting.set(Some(Wait { key, request }));
+                        wake.waiting.set(Some(Wait {
+                            key,
+                            request: Some(request),
+                        }));
                         self.queue_need(lane, request);
                     }
                 }
-                Err(Acquire::new(cause))
+                Err(cause)
             }
         }
     }
@@ -115,29 +147,22 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
 
     pub(super) fn release_data<A>(&self, grant: payload::Grant<'credits, A>)
     where
-        A: mem::raw::Amount<3, usize> + Into<payload::Returned>,
+        A: mem::raw::Amount<3, usize>,
     {
-        let returned = grant.amount().into();
+        let returned = grant.amount();
         grant.into_inner().release();
         self.returned(returned);
     }
 
-    pub(super) fn returned(&self, returned: payload::Returned) {
-        let usage = match returned {
-            payload::Returned::Axis(axis) => {
-                self.refund_axis(axis);
-                return;
-            }
-            payload::Returned::Value(value) => {
-                self.refund_axis(DATA);
-                value.usage()
-            }
-            payload::Returned::Failure(failure) => failure.usage(),
-        };
-        if usage.values() != usage::Values::ZERO {
+    pub(super) fn returned<A: mem::raw::Amount<3, usize>>(&self, amount: A) {
+        let [data, values, bytes] = amount.get();
+        if data != 0 {
+            self.refund_axis(DATA);
+        }
+        if values != 0 {
             self.refund_axis(VALUES);
         }
-        if usage.bytes() != usage::Bytes::ZERO {
+        if bytes != 0 {
             self.refund_axis(BYTES);
         }
     }
@@ -202,10 +227,13 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
                 continue;
             };
             let wake = self.credits.waiters.state(lane);
-            let Some(wait) = wake.waiting.get() else {
+            let Some(Wait {
+                request: Some(request),
+                ..
+            }) = wake.waiting.get()
+            else {
                 return;
             };
-            let request = wait.request;
             if self.credits.can_take(lane, request)
                 && let Some(target) = wake.target.get()
             {

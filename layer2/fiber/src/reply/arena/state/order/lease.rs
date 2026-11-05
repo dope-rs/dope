@@ -14,7 +14,7 @@ pub(in crate::reply) struct Lease<
     'arena,
     'credits,
     'region,
-    A: mem::raw::Amount<3, usize> + Into<payload::Returned> + Into<payload::Requested>,
+    A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     K = (),
 > {
     inner: mem::Lease<Refund<'a, 'arena, 'credits, 'region, A, K>, lease::Open>,
@@ -27,7 +27,7 @@ struct Refund<'a, 'arena, 'credits, 'region, A, K> {
 
 impl<'a, 'arena, 'credits, 'region, A, K> Lease<'a, 'arena, 'credits, 'region, A, K>
 where
-    A: mem::raw::Amount<3, usize> + Into<payload::Returned> + Into<payload::Requested>,
+    A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
 {
     pub(super) fn new(slot: order::Slot<'a, 'arena, 'credits, 'region, K>, amount: A) -> Self {
         Self {
@@ -55,8 +55,8 @@ where
     }
 }
 
-impl<A: mem::raw::Amount<3, usize> + Into<payload::Returned> + Into<payload::Requested>, K>
-    mem::Return for Refund<'_, '_, '_, '_, A, K>
+impl<A: mem::raw::Amount<3, usize> + Into<payload::Requested>, K> mem::Return
+    for Refund<'_, '_, '_, '_, A, K>
 {
     type Item = A;
 

@@ -3,7 +3,7 @@ pub mod common;
 use std::mem;
 
 use dope_core::driver::{
-    route::KeyTag,
+    route::{KeyTag, table::conn::Capacity},
     settings::{Config, Domain, Progress},
 };
 use dope_manifold::{
@@ -13,11 +13,7 @@ use dope_manifold::{
 };
 use dope_net::{tcp::Tcp, wire::Identity};
 
-use crate::common::manifold::profile::{
-    DriverOnly, InputFactory, TimingOnly, listener_config, require_split,
-};
-
-type Environment = Bundle<Tcp, Identity, DriverOnly, Balanced>;
+use crate::common::manifold::profile::{DriverOnly, TimingOnly};
 
 #[test]
 fn completion_progress() {
@@ -32,55 +28,24 @@ fn completion_progress() {
 #[test]
 fn bundle_types() {
     type Split = Bundle<Tcp, Identity, DriverOnly, TimingOnly>;
-    require_split::<Split>();
     assert_eq!(mem::size_of::<Split>(), 0);
 }
 
 #[test]
 fn receive_domains() {
-    let borrowed = topology::Plan::<KeyTag<0>, Environment, _>::try_new(
-        listener_config(),
-        InputFactory::<receive::Borrowed>::NEW,
-    );
-    let coupled = topology::Plan::<KeyTag<0>, Environment, _>::try_new(
-        listener_config(),
-        InputFactory::<receive::Coupled>::NEW,
-    );
-    let gated = topology::Plan::<KeyTag<0>, Environment, _>::try_new(
-        listener_config(),
-        InputFactory::<receive::Gated>::NEW,
-    );
-    let owned = topology::Plan::<KeyTag<0>, Environment, _>::try_new(
-        listener_config(),
-        InputFactory::<receive::Owned>::NEW,
-    );
-    let scoped = topology::Plan::<KeyTag<0>, Environment, _>::try_new(
-        listener_config(),
-        InputFactory::<receive::Scoped>::NEW,
-    );
-
-    let borrowed = (borrowed).expect("required fixture outcome");
-    let coupled = (coupled).expect("required fixture outcome");
-    let gated = (gated).expect("required fixture outcome");
-    let owned = (owned).expect("required fixture outcome");
-    let scoped = (scoped).expect("required fixture outcome");
+    let borrowed = topology::Layout::<KeyTag<0>, receive::Borrowed>::new(Capacity::fixed::<1>());
+    let coupled = topology::Layout::<KeyTag<0>, receive::Coupled>::new(Capacity::fixed::<1>());
+    let gated = topology::Layout::<KeyTag<0>, receive::Gated>::new(Capacity::fixed::<1>());
+    let owned = topology::Layout::<KeyTag<0>, receive::Owned>::new(Capacity::fixed::<1>());
+    let scoped = topology::Layout::<KeyTag<0>, receive::Scoped>::new(Capacity::fixed::<1>());
     assert!(DriverOnly::try_domains(borrowed) == Ok(Domain::ZERO));
     assert!(DriverOnly::try_domains(coupled) == Ok(Domain::ZERO));
     assert!(DriverOnly::try_domains(gated) == Ok(Domain::ZERO));
     assert!(DriverOnly::try_domains(owned) == Ok(Domain::ZERO));
     assert!(DriverOnly::try_domains(scoped) == Ok(Domain::ONE));
 
-    let first = topology::Plan::<KeyTag<0>, Environment, _>::try_new(
-        listener_config(),
-        InputFactory::<receive::Scoped>::NEW,
-    );
-    let second = topology::Plan::<KeyTag<1>, Environment, _>::try_new(
-        listener_config(),
-        InputFactory::<receive::Scoped>::NEW,
-    );
-
-    let first = (first).expect("required fixture outcome");
-    let second = (second).expect("required fixture outcome");
+    let first = topology::Layout::<KeyTag<0>, receive::Scoped>::new(Capacity::fixed::<1>());
+    let second = topology::Layout::<KeyTag<1>, receive::Scoped>::new(Capacity::fixed::<1>());
     let pair = (first, second);
     assert!(DriverOnly::try_domains(pair) == Ok(Domain::fixed::<2>()));
 }

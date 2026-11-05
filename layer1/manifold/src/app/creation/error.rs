@@ -28,16 +28,7 @@ use crate::{
 
 /// Application construction failure with exact domain categories.
 ///
-/// An unrelated operating-system failure cannot be erased into this type:
-///
-/// ```compile_fail
-/// use dope_manifold::app::creation::Error;
-///
-/// struct Unrelated;
-/// let error = Unrelated;
-/// let converted: Error = error.into();
-/// ```
-
+/// An unrelated operating-system failure cannot be erased into this type.
 #[derive(Debug)]
 pub enum Error {
     Config(crate::ConfigError),

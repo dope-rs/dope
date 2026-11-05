@@ -341,7 +341,7 @@ impl<'turn, 'd> Quota for Backend<'turn, 'd> {
     }
 
     fn refund(self) {
-        self.work.refund();
+        drop(self.work);
     }
 
     fn budget<Lane>(&self, limit: usize) -> Self::Budget<'_, Lane> {

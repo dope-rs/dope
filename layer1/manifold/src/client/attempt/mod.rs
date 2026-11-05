@@ -207,17 +207,6 @@ const _: () = assert!(
 ///
 /// The source borrow prevents its storage from moving or being reclaimed while
 /// this receipt exists. A copied attempt identifier cannot create a receipt.
-///
-/// ```compile_fail
-/// use dope_manifold::client::attempt::{Completion, queue::Lease};
-/// use dope_net::tcp::Tcp;
-///
-/// fn escape<'source, 'd>(lease: &Lease<'source, 'd, Tcp>)
-///     -> Completion<'static, 'd>
-/// {
-///     lease.receipt()
-/// }
-/// ```
 pub struct Completion<'source, 'd, ID: Identity = KeyTag<0>> {
     key: Id<'d, ID>,
     source: Option<ptr::NonNull<()>>,

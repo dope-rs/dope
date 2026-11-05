@@ -17,12 +17,11 @@ use common::{
     scenario::case::listener::Listener,
 };
 use dope_core::{
-    dope_sys::io::socket::record::Record,
     driver::{
         life::recovery,
         route::{FrameworkTag, KeyTag, Tag, kind},
     },
-    platform::channel::Channel,
+    io::socket,
 };
 use dope_manifold::{app::env::Bundle, timing::Throughput};
 use dope_net::{
@@ -245,7 +244,11 @@ fn quiesces_buffered_send() {
     let mut finish = Completion::new();
     let chunk = Gate::new();
     let close = Gate::new();
-    let prepared = Listener::new::<64>(Default::default())
+    let bound = socket::Listener::bind(([127, 0, 0, 1], 0).into()).expect("listener bind");
+    let addr = bound.local_addr();
+    let mut spec = Listener::new::<64>(Default::default());
+    spec.bound = Some(bound);
+    let prepared = spec
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, Throughput>>((
             script::App {
                 payload: None,
@@ -257,38 +260,25 @@ fn quiesces_buffered_send() {
         .expect("listener layout");
     let mut reports =
         Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    let (sender, receiver) = Channel::pair().expect("peer address channel");
-    let ((), got) = run::Entry(move || {
-        let port = match receiver.recv() {
-            Record::Value(port) => u16::try_from(port).expect("listener port"),
-            record => return Err(record),
-        };
-        Ok(script::Script(([127, 0, 0, 1], port).into()).try_read())
-    })
-    .with(|| {
-        prepared
-            .with_run(
-                &mut finish,
-                |case| {
-                    let addr = case.addr();
-                    assert_eq!(addr.ip(), std::net::IpAddr::from([127, 0, 0, 1]));
-                    sender
-                        .send(u32::from(addr.port()))
-                        .expect("send listener port");
-                    reached(case.try_wait(&chunk, 1), chunk.hits(), 1);
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                native,
-            )
-            .expect("listener run");
-    })
-    .expect("buffered peer start");
+    let (progress, got) = run::Entry(move || script::Script(addr).try_read())
+        .with(|| {
+            prepared
+                .with_run(
+                    &mut finish,
+                    |case| case.try_wait(&chunk, 1),
+                    recovery::Policy::new(|event| reports.push(event), recover),
+                    native,
+                )
+                .expect("listener run")
+        })
+        .expect("buffered peer start");
     assert!(
         reports.events().expect("reclaimed events").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
 
-    let got = got.expect("peer address").expect("buffered peer read");
+    let got = got.expect("buffered peer read");
+    reached(progress, chunk.hits(), 1);
     assert_eq!(got, BYE);
     assert_eq!(close.hits(), 1);
 }

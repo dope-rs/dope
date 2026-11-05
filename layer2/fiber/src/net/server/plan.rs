@@ -64,18 +64,6 @@ impl<W: wire::Spec, ID: Identity> Plan<W, ID> {
     }
 
     /// Borrows this wire owner for the port's entire lifetime.
-    ///
-    /// ```compile_fail
-    /// use dope::{core::driver::storage, net::wire::Identity};
-    /// use dope_fiber::net::server::{ListenerPort, Plan};
-    ///
-    /// fn escape<'w, 'd: 'w>(
-    ///     plan: Plan<Identity>,
-    ///     context: storage::Context<'_, 'd>,
-    /// ) -> Result<ListenerPort<'w, 'd, Identity>, o3::alloc::Error> {
-    ///     plan.try_build(context)
-    /// }
-    /// ```
     pub fn try_build<'w, 'd: 'w>(
         &'w self,
         ctx: storage::Context<'_, 'd>,

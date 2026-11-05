@@ -26,29 +26,6 @@ struct Detached {
     count: num::NonZero<u16>,
 }
 
-struct Returned {
-    head: ready::FreeIndex,
-    count: num::NonZero<u16>,
-}
-
-impl Returned {
-    const fn one(head: ready::FreeIndex) -> Self {
-        Self {
-            head,
-            count: num::NonZero::<u16>::MIN,
-        }
-    }
-}
-
-impl From<Detached> for Returned {
-    fn from(chain: Detached) -> Self {
-        Self {
-            head: chain.head,
-            count: chain.count,
-        }
-    }
-}
-
 #[repr(C)]
 pub(in crate::driver::schedule::ready) struct Chain {
     state: cell::Cell<Option<Detached>>,
@@ -137,15 +114,12 @@ impl State {
         }
     }
 
-    fn prepend(self, returned: Returned) -> Self {
+    fn prepend(self, head: ready::FreeIndex, count: num::NonZero<u16>) -> Self {
         let count = match self.0 {
-            None => returned.count,
-            Some(state) => state.count.saturating_add(returned.count.get()),
+            None => count,
+            Some(state) => state.count.saturating_add(count.get()),
         };
-        Self(Some(Available {
-            head: returned.head,
-            count,
-        }))
+        Self(Some(Available { head, count }))
     }
 }
 
@@ -270,7 +244,8 @@ impl Pool {
         let index = ready::FreeIndex::from_key(key.key());
         let state = self.state.get();
         slots.publish(key, state.link(index));
-        self.state.set(state.prepend(Returned::one(index)));
+        self.state
+            .set(state.prepend(index, num::NonZero::<u16>::MIN));
     }
 
     pub(in crate::driver::schedule::ready) fn restore(&self, slots: &ready::Slots, chain: &Chain) {
@@ -279,7 +254,7 @@ impl Pool {
         };
         let state = self.state.get();
         slots.link(chain.tail, state.link(chain.tail));
-        self.state.set(state.prepend(chain.into()));
+        self.state.set(state.prepend(chain.head, chain.count));
     }
 }
 

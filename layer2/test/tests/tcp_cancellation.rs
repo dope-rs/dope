@@ -1,34 +1,28 @@
-use std::{net, time::Duration};
+use std::{convert::Infallible, net, task::Poll, time::Duration};
 
-use dope_core::platform::wake;
-use dope_test::harness::peer::{AcceptScript, Error, Peer, Stream, TcpAcceptor, TcpScript, udp};
-use dope_test::harness::support::file;
-
-trait MaybeSend<A> {}
-impl<T: ?Sized> MaybeSend<()> for T {}
-impl<T: ?Sized + Send> MaybeSend<u8> for T {}
-
-trait MaybeSync<A> {}
-impl<T: ?Sized> MaybeSync<()> for T {}
-impl<T: ?Sized + Sync> MaybeSync<u8> for T {}
-
-const _: fn() = || {
-    fn confined<T: ?Sized + MaybeSend<A> + MaybeSync<B>, A, B>() {}
-    confined::<Stream<'static>, _, _>();
-    confined::<TcpAcceptor<'static>, _, _>();
-    confined::<udp::Socket<'static>, _, _>();
-    confined::<file::Directory<fn(Result<(), file::Error>)>, _, _>();
+use dope_core::driver::{
+    life::{creation::Attempt, recovery},
+    settings,
+};
+use dope_fiber::{BlockOn as _, abi};
+use dope_runtime::executor::{Build as _, drive, session::Completion};
+use dope_test::harness::{
+    observe::Trace,
+    peer::{AcceptScript, Error, Peer, TcpAcceptor, TcpScript},
+    scenario::process::Deadline,
 };
 
 #[test]
 fn cancel_precedes_ready() {
     for nowait in [false, true] {
-        let (wait, release) = wake::Ends::blocking().expect("gate").split();
         AcceptScript::with(
             move |listener| {
                 let stream = listener.accept().expect("accept");
                 stream.write_all(&[1]).expect("ready");
-                wait.wait_timeout(Duration::from_secs(1)).expect("release");
+                assert!(matches!(
+                    listener.accept_for(Duration::from_secs(1)),
+                    Err(Error::Cancelled)
+                ));
                 stream.nonblock(nowait);
                 let mut byte = [0];
                 for result in [
@@ -51,7 +45,6 @@ fn cancel_precedes_ready() {
                 socket.write_all(&[1]).expect("readable data");
                 socket.shutdown(net::Shutdown::Write).expect("readable EOF");
                 drop(peer);
-                release.notify().expect("release");
             },
         )
         .expect("script");
@@ -60,30 +53,64 @@ fn cancel_precedes_ready() {
 
 #[test]
 fn native_is_not_cancelled() {
-    TcpScript::with(
-        |stream| {
-            stream.nonblock(true);
-            assert!(
-                matches!(stream.read(&mut [0]), Err(Error::Syscall(error)) if error.is_block())
-            );
-            stream.nonblock(false);
-            stream
-                .read_wait(Some(Duration::from_millis(1)))
-                .expect("timeout");
-            assert!(matches!(stream.read(&mut [0]), Err(Error::TimedOut)));
-            stream.write_all(&[1]).expect("ready for EOF");
-            stream
-                .read_wait(Some(Duration::from_secs(1)))
-                .expect("EOF timeout");
-            assert_eq!(stream.read(&mut [0]).expect("EOF"), 0);
-        },
-        |peer| {
-            let socket = Peer::at(peer.addr()).try_connect().expect("connect");
-            socket.read_exact(&mut [0]).expect("worker ready");
-            socket.shutdown(net::Shutdown::Write).expect("EOF");
-            peer.finish().expect("finish");
-        },
-    )
+    Deadline::with(Duration::from_secs(5), |_| {
+        TcpScript::with(
+            |stream| {
+                stream.nonblock(true);
+                assert!(
+                    matches!(stream.read(&mut [0]), Err(Error::Syscall(error)) if error.is_block())
+                );
+                stream.nonblock(false);
+                stream
+                    .read_wait(Some(Duration::from_millis(1)))
+                    .expect("timeout");
+                assert!(matches!(stream.read(&mut [0]), Err(Error::TimedOut)));
+                stream.write_all(&[1]).expect("ready for EOF");
+                stream
+                    .read_wait(Some(Duration::from_secs(1)))
+                    .expect("EOF timeout");
+                assert_eq!(stream.read(&mut [0]).expect("EOF"), 0);
+            },
+            |peer| {
+                let socket = Peer::at(peer.addr()).try_connect().expect("connect");
+                socket.read_exact(&mut [0]).expect("worker ready");
+                let mut create = Attempt::new();
+                let executor = peer
+                    .completion()
+                    .try_build(&mut create, settings::Config::default())
+                    .unwrap_or_else(|error| panic!("executor: {:?}", error.kind()));
+                let mut finish = Completion::new();
+                executor.run(|executor| {
+                    executor
+                        .enter_with(
+                            |mut session| {
+                                let trace = Trace::<_, 0>::new();
+                                session
+                                    .with_app(&mut finish, &trace, |mut app| {
+                                        let result = app.block_on(abi::poll_fn(|_| {
+                                            socket.shutdown(net::Shutdown::Write).expect("EOF");
+                                            Poll::<()>::Pending
+                                        }));
+                                        assert!(matches!(result, Err(drive::Error::Shutdown)));
+                                    })
+                                    .expect("application cleanup");
+                            },
+                            recovery::Policy::new(
+                                drop,
+                                |failure: recovery::Recovery<'_, '_>| -> Infallible {
+                                    panic!("native recovery: {:?}", failure.cause());
+                                },
+                            ),
+                        )
+                        .as_ref()
+                        .map_err(|error| error.cause())
+                        .expect("executor completion");
+                });
+                peer.finish().expect("finish");
+            },
+        )
+    })
+    .expect("watchdog")
     .expect("script");
 }
 

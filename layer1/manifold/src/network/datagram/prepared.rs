@@ -55,7 +55,8 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         H::Hooks: hook::Bundle<Buffer = B, Send = M>,
     {
         let (binding, target, floor) = binding::Binding::bind(addr, driver)?;
-        self.finish(binding, target, floor, handler, driver)
+        let socket = self.finish(binding, target, floor, driver)?;
+        Ok(datagram::Endpoint { socket, handler })
     }
 
     pub fn adopt<H>(
@@ -69,21 +70,17 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         H::Hooks: hook::Bundle<Buffer = B, Send = M>,
     {
         let (binding, target, floor) = binding::Binding::adopt(lease, driver)?;
-        self.finish(binding, target, floor, handler, driver)
+        let socket = self.finish(binding, target, floor, driver)?;
+        Ok(datagram::Endpoint { socket, handler })
     }
 
-    fn finish<H>(
+    fn finish(
         self,
         binding: binding::Binding<'d, ID>,
         target: route::Target<'d, <ID as route::Materialize<Recv>>::With>,
         floor: Option<route::Epoch>,
-        handler: H,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<datagram::Endpoint<'d, ID, H, B, M>, creation::Error>
-    where
-        H: datagram::Ingress<'d, ID>,
-        H::Hooks: hook::Bundle<Buffer = B, Send = M>,
-    {
+    ) -> Result<datagram::Socket<'d, ID, B, M>, creation::Error> {
         let flights = driver
             .storage
             .reborrow()
@@ -91,14 +88,13 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
             .map_err(creation::Error::Allocation)?;
         let (recv, send) = flights.slots();
         let receive = receive::Receive::new(target, binding.descriptor(), self.retention);
-        let socket = datagram::Socket {
+        Ok(datagram::Socket {
             receive,
             recv_flights: recv,
             sender: self.sender.commit(send, floor),
             binding,
             priority: priority::Priority::Application,
-        };
-        Ok(datagram::Endpoint { socket, handler })
+        })
     }
 
     pub(in crate::network::datagram) fn budget(

@@ -15,16 +15,9 @@ pub enum Outcome<T, O, I = Infallible> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Resume {
-    Resumed,
+pub enum Error {
     Active,
     Absent,
-}
-
-#[derive(Debug)]
-pub enum Update<I> {
-    Active(I),
-    Absent(I),
 }
 
 #[must_use = "a selection must be handled before the application turn ends"]

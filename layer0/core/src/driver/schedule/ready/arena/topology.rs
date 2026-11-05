@@ -198,7 +198,6 @@ impl<'a> Topology<'a> {
             root.prev = link.prev;
         }
         self.lanes.set_links(side, root);
-        task.bound().clear_link();
         queued.clear();
         if root.next.is_none() && self.lanes.paused() == Some(side) {
             self.lanes.set_paused(None);

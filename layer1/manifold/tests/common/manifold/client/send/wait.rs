@@ -41,6 +41,7 @@ pub struct Wait {
     pub(crate) pending: [Cell<Option<egress::NonEmpty<Shared>>>; 2],
     pub(crate) index: Rc<Cell<Option<usize>>>,
     pub(crate) reasons: Rc<Trace<(usize, Reason), 2>>,
+    pub(crate) connected: Gate,
     pub(crate) seen: Gate,
     pub(crate) closed: Gate,
 }
@@ -163,6 +164,7 @@ impl<'d> session::Connected<'d> for Wait {
         let index = context.connection().index().into_usize();
         let slot = &self.pending[index];
         slot.set(Some(load(b"x")));
+        self.connected.hit();
     }
 }
 impl<'d> session::Failed<'d> for Wait {

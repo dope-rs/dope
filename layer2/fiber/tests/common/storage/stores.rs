@@ -7,16 +7,26 @@ use dope_fiber::{
 
 pub struct Domain;
 
+pub struct Empty<T>(pub T);
+
+impl<T> Stream<'_> for Empty<T> {
+    type Item = ();
+
+    fn poll_next(_: PollCall<'_, '_, '_, Self>) -> Poll<Option<()>> {
+        Poll::Ready(None)
+    }
+}
+
 #[pin_project::pin_project(PinnedDrop, !Unpin)]
 pub struct Pinned {
     pub(crate) address: Cell<Option<ptr::NonNull<Self>>>,
     pub(crate) observed: Rc<Cell<(usize, bool)>>,
 }
 
-impl Fiber<'_> for Pinned {
-    type Output = ();
+impl Stream<'_> for Pinned {
+    type Item = ();
 
-    fn poll(call: PollCall<'_, '_, '_, Self>) -> Poll<Self::Output> {
+    fn poll_next(call: PollCall<'_, '_, '_, Self>) -> Poll<Option<()>> {
         let fiber = call.into_fiber();
         let address = NonNull::from(fiber.as_ref().get_ref());
         let this = fiber.project();
@@ -25,14 +35,6 @@ impl Fiber<'_> for Pinned {
             this.observed.set((drops, stable && bound == address));
         }
         Poll::Pending
-    }
-}
-
-impl Stream<'_> for Pinned {
-    type Item = ();
-
-    fn poll_next(call: PollCall<'_, '_, '_, Self>) -> Poll<Option<()>> {
-        Self::poll(call).map(Some)
     }
 }
 
@@ -47,21 +49,6 @@ impl PinnedDrop for Pinned {
     }
 }
 
-pub struct CompleteOnce {
-    pub(crate) polls: Rc<Cell<usize>>,
-}
-
-impl<'d> Fiber<'d> for CompleteOnce {
-    type Output = usize;
-
-    fn poll(call: PollCall<'_, '_, 'd, Self>) -> Poll<Self::Output> {
-        let this = call.into_fiber();
-        this.polls.set(this.polls.get() + 1);
-        Poll::Ready(41)
-    }
-}
-
-/// Capacity deferral observes readiness again without polling the completed fiber or moving output.
 pub struct DropOutput {
     pub(crate) drops: Rc<Cell<usize>>,
 }
@@ -72,17 +59,26 @@ impl Drop for DropOutput {
     }
 }
 
-pub struct DropReady {
-    pub(crate) output_drops: Rc<Cell<usize>>,
+#[pin_project::pin_project]
+pub struct Complete {
+    #[pin]
+    pub(crate) pinned: Pinned,
+    pub(crate) output: Option<DropOutput>,
+    pub(crate) pending: bool,
 }
 
-impl<'d> Fiber<'d> for DropReady {
+impl Fiber<'_> for Complete {
     type Output = DropOutput;
 
-    fn poll(call: PollCall<'_, '_, 'd, Self>) -> Poll<Self::Output> {
-        let this = call.into_fiber();
-        Poll::Ready(DropOutput {
-            drops: Rc::clone(&this.output_drops),
-        })
+    fn poll(call: PollCall<'_, '_, '_, Self>) -> Poll<DropOutput> {
+        let this = call.into_fiber().project();
+        if std::mem::replace(this.pending, false) {
+            this.pinned
+                .address
+                .set(Some(NonNull::from(this.pinned.as_ref().get_ref())));
+            Poll::Pending
+        } else {
+            Poll::Ready(this.output.take().expect("one completion"))
+        }
     }
 }

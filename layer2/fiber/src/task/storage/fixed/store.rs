@@ -17,6 +17,9 @@ type Inner<T, Tag, S> = slab::Pinned<T, Tag, { u32::MAX }, false, 1, S, storage:
 /// One reserved slot reported before its fiber is installed.
 type Anchor<'a, T, Tag, S> = slab::Anchor<'a, T, Tag, { u32::MAX }, false, 1, S, storage::Eager>;
 
+pub(super) type Member<'a, T, Tag, S> =
+    slab::Anchored<'a, T, Tag, { u32::MAX }, false, 1, S, storage::Eager>;
+
 /// Pinned task slots backed by one exact o3 arena extent.
 ///
 /// Only the fiber-facing capacity proof and this store's own `Owner` address
@@ -60,22 +63,12 @@ impl<T, const N: usize, Tag, S: storage::Storage> Store<T, N, Tag, S> {
         }
     }
 
-    pub(in crate::task::storage::fixed) fn parts(&self, parts: key::Parts) -> Option<&T> {
-        self.inner.parts(parts)
-    }
-
-    pub(in crate::task::storage::fixed) fn parts_mut(
+    pub(in crate::task::storage::fixed) fn member<'d>(
         self: pin::Pin<&mut Self>,
-        parts: key::Parts,
-    ) -> Option<pin::Pin<&mut T>> {
-        self.project().inner.parts_mut(parts)
-    }
-
-    pub(in crate::task::storage::fixed) fn member(
-        self: pin::Pin<&mut Self>,
-        parts: key::Parts,
-    ) -> Option<slab::Anchored<'_, T, Tag, { u32::MAX }, false, 1, S>> {
-        self.project().inner.anchor(parts)
+        id: &Id<'d, Tag>,
+    ) -> Option<Member<'_, T, Tag, S>> {
+        let key = id.key_for(Owner::of(self.as_ref().get_ref()))?;
+        self.project().inner.anchor(key.parts())
     }
 
     pub(in crate::task::storage::fixed) fn vacant(
@@ -92,10 +85,7 @@ impl<T, const N: usize, Tag, S: storage::Storage> Store<T, N, Tag, S> {
         self: pin::Pin<&mut Self>,
         id: Id<'d, Tag>,
     ) -> Result<(), Id<'d, Tag>> {
-        let Some(key) = id.key_for(Owner::of(self.as_ref().get_ref())) else {
-            return Err(id);
-        };
-        let Some(anchor) = self.project().inner.anchor(key.parts()) else {
+        let Some(anchor) = self.member(&id) else {
             return Err(id);
         };
         anchor.discard();

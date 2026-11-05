@@ -248,12 +248,22 @@ where
 }
 
 impl<'d, F, const N: usize, D, T: Copy, const MAX: u32> Stream<'d, F, N, D, T, MAX> {
-    fn get(
+    fn held_entry(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, D>,
-    ) -> Option<pin::Pin<&mut Entry<'d, F, T, poll::Stream>>> {
-        let key = id.key_for(Owner::of(self.as_ref().get_ref()))?;
-        self.project().inner.parts_mut(key.parts())
+    ) -> Result<pin::Pin<&mut Entry<'d, F, T, poll::Stream>>, schedule::result::Error> {
+        let key = id
+            .key_for(Owner::of(self.as_ref().get_ref()))
+            .ok_or(schedule::result::Error::Absent)?;
+        let entry = self
+            .project()
+            .inner
+            .parts_mut(key.parts())
+            .ok_or(schedule::result::Error::Absent)?;
+        if !entry.as_ref().project_ref().mode.held {
+            return Err(schedule::result::Error::Active);
+        }
+        Ok(entry)
     }
 }
 
@@ -263,33 +273,18 @@ where
     F: abi::Stream<'d>,
     T: Copy,
 {
-    fn try_update<I, R>(
+    fn get_mut(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, D>,
-        input: I,
-        update: impl FnOnce(pin::Pin<&mut F>, I) -> R,
-    ) -> Result<R, schedule::result::Update<I>> {
-        let Some(entry) = self.get(id) else {
-            return Err(schedule::result::Update::Absent(input));
-        };
-        let fields = entry.project();
-        if !fields.mode.held {
-            return Err(schedule::result::Update::Active(input));
-        }
-        Ok(update(fields.fiber, input))
+    ) -> Result<pin::Pin<&mut F>, schedule::result::Error> {
+        Ok(self.held_entry(id)?.project().fiber)
     }
 
-    fn resume(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> schedule::result::Resume {
-        let Some(entry) = self.get(id) else {
-            return schedule::result::Resume::Absent;
-        };
-        let fields = entry.project();
-        if !fields.mode.held {
-            return schedule::result::Resume::Active;
-        }
+    fn resume(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> Result<(), schedule::result::Error> {
+        let fields = self.held_entry(id)?.project();
         fields.mode.held = false;
         wake::Waker::from_parent(fields.binding.poll().1).wake();
-        schedule::result::Resume::Resumed
+        Ok(())
     }
 }
 

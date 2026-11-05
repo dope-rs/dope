@@ -8,7 +8,7 @@ use crate::{
     shutdown,
 };
 
-pub(in crate::process) mod bus;
+pub(in crate::process) use crate::process::lifecycle as bus;
 mod control;
 pub(in crate::process) mod worker;
 

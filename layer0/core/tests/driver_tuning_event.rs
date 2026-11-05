@@ -261,17 +261,3 @@ fn dropped_tuning_reuses() {
         assert!(matches!(event, io::Reclaimed::Shutdown));
     }
 }
-
-const _: fn() = || {
-    use common::contract;
-    use dope_core::{
-        driver::route::{Erased, kind},
-        io::event::net::tuning::Completion,
-    };
-
-    contract::not_from::<
-        Completion<'static>,
-        (Erased<'static, kind::Tuning>, Result<(), dope_core::Errno>),
-        _,
-    >();
-};

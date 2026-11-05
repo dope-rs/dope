@@ -1,63 +1,37 @@
-use std::{cell::Cell, task::Poll, time::Duration};
+use std::{cell::Cell, net::SocketAddr, task::Poll};
 
-use dope::{
-    core::{
-        dope_sys::io::socket::record::Record,
-        platform::{channel::Channel, poll},
-    },
-    runtime::executor::root,
-};
+use dope::runtime::executor::root;
 
-use crate::common::refresh::server::{self, Failure};
+use crate::common::refresh::server::{Failure, Server};
 
-pub(crate) struct Until<'a, 'fd> {
+pub(crate) struct Until<'a> {
     changes: &'a Cell<u32>,
     before: u32,
-    signal: &'fd Channel,
-    events: &'a mut poll::Set<'fd>,
-    delay: Option<Duration>,
+    server: &'a mut Server,
     lost: u8,
 }
 
-impl<'a, 'fd> Until<'a, 'fd> {
-    pub(crate) fn new(
-        changes: &'a Cell<u32>,
-        signal: &'fd Channel,
-        events: &'a mut poll::Set<'fd>,
-        delay: Option<Duration>,
-    ) -> Self {
+impl<'a> Until<'a> {
+    pub(crate) fn new(changes: &'a Cell<u32>, server: &'a mut Server) -> Self {
         Self {
             changes,
             before: changes.get(),
-            signal,
-            events,
-            delay,
+            server,
             lost: 0,
         }
     }
 }
 
-impl<'d> root::Root<'d> for Until<'_, '_> {
-    type Output = Result<Option<Duration>, Failure>;
+impl<'d> root::Root<'d> for Until<'_> {
+    type Output = Result<Option<(Vec<u8>, SocketAddr)>, Failure>;
 
     fn poll(context: root::Context<'_, 'd, Self>) -> Poll<Self::Output> {
         let (this, wake, _, _) = context.into_parts();
         let this = this.get_mut();
-        loop {
-            match this.events.poll(0) {
-                Ok(None) => break,
-                Ok(Some(_)) => {}
-                Err(error) if error.is_intr() => continue,
-                Err(error) => return Poll::Ready(Err(Failure::Poll(error))),
-            }
-            match this.signal.recv() {
-                Record::Value(server::FOUR) => this.lost |= 1,
-                Record::Value(server::SIX) => this.lost |= 2,
-                Record::Value(server::PAUSE) => {
-                    return Poll::Ready(this.delay.map(Some).ok_or(Failure::Alias));
-                }
-                record => return Poll::Ready(Err(Failure::Record(record))),
-            }
+        match this.server.poll(&mut this.lost) {
+            Ok(Some(reply)) => return Poll::Ready(Ok(Some(reply))),
+            Ok(None) => {}
+            Err(error) => return Poll::Ready(Err(error)),
         }
         if this.changes.get() != this.before || this.lost == 3 {
             Poll::Ready(Ok(None))

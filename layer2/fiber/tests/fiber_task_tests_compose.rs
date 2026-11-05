@@ -1,4 +1,4 @@
-use std::{cell::Cell, marker::PhantomPinned, pin::pin, ptr, rc::Rc, task::Poll};
+use std::{cell::Cell, pin::pin, ptr, rc::Rc, task::Poll};
 
 use dope::core::driver::{
     life::recovery,
@@ -17,6 +17,10 @@ use dope_test::{alloc, alloc::Tracker};
 use crate::common::{
     runtime::{self, Setup},
     schedule::tasks::retained::Retain as _,
+    storage::{
+        stores::DropOutput,
+        streams::{Producer, State},
+    },
 };
 pub mod common;
 use common::recover;
@@ -276,17 +280,12 @@ fn stream_admission_retires_once() {
                         .dispatch(),
                 )
                 .expect("ready slot");
-            let polls = Cell::new(0);
-            let drops = Cell::new(0);
+            let state = State::default();
             {
-                let mut stream = pin!(dope_fiber::abi::Task::new(StreamOnce {
-                    polls: &polls,
-                    drops: &drops,
-                    _pin: PhantomPinned,
-                }));
+                let mut stream = pin!(dope_fiber::abi::Task::new(Producer::new(&state, true, 7)));
                 for (expected, count, dropped) in [
                     (Poll::Pending, 1, 0),
-                    (Poll::Ready(Some(7)), 2, 0),
+                    (Poll::Ready(Some(Ok(7))), 2, 0),
                     (Poll::Ready(None), 3, 1),
                     (Poll::Ready(None), 3, 1),
                 ] {
@@ -308,10 +307,10 @@ fn stream_admission_retires_once() {
                         assert_eq!(result, Poll::Ready(expected));
                         assert_eq!(share.work().remaining(), 0);
                     });
-                    assert_eq!((polls.get(), drops.get()), (count, dropped));
+                    assert_eq!((state.polls.get(), state.drops.get()), (count, dropped));
                 }
             }
-            assert_eq!(drops.get(), 1);
+            assert_eq!(state.drops.get(), 1);
         },
         recovery::Policy::new(|_| {}, recover),
         runtime::check_scope,
@@ -604,4 +603,56 @@ fn join_rotates_first() {
     runtime::check_reports(&reports);
 
     assert_eq!((left.get(), right.get()), (1, 2));
+}
+
+#[test]
+fn join_retains_completion() {
+    Setup::throughput().with_turn(
+        |turn, driver| {
+            let core = driver.driver_ref();
+            let root = core
+                .ready()
+                .make_slot(
+                    core.targets::<KeyTag<0>>()
+                        .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                        .dispatch(),
+                )
+                .expect("ready slot");
+            let output_drops = Rc::new(Cell::new(0));
+            let polls = Rc::new(Cell::new(0));
+            let drops = Rc::new(Cell::new(0));
+            let ready = Rc::new(Cell::new(false));
+            {
+                let mut join = pin!(dope_fiber::abi::Task::new(Join::new(
+                    Ready::new(DropOutput {
+                        drops: Rc::clone(&output_drops),
+                    }),
+                    CaptureReady {
+                        wake: Rc::new(Cell::new(None)),
+                        drops: Rc::clone(&drops),
+                        polls: Rc::clone(&polls),
+                        ready: Rc::clone(&ready),
+                        output: 9,
+                    },
+                )));
+                let before = turn.turn().app().remaining();
+                Context::with_target(root.target(), turn.turn().app(), driver, |mut context| {
+                    assert!(context.as_mut().poll(join.as_mut()).is_pending());
+                    assert_eq!(turn.turn().app().remaining(), before - 2);
+                    assert_eq!((polls.get(), drops.get(), output_drops.get()), (1, 0, 0));
+                    ready.set(true);
+                    let Poll::Ready((output, value)) = context.poll(join.as_mut()) else {
+                        panic!("joined output");
+                    };
+                    assert_eq!(value, 9);
+                    assert_eq!(turn.turn().app().remaining(), before - 3);
+                    assert_eq!((polls.get(), drops.get(), output_drops.get()), (2, 1, 0));
+                    drop(output);
+                });
+            }
+            assert_eq!((drops.get(), output_drops.get()), (1, 1));
+        },
+        recovery::Policy::new(|_| {}, recover),
+        runtime::check_scope,
+    );
 }

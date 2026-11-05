@@ -18,13 +18,6 @@ pub(in crate::storage) use layout::Layout;
 pub(crate) struct Server(array::Index<{ config::MAX_SERVERS }>);
 
 impl Server {
-    pub(in crate::storage::queries) const ALL: [Self; config::MAX_SERVERS] = [
-        Self(array::Index::at::<0>()),
-        Self(array::Index::at::<1>()),
-        Self(array::Index::at::<2>()),
-        Self(array::Index::at::<3>()),
-    ];
-
     pub(crate) fn get<T>(self, values: &[T; config::MAX_SERVERS]) -> &T {
         self.0.get(values)
     }

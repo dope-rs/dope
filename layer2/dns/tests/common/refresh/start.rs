@@ -1,10 +1,7 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use dope::{
-    core::{
-        driver::{self, schedule::clock},
-        platform::{channel::Channel, poll},
-    },
+    core::driver::{self, schedule::clock},
     manifold::service::discover::{self, PollAt as _, RefreshAt as _},
     runtime::{client, executor::session, topology::lending},
 };
@@ -19,26 +16,24 @@ use crate::common::{
     refresh::{Advance, App, Resolution, Run, Until, server},
 };
 
-pub(super) struct Start<'a, 'd> {
+pub(super) struct Start<'d> {
     pub target: Target,
     pub run: Run,
-    pub signal: &'a Channel,
-    pub events: poll::Set<'a>,
+    pub server: server::Server,
     pub delay: Option<Duration>,
     pub now: clock::Moment<'d>,
 }
 
-pub(super) struct Control<'a, 'd> {
+pub(super) struct Control<'d> {
     run: Run,
-    signal: &'a Channel,
-    events: poll::Set<'a>,
+    server: server::Server,
     delay: Option<Duration>,
     now: clock::Deadline<'d>,
     next: Rc<Cell<Option<clock::Deadline<'d>>>>,
 }
 
-impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
-    lending::Build<'d, Owner<'q, 'h, 'p, 'life, 's, 'd, R>> for Start<'a, 'd>
+impl<'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
+    lending::Build<'d, Owner<'q, 'h, 'p, 'life, 's, 'd, R>> for Start<'d>
 {
     type App<'app>
         = App<'app, 's, 'd, client::Bound<'app, 'd, Owner<'q, 'h, 'p, 'life, 's, 'd, R>>>
@@ -46,7 +41,7 @@ impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
         Self: 'app,
         Owner<'q, 'h, 'p, 'life, 's, 'd, R>: 'app,
         'd: 'app;
-    type Data = Control<'a, 'd>;
+    type Data = Control<'d>;
     type Error = create::Error;
 
     fn build<'app>(
@@ -64,8 +59,7 @@ impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
         query.refresh_at(self.now, discover::Reason::Startup);
         let data = Control {
             run: self.run.clone(),
-            signal: self.signal,
-            events: self.events,
+            server: self.server,
             delay: self.delay,
             now: self.now.into(),
             next: Rc::new(Cell::new(Some(self.now.into()))),
@@ -81,8 +75,8 @@ impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
     }
 }
 
-impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
-    lending::ExecuteAt<'life, 'd, Owner<'q, 'h, 'p, 'life, 's, 'd, R>, ()> for Start<'a, 'd>
+impl<'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
+    lending::ExecuteAt<'life, 'd, Owner<'q, 'h, 'p, 'life, 's, 'd, R>, ()> for Start<'d>
 {
     type Output = Result<(), Advance>;
 
@@ -108,15 +102,19 @@ impl<'a, 'q, 'h, 'p, 'life, 's, 'd: 'life, R: Report + 'd>
                 .drive_for(
                     data.now,
                     TIMEOUT,
-                    Until::new(&data.run.changes, data.signal, &mut data.events, data.delay),
+                    Until::new(&data.run.changes, &mut data.server),
                 )
                 .map_err(Advance::Drive)?;
             if let Some(error) = data.run.fault.take() {
                 return Err(error);
             }
-            if let Some(delay) = fixed.into_output().map_err(Advance::Signal)? {
+            if let Some((reply, peer)) = fixed.into_output().map_err(Advance::Signal)? {
+                let delay = data
+                    .delay
+                    .take()
+                    .ok_or(Advance::Signal(server::Failure::Alias))?;
                 data.now = data.now.try_add(delay).map_err(Advance::Clock)?;
-                data.signal.send(server::RESUME).map_err(Advance::Resume)?;
+                data.server.send(&reply, peer).map_err(Advance::Signal)?;
                 continue;
             }
             if data.run.resolved.len() < data.run.stop_after {

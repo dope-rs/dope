@@ -3,19 +3,18 @@ use crate::wire::tx::Id;
 /// A connection-owned, non-wrapping permutation cursor over the complete DNS
 /// transaction-ID space. Request rollback never rewinds it.
 #[derive(Clone, Copy)]
-pub(super) struct Cursor<const N: u32> {
+pub(super) struct Cursor {
     start: Id,
     issued: u32,
 }
 
-impl<const N: u32> Cursor<N> {
+impl Cursor {
     pub(super) const fn new(start: Id) -> Self {
-        const { assert!(N != 0 && N <= u16::MAX as u32 + 1) }
         Self { start, issued: 0 }
     }
 
     pub(super) const fn next(self) -> Option<(Id, Self)> {
-        if self.issued >= N {
+        if self.issued >= Id::CAPACITY as u32 {
             return None;
         }
         let id = self.start.wrapping_add(self.issued as u16);

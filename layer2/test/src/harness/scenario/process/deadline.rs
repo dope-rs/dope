@@ -1,6 +1,7 @@
 use std::time;
 
-use dope_core::platform::wake;
+use dope_core::Errno;
+use dope_runtime::process::{failure::bus, lifecycle::WaitError};
 
 use crate::harness::scenario::run;
 
@@ -9,12 +10,12 @@ pub enum Error {
     Overflow {
         duration: time::Duration,
     },
-    Create(wake::CreateError),
+    Create(bus::Create),
     Start(run::Start),
-    Cancel(wake::NotifyError),
-    Wait(wake::WaitError),
-    Both {
-        cancel: wake::NotifyError,
-        wait: wake::WaitError,
+    Cancel(Errno),
+    Worker {
+        cancel: Option<Errno>,
+        output: Result<(), WaitError>,
+        report: bus::Report,
     },
 }

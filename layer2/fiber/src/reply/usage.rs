@@ -67,7 +67,7 @@ impl Limit {
     }
 }
 
-/// Amount required by a live-credit admission.
+/// Amount required by a reply insertion.
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
 #[derive(Debug)]
@@ -83,7 +83,7 @@ impl Required {
     }
 }
 
-/// Amount available from live credits during an admission attempt.
+/// Amount available under the reply limit or shared credits during admission.
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
 #[derive(Debug)]
@@ -196,7 +196,7 @@ pub enum Capacity {
     Unavailable(Backpressure),
 }
 
-/// The exact live-credit condition that denied an insertion.
+/// The exact resource condition that temporarily denied an insertion.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Backpressure {
     resource: Resource,
@@ -248,7 +248,7 @@ pub trait Build<C> {
 }
 
 pub enum PushError<B, E, C> {
-    /// Global credits are live elsewhere; this untouched builder is retryable.
+    /// Queued data or live credits block this untouched, retryable builder.
     Backpressure {
         builder: B,
         cause: Backpressure,

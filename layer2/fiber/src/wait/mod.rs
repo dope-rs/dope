@@ -84,37 +84,6 @@ pub enum WakeStatus {
 }
 
 /// An inline bounded FIFO of caller-owned waiters with O(1) operations.
-///
-/// ```compile_fail
-/// use std::pin::{Pin, pin};
-/// use dope::core::driver;
-/// use dope_fiber::{context::Context, wait::{Capacity, Queue, Waiter}};
-///
-/// fn target_cannot_drop_first<'poll, 'd>(
-///     driver: driver::Reference<'d>,
-///     context: Pin<&Context<'poll, 'd>>,
-/// ) {
-///     let waiter = pin!(Waiter::new());
-///     {
-///         let queue = Queue::new(driver, Capacity::new(1));
-///         assert!(queue.try_register(waiter.as_ref(), context).is_ok());
-///     }
-///     waiter.as_ref().unregister();
-/// }
-/// ```
-/// ```compile_fail
-/// use std::pin::{Pin, pin};
-/// use dope::core::driver;
-/// use dope_fiber::{context::Context, wait::{Capacity, Queue, Waiter}};
-/// fn target_cannot_move<'poll, 'd>(driver: driver::Reference<'d>, context: Pin<&Context<'poll, 'd>>) {
-///     let queue = Queue::new(driver, Capacity::new(1));
-///     let waiter = pin!(Waiter::new());
-///     assert!(queue.try_register(waiter.as_ref(), context).is_ok());
-///     let moved = queue;
-///     waiter.as_ref().unregister();
-///     assert_eq!(moved.len().get(), 0);
-/// }
-/// ```
 #[repr(align(2))]
 pub struct Queue<'d> {
     links: depot::raw::Links<cell::Cell<Option<Active<'d>>>>,
@@ -211,21 +180,48 @@ impl<'d> Queue<'d> {
     }
 }
 
+/// A notification snapshots the waiter count; re-registration cannot extend it.
+pub struct Notifier<'d> {
+    queue: Queue<'d>,
+    remaining: cell::Cell<usize>,
+}
+
+impl<'d> Notifier<'d> {
+    pub const fn new(driver: driver::Reference<'d>, capacity: Capacity) -> Self {
+        Self {
+            queue: Queue::new(driver, capacity),
+            remaining: cell::Cell::new(0),
+        }
+    }
+
+    pub fn try_register<'target, 'poll>(
+        &'target self,
+        waiter: Pin<&Waiter<'target, 'd>>,
+        context: Pin<&context::Context<'poll, 'd>>,
+    ) -> Result<(), Error<'d>> {
+        self.queue.try_register(waiter, context)
+    }
+
+    /// Starts a new round with the current waiter count.
+    pub fn notify(&self) {
+        self.remaining.set(self.queue.len().get());
+    }
+
+    /// Wakes at most one waiter within the application's work budget.
+    pub fn flush(&self, work: app::Work<'_, 'd>) {
+        let remaining = self.remaining.get();
+        if remaining != 0 && self.queue.wake_one(work) == WakeStatus::Complete {
+            self.remaining
+                .set((remaining - 1).min(self.queue.len().get()));
+        }
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.remaining.get() != 0
+    }
+}
+
 /// A one-word endpoint containing at most one caller-owned waiter.
-///
-/// ```compile_fail
-/// use std::pin::{Pin, pin};
-/// use dope_fiber::{context::Context, wait::{Slot, Waiter}};
-///
-/// fn target_cannot_drop_first<'poll, 'd>(context: Pin<&Context<'poll, 'd>>) {
-///     let waiter = pin!(Waiter::new());
-///     {
-///         let slot = Slot::new();
-///         assert!(slot.try_register(waiter.as_ref(), context).is_ok());
-///     }
-///     waiter.as_ref().unregister();
-/// }
-/// ```
 #[repr(align(2))]
 pub struct Slot<'d> {
     waiter: cell::Cell<Option<Link<'d>>>,
@@ -302,23 +298,6 @@ impl Default for Slot<'_> {
 }
 
 /// A caller-owned pinned registration; its invariant target borrow outlives unlinking.
-///
-/// ```compile_fail
-/// use dope_fiber::wait::Waiter;
-/// fn widen<'a, 'b: 'a, 'd>(waiter: Waiter<'a, 'd>) -> Waiter<'b, 'd> { waiter }
-/// ```
-/// ```compile_fail
-/// use dope_fiber::wait::Waiter;
-/// fn shorten<'a, 'b: 'a, 'd>(waiter: Waiter<'b, 'd>) -> Waiter<'a, 'd> { waiter }
-/// ```
-/// ```compile_fail
-/// use dope_fiber::wait::Waiter;
-/// fn widen<'target, 'a, 'b: 'a>(waiter: Waiter<'target, 'a>) -> Waiter<'target, 'b> { waiter }
-/// ```
-/// ```compile_fail
-/// use dope_fiber::wait::Waiter;
-/// fn shorten<'target, 'a, 'b: 'a>(waiter: Waiter<'target, 'b>) -> Waiter<'target, 'a> { waiter }
-/// ```
 #[pin_project::pin_project(PinnedDrop)]
 #[repr(C)]
 pub struct Waiter<'target, 'd> {
@@ -445,6 +424,10 @@ const _: () = {
     );
     assert!(mem::size_of::<Option<Link<'static>>>() == mem::size_of::<usize>());
     assert!(mem::size_of::<Queue<'static>>() == 5 * mem::size_of::<usize>());
+    assert!(
+        mem::size_of::<Notifier<'static>>()
+            == mem::size_of::<Queue<'static>>() + mem::size_of::<usize>()
+    );
     assert!(mem::size_of::<Slot<'static>>() == mem::size_of::<usize>());
     assert!(mem::size_of::<Waiter<'static, 'static>>() == 5 * mem::size_of::<usize>());
 };

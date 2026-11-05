@@ -1,3 +1,5 @@
+use std::marker;
+
 use dope_core::driver::{
     route::Identity,
     settings,
@@ -11,7 +13,7 @@ use dope_runtime::{
 };
 use listener::{
     config, handler,
-    topology::{Plan, factory},
+    topology::{Layout, factory},
 };
 
 use crate::{
@@ -26,7 +28,11 @@ where
     E::Transport: dope_net::Listen,
     F: factory::ReceiveSpec,
 {
-    plan: Plan<ID, E, F>,
+    config: config::Prepared<E::Transport>,
+    bound: Option<<E::Transport as dope_net::Listen>::BoundListener>,
+    lifetime: Option<handler::Lifetime>,
+    factory: F,
+    env: marker::PhantomData<(ID, E, E::Wire, F::Input)>,
 }
 
 impl<ID: Identity, E, F> Direct<ID, E, F>
@@ -37,7 +43,11 @@ where
 {
     pub const fn new(config: config::Prepared<E::Transport>, factory: F) -> Self {
         Self {
-            plan: Plan::new(config, factory),
+            config,
+            bound: None,
+            lifetime: None,
+            factory,
+            env: marker::PhantomData,
         }
     }
 
@@ -61,14 +71,9 @@ where
             &mut lending::Stage<'stage, 'scope, 'life, 'e, 'd, S, Q>,
         ) -> O,
     {
-        let (app, wire) = self
-            .plan
-            .factory
-            .build()
-            .map_err(crate::BuildError::Factory)?;
-        let install =
-            listener::Install::<ID, E, _>::new(self.plan.config, wire).with_bound(self.plan.bound);
-        let install = match self.plan.lifetime {
+        let (app, wire) = self.factory.build().map_err(crate::BuildError::Factory)?;
+        let install = listener::Install::<ID, E, _>::new(self.config, wire).with_bound(self.bound);
+        let install = match self.lifetime {
             Some(life) => install.with_life(life),
             None => install,
         };
@@ -81,17 +86,16 @@ where
 
     #[must_use]
     pub fn with_bound(
-        self,
+        mut self,
         bound: Option<<E::Transport as dope_net::Listen>::BoundListener>,
     ) -> Self {
-        Self {
-            plan: self.plan.with_bound(bound),
-        }
+        self.bound = bound;
+        self
     }
 
     #[must_use]
     pub const fn with_life(mut self, life: handler::Lifetime) -> Self {
-        self.plan.lifetime = Some(life);
+        self.lifetime = Some(life);
         self
     }
 }
@@ -103,7 +107,8 @@ where
     F: factory::ReceiveSpec + settings::Resource,
 {
     fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, errors::Claim> {
-        self.plan.include_in(needs)
+        let needs = Layout::<ID, F::Input>::new(self.config.connections()).include_in(needs)?;
+        self.factory.include_in(needs)
     }
 }
 

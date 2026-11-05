@@ -393,10 +393,7 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
         recover,
         scenario::Runtime,
     };
-    use dope_core::{
-        driver::{life::recovery, route::Id},
-        platform::wake,
-    };
+    use dope_core::driver::{life::recovery, route::Id};
     use dope_manifold::{
         app::Host,
         client::session::Setup,
@@ -409,39 +406,35 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
     use dope_test::{
         alloc::Tracker,
         harness::{
-            GUARD,
-            peer::TcpScript,
+            peer::TcpAcceptor,
             signals::{Gate, LocalGate},
         },
         reclaim::Reports,
     };
 
     let mut finish = Completion::new();
-    let (wait, release) = wake::Ends::blocking()
-        .expect("peer release channel")
-        .split();
-    TcpScript::with_many::<1, _>(move |_| {
-            wait.wait_timeout(GUARD).expect("release deferred peer");
-        }, |server| {
-        let pending = Rc::new(Cell::new(Some(Snapshot::from_one(
-            Revision::new(1),
-            Endpoint::new(10, previous.unwrap_or(server.addr())),
-        ))));
-        let changes = Rc::new(Trace::new());
-        let ready = LocalGate::new();
-        let peers = Trace::new();
-        let wire = DeferredWire::default();
-        let audit = Rc::new(Report::default());
-        wire.state.first.set(false);
-        wire.state.blocked.set(true);
-        let plan = Plan::<KeyTag<0>, 1>::new(
-            1,
-            Spec::new(Duration::from_secs(2), Duration::from_secs(2)).expect("retry bounds"),
-        )
-        .expect("one connection");
-        let config = plan.configured().expect("deferred connector resources");
-        let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
-        Runtime::new(config).with_scope(
+    let listener =
+        TcpAcceptor::bind((std::net::Ipv4Addr::LOCALHOST, 0).into()).expect("deferred listener");
+    let address = listener.local_addr().expect("listener address");
+    let pending = Rc::new(Cell::new(Some(Snapshot::from_one(
+        Revision::new(1),
+        Endpoint::new(10, previous.unwrap_or(address)),
+    ))));
+    let changes = Rc::new(Trace::new());
+    let ready = LocalGate::new();
+    let peers = Trace::new();
+    let wire = DeferredWire::default();
+    let audit = Rc::new(Report::default());
+    wire.state.first.set(false);
+    wire.state.blocked.set(true);
+    let plan = Plan::<KeyTag<0>, 1>::new(
+        1,
+        Spec::new(Duration::from_secs(2), Duration::from_secs(2)).expect("retry bounds"),
+    )
+    .expect("one connection");
+    let config = plan.configured().expect("deferred connector resources");
+    let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    Runtime::new(config).with_scope(
                 |mut runtime| {
                     let setup = Setup::new(
                         State {
@@ -476,7 +469,7 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
                                     let snapshot = match previous {
                                         Some(_) => Snapshot::from_one(
                                             Revision::new(2),
-                                            Endpoint::new(10, server.addr()),
+                                            Endpoint::new(10, address),
                                         ),
                                         None => Snapshot::empty(Revision::new(2)),
                                     };
@@ -502,18 +495,19 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
             );
-        audit.checked((0,0));
-        assert_eq!(ready.handle().hits(), 1);
-        assert!(
-            matches!(reports.events(), Ok(events) if events.is_empty()),
-            "deferred attempt is finalized"
-        );
-        assert!(peers.values().expect("recorded observations")
+    audit.checked((0, 0));
+    assert_eq!(ready.handle().hits(), 1);
+    assert!(
+        matches!(reports.events(), Ok(events) if events.is_empty()),
+        "deferred attempt is finalized"
+    );
+    assert!(
+        peers
+            .values()
+            .expect("recorded observations")
             .iter()
             .copied()
             .map(|peer| peer.into_std().expect("TCP peer address"))
-            .eq([server.addr()]));
-        release.notify().expect("release peer");
-        assert!(server.finish().is_ok());
-    }).expect("deferred peer");
+            .eq([address])
+    );
 }

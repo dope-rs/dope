@@ -312,6 +312,7 @@ fn app_share_returns_unused() {
                     assert_eq!(share.work().remaining(), schedule::LIMIT - 2);
                 });
                 assert_eq!(work.remaining(), schedule::LIMIT - 2);
+                assert!(!active.is_exhausted());
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),

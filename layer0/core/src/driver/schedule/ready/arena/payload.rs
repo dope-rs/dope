@@ -170,10 +170,6 @@ impl<'a> Bound<'a> {
     pub(in crate::driver::schedule::ready) fn set_link(self, link: Link) {
         self.payload.set_word(2, link.word());
     }
-
-    pub(in crate::driver::schedule::ready) fn clear_link(self) {
-        self.set_link(Link::EMPTY);
-    }
 }
 
 const _: () = {

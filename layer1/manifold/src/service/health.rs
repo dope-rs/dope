@@ -87,10 +87,6 @@ impl Generation {
             Next::Advanced(Self(self.0 + 1))
         }
     }
-
-    pub(crate) const fn get(self) -> u64 {
-        self.0
-    }
 }
 
 #[repr(transparent)]

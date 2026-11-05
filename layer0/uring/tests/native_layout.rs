@@ -108,12 +108,6 @@ fn mapping_bounds() {
 }
 
 #[test]
-fn keeps_wrapper_layout() {
-    assert_eq!(mem::size_of::<Option<Borrowed<'static>>>(), 72);
-    assert_eq!(mem::align_of::<<Uring as Source>::Enter<'static, ()>>(), 4);
-}
-
-#[test]
 fn timeout_accepts_duration() {
     let result = Timeout::try_from(Duration::new(1, 999_999_999));
     assert!(result.is_ok());
@@ -128,6 +122,77 @@ fn timeout_overflow() {
         .err()
         .expect("out-of-range timeout was accepted");
     assert_eq!(overflow.requested(), value);
+}
+
+#[test]
+fn pair_keeps_shutdown() {
+    use std::os::fd::AsRawFd as _;
+
+    use dope_sys::io::socket;
+
+    let (left, right) = Uring::pair().expect("socket pair");
+    for file in [left.as_fd(), right.as_fd()] {
+        // SAFETY: F_GETFD reads flags from this live descriptor.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+    }
+    assert_eq!(
+        Uring::send_quiet::<Errno>(left.as_fd(), b"x").expect("send byte"),
+        b"x"
+    );
+    let mut output = [0];
+    assert_eq!(
+        Uring::recv::<{ libc::MSG_DONTWAIT }, Errno>(right.as_fd(), &mut output)
+            .expect("receive byte"),
+        b"x"
+    );
+    Uring::shutdown::<Errno>(left.as_fd(), socket::How::WRITE).expect("shutdown writer");
+    assert!(
+        Uring::recv::<{ libc::MSG_DONTWAIT }, Errno>(right.as_fd(), &mut output)
+            .expect("closed socket")
+            .is_empty()
+    );
+}
+
+#[test]
+fn pipe_keeps_nonblocking() {
+    use std::os::fd::AsRawFd as _;
+
+    use dope_sys::io::{fd::Fd as _, pipe::Pipe as _};
+
+    let (read, write) = Uring::nonblocking().expect("nonblocking pipe");
+    for file in [read.as_fd(), write.as_fd()] {
+        // SAFETY: both commands read flags from this live descriptor.
+        let (flags, status) = unsafe {
+            (
+                libc::fcntl(file.as_raw_fd(), libc::F_GETFD),
+                libc::fcntl(file.as_raw_fd(), libc::F_GETFL),
+            )
+        };
+        assert!(flags >= 0 && status >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        assert_ne!(status & libc::O_NONBLOCK, 0);
+    }
+    let mut output = [0];
+    assert!(matches!(
+        Uring::read::<Errno>(read.as_fd(), &mut output),
+        Err(error) if error.is_block()
+    ));
+    assert_eq!(
+        Uring::write::<Errno>(write.as_fd(), b"x").expect("write byte"),
+        b"x"
+    );
+    assert_eq!(
+        Uring::read::<Errno>(read.as_fd(), &mut output).expect("read byte"),
+        b"x"
+    );
+    drop(write);
+    assert!(
+        Uring::read::<Errno>(read.as_fd(), &mut output)
+            .expect("closed pipe")
+            .is_empty()
+    );
 }
 
 #[test]

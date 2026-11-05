@@ -1,4 +1,4 @@
-use std::hash::BuildHasher;
+use std::hash::{BuildHasher, Hasher as _};
 
 use dope_core::driver::life::{creation::Attempt, recovery};
 use dope_runtime::random::Entropy;
@@ -27,6 +27,38 @@ fn preserves_hash_namespace() {
     assert_eq!(name.hash_bytes(input.0), name.clone().hash_bytes(input.0));
     assert_eq!(name.hash_bytes(input.0), same.hash_bytes(input.0));
     assert_ne!(name.hash_bytes(input.0), exact.hash_bytes(input.0));
+
+    let bytes: [u8; 32] = std::array::from_fn(|index| index as u8);
+    let expected = name.hash_bytes(&bytes);
+    let width = std::mem::size_of::<usize>();
+    for prefix in 0..8 {
+        let mut hash = name.build_hasher();
+        hash.write(&bytes[..prefix]);
+        hash.write(&[]);
+        hash.write(&bytes[prefix..prefix + 1]);
+        hash.write_u8(bytes[prefix + 1]);
+        hash.write_u16(u16::from_ne_bytes(
+            bytes[prefix + 2..prefix + 4].try_into().expect("two bytes"),
+        ));
+        hash.write_u32(u32::from_ne_bytes(
+            bytes[prefix + 4..prefix + 8]
+                .try_into()
+                .expect("four bytes"),
+        ));
+        hash.write_u64(u64::from_ne_bytes(
+            bytes[prefix + 8..prefix + 16]
+                .try_into()
+                .expect("eight bytes"),
+        ));
+        hash.write_usize(usize::from_ne_bytes(
+            bytes[prefix + 16..prefix + 16 + width]
+                .try_into()
+                .expect("word bytes"),
+        ));
+        hash.write(&bytes[prefix + 16 + width..]);
+        hash.write(&[]);
+        assert_eq!(hash.finish(), expected, "prefix {prefix}");
+    }
 }
 
 #[test]

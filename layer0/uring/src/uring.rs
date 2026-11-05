@@ -292,7 +292,6 @@ impl file::File for Uring {
 impl socket::Socket for Uring {
     const MAX_IOVECS: usize = libc::UIO_MAXIOV as usize;
     type Error = Errno;
-    type Records = record::Packet;
 
     fn socket(domain: libc::c_int, kind: libc::c_int) -> Result<OwnedFd, Self::Error> {
         Self::try_open(domain, kind | libc::SOCK_CLOEXEC, 0)

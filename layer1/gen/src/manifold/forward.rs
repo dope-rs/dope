@@ -63,7 +63,7 @@ fn generate(mut input: syn::DeriveInput) -> Result<TokenStream, Failure> {
     let source = Source::new(&input)?;
     let brand = source.brand(&input, &tokens)?;
     let [vturn, vctx] = ["shared", "exclusive"].map(|name| brand.ident(name));
-    let paths = paths::Forward::resolve(facade);
+    let (core, mf) = paths::forward(facade);
     let name = &input.ident;
     let args = input.generics.split_for_impl().1;
     let bounds = input
@@ -75,8 +75,6 @@ fn generate(mut input: syn::DeriveInput) -> Result<TokenStream, Failure> {
     let field = source.field;
     let ty = source.field_ty;
     let life = brand.lifetime();
-    let core = paths.core();
-    let mf = paths.manifold();
     let generics = brand.generics(&input.generics);
     let head = generics.split_for_impl().0;
     let owner = brand.fresh("__owner");

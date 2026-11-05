@@ -160,21 +160,21 @@ fn waits_for_last_fd() {
     let mut reports = Vec::new();
 
     Runtime::quic::<2, 8>()
-        .file_slots(settings::FileSlots::fixed::<2, 1>())
+        .file_slots(settings::FileSlots::fixed::<2, 3>())
         .with_scope(
             |scope| {
                 scope.run_turn(|mut access, turn| {
-                    {
-                        let owner = access
-                            .driver_ref()
-                            .tuned_target::<KeyTag<ROUTE>>(SlotIndex::ZERO);
-                        let fd = {
-                            let held = (Reserved::<KeyTag<ROUTE>>::try_new(&access, ONE))
-                                .expect("first reservation");
-                            held.bind(owner)
-                        };
-                        assert!(fd.is_ok(), "bound descriptor");
-
+                    let [first, middle, last] = {
+                        let held = (Reserved::<KeyTag<ROUTE>>::try_new(&access, THREE))
+                            .expect("first reservation");
+                        [0_u16, 1, 2].map(|index| {
+                            let owner = access
+                                .driver_ref()
+                                .tuned_target::<KeyTag<ROUTE>>(SlotIndex::from(index));
+                            held.bind(owner).expect("bound descriptor")
+                        })
+                    };
+                    for fd in [last, first, middle] {
                         assert!(
                             matches!(
                                 Reserved::<KeyTag<{ ROUTE + 1 }>>::try_new(&access, ONE),
@@ -183,8 +183,9 @@ fn waits_for_last_fd() {
                                     available: 0,
                                 })
                             ),
-                            "the slots must remain retiring while their descriptor is live"
+                            "the range must remain retiring until its last descriptor returns"
                         );
+                        drop(fd);
                     }
                     assert!(
                         matches!(
@@ -194,9 +195,9 @@ fn waits_for_last_fd() {
                         "reclaim dropped descriptor slots"
                     );
 
-                    let next = (Reserved::<KeyTag<ROUTE>>::try_new(&access, ONE))
+                    let next = (Reserved::<KeyTag<ROUTE>>::try_new(&access, THREE))
                         .expect("reactor turn must reclaim the last descriptor's slots");
-                    assert_capacity(&next, access.driver_ref(), ONE);
+                    assert_capacity(&next, access.driver_ref(), THREE);
                 });
             },
             recovery::Policy::new(|event| reports.push(event), recover),

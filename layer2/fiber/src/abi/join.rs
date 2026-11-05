@@ -10,9 +10,9 @@ where
     R: abi::Fiber<'d>,
 {
     #[pin]
-    left: slots::raw::Entry<L, L::Output>,
+    left: slots::Task<L, L::Output>,
     #[pin]
-    right: slots::raw::Entry<R, R::Output>,
+    right: slots::Task<R, R::Output>,
     next: abi::Side,
     driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
@@ -24,35 +24,34 @@ where
 {
     pub fn new(left: L, right: R) -> Self {
         Self {
-            left: slots::raw::Entry::live(left),
-            right: slots::raw::Entry::live(right),
+            left: slots::Task::new(left),
+            right: slots::Task::new(right),
             next: abi::Side::Left,
             driver: marker::PhantomData,
         }
     }
     fn poll_child<'child, F>(
-        child: pin::Pin<&'child mut slots::raw::Entry<F, F::Output>>,
+        child: pin::Pin<&'child mut slots::Task<F, F::Output>>,
         mut context: pin::Pin<&mut context::Context<'_, 'd>>,
         first: &mut bool,
     ) -> Option<slots::raw::Done<'child, F, F::Output>>
     where
         F: abi::Fiber<'d>,
     {
-        match child.poll(|fiber| {
-            // SAFETY: poll admits only the live slot and retains its completed
-            // output proof before another child can run.
-            if mem::replace(first, false) {
-                // SAFETY: this is the join's first live child descent for its
-                // admitted PollCall; the slot owns the terminal transition.
-                unsafe { context::raw::Live::new(fiber).delegate(context.as_mut()) }
-            } else {
-                // SAFETY: the live slot owns completion and pays a new credit.
-                unsafe { context::raw::Live::new(fiber).poll(context.as_mut()) }
-            }
-        }) {
-            Some(task::Poll::Ready((done, _))) => Some(done),
-            Some(task::Poll::Pending) | None => None,
-        }
+        child
+            .poll(|fiber| {
+                // SAFETY: poll admits only the live slot and retains its completed
+                // output proof before another child can run.
+                if mem::replace(first, false) {
+                    // SAFETY: this is the join's first live child descent for its
+                    // admitted PollCall; the slot owns the terminal transition.
+                    unsafe { context::raw::Live::new(fiber).delegate(context.as_mut()) }
+                } else {
+                    // SAFETY: the live slot owns completion and pays a new credit.
+                    unsafe { context::raw::Live::new(fiber).poll(context.as_mut()) }
+                }
+            })
+            .map(|(done, _)| done)
     }
 }
 

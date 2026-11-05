@@ -6,7 +6,6 @@ use dope_core::{
         life::{creation, domain, recovery},
         settings, storage,
     },
-    platform::wake,
     random,
 };
 use o3::buffer;
@@ -40,8 +39,22 @@ pub trait Op<S: storage::Plan, Q>: Sized {
         Q: 'd;
 }
 
+/// Adapts one closure to the executor's full storage and loan lifetime contract.
 #[repr(transparent)]
-struct Scoped<F>(F);
+pub struct Scoped<F>(F);
+
+impl<F> Scoped<F> {
+    pub const fn new<S: storage::Plan, Q, R>(run: F) -> Self
+    where
+        F: for<'scope, 'life, 'p, 'd> FnOnce(session::Scope<'scope, 'life, 'p, 'd, S, Q>) -> R,
+    {
+        Self(run)
+    }
+
+    pub fn into_inner(self) -> F {
+        self.0
+    }
+}
 
 impl<S, Q, F, R> Op<S, Q> for Scoped<F>
 where
@@ -114,19 +127,12 @@ pub enum InstallError {
     Claim(settings::errors::Claim),
     Coordinators { count: NonZero<usize>, limit: usize },
     CoordinatorCountOverflow,
-    Notify(wake::NotifyError),
     Process(bus::Fault),
 }
 
 impl From<settings::errors::Claim> for InstallError {
     fn from(error: settings::errors::Claim) -> Self {
         Self::Claim(error)
-    }
-}
-
-impl From<wake::NotifyError> for InstallError {
-    fn from(error: wake::NotifyError) -> Self {
-        Self::Notify(error)
     }
 }
 

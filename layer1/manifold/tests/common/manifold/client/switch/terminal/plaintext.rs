@@ -115,6 +115,7 @@ pub enum Event {
 pub struct Plaintext {
     pub(crate) mode: Mode,
     pub(crate) events: Rc<Trace<Event, 8>>,
+    pub(crate) conn: Gate,
     pub(crate) parsed: Option<Gate>,
     pub(crate) closed: Gate,
 }
@@ -278,6 +279,7 @@ impl<'d> session::Connected<'d> for Plaintext {
         ctx: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
         *ctx.state = ctx.lifetime.expires_at();
+        self.conn.hit();
     }
 }
 

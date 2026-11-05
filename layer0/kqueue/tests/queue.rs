@@ -26,22 +26,6 @@ use crate::common::{
 type Poll = <Kqueue as ready::Source>::Poll<Slots, Failure>;
 type Files = <Kqueue as table::Source>::Files<Slots>;
 
-trait MaybeSend<A> {}
-impl<T: ?Sized> MaybeSend<()> for T {}
-impl<T: ?Sized + Send> MaybeSend<u8> for T {}
-
-trait MaybeSync<A> {}
-impl<T: ?Sized> MaybeSync<()> for T {}
-impl<T: ?Sized + Sync> MaybeSync<u8> for T {}
-
-fn confined<T: ?Sized + MaybeSend<A> + MaybeSync<B>, A, B>() {}
-
-const _: fn() = || {
-    confined::<Poll, _, _>();
-    confined::<dope_sys::io::file::Dir<Kqueue>, _, _>();
-    confined::<common::socket::Peer, _, _>();
-};
-
 #[test]
 fn owns_cloexec_fd() {
     let queue = Poll::try_new().expect("kqueue creation must succeed");

@@ -14,7 +14,10 @@ use std::cell::Cell;
 
 use dope_fiber::{
     BlockOn,
-    task::batch::{Join, Pool},
+    task::{
+        batch::{Join, Pool},
+        done::Once,
+    },
     wait::Waiter,
 };
 use dope_test::alloc::Tracker;
@@ -36,32 +39,37 @@ fn preserves_ready_round() {
 
     Setup::throughput().with_session(
         |mut session| {
-            let polls = [const { Cell::new(Some(0)) }; WIDTH];
-            let ready = Cell::new(false);
-            let wakes = Cell::new(Vec::with_capacity(WIDTH));
-            let fibers: [FanIn<'_, '_, WIDTH>; WIDTH] = array::from_fn(|index| FanIn {
-                index,
-                polls: &polls[index],
-                ready: &ready,
-                wakes: &wakes,
-            });
-            let (outputs, (allocs, bytes)) = Tracker::usage(|| {
-                session
-                    .with_quiesce(&mut finish, Empty, scenario::TIMEOUT, |mut app| {
-                        app.block_on(dope_fiber::fiber!('_ => async move {
-                            let mut domain = Pool::<WIDTH>::acquire().await?;
-                            Join::from_array(&mut domain, fibers)
-                                .await
-                        }))
-                    })
-                    .expect("batch session failed")
-                    .expect("batch drive failed")
-                    .expect("batch construction failed")
-            });
-            assert_eq!((allocs, bytes), (0, 0));
-            let outputs = outputs.collect::<Vec<_>>();
-            assert_eq!(outputs, (0..WIDTH).collect::<Vec<_>>());
-            assert!(polls.iter().all(|polls| polls.get() == Some(2)));
+            for first in [WIDTH / 2 - 1, WIDTH / 2] {
+                let polls = [const { Cell::new(Some(0)) }; WIDTH];
+                let ready = Cell::new(false);
+                let wakes = Cell::new(Vec::with_capacity(WIDTH));
+                let fibers: [FanIn<'_, '_, WIDTH>; WIDTH] = array::from_fn(|index| FanIn {
+                    index,
+                    first,
+                    polls: &polls[index],
+                    ready: &ready,
+                    wakes: &wakes,
+                });
+                let (outputs, (allocs, bytes)) = Tracker::usage(|| {
+                    session
+                        .with_quiesce(&mut finish, Empty, scenario::TIMEOUT, |mut app| {
+                            app.drive_for(
+                                scenario::TIMEOUT,
+                                Once::new(dope_fiber::fiber!('_ => async move {
+                                    let mut domain = Pool::<WIDTH>::acquire().await?;
+                                    Join::from_array(&mut domain, fibers).await
+                                })),
+                            )
+                        })
+                        .expect("batch session failed")
+                        .expect("batch drive failed")
+                        .expect("batch construction failed")
+                });
+                assert_eq!((allocs, bytes), (0, 0));
+                let outputs = outputs.collect::<Vec<_>>();
+                assert_eq!(outputs, (0..WIDTH).collect::<Vec<_>>());
+                assert!(polls.iter().all(|polls| polls.get() == Some(2)));
+            }
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,

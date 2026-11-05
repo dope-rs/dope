@@ -4,7 +4,6 @@ use dope_core::{
     driver,
     driver::route::{Identity, KeyTag},
     io::{recv, socket},
-    platform::wake,
 };
 use dope_manifold::client::{
     app::{admit::Automatic, connect::Full, failure::Observed, request},
@@ -172,7 +171,6 @@ impl domain::Init<Fault> for Fault {
 }
 
 pub struct Failure {
-    pub(crate) release: Option<wake::Notify>,
     pub(crate) events: Rc<Trace<Event, 4>>,
     pub(crate) conn: signals::Gate,
     pub(crate) recv_drained: Cell<bool>,
@@ -181,19 +179,13 @@ pub struct Failure {
 
 #[derive(Debug)]
 pub enum Event {
-    Connected {
-        applied: Option<close::Directive>,
-        notified: Option<Result<(), wake::NotifyError>>,
-    },
+    Connected { applied: Option<close::Directive> },
     Quarantined,
     Failed(Cause, Option<Cause>),
     Closed(close::Reason),
     Sent,
     Cancelled,
-    Flush {
-        released: bool,
-        empty: bool,
-    },
+    Flush,
     ConnectFault(event::ConnectFault),
     Exhausted(opening::Exhaustion),
     Receive(dope_core::Errno),
@@ -252,10 +244,8 @@ impl<'d> Output<'d> for Failure {
         )>,
     > {
         flush(|owner: &mut Self, context| {
-            let released = owner.release.is_none();
-            let empty = context.sink.is_empty();
-            if !released || !empty {
-                owner.events.record(Event::Flush { released, empty });
+            if !context.sink.is_empty() {
+                owner.events.record(Event::Flush);
             }
         })
     }
@@ -337,8 +327,7 @@ impl<'d> session::Connected<'d> for Failure {
             conn::CloseStatus::Open => None,
             conn::CloseStatus::Closing(_, applied) => Some(applied),
         };
-        let notified = self.release.take().map(|release| release.notify());
-        self.events.record(Event::Connected { applied, notified });
+        self.events.record(Event::Connected { applied });
         self.conn.hit();
     }
 }

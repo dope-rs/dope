@@ -70,6 +70,11 @@ impl<'turn, 'd> Work<'turn, 'd> {
         self.state.driver.scheduler().clock()
     }
 
+    /// Requests another driver turn for known runnable work.
+    pub fn defer(self) {
+        self.state.deferred.set(true);
+    }
+
     pub fn run<T>(self, run: impl FnOnce() -> Option<T>) -> quota::Admission<T> {
         self.state.lanes.app.admit_with(run)
     }

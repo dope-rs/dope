@@ -9,19 +9,12 @@ pub mod common;
 
 use std::marker::PhantomData;
 
-use fibers::{
-    BlockOn as _, abi,
-    abi::{Pending, Ready},
-};
+use fibers::{BlockOn as _, abi::Ready};
 
 use crate::common::{fibers::Scoped, macros};
 
 #[test]
 fn repeated_awaits() {
-    {
-        let pending = wait_repeated();
-        assert_output(&pending);
-    }
     let mut attempt = Attempt::new();
     let mut report = Completion::new();
     let executor = native::try_executor(&mut attempt);
@@ -96,12 +89,3 @@ async fn sum_repeated<'d>() -> usize {
     }
     sum
 }
-
-#[fibers::fiber_fn('d, crate = ::fibers)]
-async fn wait_repeated<'d>() -> usize {
-    loop {
-        Pending::<()>::new().await;
-    }
-}
-
-fn assert_output<'d>(_: &impl abi::Fiber<'d, Output = usize>) {}

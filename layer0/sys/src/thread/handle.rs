@@ -1,4 +1,4 @@
-use std::{mem::ManuallyDrop, ptr};
+use std::ptr;
 
 use o3::base::marker::ThreadBound;
 
@@ -12,10 +12,12 @@ impl Handle {
     /// Joins the uniquely owned thread from its creating thread.
     /// Native failure terminates before worker storage can be reclaimed.
     pub fn join(self) {
-        ManuallyDrop::new(self).wait();
+        drop(self);
     }
+}
 
-    fn wait(&self) {
+impl Drop for Handle {
+    fn drop(&mut self) {
         // SAFETY: successful spawn created this unique joinable handle, retained
         // by its creating thread. pthread_join returns zero or a positive error
         // code, which is checked before the owner can reclaim worker storage.
@@ -24,11 +26,5 @@ impl Handle {
         } {
             kernel::Fatal::Join(cause).terminate()
         }
-    }
-}
-
-impl Drop for Handle {
-    fn drop(&mut self) {
-        self.wait();
     }
 }

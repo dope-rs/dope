@@ -6,6 +6,7 @@ mod context;
 pub mod failure;
 pub mod gate;
 mod layout;
+pub mod lifecycle;
 mod runtime;
 mod shutdown;
 mod terminal;

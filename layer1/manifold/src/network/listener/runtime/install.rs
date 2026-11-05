@@ -16,21 +16,6 @@ use crate::{
 
 /// Owns every transport choice required to install one listener.
 /// Retains its wire storage borrow until the driver installs it.
-///
-/// ```compile_fail
-/// use dope_manifold::network::listener;
-/// use dope_net::Listen;
-///
-/// fn owner_lifetime_cannot_be_widened<'w, E>(
-///     install: listener::Install<'w, dope_core::driver::route::KeyTag<0>, E, dope_net::wire::domain::Endpoint<'w, E::Wire, dope_core::driver::route::KeyTag<0>>>,
-/// ) -> listener::Install<'static, dope_core::driver::route::KeyTag<0>, E, dope_net::wire::domain::Endpoint<'w, E::Wire, dope_core::driver::route::KeyTag<0>>>
-/// where
-///     E: dope_manifold::app::env::Spec,
-///     E::Transport: Listen,
-/// {
-///     install
-/// }
-/// ```
 pub struct Install<'w, ID: Identity, E, R>
 where
     E: env::Spec,

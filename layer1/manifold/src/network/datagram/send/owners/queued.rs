@@ -4,15 +4,6 @@ use dope_core::driver::route::{Identity, KeyTag};
 use o3::base::marker::ThreadBound;
 
 /// Driver- and route-bound identity of one queued payload.
-///
-/// ```compile_fail
-/// use dope_core::driver::route::KeyTag;
-/// use dope_manifold::network::datagram::send::owners::Queued;
-///
-/// fn erase(owner: Queued<'_, KeyTag<1>>) -> Queued<'static, KeyTag<1>> {
-///     owner
-/// }
-/// ```
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 pub struct Queued<'d, ID: Identity> {

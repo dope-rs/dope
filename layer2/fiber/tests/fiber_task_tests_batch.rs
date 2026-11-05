@@ -298,6 +298,78 @@ fn idle_retargets_root() {
 }
 
 #[test]
+fn nested_wake_reaches_parent() {
+    let mut reports = Vec::new();
+    Setup::throughput().with_turn(
+        |turn, mut driver| {
+            let core = driver.driver_ref();
+            let dispatch = core
+                .targets::<KeyTag<0>>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                .dispatch();
+            let root = core.ready().make_slot(dispatch).expect("root slot");
+            let target = root.target();
+            let mut inner = Pool::<1>::try_new(RootWaker::from(target)).expect("inner pool");
+            let mut outer = Pool::<1>::try_new(RootWaker::from(target)).expect("outer pool");
+            let wake = Rc::new(Cell::new(None));
+            let polls = Rc::new(Cell::new(0));
+            let drops = Rc::new(Cell::new(0));
+            let ready = Rc::new(Cell::new(false));
+            let child = Join::from_array(
+                &mut inner,
+                [CaptureReady {
+                    wake: Rc::clone(&wake),
+                    polls: Rc::clone(&polls),
+                    drops: Rc::clone(&drops),
+                    ready: Rc::clone(&ready),
+                    output: 7,
+                }],
+            );
+            let mut batch = pin!(dope_fiber::abi::Task::new(Join::from_array(
+                &mut outer,
+                [child],
+            )));
+            Context::with_target(
+                target,
+                turn.turn().app(),
+                driver.reborrow(),
+                |mut context| {
+                    assert!(
+                        Polled::polled(context.as_mut().try_poll(batch.as_mut()))
+                            .expect("poll budget")
+                            .is_pending()
+                    );
+                    assert_eq!(polls.get(), 1);
+                    ready.set(true);
+                    wake.take().expect("leaf wake").wake();
+                    assert_eq!(
+                        turn.ready_round(|observed| assert!(dispatch.matches(observed))),
+                        1
+                    );
+                    let Poll::Ready(Ok(mut output)) =
+                        Polled::polled(context.as_mut().try_poll(batch.as_mut()))
+                            .expect("poll budget")
+                    else {
+                        panic!("late leaf wake did not reach nested batch");
+                    };
+                    assert!(
+                        output
+                            .next()
+                            .expect("outer child")
+                            .expect("inner batch")
+                            .eq([7])
+                    );
+                },
+            );
+            assert_eq!((polls.get(), drops.get()), (2, 1));
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        runtime::check_scope,
+    );
+    runtime::check_reports(&reports);
+}
+
+#[test]
 fn changed_root_reclaims() {
     use dope_fiber::{
         abi::Task,

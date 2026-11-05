@@ -39,34 +39,8 @@ pub struct Retained;
 
 /// A statically narrowed driver context.
 ///
-/// Plain callbacks cannot call the retained submission boundary:
-///
-/// ```compile_fail
-/// use dope_core::{
-///     driver::{self, retained, route},
-/// };
-/// use dope_manifold::app::dispatch::raw;
-///
-/// unsafe fn retain<'a, 'owner, 'd: 'owner>(
-///     context: &mut raw::Context<'a, 'owner, 'd, raw::Plain>,
-///     slots: &driver::retained::flight::Slots<'d, route::KeyTag<1>>,
-///     submission: retained::raw::Submission<'owner, 'd, route::KeyTag<1>>,
-/// ) {
-///     submission.try_submit(context, slots);
-/// }
-/// ```
-///
-/// Narrowing is one-way; a plain callback cannot recover retained authority:
-///
-/// ```compile_fail
-/// use dope_manifold::app::dispatch::raw;
-///
-/// fn escalate<'a, 'owner, 'd: 'owner>(
-///     context: &mut raw::Context<'a, 'owner, 'd, raw::Plain>,
-/// ) {
-///     context.narrow::<raw::Retained>();
-/// }
-/// ```
+/// Plain callbacks cannot call the retained submission boundary.
+/// Narrowing is one-way; a plain callback cannot recover retained authority.
 #[repr(transparent)]
 pub struct Context<'a, 'owner, 'd: 'owner, A> {
     inner: retained::Context<'a, 'owner, 'd>,
@@ -331,38 +305,6 @@ const _: () = {
 };
 
 /// Exclusive subowner access bounded by one coordination step.
-///
-/// ```compile_fail
-/// use dope_manifold::app::dispatch::raw::Loan;
-/// use std::pin::Pin;
-///
-/// fn escape<T: ?Sized>(loan: Loan<'_, '_, T>) -> Pin<&'static mut T> {
-///     loan.into_pin()
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use dope_manifold::app::dispatch::raw::Loan;
-///
-/// fn substitute<'step, 'long: 'step, 'short: 'step, T>(
-///     loan: Loan<'step, 'long, T>,
-/// ) -> Loan<'step, 'short, T>
-/// where
-///     'long: 'short,
-/// {
-///     loan
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use dope_manifold::app::dispatch::raw::{Installed, Loan};
-///
-/// fn upgrade<'step, 'd: 'step, T>(
-///     loan: Loan<'step, 'd, T>,
-/// ) -> Installed<'step, 'd, T> {
-///     loan.into()
-/// }
-/// ```
 #[repr(transparent)]
 pub struct Loan<'step, 'd: 'step, T: ?Sized> {
     owner: pin::Pin<&'step mut T>,

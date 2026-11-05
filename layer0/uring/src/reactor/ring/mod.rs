@@ -12,7 +12,7 @@ use dope_sys::{
     ring::{Access as _, create, inspect, prepare, prepare::Prepare as _, register::Registry as _},
     table::token::{Codec, host::Context},
 };
-pub(crate) use enter::{Enter, Features};
+pub(crate) use enter::Enter;
 use map::setups::{Mapped, Setup};
 pub(crate) use map::{
     cleanup::Cleanup,
@@ -211,7 +211,7 @@ type Error = create::Error<kernel::Errno<error::Setup>, kernel::Errno<error::Map
 pub struct Ring<T> {
     pub(crate) fd: ffi::Fd,
     mapped: Mapped,
-    features: Features,
+    features: u32,
     local: Invariant<T>,
 }
 
@@ -251,11 +251,10 @@ impl<T> Ring<T> {
             mapped,
             parameters: params,
         } = setup;
-        let features = Features::new(params.features);
         Self {
             fd,
             mapped,
-            features,
+            features: params.features,
             local: marker::PhantomData,
         }
     }
@@ -301,19 +300,23 @@ impl<T> prepare::Prepare for Ring<T> {
             prepare::Rejection<Self::Cancel, Self::Files, Self::Range>,
         ),
     > {
+        use prepare::{Feature, Rejection};
+
         let mut admit = || {
-            self.features
-                .require()
-                .map_err(prepare::Rejection::Feature)?;
+            if self.features & ffi::FEATURE_EXT_ARG == 0 {
+                return Err(Rejection::Feature(Feature::ExtendedArguments));
+            }
+            if self.features & ffi::FEATURE_NODROP == 0 {
+                return Err(Rejection::Feature(Feature::NoDrop));
+            }
+            if self.features & ffi::FEATURE_CQE_SKIP == 0 {
+                return Err(Rejection::Feature(Feature::SkipCompletionOnSuccess));
+            }
             let mut registry = self.registry();
-            registry.cancel_all().map_err(prepare::Rejection::Cancel)?;
-            registry
-                .sparse_files(files)
-                .map_err(prepare::Rejection::Files)?;
+            registry.cancel_all().map_err(Rejection::Cancel)?;
+            registry.sparse_files(files).map_err(Rejection::Files)?;
             if let Some(range) = range {
-                registry
-                    .file_range(range)
-                    .map_err(prepare::Rejection::Range)?;
+                registry.file_range(range).map_err(Rejection::Range)?;
             }
             Ok(())
         };

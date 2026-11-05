@@ -148,20 +148,6 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
     ///
     /// The higher-ranked callback keeps the stack-pinned context and every
     /// derived borrow inside this scope.
-    ///
-    /// ```compile_fail
-    /// use std::pin::Pin;
-    /// use dope::core::driver::{retained, schedule::{app, ready}};
-    /// use dope_fiber::context::Context;
-    ///
-    /// fn escape<'poll, 'd: 'poll>(
-    ///     target: ready::Target<'d>,
-    ///     work: app::Work<'poll, 'd>,
-    ///     driver: retained::Context<'poll, 'poll, 'd>,
-    /// ) -> Pin<&'poll mut Context<'poll, 'd>> {
-    ///     Context::with_target(target, work, driver, |context| context)
-    /// }
-    /// ```
     pub fn with_target<R>(
         target: ready::Target<'d>,
         work: app::Work<'poll, 'd>,

@@ -1,8 +1,6 @@
 pub mod common;
 
-use std::{
-    cell::Cell, convert::Infallible, io::Write as _, net::TcpStream, rc::Rc, time::Duration,
-};
+use std::{cell::Cell, net::SocketAddr, rc::Rc, time::Duration};
 
 use common::manifold::listener::{native, reached};
 use common::{
@@ -24,7 +22,7 @@ use dope_core::{
     Backend,
     dope_sys::io::socket::accept::Source,
     driver::{
-        life::{creation::Attempt, recovery},
+        life::recovery,
         route::{FrameworkTag, KeyTag, Tag, kind, table::conn::Capacity},
         schedule,
     },
@@ -33,7 +31,6 @@ use dope_core::{
         event::{batch::Flow, net::accept::Failure},
         socket::Backlog,
     },
-    platform::wake,
 };
 use dope_manifold::{
     app::{Host, env::Bundle},
@@ -45,7 +42,7 @@ use dope_net::{
     wire::{Identity, domain},
 };
 use dope_runtime::executor::{
-    self, drive,
+    drive,
     session::{self, Completion},
 };
 use dope_test::{
@@ -53,97 +50,114 @@ use dope_test::{
     harness::{
         GUARD,
         peer::Peer,
-        server::Pair,
-        signals::{Gate, Progress as _},
+        signals::{Gate, LocalGate, Progress as _},
     },
     reclaim::Reports,
 };
 
 #[test]
 fn forced_detaches_credit() {
-    let (received, retained) = wake::Ends::blocking()
-        .expect("retained receive signal")
-        .split();
-    let harness = Pair::bind().expect("bind retained-credit harness");
-    let bind = harness.addr();
-    let result = harness.run(
-        move |source, bound| {
-            let cfg = config::Prepared::<Tcp> {
-                connections: Capacity::fixed::<8>(),
-                per_ip: None,
-                direct_flights: 0.into(),
-                bind,
-                backlog: Backlog::fixed::<16>(),
-                stream: Default::default(),
-                transport: Default::default(),
-                egress: Default::default(),
-            };
-            let pending = (cfg.connections().nonzero().get() - 1)
-                .min(<Backend as Source>::MAX_IN_FLIGHT.get())
-                .min(schedule::LIMIT);
-            let driver = try_config(cfg.connections()).expect("retained-credit listener settings");
-            let mut finish = Completion::new();
-            let mut create = Attempt::new();
-            let executor = executor::Build::try_build(source, &mut create, driver);
-    executor.as_ref().map_err(|error| error.kind()).expect("create executor");
-    let executor = executor.ok().expect("executor");
-            let mut reports = Reports::<_>::new(driver, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-            executor.run(|executor| {
-                let result = executor.enter_with(
-                    |mut session| {
-                        let hash = session.hash_state(Domain::DEFAULT);
-                        let result = listener::Listener::<KeyTag<0>, App<'_, '_, _>, Bundle<Tcp, Teardown, Throughput>>::adopt_in(
-                            App {
-                                held: None,
-                                observed: move || retained.notify().expect("retained receive signal"),
-                            }, cfg, bound, hash, &mut session,
-                            session::Scope::driver,
-                            |listener, session| {
-                                let result = session.run_quiesce(
-                                    &mut finish, Host::new(listener), Duration::ZERO,
-                                );
-                                let failure = result.err().expect("zero-duration quiescence must time out after forced cleanup");
-                                assert!(matches!(
-                                    &failure,
-                                    session::Error::Quiesce {
-                                        output: Ok(()),
-                                        drive: drive::Error::QuiescenceTimeout,
-                                        disarm: None,
-                                    }
-                                ), "quiescence must preserve completed shutdown and its timeout: {failure:?}");
-                                session.with_quiesce(
-                                    &mut finish, Empty {}, Duration::from_secs(2), |_| {},
-                                ).expect("drain retained-credit executor");
-                            },
-                        );
-                        assert!(result.is_ok(), "adopt retained-credit listener");
-                    },
-                    recovery::Policy::new(|event| reports.push(event), recover),
-                );
-                assert_eq!(reports.events().expect("reclaimed events").len(), pending, "each pending accept retires once");
-                for report in reports.into_events().expect("reclaimed events") {
-                    let error = match report {
-                        Reclaimed::Accept { result: Err(error), flow: Flow::Last, .. } => Some(error),
-                        _ => None,
-                    }.expect("each forced accept retires with a terminal error");
-                    assert!(matches!(error, Failure::Syscall(errno) if errno.is_canceled()),
-                        "unexpected forced retirement: {error:?}");
-                }
-                result.as_ref().map_err(|error| error.cause()).expect("finish executor");
-            });
-            Ok::<(), Infallible>(())
+    let cfg = config::Prepared::<Tcp> {
+        connections: Capacity::fixed::<8>(),
+        per_ip: None,
+        direct_flights: 0.into(),
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        backlog: Backlog::fixed::<16>(),
+        stream: Default::default(),
+        transport: Default::default(),
+        egress: Default::default(),
+    };
+    let pending = (cfg.connections().nonzero().get() - 1)
+        .min(<Backend as Source>::MAX_IN_FLIGHT.get())
+        .min(schedule::LIMIT);
+    let driver = try_config(cfg.connections()).expect("retained-credit listener settings");
+    let mut finish = Completion::new();
+    let retained = LocalGate::new();
+    let retained = retained.handle();
+    let mut reports = Reports::<_>::new(driver, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    Runtime::new(driver).with_scope(
+        |mut session| {
+            let hash = session.hash_state(Domain::DEFAULT);
+            let result = listener::Install::<KeyTag<0>, Bundle<Tcp, Teardown, Throughput>, _>::new(
+                cfg,
+                domain::Local::new(()),
+            )
+            .with_driver(
+                App {
+                    held: None,
+                    observed: move || retained.hit(),
+                },
+                hash,
+                &mut session,
+                session::Scope::driver,
+                |listener, session| {
+                    let peer = Peer::at(listener.local_addr())
+                        .try_connect()
+                        .expect("connect retained-credit peer");
+                    peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                    peer.write_all(b"held receive credit")
+                        .expect("write retained-credit request");
+                    let result = session.with_quiesce(
+                        &mut finish,
+                        Host::new(listener),
+                        Duration::ZERO,
+                        |mut app| {
+                            reached(
+                                fibers::TEST.try_wait(&mut app, &retained, 1),
+                                retained.hits(),
+                                1,
+                            );
+                            Ok::<(), drive::Error>(())
+                        },
+                    );
+                    let failure = result
+                        .err()
+                        .expect("zero-duration quiescence must time out after forced cleanup");
+                    assert!(
+                        matches!(
+                            &failure,
+                            session::Error::Quiesce {
+                                output: Ok(()),
+                                drive: drive::Error::QuiescenceTimeout,
+                                disarm: None,
+                            }
+                        ),
+                        "quiescence must preserve completed shutdown and its timeout: {failure:?}"
+                    );
+                    session
+                        .with_quiesce(&mut finish, Empty {}, Duration::from_secs(2), |_| {})
+                        .expect("drain retained-credit executor");
+                    drop(peer);
+                },
+            );
+            assert!(result.is_ok(), "install retained-credit listener");
         },
-        |addr| {
-            let mut stream = TcpStream::connect(addr).expect("connect retained-credit peer");
-            stream.write_all(b"held receive credit").expect("write retained-credit request");
-            received.wait_timeout(GUARD).expect("retained receive signal");
-            Some(stream)
-        },
+        recovery::Policy::new(|event| reports.push(event), recover),
     );
-    assert!(
-        result.is_ok(),
-        "forced shutdown must release every retained credit"
-    );
+    let mut accepts = 0;
+    for report in reports.into_events().expect("reclaimed events") {
+        let error = match report {
+            Reclaimed::Accept {
+                result: Err(Failure::Syscall(error)),
+                flow: Flow::Last,
+                ..
+            } => {
+                accepts += 1;
+                error
+            }
+            Reclaimed::Recv {
+                result: Err(error),
+                flow: Flow::Last,
+                ..
+            } => error,
+            _ => panic!("unexpected forced retirement: {report:?}"),
+        };
+        assert!(
+            error.is_canceled(),
+            "unexpected forced retirement: {error:?}"
+        );
+    }
+    assert_eq!(accepts, pending, "each pending accept retires once");
 }
 
 #[test]

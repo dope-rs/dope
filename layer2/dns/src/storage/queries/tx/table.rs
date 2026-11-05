@@ -1,12 +1,8 @@
 use std::mem;
 
 use o3::{
-    alloc,
-    depot::{
-        capacity,
-        index::{Domain, set},
-        map::direct,
-    },
+    alloc::{self, BoxSliceExt as _},
+    depot::index::set,
 };
 use wire::tx::Id;
 
@@ -28,24 +24,26 @@ pub(crate) struct Epoch(u64);
 pub(in crate::storage::queries) struct Table<'s> {
     pool: &'s set::State<Id, u16, 2, set::Disjoint>,
     epochs: [set::Id<2>; 2],
-    udp: direct::Table<Id, index::Branch>,
-    tcp: direct::Table<Id, index::Branch>,
+    owners: Box<[Option<index::Branch>; Id::CAPACITY * 2]>,
+    streams: u32,
     cursor: u64,
     epoch: Epoch,
     cookies: cookies::Cookies,
 }
 
 impl<'s> Table<'s> {
+    #[inline]
     pub(in crate::storage::queries) fn try_new(
-        bound: Domain<Id, u16>,
         pool: &'s set::State<Id, u16, 2, set::Disjoint>,
     ) -> Result<Self, alloc::Error> {
-        let capacity = capacity::Count::new(bound.capacity() as u32);
+        let Ok(owners) = Box::try_repeat(Id::CAPACITY * 2, None)?.try_into() else {
+            unreachable!("length");
+        };
         Ok(Self {
             pool,
             epochs: [set::Id::at::<0>(), set::Id::at::<1>()],
-            udp: direct::Table::try_new(capacity)?,
-            tcp: direct::Table::try_new(capacity)?,
+            owners,
+            streams: 0,
             cursor: 0,
             epoch: Epoch::ZERO,
             cookies: cookies::Cookies::new(),
@@ -70,7 +68,7 @@ impl<'s> Table<'s> {
             None => {
                 let removed = self.pool.take_from(self.epochs[1], start.ordinal()).ok_or(
                     error::Identity::Datagram {
-                        capacity: self.udp.capacity(),
+                        capacity: Id::CAPACITY,
                     },
                 )?;
                 if let Err(error) = self.try_rotate() {
@@ -87,14 +85,15 @@ impl<'s> Table<'s> {
                 return Err(error);
             }
         };
-        let id = Id::from_ordinal(removed.index());
         self.cursor = next;
-        let capacity = self.udp.capacity();
-        let Some(slot) = self.udp.vacant(id) else {
+        let slot = &mut self.owners[usize::from(removed.index().raw())];
+        if slot.is_some() {
             removed.restore();
-            return Err(error::Identity::Datagram { capacity });
-        };
-        slot.insert(owner);
+            return Err(error::Identity::Datagram {
+                capacity: Id::CAPACITY,
+            });
+        }
+        *slot = Some(owner);
         Ok(lease::Udp::new(removed, self.epoch, cookie))
     }
 
@@ -107,10 +106,12 @@ impl<'s> Table<'s> {
         owner: index::Branch,
         id: Id,
     ) -> Result<lease::Tcp, error::Identity> {
-        let Some(slot) = self.tcp.vacant(id) else {
+        let slot = &mut self.owners[Id::CAPACITY + usize::from(id.wire())];
+        if slot.is_some() {
             return Err(error::Identity::Stream { id: id.wire() });
-        };
-        slot.insert(owner);
+        }
+        *slot = Some(owner);
+        self.streams += 1;
         Ok(lease::Tcp::new())
     }
 
@@ -119,16 +120,9 @@ impl<'s> Table<'s> {
             tx::Lease::Tcp {
                 id,
                 capacity: tx::Tcp,
-            } => {
-                if let Some(slot) = self.tcp.entry(id) {
-                    slot.discard();
-                }
-            }
+            } => self.clear_tcp(id),
             tx::Lease::Udp { removed, epoch, .. } => {
-                let id = Id::from_ordinal(removed.index());
-                if let Some(slot) = self.udp.entry(id) {
-                    slot.discard();
-                }
+                self.owners[usize::from(removed.index().raw())] = None;
                 let free = if epoch == self.epoch {
                     self.epochs[1]
                 } else {
@@ -140,22 +134,19 @@ impl<'s> Table<'s> {
     }
 
     pub(in crate::storage::queries) fn cancel(&mut self, cancel: tx::Cancel) {
-        let id = cancel.id();
-        if let Some(slot) = self.tcp.entry(id) {
-            slot.discard();
-        }
+        self.clear_tcp(cancel.id());
     }
 
     pub(in crate::storage::queries) fn udp_owner(&self, id: Id) -> Option<index::Branch> {
-        self.udp.get(id).copied()
+        self.owners[usize::from(id.wire())]
     }
 
     pub(in crate::storage::queries) fn stream_owner(&self, id: Id) -> Option<index::Branch> {
-        self.tcp.get(id).copied()
+        self.owners[Id::CAPACITY + usize::from(id.wire())]
     }
 
     pub(in crate::storage::queries) const fn has_stream(&self) -> bool {
-        !self.tcp.is_empty()
+        self.streams != 0
     }
 
     pub(in crate::storage::queries) fn cache(
@@ -165,6 +156,15 @@ impl<'s> Table<'s> {
         value: Server,
     ) -> bool {
         self.cookies.cache(cookie, server, value)
+    }
+
+    fn clear_tcp(&mut self, id: Id) {
+        if self.owners[Id::CAPACITY + usize::from(id.wire())]
+            .take()
+            .is_some()
+        {
+            self.streams -= 1;
+        }
     }
 
     fn try_rotate(&mut self) -> Result<(), error::Identity> {
@@ -205,5 +205,5 @@ const _: () = {
             == mem::size_of::<lease::Udp<'static>>()
     );
     assert!(mem::size_of::<Epoch>() == mem::size_of::<u64>());
-    assert!(u16::MAX as u32 + 1 < u32::MAX);
+    assert!(Id::CAPACITY < u32::MAX as usize);
 };

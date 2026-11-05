@@ -59,6 +59,13 @@ pub enum OpenError {
     Read(dope_core::Errno),
     Tail { expected: u8, observed: Option<u8> },
 }
+#[derive(Debug)]
+pub enum RotateError {
+    Failed(Failure),
+    Closed,
+    Busy,
+    Open(OpenError),
+}
 #[derive(Clone, Copy, Debug)]
 pub enum Failure {
     System(dope_core::Errno),
@@ -79,7 +86,8 @@ where
 }
 #[pin_project::pin_project]
 pub struct Appender<'p, 'd, ID: Identity, const N: usize, const B: usize> {
-    file: lease::Owner<'d, ID, file::Locked>,
+    file: file::Locked,
+    _route: lease::Owner<'d, ID>,
     pub(super) flights: flight::Slots<'d, <ID as route::Materialize<kind::Write>>::With>,
     pub(super) queue: Queue<'p, 'd, N, B>,
 }
@@ -109,47 +117,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         storage: &'p mut Storage<N, B>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<Self, creation::Error> {
-        use fs::path::CStrExt as _;
-
-        let path = Box::try_copy(path.as_ref())
-            .map_err(open::Error::from)
-            .map_err(OpenError::Open)
-            .map_err(creation::Error::Appender)?;
-        let access = match required_tail {
-            Some(_) => open::Access::ReadWrite,
-            None => open::Access::Write,
-        };
-        let file = open::Options::new(access)
-            .creation(open::Creation::Create)
-            .append()
-            .nofollow()
-            .nonblock()
-            .open(&path)
-            .map_err(open::Error::System)
-            .map_err(OpenError::Open)
-            .map_err(creation::Error::Appender)?;
-        drop(path);
-        let (file, offset) = file::Locked::try_new(file)
-            .map_err(OpenError::Lock)
-            .map_err(creation::Error::Appender)?;
-        // Subtracting one admits precisely the nonempty file lengths.
-        if let Some(expected) = required_tail
-            && let Ok(position) = offset.checked_sub(transfer::Len::fixed::<1>())
-        {
-            let mut tail = [0];
-            let observed = file
-                .try_read_at(&mut tail, position)
-                .map_err(OpenError::Read)
-                .map_err(creation::Error::Appender)?
-                .first()
-                .copied();
-            if observed != Some(expected) {
-                return Err(creation::Error::Appender(OpenError::Tail {
-                    expected,
-                    observed,
-                }));
-            }
-        }
+        let file = open_file(path.as_ref(), required_tail).map_err(creation::Error::Appender)?;
         let mut held = lease::Owner::try_reserve(driver).map_err(creation::Error::Route)?;
         let flights = held
             .driver()
@@ -162,11 +130,12 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
             )
             .map_err(creation::Error::Allocation)?
             .slots();
-        let file = held.into_claim().store(file);
+        let route = held.commit();
         storage.failure.set(None);
         Ok(Self {
-            flights,
             file,
+            _route: route,
+            flights,
             queue: Queue {
                 storage,
                 current: None,
@@ -227,16 +196,18 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         }
     }
     pub(super) fn prepare(&mut self) -> Option<Pending<'p, N, B>> {
-        self.seal();
         if let Some(active) = self.queue.in_flight.take() {
             return match active {
-                InFlight::Rejected { pending } => Some(pending),
-                active @ InFlight::Submitted { .. } => {
+                InFlight::Rejected { pending } if self.queue.storage.failure().is_none() => {
+                    Some(pending)
+                }
+                active => {
                     self.queue.in_flight = Some(active);
                     None
                 }
             };
         }
+        self.seal();
         self.queue
             .storage
             .pool
@@ -310,7 +281,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         let bytes = raw::bytes(&pending);
         let op =
             fs::Submission::<<ID as route::Materialize<kind::Write>>::With>::write_current_prefix(
-                fd::AsFd::as_fd(&*self.file),
+                fd::AsFd::as_fd(&self.file),
                 bytes,
                 target,
             );
@@ -336,11 +307,39 @@ where
     pub fn record<'a>(&'a mut self, limit: usize) -> Result<Record<'a, 'd>, WriteError> {
         self.inner.as_mut().get_mut().begin(limit)
     }
-}
 
-const _: () = assert!(
-    size_of::<lease::Owner<'static, route::KeyTag<0>, file::Locked>>() == 2 * size_of::<usize>()
-);
+    /// Retries the retained suffix after a native write failure.
+    pub fn try_retry(&mut self) -> Result<(), Failure> {
+        let failure = &self.inner.as_mut().get_mut().queue.storage.failure;
+        match failure.get() {
+            Some(Failure::System(_)) => failure.set(None),
+            Some(error) => return Err(error),
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// Seals the current block and replaces the file after successful drain.
+    pub fn try_rotate(
+        &mut self,
+        path: impl AsRef<path::Path>,
+        required_tail: Option<u8>,
+    ) -> Result<(), RotateError> {
+        let this = self.inner.as_mut().get_mut();
+        if let Some(failure) = this.queue.storage.failure() {
+            return Err(RotateError::Failed(failure));
+        }
+        if this.queue.closed {
+            return Err(RotateError::Closed);
+        }
+        this.seal();
+        if this.queue.in_flight.is_some() || !this.queue.storage.pool.is_empty() {
+            return Err(RotateError::Busy);
+        }
+        this.file = open_file(path.as_ref(), required_tail).map_err(RotateError::Open)?;
+        Ok(())
+    }
+}
 
 impl<'p, 'd, ID: Identity, const N: usize, const B: usize> event::Drive<'d>
     for Appender<'p, 'd, ID, N, B>
@@ -391,10 +390,50 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> event::Drive<'d>
                     this.submit(pending, &mut driver);
                 }
             }
-            Err(errno) => this.fail_pending(pending, Failure::System(errno)),
+            Err(errno) => {
+                this.queue.in_flight = Some(InFlight::Rejected { pending });
+                this.queue.storage.failure.set(Some(Failure::System(errno)));
+            }
         }
         ops::ControlFlow::Continue(())
     }
+}
+
+fn open_file(path: &path::Path, required_tail: Option<u8>) -> Result<file::Locked, OpenError> {
+    use fs::path::CStrExt as _;
+
+    let path = Box::try_copy(path)
+        .map_err(open::Error::from)
+        .map_err(OpenError::Open)?;
+    let access = match required_tail {
+        Some(_) => open::Access::ReadWrite,
+        None => open::Access::Write,
+    };
+    let file = open::Options::new(access)
+        .creation(open::Creation::Create)
+        .append()
+        .nofollow()
+        .nonblock()
+        .open(&path)
+        .map_err(open::Error::System)
+        .map_err(OpenError::Open)?;
+    drop(path);
+    let (file, offset) = file::Locked::try_new(file).map_err(OpenError::Lock)?;
+    // Subtracting one admits precisely the nonempty file lengths.
+    if let Some(expected) = required_tail
+        && let Ok(position) = offset.checked_sub(transfer::Len::fixed::<1>())
+    {
+        let mut tail = [0];
+        let observed = file
+            .try_read_at(&mut tail, position)
+            .map_err(OpenError::Read)?
+            .first()
+            .copied();
+        if observed != Some(expected) {
+            return Err(OpenError::Tail { expected, observed });
+        }
+    }
+    Ok(file)
 }
 
 mod raw;

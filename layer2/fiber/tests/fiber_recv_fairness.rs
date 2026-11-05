@@ -3,7 +3,7 @@ use dope::{
     manifold::{app::Host, network::listener::Domain},
     runtime::executor::{Executor, session::Completion},
 };
-use dope_core::{driver::route::KeyTag, platform::wake};
+use dope_core::driver::route::KeyTag;
 use dope_test::harness::{GUARD, scenario};
 pub mod common;
 use common::recover;
@@ -106,21 +106,17 @@ fn hoarder_yields_to_peer() {
                     |sess| sess.driver(),
                     |server, sess| {
                         let pool = store.handle();
-                        let (rx, tx) = wake::Ends::blocking().expect("probe release").split();
-                        Peer::at(addr)
-                            .with_many::<2, _, _>(move |[bulk, probe]| {
-                                bulk.write_all(&[b'H'; QUEUE_CAP])
-                                    .expect("fill receive queue");
-                                rx.wait_timeout(GUARD)
-                                    .expect("hoarder must retain all input");
-                                probe.write_all(b"P").expect("write probe");
-                                let mut reply = [0; 1];
-                                probe.read_exact(&mut reply).expect("read probe reply");
-                                reply
-                            }, |peers| {
                         let result = sess.with_quiesce(&mut finish,
                             Host::new(server), scenario::TIMEOUT,
                             |mut app| -> Result<(), drive::Error> {
+                                let bulk_peer = Peer::at(addr).try_connect().expect("connect hoarder");
+                                let probe_peer = Peer::at(addr).try_connect().expect("connect probe");
+                                for peer in [&bulk_peer, &probe_peer] {
+                                    peer.set_nodelay(true).expect("peer NODELAY");
+                                    peer.read_wait(Some(GUARD)).expect("peer read timeout");
+                                    peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                                }
+                                bulk_peer.write_all(&[b'H'; QUEUE_CAP]).expect("fill receive queue");
                                 let bulk = app.block_on(
                                     dope_fiber::fiber!('_ => async move { pool.accept().await }),
                                 )?;
@@ -129,7 +125,7 @@ fn hoarder_yields_to_peer() {
                                     dope_fiber::fiber!('_ => async move { pool.accept().await }),
                                 )?).ok().expect("accept probe");
                                 assert_eq!(fibers::TEST.try_wait(&mut app, &seen, QUEUE_CAP as u32).expect("bounded progress"), fibers::Wait::Reached);
-                                assert!(tx.notify().is_ok(), "probe peer must remain connected");
+                                probe_peer.write_all(b"P").expect("probe peer must remain connected");
                                 app.block_on(dope_fiber::fiber!('_ => async move {
                                     {
                                         let read = probe.read().await;
@@ -142,6 +138,9 @@ fn hoarder_yields_to_peer() {
                                     let reply = probe.write_all(b"R").await;
                                     assert!(reply.is_ok(), "write typed probe reply");
                                 }))?;
+                                let mut reply = [0; 1];
+                                probe_peer.read_exact(&mut reply).expect("read probe reply");
+                                assert_eq!(reply, [b'R']);
                                 Ok(())
                             },
                         );
@@ -149,8 +148,6 @@ fn hoarder_yields_to_peer() {
                         {
                             ((result).expect("fairness fiber stalled"));
                         }
-                        assert_eq!(peers.finish().expect("finish fairness clients"), [b'R']);
-                        }).expect("spawn fairness clients");
                     },
                 );
                 assert!(result.is_ok(), "listener must bind");

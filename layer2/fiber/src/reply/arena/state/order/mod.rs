@@ -14,12 +14,11 @@ use o3::{
 use crate::reply::{
     LaneIndex,
     arena::{retire::Retired, state},
-    layout, order,
+    layout, order, recv,
     retain::{
         grant::payload,
         pool::{Acquire, Owner},
     },
-    usage,
 };
 
 mod lease;
@@ -44,20 +43,16 @@ impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
     pub(in crate::reply) fn try_lease<A>(
         self,
         amount: A,
+        limit: layout::Limit,
+        acceptance: recv::Acceptance,
     ) -> Result<Lease<'a, 'arena, 'credits, 'region, A, K>, Acquire>
     where
-        A: mem::raw::Amount<3, usize> + Into<payload::Returned> + Into<payload::Requested>,
+        A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     {
-        self.owner.payload.try_acquire(self.key, amount)?;
+        self.owner
+            .payload
+            .try_acquire(self.key, amount, limit, acceptance)?;
         Ok(Lease::new(self, amount))
-    }
-
-    pub(in crate::reply) fn len(&self) -> usize {
-        self.owner.payload.len()
-    }
-
-    pub(in crate::reply) fn usage(&self) -> usage::Usage {
-        self.owner.payload.usage()
     }
 
     pub(in crate::reply) fn cancel_pop(self) -> order::Depth {

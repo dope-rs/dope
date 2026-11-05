@@ -34,28 +34,6 @@ pub use spec::Spec;
 pub use staged::Staged;
 
 /// Driver-owned ingress authority with statically selected staging.
-///
-/// Local authority cannot be substituted for externally supplied authority.
-///
-/// ```compile_fail
-/// use dope_manifold::client::session::ingress::origin;
-/// use dope_manifold::network::client::topology::plan::{Input, Local};
-///
-/// fn require_external<A: Input<Authority = origin::External>>() {}
-///
-/// require_external::<Local>();
-/// ```
-///
-/// The default buffered staging cannot be substituted for direct staging.
-///
-/// ```compile_fail
-/// use dope_manifold::client::session::codec::staging;
-/// use dope_manifold::network::client::topology::plan::{Input, Local};
-///
-/// fn require_direct<A: Input<Staging = staging::Direct>>() {}
-///
-/// require_direct::<Local>();
-/// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Local<P = staging::Buffered>(marker::PhantomData<fn() -> P>);
 

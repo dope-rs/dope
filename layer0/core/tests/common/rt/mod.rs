@@ -119,7 +119,6 @@ impl Runtime {
     }
 }
 
-pub mod record;
 pub mod thread;
 
 pub mod route;

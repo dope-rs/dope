@@ -21,3 +21,7 @@ dope-net = { path = "../net" }
 dope-manifold = { path = "../manifold" }
 dope-test.workspace = true
 libc.workspace = true
+
+[[test]]
+name = "process"
+harness = false

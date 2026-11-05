@@ -29,9 +29,7 @@ impl<'run> Context<'run> {
     }
 
     pub fn terminal(&self) -> process::Terminal<'run> {
-        process::Terminal {
-            source: self.shutdown.source,
-        }
+        self.shutdown.terminal()
     }
 
     pub(super) fn gated(self) -> (Self, gate::Closed<'run>) {

@@ -25,7 +25,7 @@ impl<const N: usize, const B: usize> Storage<N, B> {
         })
     }
 
-    /// Returns the most recent appender's terminal failure after it is dropped.
+    /// Returns the most recent appender's uncleared failure after it is dropped.
     /// A successful open starts a new result; draining does not imply durability.
     pub fn failure(&self) -> Option<super::Failure> {
         self.failure.get()

@@ -1,8 +1,7 @@
-use std::{convert, net::Shutdown, pin::Pin, task};
+use std::{convert, pin::Pin, task};
 
 use dope_core::{
     driver::{retained, route::Identity, schedule::clock},
-    platform::wake,
     random::Seed,
 };
 use dope_manifold::{
@@ -19,11 +18,7 @@ use dope_net::link::{
 use dope_runtime::executor::root;
 use dope_test::{
     alloc::Tracker,
-    harness::{
-        peer,
-        scenario::TIMEOUT,
-        signals::{Gate, Progress as _},
-    },
+    harness::signals::{Gate, Progress as _},
 };
 use o3::buffer::{bytes::TryRetain, resident};
 
@@ -31,18 +26,6 @@ use crate::common::manifold::listener::defer::wire::Wire;
 
 pub const BODY_LEN: usize = 1024 * 1024;
 pub(crate) static BODY: [u8; BODY_LEN] = [0x52; BODY_LEN];
-
-pub struct Script {
-    pub(crate) release: wake::Wait,
-}
-
-#[derive(Debug)]
-pub enum Failure {
-    Write(peer::Error),
-    Shutdown(peer::Error),
-    Release(wake::WaitError),
-    Read(peer::Error),
-}
 
 #[derive(Clone, Copy, Debug)]
 pub enum State {
@@ -72,23 +55,6 @@ impl<'d> root::Root<'d> for Until<'_> {
             wake.wake();
             task::Poll::Pending
         }
-    }
-}
-
-impl Script {
-    pub fn new(release: wake::Wait) -> Self {
-        Self { release }
-    }
-
-    pub fn try_run(self, socket: &peer::Stream<'_>) -> Result<Vec<u8>, Failure> {
-        socket.write_all(b"open").map_err(Failure::Write)?;
-        socket
-            .shutdown(Shutdown::Write)
-            .map_err(Failure::Shutdown)?;
-        self.release
-            .wait_timeout(TIMEOUT)
-            .map_err(Failure::Release)?;
-        peer::Peer::try_read_all(socket).map_err(Failure::Read)
     }
 }
 

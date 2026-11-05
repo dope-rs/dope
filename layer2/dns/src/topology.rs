@@ -36,9 +36,6 @@ use crate::{
     wire::frames,
 };
 
-#[repr(transparent)]
-struct Egress(egress::Config);
-
 /// Failure to prepare a resolver topology plan.
 #[derive(Debug)]
 pub enum Prepare {
@@ -53,29 +50,6 @@ pub enum Prepare {
     },
     Allocation(alloc::Exhausted),
     BufferLayout(pool::LayoutError),
-}
-
-impl Egress {
-    const ENTRIES: egress::Entries = egress::Entries::new(1);
-    const RESIDENT: egress::Resident = egress::Resident::new(frames::MAX_STREAM_FRAME_BYTES as u32);
-
-    fn try_new(config: egress::Config) -> Result<Self, Prepare> {
-        let entries = config.entries();
-        let resident = config.bytes();
-        if entries < Self::ENTRIES || resident < Self::RESIDENT {
-            return Err(Prepare::Egress {
-                required_entries: Self::ENTRIES,
-                available_entries: entries,
-                required_resident: Self::RESIDENT,
-                available_resident: resident,
-            });
-        }
-        Ok(Self(config))
-    }
-
-    const fn into_inner(self) -> egress::Config {
-        self.0
-    }
 }
 
 /// Complete transport plan for one resolver over an exact storage path.
@@ -93,7 +67,7 @@ pub struct Plan<
     packets: udp::Pool,
     datagram: plan::Plan<DatagramTag, send::Sourced>,
     stream: Layout<StreamTag, 1>,
-    egress: Egress,
+    egress: egress::Config,
 }
 
 impl<
@@ -134,7 +108,19 @@ impl<
         let layout = pool::Width::new(OUTBOUND).map_err(Prepare::BufferLayout)?;
         let datagram = plan::Plan::new(config);
         let stream = Layout::new(1).map_err(Prepare::Stream)?;
-        let egress = Egress::try_new(egress)?;
+        const ENTRIES: egress::Entries = egress::Entries::new(1);
+        const RESIDENT: egress::Resident =
+            egress::Resident::new(frames::MAX_STREAM_FRAME_BYTES as u32);
+        let entries = egress.entries();
+        let resident = egress.bytes();
+        if entries < ENTRIES || resident < RESIDENT {
+            return Err(Prepare::Egress {
+                required_entries: ENTRIES,
+                available_entries: entries,
+                required_resident: RESIDENT,
+                available_resident: resident,
+            });
+        }
         let packets = udp::Pool::try_from(layout).map_err(Prepare::Allocation)?;
         Ok(Self {
             path,
@@ -210,7 +196,7 @@ where
         let stream = self.stream.into_plan(
             Spec::new(config.refresh.backoff.base, config.refresh.backoff.max)
                 .map_err(creation::Error::Retry)?
-                .with_egress(self.egress.into_inner()),
+                .with_egress(self.egress),
         );
         let udp_rng = entropy::Datagram::new(
             random::Root::try_acquire(&stage.driver()).map_err(creation::Error::RootExhausted)?,
@@ -246,8 +232,6 @@ where
 }
 
 const _: () = {
-    assert!(mem::size_of::<Egress>() == mem::size_of::<egress::Config>());
-    assert!(mem::align_of::<Egress>() == mem::align_of::<egress::Config>());
     assert!(
         mem::size_of::<Plan<KeyTag<0>, KeyTag<1>, 1, 1, 1, fn(ReceiveError)>>()
             == mem::size_of::<(

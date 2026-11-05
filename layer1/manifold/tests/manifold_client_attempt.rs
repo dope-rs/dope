@@ -31,7 +31,7 @@ use dope_runtime::{
 use dope_test::{
     alloc::Tracker,
     fibers,
-    harness::peer::TcpScript,
+    harness::peer,
     reclaim::Reports,
     scope::{self, Driver},
 };
@@ -248,93 +248,86 @@ fn cancel_before_reuse() {
 
 #[test]
 fn connected_cancel_survives_shared_maintenance() {
-    TcpScript::try_gated::<1>(
-        |_| {},
-        |address, release| {
-            let mut create = Attempt::new();
-            let mut finish = Completion::new();
-            let runtime = Runtime::throughput();
-            let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
-            let audit = Rc::new(Report::default());
-            let trace = Rc::new(Trace::default());
-            let exhaust = Cell::new(false);
-            let executor = runtime
-                .try_executor(&mut create)
-                .ok()
-                .expect("executor construction");
-            executor
-                .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(1)))
-                .run(|executor| {
-                    let result = executor.try_create(
-                        |mut session| {
-                            let source = session.storage();
-                            let lease = source
-                                .try_reserve()
-                                .expect("attempt reservation")
-                                .start(StreamTarget::new(address, Default::default()));
-                            let result = engine::Startup::new(
-                                Empty {
-                                    audit: Rc::clone(&audit),
-                                    trace: Rc::clone(&trace),
-                                    reject: None,
-                                },
-                                source,
-                                Capacity::fixed::<1>(),
-                                Default::default(),
-                                Local::new(Identity),
-                            )
-                            .try_with::<Bundle<Tcp, Identity, Throughput>, _, _>(
-                                &mut session,
-                                Scope::driver,
-                                |engine, session| {
-                                    session.with_quiesce(
-                                        &mut finish,
-                                        Host::new(Exhausted {
-                                            inner: engine,
-                                            exhaust: &exhaust,
-                                        }),
-                                        Duration::from_secs(2),
-                                        |mut app| {
-                                            fibers::TEST
-                                                .try_pause(&mut app, Duration::from_millis(100))
-                                                .expect("quiet connected peer");
-                                            assert_eq!(trace.connected.get(), 1);
-                                            lease.cancel();
-                                            exhaust.set(true);
-                                            assert!(matches!(
-                                                app.run_for(Duration::from_millis(100)),
-                                                Err(drive::Error::Timeout)
-                                            ));
-                                            assert!(!exhaust.get());
-                                            assert_eq!(
-                                                trace.reason.get(),
-                                                Some(Reason::Local(
-                                                    LocalOrigin::OperationCancelled
-                                                ))
-                                            );
-                                            assert!(source.has_room());
-                                        },
-                                    )
-                                },
-                            );
-                            assert!(result.expect("build connector").is_ok(), "client teardown");
+    let listener = peer::TcpAcceptor::bind(Loopback(0).addr()).expect("listener");
+    let address = listener.local_addr().expect("listener address");
+    let mut create = Attempt::new();
+    let mut finish = Completion::new();
+    let runtime = Runtime::throughput();
+    let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
+    let audit = Rc::new(Report::default());
+    let trace = Rc::new(Trace::default());
+    let exhaust = Cell::new(false);
+    let executor = runtime
+        .try_executor(&mut create)
+        .ok()
+        .expect("executor construction");
+    executor
+        .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(1)))
+        .run(|executor| {
+            let result = executor.try_create(
+                |mut session| {
+                    let source = session.storage();
+                    let lease = source
+                        .try_reserve()
+                        .expect("attempt reservation")
+                        .start(StreamTarget::new(address, Default::default()));
+                    let result = engine::Startup::new(
+                        Empty {
+                            audit: Rc::clone(&audit),
+                            trace: Rc::clone(&trace),
+                            reject: None,
                         },
-                        recovery::Policy::new(|event| reports.push(event), recover),
+                        source,
+                        Capacity::fixed::<1>(),
+                        Default::default(),
+                        Local::new(Identity),
+                    )
+                    .try_with::<Bundle<Tcp, Identity, Throughput>, _, _>(
+                        &mut session,
+                        Scope::driver,
+                        |engine, session| {
+                            session.with_quiesce(
+                                &mut finish,
+                                Host::new(Exhausted {
+                                    inner: engine,
+                                    exhaust: &exhaust,
+                                }),
+                                Duration::from_secs(2),
+                                |mut app| {
+                                    fibers::TEST
+                                        .try_pause(&mut app, Duration::from_millis(100))
+                                        .expect("quiet connected peer");
+                                    assert_eq!(trace.connected.get(), 1);
+                                    lease.cancel();
+                                    exhaust.set(true);
+                                    assert!(matches!(
+                                        app.run_for(Duration::from_millis(100)),
+                                        Err(drive::Error::Timeout)
+                                    ));
+                                    assert!(!exhaust.get());
+                                    assert_eq!(
+                                        trace.reason.get(),
+                                        Some(Reason::Local(LocalOrigin::OperationCancelled))
+                                    );
+                                    assert!(source.has_room());
+                                },
+                            )
+                        },
                     );
-                    result
-                        .as_ref()
-                        .map_err(Kind::from)
-                        .expect("attempt source finalization");
-                });
-            assert!(
-                matches!(reports.events(), Ok(events) if events.is_empty()),
-                "unexpected reclamation: {reports:?}"
+                    assert!(result.expect("build connector").is_ok(), "client teardown");
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
             );
-            audit.checked((0, 0));
-            release.try_fire().expect("release quiet peer");
-        },
-    )
-    .expect("held peer");
+            result
+                .as_ref()
+                .map_err(Kind::from)
+                .expect("attempt source finalization");
+        });
+    assert!(
+        matches!(reports.events(), Ok(events) if events.is_empty()),
+        "unexpected reclamation: {reports:?}"
+    );
+    audit.checked((0, 0));
 }
 
 #[test]

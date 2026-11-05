@@ -19,6 +19,141 @@ use crate::common::storage::replies::support::{
 static ALLOCATOR: alloc::Tracker = Tracker::new();
 
 #[test]
+fn wakes_after_same_reply_consumption() {
+    use std::{pin::Pin, task::Poll};
+
+    use dope::core::driver::{
+        route::{Epoch, KeyTag, indices::SlotIndex},
+        schedule,
+    };
+    use dope_fiber::{
+        context::Context,
+        reply::{Arena, Work, layout, usage},
+    };
+
+    use crate::common::{
+        runtime::profile,
+        schedule::tasks::{fixtures::Rounds as _, retained::Retain as _},
+        storage::replies::{
+            TakeOne,
+            support::{capacity, limit},
+        },
+    };
+
+    let drops = Drops::new();
+    let mut reports = Vec::new();
+    Setup::for_profile::<profile::Tasks>().with_scope(
+        |scope| {
+            scope.with_driver(|context, mut control| {
+                let core = context.driver_ref();
+                let route = core
+                    .targets::<KeyTag<0>>()
+                    .bind(SlotIndex::from(0), Epoch::INITIAL)
+                    .dispatch();
+                let root = core.ready().make_slot(route).expect("ready slot");
+                let mut driver = context.retained();
+                let layout = layout::Layout::new(capacity(1, 2, 4, 4, 4), limit(1, 1, 1))
+                    .expect("reply layout");
+                Arena::try_with(layout, driver.region_token().proof(), |arena| {
+                    let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+                    lane.bind_retire(root.target());
+                    let mut older = recv::Stream::<_, TakeOne>::new();
+                    older
+                        .try_attach(driver.region_token(), lane)
+                        .expect("older reply");
+                    assert!(
+                        lane.select(driver.region_token())
+                            .try_push(Counted::mixed(&drops))
+                            .is_ok()
+                    );
+                    lane.complete(driver.region_token());
+                    let mut current = recv::Stream::<_, TakeOne>::new();
+                    current
+                        .try_attach(driver.region_token(), lane)
+                        .expect("current reply");
+                    let reserve = lane
+                        .try_reserve(usage::Usage::new(usage::Bytes::ZERO, usage::Values::new(3)))
+                        .expect("reserve remaining credit");
+                    let value = match lane
+                        .select(driver.region_token())
+                        .try_push(Counted::mixed(&drops))
+                    {
+                        Err(usage::InsertError::Backpressure { value, .. }) => value,
+                        _ => panic!("global pressure"),
+                    };
+                    drop(reserve);
+                    assert!(lane.select(driver.region_token()).try_push(value).is_ok());
+                    let failure = match lane
+                        .select(driver.region_token())
+                        .try_fail(Counted::data(&drops))
+                    {
+                        Err(usage::InsertError::Backpressure { value, cause }) => {
+                            assert_eq!(
+                                cause.into_parts(),
+                                (
+                                    usage::Resource::Values,
+                                    usage::Required::new(1),
+                                    usage::Available::new(0),
+                                )
+                            );
+                            value
+                        }
+                        _ => panic!("local pressure"),
+                    };
+                    assert_eq!(drops.count(), 0);
+                    control.begin().ready_round(|_| {});
+                    let turn = control.begin();
+                    turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                        arena.maintain(share.work(), driver.region_token());
+                    });
+                    assert_eq!(
+                        turn.ready_round(|_| {}),
+                        0,
+                        "stale global link cannot wake a local wait"
+                    );
+                    assert!(matches!(arena.work(), Work::Idle));
+
+                    let mut held = [None, None];
+                    for (index, response) in [&mut older, &mut current].into_iter().enumerate() {
+                        let turn = control.begin();
+                        let result = Context::with_target(
+                            root.target(),
+                            turn.turn().app(),
+                            driver.reborrow(),
+                            |context| Pin::new(response).poll_next(context),
+                        );
+                        held[index] = Some(match result {
+                            Poll::Ready(Some(Ok(value))) => value,
+                            _ => panic!("queued value"),
+                        });
+                        assert_eq!(
+                            turn.ready_round(|event| assert!(route.matches(event))),
+                            index
+                        );
+                    }
+                    assert!(lane.select(driver.region_token()).try_fail(failure).is_ok());
+                    assert_eq!(lane.depth(driver.region_token()).get(), 0);
+                    assert_eq!(drops.count(), 0);
+                    assert!(
+                        held.iter().all(|value| value
+                            .as_ref()
+                            .expect("retained value")
+                            .get()
+                            .bytes
+                            == 1)
+                    );
+                })
+                .expect("reply arena");
+            });
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+        runtime::check_scope,
+    );
+    assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
+    assert_eq!(drops.count(), 3);
+}
+
+#[test]
 fn wakes_each_waiter() {
     use std::{pin::pin, task::Poll};
 

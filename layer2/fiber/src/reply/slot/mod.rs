@@ -98,44 +98,14 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Open<'a, 'arena, 'credits, 'region,
         self.acceptance
     }
 
-    fn try_usage(&self, limit: layout::Limit, added: usage::Usage) -> Result<(), usage::Capacity> {
-        let current = self.order.usage();
-        let next = current.try_add(added)?;
-        if next.bytes() > limit.bytes() {
-            return Err(usage::Capacity::Limit {
-                resource: usage::Resource::Bytes,
-                current: usage::Current::new(current.bytes().get()),
-                added: usage::Added::new(added.bytes().get()),
-                limit: usage::Limit::new(limit.bytes().get()),
-            });
-        }
-        if next.values() > limit.values() {
-            return Err(usage::Capacity::Limit {
-                resource: usage::Resource::Values,
-                current: usage::Current::new(current.values().get()),
-                added: usage::Added::new(added.values().get()),
-                limit: usage::Limit::new(limit.values().get()),
-            });
-        }
-        Ok(())
-    }
-
     pub(in crate::reply) fn try_data(
         self,
         limit: layout::Limit,
         added: usage::Usage,
     ) -> Result<Push<'a, 'arena, 'credits, 'region, D, K>, Acquire> {
-        let current = self.order.len();
-        if current >= limit.data().get() {
-            return Err(Acquire::Capacity(usage::Capacity::Limit {
-                resource: usage::Resource::Items,
-                current: usage::Current::new(current),
-                added: usage::Added::new(1),
-                limit: usage::Limit::new(limit.data().get()),
-            }));
-        }
-        self.try_usage(limit, added).map_err(Acquire::Capacity)?;
-        let lease = self.order.try_lease(payload::Value::new(added))?;
+        let lease = self
+            .order
+            .try_lease(payload::Value::new(added), limit, self.acceptance)?;
         Ok(fifo::Fifo::reserve(Reserve {
             queue: &mut self.state.data,
             lease,
@@ -143,26 +113,20 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Open<'a, 'arena, 'credits, 'region,
         }))
     }
 
-    pub(in crate::reply) fn try_failure(
+    pub(in crate::reply) fn failure(
         self,
-        limit: layout::Limit,
-        added: usage::Usage,
-    ) -> Result<
+    ) -> (
+        order::Slot<'a, 'arena, 'credits, 'region, K>,
+        Failure<'a, E>,
+        &'a mut state::Signal<'region>,
+    ) {
         (
-            order::Slot<'a, 'arena, 'credits, 'region, K>,
-            Failure<'a, E>,
-            &'a mut state::Signal<'region>,
-        ),
-        usage::Capacity,
-    > {
-        self.try_usage(limit, added)?;
-        Ok((
             self.order,
             Failure {
                 end: &mut self.state.end,
             },
             self.signal,
-        ))
+        )
     }
 
     pub(in crate::reply) fn complete(self) -> Depth {

@@ -72,10 +72,7 @@ pub(in crate::storage) struct Ledger<'s, const LANES: usize, const N: usize> {
 }
 
 impl<'s, const LANES: usize, const N: usize> Ledger<'s, LANES, N> {
-    pub(in crate::storage) fn try_new(
-        layout: index::Layout,
-        store: &'s storage::Store,
-    ) -> Result<Self, storage::Error> {
+    pub(in crate::storage) fn try_new(store: &'s storage::Store) -> Result<Self, storage::Error> {
         use crate::storage::queries::tx::Table;
 
         let mut slots = Vec::try_new(LANES).map_err(storage::Error::Allocation)?;
@@ -90,8 +87,7 @@ impl<'s, const LANES: usize, const N: usize> Ledger<'s, LANES, N> {
             reg: Registry {
                 pending: Pending::new(&store.pending),
                 live: stream::Live::new(),
-                ids: Table::try_new(layout.transactions(), &store.ids)
-                    .map_err(storage::Error::Allocation)?,
+                ids: Table::try_new(&store.ids).map_err(storage::Error::Allocation)?,
                 stream_failure: None,
             },
         })
@@ -271,12 +267,6 @@ impl<'s> Pending<'s> {
 
     pub(in crate::storage::queries) fn has_udp(&self) -> bool {
         !self.sets.get::<0>().is_empty()
-    }
-
-    pub(in crate::storage::queries) fn has_stream(&self) -> bool {
-        index::Server::ALL
-            .into_iter()
-            .any(|server| !self.sets.plane(Self::id(Some(server))).is_empty())
     }
 
     pub(in crate::storage::queries) fn has_server(&self, server: index::Server) -> bool {

@@ -5,33 +5,22 @@ use crate::{
     shutdown,
 };
 
-/// Consumes a shutdown result at the final worker failure boundary.
+/// Reports worker failure or consumes its shutdown result.
 pub struct Terminal<'run> {
     pub(in crate::process) source: Tx<'run>,
 }
 
 impl<'run> Terminal<'run> {
-    pub fn fail(self) -> Result<bus::Event, bus::Fault> {
-        match self.source.report() {
-            bus::Report::Clean => Ok(bus::Event::Failed),
-            bus::Report::Failed(cause) => Err(cause),
-        }
+    pub fn fail(&self) -> Result<bus::Event, bus::Fault> {
+        self.source.send(bus::Event::Failed)?;
+        Ok(bus::Event::Failed)
     }
 
     pub fn finish(
         self,
         result: shutdown::Requested<process::Shutdown<'run>>,
     ) -> Result<bus::Event, bus::Fault> {
-        result.terminal(self.source.report())
-    }
-}
-
-impl<'run> shutdown::Requested<process::Shutdown<'run>> {
-    pub(crate) fn terminal(self, report: bus::Report) -> Result<bus::Event, bus::Fault> {
-        match report {
-            bus::Report::Clean => Ok(bus::Event::Done),
-            bus::Report::Failed(failure) => Err(failure),
-        }
+        self.source.terminal(result)
     }
 }
 

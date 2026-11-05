@@ -122,16 +122,20 @@ where
     Q: quota::State,
     S: queue::Backend<'d>,
 {
-    pub fn try_update<I, O>(
-        &mut self,
+    pub fn get_mut<'b>(
+        &'b mut self,
         id: &Scoped<'s, 'd, M::Domain>,
-        input: I,
-        update: impl FnOnce(pin::Pin<&mut M::Fiber>, I) -> O,
-    ) -> Result<O, schedule::result::Update<I>> {
-        self.inner.source.try_update(&id.original(), input, update)
+    ) -> Result<pin::Pin<&'b mut M::Fiber>, schedule::result::Error>
+    where
+        M: 'b,
+    {
+        self.inner.source.get_mut(&id.original())
     }
 
-    pub fn resume(&mut self, id: &Scoped<'s, 'd, M::Domain>) -> schedule::result::Resume {
+    pub fn resume(
+        &mut self,
+        id: &Scoped<'s, 'd, M::Domain>,
+    ) -> Result<(), schedule::result::Error> {
         self.inner.source.resume(&id.original())
     }
 }

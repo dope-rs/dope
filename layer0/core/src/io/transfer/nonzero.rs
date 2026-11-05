@@ -51,7 +51,7 @@ impl NonZero {
         // SAFETY: every private constructor retains Len's upper bound, a
         // const-admitted count, or payload::Len's checked framing extent.
         // The stored NonZero retains positivity through every projection.
-        unsafe { bounded::raw::NonZeroProof::assume(self.0) }.retain()
+        unsafe { bounded::raw::nonzero_u32(self.0) }
     }
 
     #[must_use]

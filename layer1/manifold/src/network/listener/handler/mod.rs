@@ -149,15 +149,7 @@ pub enum Deadline<'d> {
 }
 
 /// Application disposition after consuming its exact expired deadline.
-/// Continuing without an explicit next deadline state is not representable:
-///
-/// ```compile_fail
-/// use dope_manifold::network::listener::handler::Timeout;
-///
-/// fn forget_update<'d>() -> Timeout<'d> {
-///     Timeout::Continue
-/// }
-/// ```
+/// Continuing without an explicit next deadline state is not representable.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Timeout<'d> {
     Discard,

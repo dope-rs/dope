@@ -1,60 +1,9 @@
-use std::{cell::Cell, mem, num::NonZero};
+use std::{cell::Cell, num::NonZero};
 
-use dope_core::{
-    dope_sys::io::socket::record::Record,
-    platform::{
-        channel::Channel,
-        thread::{Builder, Workers},
-    },
-};
+use dope_core::platform::thread::Builder;
 
 pub mod common;
-use common::rt::thread::{Gated, Order, Owned, STACK, Write};
-
-#[test]
-fn mutates_live_parent() {
-    let mut target = 0;
-    let (gate, channel) = Channel::pair().expect("worker gate");
-    let mut builder = Builder::try_new(1).expect("worker storage");
-    builder
-        .try_push(
-            Gated {
-                channel,
-                task: Write {
-                    target: &mut target,
-                    value: 7,
-                },
-            },
-            10,
-        )
-        .expect("gated task");
-    let (before, ready, count, release, joined) = builder.scope(|mut workers| {
-        let before = workers.parents_mut().len();
-        workers.start(STACK).expect("start gated worker");
-        let ready = gate.recv();
-        let count = {
-            let mut parents = workers.parents_mut();
-            let count = parents.len();
-            if let Some(parent) = parents.next() {
-                *parent = 11;
-            }
-            count
-        };
-        let release = gate.send(2);
-        drop(gate);
-        let joined = workers.finish().next();
-        (before, ready, count, release, joined)
-    });
-    assert_eq!((before, count), (0, 1));
-    assert!(
-        matches!(ready, Record::Value(1)),
-        "worker readiness: {ready:?}"
-    );
-    release.expect("release gated worker");
-    let (parent, output) = joined.expect("joined worker");
-    assert_eq!((parent, output.expect("worker handshake")), (11, 7));
-    assert_eq!(target, 7);
-}
+use common::rt::thread::{Order, Owned, STACK, Write};
 
 #[test]
 fn joins_ordered_outputs() {
@@ -80,12 +29,17 @@ fn joins_ordered_outputs() {
         )
         .expect("second task");
     let result = builder.scope(|mut workers| {
+        assert_eq!(workers.parents_mut().len(), 0);
         workers.start(STACK).expect("start workers");
         workers.start(STACK).expect("already started");
+        assert_eq!(workers.parents_mut().len(), 2);
+        for parent in workers.parents_mut() {
+            *parent += 1;
+        }
         let mut finished = workers.finish();
         (finished.next(), finished.next(), finished.next())
     });
-    assert_eq!(result, (Some((10, 7)), Some((20, 9)), None));
+    assert_eq!(result, (Some((11, 7)), Some((21, 9)), None));
     assert_eq!((first, second), (7, 9));
 }
 
@@ -127,7 +81,6 @@ fn failed_start_drops_input() {
 
 #[test]
 fn early_return_joins() {
-    const { assert!(!mem::needs_drop::<Workers<'_, Write<'_>, u64, ()>>()) };
     let mut result = 0;
     let mut builder = Builder::try_new(1).expect("worker storage");
     builder

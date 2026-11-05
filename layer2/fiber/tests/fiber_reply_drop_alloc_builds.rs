@@ -52,40 +52,106 @@ fn register_allocates_none() {
 
 #[test]
 fn reject_skips_build() {
-    let drops = Drops::new();
+    use dope_fiber::reply::usage;
 
-    region::Token::scope(|mut token| {
-        Fixture::Queue(&drops)
-            .try_with(token.proof(), |state| {
-                let state = &state;
-                let arena = &state.arena;
-                let lane = arena.try_lane(LaneIndex::ZERO);
-                let lane = (lane).expect("lane exists");
-                let mut reply = recv::Response::<_, Never>::new();
-                assert!((reply.try_attach(&mut token, lane)) == (Ok(())));
-                for _ in 0..4 {
-                    assert!(
-                        lane.select(&mut token)
-                            .try_push(Counted::data(&drops))
-                            .is_ok()
-                    );
-                }
+    use crate::common::storage::replies::support::Collected;
 
-                let mut built = false;
-                assert!(
-                    lane.select(&mut token)
-                        .try_build(Probe {
-                            built: &mut built,
+    for collected in [false, true] {
+        let drops = Drops::new();
+        region::Token::scope(|mut token| {
+            Fixture::Queue(&drops)
+                .try_with(token.proof(), |state| {
+                    let lane = state.arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+                    let mut stream = recv::Response::<_, Never>::new();
+                    let mut collect = recv::Response::<_, Collected>::new();
+                    if collected {
+                        collect.try_attach(&mut token, lane)
+                    } else {
+                        stream.try_attach(&mut token, lane)
+                    }
+                    .expect("reply attachment");
+                    for index in 0..4 {
+                        let value = Counted {
+                            failure: None,
+                            bytes: usize::from(index == 0),
                             drops: &drops,
-                        },)
-                        .is_err()
-                );
-                assert!(!built);
-            })
-            .expect("reply storage construction");
-    });
+                        };
+                        assert!(lane.select(&mut token).try_push(value).is_ok());
+                    }
 
-    assert_eq!(drops.count(), 4);
+                    let mut built = false;
+                    let result = lane.select(&mut token).try_build(Probe {
+                        built: &mut built,
+                        drops: &drops,
+                    });
+                    let builder = match (collected, result) {
+                        (false, Err(PushError::Backpressure { builder, cause })) => {
+                            assert_eq!(
+                                cause.into_parts(),
+                                (
+                                    usage::Resource::Items,
+                                    usage::Required::new(1),
+                                    usage::Available::new(0),
+                                )
+                            );
+                            builder
+                        }
+                        (true, Err(PushError::Capacity { builder, cause })) => {
+                            assert_eq!(
+                                cause,
+                                usage::Capacity::Limit {
+                                    resource: usage::Resource::Items,
+                                    current: usage::Current::new(4),
+                                    added: usage::Added::new(1),
+                                    limit: usage::Limit::new(4),
+                                }
+                            );
+                            builder
+                        }
+                        _ => panic!("full reply"),
+                    };
+                    assert!(!*builder.built);
+                    if !collected {
+                        for (bytes, expected) in [
+                            (
+                                2,
+                                usage::Capacity::Limit {
+                                    resource: usage::Resource::Bytes,
+                                    current: usage::Current::new(1),
+                                    added: usage::Added::new(2),
+                                    limit: usage::Limit::new(1),
+                                },
+                            ),
+                            (
+                                usize::MAX,
+                                usage::Capacity::Arithmetic {
+                                    resource: usage::Resource::Bytes,
+                                    current: usage::Current::new(1),
+                                    added: usage::Added::new(usize::MAX),
+                                },
+                            ),
+                        ] {
+                            let value = Counted {
+                                failure: None,
+                                bytes,
+                                drops: &drops,
+                            };
+                            let value = match lane.select(&mut token).try_push(value) {
+                                Err(usage::InsertError::Capacity { value, cause }) => {
+                                    assert_eq!(cause, expected);
+                                    value
+                                }
+                                _ => panic!("permanent rejection"),
+                            };
+                            assert_eq!(value.bytes, bytes);
+                        }
+                    }
+                })
+                .expect("reply storage construction");
+        });
+
+        assert_eq!(drops.count(), if collected { 4 } else { 6 });
+    }
 }
 
 #[test]

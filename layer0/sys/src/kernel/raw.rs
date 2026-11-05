@@ -179,7 +179,7 @@ impl Descriptor {
     /// native operation or retained by its exclusive owner.
     pub const unsafe fn new(raw: libc::c_int) -> Self {
         // SAFETY: the native nonnegative c_int retains the exact 0..=i32::MAX bound.
-        Self(unsafe { bounded::raw::Proof::assume(raw as u32) }.retain())
+        Self(unsafe { bounded::raw::u32(raw as u32) })
     }
 
     pub const fn get(self) -> libc::c_int {
@@ -196,7 +196,7 @@ impl Count {
     /// Retains the count one count-returning operation completed within its operand.
     const fn new(value: kernel::Value) -> Self {
         // SAFETY: Value admits exactly 0..=i32::MAX, the bound retained here.
-        Self(unsafe { bounded::raw::Proof::assume(value.get() as u32) }.retain())
+        Self(unsafe { bounded::raw::u32(value.get() as u32) })
     }
 
     pub const fn get(self) -> usize {

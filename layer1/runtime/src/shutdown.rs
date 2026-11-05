@@ -1,17 +1,31 @@
-use std::{cell::Cell, marker, mem, os::fd, time};
+use std::{marker, os::fd};
 
 use dope_core::{
+    Errno,
     driver::{life::creation, settings},
-    platform::wake::{CreateError, Ends, Notify, NotifyError, Wait, WaitError},
 };
 use o3::base::marker::ThreadBound;
 
-use crate::executor::{self, create};
+use crate::{
+    executor::{self, create},
+    process::{
+        failure::bus,
+        lifecycle::{self, Main},
+    },
+};
+
+pub use crate::process::Shutdown as ReadySource;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateError {
+    Pair(bus::Create),
+    Duplicate(Errno),
+}
 
 #[derive(Debug)]
 pub struct FireError {
     pub trigger: Trigger,
-    pub cause: NotifyError,
+    pub cause: Errno,
 }
 
 #[must_use]
@@ -22,7 +36,7 @@ pub struct Pair {
 
 #[must_use]
 pub struct Source {
-    pub(crate) event: (fd::OwnedFd, Notify),
+    pub(crate) event: (fd::OwnedFd, Main),
 }
 
 impl fd::AsFd for Source {
@@ -33,32 +47,7 @@ impl fd::AsFd for Source {
 
 #[must_use]
 #[derive(Debug)]
-pub struct Trigger(Notify);
-
-/// Shutdown source whose application-install edge is observable exactly once.
-#[must_use]
-pub struct ReadySource {
-    shutdown: Source,
-    ready: Cell<Option<Notify>>,
-}
-
-impl fd::AsFd for ReadySource {
-    fn as_fd(&self) -> fd::BorrowedFd<'_> {
-        fd::AsFd::as_fd(&self.shutdown)
-    }
-}
-
-/// Blocking observer for one application-install edge.
-#[must_use]
-pub struct Readiness(Wait);
-
-/// Affine shutdown and readiness authorities for a single runtime.
-#[must_use]
-pub struct ReadyPair {
-    source: ReadySource,
-    trigger: Trigger,
-    readiness: Readiness,
-}
+pub struct Trigger(Main);
 
 type Invariant<Q> = marker::PhantomData<(fn(Q) -> Q, ThreadBound)>;
 
@@ -67,13 +56,13 @@ pub struct Requested<Q = Source>(Invariant<Q>);
 
 impl Pair {
     pub fn new() -> Result<Self, CreateError> {
-        let (event, notify) = Ends::event()?.split();
-        let (guard, notify) = notify.fork()?;
+        let (main, event) = lifecycle::pair().map_err(CreateError::Pair)?;
+        let guard = main.duplicate().map_err(CreateError::Duplicate)?;
         Ok(Self {
             source: Source {
                 event: (event, guard),
             },
-            trigger: Trigger(notify),
+            trigger: Trigger(main),
         })
     }
 
@@ -83,25 +72,6 @@ impl Pair {
 
     pub fn run<R>(self, execute: impl FnOnce(Source) -> R) -> R {
         execute(self.source)
-    }
-}
-
-impl ReadyPair {
-    pub fn new() -> Result<Self, CreateError> {
-        let (stop, trig) = Pair::new()?.split();
-        let (ready, notify) = Ends::blocking()?.split();
-        Ok(Self {
-            source: ReadySource {
-                shutdown: stop,
-                ready: Cell::new(Some(notify)),
-            },
-            trigger: trig,
-            readiness: Readiness(ready),
-        })
-    }
-
-    pub fn split(self) -> (ReadySource, Trigger, Readiness) {
-        (self.source, self.trigger, self.readiness)
     }
 }
 
@@ -119,8 +89,8 @@ impl executor::Build for Source {
     }
 }
 
-impl executor::Build for ReadySource {
-    type Shutdown = ReadySource;
+impl<'run> executor::Build for ReadySource<'run> {
+    type Shutdown = Self;
 
     fn try_build(
         self,
@@ -139,35 +109,9 @@ impl executor::Startup for Source {
     }
 }
 
-impl executor::Startup for ReadySource {
-    fn installed(&self) -> Result<(), executor::InstallError> {
-        let Some(notify) = self.ready.take() else {
-            return Ok(());
-        };
-        match notify.notify() {
-            Ok(()) => Ok(()),
-            Err(NotifyError::Write(error)) if error.is_pipe() => Ok(()),
-            Err(error) => {
-                self.ready.set(Some(notify));
-                Err(error.into())
-            }
-        }
-    }
-}
-
-impl Readiness {
-    pub fn wait(self) -> Result<(), WaitError> {
-        self.0.wait()
-    }
-
-    pub fn wait_timeout(self, limit: time::Duration) -> Result<(), WaitError> {
-        self.0.wait_timeout(limit)
-    }
-}
-
 impl Trigger {
     pub fn fire(self) -> Result<(), FireError> {
-        match self.0.notify() {
+        match self.0.request() {
             Ok(()) => Ok(()),
             Err(cause) => Err(FireError {
                 trigger: self,
@@ -184,4 +128,3 @@ impl<Q> Requested<Q> {
 }
 
 const _: () = assert!(std::mem::size_of::<Requested>() == 0);
-const _: () = assert!(mem::size_of::<Option<Notify>>() == mem::size_of::<fd::OwnedFd>());

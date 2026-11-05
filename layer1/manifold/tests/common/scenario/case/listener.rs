@@ -81,6 +81,7 @@ pub struct Listener<I = receive::Borrowed> {
     egress: egress::Config,
     stream: tcp::StreamConfig,
     transport: tcp::Config,
+    pub(crate) bound: Option<socket::Listener>,
     connection_lifetime: Option<handler::Lifetime>,
     input: marker::PhantomData<fn() -> I>,
 }
@@ -94,6 +95,7 @@ impl<I> Listener<I> {
             egress: egress::Config::DEFAULT,
             stream: Default::default(),
             transport: spec,
+            bound: None,
             connection_lifetime: None,
             input: marker::PhantomData,
         }
@@ -162,7 +164,8 @@ impl<I> Listener<I> {
         I: receive::Mode<E::Wire> + receive::Resources,
     {
         let (config, settings) = self.config::<E>();
-        let mut install = Direct::<ID, E, _>::new(config, Value::<A, I>::new(app));
+        let mut install =
+            Direct::<ID, E, _>::new(config, Value::<A, I>::new(app)).with_bound(self.bound);
         if let Some(life) = self.connection_lifetime {
             install = install.with_life(life);
         }

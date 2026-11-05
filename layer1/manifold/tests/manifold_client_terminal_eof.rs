@@ -2,12 +2,9 @@ pub mod common;
 
 use std::{cell::Cell, fmt::Debug, net::Shutdown, rc::Rc, time::Duration};
 
-use dope_core::{
-    driver::{
-        life::recovery,
-        route::{Id, KeyTag},
-    },
-    platform::wake,
+use dope_core::driver::{
+    life::recovery,
+    route::{Id, KeyTag},
 };
 use dope_manifold::{
     app::{env::Bundle, receive},
@@ -22,7 +19,7 @@ use dope_runtime::{executor::session::Completion, topology::error::Kind};
 use dope_test::{
     fibers,
     harness::{
-        peer,
+        GUARD, peer,
         signals::{self, Progress as _},
     },
     reclaim::Reports,
@@ -208,108 +205,99 @@ fn eof_blocked_waits_and_cancels() {
 fn eof_commits_then_settles() {
     for (split, excess) in [(true, false), (true, true), (false, false), (false, true)] {
         let mut finish = Completion::new();
-        let (next, resume) = wake::Ends::blocking().expect("peer input release").split();
+        let listener =
+            peer::TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind terminal peer");
+        let phase = Rc::new(Cell::new(0));
+        let conn = signals::Gate::new();
+        let commit = signals::Gate::new();
+        let settled = signals::Gate::new();
+        let closed = signals::Gate::new();
+        let partial = signals::Gate::new();
+        let full = signals::Gate::new();
+        let audit = Rc::new(Report::default());
 
-        peer::TcpScript::with(
-            move |stream| {
-                if split {
-                    assert!(stream.write_all(b"T").is_ok(), "write terminal input");
-                    next.wait_timeout(Duration::from_secs(2))
-                        .expect("partial input retained");
-                    assert!(stream.write_all(b"T").is_ok(), "fill terminal input");
-                } else {
-                    assert!(stream.write_all(b"TT").is_ok(), "write full terminal input");
-                }
-                next.wait_timeout(Duration::from_secs(2))
-                    .expect("full input retained");
-                if excess {
-                    assert!(stream.write_all(b"X").is_ok(), "exceed terminal capacity");
-                } else {
-                    assert!(stream.shutdown(Shutdown::Write).is_ok(), "terminal EOF");
-                }
-                let mut closed = Vec::new();
-                assert!(
-                    stream.read_to_end(&mut closed).is_ok(),
-                    "wait for terminal connection close"
-                );
-            },
-            |peer| {
-                let phase = Rc::new(Cell::new(0));
-                let commit = signals::Gate::new();
-                let settled = signals::Gate::new();
-                let closed = signals::Gate::new();
-                let partial = signals::Gate::new();
-                let full = signals::Gate::new();
-                let audit = Rc::new(Report::default());
-
-                let planned = Connector::<1>::new(
-                    peer.addr(),
-                    Duration::from_millis(10),
-                    Duration::from_millis(50),
-                )
-                .prepare_off::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(Value::new(
-                    Eof {
-                        audit: Rc::clone(&audit),
-
-                        decode: Decode {
-                            partial: partial.clone(),
-                            full: full.clone(),
-                        },
-                        phase: phase.clone(),
-                        commit: commit.clone(),
-                        settled: settled.clone(),
-                        closed: closed.clone(),
-                        reason: if excess {
-                            Reason::Ingress(receive::Failure::ParseCapacity)
-                        } else {
-                            Reason::Remote
-                        },
-                    },
-                ))
-                .expect("prepare actual client layout");
-                let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-
-                planned
-                    .with_run(
-                        &mut finish,
-                        |case| {
-                            if split {
-                                reached(case.try_wait(&partial, 1), &audit);
-                                resume.notify().expect("release full input");
-                            }
-                            reached(case.try_wait(&full, 1), &audit);
-                            if !split {
-                                assert_eq!(partial.hits(), 0, "first input fills the limit");
-                            }
-                            resume.notify().expect("release terminal input");
-                            if !excess {
-                                reached(case.try_wait(&commit, 1), &audit);
-                                reached(case.try_wait(&settled, 1), &audit);
-                            }
-                            reached(case.try_wait(&closed, 1), &audit);
-                        },
-                        recovery::Policy::new(|event| reclaim1.push(event), recover),
-                        native,
-                    )
-                    .expect("application scenario");
-                assert!(
-                    matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                    "unexpected reclaimed operations: {reclaim1:?}"
-                );
-
-                audit.checked((0, 0));
-                let accepted = u32::from(!excess);
-                assert_eq!(
-                    [commit.hits(), settled.hits(), closed.hits()],
-                    [accepted, accepted, 1]
-                );
-                assert_eq!(full.hits(), 1 + u32::from(excess));
-                assert_eq!(phase.get(), if excess { 0 } else { 3 });
-                let finish = peer.finish();
-                assert!(finish.is_ok(), "finish terminal peer");
-            },
+        let planned = Connector::<1>::new(
+            listener.local_addr().expect("terminal peer address"),
+            Duration::from_millis(10),
+            Duration::from_millis(50),
         )
-        .expect("spawn terminal peer");
+        .prepare_off::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(Value::new(Eof {
+            audit: Rc::clone(&audit),
+            decode: Decode {
+                partial: partial.clone(),
+                full: full.clone(),
+            },
+            phase: phase.clone(),
+            conn: conn.clone(),
+            commit: commit.clone(),
+            settled: settled.clone(),
+            closed: closed.clone(),
+            reason: if excess {
+                Reason::Ingress(receive::Failure::ParseCapacity)
+            } else {
+                Reason::Remote
+            },
+        }))
+        .expect("prepare actual client layout");
+        let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
+
+        let stream = planned
+            .with_run(
+                &mut finish,
+                |case| {
+                    reached(case.try_wait(&conn, 1), &audit);
+                    let stream = listener
+                        .accept_for(GUARD)
+                        .expect("accept terminal peer")
+                        .expect("connected terminal peer");
+                    stream.set_nodelay(true).expect("terminal nodelay");
+                    stream
+                        .read_wait(Some(GUARD))
+                        .expect("terminal read deadline");
+                    stream
+                        .write_wait(Some(GUARD))
+                        .expect("terminal write deadline");
+                    if split {
+                        stream.write_all(b"T").expect("write terminal input");
+                        reached(case.try_wait(&partial, 1), &audit);
+                        stream.write_all(b"T").expect("fill terminal input");
+                    } else {
+                        stream.write_all(b"TT").expect("write full terminal input");
+                    }
+                    reached(case.try_wait(&full, 1), &audit);
+                    if !split {
+                        assert_eq!(partial.hits(), 0, "first input fills the limit");
+                    }
+                    if excess {
+                        stream.write_all(b"X").expect("exceed terminal capacity");
+                    } else {
+                        stream.shutdown(Shutdown::Write).expect("terminal EOF");
+                        reached(case.try_wait(&commit, 1), &audit);
+                        reached(case.try_wait(&settled, 1), &audit);
+                    }
+                    reached(case.try_wait(&closed, 1), &audit);
+                    stream
+                },
+                recovery::Policy::new(|event| reclaim1.push(event), recover),
+                native,
+            )
+            .expect("application scenario");
+        assert!(
+            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+            "unexpected reclaimed operations: {reclaim1:?}"
+        );
+
+        audit.checked((0, 0));
+        let accepted = u32::from(!excess);
+        assert_eq!(
+            [commit.hits(), settled.hits(), closed.hits()],
+            [accepted, accepted, 1]
+        );
+        assert_eq!(full.hits(), 1 + u32::from(excess));
+        assert_eq!(phase.get(), if excess { 0 } else { 3 });
+        stream
+            .read_to_end(&mut Vec::new())
+            .expect("wait for terminal connection close");
     }
 }
 

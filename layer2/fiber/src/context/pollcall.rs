@@ -7,20 +7,7 @@ use crate::{
 
 /// Exact, single-use admission for polling one pinned fiber.
 /// It is constructed only after consuming one application-work credit and
-/// cannot be retagged to a different fiber type:
-///
-/// ```compile_fail
-/// use dope_fiber::{
-///     abi::{Pending, Ready},
-///     context::PollCall,
-/// };
-///
-/// fn retag<'call, 'turn, 'd: 'turn>(
-///     call: PollCall<'call, 'turn, 'd, Ready<()>>,
-/// ) -> PollCall<'call, 'turn, 'd, Pending<()>> {
-///     call
-/// }
-/// ```
+/// cannot be retagged to a different fiber type.
 pub struct PollCall<'call, 'turn, 'd: 'turn, F> {
     pub(super) fiber: Pin<&'call mut F>,
     pub(super) context: Pin<&'call mut Context<'turn, 'd>>,

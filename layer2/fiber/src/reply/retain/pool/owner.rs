@@ -7,10 +7,11 @@ use o3::mem::{self, raw::Source as _, rc};
 use crate::reply::{
     LaneIndex,
     arena::state::EntryKey,
+    layout, recv,
     retain::{
         self,
         grant::{entries, payload},
-        pool::{self, Acquire, Active, Key, LeaseEdge, Release, state},
+        pool::{self, Acquire, Active, Key, LeaseEdge, Release},
     },
     usage,
 };
@@ -36,13 +37,7 @@ pub(in crate::reply) struct Payload<'arena, 'credits, 'region> {
 
 /// One removed member and its exact source owner, kept inseparable until
 /// retention commits or the original acquisition is returned.
-pub(in crate::reply) struct Removal<
-    'a,
-    'arena,
-    'credits,
-    'region,
-    A: mem::raw::Amount<3, usize> + Into<payload::Returned>,
-> {
+pub(in crate::reply) struct Removal<'a, 'arena, 'credits, 'region, A: mem::raw::Amount<3, usize>> {
     owner: &'a mut Payload<'arena, 'credits, 'region>,
     grant: payload::Grant<'credits, A>,
 }
@@ -50,42 +45,6 @@ pub(in crate::reply) struct Removal<
 struct Retention<'a, 'arena, 'credits, 'region> {
     owner: &'a mut Payload<'arena, 'credits, 'region>,
     grant: payload::Grant<'credits, payload::Failure>,
-}
-
-/// A source-bound component transfer produced only by the captured removal.
-struct Transfer<'arena, 'credits, 'region, A: mem::raw::Sum<3, usize>> {
-    active: Active<'arena, 'credits, 'region>,
-    grant: payload::Grant<'credits, A>,
-}
-
-trait Component: mem::raw::Sum<3, usize> {
-    fn axis<'a, 'credits>(
-        entry: &'a state::Entry<'credits>,
-    ) -> &'a state::raw::Axis<'credits, Self>;
-}
-
-impl Component for payload::Values {
-    fn axis<'a, 'credits>(
-        entry: &'a state::Entry<'credits>,
-    ) -> &'a state::raw::Axis<'credits, Self> {
-        &entry.values
-    }
-}
-
-impl Component for payload::Bytes {
-    fn axis<'a, 'credits>(
-        entry: &'a state::Entry<'credits>,
-    ) -> &'a state::raw::Axis<'credits, Self> {
-        &entry.bytes
-    }
-}
-
-impl<A: Component> Transfer<'_, '_, '_, A> {
-    fn commit(self) {
-        // SAFETY: Retention created both this target and component from its exact
-        // captured owner. The live edge prevents entry reuse during the transfer.
-        unsafe { A::axis(self.active.state()).activate(self.grant) };
-    }
 }
 
 impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
@@ -160,13 +119,76 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
     }
 
     pub(in crate::reply) fn try_acquire<
-        A: mem::raw::Amount<3, usize> + Into<payload::Returned> + Into<payload::Requested>,
+        A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     >(
         &mut self,
         key: EntryKey,
         amount: A,
+        limit: layout::Limit,
+        acceptance: recv::Acceptance,
     ) -> Result<(), Acquire> {
-        self.key.try_acquire(self.lane, key, &mut self.sum, amount)
+        let lanes = &self.key.parts().core.lanes;
+        let [items, values, bytes] = amount.get();
+        let current = self.sum.usage();
+        let next = current
+            .try_add(usage::Usage::new(
+                usage::Bytes::new(bytes),
+                usage::Values::new(values),
+            ))
+            .map_err(|cause| {
+                lanes.cancel_entry(self.lane, key);
+                Acquire::Capacity(cause)
+            })?;
+        let held = self.sum.len();
+        let mut blocked = None;
+        for (resource, current, added, limit, exceeded) in [
+            (
+                usage::Resource::Items,
+                held,
+                items,
+                limit.data().get(),
+                items > limit.data().get() - held,
+            ),
+            (
+                usage::Resource::Bytes,
+                current.bytes().get(),
+                bytes,
+                limit.bytes().get(),
+                next.bytes() > limit.bytes(),
+            ),
+            (
+                usage::Resource::Values,
+                current.values().get(),
+                values,
+                limit.values().get(),
+                next.values() > limit.values(),
+            ),
+        ] {
+            if !exceeded {
+                continue;
+            }
+            if acceptance != recv::Acceptance::Payload || added > limit {
+                lanes.cancel_entry(self.lane, key);
+                return Err(Acquire::Capacity(usage::Capacity::Limit {
+                    resource,
+                    current: usage::Current::new(current),
+                    added: usage::Added::new(added),
+                    limit: usage::Limit::new(limit),
+                }));
+            }
+            if blocked.is_none() {
+                blocked = Some(usage::Backpressure::new(
+                    resource,
+                    usage::Required::new(added),
+                    usage::Available::new(limit - current),
+                ));
+            }
+        }
+        if let Some(cause) = blocked {
+            lanes.wait_local(self.lane, key);
+            return Err(Acquire::Backpressure(cause));
+        }
+        lanes.take_waiting(self.lane, key, &mut self.sum, amount, acceptance)
     }
 
     fn restore<A: mem::raw::Amount<3, usize>>(&mut self, grant: payload::Grant<'credits, A>) {
@@ -182,14 +204,6 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
             sum: self.sum.drain(),
         })
     }
-
-    pub(in crate::reply) fn len(&self) -> usize {
-        self.sum.len()
-    }
-
-    pub(in crate::reply) fn usage(&self) -> usage::Usage {
-        self.sum.usage()
-    }
 }
 
 // SAFETY: the implementation preserves the caller's original-member obligation
@@ -202,7 +216,7 @@ unsafe impl<'arena, 'credits, 'region> retain::raw::Remove<'arena, 'credits, 're
     /// That member must not have been removed from this sum before.
     unsafe fn remove<A>(&mut self, amount: A) -> Removal<'_, 'arena, 'credits, 'region, A>
     where
-        A: mem::raw::Amount<3, usize> + Into<payload::Returned>,
+        A: mem::raw::Amount<3, usize>,
     {
         // SAFETY: the owning slot/removal proves membership in this exact source;
         // take splits it under the exclusive borrow, then Removal retains it.
@@ -225,7 +239,8 @@ impl<'arena, 'credits, 'region> Retention<'_, 'arena, 'credits, 'region> {
                         return Err(error);
                     }
                 };
-                Transfer { active, grant }.commit();
+                // SAFETY: the captured owner binds this held edge and grant to the same entry.
+                unsafe { active.state().values.activate(grant) };
                 retain::Held {
                     bytes: None,
                     values: Some(credit),
@@ -240,7 +255,8 @@ impl<'arena, 'credits, 'region> Retention<'_, 'arena, 'credits, 'region> {
                         return Err(error);
                     }
                 };
-                Transfer { active, grant }.commit();
+                // SAFETY: the captured owner binds this held edge and grant to the same entry.
+                unsafe { active.state().bytes.activate(grant) };
                 retain::Held {
                     bytes: Some(credit),
                     values: None,
@@ -262,16 +278,11 @@ impl<'arena, 'credits, 'region> Retention<'_, 'arena, 'credits, 'region> {
                         return Err(error);
                     }
                 };
-                Transfer {
-                    active,
-                    grant: values,
+                // SAFETY: both live edges and disjoint grants belong to this captured owner.
+                unsafe {
+                    active.state().values.activate(values);
+                    active.state().bytes.activate(bytes);
                 }
-                .commit();
-                Transfer {
-                    active,
-                    grant: bytes,
-                }
-                .commit();
                 held
             }
         };
@@ -279,9 +290,9 @@ impl<'arena, 'credits, 'region> Retention<'_, 'arena, 'credits, 'region> {
     }
 }
 
-impl<A: mem::raw::Amount<3, usize> + Into<payload::Returned>> Removal<'_, '_, '_, '_, A> {
+impl<A: mem::raw::Amount<3, usize>> Removal<'_, '_, '_, '_, A> {
     pub(in crate::reply) fn release(self) {
-        self.owner.key.release_data(self.grant);
+        self.owner.key.release_data(self.owner.lane, self.grant);
     }
 }
 
@@ -303,7 +314,7 @@ impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::
                 return Err(error);
             }
         };
-        owner.key.release_data(data);
+        owner.key.release_data(owner.lane, data);
         Ok(held)
     }
 
@@ -314,7 +325,7 @@ impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::
         let (data, grant) = payload::Value::split(grant);
         match payload::Failure::claim(grant) {
             None => {
-                owner.key.release_data(data);
+                owner.key.release_data(owner.lane, data);
                 Ok(None)
             }
             Some(grant) => {
@@ -326,7 +337,7 @@ impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::
                         return Err(error);
                     }
                 };
-                owner.key.release_data(data);
+                owner.key.release_data(owner.lane, data);
                 Ok(Some(mem::Lease::new(edge, grant)))
             }
         }

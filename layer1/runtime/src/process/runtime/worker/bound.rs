@@ -1,3 +1,4 @@
+use fd::AsFd as _;
 use std::{marker, mem, os::fd};
 
 use dope_core::platform::{affinity, thread::Slot};

@@ -88,7 +88,8 @@ unsafe impl<'p, 'd, ID: Identity, const N: usize, const B: usize> dispatch::raw:
     }
 }
 
-// SAFETY: Control keeps the owner pinned and only copies into idle blocks.
+// SAFETY: Control keeps the owner pinned, copies only into idle blocks, and
+// replaces the file only after every native write loan has ended.
 unsafe impl<'p, 'd, ID: Identity, const N: usize, const B: usize> dispatch::raw::Control<'d>
     for appender::Appender<'p, 'd, ID, N, B>
 {

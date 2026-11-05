@@ -88,7 +88,7 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
                 .map_err(|errno| Error::syscall(Operation::FastOpen, errno))?;
         }
         handle
-            .bind(&socket::Addr::from_std(addr))
+            .bind(&socket::Inet::from_std(addr))
             .map_err(|errno| Error::syscall(Operation::Bind, errno))?;
         if let Some(depth) = depth {
             handle

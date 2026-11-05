@@ -47,10 +47,10 @@ impl Group {
             operation: Operation::Bind,
             errno,
         };
-        first.bind(&socket::Addr::from_std(addr)).map_err(failed)?;
+        first.bind(&socket::Inet::from_std(addr)).map_err(failed)?;
         let local = first.local_addr().map_err(Error::LocalAddress)?;
         let addr = local.into_std().map_err(Error::Address)?;
-        let bound = socket::Addr::from_std(addr);
+        let bound = socket::Inet::from_std(addr);
         let mut sockets = Vec::try_new(usize::from(count.encode())).map_err(Error::Allocation)?;
         sockets.push(first);
         while sockets.len() < usize::from(count.encode()) {

@@ -88,10 +88,6 @@ impl<'s, const N: usize> Query<'s, N> {
         &mut self.branches[family.index()]
     }
 
-    pub(in crate::storage::queries) fn into_iter(self) -> impl Iterator<Item = state::Row<'s, N>> {
-        self.branches.into_iter()
-    }
-
     pub(in crate::storage::queries) fn complete(
         &self,
         now: Instant,

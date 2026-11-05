@@ -158,6 +158,8 @@ fn response_scenarios() {
         (FULL, 2, 1, CAPACITY),
         (Mode::Refused, 3, 2, Ok(4)),
         (Mode::Reply(Reply::Name), 2, 1, Err(Kind::Name)),
+        (Mode::Reply(Reply::Empty), 2, 1, Err(Kind::Empty)),
+        (Mode::Code(2), 2, 1, Err(Kind::Server { code: 2 })),
         (Mode::Malformed(true), 2, 2, Ok(3)),
         (
             Mode::Malformed(false),
@@ -180,12 +182,7 @@ fn response_scenarios() {
         ),
         (Mode::Partial, 2, 2, Ok(7)),
         (Mode::Cookie(Cookie::Missing), 2, 1, Ok(8)),
-        (
-            Mode::ExtendedCode(0x80),
-            2,
-            1,
-            Err(Kind::Server { code: 2048 }),
-        ),
+        (Mode::Code(2048), 2, 1, Err(Kind::Server { code: 2048 })),
         (Mode::Reject(Reject::Wrong), 2, 1, Ok(10)),
         (Mode::Reject(Reject::Duplicate), 2, 1, Ok(10)),
         (Mode::Reject(Reject::Trailing), 2, 1, Ok(10)),

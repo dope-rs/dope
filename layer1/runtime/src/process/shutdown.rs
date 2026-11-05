@@ -1,6 +1,6 @@
 use std::{mem, os::fd};
 
-use crate::process::{gate, runtime::bus};
+use crate::process::{gate, lifecycle, runtime::bus};
 
 /// Shutdown source borrowed from the exact process run that owns this worker.
 ///
@@ -17,6 +17,16 @@ impl<'run> Shutdown<'run> {
 
     pub(super) fn gate(&self) -> gate::Closed<'run> {
         gate::Closed::new(self.source)
+    }
+
+    pub fn control(&self) -> lifecycle::Control<'_> {
+        lifecycle::Control::new(self.source.as_fd())
+    }
+
+    pub fn terminal(&self) -> crate::process::Terminal<'run> {
+        crate::process::Terminal {
+            source: self.source,
+        }
     }
 }
 

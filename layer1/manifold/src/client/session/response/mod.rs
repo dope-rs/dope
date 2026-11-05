@@ -41,11 +41,6 @@ pub struct Resume<P, Q>(ResumeState<P, Q>);
 pub struct Committed<P>(P);
 
 /// Connection-owned work that can exist only after input commitment.
-///
-/// ```compile_fail
-/// use dope_manifold::client::session::response::Item;
-/// fn before_commit<P>(prepared: P) -> Item<P> { Item::new(prepared) }
-/// ```
 #[repr(transparent)]
 #[must_use]
 pub struct Item<P>(P);

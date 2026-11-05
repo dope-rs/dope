@@ -2,7 +2,7 @@ use dope_fiber::context::PollResult;
 
 pub mod set;
 
-use std::{array, cell::Cell, marker::PhantomPinned, pin::Pin, rc::Rc, task::Poll};
+use std::{array, cell::Cell, pin::Pin, rc::Rc, task::Poll};
 
 use dope::core::driver::{
     retained,
@@ -249,33 +249,5 @@ impl<'d> abi::Resume<'d> for OwnedOnce<'_> {
     ) -> abi::Transition<'id, usize> {
         let (vacant, state) = live.take();
         vacant.complete(state.value)
-    }
-}
-
-pub struct StreamOnce<'a> {
-    pub(crate) polls: &'a Cell<usize>,
-    pub(crate) drops: &'a Cell<usize>,
-    pub(crate) _pin: PhantomPinned,
-}
-
-impl Drop for StreamOnce<'_> {
-    fn drop(&mut self) {
-        self.drops.set(self.drops.get() + 1);
-    }
-}
-
-impl<'d> abi::Stream<'d> for StreamOnce<'_> {
-    type Item = u8;
-
-    fn poll_next(call: PollCall<'_, '_, 'd, Self>) -> Poll<Option<Self::Item>> {
-        let this = call.into_fiber();
-        let next = this.polls.get();
-        this.polls.set(next + 1);
-        match next {
-            0 => Poll::Pending,
-            1 => Poll::Ready(Some(7)),
-            2 => Poll::Ready(None),
-            _ => unreachable!("terminal"),
-        }
     }
 }

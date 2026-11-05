@@ -3,20 +3,20 @@ use std::mem::{align_of, needs_drop, size_of};
 pub mod common;
 
 use common::wire::Failing;
-use dope_core::driver::route;
+use dope_core::{driver::route, io::socket::Inet};
 use dope_net::{
     link::{
         egress::{self, metadata},
+        oneshot::raw::Io,
         pool::recv::{input, storage::tail},
     },
-    wire::{
-        self, failure, open,
-        receive::{self, batch::One},
-        send::Vectored,
-    },
+    wire::{self, failure, open, receive::batch::One, send::Vectored},
 };
 use metadata::{front, reserve};
-use o3::{buffer::bytes::Source, mem};
+use o3::{
+    buffer::{bytes::Source, storage::Shared},
+    mem,
+};
 use wire::{
     receive::mode,
     send::{Empty, Transition, reclaim},
@@ -84,6 +84,8 @@ fn vectored_caches_length() {
 
 #[test]
 fn send_proof_layouts() {
+    type Access = Io<'static, 'static, 'static, 'static, route::KeyTag<0>, (), Inet, Shared>;
+    assert_eq!(size_of::<Access>(), 2 * size_of::<usize>());
     assert!(size_of::<Transition<'static, reclaim::OnSubmit, Empty>>() <= size_of::<usize>());
 }
 
@@ -189,11 +191,6 @@ fn metadata_owner_layouts() {
 
 #[test]
 fn mixed_receive_pays_sum() {
-    fn batch<S: for<'input> receive::raw::Batch<'input>>() {}
-
-    batch::<One<&'static [u8]>>();
-    batch::<One<Source<'static, &'static [u8]>>>();
-
     assert_eq!(size_of::<One<&'static [u8]>>(), size_of::<&'static [u8]>());
     assert_eq!(
         size_of::<One<Source<'static, &'static [u8]>>>(),

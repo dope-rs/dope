@@ -5,13 +5,13 @@ use o3::{mem, mem::lease};
 use crate::{
     driver,
     driver::schedule::ready,
-    io::fd::{handles, identity, slots},
+    io::fd::{domain, handles, identity},
 };
 
 #[repr(transparent)]
-pub(super) struct Lease<'d, P: Phase>
+pub(super) struct Lease<'d, P>
 where
-    Retire<'d, P>: mem::Return<Item = P::Id<'d>>,
+    Retire<'d, P>: mem::Return,
 {
     inner: mem::Lease<Retire<'d, P>, lease::Open>,
 }
@@ -19,10 +19,6 @@ where
 pub(super) enum Active {}
 pub(super) enum Creating {}
 pub(super) enum Unopened {}
-
-pub(super) trait Phase {
-    type Id<'d>: Copy;
-}
 
 pub(super) struct Retire<'d, P> {
     driver: driver::Reference<'d>,
@@ -37,20 +33,12 @@ impl<'d> mem::Return for Retire<'d, Active> {
     }
 }
 
-impl Phase for Active {
-    type Id<'d> = identity::Identity<'d>;
-}
-
 impl<'d> mem::Return for Retire<'d, Creating> {
     type Item = identity::Identity<'d, handles::OutboundSlot>;
 
     fn return_item(self, id: Self::Item) {
         self.driver.descriptors().creating(id);
     }
-}
-
-impl Phase for Creating {
-    type Id<'d> = identity::Identity<'d, handles::OutboundSlot>;
 }
 
 impl<'d> mem::Return for Retire<'d, Unopened> {
@@ -61,15 +49,11 @@ impl<'d> mem::Return for Retire<'d, Unopened> {
     }
 }
 
-impl Phase for Unopened {
-    type Id<'d> = identity::Identity<'d, handles::OutboundSlot>;
-}
-
-impl<'d, P: Phase> Lease<'d, P>
+impl<'d, P> Lease<'d, P>
 where
-    Retire<'d, P>: mem::Return<Item = P::Id<'d>>,
+    Retire<'d, P>: mem::Return,
 {
-    fn new(driver: driver::Reference<'d>, id: P::Id<'d>) -> Self {
+    fn new(driver: driver::Reference<'d>, id: <Retire<'d, P> as mem::Return>::Item) -> Self {
         Self {
             inner: mem::Lease::open(
                 Retire {
@@ -91,8 +75,11 @@ impl<'d> Lease<'d, Active> {
         Self::new(driver, id)
     }
 
-    pub(super) fn from_slot(slot: slots::ReservedSlot<'d>, driver: driver::Reference<'d>) -> Self {
-        Self::new(driver, slot.into_inner().into_id())
+    pub(super) fn from_slot(
+        slot: domain::Solo<identity::Identity<'d>>,
+        driver: driver::Reference<'d>,
+    ) -> Self {
+        Self::new(driver, slot.into_id())
     }
 
     pub(super) fn slot_ref(&self) -> &handles::PhysicalSlot {

@@ -1,6 +1,7 @@
 use std::{ffi::OsStr, path::Path, process, time};
 
-use dope_core::{Errno, platform::wake};
+use dope_core::Errno;
+use dope_runtime::process::lifecycle::{Main, Outcome, WaitError};
 
 use crate::harness::scenario::{native, run};
 
@@ -10,8 +11,7 @@ mod state;
 pub const CHILD: &str = "O3_TEST_CHILD";
 
 pub struct Deadline<'scope> {
-    cancel: Option<wake::Notify>,
-    join: &'scope mut dyn FnMut() -> Result<(), wake::WaitError>,
+    worker: Option<(Main, run::Join<'scope, Outcome<(), WaitError>>)>,
 }
 
 impl Deadline<'_> {
@@ -23,20 +23,17 @@ impl Deadline<'_> {
         let deadline = time::Instant::now()
             .checked_add(duration)
             .ok_or(deadline::Error::Overflow { duration })?;
-        let (wait, cancel) = wake::Ends::blocking()
-            .map_err(deadline::Error::Create)?
-            .split();
+        let (cancel, worker) = Main::try_pair().map_err(deadline::Error::Create)?;
         run::scope(
             run::Entry(move || {
-                match wait.wait_timeout(deadline.saturating_duration_since(time::Instant::now())) {
-                    Err(wake::WaitError::Timeout { .. }) => native::terminate(),
+                worker.run(|source| match source.control().wait_stop_until(deadline) {
+                    Err(WaitError::Timeout { .. }) => native::terminate(),
                     result => result,
-                }
+                })
             }),
             |join| {
                 let mut watchdog = Deadline {
-                    cancel: Some(cancel),
-                    join,
+                    worker: Some((cancel, join)),
                 };
                 let result = run(&mut watchdog);
                 watchdog.disarm().map(|()| result)
@@ -47,16 +44,19 @@ impl Deadline<'_> {
 
     /// Cancels and joins this watchdog once, before returning to its caller.
     pub fn disarm(&mut self) -> Result<(), deadline::Error> {
-        let Some(cancel) = self.cancel.take() else {
+        let Some((cancel, join)) = self.worker.take() else {
             return Ok(());
         };
-        let notified = cancel.notify();
-        drop(cancel);
-        match (notified, (self.join)()) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(cancel), Ok(())) => Err(deadline::Error::Cancel(cancel)),
-            (Ok(()), Err(wait)) => Err(deadline::Error::Wait(wait)),
-            (Err(cancel), Err(wait)) => Err(deadline::Error::Both { cancel, wait }),
+        let stopped = cancel.stop();
+        let outcome = join.finish();
+        match (stopped, outcome) {
+            (Ok(_), Outcome::Done(())) => Ok(()),
+            (Err(cancel), Outcome::Done(())) => Err(deadline::Error::Cancel(cancel)),
+            (stopped, Outcome::Failed { output, report }) => Err(deadline::Error::Worker {
+                cancel: stopped.err(),
+                output,
+                report,
+            }),
         }
     }
 }

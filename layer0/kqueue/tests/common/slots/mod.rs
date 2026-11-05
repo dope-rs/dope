@@ -29,7 +29,7 @@ unsafe impl change::raw::Slots for Slots {
     unsafe fn nth(_: Capacity, ordinal: usize) -> Index {
         // SAFETY: the caller passes an ordinal below `count(capacity)`, so it names
         // one of the four indices the bounded domain admits.
-        unsafe { bounded::raw::Proof::assume(ordinal as u32) }.retain()
+        unsafe { bounded::raw::u32(ordinal as u32) }
     }
 }
 

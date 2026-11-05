@@ -42,7 +42,7 @@ pub(in crate::reply) unsafe trait Remove<'arena, 'credits, 'region> {
     /// # Safety
     /// The amount must belong to one original member of this exact owner, and
     /// that member must not have been removed from this sum before.
-    unsafe fn remove<A: mem::raw::Amount<3, usize> + Into<payload::Returned>>(
+    unsafe fn remove<A: mem::raw::Amount<3, usize>>(
         &mut self,
         amount: A,
     ) -> pool::Removal<'_, 'arena, 'credits, 'region, A>;

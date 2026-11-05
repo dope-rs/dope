@@ -11,53 +11,29 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub(super) struct Bind<
-    'life,
-    's,
-    'd: 'life,
-    ID: Identity,
-    const IDS: u32,
-    const LANES: usize,
-    const N: usize,
-> {
+pub(super) struct Bind<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize> {
     pub(super) token: conn::Id<'d, ID>,
     pub(super) peer: peer::Peer<'life, 's, 'd, LANES, N>,
     pub(super) wake: ready::Target<'d>,
-    pub(super) ids: Cursor<IDS>,
+    pub(super) ids: Cursor,
     pub(super) blocked: bool,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Retiring<
-    'life,
-    's,
-    'd: 'life,
-    ID: Identity,
-    const IDS: u32,
-    const LANES: usize,
-    const N: usize,
-> {
-    pub(super) bind: Bind<'life, 's, 'd, ID, IDS, LANES, N>,
+pub(super) struct Retiring<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize> {
+    pub(super) bind: Bind<'life, 's, 'd, ID, LANES, N>,
     pub(super) branches: index::Retirement<LANES>,
     pub(super) error: Option<error::Kind>,
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Link<
-    'life,
-    's,
-    'd: 'life,
-    ID: Identity,
-    const IDS: u32,
-    const LANES: usize,
-    const N: usize,
-> {
-    Open(Bind<'life, 's, 'd, ID, IDS, LANES, N>),
-    Retiring(Retiring<'life, 's, 'd, ID, IDS, LANES, N>),
+pub(super) enum Link<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize> {
+    Open(Bind<'life, 's, 'd, ID, LANES, N>),
+    Retiring(Retiring<'life, 's, 'd, ID, LANES, N>),
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
-    Link<'life, 's, 'd, ID, IDS, LANES, N>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
+    Link<'life, 's, 'd, ID, LANES, N>
 {
     pub(super) const fn token(self) -> conn::Id<'d, ID> {
         match self {
@@ -67,8 +43,8 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
-    Retiring<'life, 's, 'd, ID, IDS, LANES, N>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
+    Retiring<'life, 's, 'd, ID, LANES, N>
 {
     pub(super) fn clear<'turn>(
         mut self,

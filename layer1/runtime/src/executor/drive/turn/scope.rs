@@ -182,10 +182,7 @@ where
         state: schedule::Progress<'d>,
         source: impl Time,
     ) -> Option<time::Duration> {
-        if matches!(state, schedule::Progress::Runnable)
-            || self.turn.is_exhausted()
-            || self.driver.driver_ref().ready().has_ready()
-        {
+        if matches!(state, schedule::Progress::Runnable) || !self.is_quiet() {
             return Some(time::Duration::ZERO);
         }
         match state {

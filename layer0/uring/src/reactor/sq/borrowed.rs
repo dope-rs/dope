@@ -167,4 +167,7 @@ impl<'a> request::Request<'a> for Borrowed<'a> {
     }
 }
 
-const _: () = assert!(mem::size_of::<Borrowed<'static>>() == mem::size_of::<sq::Entry>());
+const _: () = {
+    assert!(mem::size_of::<Borrowed<'static>>() == mem::size_of::<sq::Entry>());
+    assert!(mem::size_of::<Option<Borrowed<'static>>>() == 72);
+};

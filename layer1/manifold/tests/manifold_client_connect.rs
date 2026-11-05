@@ -32,8 +32,9 @@ use dope_runtime::{
 use dope_test::{
     fibers,
     harness::{
+        GUARD,
         observe::Trace,
-        peer::{self, TcpScript},
+        peer::{self, TcpAcceptor},
         signals::{Gate, LocalGate, Progress as _},
     },
     reclaim::Reports,
@@ -72,98 +73,87 @@ use crate::common::{
 #[test]
 fn reject_skips_callbacks() {
     let mut finish = Completion::new();
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peer");
+    let addr = server.local_addr().expect("peer address");
+    let gate = Gate::new();
+    let scoped = Rc::new(Cell::new(0));
+    let audit = Rc::new(Report::default());
 
-    TcpScript::with_many::<1, _>(
-        |_| {},
-        |server| {
-            let addr = server.addr();
-            let gate = Gate::new();
-            let scoped = Rc::new(Cell::new(0));
-            let audit = Rc::new(Report::default());
+    let planned =
+        Attempt::new(addr).prepare::<KeyTag<3>, _, Bundle<Tcp, Identity, Throughput>>(Rejected {
+            audit: Rc::clone(&audit),
+            gate: gate.clone(),
+            scoped: Rc::clone(&scoped),
+        });
+    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<3>()]);
 
-            let planned = Attempt::new(addr)
-                .prepare::<KeyTag<3>, _, Bundle<Tcp, Identity, Throughput>>(Rejected {
-                    audit: Rc::clone(&audit),
-                    gate: gate.clone(),
-                    scoped: Rc::clone(&scoped),
-                });
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<3>()]);
+    let run = planned.with_run(
+        &mut finish,
+        Identity,
+        |case| reached(case.try_wait(&gate, 1), &audit),
+        recovery::Policy::new(|event| reclaim1.push(event), recover),
+        leased,
+    );
+    run.expect("rejected attempt scenario failed");
+    assert!(
+        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim1:?}"
+    );
 
-            let run = planned.with_run(
-                &mut finish,
-                Identity,
-                |case| reached(case.try_wait(&gate, 1), &audit),
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-                leased,
-            );
-            run.expect("rejected attempt scenario failed");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
-
-            let finish = server.finish();
-            assert!(finish.is_ok(), "finish held peer");
-            assert_eq!(scoped.get(), 0);
-            audit.checked((0, 0));
-        },
-    )
-    .expect("spawn peer");
+    assert_eq!(scoped.get(), 0);
+    audit.checked((0, 0));
 }
 
 #[test]
 fn reports_state_failure() {
     let mut finish = Completion::new();
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind rejection peer");
+    let done = Gate::new();
+    let trace = Rc::new(empty::Trace::default());
+    let audit = Rc::new(Report::default());
 
-    TcpScript::with(
-        |stream| {
-            assert_eq!(
-                stream.read(&mut [0]).expect("rejected connection closes"),
-                0
-            );
-        },
-        |server| {
-            let done = Gate::new();
-            let trace = Rc::new(empty::Trace::default());
-            let audit = Rc::new(Report::default());
+    let planned = Attempt::new(server.local_addr().expect("peer address"))
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Empty {
+            audit: Rc::clone(&audit),
+            trace: Rc::clone(&trace),
+            reject: Some(done.clone()),
+        });
+    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-            let planned = Attempt::new(server.addr())
-                .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Empty {
-                    audit: Rc::clone(&audit),
-                    trace: Rc::clone(&trace),
-                    reject: Some(done.clone()),
-                });
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-
-            planned
-                .with_run(
-                    &mut finish,
-                    Identity,
-                    |case| reached(case.try_wait(&done, 1), &audit),
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    leased,
-                )
-                .expect("connection state rejection must retire its transport");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
-            assert!(server.finish().is_ok());
-            assert!(matches!(
-                trace.failed.values().as_deref(),
-                Ok([ConnectFault::Transport(
-                    dope_net::link::event::ConnectError::State(rc::Error::Exhausted)
-                )])
-            ));
-            assert_eq!(trace.prepared.get(), 0);
-            assert_eq!(trace.admitted.get(), 0);
-            audit.checked((0, 0));
-            assert_eq!(trace.connected.get(), 0);
-            assert_eq!(trace.closed.get(), 0);
-            assert_eq!(trace.drained.get(), 0);
-        },
-    )
-    .expect("the state rejection peer must bind");
+    planned
+        .with_run(
+            &mut finish,
+            Identity,
+            |case| reached(case.try_wait(&done, 1), &audit),
+            recovery::Policy::new(|event| reclaim1.push(event), recover),
+            leased,
+        )
+        .expect("connection state rejection must retire its transport");
+    assert!(
+        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim1:?}"
+    );
+    assert!(matches!(
+        trace.failed.values().as_deref(),
+        Ok([ConnectFault::Transport(
+            dope_net::link::event::ConnectError::State(rc::Error::Exhausted)
+        )])
+    ));
+    assert_eq!(trace.prepared.get(), 0);
+    assert_eq!(trace.admitted.get(), 0);
+    audit.checked((0, 0));
+    assert_eq!(trace.connected.get(), 0);
+    assert_eq!(trace.closed.get(), 0);
+    assert_eq!(trace.drained.get(), 0);
+    let stream = server
+        .accept_for(GUARD)
+        .expect("accept rejection peer")
+        .expect("connected peer");
+    stream.read_wait(Some(GUARD)).expect("peer read deadline");
+    assert_eq!(
+        stream.read(&mut [0]).expect("rejected connection closes"),
+        0
+    );
 }
 
 #[test]
@@ -329,19 +319,16 @@ fn fresh_open_survives_shared_maintenance() {
 
 #[test]
 fn cancelled_open_preserves_reused_attempt() {
-    TcpScript::with(
-        |stream| {
-            assert_eq!(stream.read(&mut [0]).expect("replacement closes"), 0);
-        },
-        |server| {
-            let mut finish = Completion::new();
-            let mut create = dope_core::driver::life::creation::Attempt::new();
-            let runtime = Runtime::throughput();
-            let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
-            let audit = Rc::new(Report::default());
-            let counts = Rc::new(Counts::default());
-            let executor = runtime.try_executor(&mut create).ok().expect("executor");
-            executor
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind replacement peer");
+    let addr = server.local_addr().expect("peer address");
+    let mut finish = Completion::new();
+    let mut create = dope_core::driver::life::creation::Attempt::new();
+    let runtime = Runtime::throughput();
+    let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
+    let audit = Rc::new(Report::default());
+    let counts = Rc::new(Counts::default());
+    let executor = runtime.try_executor(&mut create).ok().expect("executor");
+    executor
                 .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(1)))
                 .run(|executor| {
                     let result = executor.try_create(
@@ -361,7 +348,7 @@ fn cancelled_open_preserves_reused_attempt() {
                                 };
                                 current.cancel();
                                 let lease = source.try_reserve().expect("same physical slot").start(
-                                    StreamTarget::new(server.addr(), Default::default()),
+                                    StreamTarget::new(addr, Default::default()),
                                 );
                                 assert_eq!(lease.id().index(), old.index());
                                 assert_ne!(lease.id().generation(), old.generation());
@@ -434,58 +421,63 @@ fn cancelled_open_preserves_reused_attempt() {
                     );
                     result.as_ref().map_err(Kind::from).expect("attempt source");
                 });
-            assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
-            assert_eq!(audit.faults.values().expect("exact attempt failure").len(), 1);
-            assert_eq!((audit.sent.get(), audit.cancelled.get()), (Some(0), Some(0)));
-            assert_eq!(
-                [counts.received.get(), counts.connected.get(), counts.closed.get(), counts.drained.get()],
-                [0, 1, 1, 1]
-            );
-            server.finish().expect("replacement peer");
-        },
-    )
-    .expect("spawn replacement peer");
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+    assert_eq!(
+        audit.faults.values().expect("exact attempt failure").len(),
+        1
+    );
+    assert_eq!(
+        (audit.sent.get(), audit.cancelled.get()),
+        (Some(0), Some(0))
+    );
+    assert_eq!(
+        [
+            counts.received.get(),
+            counts.connected.get(),
+            counts.closed.get(),
+            counts.drained.get()
+        ],
+        [0, 1, 1, 1]
+    );
+    let stream = server
+        .accept_for(GUARD)
+        .expect("accept replacement peer")
+        .expect("connected peer");
+    stream.read_wait(Some(GUARD)).expect("peer read deadline");
+    assert_eq!(stream.read(&mut [0]).expect("replacement closes"), 0);
 }
 
 #[test]
 fn deferred_open_retries() {
     let mut finish = Completion::new();
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peer");
+    let addr = server.local_addr().expect("peer address");
+    let gate = Gate::new();
+    let audit = Rc::new(Report::default());
 
-    TcpScript::with_many::<1, _>(
-        |_| {},
-        |server| {
-            let addr = server.addr();
-            let gate = Gate::new();
-            let audit = Rc::new(Report::default());
+    let planned = Attempt::new(addr)
+        .prepare::<KeyTag<1>, _, Bundle<Tcp, DeferredWire, Throughput>>(Deferred {
+            audit: Rc::clone(&audit),
+            gate: gate.clone(),
+        });
+    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<1>()]);
 
-            let planned = Attempt::new(addr)
-                .prepare::<KeyTag<1>, _, Bundle<Tcp, DeferredWire, Throughput>>(Deferred {
-                    audit: Rc::clone(&audit),
-                    gate: gate.clone(),
-                });
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<1>()]);
+    planned
+        .with_run(
+            &mut finish,
+            DeferredWire::default(),
+            |case| reached(case.try_wait(&gate, 1), &audit),
+            recovery::Policy::new(|event| reclaim1.push(event), recover),
+            leased,
+        )
+        .expect("deferred attempt scenario failed");
+    assert!(
+        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim1:?}"
+    );
 
-            planned
-                .with_run(
-                    &mut finish,
-                    DeferredWire::default(),
-                    |case| reached(case.try_wait(&gate, 1), &audit),
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    leased,
-                )
-                .expect("deferred attempt scenario failed");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
-
-            let finish = server.finish();
-            assert!(finish.is_ok(), "finish peer");
-            assert_eq!(gate.hits(), 1);
-            audit.checked((0, 0));
-        },
-    )
-    .expect("spawn peer");
+    assert_eq!(gate.hits(), 1);
+    audit.checked((0, 0));
 }
 
 #[test]
@@ -542,98 +534,87 @@ fn rejected_credit_closes() {
 #[test]
 fn owned_plan_reused() {
     let mut finish = Completion::new();
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peer");
+    let address = server.local_addr().expect("peer address");
+    let identity = String::from("borrowed-service");
+    let resolves = Rc::new(Cell::new(0));
+    let ready_g = LocalGate::new();
+    let ready = ready_g.handle();
+    let peers = Trace::<socket::Addr, 4>::new();
+    let wire = DeferredWire::default();
+    let audit = Rc::new(Report::default());
 
-    TcpScript::with_many::<1, _>(
-        |_| {},
-        |server| {
-            let address = server.addr();
-            let identity = String::from("borrowed-service");
-            let resolves = Rc::new(Cell::new(0));
-            let ready_g = LocalGate::new();
-            let ready = ready_g.handle();
-            let peers = Trace::<socket::Addr, 4>::new();
-            let wire = DeferredWire::default();
-            let audit = Rc::new(Report::default());
+    let set = Snapshot::from_one(
+        Revision::new(1),
+        Endpoint::new(
+            identity.as_str(),
+            Addr {
+                socket: address,
+                resolves: resolves.clone(),
+            },
+        ),
+    );
+    let node = App {
+        audit: Rc::clone(&audit),
+        ready,
+        peers: &peers,
+        wire: wire.clone(),
+    };
+    let install = Install::<
+        KeyTag<0>,
+        1,
+        Bundle<Net, DeferredWire, Throughput>,
+        _,
+        plan::Standard,
+        sync::Preserve,
+        &str,
+    >::new(
+        set,
+        1,
+        plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
+            .expect("valid retry bounds"),
+        node,
+    );
+    let install = (install).expect("valid connector plan");
+    let baseline = settings::Config::for_profile::<Throughput>();
+    let prepared = topology::Plan::new((), install).with_install(baseline);
+    let prepared = (prepared).expect("prepare service connector topology");
+    let mut reclaim1 = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
 
-            let set = Snapshot::from_one(
-                Revision::new(1),
-                Endpoint::new(
-                    identity.as_str(),
-                    Addr {
-                        socket: address,
-                        resolves: resolves.clone(),
-                    },
-                ),
+    prepared.with_local(
+        |worker| {
+            let result = worker.lend(|install, stage| {
+                lending::Installer::<_, _>::install(install, stage, Wait(ready, &mut finish))
+            });
+            let result = (result).expect("install prepared service connector topology");
+            assert_eq!(
+                result
+                    .expect("service connector application teardown")
+                    .expect("service connector progress"),
+                fibers::Wait::Reached
             );
-            let node = App {
-                audit: Rc::clone(&audit),
-                ready,
-                peers: &peers,
-                wire: wire.clone(),
-            };
-            let install = Install::<
-                KeyTag<0>,
-                1,
-                Bundle<Net, DeferredWire, Throughput>,
-                _,
-                plan::Standard,
-                sync::Preserve,
-                &str,
-            >::new(
-                set,
-                1,
-                plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
-                    .expect("valid retry bounds"),
-                node,
-            );
-            let install = (install).expect("valid connector plan");
-            let baseline = settings::Config::for_profile::<Throughput>();
-            let prepared = topology::Plan::new((), install).with_install(baseline);
-            let prepared = (prepared).expect("prepare service connector topology");
-            let mut reclaim1 = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
-
-            prepared.with_local(
-                |worker| {
-                    let result = worker.lend(|install, stage| {
-                        lending::Installer::<_, _>::install(
-                            install,
-                            stage,
-                            Wait(ready, &mut finish),
-                        )
-                    });
-                    let result = (result).expect("install prepared service connector topology");
-                    assert_eq!(
-                        result
-                            .expect("service connector application teardown")
-                            .expect("service connector progress"),
-                        fibers::Wait::Reached
-                    );
-                },
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-                |entered| assert!(entered.is_ok(), "enter prepared service connector topology"),
-            );
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
-
-            audit.checked((0, 0));
-            assert_eq!(ready.hits(), 1);
-            assert_eq!(wire.opens(), 2);
-            assert_eq!(resolves.get(), 1);
-            assert!(
-                peers
-                    .values()
-                    .expect("recorded observations")
-                    .iter()
-                    .copied()
-                    .map(|peer| peer.into_std().expect("TCP peer address"))
-                    .eq([address])
-            );
-            assert!(server.finish().is_ok(), "finish held peer");
         },
-    )
-    .expect("spawn held peer");
+        recovery::Policy::new(|event| reclaim1.push(event), recover),
+        |entered| assert!(entered.is_ok(), "enter prepared service connector topology"),
+    );
+    assert!(
+        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim1:?}"
+    );
+
+    audit.checked((0, 0));
+    assert_eq!(ready.hits(), 1);
+    assert_eq!(wire.opens(), 2);
+    assert_eq!(resolves.get(), 1);
+    assert!(
+        peers
+            .values()
+            .expect("recorded observations")
+            .iter()
+            .copied()
+            .map(|peer| peer.into_std().expect("TCP peer address"))
+            .eq([address])
+    );
 }
 
 fn leased<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>, lease: Option<bool>) -> T {

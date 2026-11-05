@@ -3,7 +3,7 @@ use std::{marker, pin, task};
 use o3::{alloc, depot::capacity};
 
 use crate::{
-    abi, context,
+    context,
     task::storage::{
         Id,
         fixed::{
@@ -205,37 +205,13 @@ where
         *plane.quota = State::retire(*plane.quota, quota::Retired::new());
         Ok(())
     }
-}
 
-impl<'a, 'd, R, P, Q> local::Next<'d, <R::Member as tree::Member<'d>>::Domain>
-    for Route<'a, 'd, R, P, Q>
-where
-    R: tree::At<'d, P>,
-    R::Member: local::Next<
-            'd,
-            <R::Member as tree::Member<'d>>::Domain,
-            Fiber = <R::Member as tree::Member<'d>>::Fiber,
-        > + Core<'d, <R::Member as tree::Member<'d>>::Domain>,
-    Q: State,
-    'd: 'a,
-{
-    fn try_update<I, O>(
+    fn get_mut(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-        input: I,
-        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> O,
-    ) -> Result<O, I> {
+    ) -> Option<pin::Pin<&mut Self::Fiber>> {
         let plane = self.get_mut().plane.as_mut().project();
-        local::Next::try_update(R::project(plane.routes), id, input, update)
-    }
-
-    fn poll_next(
-        self: pin::Pin<&mut Self>,
-        id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-        context: pin::Pin<&mut context::Context<'_, 'd>>,
-    ) -> Option<task::Poll<Option<<Self::Fiber as abi::Stream<'d>>::Item>>> {
-        let plane = self.get_mut().plane.as_mut().project();
-        local::Next::poll_next(R::project(plane.routes), id, context)
+        local::Core::get_mut(R::project(plane.routes), id)
     }
 }
 
@@ -276,6 +252,7 @@ where
     Q: State,
     'd: 'a,
 {
+    type Output = <R::Member as staged::Core<'d, <R::Member as tree::Member<'d>>::Domain>>::Output;
     type Ready<'b>
         = Completed<
         'b,
@@ -303,41 +280,19 @@ where
         }))
     }
 
-    fn poll_staged(
-        self: pin::Pin<&mut Self>,
-        id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-        context: pin::Pin<&mut context::Context<'_, 'd>>,
-    ) -> Option<staged::Poll> {
-        let route = self.get_mut();
-        let plane = route.plane.as_mut().project();
-        let member = R::project(plane.routes);
-        staged::Core::poll_staged(member, id, context)
-    }
-
-    fn take_output(
-        self: pin::Pin<&mut Self>,
-        id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-    ) -> Option<<Self::Fiber as abi::Fiber<'d>>::Output> {
-        let route = self.get_mut();
-        let plane = route.plane.as_mut().project();
-        let member = R::project(plane.routes);
-        staged::Core::take_output(member, id)
-    }
-
-    fn state(&self, id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>) -> Option<staged::State> {
-        let plane = self.plane.as_ref().get_ref();
-        let member = R::project_ref(&plane.routes);
-        staged::Core::state(member, id)
-    }
-
     fn remove_state(
         self: pin::Pin<&mut Self>,
         id: Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-    ) -> Option<staged::State> {
+    ) -> staged::Removal {
         let plane = self.get_mut().plane.as_mut().project();
-        let state = staged::Core::remove_state(R::project(plane.routes), id)?;
-        *plane.quota = State::retire(*plane.quota, quota::Retired::new());
-        Some(state)
+        let removed = staged::Core::remove_state(R::project(plane.routes), id);
+        match removed {
+            staged::Removal::Absent => {}
+            staged::Removal::Live | staged::Removal::Staged => {
+                *plane.quota = State::retire(*plane.quota, quota::Retired::new());
+            }
+        }
+        removed
     }
 }
 
@@ -353,6 +308,11 @@ impl<C: staged::Completion, Q: State> staged::Completion for Completed<'_, C, Q>
         let output = self.ready.finish();
         *self.quota = self.quota.retire(quota::Retired::new());
         output
+    }
+
+    fn discard(self) {
+        self.ready.discard();
+        *self.quota = self.quota.retire(quota::Retired::new());
     }
 }
 

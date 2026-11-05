@@ -1,28 +1,20 @@
 use std::marker;
 
 use dope_core::{
-    platform::{affinity, affinity::Binding, channel, thread},
+    platform::{affinity, affinity::Binding, thread},
     random,
 };
 
 use crate::process::{
     self,
-    failure::bus::{Event, Fault, Read, Report},
+    failure::bus::{Create, Event, Read},
     layout,
     runtime::{bus, worker, worker::Entry},
 };
 
-pub(super) enum Outcome<X> {
-    Complete,
-    Affinity {
-        source: affinity::Error,
-        bus: Report,
-    },
-    Worker {
-        source: X,
-        bus: Report,
-    },
-    Bus(Fault),
+pub(in crate::process::runtime) enum Failure<X> {
+    Affinity(affinity::Error),
+    Entry(X),
 }
 
 fn execute<I, E, X>(
@@ -30,7 +22,7 @@ fn execute<I, E, X>(
     tx: bus::Tx<'_>,
     seed: random::Seed,
     entry: E,
-) -> (Outcome<X>, Event)
+) -> Result<(), Failure<X>>
 where
     E: Entry<I, X>,
 {
@@ -38,34 +30,17 @@ where
     let affinity = match Binding::bind(cpu) {
         Ok(affinity) => affinity,
         Err(error) => {
-            return (
-                Outcome::Affinity {
-                    source: error,
-                    bus: tx.report(),
-                },
-                Event::Failed,
-            );
+            let _ = tx.send(Event::Failed);
+            return Err(Failure::Affinity(error));
         }
     };
     let context = process::Context::new(affinity, seed, tx);
-    match entry.run(input, context) {
-        Ok(proof) => match proof.terminal(tx.report()) {
-            Err(failure) => (Outcome::Bus(failure), Event::Failed),
-            Ok(event) => (Outcome::Complete, event),
-        },
-        Err(error) => (
-            Outcome::Worker {
-                source: error,
-                bus: tx.report(),
-            },
-            Event::Failed,
-        ),
-    }
+    entry.run(input, context).map(drop).map_err(Failure::Entry)
 }
 
 pub(in crate::process::runtime) struct Task<I, E, X> {
     assignment: layout::Assignment<I>,
-    peer: bus::Bus,
+    peer: bus::Worker,
     seed: random::Seed,
     entry: E,
     output: marker::PhantomData<fn() -> X>,
@@ -77,17 +52,14 @@ pub(in crate::process::runtime) struct Parent {
     pub(super) handoff: Option<Read>,
 }
 
-pub(in crate::process::runtime) struct Output<X> {
-    pub(super) outcome: Outcome<X>,
-    pub(super) terminal: Option<Fault>,
-}
+pub(in crate::process::runtime) type Output<X> = bus::Outcome<(), Failure<X>>;
 
 impl<I, E, X> Task<I, E, X> {
     pub(super) fn try_new(
         job: layout::Assignment<I>,
         seed: random::Seed,
         entry: E,
-    ) -> Result<(Self, Parent), channel::Create> {
+    ) -> Result<(Self, Parent), Create> {
         let cpu = job.cpu;
         let (main, peer) = bus::Main::try_pair()?;
         Ok((
@@ -117,18 +89,22 @@ impl<I: Send, E: worker::Entry<I, X>, X: Send> thread::Task for Task<I, E, X> {
             entry,
             output: _,
         } = self;
-        let (outcome, event) = execute::<I, E, X>(job, peer.tx(), seed, entry);
-        let terminal = peer.tx().send(event).err();
-        Output { outcome, terminal }
+        peer.run(|shutdown| execute::<I, E, X>(job, shutdown.source, seed, entry))
     }
 }
 
 impl Parent {
     pub(super) fn stop(&mut self) -> Option<dope_core::Errno> {
-        let source = self.main.as_ref()?.stop()?;
-        self.main = None;
-        self.handoff = Some(Read::Stopped(source));
-        Some(source)
+        match self.main.take()?.stop() {
+            Ok(main) => {
+                self.main = Some(main);
+                None
+            }
+            Err(source) => {
+                self.handoff = Some(Read::Stopped(source));
+                Some(source)
+            }
+        }
     }
 
     pub(super) fn handoff<M: bus::Mode>(&mut self, readiness: bus::Readiness) {

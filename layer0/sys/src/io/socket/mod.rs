@@ -280,10 +280,9 @@ const _: () = assert!(mem::size_of::<Setup>() == 2 * mem::size_of::<u32>());
 pub trait Socket: errno::Source {
     const MAX_IOVECS: usize;
     type Error;
-    type Records: record::Transport;
 
     fn socket(domain: libc::c_int, kind: libc::c_int) -> Result<OwnedFd, Self::Error>;
-    /// Creates exclusively owned endpoints using this backend's record transport.
+    /// Creates exclusively owned local socket endpoints.
     fn pair() -> Result<(OwnedFd, OwnedFd), record::Error>;
 
     /// Creates one datagram descriptor without changing its descriptor flags.
@@ -473,6 +472,13 @@ pub trait Socket: errno::Source {
         unsafe {
             io::raw::Buffer::try_native(output, raw, || kernel::raw::Code::last::<Self>().into())
         }
+    }
+
+    fn recv_now<'a, E: From<Errno>>(
+        file: BorrowedFd<'_>,
+        output: &'a mut [u8],
+    ) -> Result<&'a mut [u8], E> {
+        Self::recv::<{ libc::MSG_DONTWAIT }, E>(file, output)
     }
 
     /// Sends one datagram to the retained native destination.

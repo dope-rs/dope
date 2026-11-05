@@ -10,7 +10,6 @@ pub struct Sip<const C: usize, const D: usize> {
     length: usize,
     state: [u64; 4],
     tail: u64,
-    ntail: usize,
     _thread: ThreadBound,
 }
 
@@ -25,7 +24,6 @@ impl<const C: usize, const D: usize> Sip<C, D> {
                 k1 ^ 0x7465_6462_7974_6573,
             ],
             tail: 0,
-            ntail: 0,
             _thread: ThreadBound::NEW,
         }
     }
@@ -84,14 +82,12 @@ impl<const C: usize, const D: usize> Sip<C, D> {
     }
 
     fn short_write(&mut self, size: usize, value: u64) {
+        let ntail = self.length & 7;
         self.length = self.length.wrapping_add(size);
-        let needed = 8 - self.ntail;
-        self.tail |= value << (8 * self.ntail);
-        if size < needed {
-            self.ntail += size;
-        } else {
+        let needed = 8 - ntail;
+        self.tail |= value << (8 * ntail);
+        if size >= needed {
             Self::compress(&mut self.state, self.tail);
-            self.ntail = size - needed;
             self.tail = if needed < 8 { value >> (8 * needed) } else { 0 };
         }
     }
@@ -115,23 +111,20 @@ impl<const C: usize, const D: usize> hash::Hasher for Sip<C, D> {
     }
 
     fn write(&mut self, mut bytes: &[u8]) {
+        let ntail = self.length & 7;
         self.length = self.length.wrapping_add(bytes.len());
-        if self.ntail != 0 {
-            let take = bytes.len().min(8 - self.ntail);
-            self.tail |= Self::pack(&bytes[..take]) << (8 * self.ntail);
-            self.ntail += take;
+        if ntail != 0 {
+            let take = bytes.len().min(8 - ntail);
+            self.tail |= Self::pack(&bytes[..take]) << (8 * ntail);
             bytes = &bytes[take..];
-            if self.ntail < 8 {
+            if ntail + take < 8 {
                 return;
             }
             Self::compress(&mut self.state, self.tail);
-            self.ntail = 0;
-            self.tail = 0;
         }
 
         let rest = Self::blocks(&mut self.state, bytes);
         self.tail = Self::pack(rest);
-        self.ntail = rest.len();
     }
 
     fn write_u8(&mut self, value: u8) {

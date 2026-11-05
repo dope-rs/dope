@@ -410,7 +410,7 @@ fn apply<'p, 'w, 'd, 'machine, 'turn, 'driver, 'context, 'owner, ID: Identity + 
         drive::Run<'d> + close::ClosePhase<'d, ID, A, S, E>,
 {
     let Some(key) = key else {
-        return drive::Run::run(engine, turn, driver);
+        return drive::Run::run(engine, turn, driver, true);
     };
     {
         let this = engine.as_ref().project_ref();
@@ -420,5 +420,5 @@ fn apply<'p, 'w, 'd, 'machine, 'turn, 'driver, 'context, 'owner, ID: Identity + 
     }
     <A::Requests as Policy<'w, 'd, ID, A>>::drain(engine.as_mut(), key, turn.reborrow(), driver);
     <A::Requests as Policy<'w, 'd, ID, A>>::submit(engine.as_mut(), key, turn.reborrow(), driver);
-    drive::Run::run(engine, turn, driver);
+    drive::Run::run(engine, turn, driver, true);
 }

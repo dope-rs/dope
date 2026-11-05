@@ -11,6 +11,7 @@ pub trait Core<'d, D> {
     fn capacity(&self) -> Capacity;
     fn insert(self: pin::Pin<&mut Self>, fiber: Self::Fiber) -> Option<Id<'d, D>>;
     fn try_remove(self: pin::Pin<&mut Self>, id: Id<'d, D>) -> Result<(), Id<'d, D>>;
+    fn get_mut(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> Option<pin::Pin<&mut Self::Fiber>>;
 }
 
 impl<'d, D, S: local::Core<'d, D>> local::Core<'d, D> for pin::Pin<&mut S> {
@@ -26,5 +27,9 @@ impl<'d, D, S: local::Core<'d, D>> local::Core<'d, D> for pin::Pin<&mut S> {
 
     fn try_remove(self: pin::Pin<&mut Self>, id: Id<'d, D>) -> Result<(), Id<'d, D>> {
         S::try_remove(self.get_mut().as_mut(), id)
+    }
+
+    fn get_mut(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> Option<pin::Pin<&mut Self::Fiber>> {
+        S::get_mut(self.get_mut().as_mut(), id)
     }
 }

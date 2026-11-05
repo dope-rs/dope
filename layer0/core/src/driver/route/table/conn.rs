@@ -13,14 +13,9 @@ impl Capacity {
     pub const fn fixed<const COUNT: usize>() -> Self {
         const { assert!(COUNT > 0 && COUNT <= route::SLOT_MASK as usize, "capacity") };
         // SAFETY: the const bound keeps the count in 1..=SLOT_MASK.
-        Self(
-            unsafe {
-                bounded::raw::NonZeroProof::assume(
-                    num::NonZero::<u32>::MIN.saturating_add(COUNT as u32 - 1),
-                )
-            }
-            .retain(),
-        )
+        Self(unsafe {
+            bounded::raw::nonzero_u32(num::NonZero::<u32>::MIN.saturating_add(COUNT as u32 - 1))
+        })
     }
 
     pub const fn nonzero(self) -> num::NonZero<usize> {
@@ -56,7 +51,7 @@ impl From<num::NonZero<u16>> for Capacity {
     fn from(count: num::NonZero<u16>) -> Self {
         const { assert!(u16::MAX as u64 <= route::SLOT_MASK, "capacity bound") };
         // SAFETY: the const bound keeps every nonzero u16 count within 1..=SLOT_MASK.
-        Self(unsafe { bounded::raw::NonZeroProof::assume(count.into()) }.retain())
+        Self(unsafe { bounded::raw::nonzero_u32(count.into()) })
     }
 }
 

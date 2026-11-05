@@ -13,36 +13,19 @@ use crate::reply::{
 
 enum Reject {
     Front(order::Front),
-    Capacity(usage::Capacity),
-    Backpressure(usage::Backpressure),
+    Acquire(pool::Acquire),
 }
 
 impl Reject {
-    /// A collected reply cancels the wait installed by its synchronous denial.
-    /// Queue links remain for the existing bounded cancellation drain.
-    fn acquire(
-        cause: pool::Acquire,
-        accept: recv::Acceptance,
-        lane: pool::Lane<'_, '_, '_>,
-    ) -> Self {
-        match cause {
-            pool::Acquire::Backpressure(cause) => {
-                if let recv::Acceptance::Collected = accept {
-                    lane.cancel();
-                    Self::Capacity(usage::Capacity::Unavailable(cause))
-                } else {
-                    Self::Backpressure(cause)
-                }
-            }
-            pool::Acquire::Capacity(cause) => Self::Capacity(cause),
-        }
-    }
-
     fn into_error<T>(self, value: T) -> usage::InsertError<T> {
         match self {
             Self::Front(front) => usage::InsertError::Front { value, front },
-            Self::Capacity(cause) => usage::InsertError::Capacity { value, cause },
-            Self::Backpressure(cause) => usage::InsertError::Backpressure { value, cause },
+            Self::Acquire(pool::Acquire::Capacity(cause)) => {
+                usage::InsertError::Capacity { value, cause }
+            }
+            Self::Acquire(pool::Acquire::Backpressure(cause)) => {
+                usage::InsertError::Backpressure { value, cause }
+            }
         }
     }
 }
@@ -55,7 +38,6 @@ pub struct Push<'a, 'arena, 'credits, 'region, D, E = D, K = ()> {
         &'a mut state::Entry<'arena, 'credits, 'region, D, E>,
     )>,
     limit: &'a layout::Limit,
-    lane: pool::Lane<'arena, 'credits, 'region>,
 }
 
 impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region, D, E, K> {
@@ -82,7 +64,6 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         Self {
             front,
             limit: &state.limit,
-            lane: pool::Lane::new(lane),
         }
     }
 
@@ -136,16 +117,12 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         usage: usage::Usage,
     ) -> Result<slot::Push<'a, 'arena, 'credits, 'region, D, K>, Reject> {
         let limit = *self.limit;
-        let lane = self.lane;
         let open = self.attached().map_err(Reject::Front)?;
         let accept = open.acceptance();
         if let recv::Acceptance::Unit = accept {
             return Err(Reject::Front(order::Front::Denied));
         }
-        match open.try_data(limit, usage) {
-            Ok(held) => Ok(held),
-            Err(cause) => Err(Reject::acquire(cause, accept, lane)),
-        }
+        open.try_data(limit, usage).map_err(Reject::Acquire)
     }
 
     fn try_failure(
@@ -153,16 +130,12 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         usage: usage::Usage,
     ) -> Result<Failure<'a, 'arena, 'credits, 'region, E, K>, Reject> {
         let limit = *self.limit;
-        let lane = self.lane;
         let open = self.attached().map_err(Reject::Front)?;
         let accept = open.acceptance();
-        let (order, slot, signal) = open.try_failure(limit, usage).map_err(Reject::Capacity)?;
-        let lease = match order.try_lease(payload::Failure::new(usage)) {
-            Ok(lease) => lease,
-            Err(cause) => {
-                return Err(Reject::acquire(cause, accept, lane));
-            }
-        };
+        let (order, slot, signal) = open.failure();
+        let lease = order
+            .try_lease(payload::Failure::new(usage), limit, accept)
+            .map_err(Reject::Acquire)?;
         Ok(Failure {
             slot,
             lease,
@@ -191,10 +164,10 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         let usage = builder.usage();
         let held = match self.try_data(usage) {
             Ok(held) => held,
-            Err(Reject::Backpressure(cause)) => {
+            Err(Reject::Acquire(pool::Acquire::Backpressure(cause))) => {
                 return Err(usage::PushError::Backpressure { builder, cause });
             }
-            Err(Reject::Capacity(cause)) => {
+            Err(Reject::Acquire(pool::Acquire::Capacity(cause))) => {
                 return Err(usage::PushError::Capacity { builder, cause });
             }
             Err(Reject::Front(front)) => {

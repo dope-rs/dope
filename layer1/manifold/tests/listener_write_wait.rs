@@ -15,7 +15,7 @@ use common::{
     manifold::listener::defer::{
         app,
         preamble::{self, FRAMES, HANDSHAKE, PREFIX},
-        script::{self, BODY_LEN, Payload, Script, Until},
+        script::{self, BODY_LEN, Payload, Until},
         wire::{Profile, Wire},
     },
     recover,
@@ -29,7 +29,6 @@ use dope_core::{
         settings::claim::Needs,
     },
     io::socket::{self, option},
-    platform::wake,
 };
 use dope_manifold::{
     app::{Host, env::Bundle, receive},
@@ -47,6 +46,7 @@ use dope_runtime::executor::{
 };
 use dope_test::{
     alloc::Tracker,
+    fibers,
     harness::{
         GUARD,
         peer::{self, Peer},
@@ -208,12 +208,6 @@ fn recycle_resumes_waiter() {
     let done = Gate::new();
     let deferred = Gate::new();
     let closed = Gate::new();
-    let [
-        (wait_a, go_a),
-        (wait_b, go_b),
-        (wait_c, go_c),
-        (wait_d, go_d),
-    ] = [(); 4].map(|()| wake::Ends::blocking().expect("peer release pipe").split());
     let prepared = Listener::new::<4>(Default::default())
         .direct(2)
         .stream(StreamConfig {
@@ -239,106 +233,77 @@ fn recycle_resumes_waiter() {
         .with_run(
             &mut finish,
             move |case| {
-                Peer::at(case.addr())
-                    .with(
-                        move |socket| Script::new(wait_a).try_run(socket),
-                        |first| {
-                            Peer::at(case.addr())
-                                .with(
-                                    move |socket| Script::new(wait_b).try_run(socket),
-                                    |second| {
-                                        reached(case.try_wait(&done, 2), done.hits(), 2);
-                                        Peer::at(case.addr())
-                                            .with(
-                                                move |socket| Script::new(wait_c).try_run(socket),
-                                                |third| {
-                                                    reached(
-                                                        case.try_wait(&deferred, 1),
-                                                        deferred.hits(),
-                                                        1,
-                                                    );
-                                                    assert_eq!(done.hits(), 2);
-                                                    go_a.notify()
-                                                        .expect("first peer release failed");
-                                                    go_b.notify()
-                                                        .expect("second peer release failed");
-                                                    reached(
-                                                        case.try_wait(&done, 3),
-                                                        done.hits(),
-                                                        3,
-                                                    );
-                                                    reached(
-                                                        case.try_wait(&closed, 2),
-                                                        closed.hits(),
-                                                        2,
-                                                    );
-                                                    assert_eq!(
-                                                        first
-                                                            .finish()
-                                                            .expect("held peer finish")
-                                                            .expect("held peer I/O")
-                                                            .len(),
-                                                        BODY_LEN + 1
-                                                    );
-                                                    assert_eq!(
-                                                        second
-                                                            .finish()
-                                                            .expect("held peer finish")
-                                                            .expect("held peer I/O")
-                                                            .len(),
-                                                        BODY_LEN + 1
-                                                    );
-                                                    Peer::at(case.addr())
-                                                        .with(
-                                                            move |socket| {
-                                                                Script::new(wait_d).try_run(socket)
-                                                            },
-                                                            |fourth| {
-                                                                reached(
-                                                                    case.try_wait(&done, 4),
-                                                                    done.hits(),
-                                                                    4,
-                                                                );
-                                                                assert_eq!(deferred.hits(), 1);
-                                                                go_c.notify().expect(
-                                                                    "third peer release failed",
-                                                                );
-                                                                go_d.notify().expect(
-                                                                    "fourth peer release failed",
-                                                                );
-                                                                reached(
-                                                                    case.try_wait(&closed, 4),
-                                                                    closed.hits(),
-                                                                    4,
-                                                                );
-                                                                assert_eq!(
-                                                                    third
-                                                                        .finish()
-                                                                        .expect("held peer finish")
-                                                                        .expect("held peer I/O")
-                                                                        .len(),
-                                                                    BODY_LEN + 1
-                                                                );
-                                                                assert_eq!(
-                                                                    fourth
-                                                                        .finish()
-                                                                        .expect("held peer finish")
-                                                                        .expect("held peer I/O")
-                                                                        .len(),
-                                                                    BODY_LEN + 1
-                                                                );
-                                                            },
-                                                        )
-                                                        .expect("fourth peer spawn failed");
-                                                },
-                                            )
-                                            .expect("third peer spawn failed");
-                                    },
-                                )
-                                .expect("second peer spawn failed");
-                        },
-                    )
-                    .expect("first peer spawn failed");
+                let peers = [(); 2].map(|()| {
+                    let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+                    peer.set_nodelay(true).expect("peer nodelay");
+                    peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                    peer.write_all(b"open").expect("open wire");
+                    peer.shutdown(Shutdown::Write).expect("peer half-close");
+                    peer.nonblock(true);
+                    peer
+                });
+                reached(case.try_wait(&done, 2), done.hits(), 2);
+                let third = Peer::at(case.addr()).try_connect().expect("third peer");
+                third.set_nodelay(true).expect("peer nodelay");
+                third.write_wait(Some(GUARD)).expect("peer write timeout");
+                third.write_all(b"open").expect("open wire");
+                third.shutdown(Shutdown::Write).expect("peer half-close");
+                third.nonblock(true);
+                reached(case.try_wait(&deferred, 1), deferred.hits(), 1);
+                assert_eq!(done.hits(), 2);
+                for peer in peers {
+                    let started = time::Instant::now();
+                    let mut received = 0;
+                    let mut bytes = [0; 4096];
+                    loop {
+                        assert!(started.elapsed() < GUARD, "peer drain timeout");
+                        match peer.read(&mut bytes) {
+                            Ok(0) => break,
+                            Ok(count) => received += count,
+                            Err(error) => {
+                                assert!(
+                                    matches!(error, peer::Error::Syscall(error)
+                                        if error.is_block() || error.is_intr()),
+                                    "read peer: {error:?}"
+                                );
+                                case.try_drive(fibers::Yield::new()).expect("drive peer");
+                            }
+                        }
+                    }
+                    assert_eq!(received, BODY_LEN + 1);
+                }
+                reached(case.try_wait(&done, 3), done.hits(), 3);
+                reached(case.try_wait(&closed, 2), closed.hits(), 2);
+                let fourth = Peer::at(case.addr()).try_connect().expect("fourth peer");
+                fourth.set_nodelay(true).expect("peer nodelay");
+                fourth.write_wait(Some(GUARD)).expect("peer write timeout");
+                fourth.write_all(b"open").expect("open wire");
+                fourth.shutdown(Shutdown::Write).expect("peer half-close");
+                fourth.nonblock(true);
+                reached(case.try_wait(&done, 4), done.hits(), 4);
+                assert_eq!(deferred.hits(), 1);
+                for peer in [third, fourth] {
+                    let started = time::Instant::now();
+                    let mut received = 0;
+                    let mut bytes = [0; 4096];
+                    loop {
+                        assert!(started.elapsed() < GUARD, "peer drain timeout");
+                        match peer.read(&mut bytes) {
+                            Ok(0) => break,
+                            Ok(count) => received += count,
+                            Err(error) => {
+                                assert!(
+                                    matches!(error, peer::Error::Syscall(error)
+                                        if error.is_block() || error.is_intr()),
+                                    "read peer: {error:?}"
+                                );
+                                case.try_drive(fibers::Yield::new()).expect("drive peer");
+                            }
+                        }
+                    }
+                    assert_eq!(received, BODY_LEN + 1);
+                }
+                reached(case.try_wait(&closed, 4), closed.hits(), 4);
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             native,

@@ -140,12 +140,10 @@ where
         let mut app = token.pin_mut(self.stored).project().app;
         let _ = D::released(executor::raw::Released::new(app.as_mut()));
         let shutdown = executor::raw::Shutdown::new(app, turn, retained);
-        let shutdown = D::shutdown(shutdown);
-        let driver = shutdown.into_driver();
-        let retained = retained::raw::Owner::from_driver(driver.driver_ref());
+        let _ = D::shutdown(shutdown);
         Owner {
             stored: self.stored,
-            retained,
+            retained: self.retained,
             install: self.install,
             state: marker::PhantomData,
         }

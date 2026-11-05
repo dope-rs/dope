@@ -2,7 +2,7 @@
 
 use std::{mem::size_of, num};
 
-use o3::{mem, mem::credit::fair};
+use o3::mem;
 
 use crate::reply::{retain, usage};
 
@@ -16,15 +16,9 @@ pub(in crate::reply) struct Grant<'credits, A: mem::raw::Amount<3, usize>>(
     pub(in crate::reply::retain::grant::payload) Credit<'credits, A>,
 );
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Units<const DATA: usize, const VALUES: usize, const BYTES: usize>;
-
-impl<const DATA: usize, const VALUES: usize, const BYTES: usize> Units<DATA, VALUES, BYTES> {
-    const VALUE: Self = Self;
-}
-
 /// One payload data unit, with no value or byte component.
-type Data = Units<1, 0, 0>;
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct Data;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::reply) struct Values(num::NonZero<usize>);
@@ -37,12 +31,6 @@ pub(in crate::reply) struct Value(usage::Usage);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::reply) struct Failure(usage::Usage);
-
-pub(in crate::reply) enum Returned {
-    Axis(fair::Axis<3>),
-    Value(Value),
-    Failure(Failure),
-}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::reply) enum Requested {
@@ -63,12 +51,10 @@ pub(in crate::reply::retain) enum Class<'credits> {
     Both(Grant<'credits, Values>, Grant<'credits, Bytes>),
 }
 
-// SAFETY: `get` returns exactly this type's three parameters.
-unsafe impl<const DATA: usize, const VALUES: usize, const BYTES: usize> mem::raw::Amount<3, usize>
-    for Units<DATA, VALUES, BYTES>
-{
+// SAFETY: `Data` represents exactly one payload data unit.
+unsafe impl mem::raw::Amount<3, usize> for Data {
     fn get(self) -> [usize; 3] {
-        [DATA, VALUES, BYTES]
+        [1, 0, 0]
     }
 }
 
@@ -101,36 +87,6 @@ unsafe impl mem::raw::Sum<3, usize> for Bytes {
         // SAFETY: the source-bound pair owns disjoint positive components;
         // their admitted lane total bounds this sum, so it neither wraps nor is zero.
         Self(unsafe { num::NonZero::new_unchecked(self.0.get().wrapping_add(other.0.get())) })
-    }
-}
-
-impl From<Data> for Returned {
-    fn from(_value: Data) -> Self {
-        Self::Axis(fair::Axis::at::<0>())
-    }
-}
-
-impl From<Values> for Returned {
-    fn from(_value: Values) -> Self {
-        Self::Axis(fair::Axis::at::<1>())
-    }
-}
-
-impl From<Bytes> for Returned {
-    fn from(_value: Bytes) -> Self {
-        Self::Axis(fair::Axis::at::<2>())
-    }
-}
-
-impl From<Value> for Returned {
-    fn from(value: Value) -> Self {
-        Self::Value(value)
-    }
-}
-
-impl From<Failure> for Returned {
-    fn from(value: Failure) -> Self {
-        Self::Failure(value)
     }
 }
 
@@ -204,7 +160,7 @@ unsafe impl mem::raw::Exact<3, usize, Value> for SplitValue {
     type Left = Data;
     type Right = Failure;
     fn parts(self, source: Value, (): ()) -> (Data, Failure) {
-        (Data::VALUE, Failure(source.0))
+        (Data, Failure(source.0))
     }
 }
 
@@ -252,7 +208,7 @@ impl Value {
     pub(in crate::reply) fn split<'credits>(
         grant: Grant<'credits, Self>,
     ) -> (
-        Grant<'credits, impl mem::raw::Amount<3, usize> + Into<Returned>>,
+        Grant<'credits, impl mem::raw::Amount<3, usize>>,
         Grant<'credits, Failure>,
     ) {
         // SAFETY: SplitValue is exact for every Value, including zero usage.
@@ -325,7 +281,6 @@ const _: () = {
     assert!(size_of::<Grant<'_, Data>>() == size_of::<usize>());
     assert!(size_of::<Grant<'_, Value>>() == 3 * size_of::<usize>());
     assert!(size_of::<Grant<'_, Failure>>() == 3 * size_of::<usize>());
-    assert!(size_of::<Returned>() == 3 * size_of::<usize>());
     assert!(size_of::<Requested>() == 3 * size_of::<usize>());
     assert!(size_of::<Used>() == size_of::<usage::Usage>());
     assert!(size_of::<Grant<'_, Used>>() == 3 * size_of::<usize>());

@@ -5,22 +5,16 @@ mod start;
 mod until;
 use std::{
     cell::Cell,
-    iter,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    os::fd::AsFd as _,
     pin,
     rc::Rc,
     time::Duration,
 };
 
 use dope::{
-    core::{
-        dope_sys::io::socket::record::Fault,
-        driver::{
-            route::KeyTag,
-            schedule::{Progress, Turn, clock},
-        },
-        platform::{channel::Channel, poll, wake},
+    core::driver::{
+        route::KeyTag,
+        schedule::{Progress, Turn, clock},
     },
     manifold::{
         app::{creation, dispatch},
@@ -37,7 +31,7 @@ use dope_dns::{
     storage,
     topology::Plan,
 };
-use o3::{alloc, base::cell::region};
+use o3::base::cell::region;
 use pin_project::pin_project;
 use start::Start;
 pub use start::Stop;
@@ -74,21 +68,6 @@ impl Run {
             allow_failures: allow,
             stop_after: limit,
         }
-    }
-
-    pub fn try_tail<'report, 'a>(
-        &self,
-        finish: &'report mut session::Completion,
-        signal: &'a Channel,
-        delay: Option<Duration>,
-    ) -> Result<Tail<'report, 'a>, alloc::Error> {
-        Ok(Tail {
-            finish,
-            run: self.clone(),
-            signal,
-            events: poll::Set::try_new(iter::once(signal.as_fd()), iter::empty())?,
-            delay,
-        })
     }
 }
 
@@ -182,7 +161,7 @@ impl<B> Resolution<'_, '_, '_, B> {
 pub struct App<'app, 's, 'd, B> {
     #[pin]
     #[manifold]
-    resolution: Resolution<'app, 's, 'd, B>,
+    pub(crate) resolution: Resolution<'app, 's, 'd, B>,
 }
 
 #[derive(Debug)]
@@ -190,12 +169,9 @@ pub enum Advance {
     Drive(drive::Error),
     Deadline,
     Clock(clock::Range),
-    Resume(Fault),
     Signal(server::Failure),
     Query(error::Error<ADDRESSES>),
     Readiness,
-    Wait(wake::WaitError),
-    Notify(wake::NotifyError),
 }
 
 impl Advance {
@@ -226,11 +202,10 @@ impl<'report> From<lending::Error<'report, create::Error, Result<(), Advance>>>
     }
 }
 
-pub struct Tail<'report, 'a> {
+pub struct Tail<'report> {
     pub finish: &'report mut session::Completion,
     pub run: Run,
-    pub signal: &'a Channel,
-    pub events: poll::Set<'a>,
+    pub server: server::Server,
     pub delay: Option<Duration>,
 }
 
@@ -319,7 +294,7 @@ unsafe impl<'app, 's: 'app, 'd: 'app, B> dispatch::raw::Probe<'d, Self>
 }
 
 pub fn compose<'report, 'scope, 'life: 'scope, 'e: 'life, 'd: 'e, R: Report + 'd>(
-    tail: Tail<'report, '_>,
+    tail: Tail<'report>,
     install: Plan<KeyTag<DATAGRAM_ROUTE>, KeyTag<STREAM_ROUTE>, OUTBOUND, LANES, ADDRESSES, R>,
     stage: &mut lending::Stage<'_, 'scope, 'life, 'e, 'd, storage::Plan<LANES, ADDRESSES>, ()>,
     outcome: &mut Option<Result<(), Failure<'report>>>,
@@ -346,8 +321,7 @@ pub fn compose<'report, 'scope, 'life: 'scope, 'e: 'life, 'd: 'e, R: Report + 'd
             };
             let Tail {
                 run,
-                signal,
-                events,
+                server,
                 delay,
                 finish,
             } = tail;
@@ -355,8 +329,7 @@ pub fn compose<'report, 'scope, 'life: 'scope, 'e: 'life, 'd: 'e, R: Report + 'd
             let build = Start {
                 target,
                 run,
-                signal,
-                events,
+                server,
                 delay,
                 now,
             };

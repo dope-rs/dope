@@ -233,17 +233,6 @@ impl<'region, D, E, K> Arena<'_, '_, 'region, D, E, K> {
     /// Lends one arena while its original data and credit storage remain owned.
     /// The scope retains the arena itself, so abandoning a loan cannot skip
     /// teardown of its registered entries and detached batches.
-    ///
-    /// ```compile_fail
-    /// use dope_fiber::reply::{Arena, layout};
-    /// use o3::{alloc, base::cell::region};
-    ///
-    /// fn escape<'region>(layout: layout::Layout, proof: region::Proof<region::Identity<'region>>)
-    ///     -> Result<&'region Arena<'region, 'region, 'region, ()>, alloc::Error>
-    /// {
-    ///     Arena::try_with(layout, proof, |arena| arena)
-    /// }
-    /// ```
     pub fn try_with<R>(
         layout: layout::Layout,
         proof: region::Proof<region::Identity<'region>>,

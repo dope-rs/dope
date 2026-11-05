@@ -343,7 +343,7 @@ fn reuse_waits_for_owner() {
                             &mut finish,
                             Empty {},
                             scenario::TIMEOUT,
-                            |mut app| app.drive(Once::new(response)),
+                            |mut app| app.drive_for(scenario::TIMEOUT, Once::new(response)),
                         );
                         assert!(
                             result.is_ok(),
@@ -377,7 +377,7 @@ fn reuse_waits_for_owner() {
                         &mut finish,
                         Maintenance::new(state, &releases),
                         scenario::TIMEOUT,
-                        |mut app| app.drive(Once::new(Drain::new(state))),
+                        |mut app| app.drive_for(scenario::TIMEOUT, Once::new(Drain::new(state))),
                     );
                     assert!(
                         matches!(result, Ok(Ok(()))),

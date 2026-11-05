@@ -1,9 +1,10 @@
 use std::mem;
 
+pub use dope_core::dope_sys::io::socket::record::Error as Create;
 use dope_core::platform::affinity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
+#[repr(u8)]
 pub enum Event {
     Installed,
     Ready,
@@ -14,7 +15,7 @@ pub enum Event {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Invalid(u32);
+pub struct Invalid(u8);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordSize {
@@ -55,11 +56,11 @@ pub struct Shutdown {
 }
 
 impl Event {
-    pub(in crate::process) const fn encode(self) -> u32 {
-        self as u32
+    pub(in crate::process) const fn encode(self) -> u8 {
+        self as u8
     }
 
-    pub(in crate::process) const fn decode(value: u32) -> Result<Self, Invalid> {
+    pub(in crate::process) const fn decode(value: u8) -> Result<Self, Invalid> {
         match value {
             0 => Ok(Self::Installed),
             1 => Ok(Self::Ready),
@@ -103,7 +104,6 @@ pub enum Read {
     /// The coordinator consumed this Main after an exact shutdown failure.
     Stopped(dope_core::Errno),
     Closed,
-    Record(RecordSize),
     Event(Invalid),
     Sequence(Sequence),
 }
@@ -118,6 +118,6 @@ pub enum State {
 }
 
 const _: () = {
-    assert!(mem::size_of::<Event>() == mem::size_of::<u32>());
-    assert!(mem::size_of::<Invalid>() == mem::size_of::<u32>());
+    assert!(mem::size_of::<Event>() == mem::size_of::<u8>());
+    assert!(mem::size_of::<Invalid>() == mem::size_of::<u8>());
 };

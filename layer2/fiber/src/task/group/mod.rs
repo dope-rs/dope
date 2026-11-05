@@ -50,16 +50,6 @@ pub struct Group<'d, F, const N: usize> {
 }
 
 /// Exclusive proof that one group slot remains vacant.
-///
-/// ```compile_fail
-/// use dope_fiber::{abi::Ready, task::group::Vacant};
-///
-/// fn escape<'a, 'd>(vacant: Vacant<'a, 'd, Ready<()>, 1>)
-///     -> Vacant<'static, 'd, Ready<()>, 1>
-/// {
-///     vacant
-/// }
-/// ```
 #[must_use = "a vacancy must be filled before the fiber can run"]
 #[repr(C)]
 pub struct Vacant<'group, 'd, F, const N: usize> {

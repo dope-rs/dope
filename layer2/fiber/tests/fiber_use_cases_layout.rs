@@ -15,7 +15,7 @@ use dope_fiber::{
     abi::Ready,
     context::{PollCall, wake},
     net::{Io, read},
-    task::storage::{fixed::staged, set::Set},
+    task::storage::set::Set,
 };
 
 use crate::common::storage::cases::Domain;
@@ -54,10 +54,6 @@ fn keeps_hot_layouts() {
     assert_eq!(
         size_of::<PollCall<'static, 'static, 'static, Ready<()>>>(),
         size_of::<[usize; 2]>()
-    );
-    assert_eq!(
-        size_of::<staged::Slab<'static, Ready<()>, 1, Domain>>(),
-        size_of::<[usize; 4]>(),
     );
     assert_eq!(
         size_of::<Set<'static, Ready<()>, (), Domain>>(),

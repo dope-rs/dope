@@ -36,7 +36,7 @@ impl Layout {
             ));
         }
         let branches = Domain::try_new(count).map_err(storage::Error::Branches)?;
-        let ids = Domain::try_new(1 << 16).map_err(storage::Error::Transactions)?;
+        let ids = Domain::try_new(tx::Id::CAPACITY).map_err(storage::Error::Transactions)?;
         Ok(Self {
             lanes,
             branches,

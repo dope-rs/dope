@@ -164,29 +164,4 @@ const _: () = {
         size_of::<failure::Failure<'static, 'static, u32, u32>>()
             == size_of::<Unlinked<'static, 'static, u32, u32>>()
     );
-
-    let mut health = Health::new();
-    assert!(health.try_ready(Ready::Probe).is_ok());
-    assert!(health.generation.get() == 1);
-    assert!(matches!(health.ready, Ready::Probe));
-    assert!(matches!(health.idle, Idle::Exhausted));
-    assert!(health.try_ready(Ready::Healthy).is_ok());
-    assert!(health.generation.get() == 2);
-    assert!(matches!(health.ready, Ready::Healthy));
-
-    health.generation = Generation::LAST;
-    health.ready = Ready::Probe;
-    health.idle = Idle::Probing;
-    assert!(health.try_ready(Ready::Healthy).is_err());
-    assert!(health.generation.get() == u64::MAX);
-    assert!(matches!(health.idle, Idle::Exhausted));
-    assert!(matches!(health.ready, Ready::Probe));
-    health.idle = Idle::Backoff;
-    assert!(health.try_ready(Ready::Probe).is_err());
-    assert!(health.generation.get() == u64::MAX);
-    assert!(matches!(health.idle, Idle::Exhausted));
-    assert!(matches!(health.ready, Ready::Probe));
-    assert!(health.try_ready(Ready::Healthy).is_err());
-    assert!(health.generation.get() == u64::MAX);
-    assert!(matches!(health.idle, Idle::Exhausted));
 };

@@ -1,14 +1,11 @@
-use std::{marker, pin, task};
+use std::{marker, pin};
 
 use o3::{
     alloc,
     depot::{arena::slab::storage, capacity},
 };
 
-use crate::{
-    abi, context,
-    task::storage::{Id, Owner, caps},
-};
+use crate::task::storage::{Id, caps};
 
 pub mod direct;
 pub mod local;
@@ -26,8 +23,7 @@ pub enum Capacity {
     Full,
 }
 
-/// Pinned task slots for fibers that end by yielding their terminator.
-/// A stream keeps its end in its item stream; this boundary proves capacity and pins the slot.
+/// Pinned task values with exact fixed capacity.
 /// Slots, generations, and the free list belong to o3's arena extent.
 #[pin_project::pin_project(!Unpin)]
 pub struct Slab<'d, F, const N: usize, D, S: storage::Storage = storage::Inline<N>> {
@@ -66,14 +62,7 @@ impl<'d, F, const N: usize, D> Slab<'d, F, N, D, storage::Heap> {
     }
 }
 
-impl<'d, F, const N: usize, D, S: storage::Storage> Slab<'d, F, N, D, S> {
-    fn get(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> Option<pin::Pin<&mut F>> {
-        let key = id.key_for(Owner::of(&self.inner))?;
-        self.project().inner.parts_mut(key.parts())
-    }
-}
-
-/// One reserved stream slot retaining the identity of the store that issued it.
+/// One reserved task slot retaining the identity of the store that issued it.
 struct Admit<'a, 'd, F, const N: usize, D, S: storage::Storage> {
     slot: store::Vacant<'a, F, N, D, S>,
     driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
@@ -90,10 +79,7 @@ impl<'d, F, const N: usize, D, S: storage::Storage> direct::Insert<'d, D>
     }
 }
 
-impl<'d, F, const N: usize, D, S: storage::Storage> local::Core<'d, D> for Slab<'d, F, N, D, S>
-where
-    F: abi::Stream<'d>,
-{
+impl<'d, F, const N: usize, D, S: storage::Storage> local::Core<'d, D> for Slab<'d, F, N, D, S> {
     type Fiber = F;
 
     fn capacity(&self) -> Capacity {
@@ -108,11 +94,13 @@ where
     fn try_remove(self: pin::Pin<&mut Self>, id: Id<'d, D>) -> Result<(), Id<'d, D>> {
         self.project().inner.try_remove(id)
     }
+
+    fn get_mut(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> Option<pin::Pin<&mut F>> {
+        Some(self.project().inner.member(id)?.into_value())
+    }
 }
 
-impl<'d, F: abi::Stream<'d>, const N: usize, D, S: storage::Storage> direct::Core<'d, D>
-    for Slab<'d, F, N, D, S>
-{
+impl<'d, F, const N: usize, D, S: storage::Storage> direct::Core<'d, D> for Slab<'d, F, N, D, S> {
     fn admit(self: pin::Pin<&mut Self>) -> Option<impl direct::Insert<'d, D, Fiber = F>> {
         let this = self.project();
         Some(Admit {
@@ -122,39 +110,7 @@ impl<'d, F: abi::Stream<'d>, const N: usize, D, S: storage::Storage> direct::Cor
     }
 }
 
-impl<'d, F: abi::Stream<'d>, const N: usize, D, S: storage::Storage> local::Next<'d, D>
-    for Slab<'d, F, N, D, S>
-{
-    fn try_update<I, R>(
-        self: pin::Pin<&mut Self>,
-        id: &Id<'d, D>,
-        input: I,
-        update: impl FnOnce(pin::Pin<&mut F>, I) -> R,
-    ) -> Result<R, I> {
-        match self.get(id) {
-            Some(fiber) => Ok(update(fiber, input)),
-            None => Err(input),
-        }
-    }
-
-    fn poll_next(
-        self: pin::Pin<&mut Self>,
-        id: &Id<'d, D>,
-        mut context: pin::Pin<&mut context::Context<'_, 'd>>,
-    ) -> Option<task::Poll<Option<<F as abi::Stream<'d>>::Item>>> {
-        let slot = self.get(id)?;
-        Some(
-            match context::PollCall::try_poll(slot, context.as_mut(), F::poll_next) {
-                context::PollResult::Polled(poll) => poll,
-                context::PollResult::Exhausted => task::Poll::Pending,
-            },
-        )
-    }
-}
-
-impl<'d, F: abi::Stream<'d>, const N: usize, D, S: storage::Storage> tree::Member<'d>
-    for Slab<'d, F, N, D, S>
-{
+impl<'d, F, const N: usize, D, S: storage::Storage> tree::Member<'d> for Slab<'d, F, N, D, S> {
     type Fiber = F;
     type Domain = D;
     type Target = ();
@@ -162,9 +118,7 @@ impl<'d, F: abi::Stream<'d>, const N: usize, D, S: storage::Storage> tree::Membe
     const CAPACITY: tree::Capacity = tree::Capacity::new(caps::Tasks::<N>::new().nonzero());
 }
 
-impl<'d, F: abi::Stream<'d>, const N: usize, D> tree::Build<'d>
-    for tree::Leaf<Slab<'d, F, N, D, storage::Heap>>
-{
+impl<'d, F, const N: usize, D> tree::Build<'d> for tree::Leaf<Slab<'d, F, N, D, storage::Heap>> {
     fn try_build_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
         Ok(Self::new(Slab::try_new_with_capacity(physical)?))
     }

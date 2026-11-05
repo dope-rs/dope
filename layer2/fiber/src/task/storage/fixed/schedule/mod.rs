@@ -82,14 +82,12 @@ pub trait Ops<'d>: tree::Member<'d> + pool::Proof + Sized {
 
 /// Access to a yielded stream while its original slot remains occupied.
 pub trait StreamOps<'d>: Ops<'d> {
-    fn try_update<I, R>(
+    fn get_mut(
         self: pin::Pin<&mut Self>,
         id: &Identity<'d, Self>,
-        input: I,
-        update: impl FnOnce(pin::Pin<&mut Self::Fiber>, I) -> R,
-    ) -> Result<R, result::Update<I>>;
+    ) -> Result<pin::Pin<&mut Self::Fiber>, result::Error>;
 
-    fn resume(self: pin::Pin<&mut Self>, id: &Identity<'d, Self>) -> result::Resume;
+    fn resume(self: pin::Pin<&mut Self>, id: &Identity<'d, Self>) -> Result<(), result::Error>;
 }
 
 /// Recursive operations over a fixed scheduler tree.

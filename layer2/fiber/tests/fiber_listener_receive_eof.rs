@@ -7,7 +7,6 @@ use dope::{
             route::{Id, KeyTag, table::conn::Capacity},
         },
         io::socket::{self, Backlog},
-        platform::wake,
     },
     manifold::{app::Host, network::listener::Domain, timing::Balanced},
     net::{
@@ -28,7 +27,7 @@ use dope_fiber::{
     },
 };
 use dope_test::{
-    harness::{peer::Peer, scenario},
+    harness::{GUARD, peer::Peer, scenario},
     reclaim::Reports,
 };
 
@@ -73,21 +72,13 @@ fn writes_after_eof() {
                     &mut sess,
                     |sess| sess.driver(),
                     |listener, sess| {
-                        let (reset, release) = wake::Ends::blocking().expect("reset gate").split();
-                        Peer::at(addr)
-                            .with(
-                                move |peer| {
-                                    peer.write_all(b"tail").expect("peer tail");
-                                    peer.shutdown(Shutdown::Write).expect("peer EOF");
-                                    let mut response = [0; 2];
-                                    peer.read_exact(&mut response).expect("reply after EOF");
-                                    assert_eq!(&response, b"ok");
-                                    reset.wait_timeout(scenario::TIMEOUT).expect("reply observed");
-                                    Peer::try_reset(*peer).expect("reset on close");
-                                },
-                                |peer| {
-                                    let handle = storage.handle();
-                                    sess.with_quiesce(
+                        let peer = Peer::at(addr).try_read(GUARD).expect("peer connection");
+                        peer.write_wait(Some(GUARD)).expect("peer write timeout");
+                        peer.set_nodelay(true).expect("peer no delay");
+                        peer.write_all(b"tail").expect("peer tail");
+                        peer.shutdown(Shutdown::Write).expect("peer EOF");
+                        let handle = storage.handle();
+                        sess.with_quiesce(
                                         &mut finish,
                                         Host::new(listener),
                                         scenario::TIMEOUT,
@@ -102,8 +93,11 @@ fn writes_after_eof() {
                                                 assert!(matches!(io.read().await, Ok(None)));
                                                 io.write_all(b"o").await.ok().expect("first write after EOF");
                                                 io.write_all(b"k").await.ok().expect("second write after EOF");
-                                                release.notify().expect("release reset");
-                                                peer.finish().expect("peer reset completed");
+                                                let mut response = [0; 2];
+                                                peer.read_exact(&mut response).expect("reply after EOF");
+                                                assert_eq!(&response, b"ok");
+                                                Peer::try_reset(&peer).expect("reset on close");
+                                                drop(peer);
                                                 assert!(matches!(io.write_all(b"x").await,
                                                     Err(Write::ConnectionFailed { payload: Some(payload) })
                                                         if payload.as_ref() == b"x"
@@ -118,9 +112,6 @@ fn writes_after_eof() {
                                     )
                                     .expect("listener lifecycle")
                                     .expect("listener progress");
-                                },
-                            )
-                            .expect("peer worker");
                     },
                 );
                 assert!(result.is_ok(), "listener installation");

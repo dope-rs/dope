@@ -1,7 +1,7 @@
 //! Worker execution and process-watch failures.
 use dope_core::{
     dope_sys::thread::signal::Signal,
-    platform::{affinity, channel, signal, thread},
+    platform::{affinity, signal, thread},
 };
 use o3::alloc;
 
@@ -16,7 +16,7 @@ pub enum Cause<S> {
     Entropy(dope_core::Errno),
     WorkerBus {
         cpu: affinity::Cpu,
-        source: channel::Create,
+        source: bus::Create,
     },
     BusRead {
         cpu: affinity::Cpu,
@@ -58,7 +58,6 @@ impl<S> Cause<S> {
 pub enum Bus {
     Write {
         source: bus::Fault,
-        terminal: Option<bus::Fault>,
         handoff: Option<bus::Read>,
     },
     Read(bus::Read),
@@ -67,18 +66,20 @@ pub enum Bus {
 /// Exact terminal failure produced by one returned worker.
 #[derive(Debug)]
 pub enum Worker<W> {
+    Failed {
+        cpu: affinity::Cpu,
+        handoff: Option<bus::Read>,
+    },
     Affinity {
         cpu: affinity::Cpu,
         source: affinity::Error,
         bus: bus::Report,
-        terminal: Option<bus::Fault>,
         handoff: Option<bus::Read>,
     },
     Entry {
         cpu: affinity::Cpu,
         source: W,
         bus: bus::Report,
-        terminal: Option<bus::Fault>,
         handoff: Option<bus::Read>,
     },
     Bus {

@@ -166,9 +166,9 @@ impl Handle {
         Ok(())
     }
 
-    pub(crate) fn bind(&self, addr: &Addr) -> Result<(), Errno> {
-        addr.storage()
-            .as_addr()
+    pub(crate) fn bind(&self, addr: &Inet) -> Result<(), Errno> {
+        addr.view()
+            .native()
             .try_bind::<Backend, Errno>(self.fd.as_fd())
     }
 

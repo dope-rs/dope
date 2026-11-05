@@ -1,8 +1,8 @@
-use std::{marker, mem};
+use std::mem;
 
 use dope_sys::io::socket::route::{Plan, count::Count, selector};
 
-use crate::sockets::reuse::Map;
+use crate::sockets::reuse::{Error, Loaded, Map};
 
 const LDX_DW_MEM: u8 = 0x79;
 const LDX_B_MEM: u8 = 0x71;
@@ -47,13 +47,13 @@ const MAP_HANDLE: usize = 17;
 /// Additional instructions before the shared selector body in a prefixed plan.
 const PREFIX_LEN: usize = 14;
 const PREFIX_BODY: usize = PREFIX_LEN + 2;
+const LEN: usize = 28;
 
 const HASH: usize = 62;
 const HASH_STEP: usize = 7;
 const FNV_BASIS: i32 = 0x811c9dc5_u32 as i32;
 const FNV_PRIME: i32 = 0x01000193;
-const REDUCE: usize = HASH + selector::Bootstrap::MAX as usize * HASH_STEP;
-const BOOTSTRAP_LEN: usize = REDUCE + 2;
+const BOOTSTRAP_LEN: usize = HASH + selector::Bootstrap::MAX as usize * HASH_STEP + 1;
 
 /// The displacement of the instruction at slot `at` to the label at slot `target`.
 const fn link(at: usize, target: usize) -> i16 {
@@ -69,46 +69,20 @@ pub(super) struct Instruction {
     imm: i32,
 }
 
-pub(super) struct Program<'a> {
-    instructions: Instructions,
-    map: marker::PhantomData<&'a Map>,
-}
-
-enum Instructions {
-    Direct([Instruction; Program::LEN]),
-    Prefixed([Instruction; Program::LEN + PREFIX_LEN]),
-    Bootstrap([Instruction; BOOTSTRAP_LEN]),
-    PrefixedBootstrap([Instruction; BOOTSTRAP_LEN + PREFIX_LEN]),
-}
-
-impl<'a> Program<'a> {
-    const LEN: usize = 28;
-
-    pub(super) fn compile(map: &'a Map, plan: Plan) -> Self {
-        let body = shape(plan.selector(), plan.count(), map);
-        let instructions = match (plan.bootstrap(), plan.prefix()) {
-            (None, None) => Instructions::Direct(body),
-            (None, Some(prefix)) => Instructions::Prefixed(prefixed(prefix, body)),
-            (Some(config), None) => {
-                Instructions::Bootstrap(bootstrap(plan.selector(), config, plan.count(), body))
+pub(super) fn load(map: &Map, plan: Plan) -> Result<Loaded, Error> {
+    let body = shape(plan.selector(), plan.count(), map);
+    match (plan.bootstrap(), plan.prefix()) {
+        (None, None) => Loaded::load(&body),
+        (None, Some(prefix)) => Loaded::load(&prefixed::<LEN, { LEN + PREFIX_LEN }>(prefix, body)),
+        (Some(config), prefix) => {
+            let (body, used) = bootstrap(plan.selector(), config, plan.count(), body);
+            match prefix {
+                None => Loaded::load(&body[..used]),
+                Some(prefix) => Loaded::load(
+                    &prefixed::<BOOTSTRAP_LEN, { BOOTSTRAP_LEN + PREFIX_LEN }>(prefix, body)
+                        [..used + PREFIX_LEN],
+                ),
             }
-            (Some(config), Some(prefix)) => Instructions::PrefixedBootstrap(prefixed(
-                prefix,
-                bootstrap(plan.selector(), config, plan.count(), body),
-            )),
-        };
-        Self {
-            instructions,
-            map: marker::PhantomData,
-        }
-    }
-
-    pub(super) const fn instructions(&self) -> &[Instruction] {
-        match &self.instructions {
-            Instructions::Direct(instructions) => instructions,
-            Instructions::Prefixed(instructions) => instructions,
-            Instructions::Bootstrap(instructions) => instructions,
-            Instructions::PrefixedBootstrap(instructions) => instructions,
         }
     }
 }
@@ -119,7 +93,7 @@ fn prefixed<const BODY: usize, const LENGTH: usize>(
     prefix: selector::PrefixPlan,
     body: [Instruction; BODY],
 ) -> [Instruction; LENGTH] {
-    const { assert!(BODY >= Program::LEN && LENGTH == BODY + PREFIX_LEN) };
+    const { assert!(BODY >= LEN && LENGTH == BODY + PREFIX_LEN) };
     let mut program = [EMPTY; LENGTH];
     let drop = PREFIX_LEN + DROP;
     program[..2].copy_from_slice(&body[..2]);
@@ -148,8 +122,8 @@ fn prefixed<const BODY: usize, const LENGTH: usize>(
 ///
 /// Slot indices are this program's only control flow: every guard jumps forward to the
 /// shared [`DROP`] tail, and both shape branches meet the selection at [`SET`]/[`SELECT`].
-fn shape(selector: selector::Selector, count: Count, map: &Map) -> [Instruction; Program::LEN] {
-    let mut program = [EMPTY; Program::LEN];
+fn shape(selector: selector::Selector, count: Count, map: &Map) -> [Instruction; LEN] {
+    let mut program = [EMPTY; LEN];
     program[0] = instruction(LDX_DW_MEM, 2, 1, 0, 0);
     program[1] = instruction(LDX_DW_MEM, 3, 1, 8, 0);
     program[2] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
@@ -208,13 +182,13 @@ fn bootstrap(
     selector: selector::Selector,
     config: selector::Bootstrap,
     count: Count,
-    body: [Instruction; Program::LEN],
-) -> [Instruction; BOOTSTRAP_LEN] {
+    body: [Instruction; LEN],
+) -> ([Instruction; BOOTSTRAP_LEN], usize) {
     let mut program = [EMPTY; BOOTSTRAP_LEN];
-    program[..Program::LEN].copy_from_slice(&body);
+    program[..LEN].copy_from_slice(&body);
     // Only rejection edges enter bootstrap; the original selection tail always exits.
     for at in [4, 11, 13, 15] {
-        program[at].off = link(at, Program::LEN);
+        program[at].off = link(at, LEN);
     }
     program[28] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
     program[29] = instruction(
@@ -297,25 +271,44 @@ fn bootstrap(
     program[59] = instruction(ALU64_MOV_X, 7, 6, 0, 0);
     program[60] = instruction(ALU32_XOR_K, 7, 0, 0, FNV_BASIS);
     program[61] = instruction(ALU32_MUL_K, 7, 0, 0, FNV_PRIME);
-    for byte in 0..selector::Bootstrap::MAX as usize {
-        let at = HASH + byte * HASH_STEP;
+    let min = usize::from(config.min().get());
+    let max = usize::from(config.max().get());
+    let reduce = HASH + 3 + 3 * min + HASH_STEP * (max - min);
+    program[HASH] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+    program[HASH + 1] = instruction(
+        ALU64_ADD_K,
+        4,
+        0,
+        0,
+        i32::from(payload_offset(selector.set_key())) + min as i32,
+    );
+    program[HASH + 2] = instruction(JMP_JGT_X, 4, 3, link(HASH + 2, DROP), 0);
+    let mut at = HASH + 3;
+    for byte in 0..max {
         let offset = payload_offset(selector.set_key()) + byte as i16;
-        program[at] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
-        program[at + 1] = instruction(ALU64_ADD_K, 4, 0, 0, i32::from(offset) + 1);
-        program[at + 2] = instruction(JMP_JGT_X, 4, 3, link(at + 2, DROP), 0);
-        program[at + 3] = instruction(LDX_B_MEM, 8, 2, offset, 0);
-        program[at + 4] = instruction(ALU32_XOR_X, 7, 8, 0, 0);
-        program[at + 5] = instruction(ALU32_MUL_K, 7, 0, 0, FNV_PRIME);
-        program[at + 6] = instruction(JMP_JEQ_K, 6, 0, link(at + 6, REDUCE), byte as i32 + 1);
+        if byte >= min {
+            program[at] = instruction(ALU64_MOV_X, 4, 2, 0, 0);
+            program[at + 1] = instruction(ALU64_ADD_K, 4, 0, 0, i32::from(offset) + 1);
+            program[at + 2] = instruction(JMP_JGT_X, 4, 3, link(at + 2, DROP), 0);
+            at += 3;
+        }
+        program[at] = instruction(LDX_B_MEM, 8, 2, offset, 0);
+        program[at + 1] = instruction(ALU32_XOR_X, 7, 8, 0, 0);
+        program[at + 2] = instruction(ALU32_MUL_K, 7, 0, 0, FNV_PRIME);
+        at += 3;
+        if byte + 1 >= min && byte + 1 < max {
+            program[at] = instruction(JMP_JEQ_K, 6, 0, link(at, reduce), byte as i32 + 1);
+            at += 1;
+        }
     }
     let count = count.encode();
-    program[REDUCE] = if count.is_power_of_two() {
+    program[reduce] = if count.is_power_of_two() {
         instruction(ALU32_AND_K, 7, 0, 0, i32::from(count - 1))
     } else {
         instruction(ALU32_MOD_K, 7, 0, 0, i32::from(count))
     };
-    program[REDUCE + 1] = instruction(JMP_JA, 0, 0, link(REDUCE + 1, SELECT + 1), 0);
-    program
+    program[reduce + 1] = instruction(JMP_JA, 0, 0, link(reduce + 1, SELECT + 1), 0);
+    (program, reduce + 2)
 }
 
 /// Encodes Linux BPF's native-endian register bitfields by folding the high
@@ -336,8 +329,7 @@ const fn payload_offset(offset: u8) -> i16 {
 
 const _: () = {
     assert!(SET < SELECT && SELECT < DROP);
-    assert!(DROP + 2 == Program::LEN);
+    assert!(DROP + 2 == LEN);
     assert!(mem::size_of::<Instruction>() == 8);
-    assert!(PREFIX_BODY + Program::LEN - 2 == Program::LEN + PREFIX_LEN);
-    assert!(mem::align_of::<Program<'static>>() == mem::align_of::<Instruction>());
+    assert!(PREFIX_BODY + LEN - 2 == LEN + PREFIX_LEN);
 };

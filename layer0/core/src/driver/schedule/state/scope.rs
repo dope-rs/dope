@@ -94,10 +94,6 @@ impl<'turn, 'd> Guard<'turn, 'd> {
 }
 
 impl<'turn, 'd> Reactor<'turn, 'd> {
-    pub(crate) fn refund(self) {
-        self.quota.refund();
-    }
-
     pub(crate) fn remaining(&self) -> usize {
         self.quota.remaining()
     }

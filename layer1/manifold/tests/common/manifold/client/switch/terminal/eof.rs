@@ -164,6 +164,7 @@ pub struct Eof {
 
     pub(crate) decode: Decode,
     pub(crate) phase: Rc<Cell<u8>>,
+    pub(crate) conn: signals::Gate,
     pub(crate) commit: signals::Gate,
     pub(crate) settled: signals::Gate,
     pub(crate) closed: signals::Gate,
@@ -374,6 +375,7 @@ impl<'d> session::Connected<'d> for Eof {
         _: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
         self.check();
+        self.conn.hit();
     }
 }
 

@@ -18,14 +18,13 @@ use dope::core::driver::{
 use dope_fiber::{
     abi,
     task::storage::fixed::{
-        direct,
+        Slab, direct,
         local::{Removal, Store},
         quota::{Bounded, Limit},
         schedule::{
             Plane, Pool,
             result::{Outcome, Selection},
         },
-        staged::Slab,
         tree::{Branch, Here, Leaf, Left, Right},
     },
 };
@@ -33,6 +32,7 @@ use dope_fiber::{
 use crate::common::{
     runtime::{self, Setup},
     schedule::quotas::*,
+    storage::stores::Empty,
 };
 
 #[test]
@@ -57,13 +57,13 @@ fn direct_quota() {
         let id = {
             let mut route = tasks.as_mut().route::<Left<Here>>();
             let admit = route.admit().expect("the route owns one vacant slot");
-            Insert::insert(admit, Ready::new(()))
+            Insert::insert(admit, Empty(()))
         };
         assert_eq!(tasks.as_ref().get_ref().available().get(), 0);
         {
             let mut route = tasks.as_mut().route::<Right<Here>>();
             assert!(route.admit().is_none());
-            assert!(Store::insert(route.as_mut(), Ready::new(()),).is_none(),);
+            assert!(Store::insert(route.as_mut(), Empty(()),).is_none(),);
         }
         assert!(tasks.as_mut().route::<Left<Here>>().remove(id) == Removal::Removed);
         assert_eq!(tasks.as_ref().get_ref().available().get(), 1);
@@ -140,5 +140,5 @@ fn scheduled_quota() {
     );
 }
 
-type Local = Slab<'static, abi::Ready<()>, 1, Domain>;
+type Local = Slab<'static, Empty<()>, 1, Domain>;
 type LocalRoutes = Branch<Leaf<Local>, Leaf<Local>>;

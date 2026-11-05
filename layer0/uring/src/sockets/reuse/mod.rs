@@ -86,7 +86,7 @@ impl Installer {
     pub(crate) fn try_new(plan: Plan) -> Result<Self, Error> {
         let count = plan.count();
         let map = Map::create(count)?;
-        let program = Loaded::load(&map, plan)?;
+        let program = program::load(&map, plan)?;
         Ok(Self { program, map })
     }
 }
@@ -141,12 +141,10 @@ impl Map {
 }
 
 impl Loaded {
-    fn load(map: &Map, plan: Plan) -> Result<Self, Error> {
-        let program = program::Program::compile(map, plan);
+    fn load(code: &[program::Instruction]) -> Result<Self, Error> {
         let license = b"GPL\0";
         let mut name = [0_u8; 16];
         name[..10].copy_from_slice(b"dope_route");
-        let code = program.instructions();
         let attr = ProgLoad {
             prog_type: PROGRAM_TYPE,
             insn_cnt: code.len() as u32,

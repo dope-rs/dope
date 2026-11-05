@@ -14,7 +14,7 @@ use dope_manifold::{
     service::bindings::endpoint::State,
 };
 use dope_net::link::{egress, event, pool::change::opening};
-use dope_test::harness::signals::{Gate, Progress as _};
+use dope_test::harness::signals::{Gate, Progress};
 use o3::{
     base::{Call, cell::region},
     buffer::{self, hold, storage::Shared},
@@ -69,6 +69,12 @@ impl<'d> Probe<'d> {
         assert_eq!(self.cleared.get(), 3, "retirement retries then waits");
         assert_eq!(self.closed.hits(), 1);
         check_failure(self.failure.get().expect("exact send failure"));
+    }
+}
+
+impl Progress for Probe<'_> {
+    fn hits(&self) -> u32 {
+        u32::from(self.connection.get().is_some())
     }
 }
 
@@ -490,12 +496,9 @@ impl<'life, 'd: 'life> policy::Lifecycle<'life, 'd, Probe<'d>, KeyTag<0>, 1>
 }
 
 pub fn check_transmit<const TAKE: bool, const REPORT: bool>() {
-    use std::{net::Shutdown, time::Duration};
+    use std::{net, time::Duration};
 
-    use dope_core::{
-        driver::{life::recovery, route::Id},
-        platform::wake,
-    };
+    use dope_core::driver::{life::recovery, route::Id};
     use dope_manifold::{
         app::{Host, env::Bundle},
         client::session::ingress,
@@ -519,97 +522,93 @@ pub fn check_transmit<const TAKE: bool, const REPORT: bool>() {
         scenario::{Runtime, RuntimeCase},
     };
 
-    let (reset, release) = wake::Ends::blocking().expect("reset gate").split();
-    peer::TcpScript::with(
-        move |peer| {
-            peer.shutdown(Shutdown::Write).expect("receive EOF");
-            reset.wait_timeout(scenario::TIMEOUT).expect("EOF observed");
-            peer::Peer::try_reset(*peer).expect("reset on close");
-        },
-        |peer| {
-            let address = peer.addr();
-            let mut finish = Completion::new();
-            let plan = plan::Plan::<KeyTag<0>, 1>::new(
-                1,
-                plan::Spec::new(Duration::from_secs(1), Duration::from_secs(1))
-                    .expect("retry bounds"),
-            )
-            .expect("client layout");
-            let runtime =
-                Runtime::try_for_plan::<profile::Slow, _>(&plan).expect("client settings");
-            let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
-            runtime.with_scope(
-                |mut runtime| {
-                    let probe = Probe::new();
-                    let hash = runtime.hash_state(health::Domain::DEFAULT);
-                    let peers =
-                        Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
-                    let run = |app: &mut dyn RuntimeCase| {
-                        assert_eq!(
-                            app.try_wait(&probe.eof, 1).expect("retained EOF"),
-                            fibers::Wait::Reached,
-                        );
-                        release.notify().expect("release reset");
-                        peer.finish().expect("peer reset completed");
-                        probe.send();
-                        assert_eq!(
-                            app.try_wait(&probe.closed, 1)
-                                .expect("send failure retirement"),
-                            fibers::Wait::Reached,
-                        );
-                    };
-                    let result = if REPORT {
-                        let session =
-                            Bound::<_, _, KeyTag<0>, 1>::bind(&probe, Logic::<TAKE>::new());
-                        let setup = session::Setup::new(session, ingress::Plan::none());
-                        plan.bind(domain::Local::new(Identity), hash).install::<
-                            _, _, sync::Preserve, _, Bundle<Tcp, Identity, profile::Slow>, 1, _, _,
-                        >(
-                            setup,
-                            peers,
-                            &mut runtime,
-                            Scope::driver,
-                            |host, runtime| {
-                                runtime
-                                    .with_quiesce(
-                                        &mut finish,
-                                        Host::new(host),
-                                        scenario::TIMEOUT,
-                                        |mut app| run(&mut app),
-                                    )
-                                    .expect("bound client lifecycle");
-                            },
-                        )
-                    } else {
-                        let session =
-                            Bound::<_, _, KeyTag<0>, 1>::bind(&probe, Logic::<false, false>::new());
-                        let setup = session::Setup::new(session, ingress::Plan::none());
-                        plan.bind(domain::Local::new(Identity), hash).install::<
-                            _, _, sync::Preserve, _, Bundle<Tcp, Identity, profile::Slow>, 1, _, _,
-                        >(
-                            setup,
-                            peers,
-                            &mut runtime,
-                            Scope::driver,
-                            |host, runtime| {
-                                runtime
-                                    .with_quiesce(
-                                        &mut finish,
-                                        Host::new(host),
-                                        scenario::TIMEOUT,
-                                        |mut app| run(&mut app),
-                                    )
-                                    .expect("bound client lifecycle");
-                            },
-                        )
-                    };
-                    assert!(result.is_ok(), "bound client installation");
-                    probe.check::<REPORT>();
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-            );
-            assert!(reports.events().expect("reclaimed events").is_empty());
-        },
+    let listener =
+        peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("reset listener");
+    let address = listener.local_addr().expect("listener address");
+    let mut finish = Completion::new();
+    let plan = plan::Plan::<KeyTag<0>, 1>::new(
+        1,
+        plan::Spec::new(Duration::from_secs(1), Duration::from_secs(1)).expect("retry bounds"),
     )
-    .expect("reset peer");
+    .expect("client layout");
+    let runtime = Runtime::try_for_plan::<profile::Slow, _>(&plan).expect("client settings");
+    let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
+    runtime.with_scope(
+        |mut runtime| {
+            let probe = Probe::new();
+            let hash = runtime.hash_state(health::Domain::DEFAULT);
+            let peers = Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
+            let run = |app: &mut dyn RuntimeCase| {
+                assert_eq!(
+                    app.try_wait(&probe, 1).expect("client connected"),
+                    fibers::Wait::Reached,
+                );
+                let peer = listener
+                    .accept_for(scenario::TIMEOUT)
+                    .expect("accept peer")
+                    .expect("connected peer");
+                peer.shutdown(net::Shutdown::Write).expect("receive EOF");
+                assert_eq!(
+                    app.try_wait(&probe.eof, 1).expect("retained EOF"),
+                    fibers::Wait::Reached,
+                );
+                peer::Peer::try_reset(&peer).expect("reset on close");
+                drop(peer);
+                probe.send();
+                assert_eq!(
+                    app.try_wait(&probe.closed, 1)
+                        .expect("send failure retirement"),
+                    fibers::Wait::Reached,
+                );
+            };
+            let result = if REPORT {
+                let session = Bound::<_, _, KeyTag<0>, 1>::bind(&probe, Logic::<TAKE>::new());
+                let setup = session::Setup::new(session, ingress::Plan::none());
+                plan.bind(domain::Local::new(Identity), hash).install::<
+                            _, _, sync::Preserve, _, Bundle<Tcp, Identity, profile::Slow>, 1, _, _,
+                        >(
+                            setup,
+                            peers,
+                            &mut runtime,
+                            Scope::driver,
+                            |host, runtime| {
+                                runtime
+                                    .with_quiesce(
+                                        &mut finish,
+                                        Host::new(host),
+                                        scenario::TIMEOUT,
+                                        |mut app| run(&mut app),
+                                    )
+                                    .expect("bound client lifecycle");
+                            },
+                        )
+            } else {
+                let session =
+                    Bound::<_, _, KeyTag<0>, 1>::bind(&probe, Logic::<false, false>::new());
+                let setup = session::Setup::new(session, ingress::Plan::none());
+                plan.bind(domain::Local::new(Identity), hash).install::<
+                            _, _, sync::Preserve, _, Bundle<Tcp, Identity, profile::Slow>, 1, _, _,
+                        >(
+                            setup,
+                            peers,
+                            &mut runtime,
+                            Scope::driver,
+                            |host, runtime| {
+                                runtime
+                                    .with_quiesce(
+                                        &mut finish,
+                                        Host::new(host),
+                                        scenario::TIMEOUT,
+                                        |mut app| run(&mut app),
+                                    )
+                                    .expect("bound client lifecycle");
+                            },
+                        )
+            };
+            assert!(result.is_ok(), "bound client installation");
+            probe.check::<REPORT>();
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+    );
+    assert!(reports.events().expect("reclaimed events").is_empty());
 }

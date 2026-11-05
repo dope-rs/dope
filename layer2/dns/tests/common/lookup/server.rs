@@ -235,7 +235,7 @@ pub enum Mode<'a> {
     Close(bool),
     Partial,
     Cookie(Cookie),
-    ExtendedCode(u8),
+    Code(u16),
 }
 
 pub struct Peer<'a> {
@@ -365,26 +365,27 @@ impl Mode<'_> {
                 Self::Stream(_) if query.kind == A => Reply::Cut,
                 Self::Stream(_) => Reply::Empty,
                 Self::Malformed(_) | Self::Close(_) if query.kind == A => Reply::Cut,
-                Self::Malformed(_) | Self::Close(_) | Self::Cookie(_) | Self::ExtendedCode(_) => {
+                Self::Malformed(_) | Self::Close(_) | Self::Cookie(_) | Self::Code(_) => {
                     Reply::Empty
                 }
             };
             let auth = !matches!(self, Self::Cookie(Cookie::Missing));
             let mut reply = query.reply(reply, auth)?;
-            let renew = match self {
-                Self::Cookie(Cookie::Bad) => true,
-                Self::Cookie(Cookie::Renew) => {
-                    !mem::replace(&mut renewed[usize::from(query.kind != A)], true)
+            let code = match self {
+                Self::Cookie(Cookie::Bad) => Some(23),
+                Self::Cookie(Cookie::Renew)
+                    if !mem::replace(&mut renewed[usize::from(query.kind != A)], true) =>
+                {
+                    Some(23)
                 }
-                _ => false,
+                Self::Code(code) => Some(code),
+                _ => None,
             };
-            if renew {
-                cookie(&mut reply, &query.client()?)?[0] = 1;
+            if let Some(code) = code {
+                cookie(&mut reply, &query.client()?)?[0] =
+                    u8::try_from(code >> 4).map_err(Server::Length)?;
                 let flags = reply.get_mut(3).ok_or(Server::Header)?;
-                *flags = *flags & 0xf0 | 7;
-            }
-            if let Self::ExtendedCode(code) = self {
-                cookie(&mut reply, &query.client()?)?[0] = code;
+                *flags = *flags & 0xf0 | (code & 0xf) as u8;
             }
             udp.send_to(&reply, peer).map_err(Server::Io)?;
             done += 1;
@@ -445,7 +446,7 @@ impl Mode<'_> {
             | Self::Oversized(_)
             | Self::Refused
             | Self::Reject(_)
-            | Self::ExtendedCode(_)
+            | Self::Code(_)
             | Self::Delay(_) => {}
         }
         Ok(done)

@@ -4,40 +4,9 @@ use crate::{
     driver::{
         life::native::request::{Borrowed, bound},
         retained, route,
-        route::kind,
     },
     io::fd::handles,
 };
-
-/// A submission whose borrowed resources are retained through terminal
-/// completion or quiescence.
-pub(crate) struct Submission<
-    'borrow,
-    'owner: 'borrow,
-    'd: 'owner,
-    Tag: route::Tag,
-    C: kind::Class = kind::Any,
-> {
-    pub(crate) submission: bound::Captured<'owner, 'd, Borrowed<'borrow>>,
-    pub(crate) target: route::Operation<'d, Tag, C>,
-}
-
-impl<'borrow, 'owner: 'borrow, 'd: 'owner, Tag: route::Tag, C: kind::Class>
-    Submission<'borrow, 'owner, 'd, Tag, C>
-{
-    /// # Safety
-    /// Captured storage belongs to `token` through completion or quiescence.
-    pub(crate) unsafe fn bind(
-        token: retained::raw::Token<'owner, 'd>,
-        entry: retained::raw::Submission<'borrow, 'd, Tag, C>,
-    ) -> Self {
-        let (entry, target) = entry.into_parts();
-        Self {
-            submission: bound::Captured::new(entry, token),
-            target,
-        }
-    }
-}
 
 /// A retained connect, distinct from unrelated raw submissions accepted by a
 /// tuning transaction.
@@ -73,14 +42,6 @@ impl<'borrow, 'owner: 'borrow, 'd: 'owner, Tag: route::Tag> Connect<'borrow, 'ow
 }
 
 const _: () = {
-    assert!(
-        mem::size_of::<Submission<'static, 'static, 'static, route::KeyTag<1>>>()
-            == mem::size_of::<retained::raw::Submission<'static, 'static, route::KeyTag<1>>>()
-    );
-    assert!(
-        mem::align_of::<Submission<'static, 'static, 'static, route::KeyTag<1>>>()
-            == mem::align_of::<retained::raw::Submission<'static, 'static, route::KeyTag<1>>>()
-    );
     assert!(
         mem::size_of::<bound::Captured<'static, 'static, Borrowed<'static>>>()
             == mem::size_of::<Borrowed<'static>>()

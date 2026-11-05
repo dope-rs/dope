@@ -129,11 +129,13 @@ fn retires_after_updates() {
         assert!(book.step().is_none());
         book.try_keep(&mut lease, 3).expect("fanout registration");
         book.publish();
+        book.publish();
     }
     assert!(!book.has_pending());
-    assert!(book.step().is_none());
     let mut next = storage::Lease::new();
     book.try_keep(&mut next, 4).expect("fanout registration");
+    assert!(!book.has_pending());
+    assert!(book.step().is_none());
     book.publish();
     assert!(matches!(book.step(), Some(storage::Step::Item(4))));
     assert!(book.step().is_none());

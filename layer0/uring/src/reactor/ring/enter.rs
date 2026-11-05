@@ -1,9 +1,6 @@
 use std::{marker, mem, ptr, time};
 
-use dope_sys::{
-    kernel,
-    ring::{enter, prepare::Feature},
-};
+use dope_sys::{kernel, ring::enter};
 use o3::base::num::bounded;
 
 use crate::{
@@ -147,45 +144,5 @@ const _: () = {
     assert!(mem::align_of::<ring::ffi::Timespec>() == mem::align_of::<Timeout>());
     assert!(mem::size_of::<Arguments>() == 24);
     assert!(mem::size_of::<Enter<'static, ()>>() == 16);
+    assert!(mem::align_of::<Enter<'static, ()>>() == 4);
 };
-
-#[derive(Clone, Copy, Debug)]
-#[repr(transparent)]
-pub(crate) struct Features(u32);
-
-impl Features {
-    pub(crate) const fn new(bits: u32) -> Self {
-        Self(bits)
-    }
-
-    pub(crate) const fn has_ext_arg(self) -> bool {
-        use crate::reactor::ring::ffi;
-
-        self.0 & ffi::FEATURE_EXT_ARG != 0
-    }
-
-    pub(crate) const fn has_no_drop(self) -> bool {
-        use crate::reactor::ring::ffi;
-
-        self.0 & ffi::FEATURE_NODROP != 0
-    }
-
-    pub(crate) const fn has_cqe_skip(self) -> bool {
-        use crate::reactor::ring::ffi;
-
-        self.0 & ffi::FEATURE_CQE_SKIP != 0
-    }
-
-    pub(super) fn require(self) -> Result<(), Feature> {
-        if !self.has_ext_arg() {
-            return Err(Feature::ExtendedArguments);
-        }
-        if !self.has_no_drop() {
-            return Err(Feature::NoDrop);
-        }
-        if !self.has_cqe_skip() {
-            return Err(Feature::SkipCompletionOnSuccess);
-        }
-        Ok(())
-    }
-}

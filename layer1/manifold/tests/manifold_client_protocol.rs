@@ -1,6 +1,11 @@
 pub mod common;
 
-use std::{cell::Cell, net::Shutdown, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    net::{Ipv4Addr, Shutdown},
+    rc::Rc,
+    time::Duration,
+};
 
 use dope_core::driver::{
     life::recovery,
@@ -28,7 +33,7 @@ use dope_runtime::executor::session::{Completion, Scope};
 use dope_test::{
     fibers,
     harness::{
-        peer::{self, Peer},
+        GUARD, peer,
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -46,7 +51,7 @@ use crate::common::{
             close::{
                 members::Until,
                 observe::{Events, Session},
-                run::{Exhausted, Run, serve},
+                run::{Exhausted, Run},
             },
             half::{AFTER_EOF, Action, Half, Progress, RESPONSE},
         },
@@ -82,85 +87,88 @@ where
     C::Error: PartialEq,
 {
     let mut finish = Completion::new();
-    peer::AcceptScript::with(serve, |peer| {
-        let addr = peer.addr();
-        let plan = (plan::Plan::<KeyTag<0>, 1, plan::Standard, plan::Local<C::Staging>>::new(
-            1,
-            plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
-                .expect("valid retry bounds"),
-        ))
-        .expect("connector capacity");
-        let config = (plan.configured()).expect("configure executor");
-        let mut reclaim1 = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let listener = peer::TcpAcceptor::bind((Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
+    let addr = listener.local_addr().expect("listener address");
+    let plan = (plan::Plan::<KeyTag<0>, 1, plan::Standard, plan::Local<C::Staging>>::new(
+        1,
+        plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
+            .expect("valid retry bounds"),
+    ))
+    .expect("connector capacity");
+    let config = (plan.configured()).expect("configure executor");
+    let mut reclaim1 = Reports::<_>::new(config, [Id::fixed::<0>()]);
 
-        Runtime::new(config).with_scope(
-            |mut runtime| {
-                let target = Session::new(case.codec);
-                let events = target.events.clone();
-                let errors = target.errors.clone();
-                let audit = target.audit.clone();
-                let gate = target.gate.clone();
-                let backoff = runtime.hash_state(health::Domain::DEFAULT);
-                let setup = session::Setup::new(target, ingress::Plan::none());
-                let set = Snapshot::from_one(Revision::new(1), Endpoint::new(addr, addr));
-                let result = plan
-                    .bind(domain::Local::new(Identity), backoff)
-                    .install::<_, _, sync::Preserve, _, Bundle<Tcp, Identity, Balanced>, 16, _, _>(
-                        setup,
-                        set,
-                        &mut runtime,
-                        Scope::driver,
-                        |host, runtime| {
-                            let result = runtime.with_quiesce(
-                                &mut finish,
-                                Host::new(host),
-                                Duration::from_secs(2),
-                                |mut app| {
-                                    assert_eq!(
-                                        fibers::TEST
-                                            .try_wait(&mut app, &gate, 2)
-                                            .expect("driver wait"),
-                                        fibers::Wait::Reached
-                                    );
-                                    let events = Events::snapshot(&events);
-                                    assert_eq!(events.closed.len(), 1);
-                                    assert!((events.closed[0].1) == (case.reason));
-                                    let old = events.conn[0];
-                                    let new = events.conn[1];
-                                    assert!((old.index()) == (new.index()));
-                                    assert!(old != new);
-                                    assert_eq!(events.replies, Some(0));
-                                },
-                            );
-                            assert!(result.is_ok(), "application teardown");
-                        },
-                    );
-                assert!(result.is_ok(), "create connector");
-                audit.checked((0, 0));
-                assert!(&*errors.values().expect("codec observations") == case.error.as_slice());
-                let observed = Events::snapshot(&events);
-                assert_eq!(gate.hits() as usize, observed.conn.len());
-                assert!(observed.replies.is_some(), "reply count overflowed");
-                assert!(
-                    observed.is_ordered(),
-                    "{:?}",
-                    (&observed.conn, &observed.closed, &observed.quarantined)
+    Runtime::new(config).with_scope(
+        |mut runtime| {
+            let target = Session::new(case.codec);
+            let events = target.events.clone();
+            let errors = target.errors.clone();
+            let audit = target.audit.clone();
+            let gate = target.gate.clone();
+            let backoff = runtime.hash_state(health::Domain::DEFAULT);
+            let setup = session::Setup::new(target, ingress::Plan::none());
+            let set = Snapshot::from_one(Revision::new(1), Endpoint::new(addr, addr));
+            let result = plan
+                .bind(domain::Local::new(Identity), backoff)
+                .install::<_, _, sync::Preserve, _, Bundle<Tcp, Identity, Balanced>, 16, _, _>(
+                    setup,
+                    set,
+                    &mut runtime,
+                    Scope::driver,
+                    |host, runtime| {
+                        let result = runtime.with_quiesce(
+                            &mut finish,
+                            Host::new(host),
+                            Duration::from_secs(2),
+                            |mut app| {
+                                assert_eq!(
+                                    fibers::TEST.try_wait(&mut app, &gate, 1).expect("connect"),
+                                    fibers::Wait::Reached
+                                );
+                                let first = listener
+                                    .accept_for(GUARD)
+                                    .expect("accept")
+                                    .expect("connected peer");
+                                first.set_nodelay(true).expect("TCP_NODELAY");
+                                first.write_wait(Some(GUARD)).expect("write deadline");
+                                first.write_all(&[0xff]).expect("protocol-error byte");
+                                assert_eq!(
+                                    fibers::TEST
+                                        .try_wait(&mut app, &gate, 2)
+                                        .expect("driver wait"),
+                                    fibers::Wait::Reached
+                                );
+                                let events = Events::snapshot(&events);
+                                assert_eq!(events.closed.len(), 1);
+                                assert!((events.closed[0].1) == (case.reason));
+                                let old = events.conn[0];
+                                let new = events.conn[1];
+                                assert!((old.index()) == (new.index()));
+                                assert!(old != new);
+                                assert_eq!(events.replies, Some(0));
+                            },
+                        );
+                        assert!(result.is_ok(), "application teardown");
+                    },
                 );
-            },
-            recovery::Policy::new(|event| reclaim1.push(event), recover),
-        );
-        assert!(
-            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim1:?}"
-        );
-
-        Peer::at(addr)
-            .try_connect()
-            .expect("release protocol-error peer");
-        let finished = (peer.finish()).expect("finish protocol-error peer");
-        finished.expect("protocol-error peer I/O");
-    })
-    .expect("spawn protocol-error peer");
+            assert!(result.is_ok(), "create connector");
+            audit.checked((0, 0));
+            assert!(&*errors.values().expect("codec observations") == case.error.as_slice());
+            let observed = Events::snapshot(&events);
+            assert_eq!(gate.hits() as usize, observed.conn.len());
+            assert!(observed.replies.is_some(), "reply count overflowed");
+            assert!(
+                observed.is_ordered(),
+                "{:?}",
+                (&observed.conn, &observed.closed, &observed.quarantined)
+            );
+        },
+        recovery::Policy::new(|event| reclaim1.push(event), recover),
+    );
+    assert!(
+        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reclaim1:?}"
+    );
 }
 
 #[test]

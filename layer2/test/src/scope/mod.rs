@@ -25,6 +25,5 @@ impl<R> Error<'_, R> {
 }
 
 mod driver;
+pub use dope_runtime::executor::Scoped;
 pub use driver::Driver;
-mod scoped;
-pub use scoped::Scoped;

@@ -2,13 +2,10 @@ pub mod common;
 
 use std::{net::SocketAddr, rc::Rc, time::Duration};
 
-use dope_core::{
-    driver::{
-        life::recovery,
-        route::{Id, KeyTag, table::conn::Capacity},
-        settings,
-    },
-    platform::wake,
+use dope_core::driver::{
+    life::recovery,
+    route::{Id, KeyTag, table::conn::Capacity},
+    settings,
 };
 use dope_manifold::{
     app::{self, env},
@@ -32,7 +29,7 @@ use dope_test::{
     harness::{
         GUARD,
         observe::Trace,
-        peer,
+        peer::TcpAcceptor,
         signals::{LocalGate, Progress as _},
     },
     reclaim::Reports,
@@ -50,55 +47,36 @@ use crate::common::{
 
 #[test]
 fn fresh_uses_peer() {
-    let (end_rx, end_tx) = wake::Ends::blocking()
-        .expect("peer release channel")
-        .split();
-    peer::TcpScript::with_many::<2, _>(
-        move |streams| {
-            let [main, aux] = streams;
-            let primary = (main.peer_addr()).expect("main peer address");
-            let aux_addr = (aux.peer_addr()).expect("side peer address");
-            assert!(primary != aux_addr);
-            let mut payload = [0; 6];
-            assert!(aux.read_exact(&mut payload).is_ok(), "side payload");
-            assert_eq!(payload, *b"cancel");
-            assert!(end_rx.wait_timeout(GUARD).is_ok(), "release server");
-        },
-        |server| {
-            let addr = server.addr();
-
-            let events = Trace::new();
-            run(addr, false, &events);
-
-            assert!(*events.values().expect("recorded observations") == [Ok(())]);
-            assert!(end_tx.notify().is_ok(), "release server");
-            assert!(server.finish().is_ok(), "finish server");
-        },
-    )
-    .expect("spawn server");
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peer");
+    let events = Trace::new();
+    run(server.local_addr().expect("peer address"), false, &events);
+    assert!(*events.values().expect("recorded observations") == [Ok(())]);
+    let [main, aux] = [(); 2].map(|()| {
+        server
+            .accept_for(GUARD)
+            .expect("accept peer")
+            .expect("connected peer")
+    });
+    assert_ne!(
+        main.peer_addr().expect("main peer address"),
+        aux.peer_addr().expect("side peer address"),
+    );
+    aux.read_wait(Some(GUARD)).expect("side read deadline");
+    let mut payload = [0; 6];
+    aux.read_exact(&mut payload).expect("side payload");
+    assert_eq!(payload, *b"cancel");
 }
 
 #[test]
 fn abandon_drains_lane() {
-    let (end_rx, end_tx) = wake::Ends::blocking()
-        .expect("peer release channel")
-        .split();
-    peer::TcpScript::with(
-        move |_| {
-            assert!(end_rx.wait_timeout(GUARD).is_ok(), "release server");
-        },
-        |server| {
-            let addr = server.addr();
-
-            let events = Trace::new();
-            run(addr, true, &events);
-
-            assert!(events.values().expect("recorded observations").is_empty());
-            assert!(end_tx.notify().is_ok(), "release server");
-            assert!(server.finish().is_ok(), "finish server");
-        },
-    )
-    .expect("spawn server");
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peer");
+    let events = Trace::new();
+    run(server.local_addr().expect("peer address"), true, &events);
+    assert!(events.values().expect("recorded observations").is_empty());
+    server
+        .accept_for(GUARD)
+        .expect("accept primary")
+        .expect("connected primary");
 }
 
 #[test]
@@ -174,29 +152,27 @@ fn startup_hides_target() {
 #[test]
 fn empty_side_preserves_primary_timeout_quota() {
     let mut finish = Completion::new();
-    peer::TcpScript::with_many::<2, _>(
-        |_| {},
-        |server| {
-            let ready = LocalGate::new();
-            let events = Trace::new();
-            let audit = Rc::new(Report::default());
-            let addr = server.addr();
-            let snapshot = service::Snapshot::from_one(
-                service::Revision::new(1),
-                service::Endpoint::new(addr, addr),
-            );
-            let plan = plan::Plan::<KeyTag<0>, 1, plan::Side>::try_new(
-                1,
-                plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
-                    .expect("retry bounds")
-                    .with_ttl(lifetime::LIMIT),
-            )
-            .expect("side connector plan");
-            let prepared = Plan::new(Storage(Capacity::fixed::<1>()), plan)
-                .with_install(settings::Config::for_profile::<Balanced>())
-                .expect("side connector layout");
-            let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
-            prepared.try_scoped(
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peers");
+    let ready = LocalGate::new();
+    let events = Trace::new();
+    let audit = Rc::new(Report::default());
+    let addr = server.local_addr().expect("peer address");
+    let snapshot = service::Snapshot::from_one(
+        service::Revision::new(1),
+        service::Endpoint::new(addr, addr),
+    );
+    let plan = plan::Plan::<KeyTag<0>, 1, plan::Side>::try_new(
+        1,
+        plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
+            .expect("retry bounds")
+            .with_ttl(lifetime::LIMIT),
+    )
+    .expect("side connector plan");
+    let prepared = Plan::new(Storage(Capacity::fixed::<1>()), plan)
+        .with_install(settings::Config::for_profile::<Balanced>())
+        .expect("side connector layout");
+    let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
+    prepared.try_scoped(
                 |scope| {
                     let result = scope.lend(|plan, stage| {
                         let setup = session::Setup::new(
@@ -216,7 +192,13 @@ fn empty_side_preserves_primary_timeout_quota() {
                                 &mut finish,
                                 app::Host::new(Limited { inner: pool }),
                                 Duration::from_secs(2),
-                                |mut app| dope_test::fibers::TEST.try_wait(&mut app, &ready.handle(), 2),
+                                |mut app| {
+                                    let progress = dope_test::fibers::TEST.try_wait(&mut app, &ready.handle(), 2);
+                                    for _ in 0..2 {
+                                        server.accept_for(GUARD).expect("accept peer").expect("connected peer");
+                                    }
+                                    progress
+                                },
                             ),
                         )
                     });
@@ -228,18 +210,20 @@ fn empty_side_preserves_primary_timeout_quota() {
                 recovery::Policy::new(|event| reports.push(event), recover),
                 |entered| assert!(entered.is_ok()),
             );
-            assert!(events.values().expect("lifetime events").iter().any(|event| matches!(
+    assert!(
+        events
+            .values()
+            .expect("lifetime events")
+            .iter()
+            .any(|event| matches!(
                 event,
                 lifetime::Event::Closed(dope_manifold::client::close::Reason::Timeout(
                     dope_manifold::client::deadline::Kind::Lifetime,
                 )),
-            )));
-            assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
-            audit.checked((0, 0));
-            server.finish().expect("finish peers");
-        },
-    )
-    .expect("spawn peers");
+            ))
+    );
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+    audit.checked((0, 0));
 }
 
 #[test]
@@ -257,25 +241,19 @@ fn forced_finish_settles_queued_side_requests() {
         },
     };
 
-    let (end_rx, end_tx) = wake::Ends::blocking()
-        .expect("peer release channel")
-        .split();
-    peer::TcpScript::with_many::<2, _>(
-        move |_streams| end_rx.wait_timeout(GUARD).expect("release peers"),
-        |server| {
-            let mut finish = Completion::new();
-            let audit = Rc::new(Report::default());
-            let connected = Gate::new();
-            let plan = plan::Plan::<KeyTag<0>, 2, plan::Side>::try_new(
-                2,
-                plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1))
-                    .expect("retry bounds"),
-            )
-            .expect("two side slots");
-            let prepared = Plan::new(Storage(Capacity::fixed::<2>()), plan)
-                .with_install(settings::Config::for_profile::<Balanced>())
-                .expect("side shutdown layout");
-            prepared.try_scoped(
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peers");
+    let mut finish = Completion::new();
+    let audit = Rc::new(Report::default());
+    let connected = Gate::new();
+    let plan = plan::Plan::<KeyTag<0>, 2, plan::Side>::try_new(
+        2,
+        plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1)).expect("retry bounds"),
+    )
+    .expect("two side slots");
+    let prepared = Plan::new(Storage(Capacity::fixed::<2>()), plan)
+        .with_install(settings::Config::for_profile::<Balanced>())
+        .expect("side shutdown layout");
+    prepared.try_scoped(
                 |scope| {
                     scope.lend(|plan, stage| {
                         let registry = stage.storage();
@@ -290,7 +268,7 @@ fn forced_finish_settles_queued_side_requests() {
                             },
                             ingress::Plan::none(),
                         );
-                        let addr = server.addr();
+                        let addr = server.local_addr().expect("peer address");
                         let snapshot = service::Snapshot::from_one(
                             service::Revision::new(1),
                             service::Endpoint::new(addr, addr),
@@ -347,12 +325,13 @@ fn forced_finish_settles_queued_side_requests() {
                 recovery::Policy::new(drop, recover),
                 |entered| assert!(entered.is_ok()),
             );
-            audit.checked((0, 0));
-            end_tx.notify().expect("release peers");
-            server.finish().expect("finish peers");
-        },
-    )
-    .expect("spawn peers");
+    audit.checked((0, 0));
+    for _ in 0..2 {
+        server
+            .accept_for(GUARD)
+            .expect("accept primary")
+            .expect("connected primary");
+    }
 }
 
 #[test]
@@ -373,34 +352,23 @@ fn cancelled_native_slots_bound_retry_promotion() {
     if std::env::consts::OS != "linux" {
         return;
     }
-    let (end_rx, end_tx) = wake::Ends::blocking()
-        .expect("peer release channel")
-        .split();
-    peer::AcceptScript::with(
-        move |acceptor| {
-            let _primary = [acceptor.accept().expect("first primary"), acceptor.accept().expect("second primary")];
-            for _ in 0..2 {
-                let side = acceptor.accept().expect("replacement side connection");
-                let mut payload = [0; 6];
-                side.read_exact(&mut payload).expect("replacement side payload");
-                assert_eq!(payload, *b"cancel");
-            }
-            end_rx.wait_timeout(GUARD).expect("release primary connections");
-        },
-        |server| {
-            let mut finish = Completion::new();
-            let audit = Rc::new(Report::default());
-            let done = LocalGate::new();
-            let plan = plan::Plan::<KeyTag<0>, 2, plan::Side>::try_new(
-                2,
-                plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1)).expect("retry bounds"),
-            ).expect("two side slots");
-            let prepared = Plan::new(Storage(Capacity::fixed::<2>()), plan)
-                .with_install(settings::Config::for_profile::<Balanced>()
-                    .with_queues(settings::QueueLayout::fixed::<64, 128>()))
-                .expect("side retry layout");
-            let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
-            prepared.try_scoped(
+    let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peers");
+    let mut finish = Completion::new();
+    let audit = Rc::new(Report::default());
+    let done = LocalGate::new();
+    let plan = plan::Plan::<KeyTag<0>, 2, plan::Side>::try_new(
+        2,
+        plan::Spec::new(Duration::from_millis(10), Duration::from_secs(1)).expect("retry bounds"),
+    )
+    .expect("two side slots");
+    let prepared = Plan::new(Storage(Capacity::fixed::<2>()), plan)
+        .with_install(
+            settings::Config::for_profile::<Balanced>()
+                .with_queues(settings::QueueLayout::fixed::<64, 128>()),
+        )
+        .expect("side retry layout");
+    let mut reports = Reports::<_>::new(prepared.layout(), [Id::fixed::<0>()]);
+    prepared.try_scoped(
                 |scope| {
                     let result = scope.lend(|plan, stage| {
                         let registry = stage.storage();
@@ -413,7 +381,7 @@ fn cancelled_native_slots_bound_retry_promotion() {
                             events: Rc::clone(&events),
                             gate: Gate::new(),
                         }, ingress::Plan::none());
-                        let addr = server.addr();
+                        let addr = server.local_addr().expect("peer address");
                         let snapshot = service::Snapshot::from_one(service::Revision::new(1), service::Endpoint::new(addr, addr));
                         let hash = stage.hash_state(health::Domain::for_id(0));
                         let result = plan.bind(domain::Local::new(wire::Identity), hash)
@@ -434,12 +402,26 @@ fn cancelled_native_slots_bound_retry_promotion() {
                 recovery::Policy::new(|event| reports.push(event), recover),
                 |entered| assert!(entered.is_ok()),
             );
-            assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
-            audit.checked((0, 0));
-            end_tx.notify().expect("release peers");
-            server.finish().expect("finish peers");
-        },
-    ).expect("spawn peers");
+    assert!(matches!(reports.events(), Ok(events) if events.is_empty()));
+    audit.checked((0, 0));
+    for _ in 0..2 {
+        server
+            .accept_for(GUARD)
+            .expect("accept primary")
+            .expect("connected primary");
+    }
+    for _ in 0..2 {
+        let side = server
+            .accept_for(GUARD)
+            .expect("accept replacement")
+            .expect("connected replacement");
+        side.read_wait(Some(GUARD))
+            .expect("replacement read deadline");
+        let mut payload = [0; 6];
+        side.read_exact(&mut payload)
+            .expect("replacement side payload");
+        assert_eq!(payload, *b"cancel");
+    }
 }
 
 fn run(addr: SocketAddr, eager: bool, events: &Trace<Result<(), Error>, 4>) {

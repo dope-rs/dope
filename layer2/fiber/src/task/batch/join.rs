@@ -4,7 +4,6 @@ use o3::depot::array;
 
 use crate::{
     abi, context,
-    context::wake,
     core::driver::schedule::{
         app,
         ready::{
@@ -106,9 +105,8 @@ where
             return Ok(Progress::Done(done));
         }
 
-        let parent: wake::Waker<'d> = context.as_ref().root_waker().into();
         let pool = *this.pool;
-        let root = match pool.tasks.try_root(parent.0) {
+        let root = match pool.tasks.try_root(context.as_ref().waker().0) {
             Ok(root) => root,
             Err(pool::RootError::Foreign) => {
                 return Err(Error::Root(RootError::Foreign));
@@ -162,57 +160,56 @@ where
         }
 
         if budget == 0 {
-            return Ok(if this.state.has_fresh() || !pool.ready.is_empty() {
-                Progress::More
-            } else {
-                Progress::Parked
-            });
-        }
-
-        let Some(mut drain) = pool.ready.drain() else {
-            return Ok(Progress::Parked);
-        };
-        loop {
-            let pending = match this.state.pending() {
-                state::PendingState::Live(pending) => pending,
-                state::PendingState::Done(done) => return Ok(Progress::Done(done)),
+            if this.state.has_fresh() {
+                return Ok(Progress::More);
+            }
+        } else {
+            let Some(mut drain) = pool.ready.drain() else {
+                return Ok(Progress::Parked);
             };
-            let (index, permit) = if initial {
-                let Some(index) = drain.pop() else {
-                    return Ok(Progress::Parked);
+            loop {
+                let pending = match this.state.pending() {
+                    state::PendingState::Live(pending) => pending,
+                    state::PendingState::Done(done) => return Ok(Progress::Done(done)),
                 };
-                initial = false;
-                (index, None)
-            } else {
-                match context.as_ref().work().next(&mut drain) {
-                    app::Next::Item(index, permit) => (index, Some(permit)),
-                    app::Next::Empty => return Ok(Progress::Parked),
-                    app::Next::Exhausted(_) => return Ok(Progress::More),
-                }
-            };
-            let attach = pool.ready.attach(index);
-            budget -= 1;
-            let done = poll_slot(
-                this.table.as_mut(),
-                context.as_mut(),
-                index,
-                attach,
-                permit,
-                &pool.tasks,
-                root,
-            )
-            .map_err(Error::Task)?;
-            if let state::Status::Done(all) = pending.commit(done) {
-                return Ok(Progress::Done(all));
-            }
-            if budget == 0 {
-                return Ok(if drain.peek().is_some() {
-                    Progress::More
+                let (index, permit) = if initial {
+                    let Some(index) = drain.pop() else {
+                        break;
+                    };
+                    initial = false;
+                    (index, None)
                 } else {
-                    Progress::Parked
-                });
+                    match context.as_ref().work().next(&mut drain) {
+                        app::Next::Item(index, permit) => (index, Some(permit)),
+                        app::Next::Empty => break,
+                        app::Next::Exhausted(_) => return Ok(Progress::More),
+                    }
+                };
+                let attach = pool.ready.attach(index);
+                budget -= 1;
+                let done = poll_slot(
+                    this.table.as_mut(),
+                    context.as_mut(),
+                    index,
+                    attach,
+                    permit,
+                    &pool.tasks,
+                    root,
+                )
+                .map_err(Error::Task)?;
+                if let state::Status::Done(all) = pending.commit(done) {
+                    return Ok(Progress::Done(all));
+                }
+                if budget == 0 {
+                    break;
+                }
             }
         }
+        Ok(if pool.ready.is_empty() {
+            Progress::Parked
+        } else {
+            Progress::More
+        })
     }
 
     fn cancel(self: pin::Pin<&mut Self>) {

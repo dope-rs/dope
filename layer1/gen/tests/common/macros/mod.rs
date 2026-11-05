@@ -5,10 +5,7 @@ mod text;
 
 pub use budget::Budget;
 use counter::Counter;
-use engine::{
-    core::driver::route::{Identity, KeyTag},
-    manifold::timing::interval,
-};
+use engine::core::driver::route::{Identity, KeyTag};
 pub use text::Text;
 
 #[pin_project::pin_project]
@@ -100,28 +97,10 @@ pub struct Forward {
 #[pin_project::pin_project]
 #[derive(engine::Forward)]
 #[forward(crate = ::engine)]
-pub struct Retained<'d> {
-    #[pin]
-    #[forward]
-    pub inner: interval::Interval<'d, KeyTag<10>>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Forward)]
-#[forward(crate = ::engine)]
 pub struct Defaulted<'d, M = (), ID: Identity = KeyTag<9>> {
     #[pin]
     #[forward('d)]
     pub inner: Counter<ID, (&'d (), M)>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Application)]
-#[dispatcher(crate = ::engine)]
-pub struct Lifetime<'d> {
-    #[pin]
-    #[manifold]
-    pub inner: interval::Interval<'d, KeyTag<11>>,
 }
 
 #[pin_project::pin_project]
@@ -132,15 +111,3 @@ pub struct Nested {
     #[manifold]
     pub inner: Forward,
 }
-
-#[derive(engine::Application)]
-#[dispatcher(crate = ::engine)]
-pub struct Facade {}
-
-#[derive(engine::Application)]
-#[dispatcher(
-    core = ::engine::core,
-    manifold = ::engine::manifold,
-    runtime = ::engine::runtime
-)]
-pub struct Parts {}

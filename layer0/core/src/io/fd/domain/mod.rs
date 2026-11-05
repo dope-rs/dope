@@ -21,7 +21,6 @@ mod outbound;
 
 mod resident;
 pub(crate) mod retire;
-mod state;
 
 pub(crate) struct Domain {
     resident: resident::Store,
@@ -94,9 +93,20 @@ impl Domain {
 
     fn release_slot(&self, slot: handles::OutboundSlot) {
         let owner = slot.owner();
-        state::get(self, slot.physical())
+        self.resident
+            .lifecycle(slot.physical())
             .set(states::SlotState::route(states::Phase::MAPPED, owner));
-        Outbound::from(self).reclaim(owner);
+        let cell = &self.outbound.routes[owner.raw() as usize];
+        if let Some(mut lease) = cell.get()
+            && let State::Retired(remaining) = lease.state
+        {
+            if let Some(remaining) = NonZero::new(remaining.get() - 1) {
+                lease.state = State::Retired(remaining);
+                cell.set(Some(lease));
+            } else {
+                Outbound::from(self).reclaim(owner, lease);
+            }
+        }
     }
 }
 
@@ -116,10 +126,10 @@ struct Lease {
     state: State,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum State {
     Live,
-    Retired,
+    Retired(NonZero<u32>),
 }
 
 pub(crate) struct Table {

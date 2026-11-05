@@ -3,7 +3,6 @@
 use std::{convert, mem, num::NonZero, pin};
 
 use dope_core::driver::{
-    self,
     life::{self, finish},
     retained, schedule,
 };
@@ -156,7 +155,7 @@ impl<const N: usize> Weights<N> {
         if let Count::Bounded(_) = count {
             self.values = values.map(|value| {
                 // SAFETY: the admitted sum bounds each nonnegative share and its representation.
-                unsafe { bounded::raw::Proof::assume(value as u32) }.retain()
+                unsafe { bounded::raw::u32(value as u32) }
             });
         }
         Some(count)
@@ -236,10 +235,6 @@ impl<'app, 'turn, 'driver, 'owner, 'd: 'owner, R> Shutdown<'app, 'turn, 'driver,
         retained::Context<'driver, 'owner, 'd>,
     ) {
         (self.turn, self.driver)
-    }
-
-    pub(crate) fn into_driver(self) -> driver::Context<'driver, 'd> {
-        self.driver.into_driver()
     }
 }
 

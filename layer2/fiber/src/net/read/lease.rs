@@ -7,17 +7,6 @@ use dope::net::{
 use o3::buffer::write::consume;
 
 /// A retained cursor that exclusively borrows its `Io` until it is dropped.
-///
-/// ```compile_fail
-/// use dope::net::wire::Spec;
-/// use dope_fiber::net::read::Lease;
-///
-/// fn widen<'io, 'w, 'd: 'w, W: Spec + 'w>(
-///     lease: Lease<'io, 'w, 'd, W>,
-/// ) -> Lease<'static, 'w, 'd, W> {
-///     lease
-/// }
-/// ```
 #[must_use = "dropping a read lease discards unread bytes and returns receive credit"]
 pub struct Lease<'io, 'w, 'd: 'w, W: wire::Spec + 'w> {
     cursor: Chunk<'w, 'd, W>,

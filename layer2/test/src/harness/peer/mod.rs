@@ -11,18 +11,20 @@ use dope_core::{
         },
     },
     io::socket::install::adopt,
-    platform::wake,
+};
+use dope_runtime::process::{
+    failure::bus,
+    lifecycle::{Control, Main},
 };
 use fd::AsFd as _;
 use o3::{base::marker::ThreadBound, depot::array::init};
-use scripts::{Control, Script};
+use scripts::Script;
 
 use crate::harness::scenario::run;
 
 mod connect;
 mod finish;
 mod half;
-mod release;
 mod scripts;
 mod stream;
 pub mod udp;
@@ -30,7 +32,6 @@ pub mod udp;
 pub type Client<'scope, T, const N: usize = 1> = TcpScript<'scope, T, N>;
 pub use finish::Finish;
 pub use half::Half;
-pub use release::Release;
 pub use stream::Stream;
 
 #[derive(Debug)]
@@ -42,7 +43,7 @@ pub enum Exchange {
 #[derive(Debug)]
 pub enum Spawn {
     Io(Error),
-    Wake(wake::CreateError),
+    Control(bus::Create),
     Thread(run::Start),
 }
 
@@ -72,30 +73,6 @@ impl From<Errno> for Error {
 
 const IO_TIMEOUT: time::Duration = time::Duration::from_secs(5);
 const FINISH_TIMEOUT: time::Duration = time::Duration::from_secs(10);
-
-impl<T: Send> TcpScript<'_, T> {
-    /// Runs scripted peers after the case consumes its release permission.
-    pub fn try_gated<const N: usize>(
-        script: impl FnOnce(&mut [&Stream<'_>; N]) -> T + Send,
-        run: impl FnOnce(net::SocketAddr, Release),
-    ) -> Result<T, Finish> {
-        let (wait, release) = wake::Ends::blocking()
-            .map_err(Spawn::Wake)
-            .map_err(Finish::Spawn)?
-            .split();
-        TcpScript::with_many::<N, _>(
-            move |peers| {
-                wait.wait_timeout(crate::harness::GUARD)?;
-                Ok(script(peers))
-            },
-            |server| {
-                run(server.addr(), Release(release));
-                server.finish()?.map_err(Finish::Release)
-            },
-        )
-        .map_err(Finish::Spawn)?
-    }
-}
 
 #[derive(Clone, Copy)]
 pub struct Peer {
@@ -224,6 +201,11 @@ impl<T, const N: usize> TcpScript<'_, T, N> {
         self.inner.addr
     }
 
+    /// Borrows the completion signal; call `finish` after the registering driver closes.
+    pub fn completion(&self) -> &Main {
+        self.inner.completion()
+    }
+
     pub fn finish(self) -> Result<T, Finish> {
         self.inner.finish()
     }
@@ -263,6 +245,11 @@ impl<T> AcceptScript<'_, T> {
         self.inner.addr
     }
 
+    /// Borrows the completion signal; call `finish` after the registering driver closes.
+    pub fn completion(&self) -> &Main {
+        self.inner.completion()
+    }
+
     pub fn finish(self) -> Result<T, Finish> {
         self.inner.finish()
     }
@@ -275,7 +262,7 @@ impl<T> AcceptScript<'_, T> {
 /// Sequential accepts on one worker-owned listener.
 pub struct TcpAcceptor<'a> {
     listener: fd::OwnedFd,
-    control: Option<&'a Control>,
+    control: Option<Control<'a>>,
     _thread: ThreadBound,
 }
 
@@ -321,11 +308,11 @@ impl<'a> TcpAcceptor<'a> {
     fn next(&self, timeout: Option<time::Duration>) -> Result<Option<Stream<'a>>, Error> {
         let start = time::Instant::now();
         loop {
-            let left = timeout.map(|limit| limit.saturating_sub(start.elapsed()));
             if scripts::ready(
                 self.control,
                 poll::Entry::readable(self.listener.as_fd()),
-                left,
+                start,
+                timeout,
             )?
             .is_none()
             {

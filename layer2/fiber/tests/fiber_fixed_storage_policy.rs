@@ -7,7 +7,7 @@ use crate::common::runtime::{self, profile::Tasks};
 pub mod common;
 use common::recover;
 
-use std::{mem, num, pin, task};
+use std::{mem, num, pin};
 
 use dope::core::driver::{
     route::{Epoch, KeyTag, indices::SlotIndex},
@@ -15,9 +15,8 @@ use dope::core::driver::{
 };
 use dope_fiber::{
     abi,
-    context::Context,
     task::storage::fixed::{
-        direct,
+        Slab, direct,
         local::Removal,
         quota::{Limit, Physical},
         schedule::{
@@ -26,14 +25,16 @@ use dope_fiber::{
             result::{Outcome, Selection},
             selected::route::{Entry, Routes},
         },
-        staged::{Completion as _, Slab, Store as _},
         tree::{At, Branch, Here, Leaf, Left, Right, Tree},
     },
 };
 use dope_test::alloc::Tracker;
 use o3::depot::{arena::slab::storage, capacity::Count};
 
-use crate::common::{runtime::Setup, storage::policies::*};
+use crate::common::{
+    runtime::Setup,
+    storage::{policies::*, stores::Empty},
+};
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
@@ -59,10 +60,10 @@ fn direct_has_no_layout_tax() {
 
 #[test]
 fn heap_keeps_owner_layout() {
-    type Slab1024 = Slab<'static, Ready<[u8; 4096]>, 1024, (), storage::Heap>;
+    type Slab1024 = Slab<'static, Empty<[u8; 4096]>, 1024, (), storage::Heap>;
     assert_eq!(
         mem::size_of::<Slab1024>(),
-        mem::size_of::<Slab<'static, Ready<[u8; 4096]>, 1, (), storage::Heap>>(),
+        mem::size_of::<Slab<'static, Empty<[u8; 4096]>, 1, (), storage::Heap>>(),
     );
     let (slots, full) = Tracker::usage(Slab1024::try_new);
     assert_eq!(full.0, 1);
@@ -88,13 +89,13 @@ fn heap_keeps_owner_layout() {
                 let id = plane
                     .as_mut()
                     .route::<Here>()
-                    .insert(Ready::new([0; 4096]))
+                    .insert(Empty([0; 4096]))
                     .expect("first task");
                 assert_eq!(plane.available().get(), logical - 1);
                 let mut route = plane.as_mut().route::<Here>();
-                assert!(route.insert(Ready::new([0; 4096])).is_none());
+                assert!(route.insert(Empty([0; 4096])).is_none());
                 assert!(route.remove(id) == Removal::Removed);
-                let id = route.insert(Ready::new([0; 4096])).expect("reused slot");
+                let id = route.insert(Empty([0; 4096])).expect("reused slot");
                 assert!(route.remove(id) == Removal::Removed);
             });
             assert_eq!(activity, (0, 0));
@@ -111,83 +112,11 @@ fn heap_keeps_owner_layout() {
             plane
                 .as_mut()
                 .route::<Here>()
-                .insert(Ready::new([0; 4096]))
+                .insert(Empty([0; 4096]))
                 .is_none()
         );
         assert_eq!(plane.available().get(), 1);
     });
-}
-
-#[test]
-fn capped_output_retains_quota() {
-    type Routes<'d> = Leaf<Slab<'d, Ready<u8>, 4, (), storage::Heap>>;
-    let mut reports = Vec::new();
-    Setup::for_profile::<Tasks>().with_turn(
-        |turn, mut driver| {
-            let core = driver.driver_ref();
-            let root = core
-                .ready()
-                .make_slot(
-                    core.targets::<KeyTag<0>>()
-                        .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                        .dispatch(),
-                )
-                .expect("ready slot");
-            let plane = direct::Plan::<'_, Routes<'_>>::new(Limit::new(1))
-                .try_prepare_with_capacity(Count::new(2))
-                .expect("capped task plan");
-            let mut plane = pin::pin!(plane);
-            Scope::with(plane.as_mut(), |mut plane| {
-                let id = plane
-                    .as_mut()
-                    .route::<Here>()
-                    .insert(Ready::new(7))
-                    .expect("task slot");
-                Context::with_target(
-                    root.target(),
-                    turn.turn().app(),
-                    driver.reborrow(),
-                    |mut context| {
-                        let mut route = plane.as_mut().route::<Here>();
-                        assert!(matches!(
-                            route.as_mut().poll_ready(&id, context.as_mut()),
-                            Some(task::Poll::Ready((_, true)))
-                        ));
-                    },
-                );
-                assert_eq!(plane.available().get(), 0);
-                assert!(
-                    plane
-                        .as_mut()
-                        .route::<Here>()
-                        .insert(Ready::new(8))
-                        .is_none()
-                );
-                Context::with_target(
-                    root.target(),
-                    turn.turn().app(),
-                    driver.reborrow(),
-                    |mut context| {
-                        let mut route = plane.as_mut().route::<Here>();
-                        let ready = match route.as_mut().poll_ready(&id, context.as_mut()) {
-                            Some(task::Poll::Ready((ready, false))) => Some(ready),
-                            _ => None,
-                        }
-                        .expect("retained completion");
-                        assert_eq!(ready.finish(), 7);
-                    },
-                );
-                assert_eq!(plane.available().get(), 1);
-                assert!(plane.as_mut().route::<Here>().remove(id) == Removal::Absent);
-                let mut route = plane.as_mut().route::<Here>();
-                let id = route.insert(Ready::new(9)).expect("finished slot reused");
-                assert!(route.remove(id) == Removal::Removed);
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(reports.is_empty());
 }
 
 #[test]
@@ -588,6 +517,6 @@ fn deferred_batch_is_free() {
     );
 }
 
-type Direct = Slab<'static, abi::Ready<()>, 3, Domain>;
+type Direct = Slab<'static, Empty<()>, 3, Domain>;
 type SharedRoute = Pool<'static, abi::Ready<()>, 3, (), u8>;
 type Multiplexed = Plane<'static, Leaf<SharedRoute>>;

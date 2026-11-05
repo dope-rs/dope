@@ -16,7 +16,9 @@ use crate::driver::schedule::{app, ready::wake::table::storage};
 
 /// One affine value slot per exact identity with an active-only FIFO.
 pub struct Registry<W> {
-    entries: Entries<W>,
+    entries: Box<[resident::raw::Node<resident::raw::Entry<W>>]>,
+    thread: marker::PhantomData<ThreadBound>,
+    links: links::Chain,
     draining: resident::Draining,
 }
 
@@ -38,19 +40,25 @@ pub enum Reject {
 
 impl<W> Registry<W> {
     pub fn try_new(capacity: usize) -> Result<Self, resident::Error> {
+        let capacity = capacity::Count::try_from(capacity).map_err(resident::Error::Capacity)?;
+        let entries = alloc::BoxSliceExt::try_from_fn(capacity.get(), |index| {
+            resident::raw::Node::vacant(resident::raw::Entry::default(), index as u32, u32::MAX)
+        })?;
         Ok(Self {
-            entries: Entries::try_new(capacity)?,
+            entries,
+            thread: marker::PhantomData,
+            links: links::Chain::new(),
             draining: resident::Draining::default(),
         })
     }
 
     pub fn try_slot(&self, index: usize) -> Result<Slot<'_, W>, resident::Bounds<usize>> {
-        let key = self.entries.try_key(index)?;
+        let key = self.try_key(index)?;
         Ok(Slot { table: self, key })
     }
 
     pub fn has_waiters(&self) -> bool {
-        self.entries.has_waiters()
+        !self.links.is_empty()
     }
 
     pub fn begin_drain(&self) {
@@ -66,9 +74,10 @@ impl<W> Registry<W> {
         match self.draining.drain(|| {
             let slot = Slot {
                 table: self,
-                key: Key(self.entries.links.first()?),
+                key: Key(self.links.first()?),
             };
             let Some(permit) = work.permit() else {
+                work.defer();
                 return Some(quota::Admission::Exhausted);
             };
             Some(quota::Admission::Item(permit.run(|| {
@@ -77,8 +86,8 @@ impl<W> Registry<W> {
                 // front still belongs to its exact reciprocal chain and store.
                 let (_, vacant) = unsafe {
                     depot::raw::Hooks::chain_pop(
-                        resident::raw::Slice::new(&self.entries.entries),
-                        &self.entries.links,
+                        resident::raw::Slice::new(&self.entries),
+                        &self.links,
                         slot.key.0,
                     )
                 };
@@ -91,6 +100,14 @@ impl<W> Registry<W> {
             resident::Drain::Done => quota::Admission::Empty,
             resident::Drain::Item(value) => value,
         }
+    }
+
+    fn try_key(&self, index: usize) -> Result<Key, resident::Bounds<usize>> {
+        let error = resident::Bounds::new(index, self.entries.len());
+        let key = links::Index::try_new(index)
+            .filter(|key| key.get() < self.entries.len())
+            .ok_or(error)?;
+        Ok(Key(key))
     }
 }
 
@@ -127,12 +144,6 @@ const _: () = {
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
 pub(super) struct Key(pub(super) links::Index);
-
-struct Entries<W> {
-    entries: Box<[resident::raw::Node<resident::raw::Entry<W>>]>,
-    thread: marker::PhantomData<ThreadBound>,
-    links: links::Chain,
-}
 
 /// A linear registration in a [`storage::Registry`].
 #[repr(transparent)]
@@ -174,37 +185,11 @@ impl Key {
     }
 }
 
-impl<W> Entries<W> {
-    fn try_new(capacity: usize) -> Result<Self, resident::Error> {
-        let capacity = capacity::Count::try_from(capacity).map_err(resident::Error::Capacity)?;
-        let entries = alloc::BoxSliceExt::try_from_fn(capacity.get(), |index| {
-            resident::raw::Node::vacant(resident::raw::Entry::default(), index as u32, u32::MAX)
-        })?;
-        Ok(Self {
-            entries,
-            thread: marker::PhantomData,
-            links: links::Chain::new(),
-        })
-    }
-
-    fn try_key(&self, index: usize) -> Result<Key, resident::Bounds<usize>> {
-        let error = resident::Bounds::new(index, self.entries.len());
-        let key = links::Index::try_new(index)
-            .filter(|key| key.get() < self.entries.len())
-            .ok_or(error)?;
-        Ok(Key(key))
-    }
-
-    fn has_waiters(&self) -> bool {
-        !self.links.is_empty()
-    }
-}
-
 impl<'a, W> Slot<'a, W> {
     fn view(&self) -> resident::raw::View<'a, resident::raw::Entry<W>> {
         // SAFETY: try_slot checked this key, or drain_next selected its linked
         // front from the same immutable extent. Slot retains that exact table.
-        unsafe { resident::raw::View::new(&self.table.entries.entries, self.key.0) }
+        unsafe { resident::raw::View::new(&self.table.entries, self.key.0) }
     }
 
     fn try_insert(self, value: W) -> Result<Occupied<'a, W>, storage::Reject>
@@ -218,13 +203,13 @@ impl<'a, W> Slot<'a, W> {
             });
         }
         view.initialize(value);
-        let entries = &self.table.entries;
+        let table = self.table;
         // SAFETY: the checked slot is vacant and initialized above. Only this
         // table mutates its stable hooks, preserving the chain's reciprocal ends.
         unsafe {
             depot::raw::Hooks::chain_push(
-                resident::raw::Slice::new(&entries.entries),
-                &entries.links,
+                resident::raw::Slice::new(&table.entries),
+                &table.links,
                 self.key.0,
             )
         };
@@ -232,14 +217,14 @@ impl<'a, W> Slot<'a, W> {
     }
 
     fn unlink(&self) -> links::Detached<'a> {
-        let entries = &self.table.entries;
+        let table = self.table;
         // SAFETY: take_one proves this slot linked; Occupied's exclusive
         // registration otherwise owns either this linked slot or its parked
         // marker. Its drop calls here only after excluding that parked state.
         unsafe {
             depot::raw::Hooks::chain_unlink(
-                resident::raw::Slice::new(&entries.entries),
-                &entries.links,
+                resident::raw::Slice::new(&table.entries),
+                &table.links,
                 self.key.0,
             )
         }
@@ -263,9 +248,9 @@ impl<W> Occupied<'_, W> {
             // the detached hook and the active chain's reciprocal endpoints.
             unsafe {
                 depot::raw::Hooks::push(
-                    resident::raw::Slice::new(&self.slot.table.entries.entries),
+                    resident::raw::Slice::new(&self.slot.table.entries),
                     vacant,
-                    &self.slot.table.entries.links,
+                    &self.slot.table.links,
                 )
             };
         }
@@ -286,6 +271,6 @@ impl<W> Drop for Occupied<'_, W> {
     }
 }
 
-const _: () = assert!(mem::size_of::<Entries<u64>>() == 3 * mem::size_of::<usize>());
+const _: () = assert!(mem::size_of::<Registry<u64>>() == 4 * mem::size_of::<usize>());
 const _: () =
     assert!(mem::size_of::<Option<Occupied<'static, u64>>>() == 2 * mem::size_of::<usize>());

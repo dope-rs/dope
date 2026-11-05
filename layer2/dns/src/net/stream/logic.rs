@@ -50,22 +50,14 @@ type Context<'a, 't, 'd, ID> = turns::Context<'a, 't, 'd, (), Frame, ID>;
 
 const CONNECTIONS: usize = stream::CONNECTIONS;
 
-pub(crate) struct Logic<
-    'life,
-    's,
-    'd: 'life,
-    ID: Identity,
-    const IDS: u32,
-    const LANES: usize,
-    const N: usize,
-> {
+pub(crate) struct Logic<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize> {
     codec: codec::Prefix,
     random: entropy::Stream<'d>,
-    link: cell::Cell<Option<Link<'life, 's, 'd, ID, IDS, LANES, N>>>,
+    link: cell::Cell<Option<Link<'life, 's, 'd, ID, LANES, N>>>,
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
-    Logic<'life, 's, 'd, ID, IDS, LANES, N>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
+    Logic<'life, 's, 'd, ID, LANES, N>
 {
     pub(crate) const fn new(random: entropy::Stream<'d>) -> Self {
         Self {
@@ -75,14 +67,14 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
         }
     }
 
-    fn bind(&self, token: conn::Id<'d, ID>) -> Option<Bind<'life, 's, 'd, ID, IDS, LANES, N>> {
+    fn bind(&self, token: conn::Id<'d, ID>) -> Option<Bind<'life, 's, 'd, ID, LANES, N>> {
         let Some(Link::Open(bind)) = self.link.get() else {
             return None;
         };
         (bind.token == token).then_some(bind)
     }
 
-    fn retire(&self, bind: Bind<'life, 's, 'd, ID, IDS, LANES, N>, error: Option<error::Kind>) {
+    fn retire(&self, bind: Bind<'life, 's, 'd, ID, LANES, N>, error: Option<error::Kind>) {
         self.link.set(Some(Link::Retiring(Retiring {
             bind,
             branches: index::Retirement::new(),
@@ -95,7 +87,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 
     fn close(
-        bind: Bind<'life, 's, 'd, ID, IDS, LANES, N>,
+        bind: Bind<'life, 's, 'd, ID, LANES, N>,
         status: queries::StreamStatus,
     ) -> Option<close::Reason> {
         if status.live && !status.live_for_server {
@@ -108,9 +100,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     protocol::Spec<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     type Codec = codec::Prefix;
     type Mode = mode::Plain;
@@ -126,9 +118,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     policy::Exhausted<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     fn exhaust(
         owner: &mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
@@ -143,9 +135,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     protocol::Plain<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     fn reject(
         owner: &mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
@@ -196,9 +188,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     policy::Output<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     fn sent() -> impl for<'a, 'x> Call<(
         &'a mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
@@ -266,9 +258,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     policy::Requests<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     fn drain(
         owner: &Owner<'life, 's, 'd, Self, ID, LANES, N>,
@@ -316,9 +308,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     policy::Peer<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     type Addr = index::Server;
 
@@ -341,9 +333,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     policy::Lifecycle<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     type Drain = Ready;
 
@@ -411,9 +403,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, con
     }
 }
 
-impl<'life, 's, 'd: 'life, ID: Identity, const IDS: u32, const LANES: usize, const N: usize>
+impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     policy::Scheduling<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
-    for Logic<'life, 's, 'd, ID, IDS, LANES, N>
+    for Logic<'life, 's, 'd, ID, LANES, N>
 {
     fn park<'turn>(
         owner: &mut Owner<'life, 's, 'd, Self, ID, LANES, N>,

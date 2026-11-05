@@ -1,9 +1,7 @@
 use dope_fiber::task::storage::{
     fixed::{
-        Capacity,
         direct::Plane,
         local::Removal,
-        staged::{Poll, State, Store as _},
         tree::{Branch, Here, Leaf, Left, Right},
     },
     scope::Scope,
@@ -20,19 +18,18 @@ use dope::core::driver::{
     route::{Epoch, KeyTag, indices::SlotIndex},
 };
 use dope_fiber::{
-    abi::Ready,
     context::Context,
     task::storage::{
         Id, fixed,
         fixed::{
             local,
-            local::{Store, Stream as _},
-            staged,
+            local::Store,
+            quota::Limit,
+            staged::{self, Completion as _},
         },
     },
 };
 use dope_test::alloc::Tracker;
-use fixed::quota::Limit;
 use o3::depot::arena::slab::key;
 
 use crate::common::{
@@ -47,7 +44,6 @@ static ALLOCATOR: Tracker = Tracker::new();
 fn updates_pinned_stream() {
     let observed = Rc::new(Cell::new((0, true)));
     let updated = Rc::new(Cell::new((0, true)));
-    let calls = Cell::new(0);
     let mut stores = pin!(Plane::new(Branch::new(
         Leaf::new(fixed::Slab::<'_, Pinned, 1, Domain>::new()),
         Leaf::new(fixed::Slab::<'_, Pinned, 1, Domain>::new()),
@@ -70,31 +66,18 @@ fn updates_pinned_stream() {
                     observed: observed.clone(),
                 })
                 .expect("foreign stream slot");
-            let input = stores
-                .as_mut()
-                .route::<Right<Here>>()
-                .as_mut()
-                .try_update(&task, updated.clone(), |_, input| {
-                    calls.set(calls.get() + 1);
-                    input
-                })
-                .expect_err("foreign owner");
-            assert!(Rc::ptr_eq(&input, &updated));
-            let result = stores
-                .as_mut()
-                .route::<Left<Here>>()
-                .as_mut()
-                .try_update(&task, input, |fiber, input| {
-                    calls.set(calls.get() + 1);
-                    let address = NonNull::from(fiber.as_ref().get_ref());
-                    let fields = fiber.project();
-                    fields.address.set(Some(address));
-                    *fields.observed = input;
-                    41
-                })
-                .expect("live stream");
-            assert_eq!(result, 41);
-            assert_eq!(calls.get(), 1);
+            assert!(
+                local::Stream::get_mut(stores.as_mut().route::<Right<Here>>().as_mut(), &task)
+                    .is_none()
+            );
+            {
+                let mut route = stores.as_mut().route::<Left<Here>>();
+                let fiber = local::Stream::get_mut(route.as_mut(), &task).expect("live stream");
+                let address = NonNull::from(fiber.as_ref().get_ref());
+                let fields = fiber.project();
+                fields.address.set(Some(address));
+                *fields.observed = updated.clone();
+            }
             assert!(stores.as_mut().route::<Left<Here>>().remove(task) == Removal::Removed);
             assert!(stores.as_mut().route::<Right<Here>>().remove(other) == Removal::Removed);
         });
@@ -118,7 +101,7 @@ fn keeps_pinned_on_drop() {
             let root = root.expect("ready slot");
             let observed = Rc::new(Cell::new((0, true)));
             {
-                let mut slab = pin!(staged::Slab::<'_, _, 1, Domain>::new());
+                let mut slab = pin!(fixed::Slab::<'_, _, 1, Domain>::new());
                 Scope::with(slab.as_mut(), |mut slab| {
                     let task = slab.as_mut().insert(Pinned {
                         address: Cell::new(None),
@@ -129,9 +112,9 @@ fn keeps_pinned_on_drop() {
                         root.target(),
                         turn.turn().app(),
                         driver.reborrow(),
-                        |mut context| slab.as_mut().poll_staged(&task, context.as_mut()),
+                        |context| local::Stream::poll_next(slab.as_mut(), &task, context),
                     );
-                    assert!(matches!(poll, Some(Poll::Pending)));
+                    assert!(matches!(poll, Some(task::Poll::Pending)));
                 });
             }
             assert_eq!(observed.get(), (1, true));
@@ -152,26 +135,12 @@ fn nominal_ids_keep_layout() {
     assert_eq!(size_of::<Option<Id<'static, u8>>>(), 2 * key);
     assert_eq!(size_of::<Result<(), Id<'static, u8>>>(), 2 * key);
     assert_eq!(size_of::<local::Removal>(), 1);
-
-    let mut left = pin!(staged::Slab::<'static, _, 1, u8>::new());
-    Scope::with(left.as_mut(), |mut left| {
-        let mut right = pin!(staged::Slab::<'static, _, 1, u16>::new());
-        Scope::with(right.as_mut(), |mut right| {
-            assert!((Store::capacity(left.as_ref().get_ref())) == (Capacity::Available));
-            let left_id = (left.as_mut().insert(Ready::new(()))).expect("left task slot");
-            assert!((Store::capacity(left.as_ref().get_ref())) == (Capacity::Full));
-            let right_id = (right.as_mut().insert(Ready::new(()))).expect("right task slot");
-            assert!((left.as_mut().remove(left_id)) == (Removal::Removed));
-            assert!((Store::capacity(left.as_ref().get_ref())) == (Capacity::Available));
-            assert!((right.as_mut().remove(right_id)) == (Removal::Removed));
-        });
-    });
 }
 
 #[test]
 fn rejection_returns_id() {
-    let owner = staged::Slab::<'static, Ready<()>, 1, Domain>::new();
-    let foreign = staged::Slab::<'static, Ready<()>, 1, Domain>::new();
+    let owner = fixed::Slab::<'static, Empty<()>, 1, Domain>::new();
+    let foreign = fixed::Slab::<'static, Empty<()>, 1, Domain>::new();
     let mut stores = pin!(Plane::new(Branch::new(
         Leaf::new(owner),
         Leaf::new(foreign)
@@ -180,12 +149,12 @@ fn rejection_returns_id() {
         let id = stores
             .as_mut()
             .route::<Left<Here>>()
-            .insert(Ready::new(()))
+            .insert(Empty(()))
             .expect("owner task slot");
         let other = stores
             .as_mut()
             .route::<Right<Here>>()
-            .insert(Ready::new(()))
+            .insert(Empty(()))
             .expect("foreign task slot");
         let result = stores
             .as_mut()
@@ -199,259 +168,132 @@ fn rejection_returns_id() {
 }
 
 #[test]
-fn staging_keeps_output() {
+fn deferred_completion() {
     let mut reports = Vec::new();
-
     Setup::for_profile::<profile::Tasks>().with_turn(
         |turn, mut driver| {
             let core = driver.driver_ref();
-            let root = core.ready().make_slot(
-                core.targets::<KeyTag<0>>()
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                    .dispatch(),
-            );
-            let root = root.expect("ready slot");
-            let polls = Rc::new(Cell::new(0));
-            let slab = staged::Slab::<'_, CompleteOnce, 1, Domain>::new();
-            let foreign = staged::Slab::<'_, CompleteOnce, 1, Domain>::new();
-            let mut stores = pin!(Plane::new(Branch::new(Leaf::new(slab), Leaf::new(foreign))));
-            Scope::with(stores.as_mut(), |mut stores| {
-                let task = stores
-                    .as_mut()
-                    .route::<Left<Here>>()
-                    .as_mut()
-                    .insert(CompleteOnce {
-                        polls: Rc::clone(&polls),
-                    });
-                let task = task.expect("staged task slot");
-                let visits = Rc::new(Cell::new(0));
-                let other = stores
-                    .as_mut()
-                    .route::<Right<Here>>()
-                    .as_mut()
-                    .insert(CompleteOnce {
-                        polls: Rc::clone(&visits),
-                    })
-                    .expect("foreign staged task slot");
-
-                let ((), allocs) = Tracker::usage(|| {
-                    let rejected = Context::with_target(
-                        root.target(),
-                        turn.turn().app(),
-                        driver.reborrow(),
-                        |mut context| {
-                            stores
-                                .as_mut()
-                                .route::<Right<Here>>()
-                                .as_mut()
-                                .poll_staged(&task, context.as_mut())
-                        },
-                    );
-                    assert!(rejected.is_none());
-                    assert!(
-                        stores
-                            .as_mut()
-                            .route::<Right<Here>>()
-                            .state(&task)
-                            .is_none()
-                    );
-                    assert_eq!(
-                        stores
-                            .as_mut()
-                            .route::<Right<Here>>()
-                            .as_mut()
-                            .take_output(&task),
-                        None
-                    );
-                    assert_eq!(visits.get(), 0);
-                    let first = Context::with_target(
-                        root.target(),
-                        turn.turn().app(),
-                        driver.reborrow(),
-                        |mut context| {
-                            stores
-                                .as_mut()
-                                .route::<Left<Here>>()
-                                .as_mut()
-                                .poll_staged(&task, context.as_mut())
-                        },
-                    );
-                    assert!((first) == (Some(Poll::NewlyReady)));
-                    assert!(
-                        (stores.as_mut().route::<Left<Here>>().state(&task))
-                            == (Some(State::Staged))
-                    );
-
-                    let second = Context::with_target(
-                        root.target(),
-                        turn.turn().app(),
-                        driver.reborrow(),
-                        |mut context| {
-                            stores
-                                .as_mut()
-                                .route::<Left<Here>>()
-                                .as_mut()
-                                .poll_staged(&task, context.as_mut())
-                        },
-                    );
-                    assert!((second) == (Some(Poll::Staged)));
-                    assert_eq!(
-                        stores
-                            .as_mut()
-                            .route::<Left<Here>>()
-                            .as_mut()
-                            .take_output(&task),
-                        Some(41)
-                    );
-                    let mut route = stores.as_mut().route::<Left<Here>>();
-                    assert!(route.state(&task) == Some(State::Vacant));
-                    assert!(route.capacity() == Capacity::Full);
-                    assert!(
-                        Context::with_target(
-                            root.target(),
-                            turn.turn().app(),
-                            driver.reborrow(),
-                            |mut context| route.as_mut().poll_staged(&task, context.as_mut()),
-                        )
-                        .is_none()
-                    );
-                    assert_eq!(route.as_mut().take_output(&task), None);
-                    assert_eq!(polls.get(), 1);
-                });
-                assert_eq!(allocs, (0, 0));
-                let result = stores
-                    .as_mut()
-                    .route::<Right<Here>>()
-                    .as_mut()
-                    .try_remove(task);
-                let task = result.err().expect("foreign staged owner");
-                assert!(
-                    (stores
+            let root = core
+                .ready()
+                .make_slot(
+                    core.targets::<KeyTag<0>>()
+                        .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                        .dispatch(),
+                )
+                .expect("ready slot");
+            let observed = Rc::new(Cell::new((0, true)));
+            let drops = Rc::new(Cell::new(0));
+            let slab = fixed::Slab::<'_, staged::Task<Complete, DropOutput>, 1, Domain>::new();
+            let foreign =
+                fixed::Slab::<'_, staged::Task<dope_fiber::abi::Pending<()>, ()>, 1, Domain>::new();
+            let mut plane = pin!(Plane::bounded(
+                Branch::new(Leaf::new(slab), Leaf::new(foreign)),
+                Limit::new(2),
+            ));
+            let activity = Tracker::during(|| {
+                Scope::with(plane.as_mut(), |mut plane| {
+                    let foreign = plane
                         .as_mut()
                         .route::<Right<Here>>()
-                        .as_mut()
-                        .remove(other))
-                        == (Removal::Removed)
-                );
-                assert!(
-                    (Store::remove(stores.as_mut().route::<Left<Here>>().as_mut(), task))
-                        == (Removal::Removed)
-                );
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn removal_drops_output() {
-    let mut reports = Vec::new();
-
-    Setup::for_profile::<profile::Tasks>().with_turn(
-        |turn, mut driver| {
-            let core = driver.driver_ref();
-            let root = core.ready().make_slot(
-                core.targets::<KeyTag<0>>()
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                    .dispatch(),
-            );
-            let root = root.expect("ready slot");
-            let drops = Rc::new(Cell::new(0));
-            let mut slab = pin!(staged::Slab::<'_, _, 1, Domain>::new());
-            Scope::with(slab.as_mut(), |mut slab| {
-                let task = slab.as_mut().insert(DropReady {
-                    output_drops: Rc::clone(&drops),
+                        .insert(staged::Task::new(dope_fiber::abi::Pending::new()))
+                        .expect("foreign task");
+                    assert!(
+                        staged::Store::remove_state(
+                            plane.as_mut().route::<Left<Here>>().as_mut(),
+                            foreign,
+                        ) == staged::Removal::Absent
+                    );
+                    assert_eq!(plane.available().get(), 1);
+                    for (removal, discard) in [
+                        (None, false),
+                        (None, true),
+                        (Some(staged::Removal::Live), true),
+                        (Some(staged::Removal::Staged), true),
+                    ] {
+                        observed.set((0, true));
+                        drops.set(0);
+                        let id = {
+                            let mut route = plane.as_mut().route::<Left<Here>>();
+                            let id = route
+                                .insert(staged::Task::new(Complete {
+                                    pinned: Pinned {
+                                        address: Cell::new(None),
+                                        observed: observed.clone(),
+                                    },
+                                    output: Some(DropOutput {
+                                        drops: drops.clone(),
+                                    }),
+                                    pending: true,
+                                }))
+                                .expect("task slot");
+                            assert!(matches!(
+                                Context::with_target(
+                                    root.target(),
+                                    turn.turn().app(),
+                                    driver.reborrow(),
+                                    |context| staged::Store::poll_ready(
+                                        route.as_mut(),
+                                        &id,
+                                        context
+                                    ),
+                                ),
+                                Some(task::Poll::Pending)
+                            ));
+                            if removal != Some(staged::Removal::Live) {
+                                let Some(task::Poll::Ready((ready, fresh))) = Context::with_target(
+                                    root.target(),
+                                    turn.turn().app(),
+                                    driver.reborrow(),
+                                    |context| {
+                                        staged::Store::poll_ready(route.as_mut(), &id, context)
+                                    },
+                                ) else {
+                                    panic!("completed task");
+                                };
+                                assert!(fresh);
+                                assert_eq!(observed.get(), (1, true));
+                                drop(|| ready.finish());
+                            }
+                            id
+                        };
+                        assert_eq!(plane.available().get(), 0);
+                        assert_eq!(drops.get(), 0);
+                        let mut route = plane.as_mut().route::<Left<Here>>();
+                        let remaining = turn.turn().app().remaining();
+                        let output = if let Some(expected) = removal {
+                            assert!(staged::Store::remove_state(route.as_mut(), id) == expected);
+                            None
+                        } else {
+                            let Some(task::Poll::Ready((ready, fresh))) = Context::with_target(
+                                root.target(),
+                                turn.turn().app(),
+                                driver.reborrow(),
+                                |context| staged::Store::poll_ready(route.as_mut(), &id, context),
+                            ) else {
+                                panic!("retained task");
+                            };
+                            assert!(!fresh);
+                            if discard {
+                                ready.discard();
+                                None
+                            } else {
+                                Some(ready.finish())
+                            }
+                        };
+                        assert_eq!(turn.turn().app().remaining(), remaining);
+                        assert_eq!(observed.get(), (1, true));
+                        assert!(route.capacity() == fixed::Capacity::Available);
+                        assert_eq!(drops.get(), usize::from(discard));
+                        drop(output);
+                        assert_eq!(drops.get(), 1);
+                        assert_eq!(plane.available().get(), 1);
+                    }
                 });
-                let task = task.expect("staged task slot");
-
-                let poll = Context::with_target(
-                    root.target(),
-                    turn.turn().app(),
-                    driver.reborrow(),
-                    |mut context| slab.as_mut().poll_staged(&task, context.as_mut()),
-                );
-                assert!((poll) == (Some(Poll::NewlyReady)));
-                assert_eq!(drops.get(), 0);
-                assert!((Store::remove(slab.as_mut(), task)) == (Removal::Removed));
-                assert_eq!(drops.get(), 1);
             });
+            assert_eq!(activity, (0, 0));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn deferred_completion() {
-    use staged::Completion as _;
-
-    let mut report = None;
-    Setup::for_profile::<profile::Tasks>().with_turn(
-        |turn, mut driver| {
-            let core = driver.driver_ref();
-            let target = core
-                .targets::<KeyTag<0>>()
-                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                .dispatch();
-            let root = core.ready().make_slot(target).expect("ready slot");
-            let polls = Rc::new(Cell::new(0));
-            let slab = staged::Slab::<'_, CompleteOnce, 1, Domain>::new();
-            let mut plane = pin!(Plane::bounded(Leaf::new(slab), Limit::new(1)));
-            Scope::with(plane.as_mut(), |mut scope| {
-                let mut route = scope.as_mut().route::<Here>();
-                let id = route
-                    .as_mut()
-                    .insert(CompleteOnce {
-                        polls: polls.clone(),
-                    })
-                    .expect("task slot");
-                Context::with_target(
-                    root.target(),
-                    turn.turn().app(),
-                    driver.reborrow(),
-                    |mut context| {
-                        {
-                            let ready = route
-                                .as_mut()
-                                .poll_ready(&id, context.as_mut())
-                                .expect("live task");
-                            assert!(matches!(ready, task::Poll::Ready((_, true))));
-                        }
-                        let ready = route
-                            .as_mut()
-                            .poll_ready(&id, context.as_mut())
-                            .expect("staged task");
-                        let (ready, fresh) = match ready {
-                            task::Poll::Ready(ready) => Some(ready),
-                            task::Poll::Pending => None,
-                        }
-                        .expect("staged completion");
-                        assert!(!fresh);
-                        assert_eq!(ready.finish(), 41);
-                    },
-                );
-                assert_eq!(polls.get(), 1);
-                assert!(route.as_mut().remove(id) == Removal::Absent);
-                assert!(route.capacity() == fixed::Capacity::Available);
-            });
-            assert_eq!(plane.available().get(), 1);
-        },
-        recovery::Policy::new(
-            |event| {
-                report.get_or_insert(event);
-            },
-            recover,
-        ),
-        runtime::check_scope,
-    );
-    assert!(report.is_none(), "unexpected reclamation: {report:?}");
+    assert!(reports.is_empty());
 }

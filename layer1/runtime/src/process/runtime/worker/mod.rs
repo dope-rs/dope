@@ -9,7 +9,10 @@ use o3::alloc::VecExt as _;
 
 use crate::process::{
     STACK,
-    failure::{bus::Read, execute},
+    failure::{
+        bus::{Read, Report},
+        execute,
+    },
     layout,
     runtime::{bus, worker},
 };
@@ -18,7 +21,7 @@ pub(in crate::process::runtime) mod bound;
 mod entries;
 pub(in crate::process::runtime) mod task;
 pub(super) use entries::{Entry, Gated, Plain};
-use task::{Outcome, Output, Parent, Task};
+use task::{Failure, Output, Parent, Task};
 
 const RANDOM_NAMESPACE: crate::random::Namespace = crate::random::Namespace::new(*b"\0worker\0");
 
@@ -165,44 +168,42 @@ impl<'run, I, E, X> Slots<'run, I, E, X> {
         for (parent, output) in slots.finish() {
             let cpu = parent.cpu;
             let handoff = parent.handoff;
-            let Output { outcome, terminal } = output;
-            let failure = match outcome {
-                worker::Outcome::Complete => match (terminal, handoff) {
-                    (None, None) => continue,
-                    (Some(source), handoff) => execute::Worker::Bus {
-                        cpu,
-                        source: execute::Bus::Write {
-                            source,
-                            terminal: None,
-                            handoff,
-                        },
-                    },
-                    (None, Some(source)) => execute::Worker::Bus {
+            let failure = match output {
+                bus::Outcome::Done(()) => match handoff {
+                    None => continue,
+                    Some(source) => execute::Worker::Bus {
                         cpu,
                         source: execute::Bus::Read(source),
                     },
                 },
-                worker::Outcome::Affinity { source, bus } => execute::Worker::Affinity {
+                bus::Outcome::Failed {
+                    output: Err(Failure::Affinity(source)),
+                    report: bus,
+                } => execute::Worker::Affinity {
                     cpu,
                     source,
                     bus,
-                    terminal,
                     handoff,
                 },
-                worker::Outcome::Worker { source, bus } => execute::Worker::Entry {
+                bus::Outcome::Failed {
+                    output: Err(Failure::Entry(source)),
+                    report: bus,
+                } => execute::Worker::Entry {
                     cpu,
                     source,
                     bus,
-                    terminal,
                     handoff,
                 },
-                worker::Outcome::Bus(source) => execute::Worker::Bus {
+                bus::Outcome::Failed {
+                    output: Ok(()),
+                    report: Report::Clean,
+                } => execute::Worker::Failed { cpu, handoff },
+                bus::Outcome::Failed {
+                    output: Ok(()),
+                    report: Report::Failed(source),
+                } => execute::Worker::Bus {
                     cpu,
-                    source: execute::Bus::Write {
-                        source,
-                        terminal,
-                        handoff,
-                    },
+                    source: execute::Bus::Write { source, handoff },
                 },
             };
             if target == Some(cpu) {

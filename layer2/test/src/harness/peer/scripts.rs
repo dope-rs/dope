@@ -1,44 +1,26 @@
-use std::{cell::Cell, net, os::fd, time};
+use std::{cell::Cell, net, os::fd::AsFd as _, time};
 
 use dope_core::{
     Backend, Errno,
-    dope_sys::io::{
-        fd::Fd as _,
-        poll::{self, Poll as _},
-    },
-    platform::wake,
+    dope_sys::io::poll::{self, Poll as _},
 };
-use fd::AsFd as _;
-use o3::base::marker::ThreadBound;
+use dope_runtime::process::{
+    failure::bus,
+    lifecycle::{Control, Main, Outcome, WaitError},
+};
 
 use crate::harness::{
     peer::{Error, FINISH_TIMEOUT, Finish, Spawn},
     scenario::run,
 };
 
-/// Only this worker owns its sockets and cancellation reader.
-#[derive(Debug)]
-pub(super) struct Control {
-    read: fd::OwnedFd,
-    _thread: ThreadBound,
-}
-
-impl Control {
-    /// The private nonblocking pipe is never written: live means WouldBlock,
-    /// and dropping its sole sender leaves persistent EOF for cancellation.
-    pub(super) fn check(&self) -> Result<(), Error> {
-        match Backend::read::<Errno>(self.read.as_fd(), &mut [0]) {
-            Ok(_) => return Err(Error::Cancelled),
-            Err(error) if error.is_block() => return Ok(()),
-            Err(error) if error.is_intr() => {}
-            Err(error) => return Err(error.into()),
-        }
-        let mut entries = [poll::Entry::readable(self.read.as_fd())];
-        if wait(&mut entries, Some(time::Duration::ZERO))? {
-            return Err(Error::Cancelled);
-        }
-        Ok(())
+pub(super) fn check(control: Option<Control<'_>>) -> Result<(), Error> {
+    if let Some(control) = control
+        && control.stopped()?
+    {
+        return Err(Error::Cancelled);
     }
+    Ok(())
 }
 
 pub(super) fn timeout(
@@ -53,46 +35,44 @@ pub(super) fn timeout(
 }
 
 pub(super) fn ready(
-    control: Option<&Control>,
+    control: Option<Control<'_>>,
     entry: poll::Entry<'_>,
+    start: time::Instant,
     timeout: Option<time::Duration>,
 ) -> Result<Option<i16>, Error> {
     if let Some(control) = control {
-        let mut entries = [poll::Entry::readable(control.read.as_fd()), entry];
-        let ready = wait(&mut entries, timeout)?;
+        let mut entries = [poll::Entry::readable(control.as_fd()), entry];
+        let ready = wait(&mut entries, start, timeout)?;
         if entries[0].is_ready() {
             return Err(Error::Cancelled);
         }
         Ok(ready.then_some(entries[1].revents()))
     } else {
         let mut entries = [entry];
-        Ok(wait(&mut entries, timeout)?.then_some(entries[0].revents()))
+        Ok(wait(&mut entries, start, timeout)?.then_some(entries[0].revents()))
     }
 }
 
 pub(super) fn io<T>(
-    control: Option<&Control>,
+    control: Option<Control<'_>>,
     entry: poll::Entry<'_>,
     timeout: Option<time::Duration>,
     nonblocking: bool,
     mut run: impl FnMut() -> Result<T, Errno>,
 ) -> Result<T, Error> {
     if nonblocking {
-        if let Some(control) = control {
-            control.check()?;
-        }
+        check(control)?;
         return run().map_err(Error::Syscall);
     }
     let start = time::Instant::now();
     let mut waiting = false;
     loop {
         if waiting {
-            let left = timeout.map(|limit| limit.saturating_sub(start.elapsed()));
-            if ready(control, entry, left)?.is_none() {
+            if ready(control, entry, start, timeout)?.is_none() {
                 return Err(Error::TimedOut);
             }
-        } else if let Some(control) = control {
-            control.check()?;
+        } else {
+            check(control)?;
         }
         match run() {
             Err(error) if error.is_intr() || error.is_block() => {
@@ -108,9 +88,9 @@ pub(super) fn io<T>(
 
 fn wait<const N: usize>(
     entries: &mut [poll::Entry<'_>; N],
+    start: time::Instant,
     timeout: Option<time::Duration>,
 ) -> Result<bool, Errno> {
-    let start = time::Instant::now();
     loop {
         let millis = timeout.map_or(-1, |limit| {
             let left = limit.saturating_sub(start.elapsed());
@@ -132,39 +112,28 @@ fn wait<const N: usize>(
 
 pub(super) struct Script<'scope, T> {
     pub(super) addr: net::SocketAddr,
-    done: &'scope fd::OwnedFd,
-    cancel: &'scope Cell<Option<wake::Notify>>,
-    join: &'scope mut dyn FnMut() -> Result<T, Error>,
+    main: &'scope mut Option<Main>,
+    join: Option<run::Join<'scope, Outcome<T, Error>>>,
 }
 
 impl<T: Send> Script<'_, T> {
-    /// Retains cancellation outside the view and closes it before Group joins,
-    /// including when the callback forgets the view. HUP remains observable.
+    /// Cancels forgotten views before joining their worker.
     pub(super) fn with<R>(
         addr: net::SocketAddr,
-        worker: impl FnOnce(&Control) -> Result<T, Error> + Send,
+        worker: impl for<'fd> FnOnce(Control<'fd>) -> Result<T, Error> + Send,
         run: impl for<'scope> FnOnce(Script<'scope, T>) -> R,
     ) -> Result<R, Spawn> {
-        let (read, cancel) = wake::Ends::event().map_err(Spawn::Wake)?.split();
-        let (done, complete) = wake::Ends::event().map_err(Spawn::Wake)?.split();
-        let cancel = Cell::new(Some(cancel));
+        let (main, owner) = Main::try_pair().map_err(Spawn::Control)?;
+        let mut main = Some(main);
         run::scope(
-            run::Entry(move || {
-                let result = worker(&Control {
-                    read,
-                    _thread: ThreadBound::NEW,
-                });
-                drop(complete);
-                result
-            }),
+            run::Entry(move || owner.run(|source| worker(source.control()))),
             |join| {
                 let result = run(Script {
                     addr,
-                    done: &done,
-                    cancel: &cancel,
-                    join,
+                    main: &mut main,
+                    join: Some(join),
                 });
-                cancel.take();
+                main.take();
                 result
             },
         )
@@ -174,27 +143,69 @@ impl<T: Send> Script<'_, T> {
 
 impl<T> Script<'_, T> {
     pub(super) fn stop(self) -> Result<T, Finish> {
-        self.cancel.take();
-        self.finish()
+        self.complete(true)
     }
 
     pub(super) fn finish(self) -> Result<T, Finish> {
-        let mut entries = [poll::Entry::readable(self.done.as_fd())];
-        let ready = wait(&mut entries, Some(FINISH_TIMEOUT));
-        if !matches!(ready, Ok(true)) {
-            self.cancel.take();
+        self.complete(false)
+    }
+
+    pub(super) fn completion(&self) -> &Main {
+        let Some(main) = self.main.as_ref() else {
+            unreachable!("main")
+        };
+        main
+    }
+
+    fn complete(self, stop: bool) -> Result<T, Finish> {
+        let Some(main) = self.main.take() else {
+            unreachable!("main")
+        };
+        let mut main = if stop { main.stop() } else { Ok(main) };
+        let wait = main
+            .as_ref()
+            .ok()
+            .and_then(|main| main.wait_done(FINISH_TIMEOUT).err());
+        if wait.is_some() && !stop {
+            main = main.and_then(Main::stop);
         }
-        let output = (self.join)();
-        match ready {
-            Ok(true) => output.map_err(Finish::Worker),
-            Ok(false) => Err(Finish::Timeout),
-            Err(error) => Err(Finish::Worker(Error::Syscall(error))),
+        self.join(main, wait)
+    }
+
+    fn join(mut self, main: Result<Main, Errno>, wait: Option<WaitError>) -> Result<T, Finish> {
+        let Some(join) = self.join.take() else {
+            unreachable!("joined")
+        };
+        let output = join.finish();
+        let stop = main.err();
+        match (output, wait, stop) {
+            (Outcome::Done(value), None, None) => Ok(value),
+            (
+                Outcome::Failed {
+                    output: Err(error),
+                    report: bus::Report::Clean,
+                },
+                None,
+                None,
+            ) => Err(Finish::Worker(error)),
+            (output, wait, stop) => {
+                let (worker, report) = match output {
+                    Outcome::Done(_) => (None, bus::Report::Clean),
+                    Outcome::Failed { output, report } => (output.err(), report),
+                };
+                Err(Finish::Lifecycle {
+                    wait,
+                    stop,
+                    worker,
+                    report,
+                })
+            }
         }
     }
 }
 
 impl<T> Drop for Script<'_, T> {
     fn drop(&mut self) {
-        self.cancel.take();
+        self.main.take();
     }
 }
