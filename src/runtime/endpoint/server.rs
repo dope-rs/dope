@@ -4,7 +4,7 @@ use std::net;
 
 use o3::buffer::resident;
 
-use dope::core::driver;
+use dope::core::{driver, io::datagram::Lease};
 
 use crate::conn::id;
 use crate::conn::life::{accept, options};
@@ -23,12 +23,22 @@ use handler::hook::{
 
 /// Single-use server auth and receive resource plan.
 #[must_use = "a server plan must be consumed by one endpoint binding"]
-pub struct Plan<const ID: u8, R: receive::Policy = receive::Retained> {
-    bind: net::SocketAddr,
+pub struct Plan<
+    const ID: u8,
+    R: receive::Policy = receive::Retained,
+    L: routing::LocalRoute = routing::Plain,
+> {
+    bind: Socket,
+    route: L,
     source: rustls::ServerConfig,
     connection: options::Options,
     early: Option<early::ReplayCap>,
     endpoint: endpoint::Plan<ID, R>,
+}
+
+enum Socket {
+    Bind(net::SocketAddr),
+    Adopt(Lease),
 }
 
 impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
@@ -38,7 +48,15 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         opts: options::Options,
         config: config::Config,
     ) -> Result<Self, endpoint::PlanError> {
-        Self::prepare(bind, source, opts, None, config)
+        let ep = endpoint::Plan::new(config).map_err(endpoint::PlanError::Config)?;
+        Ok(Self::prepare(
+            Socket::Bind(bind),
+            routing::Plain,
+            source,
+            opts,
+            None,
+            ep,
+        ))
     }
 
     pub fn from_params(
@@ -60,25 +78,49 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         cap: early::ReplayCap,
         config: config::Config,
     ) -> Result<Self, endpoint::PlanError> {
-        Self::prepare(bind, source, opts, Some(cap), config)
+        let mut plan = Self::new(bind, source, opts, config)?;
+        plan.early = Some(cap);
+        Ok(plan)
     }
 
+    /// Consumes one routed socket and owns its TLS authority through endpoint retirement.
+    pub fn routed(
+        bind: routing::Binding,
+        source: rustls::ServerConfig,
+        opts: options::Options,
+        config: config::Config,
+    ) -> Result<Plan<ID, R, routing::Routed>, endpoint::PlanError> {
+        let ep = endpoint::Plan::routed(config, &bind).map_err(endpoint::PlanError::Config)?;
+        let (lease, route) = bind.into_parts();
+        Ok(Plan::prepare(
+            Socket::Adopt(lease),
+            route,
+            source,
+            opts,
+            None,
+            ep,
+        ))
+    }
+}
+
+impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
     fn prepare(
-        bind: net::SocketAddr,
+        bind: Socket,
+        route: L,
         source: rustls::ServerConfig,
         mut opts: options::Options,
         early: Option<early::ReplayCap>,
-        config: config::Config,
-    ) -> Result<Self, endpoint::PlanError> {
-        let ep = endpoint::Plan::new(config).map_err(endpoint::PlanError::Config)?;
+        ep: endpoint::Plan<ID, R>,
+    ) -> Self {
         opts.cap_udp(ep.packet());
-        Ok(Self {
+        Self {
             bind,
+            route,
             source,
             connection: opts,
             early,
             endpoint: ep,
-        })
+        }
     }
 
     pub const fn capacity(&self) -> usize {
@@ -86,62 +128,52 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
     }
 }
 
-impl<const ID: u8, R: receive::Policy> AsRef<endpoint::Plan<ID, R>> for Plan<ID, R> {
+impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> AsRef<endpoint::Plan<ID, R>>
+    for Plan<ID, R, L>
+{
     fn as_ref(&self) -> &endpoint::Plan<ID, R> {
         &self.endpoint
     }
 }
 
-impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
+impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
     pub fn bind<'pool, 'd, H>(
         self,
         events: H,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> endpoint::Bound<'d, ID, H, R, endpoint::Idle, owner::Owned, datagram::Sealed<'pool>>
+    ) -> endpoint::Bound<'d, ID, H, R, endpoint::Idle, owner::Owned<L>, datagram::Sealed<'pool>>
     where
         H: handler::Handler<ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>,
         H: cert::Sink<ID, id::Driver<'d>>,
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
     {
-        let auth = accept::Authority::from_parts(self.source, self.connection, self.early)
-            .map_err(endpoint::BindError::Connection)?;
-        let mux = builder::Builder::server_in(events, auth, routing::Plain, self.endpoint.mux())
-            .bind(driver)
-            .map_err(endpoint::BindError::Mux)?;
-        let ep = self.endpoint.prepare(driver)?;
-        ep.bind(
-            self.bind,
-            reactor::Engine::new(mux, endpoint::Idle::new()),
-            driver,
-        )
+        self.bind_runtime(events, endpoint::Idle::new(), driver)
     }
 
-    fn bind_app<'pool, 'd, Q, H, A>(
+    fn bind_runtime<'pool, 'd, H, A>(
         self,
         events: H,
         app: A,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> endpoint::Bound<'d, ID, H, R, endpoint::Run<A, Q>, owner::Owned, datagram::Sealed<'pool>>
+    ) -> endpoint::Bound<'d, ID, H, R, A, owner::Owned<L>, datagram::Sealed<'pool>>
     where
         H: handler::Handler<ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>,
         H: cert::Sink<ID, id::Driver<'d>>,
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
-        A: app::Driver<'d, H, ID, R::Buffer<'d>, resident::Shared<'d>>,
-        Q: app::Receipt<'d, H, ID, R::Buffer<'d>, resident::Shared<'d>, A>,
     {
         let auth = accept::Authority::from_parts(self.source, self.connection, self.early)
             .map_err(endpoint::BindError::Connection)?;
-        let mux = builder::Builder::server_in(events, auth, routing::Plain, self.endpoint.mux())
+        let mux = builder::Builder::server_in(events, auth, self.route, self.endpoint.mux())
             .bind(driver)
             .map_err(endpoint::BindError::Mux)?;
         let ep = self.endpoint.prepare(driver)?;
-        ep.bind(
-            self.bind,
-            reactor::Engine::new(mux, endpoint::Run::<A, Q>::new(app)),
-            driver,
-        )
+        let runtime = reactor::Engine::new(mux, app);
+        match self.bind {
+            Socket::Bind(address) => ep.bind(address, runtime, driver),
+            Socket::Adopt(lease) => ep.adopt(lease, runtime, driver),
+        }
     }
 
     pub fn bind_with<'pool, 'd, Q, H, A, F, E>(
@@ -154,7 +186,7 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         H,
         R,
         endpoint::Run<A, Q>,
-        owner::Owned,
+        owner::Owned<L>,
         datagram::Sealed<'pool>,
         endpoint::BindFailure<E>,
     >
@@ -169,7 +201,7 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
     {
         let binding = driver::Binding::new(driver.driver_ref().timer(), self.endpoint.owners());
         let (events, app) = bind(binding).map_err(endpoint::BindFailure::Application)?;
-        self.bind_app::<Q, _, _>(events, app, driver)
+        self.bind_runtime(events, endpoint::Run::<A, Q>::new(app), driver)
             .map_err(endpoint::BindFailure::Endpoint)
     }
 }

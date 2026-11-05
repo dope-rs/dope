@@ -10,15 +10,15 @@ use dope::core::io::datagram::payload;
 use dope_quic::{
     conn::life::{accept, options::Options, tls::servers},
     runtime::{
-        endpoint::{self, config, owner::pool},
-        mux::builder,
+        endpoint::{self, config, owner::pool, server},
+        mux::{app, builder},
         receive, routing,
     },
     security::relay::Ticket,
 };
 use dope_test::scope::Driver;
 
-use common::routing::{CONFIG, capture};
+use common::routing::{CONFIG, Idle, capture};
 
 #[test]
 fn receive_extent_keeps_inner_capacity() {
@@ -210,4 +210,75 @@ fn routed_binding_rejects_mismatched_framing() {
             }
         },
     );
+}
+
+#[test]
+#[ignore = "requires CAP_BPF for the native reuse-port selector"]
+fn owned_routed_server_starts_application() {
+    let address = ([127, 0, 0, 1], 0).into();
+    let count = routing::Count::try_from(2).expect("two shards");
+    for relay in [false, true] {
+        let group = if relay {
+            routing::Group::bind_relay(address, count)
+        } else {
+            routing::Group::bind(address, count)
+        }
+        .expect("routing group");
+        let mut bindings = group.split();
+        let first = server::Plan::<0, receive::Copied>::routed(
+            bindings.next().expect("first binding"),
+            common::peer::raw(0x38)
+                .expect("identity")
+                .0
+                .server()
+                .expect("server TLS"),
+            Options::default(),
+            CONFIG,
+        )
+        .expect("first plan");
+        let second = server::Plan::<1, receive::Copied>::routed(
+            bindings.next().expect("second binding"),
+            common::peer::raw(0x39)
+                .expect("identity")
+                .0
+                .server()
+                .expect("server TLS"),
+            Options::default(),
+            CONFIG,
+        )
+        .expect("second plan");
+        let settings = Needs::from_tree(&(first.as_ref(), second.as_ref()))
+            .expect("claims")
+            .apply_exact(config::Config::driver(
+                settings::Datagram::fixed::<2, 1200>(),
+            ))
+            .expect("driver configuration");
+        Driver::new(settings).with_driver(
+            |mut driver| {
+                let events = capture();
+                let first = first
+                    .bind_with::<app::Silent, _, _, _, Infallible>(&mut driver, move |_| {
+                        Ok((events, Idle))
+                    })
+                    .expect("owned routed application");
+                let second = second
+                    .bind(capture(), &mut driver)
+                    .expect("owned routed idle");
+                assert_eq!(first.local_addr(), second.local_addr());
+                assert_ne!(first.local_addr().port(), 0);
+                assert!(first.is_empty());
+            },
+            Policy::new(
+                |_| {},
+                |failure: Recovery<'_, '_>| -> Infallible {
+                    panic!("native recovery: {:?}", failure.cause())
+                },
+            ),
+            |result| {
+                if let Err(error) = result {
+                    panic!("driver lifecycle: {:?}", error.cause());
+                }
+            },
+        );
+    }
 }

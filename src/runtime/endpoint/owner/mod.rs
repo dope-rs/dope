@@ -18,7 +18,7 @@ use crate::runtime::routing;
 
 /// Connection-local TLS auth owned by an endpoint.
 #[derive(Clone, Copy, Default)]
-pub struct Owned;
+pub struct Owned<R = routing::Plain>(marker::PhantomData<fn() -> R>);
 
 /// External TLS auth borrowed for exactly `'tls`.
 #[derive(Clone, Copy, Default)]
@@ -32,8 +32,8 @@ pub trait Binding<'d, const ID: u8> {
     type Mode: auth::Mode<ID, Send = resident::Shared<'d>, Identity = id::Driver<'d>>;
 }
 
-impl<'d, const ID: u8> Binding<'d, ID> for Owned {
-    type Mode = auth::Owned<routing::Plain, id::Driver<'d>>;
+impl<'d, const ID: u8, R: routing::LocalRoute> Binding<'d, ID> for Owned<R> {
+    type Mode = auth::Owned<R, id::Driver<'d>>;
 }
 
 impl<'d, 'tls, R, const ID: u8> Binding<'d, ID> for Pooled<'tls, R>
