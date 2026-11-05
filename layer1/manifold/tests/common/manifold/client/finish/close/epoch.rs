@@ -15,7 +15,7 @@ use dope_manifold::client::{
     },
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::Identity,
 };
 use dope_test::harness::signals::{Gate, Progress as _};
@@ -159,7 +159,7 @@ impl<'d, const SHUTDOWN: bool> session::Failed<'d> for Epoch<SHUTDOWN> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.audit.faults.record(error::Error::Connect(error));

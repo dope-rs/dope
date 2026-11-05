@@ -1,6 +1,6 @@
+use dope_manifold::client::attempt;
 use dope_net::link::{
     egress::{self, load, reserve::exact},
-    event,
     pool::change::opening,
 };
 use o3::buffer::storage::Shared;
@@ -10,7 +10,7 @@ use crate::common::manifold::client::{
 };
 
 pub enum Error {
-    Connect(event::ConnectFault),
+    Connect(attempt::ConnectFault),
     Exhaust(opening::Exhaustion),
     Open(opening::Exhaustion),
     Receive(dope_core::Errno),
@@ -28,7 +28,7 @@ pub enum Error {
 
 #[derive(Debug)]
 pub enum Cause<'a> {
-    Connect(&'a event::ConnectFault),
+    Connect(&'a attempt::ConnectFault),
     Exhaust(&'a opening::Exhaustion),
     Open(&'a opening::Exhaustion),
     Receive(&'a dope_core::Errno),

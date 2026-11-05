@@ -19,7 +19,7 @@ use dope_core::{
     io::socket,
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire,
 };
 use o3::base::{Call, cell::region, time::Positive};
@@ -215,7 +215,7 @@ pub trait Failed<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>:
     fn failed(
         owner: &mut State<'life, 'd, P, Self, ID, MAX>,
         key: attempt::Completion<'_, 'd, ID>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         driver: &mut driver::Context<'_, 'd>,
     );
 }

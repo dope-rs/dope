@@ -30,6 +30,7 @@ pub(in crate::client::attempt::queue) union Entry<'d, T: dope_net::Transport, ID
 pub(super) enum Fail {
     Keep,
     Remove,
+    Stale,
 }
 
 pub(super) enum Change {
@@ -87,12 +88,21 @@ impl<'d, T: dope_net::Transport, ID: Identity> Entry<'d, T, ID> {
 
     pub(in crate::client::attempt::queue) fn fail(&mut self) -> Fail {
         match self.phase() {
-            Phase::Opening | Phase::Submitted => {
-                self.done();
+            Phase::Cancelled => Fail::Remove,
+            Phase::Done => Fail::Stale,
+            _ => {
+                self.close();
                 Fail::Keep
             }
-            Phase::Cancelled => Fail::Remove,
-            Phase::Queued | Phase::Connected | Phase::Active | Phase::Done => Fail::Keep,
+        }
+    }
+
+    pub(in crate::client::attempt::queue) fn close(&mut self) -> attempt::Transition {
+        if matches!(self.phase(), Phase::Opening | Phase::Submitted) {
+            self.done();
+            attempt::Transition::Applied
+        } else {
+            attempt::Transition::Stale
         }
     }
 

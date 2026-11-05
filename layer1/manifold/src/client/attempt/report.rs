@@ -1,12 +1,10 @@
 use std::convert;
 
 use dope_core::{driver, driver::route::Identity};
-use dope_net::link::event;
-use o3::depot::arena::slab::key;
 
 use crate::client::{
     app,
-    attempt::{self, queue, queue::storage},
+    attempt::{self, queue},
 };
 
 pub(crate) trait Report<'d, ID: Identity, A> {
@@ -53,7 +51,7 @@ impl<'d, ID: Identity, A: app::Failed<'d, ID>> Report<'d, ID, A> for queue::Look
     ) {
         let (id, cause) = self.into_event();
         let key = key.with_id(id);
-        app.failed(key, event::ConnectFault::Attempt(cause), driver);
+        app.failed(key, attempt::ConnectFault::Attempt(cause), driver);
     }
 
     fn retire(
@@ -62,15 +60,8 @@ impl<'d, ID: Identity, A: app::Failed<'d, ID>> Report<'d, ID, A> for queue::Look
         app: &mut A,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        match self {
-            Self::Key(storage::Error {
-                observed:
-                    key::Observation::Free { .. }
-                    | key::Observation::Generation { .. }
-                    | key::Observation::Retired { .. },
-                ..
-            }) => {}
-            cause => cause.report(key, app, driver),
+        if !self.is_stale() {
+            self.report(key, app, driver);
         }
     }
 }

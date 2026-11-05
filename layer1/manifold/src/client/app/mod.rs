@@ -11,7 +11,6 @@ use dope_core::{
 use dope_net::{
     link::{
         egress::{self, data},
-        event,
         pool::{change::opening, recv::input},
     },
     wire::{domain, open, receive::Chunk, terminal},
@@ -416,7 +415,7 @@ pub trait Failed<'d, ID: Identity = KeyTag<0>>:
     fn failed(
         &mut self,
         key: attempt::Completion<'_, 'd, ID>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         driver: &mut driver::Context<'_, 'd>,
     );
 }

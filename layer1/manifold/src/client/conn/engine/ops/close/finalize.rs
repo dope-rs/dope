@@ -17,6 +17,7 @@ use crate::{
                 ops::{fail, retire},
             },
         },
+        deadline,
         side::mode::Mode,
     },
     service::{self, discover, sync},
@@ -92,6 +93,15 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
+    fn begin(
+        _: &mut S,
+        _: &mut A,
+        _: attempt::Id<'d, ID>,
+        _: close::Reason,
+        _: &mut retained::Context<'_, '_, 'd>,
+    ) {
+    }
+
     fn finish(
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         close: drain::OwnedDrain<'d, ID>,
@@ -108,6 +118,29 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
+    fn begin(
+        ctrl: &mut queue::Control<'source, 'd, E::Transport, ID>,
+        app: &mut A,
+        owner: attempt::Id<'d, ID>,
+        reason: close::Reason,
+        driver: &mut retained::Context<'_, '_, 'd>,
+    ) {
+        let cause = match reason {
+            close::Reason::Timeout(deadline::Kind::Connect) => {
+                attempt::ConnectFault::ConnectTimeout
+            }
+            close::Reason::Local(close::LocalOrigin::RuntimeShutdown) => {
+                attempt::ConnectFault::RuntimeShutdown
+            }
+            _ => return,
+        };
+        match ctrl.close(owner) {
+            Ok(Some(receipt)) => app.failed(receipt, cause, driver),
+            Ok(None) => {}
+            Err(error) => error.retire(attempt::Completion::reported(owner, ctrl), app, driver),
+        }
+    }
+
     fn finish(
         machine: pin::Pin<
             &mut engine::Machine<

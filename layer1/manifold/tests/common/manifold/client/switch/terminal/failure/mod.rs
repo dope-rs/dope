@@ -17,7 +17,7 @@ use dope_manifold::client::{
     },
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::{
         self, domain, failure, open, receive,
         receive::{batch, eof, mode::Disabled},
@@ -186,7 +186,7 @@ pub enum Event {
     Sent,
     Cancelled,
     Flush,
-    ConnectFault(event::ConnectFault),
+    ConnectFault(attempt::ConnectFault),
     Exhausted(opening::Exhaustion),
     Receive(dope_core::Errno),
 }
@@ -336,7 +336,7 @@ impl<'d> session::Failed<'d> for Failure {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.events.record(Event::ConnectFault(error));

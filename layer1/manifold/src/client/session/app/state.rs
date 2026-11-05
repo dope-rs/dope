@@ -11,7 +11,7 @@ use dope_core::{
 };
 use dope_net::{
     link::{
-        egress, event,
+        egress,
         pool::{change::opening, recv::input},
     },
     wire::{self, domain, open, receive::Chunk, terminal},
@@ -424,7 +424,7 @@ where
     fn failed(
         &mut self,
         key: attempt::Completion<'_, 'd, ID>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         driver: &mut driver::Context<'_, 'd>,
     ) {
         self.session.failed(key, cause, driver);

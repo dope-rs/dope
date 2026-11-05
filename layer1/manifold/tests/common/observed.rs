@@ -219,6 +219,12 @@ impl<'d, M: event::Turn<'d, Access = dispatch::raw::Retained>> event::Turn<'d> f
         let (owner, (), (done, turn, driver)) = call.into_parts();
         let this = owner.project();
         let kind = match done.into_kind() {
+            io::event::Kind::Connect(done) if this.state.hold.get() => {
+                assert!(this.pending.is_none(), "one held native completion");
+                *this.pending = Some(io::event::Kind::Connect(done).into());
+                this.state.intercepted.hit();
+                return ControlFlow::Continue(());
+            }
             io::event::Kind::Recv(done) if this.state.hold.get() => match done.classify() {
                 io::event::net::recv::Kind::Data(data) => {
                     assert!(this.pending.is_none(), "one held native completion");

@@ -27,7 +27,7 @@ use dope_manifold::{
 };
 use dope_net::{
     Transport,
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::domain,
 };
 use dope_runtime::{
@@ -209,7 +209,7 @@ impl<'d> session::Failed<'d> for State<'_> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.audit.faults.record(error::Error::Connect(error));

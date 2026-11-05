@@ -18,7 +18,7 @@ use dope_manifold::{
     },
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::{Identity, open, terminal},
 };
 use dope_test::harness::signals::Gate;
@@ -123,7 +123,7 @@ impl<'d, ID: route::Identity> app::Failed<'d, ID> for Rejected {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, ID>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.audit.faults.record(error::Error::Connect(error))

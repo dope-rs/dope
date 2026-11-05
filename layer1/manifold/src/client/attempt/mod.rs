@@ -8,7 +8,10 @@ use dope_core::{
     },
     io::socket::{self, Prepared as _, option},
 };
-use dope_net::{link::pool::change::opening, tcp};
+use dope_net::{
+    link::{event::ConnectError, pool::change::opening},
+    tcp,
+};
 use o3::{
     base::{cell::region, num::bounded},
     depot::{arena::slab::key, capacity},
@@ -24,6 +27,24 @@ pub mod queue;
 mod contract;
 
 mod report;
+
+#[derive(Clone, Copy, Debug)]
+pub enum AttemptError {
+    Lookup(key::Observation),
+    Finished,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConnectFault {
+    Transport(ConnectError),
+    Attempt(AttemptError),
+    Cleanup {
+        cause: ConnectError,
+        error: AttemptError,
+    },
+    ConnectTimeout,
+    RuntimeShutdown,
+}
 
 /// Identity of one frozen transport connection attempt.
 #[derive(Debug)]

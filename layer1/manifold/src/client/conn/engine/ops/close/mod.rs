@@ -104,7 +104,15 @@ where
             } else {
                 !slot.is_discarded() && slot.state.work.has_next()
             };
+            let owner = slot.state.owner.attempt();
             let closing = slot.state.closing.apply(Directive::reconnect(reason));
+            <S::Mode as finalize::Finalize<'p, 'w, 'd, ID, A, S, E, X>>::begin(
+                this.controller,
+                this.app,
+                owner,
+                closing.effective().reason(),
+                driver,
+            );
             if pending || wake {
                 if wake {
                     handle.wake();
@@ -115,7 +123,7 @@ where
             match closing.claim_final() {
                 closing::ClaimState::Issued(claim) => {
                     let close = drain::Drain::new(conn::Id::from_key(slot.key()), claim);
-                    let close = drain::OwnedDrain::new(slot.state.owner.attempt(), close);
+                    let close = drain::OwnedDrain::new(owner, close);
                     <S::Mode as finalize::Finalize<'p, 'w, 'd, ID, A, S, E, X>>::finish(
                         self, close, turn, driver,
                     );

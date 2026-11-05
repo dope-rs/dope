@@ -331,6 +331,145 @@ fn connected_cancel_survives_shared_maintenance() {
 }
 
 #[test]
+fn timeout_and_shutdown_settle_late_connect() {
+    use dope_manifold::{client::attempt::ConnectFault, timing::Policy as _};
+    use dope_test::harness::{GUARD, signals::Progress as _};
+
+    use crate::common::{
+        manifold::client::finish::close::members::Until,
+        observed::{Observed, State},
+    };
+
+    let listener = peer::TcpAcceptor::bind(Loopback(0).addr()).expect("listener");
+    let address = listener.local_addr().expect("listener address");
+    for shutdown in [false, true] {
+        let target = if shutdown {
+            Loopback(0).addr()
+        } else {
+            address
+        };
+        let audit = Rc::new(Report::default());
+        let trace = Rc::new(Trace::default());
+        let observed = Rc::new(State::default());
+        observed.hold.set(true);
+        let mut finish = Completion::new();
+        let runtime = Runtime::throughput();
+        let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
+
+        runtime.with_scope(
+            |mut session| {
+                let source = queue::Source::<Tcp>::try_new(
+                    capacity::Count::new(1),
+                    &mut session.driver().storage,
+                )
+                .expect("attempt source");
+                let lease = source
+                    .try_reserve()
+                    .expect("attempt reservation")
+                    .start(StreamTarget::new(target, Default::default()));
+                engine::Startup::new(
+                    Empty {
+                        audit: Rc::clone(&audit),
+                        trace: Rc::clone(&trace),
+                        reject: None,
+                    },
+                    &source,
+                    Capacity::fixed::<1>(),
+                    Default::default(),
+                    Local::new(Identity),
+                )
+                .try_with::<Bundle<Tcp, Identity, Throughput>, _, _>(
+                    &mut session,
+                    Scope::driver,
+                    |engine, session| {
+                        let start =
+                            clock::Deadline::from(session.driver().driver_ref().clock().now());
+                        let due = start
+                            .try_add(Throughput::CONNECT_DEADLINE.get())
+                            .expect("connect deadline");
+                        let result = session.with_at_for(
+                            &mut finish,
+                            Host::new(Observed {
+                                listener: engine,
+                                state: Rc::clone(&observed),
+                                pending: None,
+                            }),
+                            start,
+                            GUARD,
+                            |mut app| {
+                                app.drive_for(
+                                    start,
+                                    GUARD,
+                                    Until(|| observed.intercepted.hits() == 1),
+                                )
+                                .expect("retain connect completion")
+                                .into_output();
+                                if shutdown {
+                                    return (None, Some(lease), None);
+                                }
+                                let held = listener
+                                    .accept_for(GUARD)
+                                    .expect("accept peer")
+                                    .expect("native connection succeeded");
+                                app.drive_for(due, GUARD, Until(|| true))
+                                    .expect("expire held connect")
+                                    .into_output();
+                                assert!(app.inspect(
+                                    |host| host.manifold(),
+                                    |host| host.get_ref().pending.is_some(),
+                                ));
+                                assert!(matches!(
+                                    trace.failed.values().as_deref(),
+                                    Ok([ConnectFault::ConnectTimeout])
+                                ));
+                                lease.cancel();
+                                let replacement = source
+                                    .try_reserve()
+                                    .expect("new unpublished attempt generation");
+                                observed.hold.set(false);
+                                app.drive_for(due, GUARD, Until(|| true))
+                                    .expect("retire late connect")
+                                    .into_output();
+                                assert!(app.inspect(
+                                    |host| host.manifold(),
+                                    |host| host.get_ref().pending.is_none(),
+                                ));
+                                assert!(
+                                    listener
+                                        .try_accept()
+                                        .expect("no automatic redial")
+                                        .is_none()
+                                );
+                                assert!(!source.has_room());
+                                (Some(held), None, Some(replacement))
+                            },
+                        );
+                        result
+                            .as_ref()
+                            .map_err(|error| error.cause())
+                            .expect("client teardown");
+                    },
+                )
+                .expect("client machine");
+                assert!(source.has_room());
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
+        assert!(matches!(
+            (shutdown, trace.failed.values().as_deref()),
+            (false, Ok([ConnectFault::ConnectTimeout]))
+                | (true, Ok([ConnectFault::RuntimeShutdown]))
+        ));
+        assert_eq!(trace.connected.get(), 0);
+        audit.checked((0, 0));
+        assert!(
+            matches!(reports.events(), Ok(events) if events.is_empty()),
+            "unexpected reclamation: {reports:?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_recreated_source() {
     let audit = Rc::new(Report::default());
     let trace = Rc::new(Trace::default());

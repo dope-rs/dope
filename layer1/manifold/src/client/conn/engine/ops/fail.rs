@@ -1,7 +1,6 @@
 use app::failure::{self, Controlled, Observed};
 use dope_core::driver::{retained, route::Identity};
 use dope_net::link::event;
-use o3::depot::arena::slab::key;
 
 use crate::{
     client::{
@@ -68,7 +67,7 @@ where
         app::Failed::failed(
             app,
             attempt::Completion::reported(owner, ctrl),
-            event::ConnectFault::Transport(cause),
+            attempt::ConnectFault::Transport(cause),
             driver,
         );
     }
@@ -88,18 +87,12 @@ where
         driver: &mut retained::Context<'_, '_, 'd>,
     ) {
         let (owner, cause) = match ctrl.failed(owner) {
-            Ok(attempt::Transition::Applied) => (owner, event::ConnectFault::Transport(cause)),
+            Ok(attempt::Transition::Applied) => (owner, attempt::ConnectFault::Transport(cause)),
             Ok(attempt::Transition::Stale) => return,
+            Err(error) if error.is_stale() => return,
             Err(error) => {
                 let (owner, error) = error.into_event();
-                let cause = match error {
-                    event::AttemptError::Lookup(
-                        key::Observation::Free { .. }
-                        | key::Observation::Generation { .. }
-                        | key::Observation::Retired { .. },
-                    ) => return,
-                    error => event::ConnectFault::Cleanup { cause, error },
-                };
+                let cause = attempt::ConnectFault::Cleanup { cause, error };
                 (owner, cause)
             }
         };

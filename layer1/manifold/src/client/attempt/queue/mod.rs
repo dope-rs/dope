@@ -1,8 +1,7 @@
 pub mod storage;
 
 use dope_core::driver::route::{Identity, KeyTag};
-use dope_net::link::event;
-use o3::depot::{self, index::Initialized};
+use o3::depot::{self, arena::slab::key, index::Initialized};
 
 use crate::client::attempt;
 
@@ -31,13 +30,30 @@ pub enum Lookup<'d, ID: Identity = KeyTag<0>> {
 }
 
 impl<'d, ID: Identity> Lookup<'d, ID> {
-    pub(in crate::client) fn into_event(self) -> (attempt::Id<'d, ID>, event::AttemptError) {
+    pub(in crate::client) fn is_stale(&self) -> bool {
+        match self {
+            Self::Key(storage::Error {
+                observed:
+                    key::Observation::Free { .. }
+                    | key::Observation::Generation { .. }
+                    | key::Observation::Retired { .. },
+                ..
+            }) => true,
+            Self::Key(storage::Error {
+                key,
+                observed: key::Observation::Reserved { actual },
+            }) => *actual != key.generation(),
+            _ => false,
+        }
+    }
+
+    pub(in crate::client) fn into_event(self) -> (attempt::Id<'d, ID>, attempt::AttemptError) {
         match self {
             Self::Key(cause) => (
                 attempt::Id { handle: cause.key },
-                event::AttemptError::Lookup(cause.observed),
+                attempt::AttemptError::Lookup(cause.observed),
             ),
-            Self::Finished(key) => (key, event::AttemptError::Finished),
+            Self::Finished(key) => (key, attempt::AttemptError::Finished),
         }
     }
 }

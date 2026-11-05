@@ -31,7 +31,6 @@ use dope_manifold::{
 use dope_net::{
     link::{
         egress::{self, data::Inline},
-        event,
         pool::change::opening,
     },
     wire,
@@ -290,7 +289,7 @@ impl<'d> session::Failed<'d> for Session<'_, '_, 'd> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.audit.faults.record(error::Error::Connect(error));

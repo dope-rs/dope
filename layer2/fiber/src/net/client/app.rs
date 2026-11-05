@@ -3,7 +3,7 @@ use dope::{
     net::{
         self,
         link::{
-            egress, event,
+            egress,
             pool::{change::opening, recv::input},
         },
         wire::{open, receive::Chunk, terminal},
@@ -195,7 +195,7 @@ impl<'scope, 'w, 'd: 'w, T: net::Transport, W: input::Execution + 'd, ID: Identi
     fn failed(
         &mut self,
         key: attempt::Completion<'_, 'd, ID>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         _driver: &mut driver::Context<'_, 'd>,
     ) {
         self.port.complete(key, Outcome::Transport(cause));

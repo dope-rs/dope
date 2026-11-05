@@ -23,7 +23,7 @@ use dope_manifold::{
     },
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::{Identity, open, terminal},
 };
 use dope_test::harness::{observe, signals::Gate};
@@ -45,7 +45,7 @@ pub struct Empty {
 pub struct Trace {
     pub(crate) admitted: Cell<usize>,
     pub(crate) connected: Cell<usize>,
-    pub(crate) failed: observe::Trace<event::ConnectFault, 16>,
+    pub(crate) failed: observe::Trace<attempt::ConnectFault, 16>,
     pub(crate) prepared: Cell<usize>,
     pub(crate) closed: Cell<usize>,
     pub(crate) drained: Cell<usize>,
@@ -129,7 +129,7 @@ impl<'d> app::Failed<'d> for Empty {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.trace.failed.record(cause);

@@ -15,7 +15,7 @@ use dope_manifold::client::{
     },
 };
 use dope_net::{
-    link::{egress, egress::reserve::exact, event, pool::change::opening},
+    link::{egress, egress::reserve::exact, pool::change::opening},
     wire::{self, Identity},
 };
 use dope_test::harness::signals::LocalGateRef;
@@ -211,7 +211,7 @@ impl<'d> session::Failed<'d> for Reject<'_> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.audit.faults.record(error::Error::Connect(error));

@@ -5,7 +5,7 @@ use dope_core::{
     io::socket,
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire,
 };
 use dope_runtime::client;
@@ -505,7 +505,7 @@ where
     fn failed(
         &mut self,
         key: attempt::Completion<'_, 'd, ID>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         driver: &mut driver::Context<'_, 'd>,
     ) {
         L::failed(&mut self.endpoint, key, cause, driver);

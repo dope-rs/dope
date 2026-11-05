@@ -323,7 +323,7 @@ impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
     fn failed(
         _: &mut Owner<'life, 'd, TAKE, REPORT>,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         panic!("unexpected connect failure: {error:?}");

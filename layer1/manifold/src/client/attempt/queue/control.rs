@@ -75,6 +75,13 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Control<'a, 'd, T, ID> {
     ) -> Result<attempt::Transition, queue::Lookup<'d, ID>> {
         self.table.fail(key)
     }
+
+    pub(in crate::client) fn close(
+        &mut self,
+        key: attempt::Id<'d, ID>,
+    ) -> Result<Option<attempt::Completion<'a, 'd, ID>>, queue::Lookup<'d, ID>> {
+        self.table.close(key)
+    }
 }
 
 impl<'d, T: dope_net::Transport, ID: Identity> attempt::Control<'d, T, ID>

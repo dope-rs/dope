@@ -12,13 +12,15 @@ use dope_core::{
 };
 use dope_manifold::{
     app::{Host, env::Bundle},
-    client::{attempt::StreamTarget, conn::engine},
+    client::{
+        attempt::{AttemptError, ConnectFault, StreamTarget},
+        conn::engine,
+    },
     network::client::topology::{Install, plan},
     service::{Endpoint, Revision, Snapshot, sync},
     timing::Throughput,
 };
 use dope_net::{
-    link::event::{AttemptError, ConnectFault},
     tcp::Tcp,
     wire::{Identity, domain::Local},
 };

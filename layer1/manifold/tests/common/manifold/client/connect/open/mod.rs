@@ -28,7 +28,7 @@ use dope_manifold::{
     },
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::{self, domain::Limits, terminal},
 };
 use dope_test::harness::signals::Gate;
@@ -356,7 +356,7 @@ impl<'d, ID: Identity> app::Failed<'d, ID> for Failed {
     fn failed(
         &mut self,
         key: attempt::Completion<'_, 'd, ID>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         let id = key.id();

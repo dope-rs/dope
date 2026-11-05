@@ -1,9 +1,8 @@
 use std::net::SocketAddr;
 
 use dope::{
-    core::driver::life::recovery,
-    net::{link::event::ConnectFault, wire::domain::Local},
-    runtime::executor::session::Completion,
+    core::driver::life::recovery, manifold::client::attempt::ConnectFault,
+    net::wire::domain::Local, runtime::executor::session::Completion,
 };
 use dope_fiber::net::client::ConnectError;
 use dope_test::harness::scenario;

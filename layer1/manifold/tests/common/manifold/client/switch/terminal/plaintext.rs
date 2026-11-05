@@ -19,7 +19,7 @@ use dope_manifold::client::{
     },
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::{Identity, failure, terminal},
 };
 use dope_test::harness::{
@@ -107,7 +107,7 @@ pub enum Event {
     Quarantined,
     Closed(close::Reason),
     Decode(scope::Error),
-    Connect(event::ConnectFault),
+    Connect(attempt::ConnectFault),
     Exhausted(opening::Exhaustion),
     Receive(dope_core::Errno),
 }
@@ -287,7 +287,7 @@ impl<'d> session::Failed<'d> for Plaintext {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.events.record(Event::Connect(cause));

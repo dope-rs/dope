@@ -37,6 +37,10 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Occupied<'a, 'd, T, ID> {
         self.state().connected()
     }
 
+    pub(in crate::client::attempt::queue) fn close(mut self) -> attempt::Transition {
+        self.state().close()
+    }
+
     pub(in crate::client::attempt::queue) fn reject(mut self) {
         self.state().reject();
     }
@@ -72,11 +76,13 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Occupied<'a, 'd, T, ID> {
     }
 
     pub(in crate::client::attempt::queue) fn fail(mut self) -> attempt::Transition {
-        if matches!(self.state().fail(), Fail::Remove) {
-            self.remove();
-            attempt::Transition::Stale
-        } else {
-            attempt::Transition::Applied
+        match self.state().fail() {
+            Fail::Keep => attempt::Transition::Applied,
+            Fail::Remove => {
+                self.remove();
+                attempt::Transition::Stale
+            }
+            Fail::Stale => attempt::Transition::Stale,
         }
     }
 

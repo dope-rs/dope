@@ -4,12 +4,9 @@ use dope::{
     core::driver::route::{Identity, KeyTag},
     net::{
         self,
-        link::{
-            event,
-            pool::{
-                change::{self, opening},
-                recv::input,
-            },
+        link::pool::{
+            change::{self, opening},
+            recv::input,
         },
         wire::{self, domain, open, receive::Chunk, terminal},
     },
@@ -48,7 +45,7 @@ pub struct State;
 pub enum ConnectError<'d, E, ID: Identity = KeyTag<0>> {
     Activation,
     Mailbox(Error<'d, ID>),
-    Transport(event::ConnectFault),
+    Transport(attempt::ConnectFault),
     Open(opening::Failure<E>),
 }
 
@@ -71,7 +68,7 @@ impl<'d, E, ID: Identity> ConnectError<'d, E, ID> {
 enum Outcome<'d, ID: Identity, E> {
     Connected(conn::Id<'d, ID>),
     Activation,
-    Transport(event::ConnectFault),
+    Transport(attempt::ConnectFault),
     Open(opening::Failure<E>),
 }
 

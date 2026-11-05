@@ -8,10 +8,7 @@ use dope_core::{
     },
     io::{event::net::recv, recv::Lease, socket, transfer},
 };
-use o3::{
-    depot::{arena::slab::key, queue::tagged::entry},
-    mem::rc,
-};
+use o3::{depot::queue::tagged::entry, mem::rc};
 
 use crate::{
     link,
@@ -26,22 +23,6 @@ pub enum ConnectError {
     Connect(dope_core::Errno),
     State(rc::Error),
     Receive(dope_core::Errno),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum AttemptError {
-    Lookup(key::Observation),
-    Finished,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum ConnectFault {
-    Transport(ConnectError),
-    Attempt(AttemptError),
-    Cleanup {
-        cause: ConnectError,
-        error: AttemptError,
-    },
 }
 
 pub enum Socket<'d, ID: Identity, X> {

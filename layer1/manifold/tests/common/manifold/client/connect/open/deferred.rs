@@ -19,7 +19,7 @@ use dope_manifold::{
     },
 };
 use dope_net::{
-    link::{egress, event, pool::change::opening},
+    link::{egress, pool::change::opening},
     wire::{open, terminal},
 };
 use dope_test::harness::signals::{Gate, Progress as _};
@@ -114,7 +114,7 @@ impl<'d, ID: Identity> app::Failed<'d, ID> for Deferred {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, ID>,
-        error: event::ConnectFault,
+        error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.audit.faults.record(error::Error::Connect(error));

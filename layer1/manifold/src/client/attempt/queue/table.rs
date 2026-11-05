@@ -55,6 +55,16 @@ impl<'d, T: dope_net::Transport, ID: Identity> Table<'d, T, ID> {
         Ok(self.try_slot(key)?.fail())
     }
 
+    pub(super) fn close(
+        &self,
+        key: attempt::Id<'d, ID>,
+    ) -> Result<Option<attempt::Completion<'_, 'd, ID>>, queue::Lookup<'d, ID>> {
+        Ok(match self.try_slot(key)?.close() {
+            attempt::Transition::Applied => Some(attempt::Completion::queued(key, self)),
+            attempt::Transition::Stale => None,
+        })
+    }
+
     fn try_slot(
         &self,
         key: attempt::Id<'d, ID>,

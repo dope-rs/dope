@@ -7,7 +7,7 @@ use dope::{
         client::{self, app, attempt, close, conn},
     },
     net::{
-        link::{egress, event, pool::change::opening},
+        link::{egress, pool::change::opening},
         wire::{Identity, open, terminal},
     },
 };
@@ -16,7 +16,7 @@ use o3::{base::cell::region, buffer, buffer::storage::Shared, mem::rc};
 
 #[derive(Debug)]
 pub enum Error {
-    Connect(event::ConnectFault),
+    Connect(attempt::ConnectFault),
     Exhausted(opening::Exhaustion),
     Receive(dope::core::Errno),
     Input,
@@ -115,7 +115,7 @@ impl<'d> app::Failed<'d> for Session<'_> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        cause: event::ConnectFault,
+        cause: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
         self.errors.record(Error::Connect(cause));

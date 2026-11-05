@@ -31,6 +31,7 @@ pub enum ExtentError {
 }
 
 /// Maximum ordinary UDP payload for the physical destination's IP family.
+#[inline]
 pub const fn maximum(peer: net::SocketAddr) -> num::NonZero<u16> {
     let bytes = match peer {
         net::SocketAddr::V6(address) if address.ip().to_ipv4_mapped().is_none() => 65_527,
