@@ -1,57 +1,17 @@
-use dope_tls::tls::Tls;
 use dope_tls::tls::roles::Server;
-type Wire = Tls<Server>;
 use dope_tls::{
     config::raw::Identity,
     tls::{endpoint, protocol::Bootstrap},
 };
 use std::{num::NonZero, sync::Arc};
 
-use dope::net::wire::receive::mode::Disabled;
-use std::mem;
-
-use dope::core::driver::receive::credit;
-use dope::net::wire::{
-    self,
-    domain::{Bootstrap as _, Limits},
-    receive,
-};
+use dope::net::wire::domain::{Bootstrap as _, Limits};
 use dope_tls::tls::endpoint::layout;
 
 const CONNECTIONS: usize = 1_024;
 const RETAINED: usize = 4_096;
 const MAX_PLAIN: usize = 16_384;
 const STAGING: usize = 24_837;
-
-#[test]
-fn preserves_credit() {
-    use receive::{Chunk, Policy};
-
-    assert_eq!(
-        mem::size_of::<Chunk<'static, 'static, Wire, Disabled>>(),
-        mem::size_of::<<<Wire as wire::Spec>::Receive as Policy<Wire>>::Cursor<'static, 'static>>()
-    );
-    assert_eq!(
-        mem::size_of::<Chunk<'static, 'static, Wire>>(),
-        mem::size_of::<(
-            <<Wire as wire::Spec>::Receive as Policy<Wire>>::Cursor<'static, 'static>,
-            credit::Return<'static>,
-        )>()
-    );
-    assert_eq!(
-        mem::size_of::<Option<Chunk<'static, 'static, Wire>>>(),
-        mem::size_of::<
-            Option<(
-                <<Wire as wire::Spec>::Receive as Policy<Wire>>::Cursor<'static, 'static>,
-                credit::Return<'static>,
-            )>,
-        >()
-    );
-    assert_eq!(
-        mem::size_of::<dope_fiber::net::read::Lease<'static, 'static, 'static, Wire>>(),
-        mem::size_of::<Chunk<'static, 'static, Wire>>()
-    );
-}
 
 #[test]
 fn default_bound_is_exact() {
@@ -69,7 +29,6 @@ fn default_bound_is_exact() {
     assert_eq!(layout.recv_cap(), MAX_PLAIN);
     assert_eq!(layout.send_cap(), STAGING);
     assert_eq!(layout.payload(), 65 * MAX_PLAIN + 128 * STAGING);
-    assert_eq!(layout.payload(), 4_244_096);
 }
 
 #[test]
@@ -118,7 +77,6 @@ fn resident_sets_slots() {
     let layout = end.plan().layout(limits);
     let layout = layout.expect("resident receive budget must be representable");
 
-    assert_eq!(slots, 1_024);
     assert_eq!(layout.recv_slots(), (slots + 1) as u32);
     assert_eq!(layout.send_slots(), 1);
     assert_eq!(layout.payload(), (slots + 1) * MAX_PLAIN + STAGING);

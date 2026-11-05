@@ -13,7 +13,7 @@ use crate::tls;
 use crate::tls::{
     endpoint,
     receive::{self, policy, waiters},
-    roles, senders,
+    roles,
 };
 
 pub struct Bootstrap<R: roles::Protocol>(marker::PhantomData<fn() -> R>);
@@ -79,8 +79,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        let mut sender = senders::Sender::new(wire);
-        sender.prepare(send, plain, end)
+        wire.prepare(send, plain, end)
     }
 
     fn prepare_many<'a, 'd, ID: route::Identity + 'd, const N: usize>(
@@ -93,8 +92,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        let mut sender = senders::Sender::new(wire);
-        sender.prepare_many(send, many, end)
+        wire.prepare_many(send, many, end)
     }
 
     fn after_send<'a, 'd, ID: route::Identity + 'd>(
@@ -112,8 +110,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         'd: 'a,
     {
         let (wire, done) = context.into_parts();
-        let mut sender = senders::Sender::new(wire);
-        sender.after_send(done, end)
+        wire.after_send(done, end)
     }
 
     fn settle<'a, 'd, ID: route::Identity + 'd>(
@@ -131,7 +128,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         'd: 'a,
     {
         let (wire, done) = context.into_parts();
-        senders::Sender::new(wire).settle(done, end)
+        wire.settle(done, end)
     }
 
     fn flush<'a, 'd, ID: route::Identity + 'd>(
@@ -143,8 +140,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        let mut sender = senders::Sender::new(wire);
-        sender.flush(send, end)
+        wire.flush(send, end)
     }
 
     fn drain<'a, 'd, ID: route::Identity + 'd>(
@@ -156,7 +152,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        senders::Sender::new(wire).drain(send, end)
+        wire.prepare_drain(send, end)
     }
 
     fn close<'a, 'd, ID: route::Identity + 'd>(
@@ -173,7 +169,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         };
         let result = wire.seal_close(buffer);
         send.drop_empty();
-        let output = senders::Sender::new(wire).finish(send.consume_none(), result.is_err());
+        let output = wire.finish(send.consume_none(), result.is_err());
         match result {
             Err(cause) => end.terminal(
                 output,

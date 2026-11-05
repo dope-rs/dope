@@ -1,4 +1,4 @@
-use std::{num::NonZero, sync::mpsc, time::Duration};
+use std::{num::NonZero, time::Duration};
 
 use dope::core::driver::{
     life::{creation::Attempt, recovery},
@@ -35,7 +35,7 @@ use crate::common::{
 pub mod common;
 
 type Wire = Tls<Server>;
-use common::fiber::credit::{AFTER_RELEASE, INDEPENDENT};
+use common::fiber::credit::{AFTER_RELEASE, INDEPENDENT, READY};
 
 #[test]
 fn provided_credit() {
@@ -79,6 +79,16 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
     let (bound, addr) = Bound::try_new().expect("reserve TLS listener").into_parts();
     let capacity = Capacity::fixed::<MAX_CONNECTIONS>();
     let plan = Plan::<Wire>::try_new(capacity).expect("listener storage");
+    let plan = if fail {
+        plan.with_receive(dope_fiber::net::read::Config {
+            slots: NonZero::new(MAX_CONNECTIONS as u32).expect("connection slots"),
+            chunks: NonZero::<u32>::MIN,
+            bytes: NonZero::<u32>::MAX,
+        })
+        .expect("one retained chunk per connection")
+    } else {
+        plan
+    };
     let config = Needs::from_tree(&plan)
         .and_then(|needs| needs.resolve::<Balanced>())
         .expect("listener configuration");
@@ -93,7 +103,6 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
     .map_err(|cause| format!("{:?}", cause.kind()))
     .expect("create TLS executor");
     let exec = exec.with_plan(storage::Value::new(&plan));
-    let (tx, rx) = mpsc::sync_channel(0);
 
     exec.run(|exec| {
         let mut reports = Reports::<1>::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
@@ -135,9 +144,7 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                         peer::Peer::at(addr)
                             .with_many::<2, _, _>(
                                 move |streams| {
-                                    credit::exchange(streams, pubkey, body, joined, escaped, || {
-                                        rx.recv()
-                                    })
+                                    credit::exchange(streams, pubkey, body, joined, fail)
                                 },
                                 |peers| {
                                     let mut finish = Completion::new();
@@ -161,6 +168,25 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                 other.expect("drive independent connection accept");
                                             let mut other =
                                                 other.ok().expect("accept independent connection");
+
+                                            // This provided-buffer record fills the independent
+                                            // connection's receive credit before the staged body.
+                                            let warm = if fail {
+                                                let warm = app
+                                                    .block_on(other.read())
+                                                    .expect("drive receive credit")
+                                                    .ok()
+                                                    .flatten()
+                                                    .expect("provided receive credit");
+                                                assert_eq!(AsRef::<[u8]>::as_ref(&*warm), READY);
+                                                assert!(matches!(
+                                                    app.block_on(held.write_all(READY)),
+                                                    Ok(Ok(()))
+                                                ));
+                                                Some(warm)
+                                            } else {
+                                                None
+                                            };
 
                                             let result = app.block_on(held.read());
                                             let first = result.expect("drive first record read");
@@ -217,34 +243,49 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                     }),
                                                 )
                                                 .expect("observe held plaintext");
-                                            assert!(tx.send(()).is_ok(), "release clients");
 
-                                            if escaped {
-                                                let saved = first
-                                                    .drive(None, &mut Retain(&budget))
-                                                    .expect("staged head")
-                                                    .expect("retain staged backing")
-                                                    .try_owned()
-                                                    .expect("staged backing owns its pool slot");
-                                                drop(first);
-                                                assert!(
-                                                    tx.send(()).is_ok(),
-                                                    "both peers sent before receive resumes"
-                                                );
-                                                assert!(matches!(
-                                                    app.drive_for(
-                                                        Duration::from_millis(50),
-                                                        Once::new(other.read()),
-                                                    ),
-                                                    Err(drive::Error::Timeout)
-                                                ));
-                                                assert_eq!(saved.as_slice(), body);
-                                                drop(saved);
-                                                for (stream, expected) in [
-                                                    (&mut other, INDEPENDENT),
-                                                    (&mut held, AFTER_RELEASE),
-                                                ] {
-                                                    let mut next = app
+                                            let result = match warm {
+                                                Some(warm) => {
+                                                    // Returning credit only schedules receive;
+                                                    // the next drive owns its first allocation.
+                                                    drop(warm);
+                                                    Tracker::fail_after(0, || {
+                                                        app.block_on(other.read())
+                                                    })
+                                                }
+                                                None => {
+                                                    assert!(matches!(
+                                                        app.block_on(other.write_all(READY)),
+                                                        Ok(Ok(()))
+                                                    ));
+                                                    if escaped {
+                                                        let saved = first
+                                                            .drive(None, &mut Retain(&budget))
+                                                            .expect("staged head")
+                                                            .expect("retain staged backing")
+                                                            .try_owned()
+                                                            .expect(
+                                                                "staged backing owns its pool slot",
+                                                            );
+                                                        drop(first);
+                                                        peers
+                                                            .finish()
+                                                            .expect("join after both peers sent")
+                                                            .expect("TLS peer exchange");
+                                                        assert!(matches!(
+                                                            app.drive_for(
+                                                                Duration::from_millis(50),
+                                                                Once::new(other.read()),
+                                                            ),
+                                                            Err(drive::Error::Timeout)
+                                                        ));
+                                                        assert_eq!(saved.as_slice(), body);
+                                                        drop(saved);
+                                                        for (stream, expected) in [
+                                                            (&mut other, INDEPENDENT),
+                                                            (&mut held, AFTER_RELEASE),
+                                                        ] {
+                                                            let mut next = app
                                                         .drive_for(
                                                             TIMEOUT,
                                                             Once::new(stream.read()),
@@ -260,34 +301,20 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                         })
                                                         .expect("receive after final owner drop")
                                                         .expect("peer record");
-                                                    next.drive(
-                                                        Ok(()),
-                                                        &mut Read(|head: &[u8]| {
-                                                            assert_eq!(head, expected);
-                                                            head.len()
-                                                        }),
-                                                    )
-                                                    .expect("consume resumed peer record");
-                                                }
-                                                assert!(matches!(
-                                                    app.block_on(held.write_all(b"held-ok")),
-                                                    Ok(Ok(()))
-                                                ));
-                                                assert!(matches!(
-                                                    app.block_on(
-                                                        other.write_all(b"independent-ok")
-                                                    ),
-                                                    Ok(Ok(()))
-                                                ));
-                                                return;
-                                            }
+                                                            next.drive(
+                                                                Ok(()),
+                                                                &mut Read(|head: &[u8]| {
+                                                                    assert_eq!(head, expected);
+                                                                    head.len()
+                                                                }),
+                                                            )
+                                                            .expect("consume resumed peer record");
+                                                        }
+                                                        return;
+                                                    }
 
-                                            let result = if fail {
-                                                Tracker::fail_after(0, || {
                                                     app.block_on(other.read())
-                                                })
-                                            } else {
-                                                app.block_on(other.read())
+                                                }
                                             };
                                             let probe =
                                                 result.expect("drive independent record read");
@@ -379,6 +406,16 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                 .expect("the nonempty suffix retains its owner")
                                                 .expect("retain admitted plaintext owner");
                                             assert_eq!(saved.as_slice(), &body[2..]);
+                                            if fail {
+                                                assert!(matches!(
+                                                    app.block_on(held.write_all(READY)),
+                                                    Ok(Ok(()))
+                                                ));
+                                            }
+                                            peers
+                                                .finish()
+                                                .expect("join after peer records")
+                                                .expect("TLS peer exchange");
                                             if body.len()
                                                 > recv.buffer_len().into_nonzero().get() as usize
                                             {
@@ -425,38 +462,9 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                 0,
                                                 "last owner returns resident credit"
                                             );
-
-                                            assert!(matches!(
-                                                app.block_on(held.write_all(b"held-ok")),
-                                                Ok(Ok(()))
-                                            ));
-                                            if !fail {
-                                                assert!(matches!(
-                                                    app.block_on(
-                                                        other.write_all(b"independent-ok")
-                                                    ),
-                                                    Ok(Ok(()))
-                                                ));
-                                            }
                                         },
                                     );
                                     assert!(driven.is_ok(), "drive retained credit");
-                                    let (reply, other) = peers
-                                        .finish()
-                                        .expect("finish TLS clients")
-                                        .expect("TLS peer exchange");
-                                    assert_eq!(reply, b"held-ok");
-                                    if fail {
-                                        assert!(
-                                            other.is_err(),
-                                            "failed receive closes its connection"
-                                        );
-                                    } else {
-                                        assert_eq!(
-                                            other.expect("receive independent reply"),
-                                            b"independent-ok"
-                                        );
-                                    }
                                 },
                             )
                             .expect("spawn TLS clients");

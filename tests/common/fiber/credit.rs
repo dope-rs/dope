@@ -4,41 +4,36 @@ use crate::common::fiber::{Connect, FIRST, Peer};
 
 pub const AFTER_RELEASE: &[u8] = b"after-release";
 pub const INDEPENDENT: &[u8] = b"independent";
+pub const READY: &[u8] = b"ready";
 
-type Replies = (Vec<u8>, Result<Vec<u8>, Connect>);
-
-pub fn exchange<E>(
+pub fn exchange(
     [held, other]: &mut [&peer::Stream<'_>; 2],
     pubkey: [u8; 32],
     body: &[u8],
     joined: bool,
-    escaped: bool,
-    mut signal: impl FnMut() -> Result<(), E>,
-) -> Result<Replies, Error<E>> {
-    let mut held = Peer::establish(held, pubkey).map_err(Error::Connect)?;
-    let mut other = Peer::establish(other, pubkey).map_err(Error::Connect)?;
+    fail: bool,
+) -> Result<(), Connect> {
+    let mut held = Peer::establish(held, pubkey)?;
+    let mut other = Peer::establish(other, pubkey)?;
+    if fail {
+        other.try_send(READY)?;
+        assert_eq!(held.try_recv()?, READY);
+    }
     if joined {
-        let mut wire = held.seal(FIRST).map_err(Error::Connect)?;
-        held.tls.refresh_traffic_keys().map_err(Error::Keys)?;
-        wire.extend_from_slice(&held.seal(body).map_err(Error::Connect)?);
-        held.socket.write_all(&wire).map_err(Error::Peer)?;
+        let mut wire = held.seal(FIRST)?;
+        wire.extend_from_slice(&held.seal(body)?);
+        held.socket.write_all(&wire).map_err(Connect::Peer)?;
     } else {
-        held.try_send(body).map_err(Error::Connect)?;
+        held.try_send(body)?;
     }
-    signal().map_err(Error::Signal)?;
-    held.try_send(AFTER_RELEASE).map_err(Error::Connect)?;
-    other.try_send(INDEPENDENT).map_err(Error::Connect)?;
-    if escaped {
-        signal().map_err(Error::Signal)?;
+    if fail {
+        other.try_send(INDEPENDENT)?;
+        assert_eq!(held.try_recv()?, READY);
+        held.try_send(AFTER_RELEASE)?;
+    } else {
+        assert_eq!(other.try_recv()?, READY);
+        held.try_send(AFTER_RELEASE)?;
+        other.try_send(INDEPENDENT)?;
     }
-    let reply = held.try_recv().map_err(Error::Connect)?;
-    Ok((reply, other.try_recv()))
-}
-
-#[derive(Debug)]
-pub enum Error<E> {
-    Connect(Connect),
-    Keys(rustls::Error),
-    Peer(peer::Error),
-    Signal(E),
+    Ok(())
 }

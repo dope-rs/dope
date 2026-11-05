@@ -1,4 +1,4 @@
-use std::{convert::Infallible, num::NonZero, sync::Arc};
+use std::{num::NonZero, sync::Arc};
 
 use dope::core::{
     driver::{
@@ -337,9 +337,7 @@ fn cancelled_waiter() {
         },
         recovery::Policy::new(
             |event| reports.push(event),
-            |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                panic!("native recovery: {:?}", failure.cause())
-            },
+            |failure: recovery::Recovery<'_, '_>| failure.abort(),
         ),
         |result| {
             result
