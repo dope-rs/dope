@@ -140,7 +140,7 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                     &mut scope,
                     |scope| scope.driver(),
                     |pool, scope| {
-                        let accept = store.handle();
+                        let accept = pool.handle();
                         peer::Peer::at(addr)
                             .with_many::<2, _, _>(
                                 move |streams| {

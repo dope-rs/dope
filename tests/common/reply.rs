@@ -8,7 +8,7 @@ use std::{
 
 use dope::core::{
     driver::{
-        retained::Context,
+        Context,
         route::{Identity, KeyTag},
         schedule::{clock, ready},
     },
@@ -84,7 +84,7 @@ impl Reply<'_> {
     fn reply<'d, ID: Identity>(
         &self,
         conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
-        driver: &mut Context<'_, '_, 'd>,
+        driver: &mut Context<'_, 'd>,
     ) {
         let bytes = match Shared::try_copy(&self.body) {
             Ok(bytes) => bytes,
@@ -100,7 +100,7 @@ impl Reply<'_> {
     fn send<'d, ID: Identity>(
         &self,
         conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
-        driver: &mut Context<'_, '_, 'd>,
+        driver: &mut Context<'_, 'd>,
         bytes: resident::Shared<'d>,
     ) {
         let body = egress::Load::new(bytes);
@@ -138,16 +138,12 @@ impl<'d, ID: Identity> Application<'d, ID> for Reply<'_> {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
         _: End,
-        driver: &mut Context<'_, '_, 'd>,
-    ) -> handler::Eof {
+        driver: &mut Context<'_, 'd>,
+    ) {
         let this = self.get_mut();
         (this.observe)(Event::Eof(*conn.state()));
         if matches!(this.mode, Mode::Peer) {
             this.reply(&mut conn, driver);
-            conn.close_after();
-            handler::Eof::Hold
-        } else {
-            handler::Eof::Close
         }
     }
 
@@ -188,7 +184,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Reply<'_> {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
         chunk: R,
-        driver: &mut Context<'_, '_, 'd>,
+        driver: &mut Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         (this.observe)(Event::Input(chunk.as_ref().to_vec()));
@@ -256,7 +252,7 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Wire, bool>,
-        driver: &mut Context<'_, '_, 'd>,
+        driver: &mut Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Wire, bool>
     where
         'd: 'w,
@@ -313,7 +309,7 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for Capacity<'_, 'd> {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool>,
         chunk: R,
-        _: &mut Context<'_, '_, 'd>,
+        _: &mut Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         (this.reply.observe)(Event::Input(chunk.as_ref().to_vec()));

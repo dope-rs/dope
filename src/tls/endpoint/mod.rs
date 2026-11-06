@@ -39,17 +39,28 @@ impl<R: roles::Protocol, ID: route::Identity> Sessions<R, ID> {
             _bound: ThreadBound::NEW,
         }
     }
+}
 
-    pub(super) fn bind_pools<T>(
-        &self,
-        layout: layout::Layout,
-        complete: impl FnOnce() -> Result<T, net::Resource>,
-    ) -> Result<(&Pools, T), net::Resource> {
-        if self.buffers.get().is_some() {
+impl<R: roles::Protocol> domain::Bootstrap<tls::Tls<R>> for tls::protocol::Bootstrap<R> {
+    fn try_runtime<'w, 'd, ID: route::Identity + 'w>(
+        limits: domain::Limits,
+        bound: Bound<'w, R, ID>,
+    ) -> Result<Runtime<'w, 'd, R, ID>, net::Resource>
+    where
+        tls::Tls<R>: 'w,
+        'd: 'w,
+    {
+        let layout = bound.plan.layout(limits)?;
+        let Bound {
+            role,
+            storage: store,
+            ..
+        } = bound;
+        if store.buffers.get().is_some() {
             return Err(net::Resource::Binding(net::BindingError::AlreadyBound));
         }
         let init = Pools {
-            sessions: recycle::Store::try_new(self.capacity).map_err(net::Resource::Allocation)?,
+            sessions: recycle::Store::try_new(store.capacity).map_err(net::Resource::Allocation)?,
             recv: match layout.growing {
                 Some(warm) => buffers::Receive::Growing(
                     pool::Growing::try_warm(layout.recv, warm).map_err(net::Resource::Pool)?,
@@ -61,11 +72,20 @@ impl<R: roles::Protocol, ID: route::Identity> Sessions<R, ID> {
             send: pool::Pool::try_from(layout.send).map_err(net::Resource::Exhausted)?,
         };
         // Reverse binding order drops rejected pools before the completed state.
-        let (ready, init) = (complete()?, init);
-        if self.buffers.get().is_some() {
+        let (waiters, init) = (
+            waiters::Queue::try_new(limits.connections()).map_err(net::Resource::Queue)?,
+            init,
+        );
+        if store.buffers.get().is_some() {
             return Err(net::Resource::Binding(net::BindingError::AlreadyBound));
         }
-        Ok((self.buffers.get_or_init(|| init), ready))
+        let pools = store.buffers.get_or_init(|| init);
+        Ok(Runtime {
+            pending: None,
+            buffers: pools,
+            waiters,
+            role,
+        })
     }
 }
 
@@ -172,6 +192,17 @@ where
     pub(super) buffers: &'w Pools,
     pub(super) waiters: waiters::Queue<'d, ID>,
     pub(super) role: R::Config,
+}
+
+impl<ID: route::Identity> domain::Reconfigure for Runtime<'_, '_, roles::Server, ID> {
+    type Config = Arc<rustls::ServerConfig>;
+
+    /// Replaces future server policy and discards the cached opening.
+    /// Admitted connections retain their policy.
+    fn reconfigure(&mut self, config: Self::Config) {
+        self.pending = None;
+        self.role = config;
+    }
 }
 
 impl<R: roles::Protocol, ID: route::Identity> Runtime<'_, '_, R, ID> {

@@ -7,7 +7,7 @@ use dope::{
             life::{self, recovery},
             receive::credit::error::Arm,
             result::{self, poll},
-            retained::{self, flight},
+            retained::flight,
             route::{Epoch, KeyTag, indices::SlotIndex, kind, lease, table::conn},
             settings,
         },
@@ -333,9 +333,7 @@ pub fn submit<'p, 'w, 'd: 'w>(
     key: Key<'d>,
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<(), Error> {
-    let mut context = scope.context();
-    let owner = retained::raw::Owner::from_driver(context.driver_ref());
-    let mut driver = retained::Context::new(context.reborrow(), owner);
+    let mut driver = scope.context();
     let mut sender = pool.sender(key).ok_or(Error::Sender)?;
     submission(sender.submit(&mut driver))
 }
@@ -355,10 +353,11 @@ pub fn settle<'p, 'w, 'd: 'w>(
     done: send::Completion<'d>,
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<Key<'d>, Error> {
-    let mut context = scope.context();
-    let owner = retained::raw::Owner::from_driver(context.driver_ref());
-    let mut driver = retained::Context::new(context.reborrow(), owner);
-    match pool.settle(done).settle_owned(&mut driver, |_, _| {}) {
+    let mut driver = scope.context();
+    match pool
+        .settle(done)
+        .settle_owned(&mut driver, |_| {}, |_, _| {})
+    {
         SendOutcome::Queued { key, .. } | SendOutcome::Terminal { key } => Ok(key),
         SendOutcome::Rejected { failure, .. } => Err(Error::Rejected(failure)),
         SendOutcome::Failed { failure, .. } => Err(Error::Send(failure)),
@@ -375,22 +374,19 @@ pub fn pending<'p, 'w, 'd: 'w>(
     let round = pending::Pending::of(pool)
         .try_round()
         .map_err(|_| Error::Busy)?;
-    scope.with_driver(|mut context, mut control| {
-        let turn = control.begin();
-        let owner = retained::raw::Owner::from_driver(context.driver_ref());
-        let mut driver = retained::Context::new(context.reborrow(), owner);
-        let mut result = Ok(());
-        round.run(turn.turn().maint(), |key| {
-            observe(key);
-            let attempt = pool
-                .sender(key)
-                .ok_or(Error::PendingSender)
-                .and_then(|mut sender| submission(sender.submit(&mut driver)));
-            if result.is_ok() {
-                result = attempt;
-            }
-            pending::Disposition::Idle
-        });
-        result
-    })
+    let (_, mut driver, mut control) = scope.split();
+    let turn = control.begin();
+    let mut result = Ok(());
+    round.run(turn.turn().maint(), |key| {
+        observe(key);
+        let attempt = pool
+            .sender(key)
+            .ok_or(Error::PendingSender)
+            .and_then(|mut sender| submission(sender.submit(&mut driver)));
+        if result.is_ok() {
+            result = attempt;
+        }
+        pending::Disposition::Idle
+    });
+    result
 }

@@ -153,7 +153,7 @@ impl<R: roles::Protocol> reserve::Try<tls::Tls<R>> for Policy<R> {
         'd: 'w,
         'w: 'a,
     {
-        let open = wire.native.is_handshaking() && !wire.send_inflight;
+        let open = wire.native.is_handshaking();
         let recv = match wire.buffers.try_reserve() {
             Ok(Some(recv)) => recv,
             Ok(None) => {

@@ -1,4 +1,4 @@
-use crate::state::{buffers, staged};
+use crate::state::{buffers, direct, staged};
 use o3::buffer::pool::owners;
 use std::num;
 
@@ -42,7 +42,7 @@ pub(super) struct Producer<'s, 'd, 'input, 'f, R: roles::Protocol + 'd, ID: Iden
     pub(super) control: &'f mut (Result<(), error::Error>, buffers::Release),
 }
 
-// SAFETY: read returns at most one pooled chunk and one initialized input prefix.
+// SAFETY: Input::owned returns one pooled chunk and one initialized input prefix at most.
 // Both retain their actual storage owner, and the capacity admits two items.
 unsafe impl<'d: 'input, 'input, R: roles::Protocol + 'd, ID: Identity + 'd>
     receive::raw::Producer<'input, tls::Tls<R>> for Producer<'_, 'd, 'input, '_, R, ID>
@@ -55,7 +55,7 @@ unsafe impl<'d: 'input, 'input, R: roles::Protocol + 'd, ID: Identity + 'd>
                 released,
             },
             plain,
-        ) = self.ingress.read(self.bytes);
+        ) = direct::Input::owned(self.ingress.conn, self.bytes, self.ingress.recv);
         *self.control = (failure, released);
         Batch {
             owned: chunk,

@@ -142,7 +142,7 @@ fn run(mode: Mode, body: Vec<u8>, direct: usize) -> (Vec<u8>, Records) {
                     hash,
                     &mut sess,
                     session::Scope::driver,
-                    |listen, sess| {
+                    |listen, _, sess| {
                         peer::Peer::at(listen.local_addr())
                             .with(
                                 move |socket| run_client(socket, pubkey, mode),

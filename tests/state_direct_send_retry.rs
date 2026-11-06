@@ -182,7 +182,7 @@ fn released_direct() {
                         hash,
                         &mut sess,
                         session::Scope::driver,
-                        |listen, sess| {
+                        |listen, _, sess| {
                             peer::Peer::at(listen.local_addr())
                                 .with_many::<2, _, _>(
                                     move |sockets| run_pair(sockets, pubkey),

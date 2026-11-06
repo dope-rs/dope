@@ -2,7 +2,7 @@ use std::{collections::VecDeque, convert::Infallible, ops::ControlFlow};
 
 use dope::{
     core::{
-        driver::{life, retained},
+        driver::life,
         io::event::{self, net::recv},
     },
     net::link::{
@@ -25,9 +25,7 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
     mode: Mode,
 ) -> Result<Option<Held>, Error> {
     {
-        let mut context = scope.context();
-        let owner = retained::raw::Owner::from_driver(context.driver_ref());
-        let mut driver = retained::Context::new(context.reborrow(), owner);
+        let mut driver = scope.context();
         for key in keys
             .into_iter()
             .take(if matches!(mode, Mode::Held) { 1 } else { 2 })
@@ -123,14 +121,13 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
             _ => return Err(Error::Handshake),
         }
         pending(pool, scope, |_| {})?;
-        scope.with_driver(|mut context, mut control| {
+        {
+            let (_, mut driver, mut control) = scope.split();
             let turn = control.begin();
-            let owner = retained::raw::Owner::from_driver(context.driver_ref());
-            let mut driver = retained::Context::new(context.reborrow(), owner);
             pool.recv()
                 .flush(turn.turn().maint(), &mut driver)
-                .map_err(|failure| Error::Submit(failure.cause))
-        })?;
+                .map_err(|failure| Error::Submit(failure.cause))?;
+        }
         if matches!(mode, Mode::Held) && observed.is_none() && ready[0] {
             let conn = pool.inspect().get(keys[0]).ok_or(Error::Key)?;
             let status = conn.send_status();
@@ -140,9 +137,7 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                 rearm: pool.inspect().has_rearm(),
             });
             settle(pool, held.take().ok_or(Error::Flight)?, scope)?;
-            let mut context = scope.context();
-            let owner = retained::raw::Owner::from_driver(context.driver_ref());
-            let mut driver = retained::Context::new(context.reborrow(), owner);
+            let mut driver = scope.context();
             pool.recv()
                 .arm(keys[1], &mut driver)
                 .map_err(|failure| Error::Submit(failure.cause))?;

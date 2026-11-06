@@ -81,7 +81,6 @@ pub struct Connection<
     pub(crate) peer_closed: bool,
     pub(crate) local_closed: bool,
     pub(crate) failed: bool,
-    send_inflight: bool,
     _lease: Unique<'d, (), recycle::Header<()>>,
     _thread: ThreadBound,
     role: marker::PhantomData<fn() -> (R, ID)>,
@@ -100,7 +99,6 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
             peer_closed: false,
             local_closed: false,
             failed: false,
-            send_inflight: false,
             _lease: lease,
             _thread: ThreadBound::NEW,
             role: marker::PhantomData,
@@ -146,9 +144,6 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
     ) -> Option<&'a mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>> {
         store.try_buffer(self.buffers.send_pool())
     }
-    pub(crate) fn has_debt(&self) -> bool {
-        !self.send_inflight && self.native.wants_write()
-    }
     pub(crate) fn emit_into(
         &mut self,
         out: &mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>,
@@ -159,9 +154,6 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
         &mut self,
         out: &mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>,
     ) -> Option<error::Error> {
-        if self.send_inflight {
-            return None;
-        }
         match self.emit_into(out) {
             Ok(()) => None,
             Err(cause) => {

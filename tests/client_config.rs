@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use dope::core::driver::route::KeyTag;
 use dope::net::wire::{
-    domain::{Bootstrap as _, Limits},
+    domain::{Bootstrap as _, Limits, Reconfigure as _},
     open::{self, Runtime as _},
 };
 use dope_test::alloc::Tracker;
@@ -62,11 +62,12 @@ fn configs_stay_alive() {
     drop(client);
     assert!(retained.upgrade().is_none());
 
-    let native = Arc::new(key.server().expect("server config"));
+    let config = key.server().expect("server config");
+    let native = Arc::new(config.clone());
     let retained = Arc::downgrade(&native);
-    let slots = endpoint::Sessions::<roles::Server>::try_new(1).expect("session storage");
+    let slots = endpoint::Sessions::<roles::Server>::try_new(2).expect("session storage");
     let mut run = Bootstrap::<roles::Server>::try_runtime::<KeyTag<0>>(
-        Limits::fixed::<1, 0, 0, { 64 * 1024 }>(),
+        Limits::fixed::<2, 0, 0, { 64 * 1024 }>(),
         endpoint::Config::from(native).bind(&slots),
     )
     .expect("endpoint runtime");
@@ -75,8 +76,27 @@ fn configs_stay_alive() {
         _ => None,
     }
     .expect("server");
+    assert!(matches!(
+        run.open((), |(), wire, send| open::Disposition::retry(
+            (),
+            wire,
+            send
+        )),
+        open::Outcome::Opened(())
+    ));
+    let native = Arc::new(config);
+    let replacement = Arc::downgrade(&native);
+    run.reconfigure(native);
+    let next = match run.open((), |(), wire, _| open::Disposition::Commit(wire)) {
+        open::Outcome::Opened(wire) => Some(wire),
+        _ => None,
+    }
+    .expect("replacement server");
     drop(run);
     assert!(retained.upgrade().is_some());
+    assert!(replacement.upgrade().is_some());
     drop(server);
     assert!(retained.upgrade().is_none());
+    drop(next);
+    assert!(replacement.upgrade().is_none());
 }

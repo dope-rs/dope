@@ -93,7 +93,7 @@ fn assert_end(input: Input) {
                         &mut scope,
                         |scope| scope.driver(),
                         |pool, scope| {
-                            let accept = store.handle();
+                            let accept = pool.handle();
                             peer::Peer::at(addr)
                                 .with(
                                     move |socket| {

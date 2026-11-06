@@ -5,7 +5,7 @@ use dope::{
         driver::{
             life::recovery,
             result::SubmitCause,
-            retained::{self, flight},
+            retained::flight,
             route::{Epoch, KeyTag, indices::SlotIndex},
         },
         io::{
@@ -278,8 +278,7 @@ fn seal_retries_native_full() {
                     }
                 }
                 assert!(admitted < 513, "native queue fills before flight storage");
-                let owner = retained::raw::Owner::from_driver(context.driver_ref());
-                let mut driver = retained::Context::new(context.reborrow(), owner);
+                let mut driver = context.reborrow();
                 for _ in 0..2 {
                     let egress = pool.egress_mut(second).expect("second peer");
                     let result = egress
@@ -301,9 +300,7 @@ fn seal_retries_native_full() {
             Descriptor::from(socket).close(&mut scope.context());
 
             {
-                let mut context = scope.context();
-                let owner = retained::raw::Owner::from_driver(context.driver_ref());
-                let mut driver = retained::Context::new(context.reborrow(), owner);
+                let mut driver = scope.context();
                 let egress = pool.egress_mut(second).expect("second peer");
                 let wait = match egress
                     .connection

@@ -22,7 +22,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         plain: send::Plain<'b>,
         end: terminal::Send<'_, terminal::Error<'d, tls::Tls<R>>>,
     ) -> terminal::Processed<send::Prepared<'b, reclaim::OnSubmit, send::Plain<'b>>> {
-        if plain.is_empty() && send.as_slice().is_empty() && !self.has_debt() {
+        if plain.is_empty() && send.as_slice().is_empty() && !self.native.wants_write() {
             return end.output(send.buffered());
         }
         let mut plan = progress::Plan::plain(send, plain);
@@ -32,22 +32,22 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         };
         if let Some(cause) = self.drain(egress) {
             send.drop_empty();
-            let output = self.finish(plan.finish(), true);
+            let output = Self::finish(plan.finish(), true);
             return end.terminal(
                 output,
                 terminal::Terminal::Failed(terminal::Error::from_cause(cause)),
             );
         }
-        if self.has_debt() {
+        if self.native.wants_write() {
             send.drop_empty();
             let close = self.failed;
-            let output = self.finish(plan.finish(), close);
+            let output = Self::finish(plan.finish(), close);
             return end.output(output);
         }
         let sealed = self.encrypt(egress, plain, end);
         send.drop_empty();
         let close = self.failed;
-        let output = self.finish(plan.finish(), close);
+        let output = Self::finish(plan.finish(), close);
         sealed.map(|()| output)
     }
 
@@ -57,7 +57,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         plain: send::Vectored<'b, N>,
         end: terminal::Send<'_, terminal::Error<'d, tls::Tls<R>>>,
     ) -> terminal::Processed<send::Prepared<'b, reclaim::OnSubmit, send::Plain<'b>>> {
-        if plain.is_empty() && send.as_slice().is_empty() && !self.has_debt() {
+        if plain.is_empty() && send.as_slice().is_empty() && !self.native.wants_write() {
             return end.output(send.buffered());
         }
         let mut plan = progress::Plan::vectored(send, &plain);
@@ -67,22 +67,22 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         };
         if let Some(cause) = self.drain(egress) {
             send.drop_empty();
-            let output = self.finish(plan.finish(), true);
+            let output = Self::finish(plan.finish(), true);
             return end.terminal(
                 output,
                 terminal::Terminal::Failed(terminal::Error::from_cause(cause)),
             );
         }
-        if self.has_debt() {
+        if self.native.wants_write() {
             send.drop_empty();
             let close = self.failed;
-            let output = self.finish(plan.finish(), close);
+            let output = Self::finish(plan.finish(), close);
             return end.output(output);
         }
         let sealed = self.encrypt_many(egress, plain, end);
         send.drop_empty();
         let close = self.failed;
-        let output = self.finish(plan.finish(), close);
+        let output = Self::finish(plan.finish(), close);
         sealed.map(|()| output)
     }
 
@@ -92,10 +92,10 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         mut plain: progress::Input<'_, Bytes<'_>>,
         end: terminal::Send<'_, terminal::Error<'d, tls::Tls<R>>>,
     ) -> terminal::Processed<()> {
-        if self.send_inflight || !self.can_write() {
+        if !self.can_write() {
             return end.output(());
         }
-        while !plain.is_empty() && output.spare_len() != 0 && !self.has_debt() {
+        while !plain.is_empty() && output.spare_len() != 0 && !self.native.wants_write() {
             let part = plain.take(transfer::Len::fixed::<{ staging::MAX_PLAINTEXT }>());
             let n = match self.native.writer().write(part.as_slice()) {
                 Ok(n) => n,
@@ -130,10 +130,10 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         mut plain: progress::Input<'_, progress::Vectored<'_, N>>,
         end: terminal::Send<'_, terminal::Error<'d, tls::Tls<R>>>,
     ) -> terminal::Processed<()> {
-        if self.send_inflight || !self.can_write() {
+        if !self.can_write() {
             return end.output(());
         }
-        while !plain.is_empty() && output.spare_len() != 0 && !self.has_debt() {
+        while !plain.is_empty() && output.spare_len() != 0 && !self.native.wants_write() {
             let mut parts = plain.take(transfer::Len::fixed::<{ staging::MAX_PLAINTEXT }>());
             let limit = parts.amount();
             let mut slices = array::Vec::<io::IoSlice<'_>, N>::new();
@@ -188,14 +188,13 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         end: terminal::Send<'_, terminal::Error<'d, tls::Tls<R>>>,
     ) -> terminal::Processed<send::Transition<'b, reclaim::OnSubmit, send::Plain<'b>>> {
         let mut send = done.consume_max();
-        self.send_inflight = false;
         let Some(egress) = send.buffer_mut() else {
             return end.output(send::Transition::unchanged(send.buffered()));
         };
         let cause = self.refill(egress);
         let close = self.failed;
         let free = send.free_empty();
-        let ready = self.finish(send.consume_none(), close);
+        let ready = Self::finish(send.consume_none(), close);
         let output = send::Transition::new(ready, free);
         match cause {
             Some(cause) => end.terminal(
@@ -212,12 +211,11 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         end: Option<terminal::Drain<'_, 'd, tls::Tls<R>>>,
     ) -> send::Transition<'b, reclaim::OnSubmit, send::Plain<'b>> {
         let mut send = done.consume_max();
-        self.send_inflight = false;
         if self.resume(&mut send, end).is_pending() {
             return send::Transition::unchanged(send.buffer_wait().close_after());
         }
         let free = send.free_empty();
-        let ready = self.finish(send.consume_none(), true);
+        let ready = Self::finish(send.consume_none(), true);
         send::Transition::new(ready, free)
     }
 
@@ -226,7 +224,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         mut send: send::Storage<'b, tls::SendState<'d>>,
         end: terminal::Send<'_, terminal::Error<'d, tls::Tls<R>>>,
     ) -> terminal::Processed<send::Prepared<'b, reclaim::OnSubmit, send::Plain<'b>>> {
-        if send.as_slice().is_empty() && !self.has_debt() {
+        if send.as_slice().is_empty() && !self.native.wants_write() {
             return end.output(send.buffered());
         }
         let Some(egress) = self.try_buffer(&mut send) else {
@@ -235,7 +233,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         let cause = self.drain(egress);
         let close = self.failed;
         send.drop_empty();
-        let output = self.finish(send.consume_none(), close);
+        let output = Self::finish(send.consume_none(), close);
         match cause {
             Some(cause) => end.terminal(
                 output,
@@ -254,7 +252,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
             return send.buffer_wait().close_after();
         }
         send.drop_empty();
-        self.finish(send.consume_none(), true)
+        Self::finish(send.consume_none(), true)
     }
 
     fn resume(
@@ -265,7 +263,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         let Some(end) = end else {
             return Poll::Ready(());
         };
-        if !self.has_debt() {
+        if !self.native.wants_write() {
             return Poll::Ready(());
         }
         let Some(egress) = self.try_buffer(send) else {
@@ -290,11 +288,9 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
     }
 
     pub(crate) fn finish<'b>(
-        &mut self,
         used: send::Consumed<'b, tls::SendState<'d>>,
         close: bool,
     ) -> send::Prepared<'b, reclaim::OnSubmit, send::Plain<'b>> {
-        self.send_inflight = !used.is_empty();
         let ready = used.buffered();
         if close { ready.close_after() } else { ready }
     }

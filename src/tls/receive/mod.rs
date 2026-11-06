@@ -82,7 +82,4 @@ impl<'s, 'd, R: roles::Protocol + 'd, ID: route::Identity + 'd> Ingress<'s, 'd, 
         };
         (output, failure, released)
     }
-    fn read<B: AsMut<[u8]>>(self, bytes: B) -> (staged::Output<'d>, direct::Plain<B>) {
-        direct::Input::owned(self.conn, bytes, self.recv)
-    }
 }

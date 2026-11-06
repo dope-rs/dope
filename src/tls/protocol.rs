@@ -12,7 +12,7 @@ use crate::state::buffers;
 use crate::tls;
 use crate::tls::{
     endpoint,
-    receive::{self, policy, waiters},
+    receive::{self, policy},
     roles,
 };
 
@@ -23,33 +23,6 @@ impl<R: roles::Protocol> domain::Allocate<tls::Tls<R>> for Bootstrap<R> {
         cap: conn::Capacity,
     ) -> Result<endpoint::Sessions<R, ID>, net::Resource> {
         Ok(endpoint::Sessions::from_count(cap.entries()))
-    }
-}
-
-impl<R: roles::Protocol> domain::Bootstrap<tls::Tls<R>> for Bootstrap<R> {
-    fn try_runtime<'w, 'd, ID: route::Identity + 'w>(
-        limits: domain::Limits,
-        bound: endpoint::Bound<'w, R, ID>,
-    ) -> Result<endpoint::Runtime<'w, 'd, R, ID>, net::Resource>
-    where
-        tls::Tls<R>: 'w,
-        'd: 'w,
-    {
-        let layout = bound.plan.layout(limits)?;
-        let endpoint::Bound {
-            role,
-            storage: store,
-            ..
-        } = bound;
-        let (pools, waiters) = store.bind_pools(layout, || {
-            waiters::Queue::try_new(limits.connections()).map_err(net::Resource::Queue)
-        })?;
-        Ok(endpoint::Runtime {
-            pending: None,
-            buffers: pools,
-            waiters,
-            role,
-        })
     }
 }
 
@@ -169,7 +142,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         };
         let result = wire.seal_close(buffer);
         send.drop_empty();
-        let output = wire.finish(send.consume_none(), result.is_err());
+        let output = tls::Connection::<R, ID>::finish(send.consume_none(), result.is_err());
         match result {
             Err(cause) => end.terminal(
                 output,

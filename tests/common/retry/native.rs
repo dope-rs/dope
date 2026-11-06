@@ -15,10 +15,9 @@ use crate::common::retry::Error;
 
 pub(super) fn commit(scope: &mut life::Scope<'_, '_>) -> Result<(), Error> {
     for _ in 0..64 {
-        let state = scope.with_driver(|mut driver, mut control| {
-            let mut turn = control.begin();
-            driver.commit(turn.reactor()).map_err(Error::Commit)
-        })?;
+        let (_, mut driver, mut control) = scope.split();
+        let mut turn = control.begin();
+        let state = driver.commit(turn.reactor()).map_err(Error::Commit)?;
         match state {
             poll::Commit::Drained => return Ok(()),
             poll::Commit::Pending => {}
@@ -39,26 +38,21 @@ pub(super) fn next<'d>(scope: &mut life::Scope<'_, 'd>) -> Result<Event<'d>, Err
         .checked_add(Duration::from_secs(5))
         .ok_or(Error::Deadline)?;
     loop {
-        let event = scope.with_driver(|mut driver, mut control| {
-            let mut turn = control.begin();
-            match driver.dispatch(turn.reactor(), |event, _| ControlFlow::Break(event)) {
-                poll::Dispatch::Ready {
-                    retained: Some(event),
-                    ..
-                } => return Ok(Some(event)),
-                poll::Dispatch::Ready { retained: None, .. } => {}
-                poll::Dispatch::Fault(cause) => return Err(Error::Dispatch(cause)),
-            }
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or(Error::Timeout)?;
-            driver
-                .wait(turn.reactor(), Some(left))
-                .map_err(Error::Wait)?;
-            Ok(None)
-        })?;
-        if let Some(event) = event {
-            return Ok(event);
+        let (_, mut driver, mut control) = scope.split();
+        let mut turn = control.begin();
+        match driver.dispatch(turn.reactor(), |event, _| ControlFlow::Break(event)) {
+            poll::Dispatch::Ready {
+                retained: Some(event),
+                ..
+            } => return Ok(event),
+            poll::Dispatch::Ready { retained: None, .. } => {}
+            poll::Dispatch::Fault(cause) => return Err(Error::Dispatch(cause)),
         }
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(Error::Timeout)?;
+        driver
+            .wait(turn.reactor(), Some(left))
+            .map_err(Error::Wait)?;
     }
 }

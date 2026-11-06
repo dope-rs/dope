@@ -90,7 +90,7 @@ fn records_share_cursors() {
                     &mut scope,
                     |scope| scope.driver(),
                     |pool, scope| {
-                        let accept = store.handle();
+                        let accept = pool.handle();
                         peer::Peer::at(addr).with(move |socket| run_client(socket, pubkey), |client| {
                         let mut finish = Completion::new();
                         let data = scope

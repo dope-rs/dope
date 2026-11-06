@@ -27,7 +27,7 @@ fn rejects_reentry() {
             .server()
             .expect("server configuration"),
     );
-    // First pool allocation and the completion callback's waiter allocation.
+    // First pool allocation and waiter allocation.
     for after in [0, 3] {
         let sessions = endpoint::Sessions::try_new(1).expect("one session slot");
         CONTEXT.with_borrow_mut(|owner| {
