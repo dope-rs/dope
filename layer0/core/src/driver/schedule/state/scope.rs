@@ -16,7 +16,7 @@ pub struct Scope<'scope, 'd> {
 
 #[must_use = "the active turn must remain live for the complete driver cycle"]
 pub struct Guard<'turn, 'd> {
-    state: &'turn mut state::Core<'d>,
+    state: &'turn state::Core<'d>,
 }
 
 #[must_use = "reactor authority must be consumed by Poll or Source"]
@@ -50,14 +50,14 @@ impl<'scope, 'd> Scope<'scope, 'd> {
     pub fn begin(&mut self) -> Guard<'_, 'd> {
         self.state.reset();
         Guard {
-            state: &mut *self.state,
+            state: &*self.state,
         }
     }
 }
 
 impl<'turn, 'd> Guard<'turn, 'd> {
-    pub fn turn(&self) -> schedule::Turn<'_, 'd> {
-        schedule::Turn::new(&*self.state)
+    pub fn turn(&self) -> schedule::Turn<'turn, 'd> {
+        schedule::Turn::new(self.state)
     }
 
     pub fn reactor(&mut self) -> Reactor<'_, 'd> {
@@ -65,7 +65,7 @@ impl<'turn, 'd> Guard<'turn, 'd> {
     }
 
     pub fn split(&mut self) -> (Reactor<'_, 'd>, schedule::Turn<'_, 'd>) {
-        let state = &*self.state;
+        let state = self.state;
         let cursor = state.reactor.cursor.get();
         state.reactor.cursor.set(cursor.next());
         (
@@ -79,7 +79,7 @@ impl<'turn, 'd> Guard<'turn, 'd> {
 
     /// Runs every timer that has expired at the current turn sample.
     pub fn expire(&mut self) {
-        let state = &*self.state;
+        let state = self.state;
         timers::expire(state.driver, &state.lanes.timers);
     }
 
@@ -88,7 +88,7 @@ impl<'turn, 'd> Guard<'turn, 'd> {
     }
 
     pub fn ready(&self) -> ready::Rounds<'_, 'd> {
-        let state = &*self.state;
+        let state = self.state;
         ready::Rounds::new(state.driver, lanes::Budget::reserve_all(&state.lanes.ready))
     }
 }

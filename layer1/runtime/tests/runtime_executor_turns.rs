@@ -68,6 +68,39 @@ fn bounds_ready_cascade() {
 }
 
 #[test]
+fn preserves_root_admission() {
+    let mut finish = Completion::new();
+    let activated = Cell::new(None);
+    let config = Configured::quic::<2, 8>()
+        .config()
+        .with_domains(settings::Domain::ONE);
+    stopped(config, |mut session| {
+        let driver = session.driver().driver_ref();
+        let target = driver
+            .targets::<KeyTag<254>>()
+            .bind(SlotIndex::ZERO, Epoch::INITIAL)
+            .dispatch();
+        let ready = driver.ready().make_slot(target).expect("ready slot");
+        ready.activate();
+        let result = session
+            .with_quiesce(
+                &mut finish,
+                dispatch::Builder::new(Saturate(&activated)).ready::<KeyTag<254>>(ready),
+                TIMEOUT,
+                |app| {
+                    matches!(
+                        app.drive_until(Admitted),
+                        Ok(std::ops::ControlFlow::Break(true))
+                    )
+                },
+            )
+            .expect("application teardown");
+        assert!(result);
+        assert!(activated.get().is_some());
+    });
+}
+
+#[test]
 fn preserves_ready_storm() {
     let mut finish = Completion::new();
     let polls = Rc::new(Cell::new(Some(0)));

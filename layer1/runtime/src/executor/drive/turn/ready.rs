@@ -203,9 +203,11 @@ where
         root: &ready::Slot<'d, routes::Wake>,
         shutdown: impl FnMut() -> turn::Status,
     ) -> Result<Self, drive::Error> {
+        let admission = core.turn.turn().app().lease();
         let mut ready = Ready::observe(core, shutdown)?;
         let mut observed = root.take();
         ready.activate(Some((root, &mut observed)));
+        drop(admission);
         Ok(Self {
             ready,
             root: observed,

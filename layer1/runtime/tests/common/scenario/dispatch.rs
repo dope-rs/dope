@@ -37,6 +37,7 @@ pub trait Hooks<'d, R>: Unpin {
         &mut self,
         _: &mut R,
         _: route::Erased<'d, kind::Any>,
+        _: schedule::Turn<'_, 'd>,
         _: &mut driver::Context<'_, 'd>,
     ) {
     }
@@ -233,9 +234,10 @@ where
         if !Self::WAKE_ROUTES.has_route(wake.target().route()) {
             return false;
         }
-        let (target, mut driver) = wake.into_driver();
+        let (target, turn, mut driver) = wake.into_parts();
         let this = app.as_mut().get_mut();
-        this.hooks.activate(&mut this.ready, target, &mut driver);
+        this.hooks
+            .activate(&mut this.ready, target, turn, &mut driver);
         true
     }
 
