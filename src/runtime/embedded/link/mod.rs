@@ -93,7 +93,9 @@ impl<const ROUTE: u8, const FROM: u8, const TO: u8> Plan<ROUTE, FROM, TO> {
     }
 
     pub fn try_arena(self) -> Result<provided::Arena<output::Flight, Self>, alloc::Error> {
-        provided::Arena::<output::Flight, Self>::try_with(self.limits.entries, || Ok(self))
+        Ok(provided::Arena::<output::Flight, Self>::try_allocate(
+            self.limits.entries,
+        )?(self))
     }
 
     pub const fn capacity(self) -> NonZero<u32> {

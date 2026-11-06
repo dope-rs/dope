@@ -1,7 +1,6 @@
 use o3::{base::num::bounded, buffer};
 
 use crate::stream::outbound;
-use o3::depot::capacity::Extent as _;
 
 use crate::conn::life::options;
 use crate::conn::stream::event::queue;

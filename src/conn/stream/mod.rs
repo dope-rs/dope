@@ -423,6 +423,6 @@ const _: () = assert!(mem::size_of::<Peer>() == 10 * mem::size_of::<u64>());
 const _: () = {
     use o3::buffer::resident::Shared;
 
-    assert!(mem::size_of::<Streams<Vec<u8>, Shared<'static>>>() == 113 * mem::size_of::<usize>());
-    assert!(mem::size_of::<State<Vec<u8>, Shared<'static>>>() == 107 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Streams<Vec<u8>, Shared<'static>>>() == 112 * mem::size_of::<usize>());
+    assert!(mem::size_of::<State<Vec<u8>, Shared<'static>>>() == 106 * mem::size_of::<usize>());
 };

@@ -189,7 +189,7 @@ pub(super) fn try_collect<E>(
         }
         // SAFETY: the same admission bounds this exclusive vector's length by
         // both the protocol limit and physical capacity before issuing its slot.
-        unsafe { parts.vacancy() }.insert(part);
+        (unsafe { parts.vacancy() })(part);
     }
     Ok(())
 }

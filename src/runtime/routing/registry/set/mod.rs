@@ -24,8 +24,6 @@ use conn::{id, wire::path::reset::Token};
 use router::reset;
 use router::routing::issuer;
 
-use crate::runtime::routing::registry::Seed;
-
 pub(super) mod entry;
 pub(super) mod routes;
 pub(super) mod scope;
@@ -104,13 +102,19 @@ pub(in crate::runtime) struct Set<C, const DOMAIN: u8, B: stream::Recv, D: buffe
 }
 
 impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DOMAIN, B, D, T> {
+    fn seed(_: links::Index) -> slot::Storage<registry::Slot<C, DOMAIN, B, D, T>, registry::Epoch> {
+        slot::Storage::new(registry::Epoch::default())
+    }
+
     pub(in crate::runtime) fn try_new(
         max: capacity::Limit<{ mux::MAX_CONNECTIONS }>,
         issuer: &impl issuer::Source,
     ) -> Result<Self, router::Error> {
-        let entries =
-            planes::Set::<_, _, indexed::Min<_, _>>::try_seed_in::<{ mux::FREE_QUEUE }>(max, Seed)
-                .map_err(router::Error::from)?;
+        let entries = planes::Set::<_, _, indexed::Min<_, _>>::try_seed_in::<{ mux::FREE_QUEUE }>(
+            max,
+            Self::seed,
+        )
+        .map_err(router::Error::from)?;
         let cids = registry::Table::try_new(max, issuer.hash_seed::<{ issuer::CID_HASH_LANE }>())
             .map_err(|error| router::Error::Cids {
             capacity: max,
@@ -168,7 +172,7 @@ impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> Set<C, DO
             .map_err(ResizeError::Storage)?;
         let reset = self
             .entries
-            .try_replace::<{ mux::FREE_QUEUE }>(reset, Seed)
+            .try_replace::<{ mux::FREE_QUEUE }>(reset, Self::seed)
             .map_err(router::Error::from)
             .map_err(ResizeError::Storage)?;
         cids();

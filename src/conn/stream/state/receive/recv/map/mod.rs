@@ -83,7 +83,7 @@ impl<B: Recv> Map<B> {
     ) -> Result<Self, alloc::Error> {
         Ok(Self {
             core: store::Pool::try_new(capacity.0)?,
-            ranges: depot::raw::Arena::try_new(ranges)?,
+            ranges: depot::raw::Arena::try_new(ranges.get())?,
             meta,
         })
     }

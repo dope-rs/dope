@@ -313,7 +313,7 @@ impl Frame {
         while !input.is_empty() {
             let (f, _) = Self::read(&mut input)?;
             if !matches!(f.view(), View::Padding) {
-                alloc::Vacant::try_new(&mut out)?.insert(f);
+                alloc::try_vacant(&mut out)?(f);
             }
         }
         Ok(out)

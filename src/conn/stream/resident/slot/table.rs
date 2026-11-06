@@ -91,7 +91,7 @@ impl<Side, Value: Reusable, Auxiliary: Default> Table<Side, Value, Auxiliary> {
             // nodes.len() = live + free + E and self.capacity = C - E.
             // This arm has no free slots and passed live < self.capacity, so
             // nodes.len() < C <= nodes.capacity(). The exclusive table never shrinks.
-            unsafe { alloc::raw::VecExt::vacancy(&mut self.nodes) }.insert(Node {
+            (unsafe { alloc::raw::VecExt::vacancy(&mut self.nodes) })(Node {
                 id,
                 generation: Generation::<MAX_GENERATION>::INITIAL,
                 value: Value::new(init),

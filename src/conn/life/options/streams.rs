@@ -1,7 +1,5 @@
 use std::num;
 
-use o3::depot::capacity;
-
 use crate::conn;
 use crate::conn::life::options::builder;
 use crate::wire::ranges;
@@ -149,10 +147,8 @@ impl Parts {
             _ => None,
         }
     }
-}
 
-impl capacity::Extent for Parts {
-    fn get(self) -> usize {
+    pub(in crate::conn) const fn get(self) -> usize {
         self.0.get()
     }
 }

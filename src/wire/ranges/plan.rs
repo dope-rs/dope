@@ -146,11 +146,11 @@ impl<'body, B: stream::Recv> Prepared<'body, B> {
                 // SAFETY: both callers reserve count = prefix.len() + 1 slots
                 // in this exact vector. Each source inserts once; construction
                 // cannot access the retained vector or change its capacity.
-                unsafe { pieces.vacancy() }.insert(piece);
+                (unsafe { pieces.vacancy() })(piece);
             }
             let piece = last.project(data, layout)?;
             // SAFETY: the same reservation retains the final source's slot.
-            unsafe { pieces.vacancy() }.insert(piece);
+            (unsafe { pieces.vacancy() })(piece);
             Ok(())
         };
         match self {
@@ -172,7 +172,7 @@ impl<'body, B: stream::Recv> Prepared<'body, B> {
                     })?;
                 if let Self::One(piece) = mem::replace(self, Self::Empty) {
                     // SAFETY: required includes this old owner and all new spans.
-                    unsafe { pieces.vacancy() }.insert(piece);
+                    (unsafe { pieces.vacancy() })(piece);
                 }
                 let result = append(&mut pieces);
                 *self = Self::Many(pieces);

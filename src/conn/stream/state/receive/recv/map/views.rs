@@ -276,7 +276,7 @@ impl<'a, B: stream::Recv> Read<'a, B> {
                 });
             }
             // SAFETY: the current exclusive owner admitted this exact next slot.
-            unsafe { segs.vacancy() }.insert(node.start()..node.end());
+            (unsafe { segs.vacancy() })(node.start()..node.end());
         }
         parts.clear();
         Ok(plan::Plan::new(self.buffer.next, segs, parts))

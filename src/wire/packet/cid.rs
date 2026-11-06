@@ -141,7 +141,7 @@ impl<'wire> Ref<'wire> {
     }
 
     pub const fn into_slice(self) -> &'wire [u8] {
-        self.0.into_slice()
+        self.0.as_slice()
     }
 
     pub const fn len(self) -> usize {

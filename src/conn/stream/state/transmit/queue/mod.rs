@@ -23,7 +23,6 @@ pub(in crate::conn) use credit::Credit;
 pub(in crate::conn) use entry::Entry;
 pub(in crate::conn) use error::Error;
 use o3::depot;
-use o3::depot::capacity::Extent as _;
 use o3::{
     buffer::{self, storage},
     depot::queue::pool,
