@@ -36,7 +36,7 @@ impl<'a, B: stream::Recv, D: buffer::raw::Segment> Drain<'a, B, D> {
             }
             ctrl.try_data(
                 &mut state.receive.max_data,
-                state.receive.connection_window.limit(),
+                state.receive.connection_window.desired(),
             )?;
             state.receive.map.clear_data();
             left -= 1;

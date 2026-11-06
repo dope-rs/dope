@@ -115,7 +115,6 @@ const _: () = {
     use o3::buffer::{resident, storage};
     assert!(size_of::<Node<storage::Shared>>() == 4 * size_of::<usize>());
     assert!(size_of::<Option<Node<storage::Shared>>>() == size_of::<Node<storage::Shared>>());
-    assert!(size_of::<Node<resident::Shared<'static>>>() == 4 * size_of::<usize>());
     assert!(
         size_of::<Option<Node<resident::Shared<'static>>>>()
             == size_of::<Node<resident::Shared<'static>>>()

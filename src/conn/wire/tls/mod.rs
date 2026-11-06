@@ -168,8 +168,10 @@ impl<const DOMAIN: u8, A> Handshake<DOMAIN, A> {
     }
 
     fn advance(&mut self) -> Result<Change, conn::Error> {
-        if matches!(self.progress.state, State::Failed) {
-            return Err(conn::Error::ProtocolViolation);
+        match self.progress.state {
+            State::Handshaking => {}
+            State::Complete => return Ok(Change::default()),
+            State::Failed => return Err(conn::Error::ProtocolViolation),
         }
         let result = self.drain();
         if result.is_err() {

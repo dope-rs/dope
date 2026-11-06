@@ -4,7 +4,7 @@ use std::net;
 use std::pin;
 use std::time;
 
-use o3::{buffer::resident, mem::rc};
+use o3::buffer::resident;
 
 use crate::conn::id;
 use crate::conn::life;
@@ -38,8 +38,6 @@ where
 #[doc(hidden)]
 pub trait Mode: Sized {
     type Binding;
-
-    fn try_clone(&self) -> Result<Self, rc::Error>;
 
     fn connect<'pool, 'd, const ID: u8, H, B, R>(
         &self,
@@ -84,10 +82,6 @@ impl Owned {
 
 impl Mode for Owned {
     type Binding = owner::Owned;
-
-    fn try_clone(&self) -> Result<Self, rc::Error> {
-        Ok(Self(self.0.try_clone()?))
-    }
 
     fn connect<'pool, 'd, const ID: u8, H, B, R>(
         &self,
@@ -147,10 +141,6 @@ impl<'tls> Pooled<'tls> {
 
 impl<'tls> Mode for Pooled<'tls> {
     type Binding = owner::Pooled<'tls>;
-
-    fn try_clone(&self) -> Result<Self, rc::Error> {
-        Ok(*self)
-    }
 
     fn connect<'pool, 'd, const ID: u8, H, B, R>(
         &self,

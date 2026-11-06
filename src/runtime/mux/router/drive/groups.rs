@@ -1,4 +1,3 @@
-use crate::proto::path::Peer;
 use std::{num::NonZero, time};
 
 use o3::depot::array::copy;
@@ -8,13 +7,13 @@ use crate::{
     runtime::{brand, mux, routing::registry},
     stream,
 };
+use conn::wire::packet::Fresh as _;
 use drive::{MIN_GSO_PACKETS, Step};
 use mux::{auth, output, router};
 use router::drive;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Class {
-    destination: Peer,
     max_packet_bytes: NonZero<usize>,
     encoded_packet_bytes: usize,
 }
@@ -45,18 +44,19 @@ pub(super) fn flush_group<
         let limit = drive::slot_max_packet_bytes(slot.is_first(), slot.max_packet_bytes);
         let bytes = slot.conn.view().permit().gso_len(now, limit.get())?;
         Some(Class {
-            destination: slot.peer_addr,
             max_packet_bytes: limit,
             encoded_packet_bytes: bytes,
         })
     };
-    let Some(class) = classify(slots.get(anchor)) else {
+    let slot = slots.get(anchor);
+    let Some(class) = classify(slot) else {
         return Ok(Step::Idle);
     };
+    let destination = slot.peer_addr;
     let room = outgoing.gso_room(
         class
             .max_packet_bytes
-            .saturating_add(class.destination.overhead()),
+            .saturating_add(destination.overhead()),
     );
     if room < MIN_GSO_PACKETS {
         return Ok(Step::Idle);
@@ -67,7 +67,10 @@ pub(super) fn flush_group<
         .iter::<{ mux::FLUSH_QUEUE }>()
         .take(conn::MAX_BATCH_PACKETS * 2 - 1)
     {
-        if classify(slot) != Some(class) {
+        let Some(candidate) = classify(slot) else {
+            continue;
+        };
+        if slot.peer_addr != destination || candidate != class {
             continue;
         }
         let Some(pick) = picks.vacancy() else {
@@ -94,7 +97,8 @@ pub(super) fn flush_group<
         outgoing,
         now,
         |fatal, slots, output| {
-            output.build_gso(len, bytes, class.destination, |batch| {
+            output.emit_gso(len, bytes, destination, |batch| {
+                batch.prepare();
                 for &key in picks {
                     let mut entry = slots.entry(key);
                     let mut slot = entry.access::<false>(fatal.reborrow());
@@ -109,10 +113,10 @@ pub(super) fn flush_group<
                         *slot.first_flush = false;
                     }
                     if let Err(error) = result {
-                        return Err((key, error));
+                        return (None, Err((key, error)));
                     }
                 }
-                Ok(())
+                (None, Ok(()))
             })
         },
     );

@@ -13,7 +13,7 @@ use crate::client;
 use crate::client::life;
 use crate::client::protocol;
 use crate::conn::{id, scope, stream::Event};
-use crate::runtime::{mux, routing};
+use crate::runtime::mux;
 use data::{datagram, stream};
 use handler::hook;
 use hook::life::{close, closing, create, ready};
@@ -24,20 +24,15 @@ use wire::{cert, endpoint, ingress, packet, socket};
 use writable::Interest as _;
 
 #[pin_project::pin_project]
-pub struct Bridge<'d, const DOMAIN: u8, P: protocol::Protocol<'d>, A, B, R: routing::PeerRoute> {
+pub struct Bridge<'d, const DOMAIN: u8, P: protocol::Protocol<'d>, B> {
     #[pin]
     protocol: P,
-    lifecycle: clock::Bound<'d, life::Lifecycle<'d, DOMAIN, A, B, R>>,
+    lifecycle: clock::Bound<'d, life::Lifecycle<'d, DOMAIN, B>>,
     writable: <P::Writable as writable::Interest>::State,
 }
 
-impl<'d, const DOMAIN: u8, P: protocol::Protocol<'d>, A, B: client::Backoff, R: routing::PeerRoute>
-    Bridge<'d, DOMAIN, P, A, B, R>
-{
-    pub(super) fn new(
-        protocol: P,
-        life: clock::Bound<'d, life::Lifecycle<'d, DOMAIN, A, B, R>>,
-    ) -> Self {
+impl<'d, const DOMAIN: u8, P: protocol::Protocol<'d>, B: client::Backoff> Bridge<'d, DOMAIN, P, B> {
+    pub(super) fn new(protocol: P, life: clock::Bound<'d, life::Lifecycle<'d, DOMAIN, B>>) -> Self {
         Self {
             protocol,
             lifecycle: life,
@@ -61,11 +56,11 @@ impl<'d, const DOMAIN: u8, P: protocol::Protocol<'d>, A, B: client::Backoff, R: 
         self.project().protocol
     }
 
-    pub(super) fn lifecycle(&self) -> view::View<'_, 'd, DOMAIN, A, B, R> {
+    pub(super) fn lifecycle(&self) -> view::View<'_, 'd, DOMAIN, B> {
         self.lifecycle.view()
     }
 
-    pub(super) fn life_mut(self: pin::Pin<&mut Self>) -> &mut life::Lifecycle<'d, DOMAIN, A, B, R> {
+    pub(super) fn life_mut(self: pin::Pin<&mut Self>) -> &mut life::Lifecycle<'d, DOMAIN, B> {
         self.project().lifecycle
     }
 
@@ -136,52 +131,44 @@ impl<'d, const DOMAIN: u8, P: protocol::Protocol<'d>, A, B: client::Backoff, R: 
     /// pinned protocol callbacks. Both normal driver progress and shutdown use
     /// this one ordering auth.
     pub(super) fn drain_events(
-        self: pin::Pin<&mut Self>,
-        budget: usize,
-        resume: impl FnMut(id::Handle<id::Driver<'d>, DOMAIN>),
-    ) -> usize {
-        brand::Token::with(|scope| self.drain_in(scope, budget, resume))
-    }
-
-    fn drain_in(
         mut self: pin::Pin<&mut Self>,
-        scope: brand::Token<'_>,
         budget: usize,
         mut resume: impl FnMut(id::Handle<id::Driver<'d>, DOMAIN>),
     ) -> usize {
-        let mut left = budget;
-        while left != 0 {
-            let slot = {
+        brand::Token::with(move |scope| {
+            let mut left = budget;
+            while left != 0 {
+                let slot = {
+                    let this = self.as_mut().project();
+                    this.lifecycle.settle_close(scope.reborrow())
+                };
+                let Some(slot) = slot else { break };
+                left -= 1;
                 let this = self.as_mut().project();
-                this.lifecycle.settle_close(scope.reborrow())
-            };
-            let Some(slot) = slot else { break };
-            left -= 1;
-            let this = self.as_mut().project();
-            protocol::Protocol::close(this.protocol, slot);
-        }
-        while left != 0 {
-            let slot = {
+                protocol::Protocol::close(this.protocol, slot);
+            }
+            while left != 0 {
+                let slot = {
+                    let this = self.as_mut().project();
+                    this.lifecycle.settle_ready(scope.reborrow())
+                };
+                let Some((slot, handle)) = slot else { break };
+                left -= 1;
                 let this = self.as_mut().project();
-                this.lifecycle.settle_ready(scope.reborrow())
-            };
-            let Some((slot, handle)) = slot else { break };
-            left -= 1;
-            let this = self.as_mut().project();
-            protocol::Protocol::connect(this.protocol, slot);
-            resume(handle);
-        }
-        budget - left
+                protocol::Protocol::connect(this.protocol, slot);
+                resume(handle);
+            }
+            budget - left
+        })
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     handler::Handler<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     type Connection = ();
     type Create = create::Unit;
@@ -207,13 +194,12 @@ where
     >;
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     set::Datagram<Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     const PULL: bool = matches!(P::DATAGRAMS, protocol::Datagrams::Pull);
 
@@ -241,13 +227,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     socket::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn socket(event: socket::Event<'_, Self, DOMAIN, id::Driver<'d>>) {
         use handler::net;
@@ -280,11 +265,9 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R> cert::Sink<DOMAIN, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B> cert::Sink<DOMAIN, id::Driver<'d>> for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
-    R: routing::PeerRoute,
 {
     fn certificate(event: cert::Event<'_, '_, Self, DOMAIN, id::Driver<'d>>) {
         let (this, handle, from, failure) = event.into_parts();
@@ -292,13 +275,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     packet::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn packet(event: packet::Event<'_, Self>) {
         let (this, from, error, len) = event.into_parts();
@@ -306,13 +288,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     ready::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn established(
         mut event: ready::Event<'_, Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>,
@@ -323,13 +304,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     datagram::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn datagram(
         event: datagram::Event<'_, Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>,
@@ -343,13 +323,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     set::Stream<Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     const PULL: bool = matches!(P::STREAMS, protocol::Streams::Pull);
 
@@ -394,13 +373,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     stream::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn early(
         _: stream::Event<'_, Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>,
@@ -448,13 +426,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     writable::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn writable(self: pin::Pin<&mut Self>) {
         P::Writable::exchange(self.project().writable, writable::Receipt::Ready);
@@ -469,13 +446,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     close::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn close(
         event: close::Event<'_, Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>,
@@ -487,13 +463,12 @@ where
     }
 }
 
-impl<'d, const DOMAIN: u8, P, A, B, R>
+impl<'d, const DOMAIN: u8, P, B>
     closing::Sink<DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>
-    for Bridge<'d, DOMAIN, P, A, B, R>
+    for Bridge<'d, DOMAIN, P, B>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    R: routing::PeerRoute,
 {
     fn closing(
         event: closing::Event<'_, Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>,

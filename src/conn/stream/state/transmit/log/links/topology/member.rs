@@ -4,7 +4,7 @@ use o3::depot::index::Initialized;
 use o3::depot::queue::{indexed::keyed, links};
 
 use crate::conn::machine::storage;
-use crate::conn::stream::state::transmit::log::links::storage::{Borrowed, Projected};
+use crate::conn::stream::state::transmit::log::links::storage::{link, parts};
 use crate::conn::stream::state::transmit::log::planes;
 
 pub(in crate::conn::stream::state::transmit::log) struct Member<'b, 'a, P: planes::Plane, Q = ()> {
@@ -21,18 +21,18 @@ unsafe impl<P: planes::Plane, Q> depot::raw::KeyOwner<P> for Member<'_, '_, P, Q
     type Fifo = keyed::Fifo<Self::Key, P>;
 
     fn parts(&self) -> (Self::Key, &keyed::Link<Self::Key, P>) {
-        depot::raw::KeyBorrow::parts(Borrowed(self.entry))
+        parts(self.entry)
     }
 
     fn fifo(&self) -> &keyed::Fifo<Self::Key, P> {
         self.queue
     }
 
-    fn entry<'b>(
-        live: depot::raw::Proof<(&'b Self, links::Index), Initialized<P>>,
-    ) -> keyed::Entry<'b, Self::Key, P> {
+    fn link(
+        live: depot::raw::Proof<(&Self, links::Index), Initialized<P>>,
+    ) -> &keyed::Link<Self::Key, P> {
         let live = unsafe { live.map(|(owner, index)| (owner.entry.as_table().entries(), index)) };
-        keyed::Entry::from_source(Projected(live))
+        link(live)
     }
 }
 

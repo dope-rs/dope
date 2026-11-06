@@ -230,6 +230,38 @@ fn owned_releases_credit() {
 }
 
 #[test]
+fn released_credit_requires_publication() {
+    use common::suite::peers::packet;
+    use dope_quic::{conn, proto::param, wire::stream::Id};
+
+    let now = Instant::now();
+    let rejected = [(1, 2), (2, 1)].map(|(connection, stream)| {
+        let params = param::Set::builder()
+            .initial_data(connection)
+            .stream_uni(stream)
+            .uni_count(1)
+            .try_build()
+            .expect("bounded receive credit");
+        let mut pair =
+            packet::Pair::try_params(1, params, now, |_| {}).expect("authenticated packet peer");
+        pair.receive(b"\x0a\x02\x01a", now)
+            .expect("admitted first byte");
+        let _ = pair
+            .server
+            .recv()
+            .recv_owned(Id::new(2).expect("stream ID"))
+            .expect("release received credit");
+        matches!(
+            pair.receive(b"\x0e\x02\x01\x01b", now),
+            Err(packet::Error::Setup(peer::Setup::Server(
+                peer::Transfer::Input(conn::Error::FlowControl)
+            )))
+        )
+    });
+    assert_eq!(rejected, [true; 2]);
+}
+
+#[test]
 fn stop_freezes_stream_credit() {
     use common::suite::peers::packet;
     use dope_quic::{conn, errors::Code, proto::param, wire::stream::Id};
@@ -275,6 +307,15 @@ fn stop_freezes_stream_credit() {
             .as_deref(),
         Some(&b"defgh"[..])
     );
+    let now = pair
+        .server
+        .view()
+        .recovery()
+        .send_at(now + Duration::from_millis(30));
+    pair.server
+        .with_scope(|mut scope| scope.output().send(now))
+        .1
+        .expect("publish returned connection credit before ACK");
     pair.receive(b"\x0b\x06\x08progress", now)
         .expect("discarded bytes return connection credit for another stream");
     assert_eq!(

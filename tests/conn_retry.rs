@@ -2,7 +2,7 @@ use common::suite::mux::dispatch;
 pub mod common;
 
 use aws_lc_rs::hmac;
-use common::peer::Initial;
+use common::peer::{Initial, sealer::Raw};
 use common::suite::{mux::retry, retry::Capture};
 use dope_quic::conn::{self, Epoch, Error, life::options};
 use dope_quic::proto::param;
@@ -254,7 +254,8 @@ fn client_accepts_retry() {
     assert_eq!(client.view().recovery().unacked(Epoch::Initial), 0);
     assert_eq!(client.view().recovery().next_timer(), None);
 
-    let (second, send_result) = client.with_scope(|mut scope| scope.output().send(Instant::now()));
+    let (mut second, send_result) =
+        client.with_scope(|mut scope| scope.output().send(Instant::now()));
     send_result.expect("warmed client journals must admit its retried Initial");
     assert!(!second.is_empty(), "client must resend Initial after Retry");
     let prefix = initial::Prefix::decode(&second[0]).expect("decode reissued initial");
@@ -264,6 +265,11 @@ fn client_accepts_retry() {
     );
     assert_eq!(prefix.token, token, "client must attach the retry token");
     assert!(prefix.scid == retry::CLIENT_CID, "client SCID is preserved");
+    let offset = second[0].len() - prefix.length;
+    Raw::initial(&new_scid, rustls::Side::Client, first.len() as u64)
+        .expect("retried client Initial keys")
+        .open(&mut second[0], offset)
+        .expect("Retry must preserve the next Initial packet number");
 }
 
 #[test]

@@ -26,6 +26,7 @@ pub(super) fn try_run<const DOMAIN: u8, B, D, E>(
     egress: &mut output::Egress,
     delivery: &mut delivery::Delivery<'_, DOMAIN, B, D, E>,
     now: time::Instant,
+    changed: bool,
 ) -> Result<Outcome, conn::Timing>
 where
     B: stream::Recv,
@@ -118,8 +119,10 @@ where
     if lost.persistent {
         cc.collapse();
     }
-    let smoothed = recovery.rtt.smoothed_rtt.unwrap_or(rtt::INITIAL_RTT);
-    cc.finish(now, smoothed);
+    if changed || lost.any {
+        let smoothed = recovery.rtt.smoothed_rtt.unwrap_or(rtt::INITIAL_RTT);
+        cc.finish(now, smoothed);
+    }
     Ok(if lost.any {
         Outcome::Lost
     } else {

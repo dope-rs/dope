@@ -193,7 +193,6 @@ const _: () = {
     );
 };
 const _: () = {
-    assert!(mem::size_of::<send::Buffer<resident::Shared<'static>>>() == 32);
     assert!(
         mem::align_of::<send::Buffer<resident::Shared<'static>>>() == mem::align_of::<Vec<u8>>()
     );

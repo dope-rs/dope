@@ -5,6 +5,7 @@ use path::local;
 
 use crate::{
     conn,
+    conn::stream::state::receive::recv::map,
     conn::wire::path,
     errors,
     stream::outbound,
@@ -19,7 +20,7 @@ pub(in crate::conn) enum Control {
     StopSending(stream::Id, errors::Code),
     ResetStream(stream::Id, errors::Code, varint::VarInt),
     MaxData(varint::VarInt),
-    MaxStreamData(stream::Id, varint::VarInt),
+    MaxStreamData(stream::Id, map::Handle, varint::VarInt),
     MaxStreams(
         stream::Direction,
         bounded::U64<0, { conn::MAX_STREAM_COUNT }>,

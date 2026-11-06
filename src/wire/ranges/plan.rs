@@ -400,7 +400,8 @@ impl Plan<'_> {
             return Ok(());
         }
 
-        if extent.start() <= self.next && !self.has_overlap(extent.end()) {
+        let prefix = extent.start() <= self.next;
+        if prefix && !self.has_overlap(extent.end()) {
             copy(extent.part(self.next..extent.end(), 0), Placement::Ready);
             self.next = extent.end();
             Self::drain(&mut self.next, self.segments);
@@ -423,23 +424,23 @@ impl Plan<'_> {
             return Ok(());
         }
 
-        for part in self.parts.drain(..) {
-            let start = part.start();
-            let end = part.end();
-            if start == self.next {
+        if prefix {
+            for part in self.parts.drain(..) {
                 copy(part, Placement::Ready);
-                self.next = end;
-                Self::drain(&mut self.next, self.segments);
-                continue;
             }
-            copy(part, Placement::Gap);
-            let part = start..end;
-            alloc::Gap::partition(self.segments, |seg| seg.start < part.start)
-                .try_insert(part)
-                .map_err(|_| stream::Capacity::Limit {
-                    required: self.segments.len() + 1,
-                    available: self.segments.capacity(),
-                })?;
+            self.next = extent.end();
+            Self::drain(&mut self.next, self.segments);
+        } else {
+            for part in self.parts.drain(..) {
+                copy(part, Placement::Gap);
+                let part = part.start()..part.end();
+                alloc::Gap::partition(self.segments, |seg| seg.start < part.start)
+                    .try_insert(part)
+                    .map_err(|_| stream::Capacity::Limit {
+                        required: self.segments.len() + 1,
+                        available: self.segments.capacity(),
+                    })?;
+            }
         }
         Ok(())
     }

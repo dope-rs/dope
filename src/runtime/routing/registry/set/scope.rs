@@ -1,5 +1,5 @@
 use crate::runtime::routing::registry;
-use std::time;
+use std::{pin, time};
 
 use crate::conn::wire::path::local::Assigned;
 use crate::runtime::routing::registry::set::{Live, routes};
@@ -10,47 +10,21 @@ use o3::depot::{
 };
 use o3::{buffer, depot};
 
-use crate::runtime::mux::router;
+use crate::runtime::mux::{handler, router};
 use crate::runtime::routing::registry::set::{
-    Entries, Entry, Group, Record, Set, Tokens,
+    Entries, Entry, Group, Set, Tokens,
     routes::{issues::Drain, node},
 };
 use crate::runtime::{brand, mux};
 use crate::{conn, stream};
-use conn::id;
+use conn::{id, scope};
+use handler::hook::{
+    data::release::Mode as _,
+    life::{close::Mode as _, closing::Mode as _},
+    set::Dispatch,
+};
 use registry::Key;
 use router::reset;
-
-pub(in crate::runtime) struct Taken<
-    'storage,
-    C,
-    I,
-    const DOMAIN: u8,
-    B: stream::Recv,
-    D: buffer::raw::Segment,
-    T,
-> {
-    handle: id::Handle<I, DOMAIN>,
-    slot: registry::Slot<C, DOMAIN, B, D, T>,
-    entry: Record<'storage, C, DOMAIN, B, D, T>,
-}
-
-impl<C, I, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T>
-    Taken<'_, C, I, DOMAIN, B, D, T>
-{
-    pub(in crate::runtime) fn close(
-        self,
-        close: impl FnOnce(id::Handle<I, DOMAIN>, conn::Connection<DOMAIN, B, D>, Option<C>),
-    ) {
-        let Self {
-            handle,
-            slot,
-            entry,
-        } = self;
-        close(handle, slot.conn, slot.connection);
-        Set::recycle(entry);
-    }
-}
 
 /// One installed generation remains stable until its whole scope is consumed.
 pub(in crate::runtime) struct Scope<
@@ -236,11 +210,16 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         })
     }
 
-    pub(in crate::runtime) fn into_taken<I: Copy>(
+    pub(in crate::runtime) fn close<I: id::Temporal, H>(
         mut self,
         key: Key<'id>,
         domain: id::Domain<I, DOMAIN>,
-    ) -> Taken<'storage, C, I, DOMAIN, B, D, T> {
+        mut sink: pin::Pin<&mut H>,
+        scope: brand::Token<'_>,
+        now: time::Instant,
+    ) where
+        H: handler::Handler<DOMAIN, B, D, I, Connection = C>,
+    {
         self.reset_flush();
         let handle = self.handle(domain, key);
         node::detach(&mut self, key);
@@ -258,17 +237,40 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         entry.unlink::<{ mux::APPLICATION_QUEUE }>();
         entry.unlink::<{ mux::STREAM_QUEUE }>();
         entry.unlink::<{ mux::DATAGRAM_QUEUE }>();
-        let (slot, entry) = entry.take();
-        if slot.flags.notification == registry::Notification::Retained {
-            // The consumed slot owns the matching contribution from refresh.
+        if entry.get().flags.notification == registry::Notification::Retained {
+            // The terminal entry owns the matching contribution from refresh.
             counts.retained -= 1;
         }
         counts.active -= 1;
-        Taken {
-            handle,
-            slot,
-            entry,
+        let (app, entry, _tls) = {
+            let (mut slot, entry) = entry.take();
+            let mut app = slot.connection;
+            if let Some(app) = app.as_mut() {
+                <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Closing::notify(
+                    sink.as_mut(),
+                    handler::Slot::new(
+                        app,
+                        scope::Access::new(slot.conn.machine_mut(), scope.reborrow()),
+                    ),
+                    handle,
+                );
+                <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Release::cancel(
+                    sink.as_mut(),
+                    scope::Access::new(slot.conn.machine_mut(), scope.reborrow()),
+                    handle,
+                );
+            }
+            (app, entry, slot.tls)
+        };
+        if let Some(app) = app {
+            <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Close::close(
+                sink.as_mut(),
+                handler::Close::new(scope.reborrow(), now),
+                app,
+                handle,
+            );
         }
+        Set::recycle(entry);
     }
 }
 

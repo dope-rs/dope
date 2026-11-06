@@ -27,8 +27,14 @@ impl<B: Recv> Active<'_, B> {
         ctrl: &mut records::Records<&mut control::Pending>,
     ) -> Result<(), control::Admission> {
         let id = self.id();
+        let handle = map::Handle::from_storage(self.inner.handle());
         let stream = &mut self.inner.get_mut().state;
-        ctrl.try_stream(&mut stream.max_stream_data, id, stream.credit.limit(base))?;
+        ctrl.try_stream(
+            &mut stream.max_stream_data,
+            id,
+            handle,
+            stream.credit.desired(base),
+        )?;
         stream.clear_credit();
         Ok(())
     }

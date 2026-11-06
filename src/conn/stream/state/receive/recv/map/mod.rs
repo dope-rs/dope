@@ -126,6 +126,16 @@ impl<B: Recv> Map<B> {
         }
     }
 
+    pub(in crate::conn) fn publish(
+        live: depot::raw::Proof<(&mut Self, Handle), depot::index::Initialized<()>>,
+        limit: crate::wire::varint::VarInt,
+    ) {
+        // SAFETY: the proof retains this same receive pool and live generation.
+        let live = unsafe { live.map(|(map, handle)| (&mut map.core, *handle.0.value())) };
+        let mut slot = live.into();
+        slot.get_mut().state.credit.publish(limit);
+    }
+
     pub(in crate::conn) fn find(&self, id: Id, registry: &Table) -> Option<Resolved<'_, B>> {
         let (_, slot) = registry.read().find::<false>(id.0.id())?;
         self.current(slot)
@@ -258,10 +268,6 @@ impl<B: Recv> Node<B> {
     /// The owning projection retains Part's bounded width; ready nodes start at zero.
     pub(in crate::conn::stream::state::receive::recv::map) fn end(&self) -> u64 {
         self.start + self.bytes.as_ref().len() as u64
-    }
-
-    pub(in crate::conn::stream::state::receive::recv::map) fn bytes(&self) -> &B {
-        &self.bytes
     }
 
     pub(in crate::conn::stream::state::receive::recv::map) fn into_bytes(self) -> B {

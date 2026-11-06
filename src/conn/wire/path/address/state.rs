@@ -1,8 +1,7 @@
 use std::{mem, num, time};
 
-use crate::conn::wire::storage;
+use o3::depot::{array::copy, capacity};
 
-use crate::conn;
 use crate::conn::wire::path;
 use crate::conn::wire::path::address;
 use crate::proto::path::Peer;
@@ -180,6 +179,7 @@ pub(in crate::conn::wire::path) enum Validation {
     Previous,
 }
 
+#[derive(Clone, Copy)]
 pub(in crate::conn::wire::path) struct Observed {
     pub(in crate::conn::wire::path) key: path::Key,
     pub(in crate::conn::wire::path) address: Peer,
@@ -196,7 +196,7 @@ pub(in crate::conn::wire::path) struct State {
     pub(in crate::conn::wire::path) candidate: Option<Candidate>,
     pub(in crate::conn::wire::path) previous: Option<Candidate>,
     pub(in crate::conn::wire::path) highest_non_probing: Option<header::Number>,
-    pub(in crate::conn::wire::path) observed: storage::Vec<Observed, { conn::MAX_PATH_TOKENS }>,
+    pub(in crate::conn::wire::path) observed: copy::Vec<Observed, 2>,
     next_path_key: num::NonZero<u64>,
     policy: policy::Policy,
 }
@@ -209,7 +209,7 @@ impl State {
             candidate: None,
             previous: None,
             highest_non_probing: None,
-            observed: storage::Vec::new(),
+            observed: copy::Vec::new(),
             next_path_key: num::NonZero::<u64>::MIN,
             policy: policy::Policy::new(local, fixed),
         }
@@ -273,10 +273,10 @@ impl State {
             path.outer_received = outer_received;
             return Ok(path.key);
         }
-        let growth = self
-            .observed
-            .try_insert()
-            .map_err(|reason| Address::Capacity { address, reason })?;
+        let vacant = self.observed.vacancy().ok_or(Address::Capacity {
+            address,
+            reason: capacity::Reason::Full,
+        })?;
         let next = self.next_path_key;
         let Some(after) = next.checked_add(1) else {
             return Err(Address::Keys {
@@ -286,7 +286,7 @@ impl State {
         };
         let key = path::Key(next);
         self.next_path_key = after;
-        growth.push(Observed {
+        vacant.insert(Observed {
             key,
             address,
             received: bytes as u64,
@@ -299,7 +299,7 @@ impl State {
     }
 
     pub(in crate::conn::wire::path) fn remove(&mut self, key: path::Key) {
-        self.observed.remove(|path| path.key == key);
+        self.observed.retain(|path| path.key != key);
     }
 }
 
@@ -309,7 +309,7 @@ const _: () = {
     assert!(mem::size_of::<Candidate>() == 32);
     assert!(!mem::needs_drop::<Candidate>());
     assert!(
-        mem::size_of::<storage::Vec<Observed, { conn::MAX_PATH_TOKENS }>>()
+        mem::size_of::<copy::Vec<Observed, 2>>()
             == 2 * mem::size_of::<Observed>() + mem::size_of::<u64>()
     );
 };

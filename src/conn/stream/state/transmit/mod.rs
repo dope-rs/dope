@@ -317,15 +317,13 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         self.validate(id, Access::Receive, ready)?;
         if !self.streams.state.is_recv_done(id) {
             let state = &mut self.streams.state;
-            let relative = streams::Relative::new(id, state.local());
-            let base = state.receive.initial_stream_data.credit(relative);
             let (registry, receive) = (&mut state.resident, &mut state.receive);
             let mut slots = receive.map.parts();
             let Some(mut occupied) = slots.entry(map::Id::new(id), registry).insert(registry)
             else {
                 return Err(Error::Capacity);
             };
-            occupied.stop(control, error, base);
+            occupied.stop(control, error);
         }
         Ok(())
     }

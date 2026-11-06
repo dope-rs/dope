@@ -5,7 +5,7 @@ use std::{marker, pin};
 use app::step;
 use dope::{
     core::driver::{
-        retained, route,
+        self, route,
         schedule::{self, app, clock},
     },
     manifold::network::datagram::{self, hook},
@@ -109,7 +109,7 @@ where
         mut socket: pin::Pin<&mut datagram::Socket<'d, route::KeyTag<ID>, Payload<Q>>>,
         now: clock::Moment<'d>,
         work: app::Work<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         now.at(self).apply(|engine, raw| {
             let mut this = engine.project();

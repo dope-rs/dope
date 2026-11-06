@@ -71,28 +71,23 @@ impl<'key> Read<'key> {
         };
         let pn = opened.number().get();
         if advance {
-            match key {
-                Candidate::Current => {
-                    let first = self.read.first_current_pn.get_or_insert(pn);
-                    *first = (*first).min(pn);
+            let result = match key {
+                Candidate::Current => self.read.try_record(pn, now, pto),
+                Candidate::Previous => Ok(()),
+                Candidate::Next if !self.read.can_advance() || !self.write.can_advance() => {
+                    Err(ciphers::Update::Key)
                 }
-                Candidate::Previous => {}
-                Candidate::Next => {
-                    if !self.read.can_advance() || !self.write.can_advance() {
-                        let (_, packet, _) = opened.into_parts();
-                        return Err(Rejected::new(packet, conn::Error::KeyUpdate));
+                Candidate::Next => self.read.promote(pn, now, pto).and_then(|()| {
+                    if self.write.phase != self.read.phase {
+                        self.write.advance()
+                    } else {
+                        Ok(())
                     }
-                    if let Err(error) = self.read.promote(pn, now, pto) {
-                        let (_, packet, _) = opened.into_parts();
-                        return Err(Rejected::new(packet, error.into()));
-                    }
-                    if self.write.phase != self.read.phase
-                        && let Err(error) = self.write.advance()
-                    {
-                        let (_, packet, _) = opened.into_parts();
-                        return Err(Rejected::new(packet, error.into()));
-                    }
-                }
+                }),
+            };
+            if let Err(error) = result {
+                let (_, packet, _) = opened.into_parts();
+                return Err(Rejected::new(packet, error.into()));
             }
         }
         if !opened.is_valid() {

@@ -2,10 +2,9 @@ use crate::runtime::mux::handler::hook::Boundary;
 use o3::buffer;
 use std::pin;
 
-use crate::conn::{self, id, life, scope};
-use crate::runtime::{brand, mux::handler};
+use crate::conn::{id, life};
+use crate::runtime::mux::handler;
 use crate::stream;
-use handler::hook::{data::release::Mode as _, set::Dispatch};
 use handler::{Handler, Slot};
 
 pub struct Event<'scope, H, const DOMAIN: u8, B, D, I>
@@ -63,7 +62,6 @@ where
 pub struct On;
 pub struct Off;
 
-/// Retires the original transport owner after its optional closing callback.
 pub trait Mode<H, const DOMAIN: u8, B, D, I>: Boundary
 where
     H: Handler<DOMAIN, B, D, I>,
@@ -74,14 +72,6 @@ where
     fn notify<'scope>(
         handler: pin::Pin<&'scope mut H>,
         slot: Slot<'scope, H::Connection, DOMAIN, B, D>,
-        handle: id::Handle<I, DOMAIN>,
-    );
-
-    fn retire(
-        handler: pin::Pin<&mut H>,
-        conn: conn::Connection<DOMAIN, B, D>,
-        app: &mut H::Connection,
-        brand: brand::Token<'_>,
         handle: id::Handle<I, DOMAIN>,
     );
 }
@@ -104,24 +94,6 @@ where
             handle,
         });
     }
-
-    fn retire(
-        mut handler: pin::Pin<&mut H>,
-        mut conn: conn::Connection<DOMAIN, B, D>,
-        app: &mut H::Connection,
-        brand: brand::Token<'_>,
-        handle: id::Handle<I, DOMAIN>,
-    ) {
-        Self::notify(
-            handler.as_mut(),
-            Slot::new(
-                app,
-                scope::Access::new(conn.machine_mut(), brand.reborrow()),
-            ),
-            handle,
-        );
-        <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Release::retire(handler, conn, handle);
-    }
 }
 
 impl<H, const DOMAIN: u8, B, D, I> Mode<H, DOMAIN, B, D, I> for Off
@@ -136,15 +108,5 @@ where
         _: Slot<'scope, H::Connection, DOMAIN, B, D>,
         _: id::Handle<I, DOMAIN>,
     ) {
-    }
-
-    fn retire(
-        handler: pin::Pin<&mut H>,
-        conn: conn::Connection<DOMAIN, B, D>,
-        _: &mut H::Connection,
-        _: brand::Token<'_>,
-        handle: id::Handle<I, DOMAIN>,
-    ) {
-        <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Release::retire(handler, conn, handle);
     }
 }

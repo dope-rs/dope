@@ -64,7 +64,7 @@ where
     if elicits && let Some(sample) = sample {
         egress.recovery.rtt.update(sample, delay);
     }
-    let outcome = losses::try_run(egress, &mut delivery, now)?;
+    let outcome = losses::try_run(egress, &mut delivery, now, changed)?;
     if changed || matches!(outcome, losses::Outcome::Lost) {
         delivery.try_update(egress, now)?;
     }

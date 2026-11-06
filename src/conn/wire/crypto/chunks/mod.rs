@@ -91,12 +91,14 @@ impl State {
         let mut frames = frames.into_iter();
         let mut next = self.next;
         if let Some(parts) = self.parts.as_ref() {
-            let mut shadow = parts
-                .shadow(&mut scratch.spans)
-                .ok_or(Failure::Connection(conn::Error::CryptoBufferExceeded))?;
-            for (offset, source, step) in frames {
-                Self::plan_one(&mut next, &mut shadow, offset, source, body, step)
-                    .map_err(Failure::Connection)?;
+            if let Some(first) = frames.next() {
+                let mut shadow = parts
+                    .shadow(&mut scratch.spans)
+                    .ok_or(Failure::Connection(conn::Error::CryptoBufferExceeded))?;
+                for (offset, source, step) in std::iter::once(first).chain(frames) {
+                    Self::plan_one(&mut next, &mut shadow, offset, source, body, step)
+                        .map_err(Failure::Connection)?;
+                }
             }
         } else {
             while let Some((offset, source, step)) = frames.next() {
@@ -118,17 +120,15 @@ impl State {
                     continue;
                 }
 
-                let parts = fragment::Fragment::try_new(self.next).map_err(Failure::Allocation)?;
-                {
-                    let mut shadow = fragment::Shadow::new(self.next, &mut scratch.spans);
+                let mut shadow = fragment::Shadow::new(self.next, &mut scratch.spans);
+                Self::plan_one(&mut next, &mut shadow, offset, source, body, step)
+                    .map_err(Failure::Connection)?;
+                for (offset, source, step) in frames {
                     Self::plan_one(&mut next, &mut shadow, offset, source, body, step)
                         .map_err(Failure::Connection)?;
-                    for (offset, source, step) in frames {
-                        Self::plan_one(&mut next, &mut shadow, offset, source, body, step)
-                            .map_err(Failure::Connection)?;
-                    }
                 }
-                self.parts = Some(parts);
+                self.parts =
+                    Some(fragment::Fragment::try_new(self.next).map_err(Failure::Allocation)?);
                 break;
             }
         }

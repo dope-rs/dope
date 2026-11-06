@@ -99,10 +99,6 @@ impl Options {
         self.transport.max_pmtu().get() as usize
     }
 
-    pub(crate) fn packet_cap(&self, out: usize) -> Option<Size> {
-        Size::new(self.packet_max().min(out) as u32)
-    }
-
     pub(crate) fn copy(&self) -> Self {
         Self {
             transport: self.transport.copy(),

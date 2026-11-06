@@ -70,11 +70,6 @@ impl<T, G: external::Generation, Tag> Table<T, G, Tag> {
             tag: marker::PhantomData,
         })
     }
-
-    #[must_use]
-    pub(in crate::conn) fn initialized(&self) -> capacity::Count {
-        self.core.initialized()
-    }
 }
 
 impl<'a, T, G: external::Generation, Tag, P> Occupied<'a, T, G, Tag, P> {
@@ -104,10 +99,6 @@ impl<'a, T, G: external::Generation, Tag, P> Occupied<'a, T, G, Tag, P> {
 
     pub(in crate::conn) fn get_mut(&mut self) -> &mut T {
         self.entry.value_mut()
-    }
-
-    pub(in crate::conn) fn discard(self) {
-        self.entry.discard();
     }
 }
 

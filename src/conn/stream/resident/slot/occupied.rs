@@ -18,36 +18,12 @@ pub(in crate::conn) struct Activity<'b, 'a, S, V, A> {
     fifo: &'b mut keyed::Fifo<slot::Handle<S>>,
 }
 
-#[repr(transparent)]
-pub(in crate::conn::stream::resident::slot) struct Projected<'a, S, V, A>(
-    pub(super) Selected<&'a slot::Table<S, V, A>, links::Index, ()>,
-);
-
-// SAFETY: the retained live table identifies this exact initialized slot and link.
-unsafe impl<'a, S, V, A> depot::raw::KeyBorrow<'a> for Projected<'a, S, V, A> {
-    type Key = slot::Handle<S>;
-
-    fn parts(self) -> (Self::Key, &'a keyed::Link<Self::Key>) {
-        let (table, index) = self.0.into_inner();
-        let node = unsafe { table.nodes.get_unchecked(index.get()) };
-        (
-            slot::Handle::new(index.raw(), node.generation.get()),
-            &node.link,
-        )
-    }
-}
-
-// SAFETY: the native occupied guard retains this exact slot and generation for the borrow.
-unsafe impl<'a, S, V, A> depot::raw::KeyBorrow<'a> for &'a Occupied<'_, S, V, A> {
-    type Key = slot::Handle<S>;
-
-    fn parts(self) -> (Self::Key, &'a keyed::Link<Self::Key>) {
-        let node = unsafe { self.table.nodes.get_unchecked(self.node.get()) };
-        (
-            slot::Handle::new(self.node.raw(), node.generation.get()),
-            &node.link,
-        )
-    }
+pub(in crate::conn::stream::resident::slot) fn link<S, V, A>(
+    live: Selected<&slot::Table<S, V, A>, links::Index, ()>,
+) -> &keyed::Link<slot::Handle<S>> {
+    let (table, index) = live.into_inner();
+    // SAFETY: the retained live table identifies this exact initialized slot and link.
+    &unsafe { table.nodes.get_unchecked(index.get()) }.link
 }
 
 impl<'b, 'a, S, V, A> Activity<'b, 'a, S, V, A> {
@@ -78,16 +54,22 @@ unsafe impl<S, V, A> depot::raw::KeyOwner for Activity<'_, '_, S, V, A> {
     type Fifo = keyed::Fifo<Self::Key>;
 
     fn parts(&self) -> (Self::Key, &keyed::Link<Self::Key>) {
-        depot::raw::KeyBorrow::parts(&*self.entry)
+        let entry = &*self.entry;
+        // SAFETY: the occupied loan retains this exact slot and generation.
+        let node = unsafe { entry.table.nodes.get_unchecked(entry.node.get()) };
+        (
+            slot::Handle::new(entry.node.raw(), node.generation.get()),
+            &node.link,
+        )
     }
 
     fn fifo(&self) -> &keyed::Fifo<Self::Key> {
         self.fifo
     }
 
-    fn entry<'c>(live: Selected<&'c Self, links::Index, ()>) -> keyed::Entry<'c, Self::Key> {
+    fn link(live: Selected<&Self, links::Index, ()>) -> &keyed::Link<Self::Key> {
         let live = unsafe { live.map(|(activity, index)| (&*activity.entry.table, index)) };
-        keyed::Entry::from_source(Projected(live))
+        link(live)
     }
 }
 

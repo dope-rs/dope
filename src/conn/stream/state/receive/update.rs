@@ -96,18 +96,14 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
     }
 
     fn release_peer(&mut self, dir: Direction, ctrl: &mut control::Pending) {
-        let Some(closed) = dir.bind(&self.peer_initiated.closed).checked_add(1) else {
-            return;
-        };
-        let gate = (dir.bind(&self.peer_initiated.initial_max).get() / 2).max(1);
+        let closed = *dir.bind(&self.peer_initiated.closed) + 1;
+        let gate = (dir.bind(&self.peer_initiated.initial_max).bounded().get() / 2).max(1);
         if closed < gate {
             *dir.bind_mut(&mut self.peer_initiated.closed) = closed;
             return;
         }
         let current = *dir.bind(&self.peer_initiated.max);
-        let Some(next) = current.get().checked_add(closed) else {
-            return;
-        };
+        let next = current.get() + u64::from(closed);
         let next = bounded::U64::clamp(next);
         *dir.bind_mut(&mut self.peer_initiated.closed) = 0;
         if next > current {

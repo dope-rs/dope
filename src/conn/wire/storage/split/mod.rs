@@ -67,7 +67,6 @@ impl<T, const MAX: usize> Split<T, MAX> {
 
     pub(crate) fn retain_ready(&mut self, mut keep: impl FnMut(&T) -> bool) {
         let mut left = self.ready.raw();
-        self.ready = capacity::Count::EMPTY;
         let mut ready = capacity::Count::EMPTY;
         self.values.retain(|value| {
             if left == 0 {

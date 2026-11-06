@@ -44,7 +44,7 @@ impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> Active<'_, S, V, A, 
 }
 
 impl<S, V: slot::Reusable, A: Default> Active<'_, S, V, A, plane::RoundRobin<S>> {
-    pub(in crate::conn) fn advance(&mut self) {
+    pub(in crate::conn) fn advance(&mut self) -> bool {
         let next = {
             // SAFETY: advancing borrows this still-owned exact member.
             let member = unsafe {
@@ -57,6 +57,7 @@ impl<S, V: slot::Reusable, A: Default> Active<'_, S, V, A, plane::RoundRobin<S>>
         };
         self.plane.policy.cursor = next
             .or_else(|| slot::Activity::new(&mut self.entry, &mut self.plane.core.queue).front());
+        next.is_none()
     }
 }
 
@@ -75,6 +76,11 @@ impl<S, V: slot::Reusable, A: Default> Active<'_, S, V, A, plane::HeadOnly> {
 }
 
 impl<S, V: slot::Reusable, A: Default> Pool<S, V, A, plane::RoundRobin<S>> {
+    pub(in crate::conn) fn restart(&mut self) -> u32 {
+        self.plane.policy.cursor = self.front().map(|active| active.handle());
+        self.plane.core.length
+    }
+
     pub(in crate::conn) fn active(&mut self) -> Option<Active<'_, S, V, A, plane::RoundRobin<S>>> {
         let Some(key) = self.plane.policy.cursor else {
             return self.front();
@@ -320,11 +326,11 @@ unsafe impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> depot::raw::K
 unsafe impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> depot::raw::KeyRead
     for &Pool<S, V, A, P>
 {
-    fn entry<'a>(
-        live: depot::raw::Proof<(&'a Self, links::Index), Initialized<()>>,
-    ) -> keyed::Entry<'a, Self::Key> {
+    fn link(
+        live: depot::raw::Proof<(&Self, links::Index), Initialized<()>>,
+    ) -> &keyed::Link<Self::Key> {
         let live = unsafe { live.map(|(pool, index)| (&pool.storage, index)) };
-        keyed::Entry::from_source(slot::Projected(live))
+        slot::link(live)
     }
 }
 

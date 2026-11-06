@@ -8,7 +8,7 @@ use crate::{
             recovery::epochs,
             transmit::{builder, packet::plan::Plan},
         },
-        stream::state::transmit,
+        stream::state::{receive, transmit},
         wire::{crypto::tx, path, tls},
     },
     proto::recovery::numbers,
@@ -17,8 +17,9 @@ use crate::{
 };
 use builder::pending::{draft, selected::Selected};
 use journals::{controls, streams};
-use o3::buffer;
 use o3::depot::{array, index::Access};
+use o3::{buffer, depot};
+use receive::recv::map;
 use std::{mem, time};
 use transmit::log::journal;
 
@@ -64,12 +65,14 @@ pub(in crate::conn) struct Preparation<'a> {
     pub(in crate::conn::output::transmit::builder) scratch: &'a mut conn::Scratch,
 }
 
-pub(in crate::conn) struct Context<'a, const DOMAIN: u8, D: buffer::raw::Segment> {
+pub(in crate::conn) struct Context<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> {
     tx: &'a mut tx::Tx,
     keys: tls::Borrow<'a, DOMAIN>,
     spaces: &'a mut [numbers::PnSpace; 3],
     scratch: &'a mut conn::Scratch,
     streams: journal::Scope<'a, D>,
+    receive: &'a mut receive::State<B>,
+    peer: &'a mut conn::stream::Peer,
     control: &'a mut control::Pending,
     path: &'a mut path::State,
 }
@@ -241,13 +244,15 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Records<'a,
     }
 }
 
-pub(in crate::conn) struct Root<'a, const DOMAIN: u8> {
+pub(in crate::conn) struct Root<'a, const DOMAIN: u8, B: stream::Recv> {
     table: &'a mut journals::Table,
     controls: &'a mut array::Vec<encode::Written, { conn::PACKET_CONTROL_CAPACITY }>,
     tx: &'a mut tx::Tx,
     keys: tls::Borrow<'a, DOMAIN>,
     spaces: &'a mut [numbers::PnSpace; 3],
     scratch: &'a mut conn::Scratch,
+    receive: &'a mut receive::State<B>,
+    peer: &'a mut conn::stream::Peer,
     control: &'a mut control::Pending,
     path: &'a mut path::State,
 }
@@ -260,7 +265,7 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journal:
     type Send = D;
     type Selection = tx::Commit;
     type Context<'a>
-        = Root<'a, DOMAIN>
+        = Root<'a, DOMAIN, B>
     where
         Self: 'a;
 
@@ -296,6 +301,8 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journal:
                 keys,
                 spaces: &mut conn.egress.recovery.spaces,
                 scratch: &mut conn.scratch,
+                receive: &mut conn.streams.state.receive,
+                peer: &mut conn.streams.state.peer_initiated,
                 control: &mut conn.control,
                 path: &mut conn.path,
             },
@@ -311,7 +318,7 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journals
 {
     type Control = encode::Written;
     type Context<'a>
-        = Context<'a, DOMAIN, D>
+        = Context<'a, DOMAIN, B, D>
     where
         Self: 'a;
 
@@ -336,6 +343,8 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journals
                 spaces: root.spaces,
                 scratch: root.scratch,
                 streams: scope,
+                receive: root.receive,
+                peer: root.peer,
                 control: root.control,
                 path: root.path,
             },
@@ -363,7 +372,22 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journals
             });
             let live =
                 unsafe { live.map(|(owner, key)| ((owner.owner, owner.selected.state()), key)) };
-            let handle = journal::commit(live);
+            let handle = journal::commit(live, |record| match *record {
+                delivery::Control::MaxData(limit) => {
+                    context.receive.connection_window.publish(limit);
+                }
+                delivery::Control::MaxStreamData(_, handle, limit) => {
+                    // SAFETY: the live control retains this original receive epoch;
+                    // retirement removes it before reuse, and this packet owns both roots.
+                    let live =
+                        unsafe { depot::raw::Proof::new((&mut context.receive.map, handle)) };
+                    map::Map::publish(live, limit);
+                }
+                delivery::Control::MaxStreams(dir, limit) => {
+                    *dir.bind_mut(&mut context.peer.published) = limit;
+                }
+                _ => {}
+            });
             // SAFETY: this complete packet owner retains the same encoded stores.
             // Each response deletion updates all still-unread position receipts.
             unsafe {
@@ -381,6 +405,6 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journals
 }
 
 const _: () = assert!(
-    mem::size_of::<Context<'static, 0, o3::buffer::resident::Shared<'static>>>()
-        == 10 * mem::size_of::<usize>()
+    mem::size_of::<Context<'static, 0, Vec<u8>, o3::buffer::resident::Shared<'static>>>()
+        == 12 * mem::size_of::<usize>()
 );

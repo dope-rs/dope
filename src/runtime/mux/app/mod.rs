@@ -7,7 +7,7 @@ use std::{num, pin, time};
 
 use app::step;
 use dope::core::driver::{
-    retained,
+    self,
     schedule::{app, ready},
 };
 
@@ -268,7 +268,7 @@ pub trait Driver<
         turn: Turn<'scope, H, C>,
         parent: ready::Target<'d>,
         work: app::Work<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> quota::Admission<step::Flow>;
 }
 
@@ -324,7 +324,7 @@ pub(crate) fn drive<'turn, 'd, A, H, const DOMAIN: u8, B, App>(
     app: &mut App,
     parent: ready::Target<'d>,
     work: app::Work<'turn, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
     now: time::Instant,
 ) -> quota::Admission<step::Flow>
 where

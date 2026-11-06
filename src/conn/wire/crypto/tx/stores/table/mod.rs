@@ -18,7 +18,7 @@ use o3::{
         queue::{indexed::keyed, links},
     },
 };
-use occupied::{Borrowed, Occupied, Projected};
+use occupied::Occupied;
 pub(in crate::conn) use prepared::Prepared;
 use std::{marker, mem, num};
 
@@ -33,7 +33,7 @@ pub(in crate::conn::wire::crypto::tx) struct Slots {
 }
 
 /// Exact endpoints of one epoch's order chain. Both are empty together;
-/// only insertion and acknowledged-head consumption can change this pair.
+/// only insertion and head removal can change this pair.
 #[derive(Clone, Copy)]
 struct Ends {
     head: Option<Key>,
@@ -142,13 +142,13 @@ impl Slots {
     }
 
     pub(in crate::conn::wire::crypto::tx::stores) fn clear(&mut self, epoch: conn::Epoch) {
-        *epoch.bind_mut(&mut self.order) = Ends::EMPTY;
-        for index in 0..self.initialized() {
-            if let Some((_, entry)) = self.bind(index)
-                && entry.get().epoch == epoch
-            {
-                entry.remove();
+        while let Some(key) = epoch.bind(&self.order).head {
+            Head {
+                slots: self,
+                key,
+                epoch,
             }
+            .remove();
         }
     }
 
@@ -180,16 +180,6 @@ impl Slots {
             Key::from_parts(key.index() as u16, key.generation().get()),
             entry,
         )
-    }
-
-    fn bind(&mut self, index: usize) -> Option<(Key, Occupied<'_>)> {
-        let index = u32::try_from(index).ok()?;
-        let entry = Occupied(self.entries.entry_mut(index)?);
-        Some((entry.key(), entry))
-    }
-
-    fn initialized(&self) -> usize {
-        self.entries.initialized().get()
     }
 }
 
@@ -237,18 +227,18 @@ unsafe impl<Q, P> depot::raw::KeyOwner<Flight> for Transfer<'_, '_, Q, P> {
     type Fifo = keyed::Fifo<Key, Flight>;
 
     fn parts(&self) -> (Key, &keyed::Link<Key, Flight>) {
-        depot::raw::KeyBorrow::parts(Borrowed(&self.entry))
+        (self.entry.key(), &self.entry.get().flight)
     }
 
     fn fifo(&self) -> &keyed::Fifo<Key, Flight> {
         self.source
     }
 
-    fn entry<'b>(
-        live: depot::raw::Proof<(&'b Self, links::Index), Initialized<Flight>>,
-    ) -> keyed::Entry<'b, Key, Flight> {
+    fn link(
+        live: depot::raw::Proof<(&Self, links::Index), Initialized<Flight>>,
+    ) -> &keyed::Link<Key, Flight> {
         let live = unsafe { live.map(|(transfer, index)| (&transfer.entry, index)) };
-        keyed::Entry::from_source(Projected(live))
+        &Occupied::project(live).1.flight
     }
 }
 
@@ -309,18 +299,18 @@ unsafe impl<P> depot::raw::KeyOwner<Flight> for Slot<'_, '_, P> {
     type Fifo = keyed::Fifo<Key, Flight>;
 
     fn parts(&self) -> (Key, &keyed::Link<Key, Flight>) {
-        depot::raw::KeyBorrow::parts(Borrowed(&self.entry))
+        (self.entry.key(), &self.entry.get().flight)
     }
 
     fn fifo(&self) -> &keyed::Fifo<Key, Flight> {
         self.source
     }
 
-    fn entry<'b>(
-        live: depot::raw::Proof<(&'b Self, links::Index), Initialized<Flight>>,
-    ) -> keyed::Entry<'b, Key, Flight> {
+    fn link(
+        live: depot::raw::Proof<(&Self, links::Index), Initialized<Flight>>,
+    ) -> &keyed::Link<Key, Flight> {
         let live = unsafe { live.map(|(removal, index)| (&removal.entry, index)) };
-        keyed::Entry::from_source(Projected(live))
+        &Occupied::project(live).1.flight
     }
 }
 
@@ -348,6 +338,10 @@ impl Head<'_> {
         if !matches!(Slots::project(live).1.status.phase(), Phase::Acknowledged) {
             return None;
         }
+        Some(self.remove())
+    }
+
+    fn remove(self) -> u64 {
         let live = index::Access::into_live(self);
         let live = unsafe {
             live.map(|(head, index)| {
@@ -365,12 +359,12 @@ impl Head<'_> {
         if order.head.is_none() {
             order.tail = None;
         }
-        Some(entry.record.end())
+        entry.record.end()
     }
 }
 
 // SAFETY: the order root and native table remain exclusively owned by Head;
-// only acknowledged-head consumption can advance the root or remove the slot.
+// only consuming this head can advance the root or remove the slot.
 unsafe impl depot::raw::Source for Head<'_> {
     type Key = links::Index;
     fn key(&self) -> Self::Key {

@@ -70,33 +70,19 @@ struct Member<'a, P: planes::Plane> {
     index: Index,
 }
 
-#[repr(transparent)]
-pub(in crate::conn::stream::state::transmit::log) struct Projected<'a, P: planes::Plane>(
-    pub(super) Selected<demand::Entries<'a, P::Value, P::Tag>, Index, P>,
-);
-
-// SAFETY: the consumed live source retains the exact table, key, and link plane.
-unsafe impl<'a, P: planes::Plane> depot::raw::KeyBorrow<'a, P> for Projected<'a, P> {
-    type Key = storage::Key<P::Tag>;
-
-    fn parts(self) -> (Self::Key, &'a keyed::Link<Self::Key, P>) {
-        let (key, value) = demand::Entries::project(self.0);
-        (storage::Key::new(key), P::link(value))
-    }
+pub(in crate::conn::stream::state::transmit::log) fn link<'a, P: planes::Plane>(
+    live: Selected<demand::Entries<'a, P::Value, P::Tag>, Index, P>,
+) -> &'a keyed::Link<storage::Key<P::Tag>, P> {
+    P::link(demand::Entries::project(live).1)
 }
 
-#[repr(transparent)]
-pub(in crate::conn::stream::state::transmit::log) struct Borrowed<'b, 'a, P: planes::Plane, Q>(
-    pub(super) &'b demand::Occupied<'a, P::Value, P::Tag, { u32::MAX }, Q>,
-);
-
-// SAFETY: the native occupied guard keeps its exact key and initialized value stable.
-unsafe impl<'b, P: planes::Plane, Q> depot::raw::KeyBorrow<'b, P> for Borrowed<'b, '_, P, Q> {
-    type Key = storage::Key<P::Tag>;
-
-    fn parts(self) -> (Self::Key, &'b keyed::Link<Self::Key, P>) {
-        (storage::Key::new(self.0.key()), P::link(self.0.get()))
-    }
+pub(in crate::conn::stream::state::transmit::log) fn parts<'a, P: planes::Plane, Q>(
+    entry: &'a demand::Occupied<'_, P::Value, P::Tag, { u32::MAX }, Q>,
+) -> (
+    storage::Key<P::Tag>,
+    &'a keyed::Link<storage::Key<P::Tag>, P>,
+) {
+    (storage::Key::new(entry.key()), P::link(entry.get()))
 }
 
 // SAFETY: binding checked this slot and link plane in the retained table.
@@ -144,9 +130,9 @@ unsafe impl<P: planes::Plane> depot::raw::KeySource<P> for Walk<'_, P> {
 }
 
 unsafe impl<P: planes::Plane> depot::raw::KeyRead<P> for Walk<'_, P> {
-    fn entry<'a>(live: Selected<&'a Self, Index, P>) -> keyed::Entry<'a, Self::Key, P> {
+    fn link(live: Selected<&Self, Index, P>) -> &keyed::Link<Self::Key, P> {
         let live = unsafe { live.map(|(walk, index)| (walk.entries, index)) };
-        keyed::Entry::from_source(Projected(live))
+        link(live)
     }
 }
 

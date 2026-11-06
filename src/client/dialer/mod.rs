@@ -61,7 +61,7 @@ where
     endpoint::Endpoint<
         'd,
         ID,
-        client::Bridge<'d, ID, P, A, B, R>,
+        client::Bridge<'d, ID, P, B>,
         P::Receive,
         endpoint::Idle,
         A::Binding,
@@ -71,7 +71,7 @@ where
     type Inner = endpoint::Endpoint<
         'd,
         ID,
-        client::Bridge<'d, ID, P, A, B, R>,
+        client::Bridge<'d, ID, P, B>,
         P::Receive,
         endpoint::Idle,
         A::Binding,
@@ -107,20 +107,17 @@ where
 {
     type Access = dispatch::raw::Plain;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ops::ControlFlow<io::Event<'d>> {
         event::Drive::dispatch(call.map_owner(|owner| owner.project().inner.project().endpoint))
     }
 }

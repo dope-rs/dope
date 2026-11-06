@@ -161,14 +161,11 @@ unsafe impl<'d, 'pool, F: for<'a> FnMut(Observed<'a>)> dispatch::raw::Manifold<'
     const COORDS: usize =
         <<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         let phase = self.state.phase.get();
         if phase == Phase::Second {
             return self;
@@ -223,14 +220,11 @@ unsafe impl<'d, 'pool, F: for<'a> FnMut(Observed<'a>)> dispatch::raw::Manifold<'
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         self.state.phase.set(Phase::Done);
         dispatch::raw::Manifold::shutdown(self.as_mut().project().endpoint, turn, driver);
         self

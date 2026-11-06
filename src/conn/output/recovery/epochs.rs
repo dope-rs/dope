@@ -50,8 +50,9 @@ impl<'a, const DOMAIN: u8> Transition<'a, DOMAIN> {
     pub(in crate::conn) fn retry(&mut self) {
         self.drain(conn::Epoch::Initial);
         self.handshake.crypto.retry();
-        *conn::Epoch::Initial.bind_mut(&mut self.egress.recovery.spaces) =
-            numbers::PnSpace::default();
+        let space = conn::Epoch::Initial.bind_mut(&mut self.egress.recovery.spaces);
+        space.largest_acked = None;
+        space.time_of_last_ack_eliciting = None;
     }
 
     fn drain(&mut self, epoch: conn::Epoch) {

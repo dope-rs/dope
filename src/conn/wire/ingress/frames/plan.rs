@@ -255,8 +255,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
             resident,
             streams.resident.read().available(),
         )?;
-        let mut flow = streams.receive.connection_window;
-        let credit = flow.try_record(credit)?;
+        let credit = streams.receive.connection_window.try_record(credit)?;
         self.bytes = bytes;
 
         Ok(Reserved {

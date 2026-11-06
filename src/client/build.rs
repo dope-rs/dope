@@ -76,6 +76,47 @@ impl<P, B> Builder<P, auth::Owned, B, client::StaticConfig, routing::Plain> {
     ) -> Self {
         Self::owned_with(specs, client::StaticConfig(opts), protocol, backoff, config)
     }
+
+    pub fn owned_dense(
+        paths: Vec<net::SocketAddr>,
+        auth: clients::Authority,
+        opts: options::Options,
+        protocol: P,
+        backoff: B,
+        config: client::Config,
+    ) -> Result<Self, Error> {
+        Self::dense(
+            paths,
+            auth::Owned::new(auth),
+            routing::Count::MIN,
+            opts,
+            protocol,
+            backoff,
+            config,
+        )
+    }
+}
+
+impl<P, B> Builder<P, auth::Owned, B, client::StaticConfig, routing::Shard> {
+    pub fn owned_dense(
+        paths: Vec<net::SocketAddr>,
+        auth: clients::Authority,
+        shards: routing::Count,
+        opts: options::Options,
+        protocol: P,
+        backoff: B,
+        config: client::Config,
+    ) -> Result<Self, Error> {
+        Self::dense(
+            paths,
+            auth::Owned::new(auth),
+            shards,
+            opts,
+            protocol,
+            backoff,
+            config,
+        )
+    }
 }
 
 impl<P, B, C> Builder<P, auth::Owned, B, C, routing::Plain> {
@@ -140,16 +181,15 @@ impl<'tls, P, B> Builder<P, auth::Pooled<'tls>, B, client::StaticConfig, routing
         backoff: B,
         config: client::Config,
     ) -> Result<Self, Error> {
-        let topology =
-            topology::Topology::dense(paths, auth::Pooled::new(pool), routing::Count::MIN)
-                .ok_or(Error::EmptyTopology)?;
-        Ok(Self {
-            topology,
-            config_provider: client::StaticConfig(opts),
+        Self::dense(
+            paths,
+            auth::Pooled::new(pool),
+            routing::Count::MIN,
+            opts,
             protocol,
             backoff,
             config,
-        })
+        )
     }
 }
 
@@ -163,10 +203,30 @@ impl<'tls, P, B> Builder<P, auth::Pooled<'tls>, B, client::StaticConfig, routing
         backoff: B,
         config: client::Config,
     ) -> Result<Self, Error> {
-        let topology = topology::Topology::dense(paths, auth::Pooled::new(pool), shards)
-            .ok_or(Error::EmptyTopology)?;
+        Self::dense(
+            paths,
+            auth::Pooled::new(pool),
+            shards,
+            opts,
+            protocol,
+            backoff,
+            config,
+        )
+    }
+}
+
+impl<P, A, B, R: routing::PeerRoute> Builder<P, A, B, client::StaticConfig, R> {
+    fn dense(
+        paths: Vec<net::SocketAddr>,
+        auth: A,
+        shards: routing::Count,
+        opts: options::Options,
+        protocol: P,
+        backoff: B,
+        config: client::Config,
+    ) -> Result<Self, Error> {
         Ok(Self {
-            topology,
+            topology: topology::Topology::dense(paths, auth, shards).ok_or(Error::EmptyTopology)?,
             config_provider: client::StaticConfig(opts),
             protocol,
             backoff,
@@ -201,15 +261,16 @@ impl<P, A, B, C, R: routing::PeerRoute> Builder<P, A, B, C, R> {
                 endpoints: self.topology.len(),
             });
         }
-        let state = driver.driver_ref().clock().try_attach(|now| {
-            life::Lifecycle::try_new(self.topology, self.backoff, capacity, now)
-        })?;
+        let state = driver
+            .driver_ref()
+            .clock()
+            .try_attach(|now| life::Lifecycle::try_new(self.backoff, capacity, now))?;
         let bridge = client::Bridge::new(self.protocol, state);
         let inner = endpoint
             .bind::<_, A::Binding>(bridge, driver)
             .map_err(Error::Endpoint)?;
         Ok(client::Dialer {
-            inner: dialer::Engine::new(inner, self.config_provider),
+            inner: dialer::Engine::new(inner, self.topology, self.config_provider),
             limits: work,
         })
     }

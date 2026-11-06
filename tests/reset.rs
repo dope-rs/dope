@@ -195,6 +195,15 @@ fn holds_credit() {
         Err(Error::PeerLimit)
     ));
 
+    client
+        .recv()
+        .stop(peer, Code::MAX)
+        .expect("reset receive half remains stopped");
+    let reset_at = client.view().recovery().send_at(reset_at);
+    let (packets, result) = client.with_scope(|mut scope| scope.output().send(reset_at));
+    result.expect("late stop output");
+    assert!(packets.is_empty(), "RESET suppresses late STOP_SENDING");
+
     assert_eq!(
         client
             .release_held(held)

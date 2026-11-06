@@ -10,6 +10,7 @@ use crate::{
         control::journal::{self, storage},
         delivery,
     },
+    conn::stream::state::receive::recv::map,
     wire::{stream, varint},
 };
 
@@ -82,9 +83,10 @@ impl<P: ops::DerefMut<Target = control::Pending>> Records<P> {
         &mut self,
         owner: &mut Option<owner::Key<kind::StreamLimit>>,
         id: stream::Id,
+        handle: map::Handle,
         limit: varint::VarInt,
     ) -> Result<(), journal::Error> {
-        self.revise(owner, delivery::Control::MaxStreamData(id, limit))
+        self.revise(owner, delivery::Control::MaxStreamData(id, handle, limit))
     }
 
     pub(in crate::conn) fn set_streams(
@@ -111,12 +113,13 @@ impl<P: ops::DerefMut<Target = control::Pending>> Records<P> {
         &mut self,
         owner: &mut Option<owner::Key<kind::StreamLimit>>,
         id: stream::Id,
+        handle: map::Handle,
         limit: varint::VarInt,
     ) -> Result<(), control::Admission> {
         let state = &mut *self.0;
         state
             .storage
-            .try_queue(owner, delivery::Control::MaxStreamData(id, limit))
+            .try_queue(owner, delivery::Control::MaxStreamData(id, handle, limit))
     }
 
     pub(in crate::conn) fn try_streams(

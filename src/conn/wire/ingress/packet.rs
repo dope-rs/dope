@@ -5,7 +5,6 @@ use crate::wire::packet::header;
 
 use crate::conn;
 use crate::conn::output::recovery::{epochs, timer};
-use crate::proto::path::Peer;
 use crate::proto::recovery::numbers;
 use crate::stream;
 use crate::wire::stream::Initiator;
@@ -24,7 +23,6 @@ pub(in crate::conn::wire::ingress) struct Packet<
     epoch: conn::Epoch,
     fresh: numbers::Fresh,
     discard: epochs::Discarded,
-    peer: Option<Peer>,
     pending: conn::Effects,
 }
 
@@ -42,13 +40,11 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         let fresh = epoch
             .bind(&machine.receive.packet_numbers.spaces)
             .admit(pn)?;
-        let peer = machine.path.ingress().peer();
         Some(Self {
             connection: machine,
             epoch,
             fresh,
             discard: epochs::Discarded::default(),
-            peer,
             pending: conn::Effects::none(),
         })
     }
@@ -60,15 +56,8 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
     }
 
     #[inline]
-    fn effects(
-        machine: &conn::Machine<DOMAIN, B, D>,
-        peer: &Option<Peer>,
-        mut effects: conn::Effects,
-    ) -> conn::Effects {
-        if machine.path.ingress().peer() != *peer
-            || machine.path.local.is_dirty()
-            || machine.path.peer.is_dirty()
-        {
+    fn effects(machine: &conn::Machine<DOMAIN, B, D>, mut effects: conn::Effects) -> conn::Effects {
+        if machine.path.local.is_dirty() || machine.path.peer.is_dirty() {
             effects.insert(conn::Effects::ROUTING);
         }
         effects
@@ -99,7 +88,7 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         if matches!(error, conn::Error::Timing(_)) {
             effects.insert(conn::Effects::LIFECYCLE);
         }
-        Self::effects(self.connection, &self.peer, effects)
+        Self::effects(self.connection, effects)
     }
 
     pub(in crate::conn::wire::ingress) fn try_drop(
@@ -109,7 +98,7 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         self.discard
             .apply(&mut self.connection.receive.packet_numbers);
         let effects = self.pending.take();
-        Ok(Self::effects(self.connection, &self.peer, effects))
+        Ok(Self::effects(self.connection, effects))
     }
 
     pub(in crate::conn::wire::ingress) fn try_commit(
@@ -141,7 +130,6 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             epoch,
             fresh,
             discard,
-            peer,
             pending: mut effects,
         } = self;
         let schedule = machine
@@ -162,6 +150,6 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             .egress
             .activity
             .ack_eliciting_sent_since_last_receive = false;
-        Ok(Self::effects(machine, &peer, effects))
+        Ok(Self::effects(machine, effects))
     }
 }

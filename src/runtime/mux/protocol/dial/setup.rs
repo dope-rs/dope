@@ -86,8 +86,9 @@ impl<
         if self.owner.is_full() {
             return Err(errors::Preflight::Capacity);
         }
-        let limit = options
-            .packet_cap(self.ceiling)
+        let limit = self
+            .binding
+            .packet_cap(options, self.ceiling)
             .ok_or(errors::Preflight::InvalidConfig)?;
         let local = cids::Source::new(self.owner)
             .reserve(&self.binding.route, &mut self.binding.issuer)

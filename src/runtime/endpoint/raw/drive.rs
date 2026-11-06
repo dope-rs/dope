@@ -1,7 +1,7 @@
 use std::pin;
 
 use dope::{
-    core::driver::{retained, route, schedule},
+    core::driver::{self, route, schedule},
     manifold::network::datagram::hook,
 };
 use o3::buffer::{self, resident};
@@ -53,7 +53,7 @@ where
     unsafe fn pre_park<'a, 'turn>(
         endpoint: pin::Pin<&'a mut Transport<'d, ID, H, B, Idle, M, Q>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> pin::Pin<&'a mut Transport<'d, ID, H, B, Idle, M, Q>> {
         // SAFETY: the caller retains this exact endpoint through completion or quiescence.
         unsafe {
@@ -96,7 +96,7 @@ where
     unsafe fn pre_park<'a, 'turn>(
         endpoint: pin::Pin<&'a mut Transport<'d, ID, H, B, Run<A, R>, M, Q>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> pin::Pin<&'a mut Transport<'d, ID, H, B, Run<A, R>, M, Q>> {
         // SAFETY: the caller retains this exact endpoint through completion or quiescence.
         unsafe {

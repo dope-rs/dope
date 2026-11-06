@@ -1,7 +1,7 @@
 use std::{cell::Cell, pin::Pin, rc::Rc};
 
 use dope::core::driver::{
-    retained,
+    self,
     schedule::{app::step, ready},
 };
 use dope_quic::{
@@ -44,7 +44,7 @@ impl<'d> app::Driver<'d, Capture<'d, 0>, 0, Vec<u8>, resident::Shared<'d>> for I
         _: app::Turn<'scope, Capture<'d, 0>, C>,
         _: ready::Target<'d>,
         _: dope::core::driver::schedule::app::Work<'turn, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> quota::Admission<step::Flow>
     where
         C: app::Set<Capture<'d, 0>, 0, Vec<u8>, resident::Shared<'d>, id::Driver<'d>>,

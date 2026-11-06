@@ -2,7 +2,7 @@ use crate::conn::{
     machine::storage::{self, demand},
     stream::state::transmit::log::{
         self, journal,
-        links::storage::{Borrowed, Projected},
+        links::storage::{link, parts},
         planes,
     },
 };
@@ -121,7 +121,7 @@ unsafe impl<const MOVED: bool, P> depot::raw::KeyOwner<planes::Delivery>
     type Fifo = keyed::Fifo<Self::Key, planes::Delivery>;
 
     fn parts(&self) -> (Self::Key, &keyed::Link<Self::Key, planes::Delivery>) {
-        depot::raw::KeyBorrow::parts(Borrowed(&self.record.node))
+        parts(&self.record.node)
     }
 
     fn fifo(&self) -> &keyed::Fifo<Self::Key, planes::Delivery> {
@@ -132,12 +132,12 @@ unsafe impl<const MOVED: bool, P> depot::raw::KeyOwner<planes::Delivery>
         }
     }
 
-    fn entry<'a>(
-        live: depot::raw::Proof<(&'a Self, links::Index), Initialized<planes::Delivery>>,
-    ) -> keyed::Entry<'a, Self::Key, planes::Delivery> {
+    fn link(
+        live: depot::raw::Proof<(&Self, links::Index), Initialized<planes::Delivery>>,
+    ) -> &keyed::Link<Self::Key, planes::Delivery> {
         let live =
             unsafe { live.map(|(owner, index)| (owner.record.node.as_table().entries(), index)) };
-        keyed::Entry::from_source(Projected(live))
+        link(live)
     }
 }
 

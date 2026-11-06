@@ -3,7 +3,7 @@ use std::time;
 use crate::{client, conn, conn::id, runtime::brand};
 
 pub(in crate::client::life) enum Retry {
-    Dormant(client::AttemptState),
+    Dormant,
     Scheduled {
         next: client::AttemptState,
         at: time::Instant,
@@ -22,7 +22,7 @@ impl Retry {
         seen: time::Instant,
     ) -> Result<Self, client::protocol::Failure> {
         if !enabled {
-            return Ok(Self::Dormant(previous));
+            return Ok(Self::Dormant);
         }
         let attempt = previous.id(domain, slot);
         let next = previous

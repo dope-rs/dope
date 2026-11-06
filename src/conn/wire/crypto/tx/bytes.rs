@@ -52,21 +52,6 @@ impl Space {
         (index <= self.bytes.len()).then_some(index)
     }
 
-    fn reclaim_to(&mut self, offset: u64) {
-        let Some(index) = self.index(offset) else {
-            return;
-        };
-        if index < self.offsets.reclaim.get() {
-            return;
-        }
-        self.offsets.reclaim = Reclaim::new(index);
-        if index == self.bytes.len() {
-            self.bytes.clear();
-            self.offsets.stored = offset;
-            self.offsets.reclaim = Reclaim::EMPTY;
-        }
-    }
-
     /// Retains the initialized prefix and reclaim index admitted by `index`;
     /// every shortening transition clears that index.
     fn compact(&mut self) {
@@ -154,20 +139,44 @@ impl Store {
     }
 
     pub(super) fn reclaim_to(&mut self, epoch: conn::Epoch, offset: u64) {
-        epoch.bind_mut(&mut self.spaces).reclaim_to(offset);
+        let space = epoch.bind_mut(&mut self.spaces);
+        let Some(index) = space.index(offset) else {
+            return;
+        };
+        if index < space.offsets.reclaim.get() {
+            return;
+        }
+        space.offsets.reclaim = Reclaim::new(index);
+        if index == space.bytes.len() {
+            if epoch == conn::Epoch::Application {
+                space.bytes = Vec::new();
+            } else {
+                space.bytes.clear();
+            }
+            space.offsets.stored = offset;
+            space.offsets.reclaim = Reclaim::EMPTY;
+        }
     }
 
     pub(super) fn discard(&mut self, epoch: conn::Epoch) {
         let space = epoch.bind_mut(&mut self.spaces);
         let end = space.end_offset();
         let mut bytes = mem::take(&mut space.bytes);
-        bytes.clear();
-        if bytes.capacity() > self.spare.capacity() {
-            mem::swap(&mut bytes, &mut self.spare);
-        }
         space.offsets.stored = end;
         space.offsets.reclaim = Reclaim::EMPTY;
         space.offsets.next_unsent = end;
+        if epoch == conn::Epoch::Handshake {
+            self.spare = Vec::new();
+            let application = conn::Epoch::Application.bind_mut(&mut self.spaces);
+            if application.bytes.is_empty() {
+                application.bytes = Vec::new();
+            }
+        } else {
+            bytes.clear();
+            if bytes.capacity() > self.spare.capacity() {
+                mem::swap(&mut bytes, &mut self.spare);
+            }
+        }
     }
 
     pub(super) fn retry(&mut self, epoch: conn::Epoch) {

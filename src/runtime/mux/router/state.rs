@@ -1,8 +1,12 @@
 use std::time;
 
 use crate::conn::wire::path::reset::Token;
-use crate::conn::{self, id, scope};
-use crate::runtime::{brand, mux, routing::registry};
+use crate::conn::{self, id, life::options, scope};
+use crate::proto::datagram::Size;
+use crate::runtime::{
+    brand, mux,
+    routing::{LocalRoute as _, registry},
+};
 use crate::{errors, stream, wire::packet::long::retry};
 use mux::{app, auth, builder, handler, manage, output, router};
 use o3::depot::{
@@ -24,7 +28,6 @@ pub(crate) enum Flush {
     More,
     Backpressure,
     Waiting,
-    Closed,
 }
 
 /// Endpoint identity, local route, and entropy auth fixed at construction.
@@ -33,6 +36,20 @@ pub(in crate::runtime::mux) struct Binding<A: auth::Mode<DOMAIN>, const DOMAIN: 
     pub(in crate::runtime::mux) route: A::LocalRoute,
     pub(in crate::runtime::mux) issuer: A::Random,
     pub(in crate::runtime::mux) opening_lifetime: Option<o3::base::time::Positive>,
+}
+
+impl<A: auth::Mode<DOMAIN>, const DOMAIN: u8> Binding<A, DOMAIN> {
+    pub(in crate::runtime::mux) fn packet_cap(
+        &self,
+        options: &options::Options,
+        out: usize,
+    ) -> Option<Size> {
+        let overhead = self
+            .route
+            .prefix()
+            .map_or(0, |prefix| usize::from(prefix.extent().get()));
+        Size::new(options.packet_max().min(out.checked_sub(overhead)?) as u32)
+    }
 }
 
 pub(crate) struct State<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv> {

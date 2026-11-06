@@ -322,7 +322,7 @@ fn kind(record: delivery::Control) -> Option<Lane> {
         delivery::Control::StopSending(_, _) => Lane::Stop,
         delivery::Control::ResetStream(_, _, _) => Lane::Reset,
         delivery::Control::MaxData(_) => Lane::MaxData,
-        delivery::Control::MaxStreamData(_, _) => Lane::MaxStreamData,
+        delivery::Control::MaxStreamData(..) => Lane::MaxStreamData,
         delivery::Control::MaxStreams(stream::Direction::Bidi, _) => Lane::MaxBidi,
         delivery::Control::MaxStreams(stream::Direction::Uni, _) => Lane::MaxUni,
         delivery::Control::PathResponse(_) => Lane::Response,

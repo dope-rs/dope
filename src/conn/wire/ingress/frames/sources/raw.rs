@@ -21,7 +21,7 @@ pub(super) unsafe fn try_datagram<B: stream::Recv>(
     // SAFETY: the caller retains the exact source/count proof. Each successful
     // callback writes one final slot; o3 owns the initialized prefix and cleanup.
     let values = unsafe {
-        alloc::raw::AssumeInit::try_map(values, entries, |slot, value| {
+        alloc::raw::try_map(values, entries, |slot, value| {
             Ok::<_, detail::Unavailable>(slot.insert(value.map_err(detail::Unavailable::Backing)?))
         })
     }?;

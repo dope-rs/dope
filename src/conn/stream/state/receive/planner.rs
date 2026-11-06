@@ -114,7 +114,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Planner<'_, B, D> {
         } else {
             let number = stream.number();
             let dir = stream.direction();
-            let limit = *dir.bind(&self.peer_initiated.max);
+            let limit = *dir.bind(&self.peer_initiated.published);
             if number >= limit.get() {
                 return Err(Receive::Peer {
                     number,

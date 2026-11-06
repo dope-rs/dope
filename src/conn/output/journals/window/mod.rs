@@ -184,6 +184,9 @@ impl Window {
                 unsafe { pointer.add(target).copy_from_nonoverlapping(source, 1) };
             }
         };
+        // The initial removed edge changes head/len; only interior removals
+        // require moving survivors in either traversal direction.
+        let mut edge = 0;
         let mut removed = 0;
         let mut steps = 0..len;
         let result = loop {
@@ -194,7 +197,11 @@ impl Window {
             // SAFETY: each original initialized slot is visited once. Moves
             // only fill already visited slots, including across the wrap.
             if accept(unsafe { (*source).assume_init_mut() }, true) {
-                removed += 1;
+                if step == edge {
+                    edge += 1;
+                } else {
+                    removed += 1;
+                }
                 if let Err(error) = emit(unsafe { source.read().assume_init() }) {
                     break Err(error);
                 }
@@ -210,6 +217,8 @@ impl Window {
             let _ = accept(unsafe { (*source).assume_init_mut() }, false);
             retain(offset, source, removed);
         }
+        let advance = if REVERSE { removed } else { edge };
+        removed += edge;
         if removed == 0 {
             return result;
         }
@@ -217,8 +226,8 @@ impl Window {
         state.len = Count::new((len - removed) as u32);
         if len == removed {
             state.head = Count::EMPTY;
-        } else if REVERSE {
-            state.head = Count::new(state.physical(capacity, removed) as u32);
+        } else if advance != 0 {
+            state.head = Count::new(state.physical(capacity, advance) as u32);
         }
         result
     }

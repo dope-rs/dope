@@ -137,7 +137,7 @@ impl<'a> Selected<'a> {
                 Encodable::ResetStream(id, code, final_)
             }
             delivery::Control::MaxData(value) => Encodable::MaxData(value),
-            delivery::Control::MaxStreamData(id, value) => Encodable::MaxStreamData(id, value),
+            delivery::Control::MaxStreamData(id, _, value) => Encodable::MaxStreamData(id, value),
             delivery::Control::MaxStreams(dir, value) => {
                 Encodable::MaxStreams(dir, varint::VarInt::from(value))
             }

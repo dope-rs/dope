@@ -119,6 +119,31 @@ fn matching_srt_closes() {
 }
 
 #[test]
+fn active_reset_token_requires_cid_use() {
+    use common::suite::peers::packet::{Pair, bytes};
+
+    let now = Instant::now();
+    let mut pair = Pair::try_new(1, now, |_| {}).expect("packet peer");
+    let notice = bytes::notice(1, 1).expect("replacement CID");
+    let token = *notice.last_chunk::<16>().expect("notice token");
+    pair.receive(&notice, now).expect("install replacement CID");
+
+    for sent in [false, true] {
+        if sent {
+            assert_eq!(pair.retired(now).expect("use replacement CID"), [0]);
+        }
+        let mut reset = retry::try_tail(0x40, 30, token).expect("reset tail");
+        let result = pair.server.with_scope(|mut scope| {
+            scope
+                .input(&mut pair.work)
+                .recv_packet(&mut reset, now, |_| {})
+        });
+        assert_eq!(result.is_ok(), sent);
+        assert_eq!(pair.server.view().path().is_reset(), sent);
+    }
+}
+
+#[test]
 fn authenticated_packet_with_reset_tail_keeps_its_outcome() {
     use common::suite::peers::packet::{Pair, bytes};
 

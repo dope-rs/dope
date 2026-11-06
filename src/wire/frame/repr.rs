@@ -102,7 +102,7 @@ pub(super) fn try_ranges(
     // against its immutable borrowed bytes. Consuming it yields one pair per
     // admitted slot, and the callback only transfers that pair into the slot.
     let block = unsafe {
-        alloc::raw::AssumeInit::try_map(block, ranges, |slot, pair| {
+        alloc::raw::try_map(block, ranges, |slot, pair| {
             Ok::<_, alloc::Error>(slot.insert(pair))
         })
     }?;

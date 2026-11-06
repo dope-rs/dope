@@ -3,6 +3,7 @@ use crate::conn::wire::path::probe;
 use crate::conn::{
     self,
     output::control::{self, journal::storage::View, revision},
+    output::delivery,
 };
 use o3::depot;
 use o3::depot::index::Access;
@@ -43,6 +44,7 @@ const _: () = {
 /// Consumes the selected slot, packet operation, and original exclusive owner.
 pub(in crate::conn) fn commit(
     live: depot::raw::Proof<((&mut control::Pending, State), revision::Key), Initialized<State>>,
+    publish: impl FnOnce(&delivery::Control),
 ) -> revision::Key {
     let live = unsafe {
         live.map(|((pending, state), key)| {
@@ -53,6 +55,7 @@ pub(in crate::conn) fn commit(
         })
     };
     let (mut slot, (state, key)) = storage::Set::project(live);
+    publish(slot.entry().record());
     match state {
         State::Ready => {
             slot.dispatch(conn::Epoch::Application);
@@ -127,11 +130,11 @@ unsafe impl depot::raw::KeySource for Lane<'_> {
 }
 
 unsafe impl depot::raw::KeyRead for Lane<'_> {
-    fn entry<'a>(
-        live: depot::raw::Proof<(&'a Self, links::Index), Initialized<()>>,
-    ) -> keyed::Entry<'a, Self::Key> {
+    fn link(
+        live: depot::raw::Proof<(&Self, links::Index), Initialized<()>>,
+    ) -> &keyed::Link<Self::Key> {
         let live = unsafe { live.map(|(lane, index)| (lane.pending.storage.view(), index)) };
-        keyed::Entry::from_source(storage::Projected(live))
+        View::link(live)
     }
 }
 
@@ -188,11 +191,11 @@ unsafe impl depot::raw::KeySource for Flight<'_> {
 }
 
 unsafe impl depot::raw::KeyRead for Flight<'_> {
-    fn entry<'a>(
-        live: depot::raw::Proof<(&'a Self, links::Index), Initialized<()>>,
-    ) -> keyed::Entry<'a, Self::Key> {
+    fn link(
+        live: depot::raw::Proof<(&Self, links::Index), Initialized<()>>,
+    ) -> &keyed::Link<Self::Key> {
         let live = unsafe { live.map(|(flight, index)| (flight.pending.storage.view(), index)) };
-        keyed::Entry::from_source(storage::Projected(live))
+        View::link(live)
     }
 }
 

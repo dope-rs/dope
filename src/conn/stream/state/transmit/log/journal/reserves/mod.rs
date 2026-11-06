@@ -72,13 +72,19 @@ impl<O: journal::raw::Schedule> Schedule<O> {
         apply: impl for<'s> FnOnce(Selection<'s, O::Send>, O::Context<'a>) -> Result<R, E>,
     ) -> Result<Option<R>, E> {
         let (state, entries, context) = self.owner.parts();
-        while let Some(handle) = state.scratch_pending.get(self.next).copied() {
+        let len = state.scratch_pending.len();
+        while self.next < len {
             let Some(vacancy) = entries.vacancy() else {
                 return Ok(None);
             };
             if !state.deliveries.has_room(self.count + 1) {
                 return Ok(None);
             }
+            let index = usize::from(state.scratch_start) + self.next;
+            let index = if index >= len { index - len } else { index };
+            // SAFETY: the frozen snapshot has start < len and at most 256 entries;
+            // next < len, so one subtraction keeps this index within that snapshot.
+            let handle = unsafe { *state.scratch_pending.get_unchecked(index) };
             self.next += 1;
             let Some(occupied) = state.map.occupied(handle) else {
                 continue;
@@ -93,6 +99,9 @@ impl<O: journal::raw::Schedule> Schedule<O> {
                 context,
             )
             .map(Some);
+        }
+        if self.count == 0 {
+            state.scratch_consumed = true;
         }
         Ok(None)
     }
@@ -306,6 +315,9 @@ impl<'a, D: buffer::raw::Segment> Scope<'a, D> {
         supply: journals::Supply<streams::Tag>,
         mut emit: impl FnMut(journals::Slot<'a, streams::Tag>, delivery::Handle<delivery::Stream>),
     ) {
+        if matches!(self.entries.as_slice().last(), Some(Entry::Fresh(_))) {
+            self.state.scratch_consumed = true;
+        }
         for (entry, slot) in supply.consume(self.entries.drain()) {
             let handle = match entry {
                 Entry::Retry(selected) => {

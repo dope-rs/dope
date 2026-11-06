@@ -199,17 +199,19 @@ impl<B: stream::Recv, D: buffer::raw::Segment> ops::DerefMut for Streams<B, D> {
 pub(super) struct Peer {
     opened_count: [u64; 2],
     pub(super) max: [bounded::U64<0, { conn::MAX_STREAM_COUNT }>; 2],
-    pub(super) initial_max: [bounded::U64<0, { conn::MAX_STREAM_COUNT }>; 2],
-    pub(super) closed: [u64; 2],
+    pub(super) published: [bounded::U64<0, { conn::MAX_STREAM_COUNT }>; 2],
+    pub(super) initial_max: [Count; 2],
+    pub(super) closed: [u32; 2],
     pub(super) max_streams: [Option<owner::Key<kind::MaxStreams>>; 2],
 }
 
 impl Peer {
     fn new(initial: [Count; 2]) -> Self {
-        let initial = initial.map(|value| bounded::U64::clamp(value.get() as u64));
+        let max = initial.map(|value| bounded::U64::clamp(value.get() as u64));
         Self {
             opened_count: [0; 2],
-            max: initial,
+            max,
+            published: max,
             initial_max: initial,
             closed: [0; 2],
             max_streams: [None; 2],
@@ -383,7 +385,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> State<B, D> {
         if matches!(dir, Direction::Uni) && matches!(access, Access::Send) {
             return Err(conn::Error::StreamState);
         }
-        if stream.number() >= dir.bind(&self.peer_initiated.max).get() {
+        if stream.number() >= dir.bind(&self.peer_initiated.published).get() {
             return Err(conn::Error::StreamLimit);
         }
         Ok(())
@@ -421,6 +423,6 @@ const _: () = assert!(mem::size_of::<Peer>() == 10 * mem::size_of::<u64>());
 const _: () = {
     use o3::buffer::resident::Shared;
 
-    assert!(mem::size_of::<Streams<Vec<u8>, Shared<'static>>>() == 109 * mem::size_of::<usize>());
-    assert!(mem::size_of::<State<Vec<u8>, Shared<'static>>>() == 103 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Streams<Vec<u8>, Shared<'static>>>() == 111 * mem::size_of::<usize>());
+    assert!(mem::size_of::<State<Vec<u8>, Shared<'static>>>() == 105 * mem::size_of::<usize>());
 };

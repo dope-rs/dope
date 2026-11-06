@@ -82,6 +82,23 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         Ok(plan)
     }
 
+    pub fn single(
+        bind: routing::Single,
+        source: rustls::ServerConfig,
+        opts: options::Options,
+        config: config::Config,
+    ) -> Result<Plan<ID, R, routing::SingleRoute>, endpoint::PlanError> {
+        let ep = endpoint::Plan::single(config, &bind).map_err(endpoint::PlanError::Config)?;
+        let (address, route) = bind.into_parts();
+        Ok(Plan::prepare(
+            Socket::Bind(address),
+            route,
+            source,
+            opts,
+            ep,
+        ))
+    }
+
     /// Consumes one routed socket and owns its TLS authority through endpoint retirement.
     pub fn routed(
         bind: routing::Binding,

@@ -50,25 +50,23 @@ impl<S> Sender<S> {
     }
 }
 
-type Pooled<'a, 'pool, 'd, const ID: u8, P, B, A, R> = Sender<
+type Pooled<'a, 'pool, 'd, const ID: u8, P, B, M> = Sender<
     control::Sender<
         'a,
         'd,
         ID,
-        client::Bridge<'d, ID, P, A, B, R>,
+        client::Bridge<'d, ID, P, B>,
         <P as protocol::Protocol<'d>>::Receive,
-        <A as auth::Mode>::Binding,
+        M,
         datagram::Sealed<'pool>,
     >,
 >;
 
-impl<'pool, 'd, const ID: u8, P, B, A, R> Pooled<'_, 'pool, 'd, ID, P, B, A, R>
+impl<'pool, 'd, const ID: u8, P, B, M> Pooled<'_, 'pool, 'd, ID, P, B, M>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
-    A: auth::Mode,
-    A::Binding: owner::Binding<'d, ID>,
-    R: routing::PeerRoute,
+    M: owner::Binding<'d, ID>,
 {
     /// Borrows protocol state while retaining this admitted output position.
     pub fn protocol(&self) -> &P {
@@ -249,7 +247,7 @@ where
     /// Acquires one output position before selecting a logical client slot.
     pub fn try_sender(
         self,
-    ) -> Result<Pooled<'turn, 'pool, 'd, ID, P, B, A, R>, control::SendError> {
+    ) -> Result<Pooled<'turn, 'pool, 'd, ID, P, B, A::Binding>, control::SendError> {
         self.0.apply(|ctl, now| {
             let inner =
                 actions::try_sender(ctl.inner.as_mut().project().inner.project().endpoint, now)?;

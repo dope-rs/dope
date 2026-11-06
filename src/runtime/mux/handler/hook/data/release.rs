@@ -3,7 +3,7 @@ use o3::buffer;
 use o3::buffer::hold::evidence;
 use std::pin;
 
-use crate::conn::{self, id, scope};
+use crate::conn::{id, scope};
 use crate::runtime::mux::handler::hook::set;
 use crate::runtime::mux::{app, handler::Handler};
 use crate::stream::{self, release, send::admit};
@@ -19,18 +19,6 @@ pub trait Mode<H, const DOMAIN: u8, B, D, I: id::Temporal>: Boundary {
     ) where
         B: stream::Recv,
         D: buffer::raw::Segment;
-
-    /// Releases all send owners after slot detachment, consuming final readiness.
-    fn retire(
-        handler: pin::Pin<&mut H>,
-        mut conn: conn::Connection<DOMAIN, B, D>,
-        handle: id::Handle<I, DOMAIN>,
-    ) where
-        B: stream::Recv,
-        D: buffer::raw::Segment,
-    {
-        conn.with_scope(|scope| Self::cancel(handler, scope, handle));
-    }
 
     fn release(
         handler: pin::Pin<&mut H>,

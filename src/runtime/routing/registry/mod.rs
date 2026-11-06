@@ -11,5 +11,5 @@ pub(in crate::runtime) use set::Set;
 pub(in crate::runtime) use set::routes::claims::Reservation;
 pub(in crate::runtime) use set::routes::issues::Drain;
 pub(in crate::runtime) use set::routes::{Directory, Hit};
-pub(in crate::runtime) use set::scope::{Scope, Taken};
+pub(in crate::runtime) use set::scope::Scope;
 pub(in crate::runtime) use table::Table;

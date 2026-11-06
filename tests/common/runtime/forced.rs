@@ -117,8 +117,8 @@ impl<'d> cert::Sink<0, id::Driver<'d>> for Server<'_> {
 }
 
 impl<'d> packet::Sink<0, Vec<u8>, resident::Shared<'d>, id::Driver<'d>> for Server<'_> {
-    fn packet(event: packet::Event<'_, Self>) {
-        panic!("server packet: {:?}", event.into_parts().2);
+    fn packet(mut event: packet::Event<'_, Self>) {
+        panic!("server packet: {:?}", event.as_parts().2);
     }
 }
 

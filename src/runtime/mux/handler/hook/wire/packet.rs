@@ -40,6 +40,10 @@ impl<'scope, H> Event<'scope, H> {
         }
     }
 
+    pub fn as_parts(&mut self) -> (pin::Pin<&mut H>, &net::SocketAddr, &Failure<'scope>, usize) {
+        (self.handler.as_mut(), &self.from, &self.error, self.len)
+    }
+
     pub fn into_parts(
         self,
     ) -> (

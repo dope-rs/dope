@@ -44,24 +44,9 @@ impl<T, const MAX: usize> Vec<T, MAX> {
         Ok(storage::Vacant { values: self })
     }
 
-    pub(crate) fn remove(&mut self, test: impl FnMut(&T) -> bool) {
-        let Some(index) = self.backing.as_slice().iter().position(test) else {
-            return;
-        };
-        let (len, entries) = self.backing.parts_mut();
-        let last = len.raw() - 1;
-        let entries = entries.as_mut_ptr();
-        if index != last as usize && mem::size_of::<T>() != 0 {
-            unsafe { ptr::swap_nonoverlapping(entries.add(index), entries.add(last as usize), 1) };
-        }
-        *len = capacity::Count::new(last);
-        unsafe { (*entries.add(last as usize)).assume_init_drop() };
-    }
-
     pub(in crate::conn::wire::storage) fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
         let (len, entries) = self.backing.parts_mut();
         let original = len.raw();
-        *len = capacity::Count::EMPTY;
         let mut deleted = 0;
         for index in 0..original {
             let entry = unsafe { entries.as_mut_ptr().add(index as usize) };

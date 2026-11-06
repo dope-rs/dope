@@ -37,7 +37,7 @@ pub(crate) struct Range {
 }
 
 /// Exclusive admission while the sender still accepts bytes and its final mark.
-pub(crate) struct Open<'a>(&'a mut State);
+pub(crate) struct Open<'a>(&'a mut Sender);
 
 pub(crate) struct Append<'a> {
     open: Open<'a>,
@@ -71,7 +71,7 @@ impl<'lane, 'sender, O: buffer::raw::Segment> From<Source<'lane, 'sender, O>>
         };
         Head {
             entry,
-            front: &mut sender.state.position.front,
+            front: &mut sender.position.front,
             amount,
         }
     }
@@ -91,7 +91,7 @@ pub(crate) struct Acknowledged;
 /// Retains the unacknowledged sender while its bytes are readmitted as fresh.
 #[must_use]
 pub(crate) struct Replay<'a> {
-    state: &'a mut State,
+    sender: &'a mut Sender,
     bytes: usize,
 }
 
@@ -101,9 +101,9 @@ impl Replay<'_> {
     }
 
     pub(crate) fn commit(self) {
-        self.state.position.pending = varint::Span::from_zero(self.state.position.pending.end());
-        if matches!(self.state.finish, Finish::Sent) {
-            self.state.finish = Finish::Marked;
+        self.sender.position.pending = varint::Span::from_zero(self.sender.position.pending.end());
+        if matches!(self.sender.finish, Finish::Sent) {
+            self.sender.finish = Finish::Marked;
         }
     }
 }
@@ -265,14 +265,14 @@ impl Position {
 }
 
 #[derive(Default)]
-pub(crate) struct State {
+pub(crate) struct Sender {
     pub(super) position: Position,
     pub(super) finish: Finish,
     stop_error: Option<varint::Stored>,
     reset_error: Option<varint::Stored>,
 }
 
-impl State {
+impl Sender {
     pub(crate) fn open(&mut self) -> Option<Open<'_>> {
         match self.finish {
             Finish::More => Some(Open(self)),
@@ -300,53 +300,31 @@ impl State {
         self.reset_error
             .map(|value| errors::Code::from_varint(value.get()))
     }
-}
 
-impl ops::Deref for State {
-    type Target = Position;
-
-    fn deref(&self) -> &Self::Target {
-        &self.position
-    }
-}
-
-impl ops::DerefMut for State {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.position
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct Sender {
-    pub(super) state: State,
-}
-
-impl Sender {
     pub(crate) fn publish(commit: crate::conn::Publication<'_>) {
         let (sender, written) = commit.into_parts();
-        sender.state.position.pending = written.pending;
+        sender.position.pending = written.pending;
         if matches!(written.boundary, send::Boundary::End) {
-            sender.state.finish = Finish::Sent;
+            sender.finish = Finish::Sent;
         }
     }
 
     pub(crate) fn try_replay(&mut self) -> Result<Replay<'_>, Acknowledged> {
-        if self.state.position.base_offset != varint::VarInt::ZERO
-            || matches!(self.state.finish, Finish::Acked)
+        if self.position.base_offset != varint::VarInt::ZERO || matches!(self.finish, Finish::Acked)
         {
             return Err(Acknowledged);
         }
-        let bytes = self.state.position.buffered_len() - self.state.view().unsent_len();
+        let bytes = self.position.buffered_len() - self.view().unsent_len();
         Ok(Replay {
-            state: &mut self.state,
+            sender: self,
             bytes,
         })
     }
 
     /// A rejected early reset retains no byte owners and restarts its final size.
     pub(crate) fn reject_reset(&mut self) {
-        self.state.position = Position::default();
-        self.state.finish = Finish::More;
+        self.position = Position::default();
+        self.finish = Finish::More;
     }
 
     pub(crate) fn ack<E: release::Sink, O: buffer::raw::Segment>(
@@ -355,7 +333,7 @@ impl Sender {
         let (sender, mut chunks, buffers, run) = reclaim.into_parts();
         let len = run.len();
         let finish = match run.boundary() {
-            send::Boundary::More => sender.state.finish,
+            send::Boundary::More => sender.finish,
             send::Boundary::End => Finish::Acked,
         };
         let base = run.end();
@@ -376,14 +354,14 @@ impl Sender {
                 ControlFlow::Continue(rest) => rest,
             };
             rest = left;
-            sender.state.position.front = Cursor::default();
+            sender.position.front = Cursor::default();
             let (owner, lane) = front.take();
             chunks = lane;
             released.release(owner, buffers);
         }
-        let buffered = sender.state.position.buffered_len() - len;
-        sender.state.position.base_offset = base;
-        sender.state.finish = finish;
+        let buffered = sender.position.buffered_len() - len;
+        sender.position.base_offset = base;
+        sender.finish = finish;
         if matches!(finish, Finish::Acked) && buffered == 0 {
             Acked::Closed(released)
         } else {
@@ -397,10 +375,10 @@ impl Sender {
         buffers: &mut outbound::BufferCache,
         code: errors::Code,
     ) -> batch::Batch<E::Mode> {
-        let end = self.state.view().next_offset();
-        self.state.stop_error = Some((*code.as_varint()).into());
+        let end = self.view().next_offset();
+        self.stop_error = Some((*code.as_varint()).into());
         let released = self.discard_all::<E>(chunks, buffers);
-        self.state.position.base_offset = end;
+        self.position.base_offset = end;
         released
     }
 
@@ -412,9 +390,9 @@ impl Sender {
         code: errors::Code,
     ) -> (batch::Batch<E::Mode>, bool) {
         let released = self.stop::<E>(chunks, buffers, code);
-        let reset = self.state.reset_error.is_none();
+        let reset = self.reset_error.is_none();
         if reset {
-            self.state.reset_error = Some((*code.as_varint()).into());
+            self.reset_error = Some((*code.as_varint()).into());
         }
         (released, reset)
     }
@@ -425,10 +403,10 @@ impl Sender {
         buffers: &mut outbound::BufferCache,
         code: errors::Code,
     ) -> batch::Batch<E::Mode> {
-        let end = self.state.view().next_offset();
+        let end = self.view().next_offset();
         let released = self.discard_all::<E>(chunks, buffers);
-        self.state.position.base_offset = end;
-        self.state.reset_error = Some((*code.as_varint()).into());
+        self.position.base_offset = end;
+        self.reset_error = Some((*code.as_varint()).into());
         released
     }
 
@@ -437,27 +415,21 @@ impl Sender {
         chunks: &mut pool::Lane<'_, chunk::Node<impl buffer::raw::Segment>>,
         buffers: &mut outbound::BufferCache,
     ) -> batch::Batch<E::Mode> {
-        let mut released = batch::Batch::<E::Mode>::wire_bytes(self.state.position.buffered_len());
+        let mut released = batch::Batch::<E::Mode>::wire_bytes(self.position.buffered_len());
         while let Some(owner) = chunks.pop_front() {
             released.release(owner, buffers);
         }
-        self.state.position.pending = varint::Span::empty(self.state.position.pending.start());
-        self.state.position.front = Cursor::default();
+        self.position.pending = varint::Span::empty(self.position.pending.start());
+        self.position.front = Cursor::default();
         released
     }
 }
 
 impl ops::Deref for Sender {
-    type Target = State;
+    type Target = Position;
 
     fn deref(&self) -> &Self::Target {
-        &self.state
-    }
-}
-
-impl ops::DerefMut for Sender {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.state
+        &self.position
     }
 }
 

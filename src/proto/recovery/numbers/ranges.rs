@@ -76,12 +76,6 @@ impl Window {
         !self.contains(pn)
     }
 
-    fn remove_bit(&mut self, pn: u64, largest: u64) {
-        if pn <= largest {
-            self.clear_bit(pn);
-        }
-    }
-
     pub(super) fn insert(&mut self, numbers::Fresh(pn): numbers::Fresh) {
         let raw = pn.get();
         let Some(old) = self.largest() else {
@@ -99,8 +93,8 @@ impl Window {
             if retired >= WINDOW_BITS as u64 {
                 self.words.fill(0);
             } else {
-                for offset in 0..retired {
-                    self.remove_bit(old_base + offset, old);
+                for pn in old_base..new_base.min(old + 1) {
+                    self.clear_bit(pn);
                 }
             }
             self.largest = pn;

@@ -11,12 +11,13 @@ use crate::runtime::brand;
 use crate::runtime::endpoint::{self, control::SendError, owner};
 use crate::runtime::mux::{self, router::Admission};
 use crate::runtime::routing;
+use life::topology;
 
 /// The dialer binds its protocol bridge and receive storage to the same endpoint.
-type Connection<'pool, 'd, const ID: u8, P, B, A, R> = endpoint::Endpoint<
+type Connection<'pool, 'd, const ID: u8, P, B, A> = endpoint::Endpoint<
     'd,
     ID,
-    client::Bridge<'d, ID, P, A, B, R>,
+    client::Bridge<'d, ID, P, B>,
     <P as protocol::Protocol<'d>>::Receive,
     endpoint::Idle,
     <A as auth::Mode>::Binding,
@@ -37,7 +38,8 @@ pub(in crate::client) struct Engine<
     A::Binding: owner::Binding<'d, ID>,
 {
     #[pin]
-    pub(in crate::client) endpoint: Connection<'pool, 'd, ID, P, B, A, R>,
+    pub(in crate::client) endpoint: Connection<'pool, 'd, ID, P, B, A>,
+    topology: topology::Topology<A, R>,
     config: C,
 }
 
@@ -51,10 +53,15 @@ where
     R: routing::PeerRoute,
 {
     pub(in crate::client) fn new(
-        endpoint: Connection<'pool, 'd, ID, P, B, A, R>,
+        endpoint: Connection<'pool, 'd, ID, P, B, A>,
+        topology: topology::Topology<A, R>,
         config: C,
     ) -> Self {
-        Self { endpoint, config }
+        Self {
+            endpoint,
+            topology,
+            config,
+        }
     }
 
     /// Existing transport deadlines own capacity wakeup.
@@ -82,18 +89,10 @@ where
                 .lifecycle()
                 .next_due(endpoint.domain().identity(), raw)
         })?;
-        let due = match due.transpose() {
-            Ok(due) => due,
-            Err(failure) => {
-                let (due, error) = failure.into_parts();
-                return self.failed(scope, due, now, error.into());
-            }
-        };
         enum Failure {
             Fresh(errors::Connect),
             Reconnect(errors::Reconnect),
         }
-        let auth = due.auth();
         let config = self
             .as_mut()
             .project()
@@ -109,23 +108,23 @@ where
             });
             return Some(false);
         };
-        let again = self
-            .as_mut()
-            .project()
-            .endpoint
-            .handler_mut()
-            .life_mut()
-            .take_again(&due);
         let result = now.at(self.as_mut()).apply(|core, raw| {
             let mut this = core.project();
-            match again {
+            let (addr, auth, route) = this.topology.peer(due.slot.index() as usize)?;
+            let again = this
+                .endpoint
+                .as_mut()
+                .handler_mut()
+                .life_mut()
+                .take_again(&due);
+            Some(match again {
                 Some(again) => auth
                     .reconnect(
                         scope.reborrow(),
                         this.endpoint.as_mut(),
                         config,
                         again,
-                        due.route(),
+                        route,
                         raw,
                     )
                     .map_err(Failure::Reconnect),
@@ -133,14 +132,14 @@ where
                     .connect(
                         scope.reborrow(),
                         this.endpoint.as_mut(),
-                        due.address(),
+                        *addr,
                         config,
-                        due.route(),
+                        route,
                         raw,
                     )
                     .map_err(Failure::Fresh),
-            }
-        });
+            })
+        })?;
         match result {
             Ok(handle) => {
                 self.project()
@@ -171,10 +170,10 @@ where
         }
     }
 
-    fn failed<T>(
+    fn failed(
         self: pin::Pin<&mut Self>,
         scope: brand::Token<'_>,
-        due: life::Due<T, R>,
+        due: life::Due,
         now: clock::Moment<'d>,
         error: errors::Connect,
     ) -> Option<bool> {

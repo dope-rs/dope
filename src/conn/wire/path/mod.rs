@@ -423,27 +423,17 @@ impl State {
     ) -> conn::Effects {
         'record: {
             let Some(path) = path else {
+                self.peer.use_active();
                 break 'record;
             };
-            if self
-                .address
-                .candidate
-                .is_some_and(|item| item.path() == path)
-            {
-                self.peer.use_spare();
-            }
-            if self
-                .address
-                .previous
-                .is_some_and(|item| item.path() == path)
-            {
-                self.peer.use_previous();
-            }
             let active = self.address.active;
             let Some(item) = self.address.get_mut(path) else {
                 break 'record;
             };
-            if Some(item.address) != active {
+            if Some(item.address) == active {
+                self.peer.use_active();
+            } else {
+                self.peer.use_selected();
                 let Some(sent) = item.sent.checked_add(bytes as u64) else {
                     break 'record;
                 };

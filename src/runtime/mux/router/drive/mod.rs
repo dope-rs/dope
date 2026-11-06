@@ -1,5 +1,5 @@
 use o3::buffer;
-use std::{num::NonZero, pin, time};
+use std::{num::NonZero, time};
 
 use dope::core::io::datagram;
 
@@ -58,9 +58,6 @@ fn flush_slot_round<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         slot.peer_addr.overhead()
     };
     let outer = max.saturating_add(overhead);
-    if outer.get() > output.bytes_capacity {
-        return Ok(router::Flush::Closed);
-    }
     let gso = if slot
         .conn
         .view()
@@ -155,27 +152,19 @@ impl Step {
     }
 }
 
-fn flush_slot<
-    'storage,
-    'id,
-    A: auth::Mode<DOMAIN>,
-    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
-    const DOMAIN: u8,
-    B: stream::Recv,
->(
-    sink: pin::Pin<&mut H>,
+fn flush_slot<'storage, 'id, A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv>(
     scope: brand::Token<'_>,
-    mut slots: registry::Scope<'storage, 'id, H::Connection, DOMAIN, B, A::Send, A::Session>,
+    mut slots: registry::Scope<'storage, 'id, C, DOMAIN, B, A::Send, A::Session>,
     key: registry::Key<'id>,
     binding: &mut router::Binding<A, DOMAIN>,
     outgoing: &mut output::Storage,
     now: time::Instant,
     blocked: usize,
-) -> Result<router::Flush, errors::Transmit<A::Identity, DOMAIN>> {
+) -> Result<(), errors::Transmit<A::Identity, DOMAIN>> {
     let peers = slots.len_in::<{ mux::FLUSH_QUEUE }>();
     let handle = slots.handle(binding.domain, key);
-    let round = router::State::<A, H::Connection, DOMAIN, B>::output_in(
-        scope.reborrow(),
+    let round = router::State::<A, C, DOMAIN, B>::output_in(
+        scope,
         &mut slots,
         key,
         binding,
@@ -185,7 +174,7 @@ fn flush_slot<
             let round = flush_slot_round(slot, output, peers, now);
             let ready = match &round {
                 Ok(router::Flush::More | router::Flush::Backpressure) | Err(_) => true,
-                Ok(router::Flush::Idle | router::Flush::Waiting | router::Flush::Closed) => false,
+                Ok(router::Flush::Idle | router::Flush::Waiting) => false,
             };
             (round, ready)
         },
@@ -196,14 +185,7 @@ fn flush_slot<
     {
         slots.block_flush(outgoing.pending.bytes(), blocked + 1);
     }
-    match round {
-        router::Flush::Closed => {
-            let taken = slots.into_taken(key, binding.domain);
-            router::Turn::<A, H, DOMAIN, B>::retire(sink, taken, scope, now);
-            Ok(router::Flush::Closed)
-        }
-        round => Ok(round),
-    }
+    Ok(())
 }
 
 fn flush_one<
@@ -224,11 +206,10 @@ fn flush_one<
     {
         return Ok(Step::Idle);
     }
-    turn.run(|scope, turn| {
+    brand::Token::with_mut(turn, |scope, turn| {
         let state = &mut *turn.state;
         let binding = &mut state.binding;
         let outgoing = &mut state.outgoing;
-        let sink = turn.handler.as_mut();
         Scope::with(&mut state.registry, |mut slots| {
             let blocked = slots.blocked_flush(outgoing.pending.bytes());
             let Some(key) = slots.pop_front::<{ mux::FLUSH_QUEUE }>() else {
@@ -239,9 +220,7 @@ fn flush_one<
             {
                 return Ok(Step::Driven);
             }
-            flush_slot::<A, H, DOMAIN, B>(
-                sink, scope, slots, key, binding, outgoing, now, blocked,
-            )?;
+            flush_slot(scope, slots, key, binding, outgoing, now, blocked)?;
             Ok(Step::Driven)
         })
     })
@@ -283,7 +262,7 @@ fn reap_one<
     turn: &mut router::Turn<'_, A, H, DOMAIN, B>,
     now: time::Instant,
 ) -> Result<Step, errors::Transmit<A::Identity, DOMAIN>> {
-    turn.run(|scope, turn| {
+    brand::Token::with_mut(turn, |scope, turn| {
         let state = &mut *turn.state;
         let binding = &mut state.binding;
         let sink = turn.handler.as_mut();
@@ -318,8 +297,7 @@ fn reap_one<
                     },
                 );
             if closed {
-                let taken = slots.into_taken(key, binding.domain);
-                router::Turn::<A, H, DOMAIN, B>::retire(sink, taken, scope, now);
+                slots.close(key, binding.domain, sink, scope, now);
             }
             result.map_err(|cause| errors::Transmit::new(handle, cause))?;
             Ok(Step::Driven)

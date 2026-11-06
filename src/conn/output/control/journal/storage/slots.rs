@@ -7,7 +7,7 @@ use crate::conn;
 use crate::conn::machine::storage::demand;
 use crate::conn::output::control::journal::{
     self, Lanes,
-    storage::{Entry, Key, Native, Revision, Set, Slot, Status, View},
+    storage::{Entry, Key, Native, Revision, Set, Slot, Status},
 };
 use crate::conn::output::{control, delivery};
 use control::{owner, revision};
@@ -57,37 +57,12 @@ pub(in crate::conn::output::control) struct Occupied<'a, P = ()> {
     pub(super) queues: &'a mut journal::Queues,
 }
 
-#[repr(transparent)]
-pub(in crate::conn::output::control::journal) struct Projected<S>(
-    pub depot::raw::Proof<(S, links::Index), Initialized<()>>,
-);
-
 fn project<'a, P>(
     live: depot::raw::Proof<(&'a Native<'_, P>, links::Index), Initialized<()>>,
 ) -> (Key, &'a Entry) {
     let live = unsafe { live.map(|(slot, index)| (slot.as_table().entries(), index)) };
     let (key, slot) = demand::Entries::project(live);
     (Key::new(key), &slot.value)
-}
-
-// SAFETY: the proof selects an initialized slot in the retained native store.
-unsafe impl<'a, P> depot::raw::KeyBorrow<'a> for Projected<&'a Native<'_, P>> {
-    type Key = Key;
-
-    fn parts(self) -> (Key, &'a keyed::Link<Key>) {
-        let (key, entry) = project(self.0);
-        (key, &entry.hook)
-    }
-}
-
-// SAFETY: View projects the selected native slot's generation and hook together.
-unsafe impl<'a> depot::raw::KeyBorrow<'a> for Projected<View<'a>> {
-    type Key = Key;
-
-    fn parts(self) -> (Key, &'a keyed::Link<Key>) {
-        let (key, _, entry) = View::project(self.0);
-        (key, &entry.hook)
-    }
 }
 
 struct Move<'a, 'slot, P> {
@@ -110,11 +85,9 @@ unsafe impl<P> depot::raw::KeyOwner for Move<'_, '_, P> {
         self.source
     }
 
-    fn entry<'a>(
-        live: depot::raw::Proof<(&'a Self, links::Index), Initialized<()>>,
-    ) -> keyed::Entry<'a, Key> {
+    fn link(live: depot::raw::Proof<(&Self, links::Index), Initialized<()>>) -> &keyed::Link<Key> {
         let live = unsafe { live.map(|(owner, index)| (&*owner.slot, index)) };
-        keyed::Entry::from_source(Projected(live))
+        &project(live).1.hook
     }
 }
 

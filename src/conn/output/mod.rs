@@ -234,22 +234,24 @@ pub(super) enum AmpError {
 }
 
 impl Activity {
-    fn credit(&self, received: u64, sent: u64) -> u64 {
-        if self.peer_address_validated {
+    pub(super) fn credit(validated: bool, received: u64, sent: u64) -> u64 {
+        if validated {
             return u64::MAX;
         }
-        let room = u64::MAX - sent;
-        received
-            .checked_mul(3)
-            .map_or(room, |auth| auth.saturating_sub(sent).min(room))
+        received.saturating_mul(3).saturating_sub(sent)
     }
 
     pub(super) fn amp_credit(&self) -> u64 {
-        self.credit(self.amplification_received, self.amplification_sent)
+        Self::credit(
+            self.peer_address_validated,
+            self.amplification_received,
+            self.amplification_sent,
+        )
     }
 
     pub(super) fn outer_credit(&self) -> u64 {
-        self.credit(
+        Self::credit(
+            self.peer_address_validated,
             self.outer_amplification_received,
             self.outer_amplification_sent,
         )

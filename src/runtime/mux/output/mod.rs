@@ -20,7 +20,6 @@ use o3::{
 };
 
 use crate::conn::{self, wire::packet};
-use packet::Fresh as _;
 
 pub(super) struct Storage {
     pub(super) pending: Pending,
@@ -252,22 +251,6 @@ impl Storage {
         };
         let (addr, result) = emit(flight.batch);
         (flight.commit(addr.unwrap_or(fallback)), result)
-    }
-
-    /// Builds and publishes one mux-owned cross-connection GSO flight.
-    /// The HRTB prevents the resident builder from escaping, and normal
-    /// closure return always consumes the exact admission in `commit`.
-    pub(super) fn build_gso<E>(
-        &mut self,
-        packet: usize,
-        byte: usize,
-        addr: Peer,
-        emit: impl for<'batch> FnOnce(&'batch mut packet::Gso) -> Result<(), E>,
-    ) -> (usize, Result<(), E>) {
-        self.emit_gso(packet, byte, addr, |batch| {
-            batch.prepare();
-            (None, emit(batch))
-        })
     }
 
     pub(super) fn emit_owned(

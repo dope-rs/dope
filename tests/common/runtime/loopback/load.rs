@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use app::step;
 use dope::core::driver::{
-    retained,
+    self,
     schedule::{app, ready},
 };
 use dope::runtime::shutdown;
@@ -126,7 +126,7 @@ impl<'d> Driver<'d, Capture<'d, SERVER_ROUTE>, SERVER_ROUTE, Vec<u8>, resident::
         turn: Turn<'scope, Capture<'d, SERVER_ROUTE>, C>,
         parent: ready::Target<'d>,
         work: app::Work<'turn, 'd>,
-        _driver: &mut retained::Context<'_, '_, 'd>,
+        _driver: &mut driver::Context<'_, 'd>,
     ) -> quota::Admission<step::Flow> {
         let (handler, mut conns) = turn.into_parts();
         let handler = handler.as_ref();

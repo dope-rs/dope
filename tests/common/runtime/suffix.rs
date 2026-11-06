@@ -2,7 +2,7 @@ use std::{cell::Cell, net::SocketAddr, pin::Pin, rc::Rc};
 
 use dope::core::{
     driver::{
-        retained,
+        self,
         route::KeyTag,
         schedule::{self, app, clock},
     },
@@ -70,7 +70,7 @@ impl<'d> datagram::Application<'d, KeyTag<0>> for Sender {
         socket: Pin<&mut datagram::Socket<'d, KeyTag<0>, Payload<pool::Cursor>>>,
         _: clock::Moment<'d>,
         _: app::Work<'turn, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         let this = self.get_mut();
         if let Some(payload) = this.pending.take()

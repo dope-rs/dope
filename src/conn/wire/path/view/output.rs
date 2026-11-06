@@ -1,7 +1,7 @@
 use std::{num, time};
 
 use crate::conn;
-use crate::conn::output::control;
+use crate::conn::output::{Activity, control};
 use crate::conn::wire::path;
 use crate::proto::path::Peer;
 use crate::proto::recovery::{numbers, pmtud};
@@ -94,13 +94,8 @@ impl<'a> Output<'a> {
         }
         let mut expanded = observed.validated;
         if !observed.validated {
-            let credit = |received: u64, sent: u64| {
-                let auth = u128::from(received) * 3;
-                auth.saturating_sub(u128::from(sent))
-                    .min(u128::from(u64::MAX - sent)) as u64
-            };
-            let inner = credit(observed.received, observed.sent);
-            let outer = credit(observed.outer_received, observed.outer_sent)
+            let inner = Activity::credit(false, observed.received, observed.sent);
+            let outer = Activity::credit(false, observed.outer_received, observed.outer_sent)
                 .saturating_sub(observed.address.overhead() as u64);
             let room = inner.min(outer).min(usize::MAX as u64) as usize;
             expanded = room >= pmtud::BASE_PMTU as usize;

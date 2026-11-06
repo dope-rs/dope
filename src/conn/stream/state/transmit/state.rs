@@ -13,9 +13,14 @@ use crate::wire::{
     varint::VarInt,
 };
 use log::journal;
+use std::num::NonZero;
 
 pub(in crate::conn) struct State<D: buffer::raw::Segment> {
     pub(in crate::conn::stream::state::transmit) scratch_pending: Vec<queue::Handle>,
+    pub(in crate::conn::stream::state::transmit) scratch_start: u8,
+    pub(in crate::conn::stream::state::transmit) scratch_consumed: bool,
+    schedule_phase: u8,
+    schedule_remaining: u32,
     pub(in crate::conn::stream::state::transmit) deliveries: journal::Journal,
     pub(in crate::conn::stream::state::transmit) map: queue::Map<D>,
     pub(in crate::conn) peer: peer::Peer,
@@ -30,6 +35,10 @@ impl<D: buffer::raw::Segment> State<D> {
         scratch.clear();
         Self {
             scratch_pending: scratch,
+            scratch_start: 0,
+            scratch_consumed: false,
+            schedule_phase: 0,
+            schedule_remaining: 0,
             deliveries: journal::Journal::new(journal),
             map,
             peer: peer::Peer::new(queue::Credit::new(VarInt::ZERO)),
@@ -54,8 +63,32 @@ impl<D: buffer::raw::Segment> State<D> {
         work: usize,
         admit: impl Fn(Id) -> bool,
     ) -> Result<(), control::Admission> {
-        self.map
-            .snapshot(&mut self.scratch_pending, control, work, admit)
+        const {
+            assert!(conn::STREAM_SCHEDULE_WORK_LIMIT <= u8::MAX as usize + 1);
+        }
+        if !self.scratch_consumed && !self.scratch_pending.is_empty() {
+            return Ok(());
+        }
+        self.scratch_consumed = false;
+        self.scratch_start = 0;
+        let result = self.map.snapshot(
+            &mut self.scratch_pending,
+            &mut self.schedule_remaining,
+            control,
+            work,
+            admit,
+        );
+        if let Some(len) = NonZero::new(self.scratch_pending.len()) {
+            self.scratch_start = (usize::from(self.schedule_phase) % len.get()) as u8;
+        }
+        if self.schedule_remaining == 0 {
+            self.schedule_phase = if self.map.view().has_pending() {
+                self.schedule_phase.wrapping_add(1)
+            } else {
+                0
+            };
+        }
+        result
     }
 
     pub(in crate::conn) fn selection(&mut self) -> (log::Selection<'_>, &queue::Map<D>) {
@@ -69,6 +102,7 @@ impl<D: buffer::raw::Segment> State<D> {
         early: bool,
         control: &mut control::Pending,
     ) -> Result<(), conn::Error> {
+        self.scratch_pending.clear();
         self.map.try_for_each::<conn::Error>(|mut occupied| {
             let relative = streams::Relative::new(occupied.id(), local);
             let limit = queue::Entry::limit(Some(peer), relative);

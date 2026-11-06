@@ -29,7 +29,6 @@ mod key;
 mod slots;
 use slots::Insert;
 pub(in crate::conn::output::control) use slots::Occupied;
-pub(in crate::conn::output::control::journal) use slots::Projected;
 mod status;
 
 /// One occupied slot whose next revision has already been committed.
@@ -78,6 +77,12 @@ impl Slot {
 }
 
 impl<'a> View<'a> {
+    pub(in crate::conn::output::control::journal) fn link(
+        live: depot::raw::Proof<(Self, links::Index), Initialized<()>>,
+    ) -> &'a keyed::Link<Key> {
+        &Self::project(live).2.hook
+    }
+
     pub(in crate::conn::output::control::journal) fn project(
         live: depot::raw::Proof<(Self, links::Index), Initialized<()>>,
     ) -> (Key, revision::Key, &'a Entry) {

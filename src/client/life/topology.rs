@@ -1,8 +1,6 @@
 use std::net;
 
-use o3::mem::rc;
-
-use crate::{client::auth, runtime::routing};
+use crate::runtime::routing;
 
 pub(in crate::client) struct Peer<A, R> {
     pub(in crate::client) addr: net::SocketAddr,
@@ -44,38 +42,23 @@ impl<A, R: routing::PeerRoute> Topology<A, R> {
         }
     }
 
-    pub(super) fn peer(&self, index: usize) -> Option<Peer<Result<A, rc::Error>, R>>
-    where
-        A: auth::Mode,
-    {
+    pub(in crate::client) fn peer(&self, index: usize) -> Option<(&net::SocketAddr, &A, R)> {
         match self {
-            Self::Flat(peers) => peers.get(index).map(|peer| Peer {
-                addr: peer.addr,
-                auth: peer.auth.try_clone(),
-                route: peer.route,
-            }),
+            Self::Flat(peers) => peers
+                .get(index)
+                .map(|peer| (&peer.addr, &peer.auth, peer.route)),
             Self::Dense {
                 paths,
                 auth,
                 shards,
                 capacity: _,
             } => {
+                let first = R::from_shard(routing::Shard::from_index(0))?;
+                if first.shard().is_none() {
+                    return Some((paths.get(index)?, auth, first));
+                }
                 let (shard, path) = shards.resolve(paths.len(), index)?;
-                Some(Peer {
-                    addr: *paths.get(path)?,
-                    auth: auth.try_clone(),
-                    route: R::from_shard(shard)?,
-                })
-            }
-        }
-    }
-
-    pub(super) fn route(&self, index: usize) -> Option<R> {
-        match self {
-            Self::Flat(peers) => peers.get(index).map(|peer| peer.route),
-            Self::Dense { paths, shards, .. } => {
-                let (shard, _) = shards.resolve(paths.len(), index)?;
-                R::from_shard(shard)
+                Some((paths.get(path)?, auth, R::from_shard(shard)?))
             }
         }
     }

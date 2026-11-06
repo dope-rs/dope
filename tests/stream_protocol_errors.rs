@@ -86,3 +86,31 @@ fn accepts_last_stream() {
         );
     });
 }
+
+#[test]
+fn closed_stream_credit_requires_publication() {
+    use common::{peer, peer::Scope as _, suite::peers::packet};
+    use dope_quic::proto::param;
+
+    let now = Instant::now();
+    let params = param::Set::builder()
+        .initial_data(0)
+        .stream_uni(0)
+        .uni_count(1)
+        .try_build()
+        .expect("one receive stream");
+    let mut pair = Pair::try_params(1, params, now, |_| {}).expect("application packet fixture");
+    pair.receive(b"\x0b\x02\x00", now)
+        .expect("first stream FIN");
+    let _ = pair
+        .server
+        .recv()
+        .recv_owned(Id::new(2).expect("first stream ID"))
+        .expect("retire completed stream");
+    assert!(matches!(
+        pair.receive(b"\x0b\x06\x00", now),
+        Err(packet::Error::Setup(peer::Setup::Server(
+            peer::Transfer::Input(Error::StreamLimit)
+        )))
+    ));
+}

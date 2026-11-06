@@ -4,6 +4,7 @@ pub mod common;
 use common::receive::copied;
 use common::runtime::gso::{self, Capture};
 use dope_quic::conn::life::{accept::Authority, options::Options};
+use dope_quic::errors::Code;
 use dope_quic::proto::param;
 use dope_quic::runtime::mux::builder::{Builder, Plan};
 use dope_quic::stream::{Recv as _, RecvBuffer};
@@ -91,7 +92,9 @@ fn moves_received_owner() {
             let mut send = streams.send();
             let stream = send.open_uni().expect("negotiated stream");
             send.send(stream, payload).expect("stream credit");
-            send.finish(stream).expect("stream FIN");
+            if ordinal == 0 {
+                send.finish(stream).expect("stream FIN");
+            }
         })
         .expect("established sender");
         now = Capture::release_at(&client, &[handle], now).expect("fixture release_at");
@@ -110,6 +113,56 @@ fn moves_received_owner() {
             .expect("fixture deliver_at");
             let id = server.handler().readable.expect("readable owner");
             assert_eq!(id.number(), ordinal as u64);
+            let held = if ordinal == 0 {
+                None
+            } else {
+                let held = Pin::new(&mut server)
+                    .observe(now, |mut turn| {
+                        turn.protocol().with_conn(peer, |mut conn| {
+                            let mut streams = conn.streams();
+                            let stream = streams.view().resolve_recv(id).expect("bound stream");
+                            let mut receive = streams.receive();
+                            Tracker::fail_after(0, || {
+                                receive
+                                    .hold(stream)
+                                    .expect("held prefix")
+                                    .detach(&mut receive)
+                            })
+                        })
+                    })
+                    .expect("connection access");
+                Pin::new(&mut server).handler_mut().get_mut().readable = None;
+                for reset in [false, true] {
+                    Capture::access(&mut client, handle, now, |mut conn| {
+                        let mut streams = conn.streams();
+                        let stream = streams.view().resolve_send(id).expect("bound sender");
+                        let mut send = streams.send();
+                        if reset {
+                            send.reset(stream, Code::ZERO).expect("stream reset");
+                        } else {
+                            send.send(stream, b"tail").expect("unread tail");
+                        }
+                    })
+                    .expect("established sender");
+                    now = Capture::release_at(&client, &[handle], now).expect("fixture release_at");
+                    copied::Capture::deliver(
+                        &mut server,
+                        gso::CLIENT,
+                        Capture::output(&mut client, now).expect("fixture output"),
+                        now,
+                    )
+                    .expect("fixture deliver");
+                    Capture::deliver_at(
+                        &mut client,
+                        gso::SERVER,
+                        copied::Capture::output(&mut server, now).expect("fixture output"),
+                        now,
+                    )
+                    .expect("fixture deliver_at");
+                }
+                assert!(server.handler().readable == Some(id));
+                Some(held)
+            };
             Pin::new(&mut server).observe(now, |mut turn| {
                 turn.protocol()
                     .with_conn(peer, |mut conn| {
@@ -127,7 +180,14 @@ fn moves_received_owner() {
                                         .expect("one owner");
                                     (RecvBuffer::from_vec(bytes), &payload[..])
                                 } else {
-                                    let held = streams.receive().hold(stream).expect("held owner");
+                                    let mut dst = Vec::new();
+                                    assert_eq!(streams.receive().recv(stream, &mut dst), Ok(0));
+                                    assert!(dst.is_empty());
+                                    let held = held
+                                        .expect("held prefix")
+                                        .rebind(&mut streams.receive())
+                                        .map_err(|error| error.kind())
+                                        .expect("original receive owner");
                                     assert_eq!(held.as_ref(), payload);
                                     let (bytes, mut credit) = held.into_parts();
                                     let pointer = bytes.as_ref().as_ptr();
@@ -141,6 +201,7 @@ fn moves_received_owner() {
                                     assert_eq!((prefix.len(), credit.len()), (2, bytes.len()));
                                     prefix.release(&mut streams.receive());
                                     credit.release(&mut streams.receive());
+                                    assert!(streams.resident().handle(id).is_none());
                                     (bytes, &payload[2..])
                                 }
                             })

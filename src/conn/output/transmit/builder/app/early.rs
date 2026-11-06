@@ -83,11 +83,15 @@ pub(in crate::conn::output::transmit) fn build<
                     } else {
                         selected.budget(fresh)
                     };
+                    let flow = credit.min(budget);
+                    if flow == 0 && matches!(boundary, send::Boundary::More) {
+                        return Ok(ControlFlow::Continue(()));
+                    }
                     let room = limit
                         .saturating_sub(frames.len().saturating_add(conn::STREAM_FRAME_OVERHEAD));
-                    let take = credit.min(budget).min(room as u64) as usize;
+                    let take = flow.min(room as u64) as usize;
                     if take == 0 && matches!(boundary, send::Boundary::More) {
-                        return Ok(ControlFlow::Continue(()));
+                        return Ok(ControlFlow::Break(()));
                     }
                     let Some(prepared) = selected.prepare(take) else {
                         return Ok(ControlFlow::Continue(()));

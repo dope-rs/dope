@@ -1,23 +1,16 @@
-use crate::runtime::{brand, routing};
-use o3::mem::rc;
+use crate::runtime::brand;
 
 use std::time;
 
-use crate::client::{self, auth, life};
+use crate::client::{self, life};
 use crate::{conn::id, errors};
 use life::{due, endpoint};
 
 #[repr(transparent)]
-pub(in crate::client) struct View<'a, 'd, const DOMAIN: u8, A, B, R: routing::PeerRoute>(
-    &'a life::Lifecycle<'d, DOMAIN, A, B, R>,
-);
+pub(in crate::client) struct View<'a, 'd, const DOMAIN: u8, B>(&'a life::Lifecycle<'d, DOMAIN, B>);
 
-impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
-    View<'_, 'd, DOMAIN, A, B, R>
-{
-    pub(super) fn new<'a>(
-        life: &'a life::Lifecycle<'d, DOMAIN, A, B, R>,
-    ) -> View<'a, 'd, DOMAIN, A, B, R> {
+impl<'d, const DOMAIN: u8, B: client::Backoff> View<'_, 'd, DOMAIN, B> {
+    pub(super) fn new<'a>(life: &'a life::Lifecycle<'d, DOMAIN, B>) -> View<'a, 'd, DOMAIN, B> {
         View(life)
     }
 
@@ -34,23 +27,16 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
         &self,
         domain: id::Domain,
         now: time::Instant,
-    ) -> Option<due::Due<Result<A, rc::Error>, R>>
-    where
-        A: auth::Mode,
-    {
+    ) -> Option<due::Due> {
         let (index, deadline, endpoint, ready) = self.0.endpoints.peek()?;
         if *deadline > now {
             return None;
         }
         ready?;
-        let peer = self.0.topology.peer(index)?;
         Some(due::Due {
             domain,
             slot: client::SlotId::from_index(index as u32),
             attempt: endpoint.attempt,
-            addr: peer.addr,
-            auth: peer.auth,
-            route: peer.route,
         })
     }
 

@@ -1,5 +1,5 @@
+use crate::runtime::brand;
 use crate::runtime::mux;
-use crate::runtime::{brand, routing};
 use indexed::resident::{self, phase};
 use o3::alloc::BoxSliceExt as _;
 use o3::depot::{capacity, heap::indexed};
@@ -29,8 +29,7 @@ struct Bound {
 
 /// The heap and event owner retain each endpoint's exact resident phase.
 /// Live cardinality belongs to consumed Active transitions in that same domain.
-pub(super) struct Lifecycle<'d, const DOMAIN: u8, A, B, R: routing::PeerRoute> {
-    topology: topology::Topology<A, R>,
+pub(super) struct Lifecycle<'d, const DOMAIN: u8, B> {
     endpoints: resident::Min<time::Instant, endpoint::Types<'d, DOMAIN>, Capacity>,
     handle_to_endpoint: Box<[Option<client::SlotId>]>,
     backoff: B,
@@ -38,11 +37,8 @@ pub(super) struct Lifecycle<'d, const DOMAIN: u8, A, B, R: routing::PeerRoute> {
     failure: Option<protocol::Failure>,
 }
 
-impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
-    Lifecycle<'d, DOMAIN, A, B, R>
-{
+impl<'d, const DOMAIN: u8, B: client::Backoff> Lifecycle<'d, DOMAIN, B> {
     pub(super) fn try_new(
-        topology: topology::Topology<A, R>,
         backoff: B,
         capacity: Capacity,
         now: time::Instant,
@@ -52,7 +48,6 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
                 .map_err(build::Error::Storage)?;
         let reverse = Box::try_repeat(capacity.get(), None).map_err(build::Error::Reverse)?;
         Ok(Self {
-            topology,
             endpoints: entries,
             handle_to_endpoint: reverse,
             backoff,
@@ -61,16 +56,12 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
         })
     }
 
-    pub(super) fn view(&self) -> view::View<'_, 'd, DOMAIN, A, B, R> {
+    pub(super) fn view(&self) -> view::View<'_, 'd, DOMAIN, B> {
         view::View::new(self)
     }
 
     /// The retained Scheduled entry owns both the deadline and this endpoint.
-    pub(super) fn bind_due(
-        &mut self,
-        due: due::Due<A, R>,
-        handle: id::Handle<id::Driver<'d>, DOMAIN>,
-    ) {
+    pub(super) fn bind_due(&mut self, due: due::Due, handle: id::Handle<id::Driver<'d>, DOMAIN>) {
         let due::Due { slot, attempt, .. } = due;
         let index = slot.index() as usize;
         let Some(resident::Entry::Scheduled(endpoint)) = self.endpoints.entry(index) else {
@@ -89,20 +80,19 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
         *reverse = Some(slot);
     }
 
-    pub(super) fn defer_due<T>(
+    pub(super) fn defer_due(
         &mut self,
         scope: brand::Token<'_>,
-        due: due::Due<T, R>,
+        due: due::Due,
         seen: time::Instant,
     ) {
         let due::Due {
             domain,
             slot,
             attempt,
-            ..
         } = due;
         let index = slot.index() as usize;
-        let Some(resident::Entry::Scheduled(endpoint)) = self.endpoints.entry(index) else {
+        let Some(resident::Entry::Scheduled(mut endpoint)) = self.endpoints.entry(index) else {
             return;
         };
         if endpoint.get().0.attempt != attempt {
@@ -122,13 +112,12 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
                 let (mut endpoint, _) = endpoint.replace(at);
                 endpoint.get_mut().0.attempt = next;
             }
-            Ok(Retry::Dormant(next)) => {
-                let (mut endpoint, _, _) = endpoint.retire(endpoint::Idle::Dormant);
-                endpoint.get_mut().0.attempt = next;
-            }
-            Err(failure) => {
+            result @ (Ok(Retry::Dormant) | Err(_)) => {
+                endpoint.get_mut().0.reconnect = None;
                 endpoint.retire(endpoint::Idle::Dormant);
-                self.fail(failure);
+                if let Err(failure) = result {
+                    self.fail(failure);
+                }
             }
         }
     }
@@ -164,16 +153,13 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
             return;
         };
         let index = bound.slot.index() as usize;
-        let Some(route) = self.topology.route(index) else {
-            return;
-        };
         let Some(endpoint) = self.endpoints.common_mut(index) else {
             return;
         };
-        endpoint.reconnect = again.filter(|again| again.matches_path(route));
+        endpoint.reconnect = again;
     }
 
-    pub(super) fn take_again(&mut self, due: &due::Due<A, R>) -> Option<life::Reconnect> {
+    pub(super) fn take_again(&mut self, due: &due::Due) -> Option<life::Reconnect> {
         let resident::Entry::Scheduled(mut endpoint) =
             self.endpoints.entry(due.slot.index() as usize)?
         else {
@@ -182,7 +168,7 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
         endpoint.get_mut().0.reconnect.take()
     }
 
-    pub(super) fn put_again(&mut self, due: &due::Due<A, R>, again: life::Reconnect) {
+    pub(super) fn put_again(&mut self, due: &due::Due, again: life::Reconnect) {
         let Some(resident::Entry::Scheduled(mut endpoint)) =
             self.endpoints.entry(due.slot.index() as usize)
         else {
@@ -273,7 +259,8 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
     ) -> Option<client::SlotScope<'scope>> {
         let attempt = match self.endpoints.control()? {
             resident::Control::Full(endpoint) => endpoint.change::<phase::Scheduled>(()).1,
-            resident::Control::Empty(endpoint) => {
+            resident::Control::Empty(mut endpoint) => {
+                endpoint.get_mut().0.reconnect = None;
                 endpoint.change::<phase::Idle>(endpoint::Idle::Dormant).1
             }
         };
@@ -299,7 +286,10 @@ impl<'d, const DOMAIN: u8, A, B: client::Backoff, R: routing::PeerRoute>
 
     pub(super) fn seal(&mut self) {
         self.reconnect = false;
-        self.endpoints.clear(|_, ()| endpoint::Idle::Dormant);
+        self.endpoints.clear(|endpoint, ()| {
+            endpoint.reconnect = None;
+            endpoint::Idle::Dormant
+        });
     }
 
     pub(super) const fn failure(&self) -> Option<protocol::Failure> {
@@ -371,8 +361,7 @@ fn close<
             endpoint.get_mut().0.attempt = next;
             endpoint.schedule(at, attempt);
         }
-        Ok(Retry::Dormant(next)) => {
-            endpoint.get_mut().0.attempt = next;
+        Ok(Retry::Dormant) => {
             endpoint.change::<phase::Control>(attempt);
         }
         Err(failure) => {

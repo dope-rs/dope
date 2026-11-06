@@ -347,33 +347,46 @@ impl<D: buffer::raw::Segment> Map<D> {
     pub(in crate::conn::stream::state::transmit) fn snapshot(
         &mut self,
         out: &mut Vec<Handle>,
+        remaining: &mut u32,
         control: &mut control::Pending,
         mut quota: usize,
         admit: impl Fn(stream::Id) -> bool,
     ) -> Result<(), control::Admission> {
         out.clear();
-        let work = self.core.length().min(conn::STREAM_SCHEDULE_WORK_LIMIT);
+        if *remaining == 0 {
+            *remaining = self.core.restart();
+        }
+        let work = (*remaining as usize).min(conn::STREAM_SCHEDULE_WORK_LIMIT);
         for _ in 0..work {
             let Some(mut active) = self.core.active() else {
+                *remaining = 0;
                 break;
             };
             let id = active.id();
-            if !admit(id) {
-                active.advance();
-                continue;
+            let remove = if admit(id) {
+                match active.get_mut().deferred() {
+                    Some((reset, size)) if quota != 0 => {
+                        reset.try_queue(control, id, size)?;
+                        quota -= 1;
+                        true
+                    }
+                    Some(_) => false,
+                    None => {
+                        out.push(Handle::from_storage(active.handle()));
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            let wrapped = active.advance();
+            if remove {
+                active.deactivate();
             }
-            match active.get_mut().deferred() {
-                Some((reset, size)) if quota != 0 => {
-                    reset.try_queue(control, id, size)?;
-                    active.advance();
-                    active.deactivate();
-                    quota -= 1;
-                }
-                Some(_) => active.advance(),
-                None => {
-                    active.advance();
-                    out.push(Handle::from_storage(active.handle()));
-                }
+            *remaining -= 1;
+            if wrapped {
+                *remaining = 0;
+                break;
             }
         }
         Ok(())

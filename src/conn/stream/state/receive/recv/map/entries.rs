@@ -174,14 +174,13 @@ impl<'map, B: Recv> Occupied<'map, B> {
         self.entry.get_mut().state.reset(code, end);
     }
 
-    pub(in crate::conn) fn stop(
-        &mut self,
-        ctrl: &mut control::Pending,
-        code: crate::errors::Code,
-        base: varint::VarInt,
-    ) {
+    pub(in crate::conn) fn stop(&mut self, ctrl: &mut control::Pending, code: crate::errors::Code) {
         let state = &mut self.entry.get_mut().state;
-        state.credit.stop(base);
+        if state.reset_error().is_some() {
+            return;
+        }
+        ctrl.remove(&mut state.max_stream_data);
+        state.clear_credit();
         ctrl.stop(&mut state.stop_sending, code);
         self.activate();
     }
@@ -291,6 +290,7 @@ impl<B: Recv, R> DeliveryRead<'_, B, R> {
             free,
         } = self;
         let id = slot.id();
+        let handle = Handle::from_storage(slot.entry.handle());
         let stream = &mut slot.entry.get_mut().state;
         let limit = (free != 0)
             .then(|| stream.credit.release(base, free))
@@ -299,10 +299,11 @@ impl<B: Recv, R> DeliveryRead<'_, B, R> {
         let done = reset || stream.is_eof();
         let credit = match limit {
             None => false,
-            Some(_) if done => false,
+            Some(_) if done || !stream.stop_sending.is_empty() => false,
             Some(limit) => match records::Records::new(&mut *ctrl).set_stream(
                 &mut stream.max_stream_data,
                 id,
+                handle,
                 limit,
             ) {
                 Ok(()) => false,

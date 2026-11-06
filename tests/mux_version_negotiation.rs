@@ -114,3 +114,25 @@ fn offered_version_ignored() {
     );
     assert_eq!(client.handler().certificates, 0);
 }
+
+#[test]
+fn negotiation_after_retry_ignored() {
+    let (mut client, handle, server, local, orig) =
+        install::attempt(0x76).expect("install attempt");
+    let mut response =
+        retry::try_wire(&orig, &local, &[0x61; 8], b"retry").expect("valid Retry packet");
+    Capture::receive(&mut client, server, &mut response, Instant::now())
+        .expect("client must accept Retry");
+    let mut response = install::negotiation(&local, &orig, &[0xface_b00c]);
+    Capture::receive(&mut client, server, &mut response, Instant::now())
+        .expect("client must discard negotiation after Retry");
+
+    assert!(
+        !client
+            .conn(handle)
+            .expect("test connection handle must remain addressable")
+            .view()
+            .lifecycle()
+            .is_closed()
+    );
+}

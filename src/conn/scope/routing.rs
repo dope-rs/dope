@@ -69,14 +69,9 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Routing<'_, DOM
         if !matches!(self.machine.peer.local, Initiator::Client)
             || self.machine.egress.lifecycle.state != conn::State::Handshaking
             || self.machine.path.origin.peer_first_scid.is_some()
+            || self.machine.control.probe().is_retry()
             || vn.dcid().as_ref() != self.machine.path.local.cid().as_ref()
-        {
-            return false;
-        }
-        let id = vn.scid();
-        let source = id.as_ref();
-        if source != self.machine.path.origin.original_dcid.as_slice()
-            && source != self.machine.path.peer.id().as_slice()
+            || vn.scid().as_ref() != self.machine.path.origin.original_dcid.as_slice()
         {
             return false;
         }

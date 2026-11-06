@@ -171,18 +171,11 @@ unsafe impl<'d, const ADAPTIVE: bool> Queue<stream::RecvBuffer<'d, ADAPTIVE>> fo
 
     fn clear(view: &mut views::Write<'_, '_, stream::RecvBuffer<'d, ADAPTIVE>>) {
         let ready = &mut view.entry.buffer.assembled;
-        let mut queue = unsafe { view.arena.queue(&mut ready.queue) };
+        let mut queue = unsafe { view.arena.queue(ready) };
         while queue.pop_front().is_some() {}
-        ready.bytes = 0;
     }
 
-    fn try_reserve(&mut self, bytes: usize) -> Result<(), stream::Capacity> {
-        self.bytes
-            .checked_add(bytes as u64)
-            .ok_or(stream::Capacity::Overflow {
-                current: self.bytes as usize,
-                additional: bytes,
-            })?;
+    fn try_reserve(&mut self, _: usize) -> Result<(), stream::Capacity> {
         Ok(())
     }
 
@@ -205,15 +198,17 @@ unsafe impl<'d, const ADAPTIVE: bool> Queue<stream::RecvBuffer<'d, ADAPTIVE>> fo
             return;
         }
         let ready = &mut view.entry.buffer.assembled;
-        unsafe { slots::Live::push_back(depot::raw::Proof::new((claim(bytes), &mut ready.queue))) };
-        ready.bytes += len as u64;
+        unsafe { slots::Live::push_back(depot::raw::Proof::new((claim(bytes), ready))) };
     }
 
     fn read_into(
         view: &mut views::Write<'_, '_, stream::RecvBuffer<'d, ADAPTIVE>>,
         dst: &mut Vec<u8>,
     ) -> Result<usize, stream::Capacity> {
-        let count = view.entry.buffer.assembled.bytes as usize;
+        if view.entry.buffer.assembled.is_empty() {
+            return Ok(0);
+        }
+        let count = (view.entry.buffer.next - view.entry.state.delivered_to()) as usize;
         dst.try_grow(count)
             .map_err(|error| stream::Capacity::Allocation {
                 error,
@@ -229,24 +224,22 @@ unsafe impl<'d, const ADAPTIVE: bool> Queue<stream::RecvBuffer<'d, ADAPTIVE>> fo
         view: &mut views::Write<'_, '_, stream::RecvBuffer<'d, ADAPTIVE>>,
     ) -> Result<Option<Vec<u8>>, stream::Capacity> {
         let ready = &mut view.entry.buffer.assembled;
-        let count = ready.bytes as usize;
-        let single = ready.queue.len() == 1;
-        let queue = unsafe { view.arena.queue(&mut ready.queue) };
+        let single = ready.len() == 1;
+        let queue = unsafe { view.arena.queue(ready) };
         let Some(mut first) = queue.front_entry() else {
             return Ok(None);
         };
         if single {
             let bytes = first.get_mut().bytes.try_take()?;
             first.discard();
-            ready.bytes = 0;
             return Ok(Some(bytes));
         }
+        let count = (view.entry.buffer.next - view.entry.state.delivered_to()) as usize;
         let mut bytes = Vec::try_new(count).map_err(|error| stream::Capacity::Allocation {
             error,
             requested: count,
         })?;
         bytes.extend_from_slice(first.get_mut().bytes.as_ref());
-        ready.bytes -= bytes.len() as u64;
         first.discard();
         while let Some(segment) = Self::pop_front(view) {
             bytes.extend_from_slice(segment.as_ref());
@@ -258,8 +251,7 @@ unsafe impl<'d, const ADAPTIVE: bool> Queue<stream::RecvBuffer<'d, ADAPTIVE>> fo
         view: &mut views::Write<'_, '_, stream::RecvBuffer<'d, ADAPTIVE>>,
     ) -> Option<stream::RecvBuffer<'d, ADAPTIVE>> {
         let ready = &mut view.entry.buffer.assembled;
-        let node = unsafe { view.arena.queue(&mut ready.queue) }.pop_front()?;
-        ready.bytes -= node.bytes().as_ref().len() as u64;
+        let node = unsafe { view.arena.queue(ready) }.pop_front()?;
         Some(node.into_bytes())
     }
 }

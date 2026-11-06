@@ -227,13 +227,6 @@ where
         self.retire(next);
         value
     }
-
-    pub(in crate::conn) fn discard(self) {
-        let slot = unsafe { self.core.storage.slot_mut(self.index) };
-        let next = slot.generation.next();
-        unsafe { slot.value.assume_init_drop() };
-        self.retire(next);
-    }
 }
 
 impl<T, G> Core<T, G>

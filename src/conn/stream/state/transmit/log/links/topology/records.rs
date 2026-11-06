@@ -5,7 +5,7 @@ use crate::conn::{
     stream::state::transmit::log::{
         self, journal,
         links::{
-            storage::{Account, Borrowed, Projected, Walk},
+            storage::{Account, Walk, link, parts},
             topology::{Action, Active, Group, Member, Reclaim, Tables, Transfer},
         },
         planes,
@@ -361,16 +361,16 @@ unsafe impl<P, G, S> depot::raw::KeyOwner<planes::All> for Record<'_, P, G, S> {
     type Key = storage::Key<log::NodeTag>;
     type Fifo = keyed::Fifo<Self::Key, planes::All>;
     fn parts(&self) -> (Self::Key, &keyed::Link<Self::Key, planes::All>) {
-        depot::raw::KeyBorrow::parts(Borrowed(&self.node))
+        parts(&self.node)
     }
     fn fifo(&self) -> &keyed::Fifo<Self::Key, planes::All> {
         &self.group.get().nodes.all
     }
-    fn entry<'b>(
-        live: Selected<&'b Self, links::Index, planes::All>,
-    ) -> keyed::Entry<'b, Self::Key, planes::All> {
+    fn link(
+        live: Selected<&Self, links::Index, planes::All>,
+    ) -> &keyed::Link<Self::Key, planes::All> {
         let live = unsafe { live.map(|(record, index)| (record.node.as_table().entries(), index)) };
-        keyed::Entry::from_source(Projected(live))
+        link(live)
     }
 }
 

@@ -2,8 +2,8 @@ pub mod common;
 use crate::common::peer;
 use std::time::{Duration, Instant};
 
-use dope_quic::conn;
 use dope_quic::wire::packet::cid;
+use dope_quic::{conn, security::crypto};
 use peer::Receiver as _;
 use peer::{Config, Pair, sealer};
 use rustls::crypto::aws_lc_rs::cipher_suite;
@@ -32,13 +32,21 @@ fn retains_reordered_epoch() {
         assert!(client.view().lifecycle().is_confirmed(), "{suite:?}");
         assert!(server.view().lifecycle().is_confirmed(), "{suite:?}");
 
-        server
-            .with_scope(|mut scope| scope.datagrams().try_send(b"peer old phase".to_vec()))
-            .expect("the peer's old-phase datagram must be admitted");
-        now = server.view().recovery().send_at(now);
-        let (mut peer_old, send_result) = server.with_scope(|mut scope| scope.output().send(now));
-        send_result.expect("the peer's old-phase datagram must enter a packet");
-        assert_eq!(server.inspection().tx_queued(), 0);
+        let [mut peer_old, mut peer_grace, mut peer_expired] = [
+            b"peer old phase".as_slice(),
+            b"peer grace phase",
+            b"peer expired phase",
+        ]
+        .map(|payload| {
+            server
+                .with_scope(|mut scope| scope.datagrams().try_send(payload.to_vec()))
+                .expect("the peer's old-phase datagram must be admitted");
+            now = server.view().recovery().send_at(now);
+            let (packets, send_result) = server.with_scope(|mut scope| scope.output().send(now));
+            send_result.expect("the peer's old-phase datagram must enter a packet");
+            assert!(!packets.is_empty());
+            packets
+        });
 
         assert!(
             client
@@ -59,10 +67,11 @@ fn retains_reordered_epoch() {
             Err(conn::Error::KeyUpdate),
         ));
 
+        now += Duration::from_secs(5);
         for packet in &mut peer_old {
             client
                 .receive(&mut work, packet, now)
-                .expect("local key update must retain the peer's previous generation");
+                .expect("old keys must survive until a new-phase packet authenticates");
         }
         assert_eq!(
             client
@@ -108,6 +117,28 @@ fn retains_reordered_epoch() {
             Some(b"response phase".as_slice()),
         );
 
+        now += Duration::from_millis(1);
+        for packet in &mut peer_grace {
+            client
+                .receive(&mut work, packet, now)
+                .expect("old-key grace must start at new-phase authentication");
+        }
+        assert_eq!(
+            client
+                .with_scope(|mut scope| scope.datagrams().recv())
+                .as_deref(),
+            Some(b"peer grace phase".as_slice()),
+        );
+        now += Duration::from_secs(5);
+        for packet in &mut peer_expired {
+            assert!(matches!(
+                client.receive(&mut work, packet, now),
+                Err(peer::Transfer::Input(conn::Error::Crypto(
+                    crypto::Error::Decrypt(rustls::Error::DecryptError)
+                )))
+            ));
+        }
+
         let next = client
             .view()
             .recovery()
@@ -135,7 +166,7 @@ fn retains_reordered_epoch() {
 #[test]
 fn rejects_old_keys_above_reordered_current() {
     use common::suite::peers::packet;
-    use dope_quic::{security::crypto, wire::frame};
+    use dope_quic::wire::frame;
 
     let now = Instant::now();
     let options = Config::default().try_build().expect("datagram transport");

@@ -8,7 +8,7 @@ use std::{mem, net, num::NonZero};
 use dope::core::io::datagram;
 use dope_sys::io::socket::route::{
     count,
-    selector::{PrefixPlan, Selector},
+    selector::{Bootstrap, PrefixPlan, Selector},
 };
 
 use crate::security::relay::Ticket;
@@ -37,6 +37,15 @@ const SELECTOR: Selector = Selector::fixed::<
     { CONNECTION_ID_LEN as u8 },
     LONG_KEY_OFFSET,
     LONG_MINIMUM_LEN,
+>();
+
+const BOOTSTRAP: Bootstrap = Bootstrap::fixed::<
+    1,
+    { packet::QUIC_V1 },
+    0xe0,
+    { packet::FORM_LONG | packet::FIXED_BIT },
+    8,
+    { packet::MAX_CONNECTION_ID_LEN as u8 },
 >();
 
 const PREFIX: PrefixPlan = PrefixPlan::fixed::<
@@ -322,7 +331,7 @@ impl Group {
         plan: dope_sys::io::socket::route::Plan,
     ) -> Result<Self, datagram::Error> {
         Ok(Self {
-            native: datagram::Group::bind(addr, plan)?,
+            native: datagram::Group::bind(addr, plan.with_bootstrap(BOOTSTRAP))?,
             prefix: plan.prefix(),
             address: addr,
         })

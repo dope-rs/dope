@@ -14,7 +14,6 @@ use crate::stream;
 pub use config::Config;
 pub use control::Control;
 use dope::core::driver;
-use dope::core::driver::retained;
 use dope::core::driver::route;
 use dope::core::driver::route::indices;
 use dope::core::driver::schedule;
@@ -122,7 +121,7 @@ where
     fn drive<'turn>(
         self: pin::Pin<&mut Self>,
         work: app::Work<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let now = driver.driver_ref().clock().now();
         now.at(self).apply(|runtime, raw| {
@@ -146,7 +145,7 @@ where
     fn drive<'turn>(
         self: pin::Pin<&mut Self>,
         work: app::Work<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let now = driver.driver_ref().clock().now();
         now.at(self).apply(|runtime, raw| {
@@ -297,13 +296,11 @@ where
     H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
     B: stream::Recv,
 {
-    fn pre_park<'a, 'turn, 'root>(
+    fn pre_park<'a, 'turn>(
         endpoint: pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, dispatch::raw::Retained>,
-    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>
-    where
-        embedded::Endpoint<'d, ID, H, B, Self>: 'root;
+        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
+    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>;
 
     fn augment(
         endpoint: pin::Pin<&embedded::Endpoint<'d, ID, H, B, Self>>,
@@ -316,14 +313,11 @@ where
     H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
     B: stream::Recv,
 {
-    fn pre_park<'a, 'turn, 'root>(
+    fn pre_park<'a, 'turn>(
         mut endpoint: pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, dispatch::raw::Retained>,
-    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B>>
-    where
-        embedded::Endpoint<'d, ID, H, B>: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
+    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B>> {
         if *endpoint.as_ref().project_ref().stopping {
             endpoint
                 .as_mut()
@@ -348,14 +342,11 @@ where
     B: stream::Recv,
     A: Driver<'d, H, ID, B, resident::Shared<'d>>,
 {
-    fn pre_park<'a, 'turn, 'root>(
+    fn pre_park<'a, 'turn>(
         mut endpoint: pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, dispatch::raw::Retained>,
-    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>
-    where
-        embedded::Endpoint<'d, ID, H, B, Self>: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
+    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>> {
         if *endpoint.as_ref().project_ref().stopping {
             endpoint
                 .as_mut()

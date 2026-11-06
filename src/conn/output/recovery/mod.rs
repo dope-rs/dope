@@ -117,7 +117,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Progress<'a
             &mut streams.events,
             release::Ignore,
         );
-        let outcome = losses::try_run(egress, &mut delivery, now)?;
+        let outcome = losses::try_run(egress, &mut delivery, now, false)?;
         if matches!(outcome, losses::Outcome::Clear)
             && let Some(epoch) = egress.recovery.timer.pto_epoch
         {

@@ -16,33 +16,6 @@ pub(super) struct Occupied<'a, P = ()>(
     pub(super) compact::Occupied<'a, Entry, Generation, Delivery, P>,
 );
 
-#[repr(transparent)]
-pub(super) struct Borrowed<'b, 'a, P>(pub(super) &'b Occupied<'a, P>);
-
-#[repr(transparent)]
-pub(super) struct Projected<'b, 'a, P>(
-    pub(super) depot::raw::Proof<(&'b Occupied<'a, P>, links::Index), Initialized<Flight>>,
-);
-
-// SAFETY: the occupied loan retains this initialized flight's exact generation and link.
-unsafe impl<'b, P> depot::raw::KeyBorrow<'b, Flight> for Borrowed<'b, '_, P> {
-    type Key = Key;
-
-    fn parts(self) -> (Key, &'b keyed::Link<Key, Flight>) {
-        (self.0.key(), &self.0.get().flight)
-    }
-}
-
-// SAFETY: the live witness retains this exact initialized neighbor and original table loan.
-unsafe impl<'b, P> depot::raw::KeyBorrow<'b, Flight> for Projected<'b, '_, P> {
-    type Key = Key;
-
-    fn parts(self) -> (Key, &'b keyed::Link<Key, Flight>) {
-        let (key, entry) = Occupied::project(self.0);
-        (key, &entry.flight)
-    }
-}
-
 impl<P> Occupied<'_, P> {
     pub(super) fn send(
         mut self,
@@ -86,9 +59,5 @@ impl<P> Occupied<'_, P> {
 
     pub(super) fn get_mut(&mut self) -> &mut Entry {
         self.0.get_mut()
-    }
-
-    pub(super) fn remove(self) {
-        self.0.discard();
     }
 }

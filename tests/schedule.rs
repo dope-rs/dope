@@ -15,6 +15,55 @@ use peer::Scope as _;
 use peer::flight::Flight;
 
 #[test]
+fn pending_streams_share_batches() {
+    let Pair {
+        mut server,
+        mut client,
+        mut work,
+    } = Pair::try_default().expect("connection pair must initialize");
+    let active = client
+        .send_streams()
+        .open_uni()
+        .expect("first stream must open");
+    let waiting = client
+        .send_streams()
+        .open_uni()
+        .expect("second stream must open");
+    client
+        .send_streams()
+        .send(active, &[0x51; 4_096])
+        .expect("first stream must remain pending across both packets");
+    client
+        .send_streams()
+        .send(waiting, &[0x52])
+        .expect("second stream byte must be admitted");
+    let peer = waiting.bind(&server).expect("paired stream must resolve");
+    let mut batch = Batch::default();
+    let mut now = Instant::now() + Duration::from_secs(1);
+    for _ in 0..2 {
+        let flight = Flight::emit_due(&mut client, &mut batch, now, 1, 1_200)
+            .expect("one-packet batch must be admitted");
+        now = flight.sent_at() + Duration::from_millis(1);
+        flight
+            .deliver(&mut work, &mut server)
+            .expect("server must accept the stream packet");
+        assert!(
+            Flight::emit_at(&mut client, &mut batch, now, 0, 1_200)
+                .expect("empty batch must preserve pending streams")
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        server
+            .recv()
+            .recv_owned(peer)
+            .expect("second stream must be readable")
+            .as_deref(),
+        Some(&[0x52][..])
+    );
+}
+
+#[test]
 fn owners_wait_for_prefix() {
     let mut config = Config::new(1 << 20, 1 << 20, 0, 1);
     config.local = Some([0, 1]);

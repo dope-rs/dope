@@ -258,7 +258,7 @@ fn changed_ticket_validates_before_active_migration() {
         .try_build()
         .expect("transport parameters");
     let options = Options::builder()
-        .transport(|transport| transport.params(params.clone()).max_pmtu(1200))
+        .transport(|transport| transport.params(params.clone()))
         .try_build()
         .expect("connection options");
     let (identity, public) = peer::raw(0x5a).expect("server identity");
@@ -273,7 +273,9 @@ fn changed_ticket_validates_before_active_migration() {
     let bind = routing::Single::new("127.0.0.1:0".parse().expect("native bind"));
     let plan = endpoint::Plan::<0, receive::Adaptive>::single(
         endpoint::config::Config {
-            packet_buffer_bytes: 1200,
+            outgoing_capacity: 1,
+            outgoing_bytes_capacity: 1200,
+            packet_buffer_bytes: 1500,
             ..common::retry::ENDPOINT
         },
         &bind,

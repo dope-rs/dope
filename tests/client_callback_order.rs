@@ -24,10 +24,13 @@ use dope::{
     },
 };
 use dope_quic::{
-    client::{self, EndpointSpec, build},
+    client::{self, build},
     conn::{Epoch, life::options::Options},
     proto::param,
-    runtime::endpoint::{client::Plan, config::Config},
+    runtime::{
+        endpoint::{client::Plan, config::Config},
+        routing,
+    },
     wire::{
         frame,
         packet::{cid, long::initial},
@@ -94,15 +97,13 @@ fn connects_before_stream_delivery() {
                             .try_add(Duration::from_secs(2))
                             .expect("test deadline");
                         let authority = tls::client(public).expect("client TLS");
-                        let endpoints = peers
+                        let paths = peers
                             .iter()
-                            .map(|peer| EndpointSpec {
-                                addr: peer.local_addr().expect("peer address"),
-                                authority: authority.try_clone().expect("authority reference"),
-                            })
+                            .map(|peer| peer.local_addr().expect("peer address"))
                             .collect();
-                        let client = build::Builder::owned(
-                            endpoints,
+                        let client = build::Builder::<_, _, _, _, routing::Plain>::owned_dense(
+                            paths,
+                            authority,
                             Options::try_from(params.clone()).expect("client options"),
                             Connected::<_, true>::pull(|event| match event {
                                 Ok(slot) => {
@@ -139,6 +140,7 @@ fn connects_before_stream_delivery() {
                                 retry_budget: 2,
                             },
                         )
+                        .expect("dense client topology")
                         .bind(plan, &mut driver)
                         .expect("bound client");
                         (client, timeout, now.into())

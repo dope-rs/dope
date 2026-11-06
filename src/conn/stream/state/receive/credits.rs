@@ -81,10 +81,10 @@ const fn max_streams_dirty(dir: Direction) -> u8 {
     *dir.bind(&[MAX_STREAMS_BIDI_DIRTY, MAX_STREAMS_UNI_DIRTY])
 }
 
-#[derive(Clone, Copy)]
 #[repr(C)]
 pub(in crate::conn) struct Flow {
-    limit: varint::VarInt,
+    desired: varint::VarInt,
+    published: varint::VarInt,
     total: u64,
 }
 
@@ -93,24 +93,31 @@ pub(in crate::conn) struct Recorded(u64);
 
 impl Flow {
     pub(in crate::conn) fn new(limit: varint::VarInt) -> Self {
-        Self { limit, total: 0 }
+        Self {
+            desired: limit,
+            published: limit,
+            total: 0,
+        }
     }
 
-    pub(in crate::conn) const fn limit(&self) -> varint::VarInt {
-        self.limit
+    pub(in crate::conn) const fn desired(&self) -> varint::VarInt {
+        self.desired
     }
 
-    pub(in crate::conn) fn try_record(&mut self, count: u64) -> Result<Recorded, detail::Flow> {
+    pub(in crate::conn) fn publish(&mut self, limit: varint::VarInt) {
+        self.published = limit;
+    }
+
+    pub(in crate::conn) fn try_record(&self, count: u64) -> Result<Recorded, detail::Flow> {
         let error = || detail::Flow {
             current: self.total,
             count,
-            limit: self.limit(),
+            limit: self.published,
         };
         let total = self.total.checked_add(count).ok_or_else(error)?;
-        if total > self.limit().get() {
+        if total > self.published.get() {
             return Err(error());
         }
-        self.total = total;
         Ok(Recorded(total))
     }
 
@@ -123,11 +130,11 @@ impl Flow {
     }
 
     pub(in crate::conn) fn release(&mut self, count: u64) -> Option<varint::VarInt> {
-        let next = varint::VarInt::saturate(u128::from(self.limit.get()) + u128::from(count));
-        if next == self.limit {
+        let next = varint::VarInt::saturate(u128::from(self.desired.get()) + u128::from(count));
+        if next == self.desired {
             return None;
         }
-        self.limit = next;
+        self.desired = next;
         Some(next)
     }
 }
@@ -135,14 +142,14 @@ impl Flow {
 #[repr(C)]
 pub(in crate::conn) struct Window {
     released: varint::VarInt,
-    stopped: Option<varint::Stored>,
+    published: Option<varint::Stored>,
 }
 
 impl Window {
     pub(in crate::conn) fn new() -> Self {
         Self {
             released: varint::VarInt::ZERO,
-            stopped: None,
+            published: None,
         }
     }
 
@@ -151,19 +158,18 @@ impl Window {
     }
 
     pub(in crate::conn) fn limit(&self, base: varint::VarInt) -> varint::VarInt {
-        match self.stopped {
+        match self.published {
             Some(limit) => limit.get(),
-            None => {
-                varint::VarInt::saturate(u128::from(base.get()) + u128::from(self.released.get()))
-            }
+            None => base,
         }
     }
 
-    /// STOP freezes admission while returned capabilities still settle their debt.
-    pub(in crate::conn) fn stop(&mut self, base: varint::VarInt) {
-        if self.stopped.is_none() {
-            self.stopped = Some(self.limit(base).into());
-        }
+    pub(in crate::conn) fn desired(&self, base: varint::VarInt) -> varint::VarInt {
+        varint::VarInt::saturate(u128::from(base.get()) + u128::from(self.released.get()))
+    }
+
+    pub(in crate::conn) fn publish(&mut self, limit: varint::VarInt) {
+        self.published = Some(limit.into());
     }
 
     pub(in crate::conn) fn release(
@@ -171,10 +177,10 @@ impl Window {
         base: varint::VarInt,
         count: u64,
     ) -> Option<varint::VarInt> {
-        let prev = self.limit(base);
+        let prev = self.desired(base);
         self.released =
             varint::VarInt::saturate(u128::from(self.released.get()) + u128::from(count));
-        let next = self.limit(base);
+        let next = self.desired(base);
         (next != prev).then_some(next)
     }
 
@@ -217,6 +223,6 @@ impl<T> Receipt<T> {
 
 const _: () = assert!(std::mem::size_of::<Recorded>() == std::mem::size_of::<u64>());
 const _: () = assert!(std::mem::size_of::<Meta>() == std::mem::size_of::<u64>());
-const _: () = assert!(std::mem::size_of::<Flow>() == 2 * std::mem::size_of::<u64>());
+const _: () = assert!(std::mem::size_of::<Flow>() == 3 * std::mem::size_of::<u64>());
 const _: () = assert!(std::mem::size_of::<Window>() == 2 * std::mem::size_of::<u64>());
 const _: () = assert!(std::mem::size_of::<Receipt>() == 3 * std::mem::size_of::<u64>());

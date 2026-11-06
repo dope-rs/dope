@@ -15,10 +15,6 @@ use crate::{
     },
 };
 use conn::{id, life::accept, wire::path};
-use mux::handler::hook::{
-    life::{close::Mode as _, closing::Mode as _},
-    set::Dispatch,
-};
 use mux::{auth, handler, output, router};
 use registry::{Directory, Scope};
 use router::routing;
@@ -80,7 +76,7 @@ impl<
     where
         S: civil::Source,
     {
-        self.run(|scope, turn| {
+        brand::Token::with_mut(self, |scope, turn| {
             let state = &mut *turn.state;
             let mut sink = turn.handler.as_mut();
             let routed = Directory::with(&mut state.registry, |owner| {
@@ -339,8 +335,9 @@ impl<
                             }
                         };
                         let remote = init.scid().into_owned();
-                        let cap = cfg
-                            .packet_cap(state.outgoing.bytes_capacity)
+                        let cap = state
+                            .binding
+                            .packet_cap(cfg, state.outgoing.bytes_capacity)
                             .ok_or(errors::Receive::Packet(conn::Error::PacketCeiling))?;
                         let input = init.into_inner();
                         let cfg = cfg.copy();
@@ -411,14 +408,6 @@ impl<
         })
     }
 
-    /// Constructs the generative lifetime shared by one mux mutation.
-    pub(in crate::runtime::mux) fn run<R>(
-        &mut self,
-        f: impl FnOnce(brand::Token<'_>, &mut Self) -> R,
-    ) -> R {
-        brand::Token::with(|brand| f(brand, self))
-    }
-
     pub(in crate::runtime::mux) fn ready<R, const PLANE: usize>(
         &mut self,
         now: time::Instant,
@@ -428,7 +417,7 @@ impl<
             registry::Access<'scope, H::Connection, DOMAIN, B, A::Send, A::Session, false>,
         ) -> R,
     ) -> Option<R> {
-        self.run(|scope, turn| {
+        brand::Token::with_mut(self, |scope, turn| {
             let state = &mut *turn.state;
             let binding = &mut state.binding;
             let mut sink = turn.handler.as_mut();
@@ -456,28 +445,26 @@ impl<
         handle: id::Handle<A::Identity, DOMAIN>,
         now: time::Instant,
     ) -> Result<(), errors::Access> {
-        self.run(|scope, turn| {
+        brand::Token::with_mut(self, |scope, turn| {
             let domain = turn.state.binding.domain;
             Scope::with(&mut turn.state.registry, |slots| {
                 let key = slots
                     .bind(domain, handle)
                     .ok_or(errors::Access::InvalidHandle)?;
-                let taken = slots.into_taken(key, domain);
-                Self::retire(turn.handler.as_mut(), taken, scope, now);
+                slots.close(key, domain, turn.handler.as_mut(), scope, now);
                 Ok(())
             })
         })
     }
 
     pub(in crate::runtime::mux) fn remove_at(&mut self, index: usize, now: time::Instant) -> bool {
-        self.run(|scope, turn| {
+        brand::Token::with_mut(self, |scope, turn| {
             let domain = turn.state.binding.domain;
             Scope::with(&mut turn.state.registry, |slots| {
                 let Some(key) = slots.resolve(index) else {
                     return false;
                 };
-                let taken = slots.into_taken(key, domain);
-                Self::retire(turn.handler.as_mut(), taken, scope, now);
+                slots.close(key, domain, turn.handler.as_mut(), scope, now);
                 true
             })
         })
@@ -492,33 +479,6 @@ impl<
             }
         }
         removed
-    }
-
-    pub(in crate::runtime::mux) fn retire(
-        mut sink: pin::Pin<&mut H>,
-        taken: registry::Taken<'_, H::Connection, A::Identity, DOMAIN, B, A::Send, A::Session>,
-        scope: brand::Token<'_>,
-        now: time::Instant,
-    ) {
-        taken.close(|handle, conn, app| {
-            let Some(mut app) = app else {
-                drop(conn);
-                return;
-            };
-            <H::Events as Dispatch<H, DOMAIN, B, A::Send, A::Identity>>::Closing::retire(
-                sink.as_mut(),
-                conn,
-                &mut app,
-                scope.reborrow(),
-                handle,
-            );
-            <H::Events as Dispatch<H, DOMAIN, B, A::Send, A::Identity>>::Close::close(
-                sink.as_mut(),
-                handler::Close::new(scope.reborrow(), now),
-                app,
-                handle,
-            );
-        });
     }
 }
 

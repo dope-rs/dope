@@ -16,7 +16,16 @@ use qkdf::origin;
 
 pub(super) struct Previous {
     pub(super) generation: Generation<origin::Peer, op::Open>,
-    due: time::Instant,
+    due: Option<time::Instant>,
+}
+
+impl Previous {
+    fn try_deadline(
+        now: time::Instant,
+        pto: time::Duration,
+    ) -> Result<time::Instant, conn::Timing> {
+        conn::Timing::try_deadline(now, conn::Timing::try_mul(pto, 3)?)
+    }
 }
 
 pub(super) struct ReadKeys {
@@ -60,14 +69,17 @@ impl ReadKeys {
     }
 
     pub(super) fn expire(&mut self, now: time::Instant) {
-        if self.previous.as_ref().is_some_and(|prev| now >= prev.due) {
+        if self
+            .previous
+            .as_ref()
+            .and_then(|prev| prev.due)
+            .is_some_and(|due| now >= due)
+        {
             self.previous = None;
         }
     }
 
-    fn rotate(&mut self, now: time::Instant, pto: time::Duration) -> Result<(), Update> {
-        self.lookahead.as_ref().ok_or(Update::Key)?;
-        let due = conn::Timing::try_deadline(now, conn::Timing::try_mul(pto, 3)?)?;
+    fn rotate(&mut self, due: Option<time::Instant>) -> Result<(), Update> {
         let next = self.lookahead.take().ok_or(Update::Key)?;
         let old = self.current.replace(mem::replace(&mut self.next, next));
         self.previous = Some(Previous {
@@ -87,7 +99,8 @@ impl ReadKeys {
         if self.peer_update_unconfirmed {
             return Err(Update::Key);
         }
-        self.rotate(now, pto)?;
+        let due = Previous::try_deadline(now, pto)?;
+        self.rotate(Some(due))?;
         self.first_current_pn = Some(pn);
         self.peer_update_unconfirmed = true;
         Ok(())
@@ -97,9 +110,26 @@ impl ReadKeys {
         !self.peer_update_unconfirmed && self.lookahead.is_some()
     }
 
-    fn initiate(&mut self, now: time::Instant, pto: time::Duration) -> Result<(), Update> {
-        self.rotate(now, pto)?;
+    fn initiate(&mut self) -> Result<(), Update> {
+        self.rotate(None)?;
         self.first_current_pn = None;
+        Ok(())
+    }
+
+    pub(super) fn try_record(
+        &mut self,
+        pn: u64,
+        now: time::Instant,
+        pto: time::Duration,
+    ) -> Result<(), Update> {
+        if let Some(first) = self.first_current_pn.as_mut() {
+            *first = (*first).min(pn);
+        } else {
+            if let Some(previous) = self.previous.as_mut() {
+                previous.due = Some(Previous::try_deadline(now, pto)?);
+            }
+            self.first_current_pn = Some(pn);
+        }
         Ok(())
     }
 
@@ -341,7 +371,7 @@ impl Pair {
         {
             return Err(Update::Key);
         }
-        self.read.initiate(now, pto)?;
+        self.read.initiate()?;
         self.write.advance()
     }
 
