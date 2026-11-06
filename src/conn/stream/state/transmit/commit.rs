@@ -71,8 +71,9 @@ impl<'state, B: stream::Recv, D: buffer::raw::Segment> Commit<'state, B, D> {
         else {
             return Ok(());
         };
-        occupied.credit_mut().raise(limit, ctrl);
-        occupied.refresh();
+        if occupied.credit_mut().raise(limit, ctrl) {
+            occupied.refresh(true);
+        }
         Ok(())
     }
 
@@ -162,6 +163,7 @@ impl<'state, B: stream::Recv, D: buffer::raw::Segment> Commit<'state, B, D> {
                     |_| {},
                     proof,
                 );
+                occupied.refresh(true);
             }
             if let Some((hold, event)) = registry.event::<true>().hold(token, id)
                 && matches!(
@@ -172,7 +174,6 @@ impl<'state, B: stream::Recv, D: buffer::raw::Segment> Commit<'state, B, D> {
                 event.release();
             }
         }
-        occupied.refresh();
         self.open_peer(id);
         Ok(())
     }

@@ -20,7 +20,10 @@ pub(in crate::conn) trait Policy<Side>: Default {
 }
 
 #[derive(Default)]
-pub(in crate::conn) struct HeadOnly;
+pub(in crate::conn) struct HeadOnly {
+    pub(super) remaining: u32,
+    pub(super) dirty: bool,
+}
 
 pub(in crate::conn) struct RoundRobin<Side> {
     pub(super) cursor: Option<slot::Handle<Side>>,
@@ -50,10 +53,16 @@ impl<Side> Core<Side> {
         }
     }
 
-    fn link<Value, Auxiliary>(&mut self, entry: &mut slot::Occupied<'_, Side, Value, Auxiliary>) {
+    fn link<Value, Auxiliary>(
+        &mut self,
+        entry: &mut slot::Occupied<'_, Side, Value, Auxiliary>,
+    ) -> bool {
         if let Ok(vacant) = keyed::Slot::try_vacant(slot::Activity::new(entry, &mut self.queue)) {
             vacant.push::<false>();
             self.length += 1;
+            true
+        } else {
+            false
         }
     }
 }
@@ -66,7 +75,9 @@ impl<Side> Policy<Side> for HeadOnly {
         active: bool,
     ) {
         if active {
-            core.link(entry);
+            if core.link(entry) {
+                self.dirty = true;
+            }
             return;
         }
         if let Ok(member) = keyed::Slot::try_new(slot::Activity::new(entry, &mut core.queue)) {
@@ -81,6 +92,9 @@ impl<Side> Policy<Side> for HeadOnly {
     ) {
         member.remove();
         *length -= 1;
+        if *length == 0 {
+            *self = Self::default();
+        }
     }
 }
 
@@ -147,8 +161,11 @@ impl<Side, P> Plane<Side, P> {
 }
 
 const _: () = {
-    assert!(mem::size_of::<HeadOnly>() == 0);
+    assert!(mem::size_of::<HeadOnly>() == 2 * mem::size_of::<u32>());
     assert!(mem::size_of::<RoundRobin<()>>() == mem::size_of::<Option<NonZero<u64>>>());
-    assert!(mem::size_of::<Plane<(), HeadOnly>>() == mem::size_of::<Core<()>>());
+    assert!(
+        mem::size_of::<Plane<(), HeadOnly>>()
+            == mem::size_of::<Core<()>>() + mem::size_of::<HeadOnly>()
+    );
     assert!(mem::size_of::<Plane<(), RoundRobin<()>>>() == 6 * mem::size_of::<u32>());
 };

@@ -332,7 +332,7 @@ impl<'a, D: buffer::raw::Segment, C, W> Observed<'a, D, C, W> {
         };
         budget.commit(charge, buffers);
         append.commit(boundary);
-        occupied.refresh();
+        occupied.refresh(true);
         admit::Outcome::Retained(retained)
     }
 }

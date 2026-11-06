@@ -18,14 +18,6 @@ pub(in crate::conn) struct Activity<'b, 'a, S, V, A> {
     fifo: &'b mut keyed::Fifo<slot::Handle<S>>,
 }
 
-pub(in crate::conn::stream::resident::slot) fn link<S, V, A>(
-    live: Selected<&slot::Table<S, V, A>, links::Index, ()>,
-) -> &keyed::Link<slot::Handle<S>> {
-    let (table, index) = live.into_inner();
-    // SAFETY: the retained live table identifies this exact initialized slot and link.
-    &unsafe { table.nodes.get_unchecked(index.get()) }.link
-}
-
 impl<'b, 'a, S, V, A> Activity<'b, 'a, S, V, A> {
     pub(in crate::conn::stream::resident::slot) fn new(
         entry: &'b mut Occupied<'a, S, V, A>,
@@ -68,8 +60,9 @@ unsafe impl<S, V, A> depot::raw::KeyOwner for Activity<'_, '_, S, V, A> {
     }
 
     fn link(live: Selected<&Self, links::Index, ()>) -> &keyed::Link<Self::Key> {
-        let live = unsafe { live.map(|(activity, index)| (&*activity.entry.table, index)) };
-        link(live)
+        let (activity, index) = live.into_inner();
+        // SAFETY: this retained activity owns the exact initialized slot and link.
+        &unsafe { activity.entry.table.nodes.get_unchecked(index.get()) }.link
     }
 }
 

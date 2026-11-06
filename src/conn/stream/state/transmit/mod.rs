@@ -253,17 +253,9 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let credit = queue::Entry::limit(params, stream);
         let state = &mut self.streams.state;
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
-        let Some(mut occupied) =
-            transmit
-                .map
-                .try_live(local, credit, queue::Preparation::new(stream), registry)?
-        else {
-            return Ok(());
-        };
-        if !matches!(occupied.state().phase(), queue::Phase::Open) {
-            return Ok(());
-        }
-        occupied.refresh();
+        let _ = transmit
+            .map
+            .try_live(local, credit, queue::Preparation::new(stream), registry)?;
         Ok(())
     }
 
@@ -290,7 +282,6 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
             registry,
             |_, mut slot| {
                 slot.mark_fin();
-                slot.refresh();
             },
         )?;
         Ok(())
@@ -358,18 +349,17 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let credit = queue::Entry::limit(params, stream);
         let state = &mut self.streams.state;
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
-        let Some((key, mut occupied)) = transmit.map.try_prepared(
+        let Some(key) = transmit.map.try_prepared(
             queue::Id::new(id),
             None,
             credit,
             queue::Preparation::Create,
             registry,
-            |key, slot| (key, slot),
+            |key, _| key,
         )?
         else {
             return Err(Error::Capacity);
         };
-        occupied.refresh();
         let local = &mut self.state.local_initiated;
         *dir.bind_mut(&mut local.next) = next;
         *dir.bind_mut(&mut local.opened) = opened;

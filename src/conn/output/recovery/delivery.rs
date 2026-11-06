@@ -69,7 +69,14 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E: release::Sin
             self.handshake.crypto.lose(handle);
         }
         for handle in ctrls {
-            Records::new(&mut *self.control).lose(handle);
+            match Records::new(&mut *self.control).lose(handle) {
+                control::Retry::None => {}
+                control::Retry::Data => self.streams.transmit.retry_data(),
+                control::Retry::Stream(id) => self
+                    .streams
+                    .transmit
+                    .wake_stream(id, &self.streams.resident),
+            }
         }
         for handle in sends {
             self.streams.transmit.lose(handle);

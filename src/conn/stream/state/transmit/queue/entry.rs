@@ -1,12 +1,17 @@
-use crate::stream::{outbound, send::admit};
+use crate::stream::{
+    outbound,
+    send::{self, admit},
+};
 
 use std::ops;
 
 use crate::conn::output::control::{self, kind};
 use crate::conn::stream::resident::slot;
 use crate::conn::stream::state::streams;
-use crate::conn::stream::state::transmit::log;
-use crate::conn::stream::state::transmit::queue::{self, Phase};
+use crate::conn::stream::state::transmit::{
+    log, peer,
+    queue::{self, Phase},
+};
 use crate::proto::param;
 use crate::wire::stream::Direction;
 use crate::wire::varint;
@@ -21,6 +26,59 @@ pub(in crate::conn) struct Entry {
 }
 
 impl Entry {
+    pub(super) fn work(
+        &self,
+        peer: &peer::Peer,
+        control: &control::Pending,
+        can_control: bool,
+    ) -> queue::Work {
+        if self.is_deferred() {
+            return if !can_control {
+                queue::Work::Blocked(0)
+            } else if control.available().raw() != 0 {
+                queue::Work::Ready
+            } else {
+                queue::Work::Control(queue::CONTROL)
+            };
+        }
+        let view = self.view();
+        if !view.has_pending() || !matches!(self.phase(), Phase::Open | Phase::Marked) {
+            return queue::Work::Blocked(0);
+        }
+        if view.unsent_len() == 0 && matches!(view.boundary(0), send::Boundary::End) {
+            return queue::Work::Ready;
+        }
+        let budget = peer.budget(0);
+        let credit = self
+            .credit
+            .limit()
+            .get()
+            .saturating_sub(view.next_offset().get());
+        if budget != 0 && credit != 0 {
+            return queue::Work::Ready;
+        }
+        let global = if budget == 0 {
+            queue::ADVISORY | if credit != 0 { queue::DATA } else { 0 }
+        } else {
+            0
+        };
+        if !can_control {
+            return queue::Work::Blocked(global);
+        }
+        let ready = control.ready();
+        if (budget == 0 && ready.has_blocked(&peer.data_credit))
+            || (credit == 0 && ready.has_blocked(&self.credit))
+        {
+            queue::Work::Ready
+        } else if (budget == 0 && peer.data_credit.blocked.is_none())
+            || (credit == 0 && self.credit.blocked.is_none())
+        {
+            queue::Work::Control(queue::CONTROL | global)
+        } else {
+            queue::Work::Blocked(global)
+        }
+    }
+
     pub(in crate::conn) fn limit(
         peer: Option<&param::Set>,
         stream: streams::Relative,

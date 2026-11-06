@@ -1,5 +1,5 @@
 pub mod common;
-use common::runtime::reap::{CLIENT, Capture, Credit};
+use common::runtime::reap::{CLIENT, Capture, Credit, SERVER};
 use common::suite::peers;
 use common::suite::peers::Error;
 use dope_quic::conn;
@@ -8,6 +8,70 @@ use dope_quic::runtime::routing;
 use dope_quic::wire::packet::cid;
 use dope_quic::{proto::param, runtime::mux::builder::Builder};
 use std::{pin::Pin, time::Instant};
+
+#[test]
+fn early_flow_waits_for_credit() {
+    let params = param::Set::builder()
+        .idle_ms(0)
+        .initial_data(4)
+        .remote_bidi(4)
+        .bidi_count(1)
+        .try_build()
+        .expect("four-byte early credit");
+    let auth = peers::Authority::try_new(Options::try_from(params).expect("server options"));
+    auth.as_ref()
+        .map_err(Error::cause)
+        .expect("early-data authority");
+    let auth = auth.ok().expect("admitted authority");
+    auth.first(&peers::CID)
+        .as_ref()
+        .map_err(Error::cause)
+        .expect("cached ticket");
+    let mut client = Builder::client(Capture::default())
+        .build()
+        .expect("client router");
+    let now = Instant::now();
+    let handle = Pin::new(&mut client)
+        .observe(now, |mut turn| {
+            turn.protocol()
+                .connect(SERVER, &auth.client, Options::default(), vec![0x71; 8])
+        })
+        .expect("resumed connection");
+    Capture::with_conn(&mut client, handle, now, |mut scope| {
+        let stream = scope.streams().send().open_bidi().expect("cached stream");
+        scope
+            .streams()
+            .send()
+            .send(stream.send(), b"early-data")
+            .expect("queued early bytes");
+    })
+    .expect("client access");
+    assert!(
+        !Capture::output(&mut client, now)
+            .expect("early flight")
+            .is_empty()
+    );
+    assert!(
+        client
+            .conn(handle)
+            .expect("client")
+            .view()
+            .recovery()
+            .unacked(conn::Epoch::Application)
+            != 0
+    );
+    assert!(
+        Capture::output(&mut client, now)
+            .expect("finite discovery")
+            .is_empty()
+    );
+    assert!(
+        Pin::new(&mut client)
+            .observe(now, |turn| turn.deadline())
+            .is_none_or(|due| due > now),
+        "early flow blocking must not schedule unsendable BLOCKED frames"
+    );
+}
 
 #[test]
 fn early_control_credit() {

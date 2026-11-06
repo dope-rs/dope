@@ -333,7 +333,7 @@ impl<'a, P> Occupied<'a, P> {
         *epoch.bind_mut(&mut queues.flights.probe_cursor) = next;
     }
 
-    pub(in crate::conn::output::control) fn lose(mut self) {
+    pub(in crate::conn::output::control) fn lose(mut self) -> control::Retry {
         let entry = self.entry();
         let record = entry.record;
         let Status::InFlight {
@@ -342,14 +342,14 @@ impl<'a, P> Occupied<'a, P> {
             probe_round: round,
         } = entry.status
         else {
-            return;
+            return control::Retry::None;
         };
         if matches!(
             record,
             delivery::Control::PathValidation(_) | delivery::Control::PathResponse(_)
         ) {
             self.remove();
-            return;
+            return control::Retry::None;
         }
         if let Some(carriers) = NonZero::new(count.get() - 1) {
             self.slot.get_mut().value.status = Status::InFlight {
@@ -357,10 +357,15 @@ impl<'a, P> Occupied<'a, P> {
                 carriers,
                 probe_round: round,
             };
-            return;
+            return control::Retry::None;
         }
         self.retry(epoch);
         self.slot.get_mut().value.status = Status::Queued;
+        match record {
+            delivery::Control::DataBlocked(_) => control::Retry::Data,
+            delivery::Control::StreamDataBlocked(id, _) => control::Retry::Stream(id),
+            _ => control::Retry::None,
+        }
     }
 
     /// Moves one final lost carrier back to its ready-kind chain.

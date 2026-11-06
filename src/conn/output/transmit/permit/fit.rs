@@ -198,8 +198,7 @@ fn control<const MASK: u16, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::S
     limit: usize,
 ) -> Option<bool> {
     let mut records = records?;
-    let selected =
-        builder::Builder::<'_, DOMAIN, B, D>::select(permit.connection, &mut records, route)?;
+    let selected = builder::Builder::<'_, DOMAIN, B, D>::select(&mut records, route)?;
     Some(
         encode::Encoder::new(&permit.connection.path)
             .minimum(selected)
@@ -309,10 +308,7 @@ pub(super) fn has_app<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment
         .packet_numbers
         .is_ack_ready::<kind::OneRtt>(now)
         && can_app::<true, DOMAIN, B, D>(permit, now, AppIntent::AckOnly))
-        || ((conn
-            .control
-            .ready()
-            .has_sendable(&conn.streams.local_initiated, conn.streams.local())
+        || ((conn.control.ready().has_sendable()
             || conn.handshake.crypto.has_sendable(conn::Epoch::Application)
             || (valid && permit.has_stream()))
             && can_app::<false, DOMAIN, B, D>(permit, now, AppIntent::CongestionControlledPacket))

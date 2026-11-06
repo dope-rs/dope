@@ -108,11 +108,7 @@ pub(in crate::conn::output::transmit) fn build<
                     limit,
                 )
                 .map_err(transmit::Admission::into_error)?;
-                let control = track
-                    && build.connection.control.ready().has_sendable(
-                        &build.connection.streams.local_initiated,
-                        build.connection.streams.local(),
-                    );
+                let control = track && build.connection.control.ready().has_sendable();
                 if control {
                     build.put(|ready| ready.prefix(), &mut frames, limit, &mut commit)?;
                 }

@@ -367,7 +367,7 @@ impl<'a, D: buffer::raw::Segment> Scope<'a, D> {
                         }
                         .insert()
                     });
-                    occupied.refresh();
+                    occupied.refresh(false);
                     handle
                 }
             };

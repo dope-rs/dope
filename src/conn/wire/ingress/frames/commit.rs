@@ -355,7 +355,9 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                         }
                         frame::View::PathChallenge { .. } => {}
                         frame::View::MaxData { maximum_data: max } => {
-                            state.transmit.peer.data_credit.raise(max, ctrl);
+                            if state.transmit.peer.data_credit.raise(max, ctrl) {
+                                state.transmit.wake_data();
+                            }
                         }
                         frame::View::MaxStreamData {
                             stream_id: id,
@@ -382,11 +384,21 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                             max_streams: max,
                         } => {
                             let max = max.get();
+                            let opened = *dir.bind(&state.local_initiated.opened);
                             let limit = match dir {
                                 Direction::Bidi => &mut state.local_initiated.peer_max[0],
                                 Direction::Uni => &mut state.local_initiated.peer_max[1],
                             };
-                            *limit = (*limit).max(max);
+                            if max > *limit {
+                                let blocked = *limit < opened;
+                                *limit = max;
+                                if blocked {
+                                    state.transmit.wake_streams(dir);
+                                }
+                                if matches!(dir, Direction::Bidi) {
+                                    state.receive.map.wake();
+                                }
+                            }
                         }
                         frame::View::PathResponse { .. } => {}
                         frame::View::Crypto { .. }

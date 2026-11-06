@@ -12,7 +12,7 @@ use crate::{
             state::{
                 resident::{Table, sides},
                 streams,
-                transmit::{log::journal, queue},
+                transmit::{log::journal, peer, queue},
             },
         },
     },
@@ -51,6 +51,22 @@ pub(in crate::conn) enum Phase {
     Sent,
     Acked,
     Reset,
+}
+
+pub(super) enum Work {
+    Ready,
+    Control(u8),
+    Blocked(u8),
+}
+
+pub(super) const DATA: u8 = 1 << 0;
+pub(super) const CONTROL: u8 = 1 << 1;
+const BIDI: u8 = 1 << 2;
+const UNI: u8 = 1 << 3;
+pub(super) const ADVISORY: u8 = 1 << 4;
+
+pub(super) fn stream_wait(direction: crate::wire::stream::Direction) -> u8 {
+    *direction.bind(&[BIDI, UNI])
 }
 
 pub(in crate::conn) struct StopImpact {
@@ -107,6 +123,29 @@ struct Data<D: buffer::raw::Segment> {
     pending: usize,
     buffers: outbound::BufferCache,
     budget: budget::Budget,
+    dirty: bool,
+    recheck: bool,
+    waiting: u8,
+    readmit: u32,
+}
+
+impl<D: buffer::raw::Segment> Data<D> {
+    fn reconcile(&mut self, work: Work) -> bool {
+        match work {
+            Work::Ready => {
+                self.dirty = true;
+                true
+            }
+            Work::Control(reason) => {
+                self.waiting |= reason;
+                true
+            }
+            Work::Blocked(reason) => {
+                self.waiting |= reason;
+                false
+            }
+        }
+    }
 }
 
 pub(in crate::conn) enum Preparation {
@@ -149,6 +188,10 @@ impl<D: buffer::raw::Segment> Map<D> {
                     limits.resident(),
                     limits.send_parts(),
                 ),
+                dirty: false,
+                recheck: false,
+                waiting: 0,
+                readmit: 0,
             },
         })
     }
@@ -323,8 +366,40 @@ impl<D: buffer::raw::Segment> Map<D> {
         View::new(self)
     }
 
-    pub(in crate::conn) fn iter_ready(&self) -> impl Iterator<Item = queue::Resolved<'_>> {
-        self.core.iter().map(Resolved)
+    pub(in crate::conn::stream::state::transmit) fn wake(&mut self, reason: u8) {
+        self.data.recheck |= self.data.waiting & reason != 0;
+    }
+
+    pub(in crate::conn::stream::state::transmit) fn has_work(
+        &self,
+        control: &control::Pending,
+        can_control: bool,
+    ) -> bool {
+        self.data.readmit != 0
+            || self.data.recheck
+            || (self.core.length() != 0
+                && (self.data.dirty
+                    || (self.data.waiting & CONTROL != 0
+                        && can_control
+                        && control.available().raw() != 0)))
+    }
+
+    pub(in crate::conn::stream::state::transmit) fn retain(
+        &mut self,
+        window: &[Handle],
+        peer: &peer::Peer,
+        control: &control::Pending,
+        can_control: bool,
+    ) {
+        for handle in window {
+            let Some(mut entry) = self.core.occupied(handle.0) else {
+                continue;
+            };
+            let active = self
+                .data
+                .reconcile(entry.get().work(peer, control, can_control));
+            entry.set_active(active);
+        }
     }
 
     /// Visits each live owner in reverse slot order without allocating scratch.
@@ -349,11 +424,44 @@ impl<D: buffer::raw::Segment> Map<D> {
         out: &mut Vec<Handle>,
         remaining: &mut u32,
         control: &mut control::Pending,
+        peer: &peer::Peer,
         mut quota: usize,
+        can_control: bool,
         admit: impl Fn(stream::Id) -> bool,
     ) -> Result<(), control::Admission> {
         out.clear();
+        if self.data.waiting & CONTROL != 0 && can_control && control.available().raw() != 0 {
+            self.data.dirty = true;
+            self.data.waiting &= !CONTROL;
+        }
+        if self.data.readmit == 0 && mem::take(&mut self.data.recheck) {
+            self.data.readmit = self.core.slot_count();
+            // Visited blockers republish reasons; unvisited slots see the latest limits.
+            self.data.waiting = 0;
+        }
+        let recheck = self
+            .data
+            .readmit
+            .min(conn::STREAM_SCHEDULE_WORK_LIMIT as u32);
+        for _ in 0..recheck {
+            self.data.readmit -= 1;
+            let Some(mut entry) = self.core.bind_at(self.data.readmit) else {
+                continue;
+            };
+            if admit(entry.id()) {
+                let active = self
+                    .data
+                    .reconcile(entry.get().work(peer, control, can_control));
+                entry.set_active(active);
+            } else {
+                self.data.waiting |= stream_wait(entry.id().direction());
+                entry.set_active(false);
+            }
+        }
         if *remaining == 0 {
+            if !mem::take(&mut self.data.dirty) {
+                return Ok(());
+            }
             *remaining = self.core.restart();
         }
         let work = (*remaining as usize).min(conn::STREAM_SCHEDULE_WORK_LIMIT);
@@ -370,14 +478,24 @@ impl<D: buffer::raw::Segment> Map<D> {
                         quota -= 1;
                         true
                     }
-                    Some(_) => false,
+                    Some(_) => {
+                        if can_control {
+                            if control.available().raw() == 0 {
+                                self.data.waiting |= CONTROL;
+                            } else {
+                                self.data.dirty = true;
+                            }
+                        }
+                        false
+                    }
                     None => {
                         out.push(Handle::from_storage(active.handle()));
                         false
                     }
                 }
             } else {
-                false
+                self.data.waiting |= stream_wait(id.direction());
+                true
             };
             let wrapped = active.advance();
             if remove {

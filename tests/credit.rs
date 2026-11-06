@@ -104,37 +104,93 @@ fn lost_fin_retransmits() {
 
 #[test]
 fn blocked_share_control() {
-    let (_, mut client, _) = Pair::try_new(
-        Config::new(1 << 20, 0, 8, 8)
-            .try_build()
-            .expect("fixture transport parameters"),
-        Config::default()
-            .try_build()
-            .expect("fixture connection options"),
-    )
-    .expect("connected peers")
-    .into_parts();
-    for _ in 0..2 {
-        let stream = client
-            .send_streams()
-            .open_bidi()
-            .expect("client can open each configured bidirectional stream");
-        client
-            .send_streams()
-            .send(stream, b"blocked")
-            .expect("zero connection credit blocks rather than rejects send");
-    }
+    use common::suite::peers::packet;
+    use dope_quic::{
+        conn::wire::packet::Batch,
+        proto::param,
+        wire::{frame, varint::VarInt},
+    };
 
-    assert!(
-        !{
-            let (emitted_packets, send_result) =
-                client.with_scope(|mut scope| scope.output().send(Instant::now()));
-            send_result.expect("warmed client journals must admit blocked control");
-            emitted_packets
+    for (data, stream) in [(0, 1024), (1024, 0)] {
+        let clock = Instant::now();
+        let params = param::Set::builder()
+            .initial_data(data)
+            .stream_uni(stream)
+            .uni_count(3)
+            .try_build()
+            .expect("blocked credit");
+        let mut pair = packet::Pair::try_params(1, params, clock, |_| {}).expect("native peer");
+        pair.retired(clock).expect("settled handshake");
+        for _ in 0..2 {
+            let stream = pair.server.send_streams().open_uni().expect("stream");
+            pair.server
+                .send_streams()
+                .send(stream, b"blocked")
+                .expect("retained bytes");
         }
-        .is_empty()
-    );
-    assert!(client.view().lifecycle().is_ready());
+        let mut batch = Batch::default();
+        let sent = clock + Duration::from_secs(1);
+        pair.server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, sent, 1, 1_200))
+            .expect("lost BLOCKED carrier");
+        assert_eq!(batch.packets(), 1);
+        pair.peer
+            .open(batch.iter_mut().next().expect("BLOCKED packet"))
+            .expect("authenticated lost BLOCKED");
+        pair.server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, sent, 1, 1_200))
+            .expect("park blocked owners");
+        assert_eq!(batch.packets(), 0);
+
+        let fin = pair
+            .server
+            .send_streams()
+            .open_uni()
+            .expect("independent FIN");
+        pair.server.send_streams().finish(fin).expect("empty FIN");
+        let later = sent + Duration::from_secs(1);
+        pair.server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, later, 1, 1_200))
+            .expect("later carrier");
+        let (number, _) = pair
+            .peer
+            .open(batch.iter_mut().next().expect("FIN packet"))
+            .expect("authenticated FIN");
+        let mut ack = Vec::new();
+        frame::Borrowed::ack(
+            VarInt::try_from(number).expect("packet number"),
+            VarInt::ZERO,
+            VarInt::ZERO,
+            &[],
+        )
+        .expect("later ACK")
+        .encode(&mut ack)
+        .expect("encoded ACK");
+        let now = later + Duration::from_millis(10);
+        pair.receive(&ack, now).expect("lost BLOCKED feedback");
+        pair.server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1_200))
+            .expect("BLOCKED retry");
+        let (_, body) = pair
+            .peer
+            .open(batch.iter_mut().next().expect("retry packet"))
+            .expect("authenticated retry");
+        let frames = frame::Frame::decode_all(&body).expect("retry frames");
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| matches!(frame.view(), frame::View::DataBlocked { .. }))
+                .count(),
+            usize::from(data == 0)
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| matches!(frame.view(), frame::View::StreamDataBlocked { .. }))
+                .count(),
+            usize::from(stream == 0) * 2
+        );
+    }
 }
 
 #[test]

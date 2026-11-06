@@ -63,7 +63,7 @@ impl<E: release::Sink> Commit<'_, E> {
             return;
         };
         freed.commit(release::Cause::Reset, events, proof);
-        slot.refresh();
+        slot.refresh(true);
     }
 }
 

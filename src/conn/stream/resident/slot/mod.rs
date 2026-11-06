@@ -1,7 +1,6 @@
 use std::{marker, num::NonZero};
 
 use o3::{base::num::Generation, depot::queue::indexed::keyed};
-pub(in crate::conn::stream::resident::slot) use occupied::link;
 pub(in crate::conn) use occupied::{Activity, Occupied};
 pub(in crate::conn) use table::Table;
 

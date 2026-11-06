@@ -26,11 +26,16 @@ impl<Kind> Credit<Kind> {
         ctrl.remove(&mut self.blocked);
     }
 
-    pub(in crate::conn) fn raise(&mut self, limit: varint::VarInt, ctrl: &mut control::Pending) {
+    pub(in crate::conn) fn raise(
+        &mut self,
+        limit: varint::VarInt,
+        ctrl: &mut control::Pending,
+    ) -> bool {
         if limit <= self.limit {
-            return;
+            return false;
         }
         self.replace(limit, ctrl);
+        true
     }
 }
 

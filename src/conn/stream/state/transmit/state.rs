@@ -5,7 +5,7 @@ use crate::conn::{
     self,
     machine::storage::capacity,
     output::{control, delivery},
-    stream::state::streams,
+    stream::state::{resident::Table, streams},
 };
 use crate::proto::param;
 use crate::wire::{
@@ -57,10 +57,36 @@ impl<D: buffer::raw::Segment> State<D> {
         !self.scratch_pending.is_empty()
     }
 
+    /// A retained window owns one bounded cleanup turn after its last packet.
+    pub(in crate::conn) fn has_work(&self, control: &control::Pending, can_control: bool) -> bool {
+        self.schedule_remaining != 0
+            || !self.scratch_pending.is_empty()
+            || self.map.has_work(control, can_control)
+    }
+
+    pub(in crate::conn) fn wake_data(&mut self) {
+        self.map.wake(queue::DATA);
+    }
+
+    pub(in crate::conn) fn retry_data(&mut self) {
+        self.map.wake(queue::DATA | queue::ADVISORY);
+    }
+
+    pub(in crate::conn) fn wake_streams(&mut self, direction: crate::wire::stream::Direction) {
+        self.map.wake(queue::stream_wait(direction));
+    }
+
+    pub(in crate::conn) fn wake_stream(&mut self, id: Id, registry: &Table) {
+        if let Some((_, mut occupied)) = self.map.bind(id, registry) {
+            occupied.refresh(true);
+        }
+    }
+
     pub(in crate::conn) fn snapshot(
         &mut self,
         control: &mut control::Pending,
         work: usize,
+        can_control: bool,
         admit: impl Fn(Id) -> bool,
     ) -> Result<(), control::Admission> {
         const {
@@ -69,13 +95,17 @@ impl<D: buffer::raw::Segment> State<D> {
         if !self.scratch_consumed && !self.scratch_pending.is_empty() {
             return Ok(());
         }
+        self.map
+            .retain(&self.scratch_pending, &self.peer, control, can_control);
         self.scratch_consumed = false;
         self.scratch_start = 0;
         let result = self.map.snapshot(
             &mut self.scratch_pending,
             &mut self.schedule_remaining,
             control,
+            &self.peer,
             work,
+            can_control,
             admit,
         );
         if let Some(len) = NonZero::new(self.scratch_pending.len()) {
@@ -112,7 +142,7 @@ impl<D: buffer::raw::Segment> State<D> {
             } else {
                 credit.replace(limit, control);
             }
-            occupied.refresh();
+            occupied.refresh(true);
             Ok(())
         })
     }
@@ -131,7 +161,7 @@ impl<D: buffer::raw::Segment> State<D> {
     ) -> Result<(), conn::Error> {
         self.map.try_for_each::<conn::Error>(|mut occupied| {
             occupied.reject_early(&mut self.deliveries, control)?;
-            occupied.refresh();
+            occupied.refresh(true);
             Ok(())
         })?;
         self.peer.reject_early();

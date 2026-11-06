@@ -204,12 +204,16 @@ impl<B: Recv> Map<B> {
         self.core.front().map(|inner| Active { inner })
     }
 
-    pub(in crate::conn) fn len(&self) -> usize {
-        self.core.length()
+    pub(in crate::conn) fn wake(&mut self) {
+        self.core.wake();
     }
 
-    pub(in crate::conn) fn has_ready(&self, admit: impl Fn(stream::Id) -> bool) -> bool {
-        self.core.iter().any(|entry| admit(entry.id()))
+    pub(in crate::conn) fn has_work(&self) -> bool {
+        self.core.has_work()
+    }
+
+    pub(in crate::conn) fn work(&mut self) -> usize {
+        self.core.work()
     }
 
     pub(in crate::conn) fn scope<R>(

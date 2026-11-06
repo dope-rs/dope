@@ -1,5 +1,4 @@
 use crate::{conn::stream::resident::slot, wire::stream};
-use o3::depot::index::Initialized;
 use o3::depot::queue::{indexed::keyed, links};
 use o3::{alloc, depot};
 use slot::plane;
@@ -11,10 +10,6 @@ pub(in crate::conn) struct Active<'a, S, V: slot::Reusable, A: Default, P: plane
     entry: slot::Occupied<'a, S, V, A>,
     plane: &'a mut plane::Plane<S, P>,
 }
-
-struct Iter<'a, S, V: slot::Reusable, A: Default, P: plane::Policy<S>>(
-    keyed::Iter<&'a Pool<S, V, A, P>>,
-);
 
 impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> Active<'_, S, V, A, P> {
     pub(in crate::conn) fn id(&self) -> stream::Id {
@@ -62,7 +57,13 @@ impl<S, V: slot::Reusable, A: Default> Active<'_, S, V, A, plane::RoundRobin<S>>
 }
 
 impl<S, V: slot::Reusable, A: Default> Active<'_, S, V, A, plane::HeadOnly> {
+    pub(in crate::conn) fn complete(self) {
+        self.plane.policy.remaining -= 1;
+        self.deactivate();
+    }
+
     pub(in crate::conn) fn move_to_back(mut self) {
+        self.plane.policy.remaining -= 1;
         // SAFETY: this guard retains the exact active member and its original
         // queue; moving it preserves membership, initialization and length.
         let member = unsafe {
@@ -72,6 +73,26 @@ impl<S, V: slot::Reusable, A: Default> Active<'_, S, V, A, plane::HeadOnly> {
             )))
         };
         member.move_to_back();
+    }
+}
+
+impl<S, V: slot::Reusable, A: Default> Pool<S, V, A, plane::HeadOnly> {
+    pub(in crate::conn) fn wake(&mut self) {
+        self.plane.policy.dirty = true;
+    }
+
+    pub(in crate::conn) fn has_work(&self) -> bool {
+        self.plane.core.length != 0 && (self.plane.policy.remaining != 0 || self.plane.policy.dirty)
+    }
+
+    pub(in crate::conn) fn work(&mut self) -> usize {
+        let head = &mut self.plane.policy;
+        head.remaining = head.remaining.min(self.plane.core.length);
+        if head.remaining == 0 && head.dirty {
+            head.remaining = self.plane.core.length;
+            head.dirty = false;
+        }
+        head.remaining as usize
     }
 }
 
@@ -221,19 +242,6 @@ where
         Some(keyed::Fifo::first(self)?.into())
     }
 
-    pub(in crate::conn) fn iter<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = slot::Resolved<'a, Side, Value, Auxiliary>>
-    + use<'a, Side, Value, Auxiliary, Policy> {
-        const {
-            assert!(
-                mem::size_of::<Iter<'_, Side, Value, Auxiliary, Policy>>()
-                    == 2 * mem::size_of::<usize>()
-            );
-        }
-        Iter(keyed::Iter::new(self))
-    }
-
     pub(in crate::conn) fn length(&self) -> usize {
         self.plane.length()
     }
@@ -299,18 +307,6 @@ where
     }
 }
 
-// SAFETY: the root owns both storage and its sole active plane; its shared
-// borrow prevents insertion, retirement, and changes to every traversed link.
-unsafe impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> depot::raw::KeySource
-    for &Pool<S, V, A, P>
-{
-    type Key = slot::Handle<S>;
-
-    fn fifo(&self) -> &keyed::Fifo<Self::Key> {
-        &self.plane.core.queue
-    }
-}
-
 // SAFETY: the same permanently paired root is retained exclusively.
 unsafe impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> depot::raw::KeySource
     for &mut Pool<S, V, A, P>
@@ -319,36 +315,6 @@ unsafe impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> depot::raw::K
 
     fn fifo(&self) -> &keyed::Fifo<Self::Key> {
         &self.plane.core.queue
-    }
-}
-
-// SAFETY: this source cannot mutate or recycle any of its live projected nodes.
-unsafe impl<S, V: slot::Reusable, A: Default, P: plane::Policy<S>> depot::raw::KeyRead
-    for &Pool<S, V, A, P>
-{
-    fn link(
-        live: depot::raw::Proof<(&Self, links::Index), Initialized<()>>,
-    ) -> &keyed::Link<Self::Key> {
-        let live = unsafe { live.map(|(pool, index)| (&pool.storage, index)) };
-        slot::link(live)
-    }
-}
-
-// SAFETY: the output retains the original root lifetime through real field
-// references, and preserves the slot's side and initialized payload.
-unsafe impl<'a, S, V: slot::Reusable, A: Default, P: plane::Policy<S>>
-    depot::raw::Project<links::Index> for &'a Pool<S, V, A, P>
-{
-    type Output = slot::Resolved<'a, S, V, A>;
-
-    unsafe fn project(self, index: links::Index) -> Self::Output {
-        let node = unsafe { self.storage.nodes.get_unchecked(index.get()) };
-        slot::Resolved {
-            id: node.id,
-            value: &node.value,
-            auxiliary: &node.auxiliary,
-            side: marker::PhantomData,
-        }
     }
 }
 
@@ -388,16 +354,5 @@ unsafe impl<'a, S, V: slot::Reusable, A: Default, P: plane::Policy<S>, O>
             plane: &mut self.plane,
             operation: marker::PhantomData,
         }
-    }
-}
-
-impl<'a, S, V: slot::Reusable, A: Default, P: plane::Policy<S>> Iterator for Iter<'a, S, V, A, P> {
-    type Item = slot::Resolved<'a, S, V, A>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let live = self.0.next_entry()?;
-        // SAFETY: this copies the same retained shared root reference; the
-        // returned fields keep its original lifetime and cannot mutate it.
-        Some(unsafe { live.map(|(source, index)| (*source, index)) }.into())
     }
 }

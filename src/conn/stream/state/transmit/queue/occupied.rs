@@ -110,6 +110,7 @@ impl<D: buffer::raw::Segment, P> Occupied<'_, D, P> {
     pub(in crate::conn::stream::state::transmit) fn mark_fin(&mut self) {
         if let Ok(open) = self.entry.get_mut().open() {
             open.mark_fin();
+            self.refresh(true);
         }
     }
 
@@ -320,7 +321,7 @@ impl<'map, D: buffer::raw::Segment, P> Occupied<'map, D, P> {
         &mut self.entry.get_mut().credit
     }
 
-    pub(in crate::conn) fn refresh(&mut self) {
+    pub(in crate::conn) fn refresh(&mut self, changed: bool) {
         let active = {
             let entry = self.entry.get_mut();
             entry.is_deferred()
@@ -328,6 +329,7 @@ impl<'map, D: buffer::raw::Segment, P> Occupied<'map, D, P> {
                     && matches!(entry.phase(), queue::Phase::Open | queue::Phase::Marked)
         };
         self.entry.set_active(active);
+        self.data.dirty |= changed && active;
     }
 }
 
@@ -395,7 +397,7 @@ impl<D: buffer::raw::Segment> Occupied<'_, D> {
         vacant.append(Node::Buffer(buffer));
         budget.commit(charge, buffers);
         append.commit(send::Boundary::More);
-        self.refresh();
+        self.refresh(true);
         Ok(())
     }
 }

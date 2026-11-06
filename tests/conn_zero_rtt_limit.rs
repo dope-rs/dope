@@ -270,10 +270,11 @@ fn rejected_ticket_credit() {
 
 #[test]
 fn rejected_stream_count() {
-    use common::peer::{Bind, Config, Receiver as _, Scope as _};
+    use common::peer::{Bind, Config, Event, Receiver as _, Scope as _};
+    use dope_quic::errors::Code;
 
     let result = Authority::try_new(
-        Config::new(1000, 1000, 0, 2)
+        Config::new(1000, 1000, 2, 2)
             .try_build()
             .expect("two-stream ticket limits"),
     );
@@ -288,7 +289,7 @@ fn rejected_stream_count() {
         .map_err(Error::cause)
         .expect("issued ticket");
     let result = Authority::try_new(
-        Config::new(1000, 1000, 0, 1)
+        Config::new(1000, 1000, 1, 1)
             .try_build()
             .expect("one-stream authenticated limit"),
     );
@@ -315,6 +316,21 @@ fn rejected_stream_count() {
         .send_streams()
         .open_uni()
         .expect("second cached stream");
+    let first_bidi = client
+        .send_streams()
+        .open_bidi()
+        .expect("first cached bidi stream");
+    let excess_bidi = client
+        .send_streams()
+        .open_bidi()
+        .expect("second cached bidi stream");
+    let stop = Code::from_u8(0x51);
+    let reset = Code::from_u8(0x52);
+    client.recv().stop(excess_bidi, stop).expect("early STOP");
+    client
+        .send_streams()
+        .reset(excess_bidi, reset)
+        .expect("early RESET");
     for bytes in [b"early-".as_slice(), b"retained".as_slice()] {
         client
             .send_streams()
@@ -379,6 +395,10 @@ fn rejected_stream_count() {
         .send_streams()
         .finish(first)
         .expect("first permitted FIN");
+    client
+        .send_streams()
+        .finish(first_bidi)
+        .expect("first permitted bidi FIN");
     now = client.view().recovery().send_at(now);
     server
         .receive_from(&mut work, &mut client, now)
@@ -392,6 +412,13 @@ fn rejected_stream_count() {
             .as_deref(),
         Some(b"release".as_slice())
     );
+    let first_bidi = first_bidi
+        .bind(&server)
+        .expect("first incoming bidi stream");
+    server
+        .send_streams()
+        .finish(first_bidi)
+        .expect("permitted bidi response FIN");
     now = server.view().recovery().send_at(now);
     client
         .receive_from(&mut work, &mut server, now)
@@ -407,6 +434,25 @@ fn rejected_stream_count() {
             .expect("retained ordered bytes")
             .as_deref(),
         Some(b"early-retained".as_slice())
+    );
+    now = server.view().recovery().send_at(now);
+    client
+        .receive_from(&mut work, &mut server, now)
+        .expect("increased bidi MAX_STREAMS");
+    now = client.view().recovery().send_at(now);
+    server
+        .receive_from(&mut work, &mut client, now)
+        .expect("newly permitted STOP and RESET");
+    let control = excess_bidi.bind(&server).expect("incoming control stream");
+    assert_eq!(server.stream_state().stopped(control), Ok(Some(stop)));
+    assert!(
+        std::iter::from_fn(|| server.poll().poll_event()).any(|event| {
+            event
+                == Event::Reset {
+                    stream_id: control.receive(),
+                    error_code: reset,
+                }
+        })
     );
     assert!(client.view().lifecycle().is_ready() && server.view().lifecycle().is_ready());
 }

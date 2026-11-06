@@ -22,7 +22,11 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
         Self { conn }
     }
 
-    pub(super) fn snapshot(&mut self, work: usize) -> Result<(), control::Admission> {
+    pub(super) fn snapshot(
+        &mut self,
+        work: usize,
+        can_control: bool,
+    ) -> Result<(), control::Admission> {
         let local = self.conn.streams.local();
         let Streams {
             state:
@@ -33,8 +37,9 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
                 },
             ..
         } = &mut self.conn.streams;
-        transmit.snapshot(&mut self.conn.control, work, |id| {
-            admit.allows(streams::Relative::new(id, local))
+        let allowed = admit.all_allowed();
+        transmit.snapshot(&mut self.conn.control, work, can_control, |id| {
+            allowed || admit.allows(streams::Relative::new(id, local))
         })
     }
 

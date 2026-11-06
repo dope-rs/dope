@@ -6,7 +6,6 @@ use o3::{
 use std::num::NonZero;
 
 use crate::conn::output::delivery;
-use crate::conn::stream::{Local, state::streams};
 use crate::conn::wire::path;
 use crate::errors;
 use crate::wire::stream;
@@ -165,16 +164,6 @@ impl<'a> Selected<'a> {
             _ => return None,
         };
         self.probe.control_path(record)
-    }
-
-    pub(in crate::conn) fn allows(self, local: &Local, role: stream::Initiator) -> bool {
-        match self.encodable {
-            Encodable::StopSending(id, _)
-            | Encodable::ResetStream(id, _, _)
-            | Encodable::MaxStreamData(id, _)
-            | Encodable::StreamDataBlocked(id, _) => local.allows(streams::Relative::new(id, role)),
-            _ => true,
-        }
     }
 
     pub(in crate::conn) const fn kind(self) -> frame::Kind {

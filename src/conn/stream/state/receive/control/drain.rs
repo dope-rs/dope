@@ -55,8 +55,11 @@ impl<'a, B: stream::Recv, D: buffer::raw::Segment> Drain<'a, B, D> {
             left -= 1;
         }
 
+        if left == 0 {
+            return Ok(());
+        }
         let allowed = state.local_initiated.all_allowed();
-        let mut work = state.receive.map.len();
+        let mut work = state.receive.map.work().min(left);
         while left != 0 && work != 0 {
             work -= 1;
             let local = state.local();

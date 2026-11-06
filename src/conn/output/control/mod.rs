@@ -1,6 +1,6 @@
 use crate::conn::machine::storage::capacity;
 use crate::conn::output::delivery;
-use crate::conn::stream::{Local, state::transmit::queue};
+use crate::conn::stream::state::transmit::queue;
 use crate::conn::wire::path::probe;
 use crate::errors;
 use crate::wire::stream;
@@ -45,6 +45,12 @@ pub(in crate::conn) const SUFFIX: u16 = STOP_SENDING
 pub(in crate::conn) enum Effect {
     None,
     RetireStream(stream::Id),
+}
+
+pub(in crate::conn) enum Retry {
+    None,
+    Data,
+    Stream(stream::Id),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -167,10 +173,10 @@ impl Pending {
         }
     }
 
-    pub(in crate::conn) fn lose(&mut self, handle: revision::Key) {
-        if let Some(slot) = self.storage.revision(handle) {
-            slot.lose();
-        }
+    pub(in crate::conn) fn lose(&mut self, handle: revision::Key) -> Retry {
+        self.storage
+            .revision(handle)
+            .map_or(Retry::None, |slot| slot.lose())
     }
 }
 
@@ -230,16 +236,8 @@ impl<'pending> Ready<'pending> {
         cursor::Cursor::<SUFFIX>::new(self.pending)
     }
 
-    pub(in crate::conn) fn has_sendable(self, local: &Local, role: stream::Initiator) -> bool {
-        let bits = self.pending.storage.topology().lanes.ready_bits() & (PREFIX | SUFFIX);
-        if bits == 0 {
-            return false;
-        }
-        if local.all_allowed() || bits & !(STOP_SENDING | RESET_STREAM | MAX_STREAM_DATA) != 0 {
-            return true;
-        }
-        self.suffix()
-            .is_some_and(|mut records| records.any(|selected| selected.allows(local, role)))
+    pub(in crate::conn) fn has_sendable(self) -> bool {
+        self.pending.storage.topology().lanes.ready_bits() & (PREFIX | SUFFIX) != 0
     }
 }
 

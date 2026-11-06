@@ -5,11 +5,14 @@ use crate::{
     conn::{
         self,
         output::transmit::{builder, packet::seals},
-        stream::state::{receive, streams, transmit::queue},
+        stream::state::receive,
     },
     proto::recovery::{numbers, pmtud},
-    stream::{self, send},
-    wire::packet::{header, header::widths, kind},
+    stream,
+    wire::{
+        packet::{header, header::widths, kind},
+        stream::Initiator,
+    },
 };
 use builder::app::terminal;
 
@@ -100,10 +103,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         !conn.is_closing()
             && !conn.egress.derived.is_pending()
             && !receive::Status::new(&conn.streams.state).has_ctrl()
-            && !conn
-                .control
-                .ready()
-                .has_sendable(&conn.streams.local_initiated, conn.streams.local())
+            && !conn.control.ready().has_sendable()
             && conn.handshake.keys.has_write()
             && !conn.egress.recovery.probe.allowance.is_armed()
             && (!conn.handshake.crypto.has_sendable(conn::Epoch::Initial)
@@ -113,7 +113,10 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
             && !conn.control.probe().has_work()
             && !conn.handshake.crypto.has_sendable(conn::Epoch::Application)
             && !conn.streams.transmit.deliveries().has_retry()
-            && !conn.streams.transmit.map().view().has_pending()
+            && !conn
+                .streams
+                .transmit
+                .has_work(&conn.control, self.can_stream_control())
             && self.next_probe().is_none()
     }
 
@@ -278,10 +281,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
             return Some(AppIntent::AckOnly);
         }
         let can_send = self.can_send(now);
-        let packet = conn
-            .control
-            .ready()
-            .has_sendable(&conn.streams.local_initiated, conn.streams.local())
+        let packet = conn.control.ready().has_sendable()
             || conn.handshake.crypto.has_sendable(conn::Epoch::Application)
             || conn.streams.transmit.deliveries().has_retry()
             || conn.streams.transmit.has_snapshot();
@@ -313,7 +313,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
         }
         if conn.handshake.keys.long.early().is_some()
             && !conn.handshake.keys.has_write()
-            && conn.streams.transmit.map().view().has_pending()
+            && self.has_stream()
         {
             return true;
         }
@@ -331,8 +331,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
                 || receive::Status::new(&conn.streams.state).has_ctrl()
                 || !conn.control.ready().is_empty()
                 || conn.handshake.crypto.has_sendable(conn::Epoch::Application)
-                || conn.streams.transmit.deliveries().has_retry()
-                || conn.streams.transmit.map().view().has_pending()
+                || self.has_stream()
                 || self.next_probe().is_some())
     }
 
@@ -431,43 +430,18 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
                 || keys.long.initial().is_some())
     }
 
+    pub(super) fn can_stream_control(&self) -> bool {
+        self.connection.peer.local != Initiator::Client
+            || self.connection.egress.lifecycle.state != conn::State::Handshaking
+    }
+
     fn has_stream(&self) -> bool {
         let conn = self.connection;
-        if conn.streams.transmit.deliveries().has_retry() {
-            return true;
-        }
-        let budget = conn.streams.transmit.peer.budget(0);
-        conn.streams.transmit.map().iter_ready().any(|resolved| {
-            if !conn
+        conn.streams.transmit.deliveries().has_retry()
+            || conn
                 .streams
-                .local_initiated
-                .allows(streams::Relative::new(resolved.id(), conn.streams.local()))
-            {
-                return false;
-            }
-            let entry = resolved.state();
-            if entry.is_deferred() {
-                return conn.control.available().raw() != 0;
-            }
-            let view = entry.view();
-            if !view.has_pending()
-                || !matches!(entry.phase(), queue::Phase::Open | queue::Phase::Marked)
-            {
-                return false;
-            }
-            if view.unsent_len() == 0 && matches!(view.boundary(0), send::Boundary::End) {
-                return true;
-            }
-            let limit = entry.credit().limit();
-            let credit = limit.get().saturating_sub(view.next_offset().get());
-            (budget != 0 && credit != 0)
-                || (budget == 0
-                    && conn
-                        .control
-                        .ready()
-                        .has_blocked(&conn.streams.transmit.peer.data_credit))
-                || (credit == 0 && conn.control.ready().has_blocked(entry.credit()))
-        })
+                .transmit
+                .has_work(&conn.control, self.can_stream_control())
     }
 
     fn has_output(&self, now: time::Instant) -> bool {
@@ -500,10 +474,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Permit<'_, DOMA
                     || conn.egress.derived.is_sendable(&conn.path, &conn.control)
                     || conn.control.ready().can_probe()
                     || receive::Status::new(&conn.streams.state).can_ctrl(&conn.control)
-                    || conn
-                        .control
-                        .ready()
-                        .has_sendable(&conn.streams.local_initiated, conn.streams.local())
+                    || conn.control.ready().has_sendable()
                     || conn.handshake.crypto.has_sendable(conn::Epoch::Application)
                     || self.has_stream()
                     || self.next_probe().is_some())

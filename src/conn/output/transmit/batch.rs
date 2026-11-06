@@ -132,6 +132,8 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
             .queue()
             .reconcile(work)
             .map_err(transmit::Admission::from)?;
+        let can_control = permit::Permit::new(self.connection).can_stream_control();
+        let work = if can_control { work } else { 0 };
         control::Drain::new(
             &mut self.connection.streams.state,
             &mut self.connection.control,
@@ -150,7 +152,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
         let mut hs_done = false;
 
         let result: Result<(), transmit::Admission> = (|| {
-            stage::Stage::new(self.connection).snapshot(work)?;
+            stage::Stage::new(self.connection).snapshot(work, can_control)?;
 
             while left != 0
                 && self.connection.egress.recovery.probe.allowance.is_armed()

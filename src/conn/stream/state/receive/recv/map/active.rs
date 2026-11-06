@@ -56,7 +56,7 @@ impl<B: Recv> Active<'_, B> {
     }
 
     pub(in crate::conn) fn deactivate(self) {
-        self.inner.deactivate();
+        self.inner.complete();
     }
 
     pub(in crate::conn) fn move_to_back(self) {

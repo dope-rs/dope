@@ -168,14 +168,10 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a,
     }
 
     pub(in crate::conn::output::transmit) fn select<'pending, const MASK: u16>(
-        conn: &conn::Machine<DOMAIN, B, D>,
         records: &mut cursor::Cursor<'pending, MASK>,
         route: path::OutputRoute,
     ) -> Option<encode::Selected<'pending>> {
-        records.find(|selected| {
-            selected.allows(&conn.streams.local_initiated, conn.streams.local())
-                && selected.path() == route.path()
-        })
+        records.find(|selected| selected.path() == route.path())
     }
 
     fn put_stream(
@@ -207,8 +203,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a,
         };
         let mut result = Selection::Empty;
         while let Some(vacant) = self.controls.vacancy() {
-            let Some(selected) = Self::select(self.connection, &mut records, commit.path.route)
-            else {
+            let Some(selected) = Self::select(&mut records, commit.path.route) else {
                 break;
             };
             result = Selection::Ready;
@@ -237,10 +232,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a,
             let next = probes::Probes::new(&self.connection.control).next(
                 conn::Epoch::Application,
                 |selected| {
-                    !selected.allows(
-                        &self.connection.streams.local_initiated,
-                        self.connection.streams.local(),
-                    ) || vacant
+                    vacant
                         .as_slice()
                         .iter()
                         .any(|entry| entry.handle() == selected.handle())
