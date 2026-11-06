@@ -69,16 +69,12 @@ where
         None
     }
 
-    fn activate<'e, 'a, 'p, 's, 'r>(
+    fn activate<'e>(
         self: pin::Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'r, 'd, ID, W, (), Self::Egress>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
         _: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'r, 'd, ID, W, (), Self::Egress>
-    where
-        'd: 'r,
-    {
+    ) {
         self.as_ref().get_ref().sync_send(&mut conn);
-        conn
     }
 
     fn eof<'e>(
@@ -94,13 +90,10 @@ where
             .end(conn.id(), end);
     }
 
-    fn close<'e, 'a, 'p, 's, 'r>(
+    fn close<'e>(
         self: pin::Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'r, 'd, ID, W, (), Self::Egress>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'r, 'd, ID, W, (), Self::Egress>
-    where
-        'd: 'r,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
+    ) {
         let port = self.get_mut().port;
         match conn.failure() {
             Some(conn::Failure::Receive(error)) => {
@@ -124,7 +117,6 @@ where
                 .fail_edge(conn.id(), read::Edge::Transmit((&cause).into()));
         }
         port.connections.channel().closed(conn.id());
-        conn
     }
 
     fn close_gate(

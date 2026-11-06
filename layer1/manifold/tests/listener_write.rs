@@ -2,7 +2,7 @@ pub mod common;
 
 use common::manifold::listener::{native, reached};
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Instant};
 
 use dope_core::driver::life::recovery;
 
@@ -10,10 +10,13 @@ use dope_core::driver::life::recovery;
 static ALLOCATOR: Tracker = Tracker::new();
 
 use common::{
-    manifold::listener::pipeline::{
-        admit, body,
-        prefix::{Admission, Attempt, Prefix, Seen, State},
-        wake::{self, Wake, Zero, ZeroEvent},
+    manifold::listener::{
+        coupled::QUEUED_BODY,
+        pipeline::{
+            admit, body,
+            prefix::{Admission, Attempt, Prefix, Seen, State},
+            wake::{self, Wake, Zero, ZeroEvent},
+        },
     },
     recover,
     scenario::case::listener::Listener,
@@ -24,8 +27,10 @@ use dope_net::{link::egress, tcp::Tcp, wire::Identity};
 use dope_runtime::executor::session::Completion;
 use dope_test::{
     alloc::Tracker,
+    fibers,
     harness::{
-        peer::Peer,
+        GUARD,
+        peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
     reclaim::Reports,
@@ -370,12 +375,19 @@ fn bounded_zero_rolls_back() {
 }
 
 #[test]
-fn reserves_before_callback() {
+fn prefix_waiters_preserve_grants() {
     let seen = Rc::new(Cell::new(Seen::default()));
     let gate = Gate::new();
+    let received = Gate::new();
     let mut finish = Completion::new();
-    let prepared = Listener::new::<1>(Default::default())
+    let prepared = Listener::new::<2>(Default::default())
         .direct(0)
+        .stream(dope_net::tcp::StreamConfig {
+            send_buffer_size: Some(
+                dope_core::io::socket::option::Buffer::try_from(1024_usize).expect("socket buffer"),
+            ),
+            ..Default::default()
+        })
         .egress(egress::Config::shared(egress::Credit::fixed::<
             1,
             { 2 * write::Prefix::CAPACITY as u32 },
@@ -384,6 +396,7 @@ fn reserves_before_callback() {
             Prefix {
                 seen: seen.clone(),
                 gate: gate.clone(),
+                received: received.clone(),
             },
             Identity,
         ))
@@ -394,16 +407,37 @@ fn reserves_before_callback() {
         .with_run(
             &mut finish,
             |case| {
-                Peer::at(case.addr())
-                    .exchange(b"GO\n".to_vec(), |peer| {
-                        reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                        let bytes = peer
-                            .finish()
-                            .expect("join prefix peer")
-                            .expect("prefix wire");
-                        assert_eq!(bytes, b"AB");
-                    })
-                    .expect("prefix peer");
+                let first = Peer::at(case.addr()).try_connect().expect("first peer");
+                first.write_all(b"GO\n").expect("first request");
+                reached(case.try_wait(&received, 1), received.hits(), 1);
+                let second = Peer::at(case.addr()).try_connect().expect("second peer");
+                second.write_all(b"GO\n").expect("second request");
+                reached(case.try_wait(&received, 2), received.hits(), 2);
+                assert_eq!(gate.hits(), 0);
+                first.nonblock(true);
+                let started = Instant::now();
+                let mut remaining = QUEUED_BODY.len();
+                let mut bytes = [0; 4096];
+                while remaining != 0 {
+                    assert!(started.elapsed() < GUARD, "body drain timeout");
+                    let limit = remaining.min(bytes.len());
+                    match first.read(&mut bytes[..limit]) {
+                        Ok(0) => panic!("truncated body"),
+                        Ok(count) => remaining -= count,
+                        Err(error) => {
+                            assert!(
+                                matches!(error, peer::Error::Syscall(cause)
+                                if cause.is_block() || cause.is_intr()),
+                                "body read: {error:?}"
+                            );
+                            case.try_drive(fibers::Yield::new()).expect("drive body");
+                        }
+                    }
+                }
+                reached(case.try_wait(&gate, 2), gate.hits(), 2);
+                first.nonblock(false);
+                assert_eq!(Peer::try_read_all(&first).expect("first prefix"), b"B");
+                assert_eq!(Peer::try_read_all(&second).expect("second prefix"), b"B");
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             native,
@@ -413,17 +447,36 @@ fn reserves_before_callback() {
     assert!(seen.chunks.iter().all(|len| *len != 0));
     assert!(matches!(
         seen.admissions.as_slice(),
-        [(Admission::Committed, egress::Pending::Present)]
+        [
+            (Admission::Committed, egress::Pending::Present),
+            (
+                Admission::Deferred(write::Deferred::Capacity),
+                egress::Pending::Absent
+            )
+        ]
     ));
-    assert!(matches!(seen.attempts.as_slice(), [deferred @ .., Attempt {
-        callback: Some(State::Queued), state: State::Done, allocations: (0, 0),
-        result: Ok(write::Outcome::Committed(())),
-    }] if !deferred.is_empty() && deferred.iter().all(|attempt| matches!(attempt, Attempt {
-        callback: None, state: State::Queued, allocations: (0, 0),
-        result: Ok(write::Outcome::Deferred(write::Deferred::Capacity)),
-    }))));
+    assert_eq!(
+        seen.attempts
+            .iter()
+            .filter(|attempt| attempt.callback.is_some())
+            .count(),
+        2
+    );
+    assert!(seen.attempts.iter().all(|attempt| matches!(
+        attempt,
+        Attempt {
+            callback: Some(State::Queued),
+            state: State::Done,
+            allocations: (0, 0),
+            result: Ok(write::Outcome::Committed(())),
+        } | Attempt {
+            callback: None,
+            state: State::Queued,
+            allocations: (0, 0),
+            result: Ok(write::Outcome::Deferred(write::Deferred::Capacity)),
+        }
+    )));
     assert_eq!(seen.closed, Some(State::Done));
-    assert_eq!(gate.hits(), 1);
     assert!(
         reports.events().expect("reclaimed events").is_empty(),
         "{reports:?}"

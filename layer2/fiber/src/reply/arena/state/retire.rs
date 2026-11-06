@@ -26,17 +26,11 @@ pub(in crate::reply::arena) enum Advance {
     Complete(Option<LaneIndex>),
 }
 
-pub(in crate::reply::arena) struct Retire<'a, 'arena, 'credits, 'region, D, E, K> {
-    state: &'a mut state::Book<'arena, 'credits, 'region, D, E, K>,
-}
+pub(in crate::reply::arena) struct Retire<'a, 'arena, 'credits, 'region, D, E, K>(
+    pub(in crate::reply::arena) &'a mut state::Book<'arena, 'credits, 'region, D, E, K>,
+);
 
 impl<'a, 'arena, 'credits, 'region, D, E, K> Retire<'a, 'arena, 'credits, 'region, D, E, K> {
-    pub(in crate::reply::arena) const fn new(
-        state: &'a mut state::Book<'arena, 'credits, 'region, D, E, K>,
-    ) -> Self {
-        Self { state }
-    }
-
     /// Retires each occupied attachment once in its original lane.
     pub(in crate::reply::arena) fn begin(&mut self, retired: Retired) -> Start {
         let index = retired.key().index();
@@ -44,7 +38,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Retire<'a, 'arena, 'credits, 'regio
         // entry that remains occupied until this retirement and retention finish.
         let live = unsafe {
             depot::raw::Proof::<_, Initialized<Retired>>::new((
-                (&mut self.state.slots.0, retired),
+                (&mut self.0.slots.0, retired),
                 index.into(),
             ))
         };
@@ -63,7 +57,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Retire<'a, 'arena, 'credits, 'regio
             }
             state::EntryBody::Attached(state::Attached(slot)) => {
                 let lane = entry.owners.lane();
-                let route = self.state.order.route(lane).into_state();
+                let route = self.0.order.route(lane).into_state();
                 route.live = route.live.wrapping_sub(1);
                 entry.body = state::EntryBody::Draining(slot);
                 Start::Draining(Active::new(retired))
@@ -76,7 +70,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Retire<'a, 'arena, 'credits, 'regio
         // SAFETY: active retirement retains this entry until draining completes.
         let live = unsafe {
             depot::raw::Proof::<_, Initialized<Active>>::new((
-                (&mut self.state.slots.0, active),
+                (&mut self.0.slots.0, active),
                 index.into(),
             ))
         };
@@ -113,9 +107,9 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Retire<'a, 'arena, 'credits, 'regio
             // SAFETY: settlement retains the original released entry and its exact
             // generation while the arena loans the slab that owns that entry.
             let live = unsafe {
-                released.settle().map(|(released, key)| {
-                    ((&mut self.state.slots.0, released), key.index().into())
-                })
+                released
+                    .settle()
+                    .map(|(released, key)| ((&mut self.0.slots.0, released), key.index().into()))
             };
             let (occupied, _held) = slab::Occupied::from_live(live);
             let entry = occupied.get();
@@ -129,8 +123,8 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Retire<'a, 'arena, 'credits, 'regio
     }
 
     fn release(&mut self, lane: LaneIndex, release: Release) {
-        if matches!(release, Release::Reserved) && self.state.order.contains(lane) {
-            self.state.order.reserve(lane);
+        if matches!(release, Release::Reserved) && self.0.order.contains(lane) {
+            self.0.order.reserve(lane);
         }
     }
 }

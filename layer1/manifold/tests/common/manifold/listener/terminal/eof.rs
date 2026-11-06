@@ -143,19 +143,15 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
         }
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State, Shared>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State, Shared>
-    where
-        'd: 'w,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
+    ) {
         let this = self.get_mut();
         let (lane, epoch) = conn.id().parts();
         this.events.push(Event::Generation(lane, epoch));
         this.events.push(Event::Close);
         this.close.hit();
-        conn
     }
 }
 

@@ -24,24 +24,8 @@ pub mod open;
 pub mod path;
 
 pub use dir::Dir;
+pub use file::Kind;
 pub use len::Len;
-
-/// Native file kind observed from descriptor metadata.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct Kind(file::Kind);
-
-impl Kind {
-    pub const fn is_regular(self) -> bool {
-        self.0.is_regular()
-    }
-}
-
-impl From<file::Kind> for Kind {
-    fn from(kind: file::Kind) -> Self {
-        Self(kind)
-    }
-}
 
 /// Absolute byte position representable by every file backend.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -116,8 +100,6 @@ impl Extent {
 }
 
 const _: () = {
-    assert!(mem::size_of::<Kind>() == mem::size_of::<file::Kind>());
-    assert!(mem::align_of::<Kind>() == mem::align_of::<file::Kind>());
     assert!(mem::size_of::<Offset>() == mem::size_of::<u64>());
     assert!(mem::align_of::<Offset>() == mem::align_of::<u64>());
     assert!(mem::size_of::<Extent>() == 2 * mem::size_of::<u64>());
@@ -362,7 +344,7 @@ impl File {
     pub fn metadata(&self) -> Result<Metadata, Errno> {
         let value = Backend::metadata::<dope_sys::Errno>(fd::AsFd::as_fd(self))?;
         Ok(Metadata {
-            kind: Kind::from(value.kind()),
+            kind: value.kind(),
             length: value.size(),
         })
     }

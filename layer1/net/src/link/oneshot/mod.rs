@@ -19,7 +19,7 @@ use o3::{
     depot::{
         arena::slab::{external::errors, lookup},
         heap::keyed,
-        queue::indexed::{exact, fifo},
+        queue::indexed::fifo,
     },
 };
 pub use request::Request;
@@ -92,19 +92,19 @@ mod states;
 
 pub struct Pool<'d, ID: Identity, A: 'd, Address: socket::Prepared, B: 'd>
 where
-    B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
+    B: data::raw::StableOwner<'d>,
 {
     routes: routes::Routes<'d, ID>,
     flights: flight::Slots<'d, ID>,
     slots: table::CellSlab<raw::Cell<'d, A, Address, B>, ID>,
-    retries: fifo::List<routes::Local<'d, ID>, indices::SlotIndex, exact::Policy>,
+    retries: fifo::List<routes::Local<'d, ID>, indices::SlotIndex>,
     deadlines: keyed::Min<routes::Index, routes::Due<'d>>,
 }
 
 impl<'d, ID: Identity, A: 'd, Address, B: 'd> Pool<'d, ID, A, Address, B>
 where
     Address: socket::Prepared,
-    B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
+    B: data::raw::StableOwner<'d>,
 {
     pub fn prepare(
         base: indices::Edge,

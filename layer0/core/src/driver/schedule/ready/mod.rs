@@ -2,7 +2,7 @@ use std::{marker, mem, num};
 
 pub(crate) use arena::Arena;
 use arena::{
-    cells::{Drain, Entry, Renewal, Resident, Slots, Table},
+    cells::{Entry, Renewal, Resident, Slots, Table},
     layout, payload, pool, topology,
 };
 pub use key::retained::Retained;
@@ -15,7 +15,6 @@ use kind::Kind;
 use layout::Layout;
 use o3::{
     base::{marker::ThreadBound, num::Generation},
-    depot::queue::Removal,
     mem::Lease,
 };
 use payload::{Link, Task};
@@ -270,10 +269,7 @@ impl<'d, Tag: route::Tag> Slot<'d, Tag> {
     /// Takes readiness for this exact live slot without draining other entries.
     #[must_use]
     pub fn take(&self) -> Readiness {
-        match self.owner.item().ready().arena().take(self.dispatch_key()) {
-            Removal::Removed => Readiness::Ready,
-            Removal::Absent => Readiness::Idle,
-        }
+        self.owner.item().ready().arena().take(self.dispatch_key())
     }
 
     /// Returns the driver- and generation-branded root owned by this slot.

@@ -1,12 +1,7 @@
-use std::array;
-
 pub use bound::Bound;
 pub use chunks::Chunks;
 use dope_core::io::transfer;
-use o3::{
-    buffer,
-    buffer::{bytes, storage::inline},
-};
+use o3::buffer::storage::inline;
 
 use crate::link::egress::ResidentSize;
 
@@ -72,55 +67,9 @@ pub enum Execution {
 mod bound;
 
 /// Fixed-capacity bytes for allocation-free control frames.
-#[repr(transparent)]
-pub struct Inline<const N: usize>(pub inline::Bytes<N, u16>);
-
-impl<const N: usize> Default for Inline<N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const N: usize> Inline<N> {
-    pub const fn new() -> Self {
-        Self(inline::Bytes::new())
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl<const CAP: usize, const N: usize> From<[u8; N]> for Inline<CAP> {
-    fn from(bytes: [u8; N]) -> Self {
-        Self(bytes.into())
-    }
-}
-
-impl<const N: usize> From<array::IntoIter<u8, N>> for Inline<N> {
-    fn from(source: array::IntoIter<u8, N>) -> Self {
-        Self(bytes::Prefix::from(&source).into())
-    }
-}
-
-impl<const N: usize> AsRef<[u8]> for Inline<N> {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl<const N: usize> buffer::Residency for Inline<N> {
-    fn resident(&self) -> usize {
-        N
-    }
-}
+pub type Inline<const N: usize> = inline::Bytes<N, u16>;
 
 const _: () = assert!(std::mem::size_of::<Inline<514>>() == 516);
-const _: () =
-    assert!(std::mem::size_of::<Inline<514>>() == std::mem::size_of::<inline::Bytes<514, u16>>());
 
 // SAFETY: a shared borrow fixes the initialized inline prefix and capacity.
 unsafe impl<'d, const N: usize> raw::Contiguous<'d> for Inline<N> {}

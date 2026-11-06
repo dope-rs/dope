@@ -105,11 +105,30 @@ where
     type Connect = L::Connect;
     type ConnState = L::ConnState;
     type Failure = L::Failure;
+    type Receipt = L::Receipt;
     type Requests = L::Requests;
     type Send = L::Send;
 
     fn codec(&self) -> &Self::Codec {
         L::codec(&self.endpoint)
+    }
+
+    fn receipt(
+        &self,
+        conn: conn::Id<'d, ID>,
+        state: &Self::ConnState,
+        region: &Token<'d>,
+    ) -> Self::Receipt {
+        L::receipt(&self.endpoint, conn, state, region)
+    }
+
+    fn received<'e>(
+        &mut self,
+        receipt: Self::Receipt,
+        has_prefix: bool,
+        ctx: &mut Context<'_, 'e, 'd, Self, ID>,
+    ) {
+        L::received(&mut self.endpoint, receipt, has_prefix, ctx)
     }
 
     fn mode(&self, conn: conn::Id<'d, ID>, state: &Self::ConnState) -> session::ReceiveMode {
@@ -389,9 +408,9 @@ where
         &self,
         conn: conn::Id<'d, ID>,
         failure: conn::Transmit,
-        region: &mut Token<'d>,
+        regions: &mut (Token<'d>, Token<'d, 1>),
     ) -> Option<conn::Transmit> {
-        L::transmit_failed(&self.endpoint, conn, failure, region)
+        L::transmit_failed(&self.endpoint, conn, failure, regions)
     }
     fn io_fail<'e>(&mut self, error: dope_core::Errno, ctx: &mut Context<'_, 'e, 'd, Self, ID>) {
         L::io_fail(&mut self.endpoint, error, ctx);

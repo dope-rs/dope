@@ -1,6 +1,6 @@
-use std::{alloc::Layout, cell, mem, num::NonZero};
+use std::{alloc::Layout, cell, mem};
 
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 
 use crate::{
     core::driver::schedule::ready::task::owner,
@@ -11,11 +11,11 @@ use crate::{
 };
 
 pub(super) struct Extent {
-    pub(super) tasks: NonZero<u32>,
+    pub(super) tasks: capacity::Count,
     pub(super) owners: owner::Capacity,
 }
 
-// SAFETY: both immutable nonzero counts fit the bounded, disjoint Owner/Node layout.
+// SAFETY: both immutable u32 counts fit the bounded, disjoint Owner/Node layout.
 unsafe impl alloc::raw::Shape for Extent {
     type Root = Owner;
     type Tail = cell::Cell<mem::MaybeUninit<Node>>;
@@ -27,7 +27,7 @@ unsafe impl alloc::raw::Shape for Extent {
     }
 
     fn tail_len(&self) -> usize {
-        self.tasks.get() as usize
+        self.tasks.get()
     }
 
     fn layout(&self) -> Layout {
@@ -40,7 +40,7 @@ unsafe impl alloc::raw::Shape for Extent {
                     <= isize::MAX as usize
             );
         }
-        let size = self.offset() + self.tasks.get() as usize * mem::size_of::<Self::Tail>();
+        let size = self.offset() + self.tasks.get() * mem::size_of::<Self::Tail>();
         unsafe { Layout::from_size_align_unchecked(size, mem::align_of::<Owner>()) }
     }
 }

@@ -284,15 +284,11 @@ pub trait Application<'d, ID: Identity>: Sized {
     }
 
     /// Activates application work that became ready without socket progress.
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: pin::Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
         _: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>
-    where
-        'd: 'w,
-    {
-        conn
+    ) {
     }
 
     /// Observes exact raw-prefix discard completion with no following input.
@@ -312,14 +308,10 @@ pub trait Application<'d, ID: Identity>: Sized {
     ) {
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: pin::Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>
-    where
-        'd: 'w,
-    {
-        conn
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
+    ) {
     }
 
     fn close_gate(

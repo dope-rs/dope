@@ -344,10 +344,7 @@ pub fn try_terminate() -> Result<(), Errno> {
     // SAFETY: the isolated test process owns its installed SIGTERM receiver.
     let result = unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
     // SAFETY: kill returns zero or -1 with errno on this thread.
-    unsafe {
-        kernel::raw::Status::new(result)
-            .try_zero::<Errno>(|| kernel::raw::Code::last::<Backend>().into())
-    }
+    unsafe { kernel::raw::Status::new(result).try_zero::<Backend, Errno>() }
 }
 
 pub fn try_limit() -> Result<(libc::rlim_t, libc::rlim_t), Errno> {
@@ -355,10 +352,7 @@ pub fn try_limit() -> Result<(libc::rlim_t, libc::rlim_t), Errno> {
     // SAFETY: the output points to storage for one complete resource limit.
     let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
     // SAFETY: getrlimit returns zero or -1 with this thread's errno.
-    unsafe {
-        kernel::raw::Status::new(result)
-            .try_zero::<Errno>(|| kernel::raw::Code::last::<Backend>().into())
-    }?;
+    unsafe { kernel::raw::Status::new(result).try_zero::<Backend, Errno>() }?;
     // SAFETY: the successful query initialized both limit fields.
     let limit = unsafe { limit.assume_init() };
     Ok((limit.rlim_cur, limit.rlim_max))

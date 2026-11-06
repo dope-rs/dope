@@ -82,16 +82,12 @@ impl<'d, ID: Identity> Application<'d, ID> for Fence {
         }
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, Phase<'d>>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, Phase<'d>>
-    where
-        'd: 'w,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, Phase<'d>>,
+    ) {
         assert!(matches!(conn.state(), Phase::Seen(_)));
         self.as_ref().get_ref().close.hit();
-        conn
     }
 }
 
@@ -164,16 +160,9 @@ impl<'d, ID: Identity> Application<'d, ID> for Duplex {
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, Stage>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, Stage>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, Stage>) {
         assert!(matches!(conn.state(), Stage::Seen));
         self.as_ref().get_ref().close.hit();
-        conn
     }
 }
 

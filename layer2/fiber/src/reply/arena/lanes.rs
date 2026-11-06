@@ -131,6 +131,21 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Lane<'a, 'arena, 'credits, 'region,
         token.borrow(&self.arena.state).depth(self)
     }
 
+    pub fn cutoff(self, token: &region::Token<region::Identity<'region>>) -> order::Cutoff<'arena> {
+        token.borrow(&self.arena.state).cutoff(self)
+    }
+
+    /// Checks the original end's full identity and membership in this lane.
+    pub fn contains_cutoff(
+        self,
+        cutoff: order::Cutoff<'arena>,
+        token: &region::Token<region::Identity<'region>>,
+    ) -> bool {
+        token
+            .borrow(&self.arena.state)
+            .contains_cutoff(self.index, cutoff)
+    }
+
     /// Retains this exact ordered front until its inspection or insertion ends.
     pub fn select<'p>(
         self,

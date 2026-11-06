@@ -41,11 +41,8 @@ impl Uring {
         // SAFETY: fds names writable storage for exactly two descriptors.
         let result = unsafe { libc::pipe2(fds.as_mut_ptr(), flags) };
         // SAFETY: pipe2 just returned on this thread and `fds` is its exact destination.
-        unsafe {
-            fd::raw::Pair::new(fds)
-                .try_adopt::<Errno>(result, || kernel::raw::Code::last::<Self>().into())
-        }
-        .map_err(pipe::Error::Open)
+        unsafe { fd::raw::Pair::new(fds).try_adopt::<Self, Errno>(result) }
+            .map_err(pipe::Error::Open)
     }
 
     pub fn layout<T>(count: usize) -> Result<num::NonZero<usize>, memory::Error> {
@@ -109,9 +106,7 @@ impl Uring {
         // SAFETY: the caller owns this complete live mapping.
         let result = unsafe { libc::munmap(address, bytes.get()) };
         // SAFETY: munmap returns zero or -1; failure retains its unchanged errno.
-        unsafe {
-            kernel::raw::Status::new(result).try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { kernel::raw::Status::new(result).try_zero::<Self, E>() }
     }
 }
 
@@ -217,11 +212,8 @@ impl Thread for Uring {
         let result =
             unsafe { libc::sched_getaffinity(0, mem::size_of::<libc::cpu_set_t>(), &mut mask) };
         // SAFETY: sched_getaffinity returns zero or -1 with errno.
-        unsafe {
-            kernel::raw::Status::new(result)
-                .try_zero::<Errno>(|| kernel::raw::Code::last::<Uring>().into())
-        }
-        .map_err(affinity::Error::Current)?;
+        unsafe { kernel::raw::Status::new(result).try_zero::<Uring, Errno>() }
+            .map_err(affinity::Error::Current)?;
         Ok(Cpus::new(&mask))
     }
 
@@ -241,11 +233,8 @@ impl Thread for Uring {
         let result =
             unsafe { libc::sched_setaffinity(0, mem::size_of::<libc::cpu_set_t>(), &mask) };
         // SAFETY: sched_setaffinity returns zero or -1 with errno.
-        unsafe {
-            kernel::raw::Status::new(result)
-                .try_zero::<Errno>(|| kernel::raw::Code::last::<Uring>().into())
-        }
-        .map_err(|fault| affinity::Error::Bind { cpu, fault })?;
+        unsafe { kernel::raw::Status::new(result).try_zero::<Uring, Errno>() }
+            .map_err(|fault| affinity::Error::Bind { cpu, fault })?;
         Ok(())
     }
 }

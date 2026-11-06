@@ -3,26 +3,26 @@ use o3::depot::queue::pool;
 
 use crate::link::{event, pool::recv::storage::queue};
 
-pub struct Loan<'a, 'd> {
-    events: pool::Lane<'a, event::Completion<'d>>,
+pub struct Loan<'a, 'd, R = ()> {
+    events: pool::Lane<'a, event::Completion<'d, R>>,
     credit: credit::Slot<'a, 'd>,
 }
 
-impl<'a, 'd> Loan<'a, 'd> {
+impl<'a, 'd, R> Loan<'a, 'd, R> {
     pub(crate) fn new(
-        events: pool::Lane<'a, event::Completion<'d>>,
+        events: pool::Lane<'a, event::Completion<'d, R>>,
         credit: credit::Slot<'a, 'd>,
     ) -> Self {
         Self { events, credit }
     }
 
-    pub(in crate::link::pool) fn get(&self) -> credit::Slot<'_, 'd> {
+    pub(in crate::link::pool) fn get(&self) -> credit::Slot<'a, 'd> {
         self.credit
     }
 }
 
-impl<'d> queue::Ops<'d> for Loan<'_, 'd> {
-    fn prepare_pop(&mut self) -> Option<pool::Front<'_, event::Completion<'d>, ()>> {
+impl<'d, R> queue::Ops<'d, R> for Loan<'_, 'd, R> {
+    fn prepare_pop(&mut self) -> Option<pool::Front<'_, event::Completion<'d, R>, ()>> {
         queue::Ops::prepare_pop(&mut self.events)
     }
 
@@ -31,8 +31,8 @@ impl<'d> queue::Ops<'d> for Loan<'_, 'd> {
     }
 }
 
-impl<'d> queue::Write<'d> for Loan<'_, 'd> {
-    fn prepare_push(&mut self) -> Option<queue::Vacant<'_, 'd>> {
+impl<'d, R> queue::Write<'d, R> for Loan<'_, 'd, R> {
+    fn prepare_push(&mut self) -> Option<queue::Vacant<'_, 'd, R>> {
         queue::Write::prepare_push(&mut self.events)
     }
 }

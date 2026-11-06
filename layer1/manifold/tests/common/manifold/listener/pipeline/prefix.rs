@@ -21,6 +21,8 @@ use dope_net::{
 use dope_test::{alloc::Tracker, harness::signals::Gate};
 use o3::buffer::{bytes::TryRetain, resident};
 
+use crate::common::manifold::listener::coupled::QUEUED_BODY;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     Fresh,
@@ -81,6 +83,7 @@ pub struct Attempt {
 
 pub struct Prefix {
     pub(crate) gate: Gate,
+    pub(crate) received: Gate,
     pub(crate) seen: Rc<Cell<Seen>>,
 }
 
@@ -142,31 +145,23 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for Prefix {
         None
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, State>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State>
-    where
-        'd: 'w,
-    {
+    ) {
         self.drive(&mut conn, driver);
-        conn
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State>
-    where
-        'd: 'w,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, State>,
+    ) {
         let state = *conn.state();
         let mut seen = self.seen.take();
         seen.closed = Some(state);
         self.seen.set(seen);
         self.gate.hit();
-        conn
     }
 }
 
@@ -182,13 +177,14 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Prefix {
         seen.chunks.push(len);
         self.seen.set(seen);
         if *conn.state() == State::Fresh {
-            let body = egress::NonEmpty::from_array(b"A");
+            let body = egress::NonEmpty::from_array(&QUEUED_BODY);
             let admitted = conn.write().admit(body, driver).into();
             *conn.state_mut() = State::Queued;
             let event = (admitted, conn.write().pending());
             let mut seen = self.seen.take();
             seen.admissions.push(event);
             self.seen.set(seen);
+            self.received.hit();
         }
         self.drive(&mut conn, driver);
         receive::Outcome::Continue

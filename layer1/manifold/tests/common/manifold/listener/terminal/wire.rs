@@ -321,6 +321,7 @@ impl receive::Policy<Wire> for Ingress {
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
     type Discard = mode::Disabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Transaction<'a, 'w, ID, Wire>,

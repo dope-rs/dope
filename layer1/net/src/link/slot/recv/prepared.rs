@@ -1,5 +1,8 @@
 use dope_core::{
-    driver::{route::Identity, schedule::app::batch::Bound},
+    driver::{
+        route::{self, Identity},
+        schedule::app::batch::Bound,
+    },
     io::{recv, transfer},
 };
 use o3::mem;
@@ -29,7 +32,7 @@ pub(in crate::link) struct Prepared<
     pub(in crate::link::slot::recv) transaction: <<<W as wire::Spec>::Receive as receive::Policy<
         W,
     >>::Reserve as reserve::Kind<W>>::Transaction<'a, 'w, 'd, ID>,
-    pub(in crate::link::slot::recv) credit: P::Binding<'d, ID>,
+    pub(in crate::link::slot::recv) credit: P::Binding<'a, 'd, ID>,
     pub(in crate::link::slot::recv) needs_rearm: bool,
 }
 
@@ -38,16 +41,16 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, P: mode::Flag>
 where
     'd: 'w,
 {
-    pub(in crate::link) fn new<S>(
-        conn: &'a mut types::Connection<'w, 'd, ID, W, S>,
+    pub(in crate::link) fn new(
+        conn: &'a mut types::Control<'w, 'd, ID, W>,
         rt: &'a mut W::Runtime<'w, 'd, ID>,
-        credit: P::Binding<'d, ID>,
+        credit: P::Binding<'a, 'd, ID>,
         arm: bool,
     ) -> Result<Self, slot::Control>
     where
         <W::Receive as receive::Policy<W>>::Reserve: reserve::Immediate<W>,
     {
-        let end = match conn.control.engine.both(&mut conn.control.terminal) {
+        let end = match conn.engine.both(&mut conn.terminal) {
             terminal::Admission::Open(end) => end,
             terminal::Admission::Closed => {
                 return Err(slot::Control::Discarded {
@@ -57,11 +60,11 @@ where
             }
         };
         Ok(Self {
-            engine: &mut conn.control.engine,
+            engine: &mut conn.engine,
             end,
             transaction:
                 <<W::Receive as receive::Policy<W>>::Reserve as reserve::Immediate<W>>::reserve(
-                    &mut conn.control.wire,
+                    &mut conn.wire,
                     rt,
                 ),
             credit,
@@ -175,6 +178,7 @@ where
 {
     pub(in crate::link) fn retained(
         mut self,
+        target: route::Operation<'d, ID>,
         mut bytes: recv::Lease<'d>,
     ) -> slot::Decision<Chunk<'w, 'd, W>> {
         let (remaining, finished) = self.discard(&mut bytes);
@@ -184,7 +188,7 @@ where
                 finished,
             });
         }
-        let credit = match P::arm(self.credit, self.engine.ready_handle().target()) {
+        let credit = match P::arm(self.credit, target, self.engine.ready_handle().target()) {
             Ok(credit) => credit,
             Err(cause) => {
                 return slot::Decision::Control(slot::Control::Credit {

@@ -71,14 +71,20 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         Some(&self.front.as_mut()?.0.value().tag)
     }
 
+    pub fn is_cutoff(&self, cutoff: order::Cutoff<'arena>) -> bool {
+        self.front
+            .as_ref()
+            .is_some_and(|(_, key, _)| Some(*key) == cutoff.key())
+    }
+
     pub fn front(&self) -> order::Front {
         let Some((_, _, entry)) = &self.front else {
             return order::Front::Empty;
         };
         match entry.body {
-            state::EntryBody::Attached(_) => match entry.acceptance {
-                recv::Acceptance::Payload | recv::Acceptance::Collected => order::Front::Open,
-                recv::Acceptance::Unit => order::Front::Denied,
+            state::EntryBody::Attached(_) => match entry.owners.acceptance {
+                Some(recv::Acceptance::Unit) => order::Front::Denied,
+                _ => order::Front::Open,
             },
             state::EntryBody::Draining(_) | state::EntryBody::Drained => order::Front::Detached,
         }
@@ -90,14 +96,13 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         };
         let state::Entry {
             body,
-            acceptance: accept,
             owners,
             signal,
         } = entry;
         let order = Slot::new(front, key, owners);
         match body {
             state::EntryBody::Attached(state) => {
-                state::Head::Attached(reply::Open::new(order, *accept, state.state(), signal))
+                state::Head::Attached(reply::Open::new(order, state.state(), signal))
             }
             state::EntryBody::Draining(_) => state::Head::Draining(order),
             state::EntryBody::Drained => state::Head::Drained(order),
@@ -115,14 +120,18 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
     fn try_data(
         self,
         usage: usage::Usage,
-    ) -> Result<slot::Push<'a, 'arena, 'credits, 'region, D, K>, Reject> {
+    ) -> Result<Option<slot::Push<'a, 'arena, 'credits, 'region, D, K>>, Reject> {
         let limit = *self.limit;
         let open = self.attached().map_err(Reject::Front)?;
-        let accept = open.acceptance();
+        let Some(accept) = open.acceptance() else {
+            return Ok(None);
+        };
         if let recv::Acceptance::Unit = accept {
             return Err(Reject::Front(order::Front::Denied));
         }
-        open.try_data(limit, usage).map_err(Reject::Acquire)
+        open.try_data(limit, usage)
+            .map(Some)
+            .map_err(Reject::Acquire)
     }
 
     fn try_failure(
@@ -131,10 +140,9 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
     ) -> Result<Failure<'a, 'arena, 'credits, 'region, E, K>, Reject> {
         let limit = *self.limit;
         let open = self.attached().map_err(Reject::Front)?;
-        let accept = open.acceptance();
         let (order, slot, signal) = open.failure();
         let lease = order
-            .try_lease(payload::Failure::new(usage), limit, accept)
+            .try_lease(payload::Failure::new(usage), limit)
             .map_err(Reject::Acquire)?;
         Ok(Failure {
             slot,
@@ -149,7 +157,8 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
     {
         let usage = item.footprint();
         let held = match self.try_data(usage) {
-            Ok(held) => held,
+            Ok(Some(held)) => held,
+            Ok(None) => return Ok(()),
             Err(reject) => return Err(reject.into_error(item)),
         };
         held.commit(item);
@@ -163,7 +172,8 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
     {
         let usage = builder.usage();
         let held = match self.try_data(usage) {
-            Ok(held) => held,
+            Ok(Some(held)) => held,
+            Ok(None) => return Ok(()),
             Err(Reject::Acquire(pool::Acquire::Backpressure(cause))) => {
                 return Err(usage::PushError::Backpressure { builder, cause });
             }

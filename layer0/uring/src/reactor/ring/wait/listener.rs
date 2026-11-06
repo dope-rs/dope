@@ -1,9 +1,10 @@
 use dope_sys::{
+    Errno,
     io::{
-        file,
+        fd::Fd,
         reactor::{
             complete::flags::{Flow, Meta as _},
-            submit::Control as _,
+            submit::Control,
         },
         request::Lower as _,
     },
@@ -80,8 +81,7 @@ where
             .map_err(|error| probe::Syscall { probe, error })?;
         let entry = sockets::accept(self.range.fixed()).user_data(T::probe(probe));
         let done = self.submit(&entry, probe)?;
-        <Uring as file::raw::Completion>::close(client)
-            .map_err(|error| probe::Syscall { probe, error })?;
+        <Uring as Fd>::close::<Errno>(client).map_err(|error| probe::Syscall { probe, error })?;
         let result = done.success().map_err(Cause::<T>::Check)?;
         let slot = self
             .range
@@ -114,8 +114,8 @@ where
             Ok(done) => done,
             Err(stopped) => return Err(Recover::accept(stopped.state, stopped.cause.into(), file)),
         };
-        let closed = <Uring as file::raw::Completion>::close(client)
-            .map_err(|error| probe::Syscall { probe, error });
+        let closed =
+            <Uring as Fd>::close::<Errno>(client).map_err(|error| probe::Syscall { probe, error });
         let active = match Stopped::attach(active, closed) {
             Ok((active, ())) => active,
             Err(stopped) => return Err(Recover::accept(stopped.state, stopped.cause.into(), file)),
@@ -179,7 +179,7 @@ where
     }
 
     fn close(&mut self, slot: sq::Fixed, probe: Identity<T>) -> Result<(), Cause<T>> {
-        let entry = Uring::close(slot, T::probe(probe));
+        let entry = <Uring as Control>::close(slot, T::probe(probe));
         self.submit(&entry, probe)?
             .zero()
             .map_err(Cause::<T>::Check)

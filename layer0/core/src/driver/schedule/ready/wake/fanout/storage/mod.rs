@@ -144,13 +144,7 @@ impl<W> Registry<W> {
             return Err(storage::Reject::Full);
         };
         let index = *view.key();
-        unsafe {
-            depot::raw::Hooks::chain_push(
-                resident::raw::Slice::new(self.entries.as_ref()),
-                &self.links,
-                index,
-            )
-        };
+        unsafe { depot::raw::Hooks::chain_push(self.entries.as_ref(), &self.links, index) };
         view.initialize(self.epoch.get(), value);
         Ok(Key(index))
     }
@@ -168,11 +162,7 @@ impl<W> Registry<W> {
         }
         let last = view.hook().prev_index().is_none() && view.hook().next_index().is_none();
         let vacant = unsafe {
-            depot::raw::Hooks::chain_unlink(
-                resident::raw::Slice::new(self.entries.as_ref()),
-                &self.links,
-                *view.key(),
-            )
+            depot::raw::Hooks::chain_unlink(self.entries.as_ref(), &self.links, *view.key())
         };
         if last {
             self.draining.set(self.epoch.get());

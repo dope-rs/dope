@@ -44,9 +44,10 @@ where
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, A> Policy<'w, 'd, ID, A> for (receive::Owned, resume::Complete)
+impl<'w, 'd: 'w, ID: Identity, A, R: Default> Policy<'w, 'd, ID, A>
+    for (receive::Owned<R>, resume::Complete)
 where
-    A: app::Owned<'w, 'd, ID, Continuation = resume::Complete>,
+    A: app::Owned<'w, 'd, ID, R, Continuation = resume::Complete>,
 {
     fn prepare<S, T>(
         app: A,
@@ -67,9 +68,10 @@ where
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, A> Policy<'w, 'd, ID, A> for (receive::Owned, resume::Retained)
+impl<'w, 'd: 'w, ID: Identity, A, R: Default> Policy<'w, 'd, ID, A>
+    for (receive::Owned<R>, resume::Retained)
 where
-    A: app::Owned<'w, 'd, ID, Continuation = resume::Retained>
+    A: app::Owned<'w, 'd, ID, R, Continuation = resume::Retained>
         + app::Resumable<'d, ID, Continuation = resume::Retained>,
 {
     fn prepare<S, T>(

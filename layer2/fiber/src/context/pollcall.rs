@@ -19,11 +19,11 @@ impl<'call, 'turn, 'd: 'turn, F> PollCall<'call, 'turn, 'd, F> {
         context: Pin<&'call mut Context<'turn, 'd>>,
         poll: impl FnOnce(Self) -> Poll<T>,
     ) -> PollResult<T> {
-        let Some(permit) = context.as_ref().get_ref().work.permit() else {
+        let Some(_permit) = context.as_ref().get_ref().work.permit() else {
             context.as_ref().get_ref().requeue();
             return PollResult::Exhausted;
         };
-        PollResult::Polled(permit.run(|| poll(Self { fiber, context })))
+        PollResult::Polled(poll(Self { fiber, context }))
     }
 
     pub(crate) fn map<T: 'call>(
@@ -36,13 +36,12 @@ impl<'call, 'turn, 'd: 'turn, F> PollCall<'call, 'turn, 'd, F> {
         }
     }
 
-    pub(crate) fn delegated<'permit, R>(
+    pub(crate) fn delegated<'permit>(
         fiber: Pin<&'call mut F>,
         context: Pin<&'call mut Context<'turn, 'd>>,
-        permit: step::Delegated<'permit, 'turn, 'd>,
-        poll: impl FnOnce(Self) -> R,
-    ) -> R {
-        permit.run(|| poll(Self { fiber, context }))
+        _permit: step::Delegated<'permit, 'turn, 'd>,
+    ) -> Self {
+        Self { fiber, context }
     }
 
     pub fn into_fiber(self) -> Pin<&'call mut F> {

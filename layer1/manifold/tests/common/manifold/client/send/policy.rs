@@ -28,20 +28,33 @@ type Context<'a, 'e, 'd> = turns::Context<'a, 'e, 'd, Option<ready::Target<'d>>,
 type Retired<'a, 'life, 'd, const TAKE: bool, const REPORT: bool = true> =
     turns::Retired<'a, 'd, Option<ready::Target<'d>>, KeyTag<0>, Owner<'life, 'd, TAKE, REPORT>>;
 
-#[derive(Default)]
 pub struct Probe<'d> {
     pub(crate) eof: Gate,
     pub(crate) release: Gate,
     pub(crate) closed: Gate,
     connection: Cell<Option<conn::Id<'d, KeyTag<0>>>>,
     target: Cell<Option<ready::Target<'d>>>,
-    failure: Cell<Option<conn::Transmit>>,
+    failure: region::Value<region::Identity<'d, 1>, Option<conn::Transmit>>,
     offered: Cell<u32>,
     quarantined: Cell<u32>,
     cleared: Cell<u32>,
 }
 
 impl<'d> Probe<'d> {
+    fn new(token: &region::Token<region::Identity<'d, 1>>) -> Self {
+        Self {
+            eof: Gate::default(),
+            release: Gate::default(),
+            closed: Gate::default(),
+            connection: Cell::new(None),
+            target: Cell::new(None),
+            failure: token.bind(None),
+            offered: Cell::new(0),
+            quarantined: Cell::new(0),
+            cleared: Cell::new(0),
+        }
+    }
+
     pub fn send(&self) {
         self.release.hit();
         self.target
@@ -50,12 +63,12 @@ impl<'d> Probe<'d> {
             .wake();
     }
 
-    pub fn check<const REPORT: bool>(&self) {
+    pub fn check<const REPORT: bool>(&self, token: &region::Token<region::Identity<'d, 1>>) {
         assert_eq!(self.offered.get(), u32::from(REPORT));
         assert_eq!(self.quarantined.get(), 1);
         assert_eq!(self.cleared.get(), 3, "retirement retries then waits");
         assert_eq!(self.closed.hits(), 1);
-        check_failure(self.failure.get().expect("exact send failure"));
+        check_failure(token.borrow(&self.failure).expect("exact send failure"));
     }
 }
 
@@ -101,6 +114,7 @@ impl<const TAKE: bool, const REPORT: bool> Logic<TAKE, REPORT> {
         owner: &Owner<'life, 'd, TAKE, REPORT>,
         id: conn::Id<'d, KeyTag<0>>,
         reason: close::Reason,
+        token: &region::Token<region::Identity<'d, 1>>,
     ) {
         let probe = owner.root();
         assert_eq!(
@@ -115,7 +129,7 @@ impl<const TAKE: bool, const REPORT: bool> Logic<TAKE, REPORT> {
             u32::from(REPORT),
             "offer precedes quarantine",
         );
-        assert_eq!(probe.failure.get().is_some(), REPORT);
+        assert_eq!(token.borrow(&probe.failure).is_some(), REPORT);
     }
 
     fn clear_recv<'life, 'd>(
@@ -163,7 +177,10 @@ impl<const TAKE: bool, const REPORT: bool> Logic<TAKE, REPORT> {
             let failure = taken.expect("default lifecycle retains the diagnostic");
             check_failure(failure);
             assert_eq!(
-                probe.failure.replace(Some(failure)),
+                context
+                    .state_token()
+                    .borrow_mut(&probe.failure)
+                    .replace(failure),
                 REPORT.then_some(failure)
             );
         }
@@ -184,6 +201,7 @@ impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
     type Connect = Full;
     type ConnState = Option<ready::Target<'d>>;
     type Failure = Observed;
+    type Receipt = ();
     type Send = Shared;
 
     fn codec<'a>(_: &'a Owner<'life, 'd, TAKE, REPORT>) -> &'a Self::Codec {
@@ -355,7 +373,10 @@ impl<'life, 'd: 'life, const TAKE: bool> policy::Lifecycle<'life, 'd, Probe<'d>,
         owner: &Owner<'life, 'd, TAKE>,
         id: conn::Id<'d, KeyTag<0>>,
         failure: conn::Transmit,
-        _: &mut region::Token<region::Identity<'d>>,
+        regions: &mut (
+            region::Token<region::Identity<'d>>,
+            region::Token<region::Identity<'d, 1>>,
+        ),
     ) -> Option<conn::Transmit> {
         let probe = owner.root();
         assert_eq!(probe.connection.get(), Some(id));
@@ -366,7 +387,13 @@ impl<'life, 'd: 'life, const TAKE: bool> policy::Lifecycle<'life, 'd, Probe<'d>,
         );
         assert_eq!(probe.offered.replace(1), 0);
         check_failure(failure);
-        assert!(probe.failure.replace(Some(failure)).is_none());
+        assert!(
+            regions
+                .1
+                .borrow_mut(&probe.failure)
+                .replace(failure)
+                .is_none()
+        );
         (!TAKE).then_some(failure)
     }
 
@@ -379,12 +406,12 @@ impl<'life, 'd: 'life, const TAKE: bool> policy::Lifecycle<'life, 'd, Probe<'d>,
         id: conn::Id<'d, KeyTag<0>>,
         _: &mut Self::ConnState,
         reason: close::Reason,
-        _: &mut (
+        regions: &mut (
             region::Token<region::Identity<'d>>,
             region::Token<region::Identity<'d, 1>>,
         ),
     ) {
-        Self::quarantine(owner, id, reason);
+        Self::quarantine(owner, id, reason, &regions.1);
     }
 
     fn clear_recv<'turn>(
@@ -438,12 +465,12 @@ impl<'life, 'd: 'life> policy::Lifecycle<'life, 'd, Probe<'d>, KeyTag<0>, 1>
         id: conn::Id<'d, KeyTag<0>>,
         _: &mut Self::ConnState,
         reason: close::Reason,
-        _: &mut (
+        regions: &mut (
             region::Token<region::Identity<'d>>,
             region::Token<region::Identity<'d, 1>>,
         ),
     ) {
-        Self::quarantine(owner, id, reason);
+        Self::quarantine(owner, id, reason, &regions.1);
     }
 
     fn clear_recv<'turn>(
@@ -522,7 +549,7 @@ pub fn check_transmit<const TAKE: bool, const REPORT: bool>() {
     let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
     runtime.with_scope(
         |mut runtime| {
-            let probe = Probe::default();
+            let probe = Probe::new(runtime.driver().state_token());
             let hash = runtime.hash_state(health::Domain::DEFAULT);
             let peers = Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
             let run = |app: &mut dyn RuntimeCase| {
@@ -593,7 +620,7 @@ pub fn check_transmit<const TAKE: bool, const REPORT: bool>() {
                         )
             };
             assert!(result.is_ok(), "bound client installation");
-            probe.check::<REPORT>();
+            probe.check::<REPORT>(runtime.driver().state_token());
         },
         recovery::Policy::new(|event| reports.push(event), recover),
     );

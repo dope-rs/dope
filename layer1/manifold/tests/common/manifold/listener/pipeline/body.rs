@@ -120,17 +120,13 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Body {
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State, Self::Egress>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State, Self::Egress>
-    where
-        'd: 'w,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, State, Self::Egress>,
+    ) {
         let event = Event::Close(*conn.state());
         self.events.push(event);
         self.get_mut().gate.hit();
-        conn
     }
 }
 

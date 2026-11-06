@@ -1,41 +1,11 @@
-use o3::{
-    depot::arena::slab::{entries, external},
-    mem,
-    mem::lease,
-};
+use o3::depot::arena::slab::external;
 
 use crate::driver::{route, route::table};
 
-type Insertion<'a, T, Tag> = external::Staged<
-    mem::Lease<
-        entries::Busy<
-            'a,
-            external::Stamped<T, route::Epoch>,
-            { u32::MAX },
-            entries::Exclusive<true>,
-            { table::PARTITIONS },
-        >,
-        lease::Open,
-    >,
-    Tag,
-    true,
-    external::Logical,
->;
-
 #[repr(transparent)]
 pub struct Entry<'a, T, Tag: route::Tag> {
-    pub(in crate::driver::route::table) inner: external::Vacant<
-        entries::Pending<
-            'a,
-            external::Stamped<T, route::Epoch>,
-            { u32::MAX },
-            entries::Exclusive<true>,
-            { table::PARTITIONS },
-        >,
-        Tag,
-        true,
-        route::Epoch,
-    >,
+    pub(in crate::driver::route::table) inner:
+        external::VacantSlot<'a, T, route::Epoch, Tag, { table::PARTITIONS }>,
 }
 
 impl<'a, T, Tag: route::Tag> Entry<'a, T, Tag> {
@@ -56,7 +26,7 @@ impl<'a, T, Tag: route::Tag> Entry<'a, T, Tag> {
 
 #[repr(transparent)]
 pub struct Staged<'a, T, Tag: route::Tag> {
-    inner: Insertion<'a, T, Tag>,
+    inner: external::StagedSlot<'a, T, route::Epoch, Tag, { table::PARTITIONS }>,
 }
 
 impl<'a, T, Tag: route::Tag> Staged<'a, T, Tag> {

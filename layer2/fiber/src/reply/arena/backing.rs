@@ -18,7 +18,7 @@ impl<'credits, 'region, D> Backing<'credits, 'region, D> {
         slots: &'credits Slots<'region>,
     ) -> Result<Self, alloc::Error> {
         Ok(Self {
-            items: depot::raw::Arena::try_new(layout.data())?,
+            items: depot::raw::Arena::try_new(layout.data().get())?,
             resources: Pool::try_new(layout, slots)?,
         })
     }

@@ -42,10 +42,10 @@ where
     type Strategy = ingress::Scope;
 }
 
-impl<W> Dispatch<W> for Owned
+impl<W, R: Default> Dispatch<W> for Owned<R>
 where
     W: input::Execution,
-    Owned: input::Mode<W, Kind = input::Retained>,
+    Owned<R>: input::Mode<W, Kind = input::Retained>,
     <W::Receive as receive::Policy<W>>::Credit: delivery::Ownership<W>,
 {
     type Strategy = ingress::Retain;

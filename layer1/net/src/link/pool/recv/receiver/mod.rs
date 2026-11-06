@@ -69,7 +69,7 @@ where
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), Failure<'d, ID>> {
         let ops = &self.pool.prepared.flights;
-        let Some((slot, mut recv)) = self.pool.prepared.slab.get(key.parts()) else {
+        let Some((slot, mut recv)) = self.pool.prepared.slab.get_mut(key.parts()) else {
             return Ok(());
         };
         recv.rearm.submitted(slot.submit_recv(ops, driver))
@@ -115,7 +115,7 @@ where
                 let ops = &self.pool.prepared.flights;
                 let slab = &mut self.pool.prepared.slab;
                 let key = slab.pop()?;
-                let Some((slot, mut recv)) = slab.get(key.parts()) else {
+                let Some((slot, mut recv)) = slab.get_mut(key.parts()) else {
                     return Some(Ok(()));
                 };
                 if slot.engine.operations.recv.has_cancel() {
@@ -174,7 +174,7 @@ where
         <M::Ingress as Dispatch<W>>::wake(self.pool, key);
     }
 
-    pub fn pop_ready(&mut self, item: &delivery::Resumed<'d, ID>) -> Ready<'d>
+    pub fn pop_ready(&mut self, item: &delivery::Resumed<'d, ID>) -> Ready<'d, input::Receipt<W, M>>
     where
         M::Ingress: Dispatch<W>,
     {
@@ -190,7 +190,7 @@ where
         M::Kind: input::Replay<W>,
     {
         let Some((slot, mut recv)) =
-            Slot::receive::<M::Ingress>(&mut self.pool.prepared.slab, key.parts())
+            Slot::receive::<M::Ingress, _>(&mut self.pool.prepared.slab, key.parts())
         else {
             return Deferral::Unavailable(chunk);
         };
@@ -241,7 +241,7 @@ where
         let key = item.key();
         let (wake, close) = {
             let slab = &mut self.pool.prepared.slab;
-            let Some((slot, mut recv)) = slab.get(key.parts()) else {
+            let Some((slot, mut recv)) = slab.get_mut(key.parts()) else {
                 return;
             };
             let queued = recv.storage.has_queued();

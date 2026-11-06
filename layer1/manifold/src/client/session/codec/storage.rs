@@ -81,7 +81,7 @@ impl<S, C> Slot<S, C> {
 /// Exclusive transition authority over one actual initialized codec slot.
 pub struct Owner<'slot, 'id, S, C> {
     slot: mem::raw::Occupied<'slot, (S, C)>,
-    proof: region::Proof<region::Identity<'id>>,
+    proof: region::Identity<'id>,
 }
 
 impl<'slot, 'id, S, C> Owner<'slot, 'id, S, C> {
@@ -105,7 +105,7 @@ impl<'slot, 'id, S, C> Owner<'slot, 'id, S, C> {
 /// The original codec slot after its storage and controls were consumed.
 pub struct Vacant<'slot, 'id, S, C> {
     slot: mem::raw::Vacant<'slot, (S, C)>,
-    proof: region::Proof<region::Identity<'id>>,
+    proof: region::Identity<'id>,
 }
 
 impl<'slot, 'id, S, C> Vacant<'slot, 'id, S, C> {

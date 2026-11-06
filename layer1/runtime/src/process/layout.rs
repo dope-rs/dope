@@ -37,7 +37,7 @@ impl Layout {
             if cpu == head || tail.contains(&cpu) {
                 return Err(create::Error::Config(config::Error::DuplicateCpu(cpu)));
             }
-            alloc::Vacant::try_new(&mut tail)?.insert(cpu);
+            alloc::try_vacant(&mut tail)?(cpu);
         }
         Ok(Self { head, tail })
     }

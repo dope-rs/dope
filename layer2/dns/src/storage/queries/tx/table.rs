@@ -86,14 +86,7 @@ impl<'s> Table<'s> {
             }
         };
         self.cursor = next;
-        let slot = &mut self.owners[usize::from(removed.index().raw())];
-        if slot.is_some() {
-            removed.restore();
-            return Err(error::Identity::Datagram {
-                capacity: Id::CAPACITY,
-            });
-        }
-        *slot = Some(owner);
+        self.owners[usize::from(removed.index().raw())] = Some(owner);
         Ok(lease::Udp::new(removed, self.epoch, cookie))
     }
 

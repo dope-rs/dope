@@ -6,7 +6,7 @@ use o3::{
     alloc, depot,
     depot::{
         capacity,
-        queue::{links, pool, round},
+        queue::{links, pool},
     },
     mem,
 };
@@ -44,15 +44,19 @@ impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
         self,
         amount: A,
         limit: layout::Limit,
-        acceptance: recv::Acceptance,
     ) -> Result<Lease<'a, 'arena, 'credits, 'region, A, K>, Acquire>
     where
         A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     {
+        let acceptance = self.owner.acceptance.unwrap_or(recv::Acceptance::Collected);
         self.owner
             .payload
             .try_acquire(self.key, amount, limit, acceptance)?;
         Ok(Lease::new(self, amount))
+    }
+
+    pub(in crate::reply) const fn acceptance(&self) -> Option<recv::Acceptance> {
+        self.owner.acceptance
     }
 
     pub(in crate::reply) fn cancel_pop(self) -> order::Depth {
@@ -207,18 +211,15 @@ impl<'credits, K> Queues<'credits, K> {
             .links[N]
     }
 
-    pub(in crate::reply::arena) fn insert<const N: usize>(
-        &self,
-        member: links::Index,
-    ) -> round::Insertion {
+    pub(in crate::reply::arena) fn insert<const N: usize>(&self, member: links::Index) -> bool {
         if self.link::<N>(member).is_linked(member.get()) {
-            return round::Insertion::Present;
+            return false;
         }
         // SAFETY: this exact hook is vacant and its family's ring is reciprocal.
         unsafe {
             depot::raw::Hooks::cycle_push(&Hooks::<K, N>(&self.lanes), &self.heads[N], member)
         };
-        round::Insertion::Inserted
+        true
     }
 
     pub(in crate::reply::arena) fn remove<const N: usize>(&self, member: links::Index) {
@@ -242,6 +243,10 @@ impl<'a, 'credits, K> View<'a, 'credits, K> {
 
     pub(in crate::reply::arena) fn front(&self) -> Option<&'a state::Ordered<'credits, K>> {
         self.0.front()
+    }
+
+    pub(in crate::reply::arena) fn back(&self) -> Option<&'a state::Ordered<'credits, K>> {
+        self.0.back()
     }
 }
 

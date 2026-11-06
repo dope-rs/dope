@@ -1,6 +1,6 @@
 use std::{marker, mem, os::fd};
 
-use dope_sys::{Errno, kernel, thread::signal};
+use dope_sys::{Errno, thread::signal};
 pub(crate) use signal::AcquireFault as Acquire;
 pub(crate) use wait::Wait;
 
@@ -47,8 +47,7 @@ impl signal::Signal for Source<'_> {
             // SAFETY: one signalfd read of the retained siginfo returns exactly SIZE or -1.
             let exact = unsafe { status.admit_exact::<SIZE>() };
             // SAFETY: the read above just returned on this thread.
-            match unsafe { exact.try_admit::<Errno>(|| kernel::raw::Code::last::<Uring>().into()) }
-            {
+            match unsafe { exact.try_admit::<Uring, Errno>() } {
                 Ok(()) => return Ok(()),
                 Err(fault) if fault.is_intr() => continue,
                 Err(fault) => return Err(Wait::Read(fault)),

@@ -52,14 +52,22 @@ where
 
     /// Reserves the statically selected ingress policy for one observed data
     /// completion.
-    pub fn data<A>(self, done: A) -> Reservation<'a, 'w, 'd, ID, W, M>
+    pub fn data<A>(
+        self,
+        done: A,
+        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    ) -> Reservation<'a, 'w, 'd, ID, W, M>
     where
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
         M::Reserve: Choice<W, M::Ingress>,
+        input::Receipt<W, M>: 'a,
     {
-        <M::Reserve as Choice<W, M::Ingress>>::reserve(self.pool, done)
+        <M::Reserve as Choice<W, M::Ingress>>::reserve(self.pool, done, capture)
     }
 }
 
-type Reservation<'a, 'w, 'd, ID, W, M> =
-    event::Reservation<'d, ID, delivery::Data<'a, 'w, 'd, ID, W, <M as input::Mode<W>>::Kind>>;
+pub type Reservation<'a, 'w, 'd, ID, W, M> = event::Reservation<
+    'd,
+    ID,
+    delivery::Data<'a, 'w, 'd, ID, W, <M as input::Mode<W>>::Kind, input::Receipt<W, M>>,
+>;

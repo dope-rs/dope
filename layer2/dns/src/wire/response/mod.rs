@@ -178,10 +178,10 @@ impl<'packet> Decoder<'packet> {
         }
 
         let code = u16::from(ext) << 4 | (flags & 0x000f);
-        let reply = if let Some(error) = chain.take() {
-            reply::Reply::Malformed(error)
-        } else if flags & 0x0200 != 0 {
+        let reply = if flags & 0x0200 != 0 {
             reply::Reply::Truncated
+        } else if let Some(error) = chain.take() {
+            reply::Reply::Malformed(error)
         } else {
             match code {
                 0 => chain.resolve(packet, records, name, family)?,

@@ -84,6 +84,7 @@ impl receive::Policy<Control> for Recv {
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
     type Discard = mode::Disabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Transaction<'a, 'w, ID, Control>,
@@ -286,17 +287,13 @@ impl<'d, ID: Identity> Application<'d, ID> for App {
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Control, State<'d>>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Control, State<'d>>
-    where
-        'd: 'w,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Control, State<'d>>,
+    ) {
         let this = self.get_mut();
         assert!(matches!(conn.state(), State::Seen(_)));
         this.close.hit();
-        conn
     }
 }
 

@@ -89,11 +89,15 @@ impl<'p, 'd, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'p, 'd,
         let receive = driver.receive();
         let limits = domain::Limits::new(cap, retain, bytes, receive.buffer_len());
         let runtime = end.try_runtime(limits)?;
-        let recv = recv::State::try_new(
+        let recv = recv::State::<ID, M::Ingress, input::Receipt<W, M>>::try_new(
             cap,
-            M::Ingress::try_storage(cap, receive.buffers(), driver.driver_ref())?,
+            M::Ingress::try_storage::<input::Receipt<W, M>>(
+                cap,
+                receive.buffers(),
+                driver.driver_ref(),
+            )?,
         )?;
-        let slab = slab.try_storage::<M::Ingress>(recv)?;
+        let slab = slab.try_storage::<M::Ingress, _>(recv)?;
         Ok((
             Prepared {
                 flights: (),
@@ -196,7 +200,7 @@ type Resident<'w, 'd, ID, W, S, M> = tail::Table<
     types::Connection<'w, 'd, ID, W, S>,
     ID,
     input::Tail<'w, 'd, W, M>,
-    recv::State<'d, ID, <M as input::Mode<W>>::Ingress>,
+    recv::State<'d, ID, <M as input::Mode<W>>::Ingress, input::Receipt<W, M>>,
 >;
 type Unbound<'p, 'w, 'd, ID, T, W, S, M, B, const IOV: usize, D> =
     Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D, ()>;

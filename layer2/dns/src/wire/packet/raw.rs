@@ -10,7 +10,7 @@ use crate::wire::packet::{
 pub(in crate::wire) struct Span<'id> {
     pub(super) start: Offset,
     pub(super) end: Offset,
-    packet: region::Proof<region::Identity<'id>>,
+    packet: region::Identity<'id>,
 }
 
 #[derive(Clone, Copy)]

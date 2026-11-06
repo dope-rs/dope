@@ -76,14 +76,11 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
         Pin::new(this)
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Identity, bool>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Identity, bool>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Identity, bool>
-    where
-        'd: 'w,
-    {
+    ) {
         let this = self.get_mut();
         if matches!(this.phase, Phase::Sealing) {
             this.phase = Phase::Sealed;
@@ -93,7 +90,6 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
             });
             assert!(matches!(sent, Ok(write::Outcome::Committed(()))));
         }
-        conn
     }
 
     fn close_gate(

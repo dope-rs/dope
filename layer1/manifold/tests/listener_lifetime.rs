@@ -32,8 +32,12 @@ fn persistent_and_clear_deadline() {
         (Expiry::Clear, 1),
         (Expiry::Overflow, 1),
         (Expiry::Disabled, 1),
+        (Expiry::Reject, 0),
     ] {
-        let closes = u32::from(matches!(expiry, Expiry::Overflow | Expiry::Disabled));
+        let closes = u32::from(matches!(
+            expiry,
+            Expiry::Overflow | Expiry::Disabled | Expiry::Reject
+        ));
         let mut finish = Completion::new();
         let accept = Gate::new();
         let expire = Gate::new();

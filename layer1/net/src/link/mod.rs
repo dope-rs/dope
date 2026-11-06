@@ -38,35 +38,20 @@ impl Consumed {
 
 const _: () = assert!(mem::size_of::<Consumed>() == mem::size_of::<transfer::Len>());
 
-pub(crate) struct Connect<'addr, 'd, ID: Identity, A: socket::Prepared> {
+fn connect<'addr, 'd, ID: Identity, A: socket::Prepared>(
     fd: handles::Descriptor<'d>,
     addr: &'addr A,
     target: route::Target<'d, ID>,
-}
-
-impl<'addr, 'd, ID: Identity, A: socket::Prepared> Connect<'addr, 'd, ID, A> {
-    pub(crate) fn new(
-        fd: handles::Descriptor<'d>,
-        addr: &'addr A,
-        target: route::Target<'d, ID>,
-    ) -> Self {
-        Self { fd, addr, target }
-    }
-
-    pub(crate) fn submit(
-        self,
-        slots: &flight::Slots<'d, ID>,
-        driver: driver::Context<'_, 'd>,
-        opts: option::Set,
-    ) -> Result<pending::Connection<'d>, pending::Rejection<'d>>
-    where
-        'd: 'addr,
-    {
-        let Self { fd, addr, target } = self;
-        // SAFETY: the address is already installed in its slab-indexed stable
-        // owner. That owner and this descriptor remain live through terminal
-        // completion or quiescence.
-        let op = retained::raw::Connect::new(fd, addr, target);
-        unsafe { op.try_connect(driver, slots, &opts) }
-    }
+    slots: &flight::Slots<'d, ID>,
+    driver: driver::Context<'_, 'd>,
+    opts: option::Set,
+) -> Result<pending::Connection<'d>, pending::Rejection<'d>>
+where
+    'd: 'addr,
+{
+    // SAFETY: the address is already installed in its slab-indexed stable
+    // owner. That owner and this descriptor remain live through terminal
+    // completion or quiescence.
+    let op = retained::raw::Connect::new(fd, addr, target);
+    unsafe { op.try_connect(driver, slots, &opts) }
 }

@@ -152,7 +152,7 @@ where
         Self: 'a;
 
     fn len(&self) -> usize {
-        segments::Sequence::len(self)
+        segments::Chain::len(self)
     }
 
     fn charge(&self) -> hold::Charge {
@@ -160,7 +160,7 @@ where
     }
 
     fn start(&self) -> Self::Cursor<'_> {
-        buffer::raw::Chunks::start(self)
+        buffer::raw::Chunks::chunks(self)
     }
 
     unsafe fn resume(

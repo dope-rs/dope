@@ -48,7 +48,6 @@ pub(in crate::reply) struct Failure<'a, E> {
 /// The exact front order entry and its attached open reply slot.
 pub(in crate::reply) struct Open<'a, 'arena, 'credits, 'region, D, E, K = ()> {
     order: order::Slot<'a, 'arena, 'credits, 'region, K>,
-    acceptance: recv::Acceptance,
     state: &'a mut State<'arena, D, E>,
     signal: &'a mut state::Signal<'region>,
 }
@@ -82,20 +81,18 @@ impl<'arena, D, E> State<'arena, D, E> {
 impl<'a, 'arena, 'credits, 'region, D, E, K> Open<'a, 'arena, 'credits, 'region, D, E, K> {
     pub(in crate::reply) const fn new(
         order: order::Slot<'a, 'arena, 'credits, 'region, K>,
-        accept: recv::Acceptance,
         state: &'a mut State<'arena, D, E>,
         signal: &'a mut state::Signal<'region>,
     ) -> Self {
         Self {
             order,
-            acceptance: accept,
             state,
             signal,
         }
     }
 
-    pub(in crate::reply) const fn acceptance(&self) -> recv::Acceptance {
-        self.acceptance
+    pub(in crate::reply) const fn acceptance(&self) -> Option<recv::Acceptance> {
+        self.order.acceptance()
     }
 
     pub(in crate::reply) fn try_data(
@@ -103,9 +100,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Open<'a, 'arena, 'credits, 'region,
         limit: layout::Limit,
         added: usage::Usage,
     ) -> Result<Push<'a, 'arena, 'credits, 'region, D, K>, Acquire> {
-        let lease = self
-            .order
-            .try_lease(payload::Value::new(added), limit, self.acceptance)?;
+        let lease = self.order.try_lease(payload::Value::new(added), limit)?;
         Ok(fifo::Fifo::reserve(Reserve {
             queue: &mut self.state.data,
             lease,
@@ -216,7 +211,7 @@ const _: () = {
     );
     assert!(
         mem::size_of::<Open<'static, 'static, 'static, 'static, (), ()>>()
-            == 8 * mem::size_of::<usize>()
+            == 7 * mem::size_of::<usize>()
     );
 };
 

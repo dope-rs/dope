@@ -50,13 +50,6 @@ impl WriteState {
             Self::Close(_) => self,
         }
     }
-
-    const fn take_signal(self) -> (Self, Signal) {
-        match self {
-            Self::Shutdown => (Self::Sealed, Signal::Shutdown),
-            Self::Open | Self::Sealed | Self::Close(_) => (self, Signal::Clear),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -287,8 +280,10 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
         if self.transaction(proof.connection) != Some(proof) {
             return Signal::Clear;
         }
-        let (next, signal) = self.write.get().take_signal();
-        self.write.set(next);
+        let signal = self.signal();
+        if matches!(signal, Signal::Shutdown) {
+            self.write.set(WriteState::Sealed);
+        }
         signal
     }
 

@@ -18,7 +18,7 @@ pub trait Cursor<'d, A>:
 pub trait Head<'d>:
     buffer::Complete + hold::raw::Retain<'d> + consume::Consume + buffer::raw::Consume
 {
-    fn commit(self);
+    fn commit(self) -> usize;
 }
 
 /// An infallible segmented cursor whose current head stays tied to its owner.

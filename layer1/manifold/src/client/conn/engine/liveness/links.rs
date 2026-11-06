@@ -124,8 +124,10 @@ where
         key: pool::Key<'d, ID>,
         target: ready::Target<'d>,
     ) -> Option<liveness::Sender<'_, 'p, 'w, 'd, ID, A, E, X>> {
+        let (native, queued_recv) = self.pool.send_slot(key)?;
         Some(liveness::Sender {
-            native: self.pool.send_slot(key)?,
+            native,
+            queued_recv,
             liveness: &mut self.liveness,
             key,
             target,

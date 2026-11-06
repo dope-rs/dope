@@ -1,10 +1,6 @@
 use std::{cell::Cell, convert::Infallible, net::SocketAddr, rc::Rc};
 
-use dope_core::{
-    driver,
-    driver::{route::KeyTag, schedule::app},
-    io::socket,
-};
+use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
     app::{admit::Automatic, connect::Full, failure::Observed, request},
     attempt,
@@ -40,31 +36,6 @@ use crate::common::{
 
 type Request = egress::NonEmpty<Shared>;
 
-struct Pending<'a, 'd>(fair::Binding<'a, 'd, Request, usize>);
-
-impl<'a, 'd> app::Drain<region::Token<region::Identity<'d>>> for Pending<'a, 'd> {
-    type Candidate<'b>
-        = ()
-    where
-        Self: 'b;
-    type Item<'b>
-        = (Request, fair::Permit<'a, 'd, Request, usize>)
-    where
-        Self: 'b;
-
-    fn next_when<P>(
-        &mut self,
-        token: &mut region::Token<region::Identity<'d>>,
-        take: impl FnOnce() -> Option<P>,
-    ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
-        let front = self.0.front_entry(token)?;
-        Some(match take() {
-            Some(permit) => Ok((front(), permit)),
-            None => Err(()),
-        })
-    }
-}
-
 pub struct Requests<'d> {
     pub(crate) pending: fair::Lanes<'d, Request, usize>,
     pub(crate) assigned: [Cell<bool>; 4],
@@ -92,6 +63,7 @@ impl<'d> Session<'d> for Lane<'d> {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Enabled;
     type Send = Shared;
     fn codec(&self) -> &Self::Codec {
@@ -190,7 +162,7 @@ impl<'d> Source<'d> for Lane<'d> {
         let (mut requests, _) = turn.requests();
         let index = requests.connection().index().into_usize();
         let assigned = &self.requests.assigned[index];
-        let lane = self.requests.pending.bind(index).expect("request lane");
+        let mut lane = self.requests.pending.bind(index).expect("request lane");
         if !assigned.get() {
             let position = self.requests.next.get();
             let length = Self::REQUESTS[position];
@@ -206,8 +178,7 @@ impl<'d> Source<'d> for Lane<'d> {
             permit.push_back(requests.region(), value);
             assigned.set(true);
         }
-        let mut source = Pending(lane);
-        let Some(((value, permit), work)) = requests.claim(&mut source) else {
+        let Some(((value, permit), work)) = requests.claim(&mut lane) else {
             return;
         };
         let length = value.as_inner().len();

@@ -4,7 +4,7 @@ use dope_core::driver::{receive::Stale, route::Identity};
 use dope_net::{
     link::{
         event,
-        pool::recv::{arrival, delivery, reserve::Choice},
+        pool::recv::{arrival, delivery, input, reserve::Choice},
     },
     wire::{self, receive},
 };
@@ -53,12 +53,12 @@ where
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
         work.with(|driver, turn, bound| {
             let mut backing = None;
             let control = 'admit: {
-                let prep = match P::storage(policy.as_mut()).reserve().data(data) {
+                let prep = match P::reserve(policy.as_mut(), data, driver.region_token()) {
                     event::Reservation::Ready(prepared) => prepared,
                     event::Reservation::Control(next) => break 'admit Ok(next),
                     event::Reservation::Parked(parked) => break 'admit Err(parked),
@@ -67,13 +67,7 @@ where
                     }
                 };
                 let (next, unused) = prep.dispatch(&mut backing, bound);
-                flow::apply_done(
-                    policy.as_mut(),
-                    next,
-                    turn,
-                    driver,
-                    |policy, key, input, turn, driver| P::receive(policy, key, input, turn, driver),
-                );
+                flow::apply_done(policy.as_mut(), next, turn, driver);
                 return ((), unused);
             };
             let unused = bound.empty();

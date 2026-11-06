@@ -71,14 +71,11 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App {
         *conn.state()
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Control, bool>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Control, bool>,
         _: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Control, bool>
-    where
-        'd: 'w,
-    {
+    ) {
         if !self.0.parked.get() {
             conn.wake_target().wake();
         } else if *conn.state() {
@@ -88,7 +85,6 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App {
             }
             self.0.exhausted.set(true);
         }
-        conn
     }
 }
 

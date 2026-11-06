@@ -7,7 +7,7 @@ use o3::mem::{self, raw::Source as _, rc};
 use crate::reply::{
     LaneIndex,
     arena::state::EntryKey,
-    layout, recv,
+    layout, order, recv,
     retain::{
         self,
         grant::{entries, payload},
@@ -16,15 +16,9 @@ use crate::reply::{
     usage,
 };
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(u8)]
-enum Order {
-    Linked,
-    Detached,
-}
-
 pub(in crate::reply) struct Owner<'arena, 'credits, 'region> {
-    order: Order,
+    order: order::State,
+    pub(in crate::reply) acceptance: Option<recv::Acceptance>,
     pub(in crate::reply) payload: pool::Payload<'arena, 'credits, 'region>,
 }
 
@@ -52,6 +46,7 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
     pub(in crate::reply) fn new(
         admitted: pool::Registration<'arena, 'credits, 'region, entries::Units<1, 0>>,
         key: EntryKey,
+        acceptance: recv::Acceptance,
     ) -> Self {
         let (lane, entry) = admitted.into_parts();
         let pool = lane.pool();
@@ -59,7 +54,8 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
         let sum = payload::raw::Sum::new(pool.lanes().credits.payload(index));
         let key = pool.bind(key);
         Self {
-            order: Order::Linked,
+            order: order::State::Linked,
+            acceptance: Some(acceptance),
             payload: Payload {
                 key,
                 lane: index,
@@ -69,8 +65,12 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
         }
     }
 
+    pub(in crate::reply) const fn order(&self) -> order::State {
+        self.order
+    }
+
     pub(in crate::reply) fn clear_order(&mut self) {
-        self.order = Order::Detached;
+        self.order = order::State::Detached;
     }
 
     pub(in crate::reply) fn retire(&self) {
@@ -82,7 +82,7 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
     }
 
     pub(in crate::reply) fn is_empty(&self) -> bool {
-        matches!(self.order, Order::Detached)
+        matches!(self.order, order::State::Detached)
             && self.payload.sum.len() == 0
             && self.payload.sum.usage() == usage::Usage::ZERO
             && self.payload.key.state().life.is_vacant()

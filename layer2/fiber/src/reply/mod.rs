@@ -257,7 +257,7 @@ const _: () = {
 pub struct Storage<'arena, 'credits, 'region, D> {
     backing: &'arena Backing<'credits, 'region, D>,
     layout: layout::Layout,
-    proof: region::Proof<region::Identity<'region>>,
+    proof: region::Identity<'region>,
     owner: marker::PhantomData<fn(&'arena ()) -> &'arena ()>,
 }
 
@@ -265,7 +265,7 @@ impl<'region, D> Storage<'_, '_, 'region, D> {
     /// Lends the accounting and data backing before constructing owner-bearing tags.
     pub fn try_with<R>(
         layout: layout::Layout,
-        proof: region::Proof<region::Identity<'region>>,
+        proof: region::Identity<'region>,
         run: impl for<'arena, 'credits> FnOnce(Storage<'arena, 'credits, 'region, D>) -> R,
     ) -> Result<R, alloc::Error> {
         let slots = pool::Slots::try_new(layout)?;

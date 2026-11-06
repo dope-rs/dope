@@ -60,7 +60,6 @@ pub(in crate::client) struct Drain<'turn, 'e, 'd, B: data::raw::Payload<'d>> {
 #[derive(Clone, Copy)]
 #[repr(u8)]
 pub(in crate::client) enum Flag {
-    Enqueued = 1 << 0,
     Exhausted = 1 << 1,
     Waiting = 1 << 2,
     Queued = 1 << 3,
@@ -96,7 +95,6 @@ pub struct Work<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> {
 /// An owned payload whose final-link slot and geometry are already proven.
 #[must_use]
 pub struct Ready<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>, S = B> {
-    state: &'permit mut State,
     value: exact::Prepared<'turn, 'permit, 'e, 'd, B, demand::Fallible, S>,
 }
 
@@ -314,12 +312,10 @@ impl Outcome {
 impl<'e, 'd, B: data::raw::Payload<'d>> Ready<'_, '_, 'e, 'd, B> {
     pub fn push(self) {
         self.value.publish();
-        self.state.insert(Flag::Enqueued);
     }
 
     pub fn push_with(self, commit: impl FnOnce(&mut region::Token<region::Identity<'d>>)) {
         self.value.publish_with(commit);
-        self.state.insert(Flag::Enqueued);
     }
 }
 
@@ -328,7 +324,6 @@ impl<'d, L: data::raw::Payload<'d>, R: data::raw::Payload<'d>, U: lease::Commit<
 {
     pub fn commit_left(self) {
         self.value.commit_left();
-        self.state.insert(Flag::Enqueued);
     }
 }
 
@@ -337,7 +332,6 @@ impl<'d, L: data::raw::Payload<'d>, R: data::raw::Payload<'d>, U: lease::Commit<
 {
     pub fn commit_right(self) {
         self.value.commit_right();
-        self.state.insert(Flag::Enqueued);
     }
 }
 
@@ -357,10 +351,7 @@ impl<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> Work<'permit, 'turn, 'e,
         match plan.poll_reserve(drain.region, drain.wake) {
             exact::Outcome::Ready(value) => {
                 drain.state.remove(Flag::Waiting);
-                Admission::Ready(Ready {
-                    state: &mut drain.state,
-                    value,
-                })
+                Admission::Ready(Ready { value })
             }
             exact::Outcome::Pending(value) => {
                 drain.state.insert(Flag::Waiting);
@@ -393,7 +384,6 @@ impl<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> Work<'permit, 'turn, 'e,
         Some(match moved {
             task::Poll::Ready(Ok(())) => {
                 drain.state.remove(Flag::Waiting);
-                drain.state.insert(Flag::Enqueued);
                 Ok(())
             }
             task::Poll::Pending => {

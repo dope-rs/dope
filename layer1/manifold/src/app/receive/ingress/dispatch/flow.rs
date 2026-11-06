@@ -14,36 +14,6 @@ use dope_net::{
 
 use crate::app::receive::ingress::{self, Policy, Progress};
 
-/// Dispatches one chunk; inline settlement leaves no replay tail to skip.
-pub(in crate::app::receive::ingress) fn apply<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P, C, F>(
-    mut policy: pin::Pin<&mut P>,
-    next: event::DispatchRecv<'d, ID, C>,
-    turn: schedule::Turn<'_, 'd>,
-    driver: &mut driver::Context<'_, 'd>,
-    read: F,
-) where
-    P: Policy<'p, 'w, 'd, ID>,
-    <P::Input as input::Mode<P::Wire>>::Kind: input::Replay<P::Wire>,
-    F: FnOnce(
-        pin::Pin<&mut P>,
-        pool::Key<'d, ID>,
-        C,
-        schedule::Turn<'_, 'd>,
-        &mut driver::Context<'_, 'd>,
-    ) -> Progress<Chunk<'w, 'd, P::Wire, Disabled>>,
-{
-    match next {
-        event::DispatchRecv::Control(next) => {
-            ingress::apply_control(policy, next, turn, driver);
-        }
-        event::DispatchRecv::Chunk(key, chunk) => {
-            ingress::prepare_terminal(policy.as_mut(), key);
-            let done = read(policy.as_mut(), key, chunk, turn.reborrow(), driver);
-            let _ = settle(policy, key, done, turn, driver);
-        }
-    }
-}
-
 pub(in crate::app::receive::ingress) fn settle<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
     mut policy: pin::Pin<&mut P>,
     key: pool::Key<'d, ID>,
@@ -74,28 +44,21 @@ where
 }
 
 pub(in crate::app::receive::ingress) fn apply_done<
+    'input,
     'p,
-    'w,
+    'w: 'input,
     'd: 'w + 'p,
     ID: Identity + 'd,
     P,
-    C,
-    F,
 >(
     mut policy: pin::Pin<&mut P>,
-    next: event::DispatchRecv<'d, ID, C>,
+    next: event::DispatchRecv<'d, ID, crate::Incoming<'input, 'w, 'd, P::Wire, P::Input>>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-    read: F,
 ) where
     P: Policy<'p, 'w, 'd, ID>,
-    F: FnOnce(
-        pin::Pin<&mut P>,
-        pool::Key<'d, ID>,
-        C,
-        schedule::Turn<'_, 'd>,
-        &mut driver::Context<'_, 'd>,
-    ) -> Progress<convert::Infallible>,
+    crate::Ingress<P::Wire, P::Input>:
+        ingress::Strategy<P::Wire, P::Input, Pending<'w, 'd> = convert::Infallible>,
 {
     match next {
         event::DispatchRecv::Control(next) => {
@@ -103,7 +66,7 @@ pub(in crate::app::receive::ingress) fn apply_done<
         }
         event::DispatchRecv::Chunk(key, chunk) => {
             ingress::prepare_terminal(policy.as_mut(), key);
-            match read(policy.as_mut(), key, chunk, turn.reborrow(), driver) {
+            match P::receive(policy.as_mut(), key, chunk, turn.reborrow(), driver) {
                 Progress::Pending(pending) => match pending {},
                 Progress::Done(done) => {
                     ingress::finish_chunk(policy, key, done, turn.reborrow(), driver);

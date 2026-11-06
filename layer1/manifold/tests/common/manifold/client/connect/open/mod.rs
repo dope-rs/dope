@@ -382,6 +382,7 @@ impl<'w, 'd: 'w, ID: Identity> app::Lifecycle<'w, 'd, ID> for Failed {
     fn prepare<O>(
         &mut self,
         _: conn::Ctx<'_, 'd, ID, Wire, State, O>,
+        _: bool,
         _: egress::Queue<'_, '_, 'd, 32, Shared>,
         _: &mut driver::Context<'_, 'd>,
     ) {

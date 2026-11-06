@@ -25,7 +25,7 @@ use dope_fiber::{
             result::{Outcome, Selection},
             selected::route::{Entry, Routes},
         },
-        tree::{At, Branch, Here, Leaf, Left, Right, Tree},
+        tree::{Branch, Here, Leaf, Left, Right, Tree},
     },
 };
 use dope_test::alloc::Tracker;
@@ -194,18 +194,6 @@ fn thirteen_routes_are_free() {
     assert_eq!(
         <Thirteen<'static> as Tree<'static>>::TASKS.nonzero().get(),
         39
-    );
-    assert_eq!(
-        <Thirteen<'static> as At<'static, First>>::OFFSET.into_u32(),
-        0
-    );
-    assert_eq!(
-        <Thirteen<'static> as At<'static, Middle>>::OFFSET.into_u32(),
-        18
-    );
-    assert_eq!(
-        <Thirteen<'static> as At<'static, Last>>::OFFSET.into_u32(),
-        36
     );
     assert_eq!(mem::size_of::<First>(), 0);
     assert_eq!(mem::size_of::<Middle>(), 0);

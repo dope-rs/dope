@@ -1,20 +1,13 @@
-use o3::depot::arena::slab::{entries, external};
+use o3::depot::arena::slab::external::OccupiedSlot;
 
-use crate::driver::{route, route::table};
+use crate::driver::{
+    route,
+    route::table::{self, PARTITIONS},
+};
 
 #[repr(transparent)]
 pub struct Entry<'a, T, Tag: route::Tag>(
-    pub(in crate::driver::route::table)  external::Occupied<
-        entries::Busy<
-            'a,
-            external::Stamped<T, route::Epoch>,
-            { u32::MAX },
-            entries::Exclusive<true>,
-            { table::PARTITIONS },
-        >,
-        Tag,
-        true,
-    >,
+    pub(in crate::driver::route::table) OccupiedSlot<'a, T, route::Epoch, Tag, PARTITIONS>,
 );
 
 impl<'a, T, Tag: route::Tag> Entry<'a, T, Tag> {

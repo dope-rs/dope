@@ -208,6 +208,7 @@ where
         {
             let fields = this.as_mut().project();
             fields.schedule.shutdown();
+            fields.accept.stop_accept(driver);
         }
         control::shutdown(this.as_mut(), turn, driver);
         this
@@ -224,6 +225,9 @@ where
         control::shutdown(this.as_mut(), turn.reborrow(), driver);
         let now = driver.driver_ref().clock().now();
         for _ in 0..Phase::COUNT {
+            if turn.reborrow().maint().remaining() == 0 {
+                return this;
+            }
             let phase = this.as_mut().project().schedule.next_phase();
             match phase {
                 Phase::Accept => {
@@ -242,9 +246,6 @@ where
                 Phase::Deadline => {
                     control::expire(this.as_mut(), now, turn.reborrow(), driver);
                 }
-            }
-            if turn.reborrow().maint().remaining() == 0 {
-                return this;
             }
         }
         this

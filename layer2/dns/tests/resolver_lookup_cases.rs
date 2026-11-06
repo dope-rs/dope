@@ -31,7 +31,7 @@ use crate::common::{
         self, Query,
         cases::*,
         failure::App,
-        server::{Cookie, Mode, Peer, Reject, Reply},
+        server::{Alter, Cookie, Mode, Peer, Reply},
     },
 };
 
@@ -109,15 +109,6 @@ fn response_scenarios() {
             1,
             Err(Kind::Malformed(Malformed::AliasConflict)),
         ),
-        (
-            Mode::Stream(Reply::Aliases([
-                b"\x04next\x07example\0",
-                b"\x04edge\x07example\0",
-            ])),
-            2,
-            1,
-            Err(Kind::Malformed(Malformed::AliasConflict)),
-        ),
         (Mode::Follow(b"\x04edge\xc0\x10"), 3, 1, Ok(12)),
         (
             Mode::Reply(Reply::Alias(None, b"\0")),
@@ -183,11 +174,11 @@ fn response_scenarios() {
         (Mode::Partial, 2, 2, Ok(7)),
         (Mode::Cookie(Cookie::Missing), 2, 1, Ok(8)),
         (Mode::Code(2048), 2, 1, Err(Kind::Server { code: 2048 })),
-        (Mode::Reject(Reject::Wrong), 2, 1, Ok(10)),
-        (Mode::Reject(Reject::Duplicate), 2, 1, Ok(10)),
-        (Mode::Reject(Reject::Trailing), 2, 1, Ok(10)),
-        (Mode::Reject(Reject::Forward), 2, 1, Ok(10)),
-        (Mode::Reject(Reject::AliasConflict), 2, 1, Ok(10)),
+        (Mode::Alter(Alter::Wrong), 2, 1, Ok(10)),
+        (Mode::Alter(Alter::Duplicate), 2, 1, Ok(9)),
+        (Mode::Alter(Alter::Trailing), 2, 1, Ok(10)),
+        (Mode::Alter(Alter::Forward), 2, 1, Ok(10)),
+        (Mode::Alter(Alter::AliasConflict), 2, 1, Ok(10)),
     ] {
         let server = (Peer::new(mode, rounds)).expect("DNS fixture server must start");
         let servers =

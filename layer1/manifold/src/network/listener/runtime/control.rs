@@ -92,7 +92,6 @@ pub(in crate::network::listener) fn shutdown<'w, 'd: 'w, ID: Identity, A, E>(
     if !root.as_ref().project_ref().schedule.is_closing() {
         return;
     }
-    root.as_mut().project().accept.stop_accept(driver);
     loop {
         let grant = turn.reborrow().maint().claim(|| {
             let this = root.as_mut().project();

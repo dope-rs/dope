@@ -23,7 +23,6 @@ pub(in crate::file) struct Queue<'p, 'd, const N: usize, const B: usize> {
     pub(super) storage: &'p Storage<N, B>,
     pub(super) current: Option<inline::Lease<'p, Vec<u8>, N>>,
     pub(super) in_flight: Option<InFlight<'p, 'd, N>>,
-    pub(super) closed: bool,
 }
 impl<const N: usize, const B: usize> Queue<'_, '_, N, B> {
     pub(super) fn discard(&mut self) {

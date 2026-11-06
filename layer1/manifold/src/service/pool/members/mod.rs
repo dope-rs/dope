@@ -260,7 +260,7 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         let Some(retry) = self.queue.first() else {
             return Ok(());
         };
-        if retry.priority().retry_at > now {
+        if *retry.priority() > now {
             return Ok(());
         }
         let key = retry.key();

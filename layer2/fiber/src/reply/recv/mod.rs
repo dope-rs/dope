@@ -5,7 +5,10 @@ pub mod outcome;
 
 use std::{mem, pin, task};
 
-use o3::base::cell::region;
+use o3::{
+    base::cell::region,
+    depot::{self, index::Initialized},
+};
 
 use crate::{
     abi, context,
@@ -26,9 +29,14 @@ pub enum Acceptance {
     Unit,
     /// The complete reply must fit without waiting for shared credits.
     Collected,
+    /// Only the first data item is retained.
+    First,
 }
 
-const _: () = assert!(mem::size_of::<Acceptance>() == mem::size_of::<bool>());
+const _: () = {
+    assert!(mem::size_of::<Acceptance>() == mem::size_of::<bool>());
+    assert!(mem::size_of::<Option<Acceptance>>() == mem::size_of::<Acceptance>());
+};
 
 /// Extracts one logical value from a reply slot.
 pub trait Extract<'s, 'arena, 'credits, 'region, D, E = D> {
@@ -146,6 +154,23 @@ impl<'s, 'arena, 'credits, 'region, D, E, K> Handle<'s, 'arena, 'credits, 'regio
 
     fn detach(&mut self) {
         self.reg = None;
+    }
+
+    fn detach_order(&mut self, token: &region::Token<region::Identity<'region>>) -> order::State {
+        let Some(reg) = self.reg.as_ref() else {
+            return order::State::Detached;
+        };
+        // SAFETY: Registration retains this exact occupied entry until detach;
+        // this proof is consumed before its retirement is deferred.
+        let registered = unsafe {
+            depot::raw::Proof::<_, Initialized<Registration<'_, '_, '_, '_, D, E, K>>>::new((
+                reg.lane.arena,
+                reg.key,
+            ))
+        };
+        let order = reply::Arena::registered_order(token, registered);
+        self.detach();
+        order
     }
 }
 
@@ -281,6 +306,10 @@ impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region,
     fn detach(&mut self) {
         self.handle.detach();
     }
+
+    fn detach_order(&mut self, token: &region::Token<region::Identity<'region>>) -> order::State {
+        self.handle.detach_order(token)
+    }
 }
 
 impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
@@ -379,5 +408,9 @@ impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region,
 
     fn detach(&mut self) {
         self.handle.detach();
+    }
+
+    fn detach_order(&mut self, token: &region::Token<region::Identity<'region>>) -> order::State {
+        self.handle.detach_order(token)
     }
 }

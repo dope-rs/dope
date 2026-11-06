@@ -52,20 +52,21 @@ where
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
         work.drive(
             policy,
             data,
             |prep| prep.scoped(),
-            |policy, next, turn, driver| {
-                flow::apply(
-                    policy,
-                    next,
-                    turn,
-                    driver,
-                    |policy, key, input, turn, driver| P::receive(policy, key, input, turn, driver),
-                )
+            |mut policy, next, turn, driver| match next {
+                event::DispatchRecv::Control(next) => {
+                    ingress::apply_control(policy, next, turn, driver);
+                }
+                event::DispatchRecv::Chunk(key, chunk) => {
+                    ingress::prepare_terminal(policy.as_mut(), key);
+                    let done = P::receive(policy.as_mut(), key, chunk, turn.reborrow(), driver);
+                    let _ = flow::settle(policy, key, done, turn, driver);
+                }
             },
         )
     }

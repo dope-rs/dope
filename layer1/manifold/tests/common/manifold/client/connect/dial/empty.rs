@@ -152,6 +152,7 @@ impl<'d> app::Lifecycle<'d, 'd> for Empty {
     fn prepare<O>(
         &mut self,
         _: conn::Ctx<'_, 'd, KeyTag<0>, Identity, (), O>,
+        _: bool,
         _: egress::Queue<'_, '_, 'd, 32>,
         _: &mut driver::Context<'_, 'd>,
     ) {

@@ -24,19 +24,16 @@ where
                 poll::Commit::Pending => continue,
             }
         }
-        let parked = ready.skip().park();
-        let quiesced = parked.resolve(source, |idle| {
-            let state = idle.shutdown();
-            if idle.is_quiet() && matches!(state, schedule::Progress::Quiescent) {
-                return Ok(match idle.sync()? {
-                    poll::Commit::Drained => turn::Resolved::Done,
-                    poll::Commit::Pending => turn::Resolved::Again,
-                });
+        let Some(idle) = ready.skip().park().sync()? else {
+            continue;
+        };
+        let progress = idle.shutdown();
+        if idle.is_quiet() && matches!(progress, schedule::Progress::Quiescent) {
+            match idle.sync()? {
+                poll::Commit::Drained => return Ok(()),
+                poll::Commit::Pending => continue,
             }
-            Ok(turn::Resolved::Wait(idle, state))
-        })?;
-        if quiesced {
-            return Ok(());
         }
+        idle.wait(progress, source)?;
     }
 }

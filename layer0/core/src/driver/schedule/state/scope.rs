@@ -5,7 +5,7 @@ use state::lanes;
 
 use crate::driver::{
     schedule,
-    schedule::{clock, ready, state, timers},
+    schedule::{clock, ready, state},
 };
 
 pub(in crate::driver) const REACTORS: usize = 2;
@@ -80,7 +80,7 @@ impl<'turn, 'd> Guard<'turn, 'd> {
     /// Runs every timer that has expired at the current turn sample.
     pub fn expire(&mut self) {
         let state = self.state;
-        timers::expire(state.driver, &state.lanes.timers);
+        state.driver.timer().expire(&state.lanes.timers);
     }
 
     pub fn is_exhausted(&self) -> bool {

@@ -20,12 +20,6 @@ pub struct Receipt<'turn, 'd> {
     permit: app::Permit<'turn, 'd>,
 }
 
-impl Delegated<'_, '_, '_> {
-    pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
-        f()
-    }
-}
-
 impl<'turn, 'd> Receipt<'turn, 'd> {
     pub const fn direct(permit: app::Permit<'turn, 'd>) -> Self {
         Self { permit }
@@ -43,7 +37,8 @@ impl<'turn, 'd> Receipt<'turn, 'd> {
     }
 
     pub fn settle(self, flow: Flow) -> Flow {
-        self.permit.run(|| flow)
+        let _permit = self.permit;
+        flow
     }
 }
 

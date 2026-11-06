@@ -71,6 +71,14 @@ pub(in crate::storage) struct Ledger<'s, const LANES: usize, const N: usize> {
     pub(in crate::storage::queries) reg: Registry<'s>,
 }
 
+impl<const LANES: usize, const N: usize> Drop for Ledger<'_, LANES, N> {
+    fn drop(&mut self) {
+        for slot in &mut self.slots {
+            slot.retire(&mut self.reg);
+        }
+    }
+}
+
 impl<'s, const LANES: usize, const N: usize> Ledger<'s, LANES, N> {
     pub(in crate::storage) fn try_new(store: &'s storage::Store) -> Result<Self, storage::Error> {
         use crate::storage::queries::tx::Table;
@@ -231,7 +239,6 @@ type Taken<'a, 's> = set::Entry<
     u16,
     { config::MAX_SERVERS + 1 },
     set::Id<{ config::MAX_SERVERS + 1 }>,
-    set::Planar,
 >;
 
 impl<'s> Pending<'s> {
@@ -331,6 +338,8 @@ const _: () = {
 unsafe impl depot::raw::SetSource<index::Branch, u16, { config::MAX_SERVERS + 1 }>
     for &mut Pending<'_>
 {
+    type Mode = set::Planar;
+
     fn planes(&self) -> &set::State<index::Branch, u16, { config::MAX_SERVERS + 1 }> {
         self.sets
     }

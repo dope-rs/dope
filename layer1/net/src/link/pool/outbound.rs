@@ -27,7 +27,7 @@ use crate::{
         event,
         pool::{self, change::opening, pending::Vacancy, recv::input},
         setup,
-        slot::{transmit, types},
+        slot::types,
     },
     wire::{
         self,
@@ -108,15 +108,15 @@ where
     pub fn send_slot(
         &mut self,
         key: pool::Key<'d, ID>,
-    ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>>
+    ) -> pool::Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>
     where
         B: data::raw::Payload<'d>,
     {
-        let egress = self.storage.sender(key)?;
+        let (egress, queued) = self.storage.sender_with_recv(key)?;
         if egress.connection.engine.operations.lifecycle.is_closing() {
             return None;
         }
-        Some(egress)
+        Some((egress, queued))
     }
 
     pub fn open<P, R>(

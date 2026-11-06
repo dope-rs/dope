@@ -5,6 +5,7 @@ use o3::mem::{self, lease};
 use crate::reply::{
     arena::state::order,
     order::Depth,
+    recv::Acceptance,
     retain::{self, grant::payload},
     usage,
 };
@@ -41,12 +42,8 @@ where
         }
     }
 
-    pub(in crate::reply) const fn amount(&self) -> A {
+    pub(in crate::reply) fn amount(&self) -> A {
         *self.inner.item()
-    }
-
-    pub(in crate::reply) fn keep(self) {
-        self.inner.into_parts();
     }
 
     pub(in crate::reply::arena::state) fn discard(self) -> Depth {
@@ -68,6 +65,13 @@ impl<A: mem::raw::Amount<3, usize> + Into<payload::Requested>, K> mem::Return
 }
 
 impl<K> Lease<'_, '_, '_, '_, payload::Value, K> {
+    pub(in crate::reply) fn keep(self) {
+        let (refund, _) = self.inner.into_parts();
+        if refund.slot.owner.acceptance == Some(Acceptance::First) {
+            refund.slot.owner.acceptance = None;
+        }
+    }
+
     pub(in crate::reply) fn usage(&self) -> usage::Usage {
         self.amount().usage()
     }

@@ -39,7 +39,7 @@ impl<T, O, P> Builder<T, O, P> {
         })
     }
     pub fn try_push(&mut self, task: T, parent: P) -> Result<(), alloc::Error> {
-        alloc::Vacant::try_new(&mut self.group.slots)?.insert(Slot {
+        alloc::try_vacant(&mut self.group.slots)?(Slot {
             value: cell::UnsafeCell::new(Value {
                 task: mem::ManuallyDrop::new(task),
             }),

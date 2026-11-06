@@ -152,6 +152,7 @@ impl<'d, ID: Identity> app::Lifecycle<'d, 'd, ID> for Deferred {
     fn prepare<O>(
         &mut self,
         _: conn::Ctx<'_, 'd, ID, DeferredWire, State, O>,
+        _: bool,
         _: egress::Queue<'_, '_, 'd, 32, Shared>,
         _: &mut driver::Context<'_, 'd>,
     ) {

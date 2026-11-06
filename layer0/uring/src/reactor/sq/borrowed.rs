@@ -33,7 +33,7 @@ impl<'a> Borrowed<'a> {
         input: bytes::Prefix<'a, { i32::MAX as usize }>,
         offset: u64,
     ) -> Self {
-        let input = input.into_slice();
+        let input = input.as_slice();
         let raw = fd::AsRawFd::as_raw_fd(&file);
         let mut entry = sq::Entry::new(files::WRITE, sq::Descriptor::File(raw));
         let mut fields = entry.fields();
@@ -49,7 +49,7 @@ impl<'a> request::Borrow<'a> for Borrowed<'a> {
     type Buffer = bytes::Prefix<'a, { i32::MAX as usize }>;
 
     fn send(slot: Self::Target, input: Self::Buffer) -> Self {
-        let input = input.into_slice();
+        let input = input.as_slice();
         let mut entry = sq::Entry::new(buffers::SEND, sq::Descriptor::Fixed(slot));
         let mut fields = entry.fields();
         fields.address(input.as_ptr() as u64);

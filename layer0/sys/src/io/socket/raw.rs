@@ -4,7 +4,7 @@ use std::{
 };
 
 use libc::socklen_t;
-use o3::{base::num::bounded, buffer, buffer::pool};
+use o3::{base::num::bounded, buffer};
 
 use crate::{
     Errno,
@@ -18,18 +18,12 @@ use crate::{
 
 /// Receives streams or datagrams into caller-owned native storage.
 pub trait Receive {
-    fn recv<'a>(
-        &self,
-        output: buffer::raw::Output<'a>,
-    ) -> Result<Option<pool::Complete<'a>>, Errno>;
+    fn recv(&self, output: buffer::raw::Output<'_>) -> Result<Option<()>, Errno>;
 
     /// # Safety
     /// Output belongs to a datagram pool with at least sixteen metadata bytes
     /// followed by sockaddr_storage and the admitted payload capacity.
-    unsafe fn receive<'a>(
-        &self,
-        output: buffer::raw::Output<'a>,
-    ) -> Result<pool::Complete<'a>, Errno>;
+    unsafe fn receive(&self, output: buffer::raw::Output<'_>) -> Result<(), Errno>;
 }
 
 pub trait Open: AsFd + Sized {
@@ -58,9 +52,7 @@ pub trait Source: errno::Source {
         len: *mut socklen_t,
     ) -> Result<OwnedFd, E> {
         let raw = unsafe { libc::accept(file.as_raw_fd(), addr, len) };
-        unsafe {
-            <OwnedFd as fd::raw::Adopt>::try_adopt(raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Self, E>(raw) }
     }
 
     /// # Safety
@@ -75,12 +67,11 @@ pub trait Source: errno::Source {
         let capacity = len.get() as usize;
         let raw = unsafe { libc::send(file.as_raw_fd(), ptr.cast(), capacity, libc::MSG_NOSIGNAL) };
         // SAFETY: send completes at most the admitted c_int-bounded input extent.
-        Ok(unsafe {
-            kernel::raw::Status::from_count(raw)
-                .try_count::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?
-        .bounded()
-        .into())
+        Ok(
+            unsafe { kernel::raw::Status::from_count(raw).try_count::<Self, E>() }?
+                .bounded()
+                .into(),
+        )
     }
 
     /// # Safety
@@ -93,11 +84,7 @@ pub trait Source: errno::Source {
     ) -> Result<bounded::U32<0, { i32::MAX as u32 }>, E> {
         let raw = unsafe { libc::sendmsg(file.as_raw_fd(), header.as_raw(), flags) };
         // SAFETY: the retained header has a total extent bounded by c_int.
-        Ok(unsafe {
-            kernel::raw::Status::from_count(raw)
-                .try_count::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?
-        .bounded())
+        Ok(unsafe { kernel::raw::Status::from_count(raw).try_count::<Self, E>() }?.bounded())
     }
 }
 

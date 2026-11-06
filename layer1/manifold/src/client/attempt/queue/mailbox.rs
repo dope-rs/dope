@@ -108,7 +108,7 @@ where
 }
 
 impl<'source, 'd, T: dope_net::Transport, C, O, ID: Identity> Lease<'source, 'd, T, C, O, ID> {
-    pub const fn id(&self) -> attempt::Id<'d, ID> {
+    pub fn id(&self) -> attempt::Id<'d, ID> {
         self.lease.id()
     }
 

@@ -122,19 +122,15 @@ impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Even
         (self.observe)(Event::Discarded);
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Vec<u8>>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Vec<u8>>
-    where
-        'd: 'w,
-    {
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, Vec<u8>>,
+    ) {
         let this = self.as_ref().get_ref();
         if let Finish::Prefix(closed) | Finish::Eof(closed) = &this.finish {
             closed.set(Some(Instant::now()));
         }
         this.gate.hit();
-        conn
     }
 }
 

@@ -102,27 +102,16 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
         Outcome::Continue
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>
-    where
-        'd: 'w,
-    {
+    ) {
         self.as_ref().get_ref().fill(&mut conn, driver);
-        conn
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State>) {
         self.as_ref().get_ref().closed.hit();
-        conn
     }
 }
 

@@ -68,6 +68,7 @@ impl<'d, F: Fn(socket::Addr, ready::Target<'d>)> Session<'d> for Probe<'_, F> {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Disabled;
     type Send = Shared;
 

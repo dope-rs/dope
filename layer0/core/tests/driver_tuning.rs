@@ -88,7 +88,8 @@ fn empty_tuning_preserves_nonempty_completion() {
 fn settled_tuning_reuses_flight() {
     let setting = option::Buffer::try_from(4096_usize).expect("valid buffer size");
     let options = option::Set::new(Some(setting), None, None, None, None, None, None);
-    let runtime = Runtime::quic::<2, 8>();
+    let runtime = Runtime::quic::<2, 8>()
+        .queue_layout(dope_core::driver::settings::QueueLayout::fixed::<8, 8>());
     let mut reports =
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
@@ -139,6 +140,20 @@ fn settled_tuning_reuses_flight() {
                         Tuning::Applied(socket) => socket,
                         Tuning::Pending(pending) => {
                             let done = driver.wait_tuning(turn).ok().expect("reused tuning");
+                            for _ in 0..8 {
+                                let (idle, _) = Install::bind_udp(
+                                    driver.reborrow(),
+                                    common::LOCALHOST,
+                                    common::DATAGRAM,
+                                )
+                                .expect("idle socket");
+                                Descriptor::from(idle).close(&mut driver);
+                            }
+                            let pending::Cancellation::Submitted(pending) =
+                                pending.cancel(&mut driver)
+                            else {
+                                panic!("settled tuning must not require SQ capacity");
+                            };
                             assert!(target.matches(done.token()));
                             let (socket, outcome) = pending
                                 .complete(done)

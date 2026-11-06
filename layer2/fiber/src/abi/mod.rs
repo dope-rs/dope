@@ -1,6 +1,7 @@
 pub mod future;
 mod join;
 pub mod machine;
+mod map;
 mod pending;
 mod pollfn;
 pub mod race;
@@ -14,6 +15,7 @@ use o3::{
 };
 
 pub use join::Join;
+pub use map::Map;
 pub use pending::Pending;
 pub use pollfn::{PollFn, poll_fn};
 pub use ready::Ready;
@@ -92,7 +94,7 @@ impl<F> Owned<F> {
 /// Admitted exclusive access to the current state in one owned slot.
 pub struct Live<'slot, 'id, F> {
     slot: mem::raw::Occupied<'slot, F>,
-    proof: region::Proof<region::Identity<'id>>,
+    proof: region::Identity<'id>,
 }
 
 impl<'slot, 'id, F> Live<'slot, 'id, F> {
@@ -122,7 +124,7 @@ impl<'slot, 'id, F> Live<'slot, 'id, F> {
 /// The original slot after its state has been consumed.
 pub struct Vacant<'slot, 'id, F> {
     slot: mem::raw::Vacant<'slot, F>,
-    proof: region::Proof<region::Identity<'id>>,
+    proof: region::Identity<'id>,
 }
 
 impl<'slot, 'id, F> Vacant<'slot, 'id, F> {
@@ -144,7 +146,7 @@ impl<'slot, 'id, F> Vacant<'slot, 'id, F> {
 /// A result issued only by the original live or emptied slot.
 pub struct Transition<'id, O> {
     poll: Poll<O>,
-    _proof: region::Proof<region::Identity<'id>>,
+    _proof: region::Identity<'id>,
 }
 
 impl<'d, F: Resume<'d>> Fiber<'d> for Owned<F> {

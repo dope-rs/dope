@@ -47,7 +47,11 @@ pub trait Mode<W: wire::Spec> {
 
     type Ingress: mode::Flag + Dispatch<W>;
     type Reserve: reserve::Kind<W>;
+    type Receipt: Default;
 }
+
+pub type Receipt<W, M> =
+    <<<W as wire::Spec>::Receive as receive::Policy<W>>::Publication as receive::publication::Policy>::Receipt<<M as Mode<W>>::Receipt>;
 
 /// Tail storage selected by one input mode.
 pub(in crate::link::pool) type Tail<'w, 'd, W, M> = <<M as Mode<W>>::Kind as Kind<W>>::Tail<'w, 'd>;
@@ -69,6 +73,7 @@ where
     type Kind = M;
     type Ingress = <M as Kind<W>>::Ingress;
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
+    type Receipt = ();
 }
 
 pub trait Replay<W: wire::Spec>: Kind<W> {

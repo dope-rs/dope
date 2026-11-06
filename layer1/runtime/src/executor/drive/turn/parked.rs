@@ -3,7 +3,7 @@ use std::mem;
 use dope_core::{driver, driver::result::poll};
 use turn::{modes, scope::Core};
 
-use crate::executor::drive::{self, clock, turn};
+use crate::executor::drive::turn;
 
 #[must_use]
 pub(crate) enum Status {
@@ -43,32 +43,6 @@ where
             return Ok(None);
         }
         Ok(Some(turn::Idle::new(self.core)))
-    }
-
-    /// Resolves idle work and waits until the next turn unless the loop completes.
-    /// Returns `true` when complete; `false` requests another poll.
-    pub(crate) fn resolve<C>(
-        self,
-        source: C,
-        resolve: impl FnOnce(
-            turn::Idle<'turn, 'd, M>,
-        ) -> Result<turn::Resolved<'turn, 'd, M>, drive::Error>,
-    ) -> Result<bool, drive::Error>
-    where
-        C: clock::Time,
-    {
-        let Some(idle) = self.sync()? else {
-            return Ok(false);
-        };
-        match resolve(idle)? {
-            turn::Resolved::Again => Ok(false),
-            turn::Resolved::Done => Ok(true),
-            turn::Resolved::Wait(idle, state) => {
-                let span = idle.timeout(state, source);
-                idle.wait(source.limit(span))?;
-                Ok(false)
-            }
-        }
     }
 }
 

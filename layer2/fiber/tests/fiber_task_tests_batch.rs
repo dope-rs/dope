@@ -157,7 +157,7 @@ fn batches_share_ceiling() {
 
     Setup::throughput().with_turn(
         |turn, mut driver| {
-            const WIDTH: usize = 32;
+            const WIDTH: usize = 64;
             const BATCHES: usize = schedule::LIMIT / WIDTH;
 
             let core = driver.driver_ref();

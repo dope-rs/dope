@@ -8,11 +8,7 @@ use dope_core::driver::{
 use dope_net::link::pool;
 pub(in crate::network::listener) use gate::Gate;
 use o3::{
-    depot::{
-        self,
-        arena::pool::{Unique, recycle},
-        queue::indexed::fifo::staged,
-    },
+    depot::{self, arena::pool::Unique, queue::indexed::fifo::staged},
     mem::{self, Return, lease::Open},
 };
 
@@ -23,13 +19,7 @@ mod gate;
 
 pub(in crate::network::listener) struct Source<'p, 's, 'd, T, ID: Identity> {
     gate: &'p Gate<'s, 'd, T, ID>,
-    proof: staged::Member<
-        'p,
-        ready::Retained<'d>,
-        (),
-        Unique<'s, T, recycle::Header<T>>,
-        pool::raw::Physical<'d, ID>,
-    >,
+    proof: staged::Member<'p, ready::Retained<'d>, (), Unique<'s, T>, pool::raw::Physical<'d, ID>>,
 }
 
 pub(in crate::network::listener) struct Lease<'p, 's, 'd, T, ID: Identity> {
@@ -97,7 +87,7 @@ impl<'p, 's, 'd, T, ID: Identity> Source<'p, 's, 'd, T, ID> {
 }
 
 impl<'p, 's, 'd, T, ID: Identity> Lease<'p, 's, 'd, T, ID> {
-    fn new(lease: Unique<'s, T, recycle::Header<T>>, gate: &'p Gate<'s, 'd, T, ID>) -> Self {
+    fn new(lease: Unique<'s, T>, gate: &'p Gate<'s, 'd, T, ID>) -> Self {
         Self {
             lease: mem::Lease::open(Wake(gate), lease),
         }
@@ -113,7 +103,7 @@ impl<'p, 's, 'd, T, ID: Identity> Lease<'p, 's, 'd, T, ID> {
 }
 
 impl<'s, T, ID: Identity> Return for Wake<'_, 's, '_, T, ID> {
-    type Item = Unique<'s, T, recycle::Header<T>>;
+    type Item = Unique<'s, T>;
 
     fn return_item(self, lease: Self::Item) {
         self.0.wake(lease);

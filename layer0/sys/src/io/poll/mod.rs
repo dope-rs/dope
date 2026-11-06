@@ -106,11 +106,7 @@ pub trait Poll: errno::Source {
         // SAFETY: the entries stay live and uniquely borrowed for the call.
         let raw = unsafe { libc::poll(raw.as_mut_ptr(), raw.len() as nfds_t, timeout) };
         // SAFETY: poll returns -1 or the number of ready registrations it was given.
-        let count = unsafe {
-            kernel::raw::Status::new(raw)
-                .try_count::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?
-        .get();
+        let count = unsafe { kernel::raw::Status::new(raw).try_count::<Self, E>() }?.get();
         Ok(poll::Events { entries, count })
     }
 }

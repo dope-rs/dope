@@ -7,16 +7,13 @@ use schedule::selected::{self, Claim, Item};
 
 use crate::{
     core::driver::{self, schedule::app::step},
-    task::storage::{
-        caps,
-        fixed::{
-            quota,
-            schedule::{
-                self, queue,
-                ready::{Resident, TreeIndex},
-            },
-            tree,
+    task::storage::fixed::{
+        quota,
+        schedule::{
+            self, queue,
+            ready::{Resident, TreeIndex},
         },
+        tree,
     },
 };
 
@@ -40,7 +37,7 @@ where
     R: schedule::PlaneTree<'d> + tree::At<'d, P>,
 {
     fn into_root(self) -> TreeIndex<R> {
-        self.resident.root(caps::Path::<R, P>::new())
+        self.resident.root::<R, P>()
     }
 }
 

@@ -50,11 +50,8 @@ impl dope_sys::Timer for Timer {
         let result =
             unsafe { libc::timer_create(libc::CLOCK_MONOTONIC, &mut event, timer.as_mut_ptr()) };
         // SAFETY: timer_create returns zero or -1 with errno.
-        unsafe {
-            kernel::raw::Status::new(result)
-                .try_zero::<Errno>(|| kernel::raw::Code::last::<Uring>().into())
-        }
-        .map_err(timer::Error::Create)?;
+        unsafe { kernel::raw::Status::new(result).try_zero::<Uring, Errno>() }
+            .map_err(timer::Error::Create)?;
         // SAFETY: successful timer_create initialized the identifier.
         let timer = Self {
             timer: unsafe { timer.assume_init() },
@@ -91,7 +88,7 @@ impl Timer {
                 &setting,
                 ptr::null_mut(),
             ))
-            .try_zero::<Errno>(|| kernel::raw::Code::last::<Uring>().into())
+            .try_zero::<Uring, Errno>()
         }
     }
 }
@@ -102,8 +99,7 @@ impl Drop for Timer {
         // SAFETY: self exclusively owns one live identifier and timer_delete
         // returns zero or -1 with errno.
         if let Err(cause) = unsafe {
-            kernel::raw::Status::new(libc::timer_delete(self.timer))
-                .try_zero::<Errno>(|| kernel::raw::Code::last::<Uring>().into())
+            kernel::raw::Status::new(libc::timer_delete(self.timer)).try_zero::<Uring, Errno>()
         } {
             kernel::Fatal::TimerDelete(cause).terminate();
         }

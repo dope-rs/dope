@@ -28,6 +28,9 @@ use o3::{
     depot::capacity,
     mem::quota::{self, Acquire},
 };
+type Route<ID> = <ID as route::Materialize<kind::Accept>>::With;
+type Binding<'n, 'd, ID> = (Accept<'n, 'd, ID, ()>, flight::Need<Route<ID>>);
+
 pub(in crate::network::listener) use peers::Admission;
 use peers::Quota;
 use table::conn::Capacity;
@@ -74,7 +77,7 @@ pub(in crate::network::listener) struct Accept<
     'n,
     'd,
     ID: Identity,
-    F = flight::Slots<'d, <ID as route::Materialize<kind::Accept>>::With>,
+    F = flight::Slots<'d, Route<ID>>,
 > {
     #[pin]
     fd: Option<handles::Descriptor<'d>>,
@@ -109,16 +112,11 @@ impl<'d, ID: Identity> Prepared<'d, ID> {
         fd: handles::Descriptor<'d>,
         opts: option::Set,
         watch: &'n crate::network::listener::Watch<'d>,
-    ) -> Result<
-        Accept<'n, 'd, ID, flight::Need<<ID as route::Materialize<kind::Accept>>::With>>,
-        alloc::Error,
-    > {
+    ) -> Result<Binding<'n, 'd, ID>, alloc::Error> {
         let Prepared { capacity, quota } = self;
         let total = table::Capacity::from(capacity);
         let edge = indices::Edge::from(capacity);
-        let routes = fd
-            .driver()
-            .targets::<<ID as route::Materialize<kind::Accept>>::With>();
+        let routes = fd.driver().targets::<Route<ID>>();
         let (flights, mode) = if quota.is_limited() {
             let cap = total.count().get().min(MAX_ONESHOT_LANES) as u16;
             let flights = flight::Need::new(flight::Capacity::capped::<MAX_ONESHOT_LANES>(total));
@@ -129,58 +127,26 @@ impl<'d, ID: Identity> Prepared<'d, ID> {
                 mode::Mode::multishot(routes, edge),
             )
         };
-        Ok(Accept {
-            fd: Some(fd),
-            flights,
-            mode,
-            capacity,
-            options: opts,
-            quota,
-            watch,
-            retry: None,
-        })
-    }
-}
-
-impl<'n, 'd, ID: Identity>
-    Accept<'n, 'd, ID, flight::Need<<ID as route::Materialize<kind::Accept>>::With>>
-{
-    pub(in crate::network::listener) fn into_parts(
-        self,
-    ) -> (
-        Accept<'n, 'd, ID, ()>,
-        flight::Need<<ID as route::Materialize<kind::Accept>>::With>,
-    ) {
-        let Self {
-            fd,
-            flights,
-            mode,
-            capacity,
-            options,
-            quota,
-            watch,
-            retry,
-        } = self;
-        (
+        Ok((
             Accept {
-                fd,
+                fd: Some(fd),
                 flights: (),
                 mode,
                 capacity,
-                options,
+                options: opts,
                 quota,
                 watch,
-                retry,
+                retry: None,
             },
             flights,
-        )
+        ))
     }
 }
 
 impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID, ()> {
     pub(in crate::network::listener) fn commit(
         self,
-        flights: flight::Slots<'d, <ID as route::Materialize<kind::Accept>>::With>,
+        flights: flight::Slots<'d, Route<ID>>,
     ) -> Accept<'n, 'd, ID> {
         let Self {
             fd,

@@ -6,13 +6,3 @@ pub struct Reclaimed<B, R, E = Infallible> {
     pub report: Option<R>,
     pub result: Result<(), E>,
 }
-
-impl<B, R, E> Reclaimed<B, R, E> {
-    pub fn map_report<T>(self, map: impl FnOnce(R) -> T) -> Reclaimed<B, T, E> {
-        Reclaimed {
-            buffer: self.buffer,
-            report: self.report.map(map),
-            result: self.result,
-        }
-    }
-}

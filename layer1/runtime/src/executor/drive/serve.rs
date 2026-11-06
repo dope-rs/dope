@@ -21,9 +21,9 @@ where
             turn::Status::Active => {}
             turn::Status::Shutdown => return Ok(()),
         }
-        parked.resolve(source, |idle| {
-            let state = idle.progress();
-            Ok(turn::Resolved::Wait(idle, state))
-        })?;
+        if let Some(idle) = parked.sync()? {
+            let progress = idle.progress();
+            idle.wait(progress, source)?;
+        }
     }
 }

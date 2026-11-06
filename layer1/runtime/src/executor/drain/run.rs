@@ -27,17 +27,14 @@ where
                 return Ok(drain::Outcome::Forced);
             }
         };
-        let parked = state.next_app(tick, &mut shutdown)?.skip().park();
-        let quiesced = parked.resolve(source, |idle| {
-            let drain = idle.drain();
-            if idle.is_quiet() && matches!(drain, schedule::Progress::Quiescent) {
-                return Ok(turn::Resolved::Done);
-            }
-            let state = idle.progress().reduce(drain);
-            Ok(turn::Resolved::Wait(idle, state))
-        })?;
-        if quiesced {
+        let Some(idle) = state.next_app(tick, &mut shutdown)?.skip().park().sync()? else {
+            continue;
+        };
+        let drain = idle.drain();
+        if idle.is_quiet() && matches!(drain, schedule::Progress::Quiescent) {
             return Ok(drain::Outcome::Quiesced);
         }
+        let progress = idle.progress().reduce(drain);
+        idle.wait(progress, source)?;
     }
 }

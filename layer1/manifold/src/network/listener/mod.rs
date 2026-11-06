@@ -24,7 +24,7 @@ use dope_net::{
     Listen,
     link::{
         egress,
-        pool::{pending, send},
+        pool::{Released, pending, send},
     },
     wire,
 };
@@ -166,9 +166,28 @@ where
         let mut this = owner.as_mut().project();
         this.accept.finish(proof);
         let mut app = this.app.as_mut();
-        this.owner.pool_mut().finish_keyed(proof, |key, payload| {
-            writer::release_payload(app.as_mut(), key, payload, handler::Disposition::Closed);
-        });
+        this.owner
+            .pool_mut()
+            .finish_keyed(proof, |key, released| match released {
+                Released::Payload(payload) => {
+                    writer::release_payload(
+                        app.as_mut(),
+                        key,
+                        payload,
+                        handler::Disposition::Closed,
+                    );
+                }
+                Released::State(state) => {
+                    if let Some(egress) = state.send.retire().0 {
+                        writer::release_egress(
+                            app.as_mut(),
+                            key,
+                            egress,
+                            handler::Disposition::Closed,
+                        );
+                    }
+                }
+            });
         executor::raw::Finish::new(owner, install, proof)
     }
 }

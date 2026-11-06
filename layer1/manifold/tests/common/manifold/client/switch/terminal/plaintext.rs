@@ -126,6 +126,7 @@ impl<'d> Session<'d> for Plaintext {
     type Requests = request::Disabled;
     type ConnState = Option<clock::Deadline<'d>>;
     type Failure = Observed;
+    type Receipt = ();
     type Send = Shared;
 
     fn codec(&self) -> &Decode {

@@ -1,5 +1,4 @@
 use std::{
-    num,
     os::fd::{AsRawFd as _, IntoRawFd as _, OwnedFd},
     ptr, slice,
 };
@@ -48,9 +47,7 @@ unsafe impl file::raw::Directory for Kqueue {
         unsafe { kernel::raw::Descriptor::new(libc::dirfd(stream.0.as_ptr())) }
     }
 
-    fn next<E: From<Errno>>(
-        stream: &mut Dir,
-    ) -> Result<Option<file::Entry<'_>>, file::ReadError<E>> {
+    fn next(stream: &mut Dir) -> Result<Option<file::Entry<'_>>, Errno> {
         // SAFETY: this slot belongs to the calling thread for this synchronous read.
         let errno = unsafe { libc::__error() };
         unsafe { errno.write(0) };
@@ -70,12 +67,11 @@ unsafe impl file::raw::Directory for Kqueue {
                     kind: file::Kind::from_dirent(kind),
                 }))
             }
-            None => match num::NonZero::new(unsafe { errno.read() })
-                .map(Errno::try_from)
-                .transpose()
-                .map_err(file::ReadError::Invalid)?
+            // SAFETY: after clearing errno, readdir leaves zero at EOF or a
+            // positive native error; no intervening call changes this slot.
+            None => match unsafe { kernel::raw::Code::from_native(errno.read() as libc::intptr_t) }
             {
-                Some(error) => Err(file::ReadError::Syscall(E::from(error))),
+                Some(error) => Err(error.into()),
                 None => Ok(None),
             },
         }

@@ -142,6 +142,7 @@ where
                 }
                 return;
             };
+            let queued = sender.has_queued_recv();
             let liveness::Egress {
                 connection: mut slot,
                 pending: handle,
@@ -154,6 +155,7 @@ where
             let active = State::active(&mut slot, |active| {
                 this.app.prepare(
                     conn::Ctx::new(active, turn.reborrow().app()),
+                    queued,
                     egress.reborrow(),
                     driver,
                 );
@@ -338,8 +340,7 @@ where
                     handle.wake();
                 }
                 let status = slot.send_status();
-                if done.contains(request::Flag::Enqueued)
-                    || done.contains(request::Flag::Waiting)
+                if done.contains(request::Flag::Waiting)
                     || done.contains(request::Flag::Exhausted)
                     || done.contains(request::Flag::Queued)
                     || status.is_inflight()

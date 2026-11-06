@@ -139,7 +139,7 @@ where
         F: FnOnce(&mut C, &mut [u8]) -> write::Draft<Infallible, R>,
         B: 'd,
     {
-        self.try_send::<_, _, _, true>(
+        self.try_send::<_, _, _, false>(
             driver,
             |_| Some(()),
             |send, driver| send.try_prefix(driver, commit),
@@ -243,10 +243,8 @@ where
         F: for<'b, 'id> FnOnce(
             &mut C,
             write::Prefix<'b, 'id>,
-        ) -> Result<
-            write::Commit<region::Proof<region::Identity<'id>>, Bound<B, G>, R>,
-            E,
-        >,
+        )
+            -> Result<write::Commit<region::Identity<'id>, Bound<B, G>, R>, E>,
     {
         self.try_send::<_, _, _, false>(driver, egress::Queue::prove, |send, driver| {
             send.try_header(driver, |state, bytes, owner| {

@@ -108,6 +108,19 @@ impl<T: Copy, S: Copy, C> Entry<T, S, C> {
             invariant: marker::PhantomData,
         }
     }
+
+    fn arm(&self, target: T) -> Result<Lease<'_, T, S, C>, error::Arm> {
+        match self.state.get() {
+            State::Idle => {}
+            State::Held | State::Ready(..) => return Err(error::Arm::Busy),
+            State::Detached | State::DetachedHeld => return Err(error::Arm::Detached),
+        }
+        self.state.set(State::Held);
+        Ok(Lease {
+            entry: self,
+            target,
+        })
+    }
 }
 
 impl<'a, 'owner, T: Copy, S: Copy, C> Slot<'a, 'owner, T, S, C> {
@@ -116,6 +129,10 @@ impl<'a, 'owner, T: Copy, S: Copy, C> Slot<'a, 'owner, T, S, C> {
             entry: self.entry,
             generation: self.entry.header().generation.get(),
         }
+    }
+
+    pub fn arm(self, target: T) -> Result<Lease<'owner, T, S, C>, error::Arm> {
+        self.entry.arm(target)
     }
 
     pub fn is_active(self) -> bool {
@@ -161,16 +178,7 @@ impl<'owner, T: Copy, S: Copy, C> Key<'owner, T, S, C> {
                 observed,
             }));
         }
-        match self.entry.state.get() {
-            State::Idle => {}
-            State::Held | State::Ready(..) => return Err(error::Arm::Busy),
-            State::Detached | State::DetachedHeld => return Err(error::Arm::Detached),
-        }
-        self.entry.state.set(State::Held);
-        Ok(Lease {
-            entry: self.entry,
-            target,
-        })
+        self.entry.arm(target)
     }
 }
 

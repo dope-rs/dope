@@ -111,6 +111,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     type Connect = Peer;
     type ConnState = ();
     type Failure = failure::Controlled;
+    type Receipt = ();
     type Send = Frame;
 
     fn codec<'a>(owner: &'a Owner<'life, 's, 'd, Self, ID, LANES, N>) -> &'a Self::Codec {

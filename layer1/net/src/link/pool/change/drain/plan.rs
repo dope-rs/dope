@@ -59,12 +59,14 @@ pub(in crate::link::pool::change) struct Storage<
     D: demand::Mode,
 > where
     'd: 'w,
+    input::Receipt<W, M>: 'a,
 {
     pub(in crate::link::pool::change) entry:
         tail::Cleared<'a, types::Connection<'w, 'd, ID, W, S>, ID>,
     pub(in crate::link::pool::change) egress: &'a mut egress::Storage<'p, 'd, ID, B, IOV, D>,
     pub(in crate::link::pool::change) runtime: &'a mut W::Runtime<'w, 'd, ID>,
-    pub(in crate::link::pool::change) recv: recv::Borrow<'a, 'd, ID, M::Ingress>,
+    pub(in crate::link::pool::change) recv:
+        recv::Borrow<'a, 'd, ID, M::Ingress, input::Receipt<W, M>>,
 }
 
 pub(in crate::link::pool::change) struct Turn<'a, 'm, 'r, 'd, ID: Identity> {
@@ -103,6 +105,7 @@ pub(in crate::link::pool::change) struct Plan<
     F,
 > where
     'd: 'w,
+    input::Receipt<W, M>: 'a,
 {
     pub(in crate::link::pool::change) storage: Storage<'a, 'p, 'w, 'd, ID, W, S, M, B, IOV, D>,
     pub(in crate::link::pool::change) turn: Turn<'a, 'm, 'r, 'd, ID>,
@@ -115,6 +118,7 @@ where
     'd: 'w,
     W: wire::Spec + 'w + 'd,
     M: input::Mode<W>,
+    input::Receipt<W, M>: 'a,
     D: demand::Mode,
     F: for<'x, 'c, 'i, 'v> FnMut(Failed<'x, 'c, 'i, 'v, 'r, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>),
     O: for<'x, 'c, 'f, 's, 'v> FnMut(
@@ -334,11 +338,11 @@ where
                 state::Claim::Ready(owner) => owner,
                 state::Claim::Unavailable => return Err((slot, Branch::Stale)),
             };
-            let (next, outcome) = slot.control.engine.establish.retire();
-            slot.control.engine.establish = next;
-            let (reclaim, handle) = match outcome {
+            let (reclaim, handle) = match slot.control.engine.establish.retire() {
                 setup::Retire::Ready { close, handle } => (close, handle),
-                setup::Retire::Pending(target) => {
+                setup::Retire::Pending(setup) => {
+                    let target = setup.ready_handle().target();
+                    slot.control.engine.establish = setup;
                     slot.control
                         .engine
                         .operations
@@ -348,7 +352,8 @@ where
                         .restore(owner);
                     return Err((slot, Branch::Resume(Resume::from_target(target))));
                 }
-                setup::Retire::Unavailable => {
+                setup::Retire::Unavailable(setup) => {
+                    slot.control.engine.establish = setup;
                     slot.control
                         .engine
                         .operations

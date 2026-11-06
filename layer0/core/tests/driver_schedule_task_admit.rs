@@ -174,6 +174,20 @@ fn domain_reclaims() {
                         available: 0
                     })
                 ));
+
+                // SAFETY: the vacant node and ready set remain pinned through this binding.
+                let binding = unsafe {
+                    task::raw::Binding::bind_leased(
+                        node.as_ref(),
+                        domain.try_admit().expect("reclaimed task credit"),
+                        ready.try_attach(root, Index(0)).expect("retained topology"),
+                    )
+                };
+                binding.waker().wake();
+                drop(binding);
+                drop(node);
+                assert_eq!(ready.pop(), None);
+                assert!(root.try_admit().is_ok(), "node returned its credit");
             }
             assert!(root.try_admit().is_ok(), "domain returned its credit");
         },

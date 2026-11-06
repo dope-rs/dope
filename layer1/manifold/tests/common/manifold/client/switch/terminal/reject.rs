@@ -184,6 +184,7 @@ impl<'d> Session<'d> for Reject {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Disabled;
     type Send = Shared;
 

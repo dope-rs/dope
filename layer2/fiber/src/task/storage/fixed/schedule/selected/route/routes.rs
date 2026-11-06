@@ -1,5 +1,6 @@
 use std::marker;
 
+use schedule::pool::Proof as _;
 use selected::{Claim, State, route};
 
 use crate::task::storage::fixed::{
@@ -102,7 +103,8 @@ where
 impl<'plane, 'turn, 'd, R, L, T, Q, S, C, X, A, B, O>
     Dispatch<'plane, 'turn, 'd, R, tree::Branch<L, T>, Q, S, C, X> for tree::Branch<A, B>
 where
-    R: schedule::PlaneTree<'d>,
+    R: schedule::PlaneTree<'d> + tree::At<'d, X::Path<tree::Right<T::First>>>,
+    R::Member: schedule::pool::Proof,
     L: schedule::PlaneTree<'d>,
     T: schedule::PlaneTree<'d>,
     Q: quota::State,
@@ -125,7 +127,8 @@ where
             work,
             permit,
         } = state;
-        match S::branch(dequeued, |index| index.split()) {
+        let right_base = R::project_ref(&active.as_ref().get_ref().routes).base();
+        match S::branch(dequeued, |index| index.split(right_base)) {
             Ok(dequeued) => left.dispatch(
                 context,
                 State {

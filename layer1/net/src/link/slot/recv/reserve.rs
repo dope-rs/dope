@@ -40,14 +40,14 @@ where
     R: reserve::Try<W>,
     W::Receive: receive::Policy<W, Reserve = reserve::Waiting<R>>,
 {
-    pub(in crate::link) fn try_new<S>(
-        conn: &'a mut types::Connection<'w, 'd, ID, W, S>,
+    pub(in crate::link) fn try_new(
+        conn: &'a mut types::Control<'w, 'd, ID, W>,
         rt: &'a mut W::Runtime<'w, 'd, ID>,
-        credit: credit::Control<'d>,
+        credit: credit::Slot<'a, 'd>,
         mut arm: bool,
     ) -> Self {
-        let key = &conn.control.key;
-        let end = match conn.control.engine.both(&mut conn.control.terminal) {
+        let key = &conn.key;
+        let end = match conn.engine.both(&mut conn.terminal) {
             terminal::Admission::Open(end) => end,
             terminal::Admission::Closed => {
                 return Reserve::Control(slot::Control::Discarded {
@@ -56,47 +56,40 @@ where
                 });
             }
         };
-        let send = if conn.control.engine.operations.sending.is_inflight() {
+        let send = if conn.engine.operations.sending.is_inflight() {
             None
         } else {
-            Some(&mut conn.control.send)
+            Some(&mut conn.send)
         };
-        let txn = match R::try_reserve(&mut conn.control.wire, send, rt) {
+        let txn = match R::try_reserve(&mut conn.wire, send, rt) {
             reserve::Outcome::Ready(txn) => txn,
             reserve::Outcome::Blocked(block) => {
-                let bind = credit.bind(key.target().dispatch());
-                let credit = match <mode::Waiting<R> as mode::Stored>::arm(
-                    bind,
-                    conn.control.engine.ready_handle().target(),
-                ) {
+                let credit = match credit
+                    .arm(key.target().dispatch(), conn.engine.ready_handle().target())
+                {
                     Ok(credit) => credit,
                     Err(cause) => {
                         return Reserve::Credit(cause);
                     }
                 };
-                conn.control.engine.operations.recv.pause();
+                conn.engine.operations.recv.pause();
                 return Reserve::Blocked(Blocked {
                     block,
                     credit,
                     key,
-                    needs_cancel: conn.control.engine.operations.recv.has_cancel(),
+                    needs_cancel: conn.engine.operations.recv.has_cancel(),
                 });
             }
             reserve::Outcome::Failed(cause) => {
                 let ((), captured) = end
                     .terminal((), terminal::Terminal::Failed(cause))
                     .into_parts();
-                Prepared::<ID, W, mode::Waiting<R>>::capture(
-                    &mut conn.control.engine,
-                    &mut arm,
-                    captured,
-                );
+                Prepared::<ID, W, mode::Waiting<R>>::capture(&mut conn.engine, &mut arm, captured);
                 return Reserve::Control(slot::Control::NoChunk { needs_rearm: arm });
             }
         };
-        let credit = credit.bind(key.target().dispatch());
         Reserve::Ready(Prepared {
-            engine: &mut conn.control.engine,
+            engine: &mut conn.engine,
             end,
             transaction: txn,
             credit,

@@ -6,9 +6,9 @@ use dope_core::driver::route::{
 };
 use o3::{
     alloc,
-    depot::{arena::slab, queue::indexed::shared},
+    depot::{arena::slab, queue::indexed::shared, raw::Compact as _},
 };
-use pending::node::{Next, Node, State, Wake};
+use pending::node::{Next, Node, State};
 
 use crate::{
     link::{
@@ -74,14 +74,14 @@ where
     }
 
     pub fn at(self, key: pool::Key<'d, ID>) -> Option<Handle<'a, 'd, ID>> {
-        if !self.pool.prepared.slab.view().contains(key.parts()) {
+        if !self.pool.prepared.slab.contains(key.parts()) {
             return None;
         }
         self.pool.prepared.pending.handle(key)
     }
 
     pub fn close(self, key: pool::Key<'d, ID>) {
-        if let Some(conn) = self.pool.prepared.slab.view().get(key.parts())
+        if let Some(conn) = self.pool.prepared.slab.get(key.parts())
             && let Some(handle) = self.pool.prepared.pending.handle(key)
         {
             conn.io().close();
@@ -136,7 +136,7 @@ impl<'a, 'd, ID: Identity, C> Mut<'a, 'd, ID, C> {
 }
 
 pub(super) struct Queue<'d, ID: Identity> {
-    nodes: shared::Fifo<pool::Key<'d, ID>, Node<'d, ID>>,
+    nodes: shared::Fifo<(), Node<'d, ID>>,
     topology: cell::Cell<Topology<'d, ID>>,
     status: cell::Cell<Status>,
     claimed: cell::Cell<Lock<'d, ID>>,
@@ -229,16 +229,16 @@ impl<'d, ID: Identity> Queue<'d, ID> {
         let grant = match self.claimed.get() {
             Lock::Held(claimed) => {
                 let claimed = claimed.lane();
-                if !slots.contains(claimed) || slab.view().key_at(claimed).is_some() {
-                    slab.vacancy().try_head(capacity)
+                if !slots.contains(claimed) || slab.key_at(claimed).is_some() {
+                    slab.access().try_head(capacity)
                 } else {
-                    match slab.vacancy().try_except(capacity, claimed) {
+                    match slab.access().try_except(capacity, claimed) {
                         Err(slab::Vacancy::Full) => return Admission::Busy,
                         grant => grant,
                     }
                 }
             }
-            Lock::Free => slab.vacancy().try_head(capacity),
+            Lock::Free => slab.access().try_head(capacity),
         };
         match grant {
             Ok(grant) => Admission::Ready(Grant {
@@ -263,17 +263,14 @@ impl<'d, ID: Identity> Queue<'d, ID> {
         if matches!(self.capacity_claim.get(), Lock::Held(_)) {
             return;
         }
-        let Some((slot, key)) = self.nodes.next::<0>() else {
+        let Some((index, node, ())) = self.nodes.pop_front::<0>() else {
             return;
         };
-        let node = slot.state();
-        let index = pool::raw::Physical::bind(key);
-        if node.epoch.get() != key.epoch() || matches!(node.state.get(), State::Retired) {
-            return;
-        }
+        // SAFETY: this slot belongs to this route and lies within its admitted capacity.
+        let index = unsafe { pool::raw::Physical::from_raw(index as u32) };
         self.capacity_claim.set(Lock::Held(index));
         node.capacity.set(true);
-        Handle { queue: self, key }.wake();
+        self.wake(index, node);
     }
 
     fn clear_wait(&self, index: pool::raw::Physical<'d, ID>) {
@@ -288,6 +285,14 @@ impl<'d, ID: Identity> Queue<'d, ID> {
             && held.lane() == index.lane()
         {
             self.capacity_claim.set(Lock::Free);
+        }
+    }
+
+    fn wake(&self, index: pool::raw::Physical<'d, ID>, node: &Node<'d, ID>) {
+        match node.state.get() {
+            State::Idle => self.enqueue(Detached { index, node }),
+            State::Queued | State::Awakened | State::Retired => {}
+            State::Claimed => node.state.set(State::Awakened),
         }
     }
 
@@ -347,10 +352,7 @@ impl<'d, ID: Identity> Queue<'d, ID> {
         self.slot(index).state()
     }
 
-    fn slot(
-        &self,
-        index: pool::raw::Physical<'d, ID>,
-    ) -> shared::Slot<'_, pool::Key<'d, ID>, Node<'d, ID>> {
+    fn slot(&self, index: pool::raw::Physical<'d, ID>) -> shared::Slot<'_, (), Node<'d, ID>> {
         use o3::depot::{index::Initialized, raw::Proof};
 
         // SAFETY: admission binds every link to this queue's route and capacity.
@@ -370,10 +372,10 @@ impl<'d, ID: Identity> Handle<'_, 'd, ID> {
         if node.epoch.get() != self.key.epoch() || matches!(node.state.get(), State::Retired) {
             return;
         }
-        node.capacity.set(false);
         if waiting {
-            if slot.get::<0>() != Some(self.key) {
-                slot.push::<0>(self.key);
+            node.capacity.set(false);
+            if slot.get::<0>().is_none() {
+                slot.push::<0>(());
             }
         } else {
             self.queue.clear_wait(index);
@@ -394,11 +396,7 @@ impl<'d, ID: Identity> Handle<'_, 'd, ID> {
         if node.epoch.get() != key.epoch() {
             return;
         }
-        match node.state.get() {
-            State::Idle => queue.enqueue(Detached { index, node }),
-            State::Queued | State::Retired => {}
-            State::Claimed => node.wake.set(Wake::Pending),
-        }
+        queue.wake(index, node);
     }
 }
 

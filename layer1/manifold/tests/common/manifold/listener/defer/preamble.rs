@@ -150,6 +150,7 @@ where
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
     type Discard = mode::Enabled;
+    type Publication = receive::publication::Decoded;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Transaction<'a, 'w, ID, Preamble<F>>,
@@ -380,14 +381,11 @@ where
         Outcome::Continue
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Preamble<F>, u8>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Preamble<F>, u8>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Preamble<F>, u8>
-    where
-        'd: 'w,
-    {
+    ) {
         let this = self.get_mut();
         for frame in this.frames.iter().skip(usize::from(*conn.state())) {
             let result = conn.write().try_bounded(driver, |state, prefix| {
@@ -397,7 +395,6 @@ where
             });
             (this.observe)(Event::Enqueued(result));
         }
-        conn
     }
 
     fn eof(
@@ -409,15 +406,8 @@ where
         (self.observe)(Event::Eof(end));
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Preamble<F>, u8>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Preamble<F>, u8>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Preamble<F>, u8>) {
         self.get_mut().gate.hit();
-        conn
     }
 }
 

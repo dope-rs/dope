@@ -8,7 +8,7 @@ use dope_core::driver::{
 use dope_net::{
     link::{
         event,
-        pool::recv::{self, Readiness, Ready, arrival, delivery, reserve::Choice},
+        pool::recv::{self, Readiness, Ready, arrival, delivery, input, reserve::Choice},
     },
     wire,
 };
@@ -65,7 +65,7 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>;
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>;
 
     fn resume_tail<'p, 'w, 'd, ID: Identity + 'd, P>(
         _: pin::Pin<&mut P>,

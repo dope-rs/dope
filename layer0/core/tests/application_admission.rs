@@ -1,5 +1,5 @@
 use dope_core::driver::life::recovery;
-use o3::mem::quota;
+use o3::{depot::queue::pool::fair, mem::quota};
 pub mod common;
 
 use std::cell::Cell;
@@ -23,12 +23,18 @@ fn is_atomic() {
     Runtime { config }.with_scope(
         |scope| {
             {
-                let (_, _, mut schedule) = scope.split();
+                let (_, mut driver, mut schedule) = scope.split();
+                let token = driver.region_token();
+                let lanes =
+                    fair::Lanes::<u8>::try_new(fair::Plan::new(1, 1).expect("lane plan"), token)
+                        .expect("lane storage");
+                let mut lane = lanes.bind(0).expect("lane");
                 {
                     let active = schedule.begin();
                     let work = active.turn().app();
                     let calls = Cell::new(0);
 
+                    assert!(matches!(work.next(&mut lane, token), app::Next::Empty));
                     let empty = work.claim(|| {
                         calls.set(calls.get() + 1);
                         None::<usize>
@@ -56,6 +62,13 @@ fn is_atomic() {
                     });
                     assert!(matches!(blocked, quota::Admission::Exhausted));
                     assert_eq!(calls.get(), schedule::LIMIT + 1);
+
+                    assert!(matches!(work.next(&mut lane, token), app::Next::Empty));
+                    lane.reserve().expect("queue permit").push_back(token, 7);
+                    assert!(matches!(
+                        work.next(&mut lane, token),
+                        app::Next::Exhausted(())
+                    ));
                 }
 
                 {
@@ -63,10 +76,12 @@ fn is_atomic() {
                     let work = active.turn().app();
                     assert_eq!(work.remaining(), schedule::LIMIT);
 
-                    let permit = (work.permit())
-                        .expect("the delegated claim must consume an available admission");
-                    let (observed, receipt) =
-                        step::Receipt::delegate(permit, |proof| proof.run(|| 17));
+                    let app::Next::Item((value, _slot), permit) = work.next(&mut lane, token)
+                    else {
+                        panic!("retained admission");
+                    };
+                    assert_eq!(value, 7);
+                    let (observed, receipt) = step::Receipt::delegate(permit, |_proof| 17);
                     assert_eq!(observed, 17);
                     let yielded = receipt.settle(step::Flow::Yield);
                     assert!((yielded) == (step::Flow::Yield));

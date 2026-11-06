@@ -212,6 +212,7 @@ where
     fn prepare<O>(
         &mut self,
         mut context: conn::Ctx<'_, 'd, KeyTag<0>, Wire, (), O>,
+        _: bool,
         queue: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
         driver: &mut driver::Context<'_, 'd>,
     ) {

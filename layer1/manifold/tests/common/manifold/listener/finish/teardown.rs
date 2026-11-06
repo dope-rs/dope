@@ -53,6 +53,7 @@ impl receive::Policy<Teardown> for Recv {
     type Reserve = reserve::Direct;
     type Credit = mode::Enabled;
     type Discard = mode::Enabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: route::Identity + 'w>(
         txn: reserve::Guard<ID, Teardown>,

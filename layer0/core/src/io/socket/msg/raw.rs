@@ -176,7 +176,7 @@ unsafe impl<'a, const N: usize> buffer::raw::Chunks for super::Vectored<'a, N> {
         self.bytes().into_raw()
     }
 
-    fn start(&self) -> Self::Cursor<'_> {
+    fn chunks(&self) -> Self::Cursor<'_> {
         Cursor::start(self)
     }
 

@@ -1,5 +1,9 @@
 use std::pin;
 
+use o3::{
+    base::num::Epoch,
+    depot::{arena::slab::external, capacity},
+};
 use ready::{Global, Path};
 use storage::fixed::{local::Removal, tree};
 
@@ -12,7 +16,7 @@ use crate::{
             ready::task,
         },
     },
-    task::storage::{self, Id},
+    task::storage,
 };
 
 mod plan;
@@ -28,6 +32,10 @@ pub use plan::Plan;
 pub use plane::Plane;
 pub use pool::{Pool, Stream};
 pub use route::Route;
+
+pub type Id<'d, D> = storage::Id<'d, D, external::Key<Epoch>>;
+pub(in crate::task::storage) type Scoped<'s, 'd, D> =
+    storage::scope::Scoped<'s, 'd, D, external::Key<Epoch>>;
 
 pub(in crate::task::storage) type Input<'d, M> = (
     <M as tree::Member<'d>>::Fiber,
@@ -58,7 +66,8 @@ pub trait Ops<'d>: tree::Member<'d> + pool::Proof + Sized {
         parent: wake::RootWaker<'d>,
     ) -> Result<impl FnOnce(Input<'d, Self>) + 'a, task::Error>
     where
-        R: tree::At<'d, P, Member = Self>;
+        R: tree::At<'d, P, Member = Self> + 'a,
+        P: 'a;
 
     fn drive_index<'turn, 'queue, S>(
         entry: selected::Entry<'_, Self>,
@@ -92,7 +101,11 @@ pub trait StreamOps<'d>: Ops<'d> {
 
 /// Recursive operations over a fixed scheduler tree.
 pub trait PlaneTree<'d>: tree::Build<'d> {
-    fn wake_global(access: selected::Access<'_, Self>);
+    fn layout(&mut self, base: u32) -> capacity::Count;
+
+    fn first_base(&self) -> u32;
+
+    fn root_waker(access: selected::Access<'_, Self>) -> wake::RootWaker<'d>;
 
     fn merge_ready(access: selected::Access<'_, Self>, queue: pin::Pin<&queue::Flat<'d>>);
 
@@ -108,10 +121,21 @@ where
     L: PlaneTree<'d>,
     R: PlaneTree<'d>,
 {
-    fn wake_global(access: selected::Access<'_, Self>) {
+    fn layout(&mut self, base: u32) -> capacity::Count {
+        let (left, right) = self.parts_mut();
+        let left = left.layout(base).get() as u32;
+        let right = right.layout(base.wrapping_add(left)).get() as u32;
+        capacity::Count::new(left.wrapping_add(right))
+    }
+
+    fn first_base(&self) -> u32 {
+        self.left().first_base()
+    }
+
+    fn root_waker(access: selected::Access<'_, Self>) -> wake::RootWaker<'d> {
         match access.split() {
-            Ok(access) => L::wake_global(access),
-            Err(access) => R::wake_global(access),
+            Ok(access) => L::root_waker(access),
+            Err(access) => R::root_waker(access),
         }
     }
 

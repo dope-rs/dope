@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use dope_core::driver::{self, settings::Domain, storage};
 use dope_net::{link::pool::recv::input, wire};
 use o3::buffer::resident;
@@ -50,7 +52,7 @@ pub struct Scoped;
 /// Exact retained ranges charge the driver-domain budget while the cursor
 /// borrow cannot escape, preserving a causal zero-copy handoff.
 pub struct GatedScoped;
-pub struct Owned;
+pub struct Owned<R = ()>(PhantomData<fn() -> R>);
 
 trait Batch: Plain + Policy {}
 trait Plain {}
@@ -61,7 +63,7 @@ impl Batch for Gated {}
 impl Plain for Borrowed {}
 impl Plain for Coupled {}
 impl Plain for Gated {}
-impl Plain for Owned {}
+impl<R> Plain for Owned<R> {}
 
 /// Driver resident-domain demand and its exact receive authority.
 pub trait Resources: Sized {
@@ -130,7 +132,7 @@ impl Policy for GatedScoped {
     const EGRESS_COUPLED: bool = true;
     const APPLICATION_GATED: bool = true;
 }
-impl Policy for Owned {}
+impl<R> Policy for Owned<R> {}
 
 impl<W> input::Mode<W> for Borrowed
 where
@@ -138,6 +140,7 @@ where
     input::Borrowed: input::Kind<W>,
 {
     type Kind = input::Borrowed;
+    type Receipt = ();
     type Ingress = <input::Borrowed as input::Kind<W>>::Ingress;
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
 }
@@ -148,6 +151,7 @@ where
     input::Coupled: input::Kind<W>,
 {
     type Kind = input::Coupled;
+    type Receipt = ();
     type Ingress = <input::Coupled as input::Kind<W>>::Ingress;
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
 }
@@ -158,6 +162,7 @@ where
     input::Coupled: input::Kind<W>,
 {
     type Kind = input::Coupled;
+    type Receipt = ();
     type Ingress = <input::Coupled as input::Kind<W>>::Ingress;
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
 }
@@ -168,6 +173,7 @@ where
     input::Scoped: input::Kind<W>,
 {
     type Kind = input::Scoped;
+    type Receipt = ();
     type Ingress = <input::Scoped as input::Kind<W>>::Ingress;
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
 }
@@ -178,15 +184,17 @@ where
     input::Scoped: input::Kind<W>,
 {
     type Kind = input::Scoped;
+    type Receipt = ();
     type Ingress = <input::Scoped as input::Kind<W>>::Ingress;
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
 }
 
-impl<W> input::Mode<W> for Owned
+impl<W, R: Default> input::Mode<W> for Owned<R>
 where
     W: input::Execution,
 {
     type Kind = input::Retained;
+    type Receipt = R;
     type Ingress = W::Retained;
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
 }
@@ -214,9 +222,9 @@ where
 {
 }
 
-impl<W> Mode<W> for Owned
+impl<W, R: Default> Mode<W> for Owned<R>
 where
     W: wire::Spec,
-    Owned: input::Mode<W>,
+    Owned<R>: input::Mode<W>,
 {
 }

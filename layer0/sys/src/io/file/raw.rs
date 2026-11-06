@@ -25,10 +25,7 @@ pub(super) fn read_at<'a, S: kernel::raw::Source + ?Sized, E: From<Errno>>(
         )
     };
     // SAFETY: pread returns -1 or initializes at most this exact extent.
-    Ok(unsafe {
-        crate::io::raw::Buffer::try_native(output, raw, || kernel::raw::Code::last::<S>().into())?
-            .assume_init_mut()
-    })
+    Ok(unsafe { crate::io::raw::Buffer::try_native::<S, E>(output, raw)?.assume_init_mut() })
 }
 
 /// # Safety
@@ -52,14 +49,12 @@ pub unsafe trait Directory: kernel::raw::Source {
 
     fn from_fd<E: From<Errno>>(file: fd::OwnedFd) -> Result<Self::Stream, file::OpenError<E>>;
     fn descriptor(stream: &Self::Stream) -> kernel::raw::Descriptor;
-    fn next<E: From<Errno>>(
-        stream: &mut Self::Stream,
-    ) -> Result<Option<file::Entry<'_>>, file::ReadError<E>>;
+    fn next(stream: &mut Self::Stream) -> Result<Option<file::Entry<'_>>, Errno>;
 }
 
 /// # Safety
 /// Each decoded success retains the uniquely transferred descriptor until
-/// delivery or reclamation. Closing consumes that ownership.
+/// delivery or reclamation.
 pub unsafe trait Completion {
     type Outcome;
     type Invalid;
@@ -68,6 +63,4 @@ pub unsafe trait Completion {
     /// A successful outcome transfers one live descriptor from a completed
     /// open operation. Its descriptor has not been decoded or reclaimed before.
     unsafe fn open(outcome: Self::Outcome) -> Result<Opened, Self::Invalid>;
-
-    fn close(file: fd::OwnedFd) -> Result<(), Errno>;
 }

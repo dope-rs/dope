@@ -11,7 +11,6 @@ pub(in crate::link::pool::pending) struct Node<'d, ID: Identity> {
     pub(in crate::link::pool::pending) epoch: cell::Cell<route::Epoch>,
     pub(in crate::link::pool::pending) next: cell::Cell<Next<'d, ID>>,
     pub(in crate::link::pool::pending) state: cell::Cell<State>,
-    pub(in crate::link::pool::pending) wake: cell::Cell<Wake>,
     pub(in crate::link::pool::pending) capacity: cell::Cell<bool>,
 }
 
@@ -26,13 +25,8 @@ pub(in crate::link::pool::pending) enum State {
     Idle,
     Queued,
     Claimed,
+    Awakened,
     Retired,
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::link::pool::pending) enum Wake {
-    Quiet,
-    Pending,
 }
 
 impl<'d, ID: Identity> Default for Node<'d, ID> {
@@ -41,7 +35,6 @@ impl<'d, ID: Identity> Default for Node<'d, ID> {
             epoch: cell::Cell::new(route::Epoch::INITIAL),
             next: cell::Cell::new(Next::End),
             state: cell::Cell::new(State::Idle),
-            wake: cell::Cell::new(Wake::Quiet),
             capacity: cell::Cell::new(false),
         }
     }
@@ -50,6 +43,5 @@ impl<'d, ID: Identity> Default for Node<'d, ID> {
 const _: () = {
     assert!(mem::size_of::<Next<'static, KeyTag<0>>>() == mem::size_of::<u32>());
     assert!(mem::size_of::<State>() == 1);
-    assert!(mem::size_of::<Wake>() == 1);
     assert!(mem::size_of::<Node<'static, KeyTag<0>>>() == 2 * mem::size_of::<u64>());
 };

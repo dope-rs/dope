@@ -27,7 +27,7 @@ pub(in crate::link) struct Storage<
 > {
     lanes:
         arena::Arena<'p, 'd, B, Option<flight::Lease<'p, 'd, IOV>>, credit::Ready<'p, 'd>, ID, D>,
-    flights: &'p recycle::Store<flight::Entry<'d, IOV>>,
+    flights: &'p recycle::Store<flight::Entry<IOV>>,
 }
 
 impl<'p, 'd, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'p, 'd, ID, B, IOV, D> {

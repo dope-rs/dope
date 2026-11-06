@@ -1,6 +1,6 @@
 use std::mem;
 
-use dope_core::{driver::schedule, io::Event};
+use dope_core::io::Event;
 
 mod idle;
 pub(super) mod modes;
@@ -24,14 +24,4 @@ pub(crate) fn shutdown(source: &impl crate::executor::Startup) -> impl FnMut() -
         source.observed(crate::shutdown::Requested::new());
         Status::Shutdown
     }
-}
-
-/// Resolution of one idle turn supplied to [`Parked::resolve`].
-pub(crate) enum Resolved<'turn, 'd, M> {
-    /// Re-poll the current turn without blocking.
-    Again,
-    /// Block the driver until `progress` next becomes runnable.
-    Wait(Idle<'turn, 'd, M>, schedule::Progress<'d>),
-    /// The caller's loop is resolved.
-    Done,
 }

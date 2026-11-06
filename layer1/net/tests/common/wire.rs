@@ -1,6 +1,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use dope_core::{driver::route::Identity, io::recv};
+use dope_net::link::pool::recv::input;
 use dope_net::wire::{
     self, domain, failure, open, receive,
     receive::{batch, eof, mode, mode::access, reserve},
@@ -64,6 +65,15 @@ impl<const CAP: usize> send::Store for Buffer<CAP> {
 pub struct Eof {
     input: Rc<Cell<Input>>,
     thread: ThreadBound,
+}
+
+pub struct Receipt;
+
+impl input::Mode<Eof> for Receipt {
+    type Kind = input::Retained;
+    type Ingress = <input::Retained as input::Mode<Eof>>::Ingress;
+    type Reserve = <Eof as receive::Policy<Eof>>::Reserve;
+    type Receipt = bool;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +152,7 @@ impl receive::Policy<Eof> for Eof {
     type Reserve = reserve::Borrowed;
     type Credit = mode::Enabled;
     type Discard = mode::Disabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Transaction<'a, 'w, ID, Eof>,

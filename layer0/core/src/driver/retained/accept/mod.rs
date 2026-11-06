@@ -134,13 +134,9 @@ where
     }
 
     pub fn stop(&mut self, driver: &mut driver::Context<'_, 'd>) {
-        let mut active = 0;
         for lane in self.iter_mut() {
-            let state = lane.project().state;
-            state.stop(driver);
-            active += usize::from(state.is_live());
+            lane.project().state.stop(driver);
         }
-        self.active = active;
     }
 
     pub fn progress<'a>(
@@ -258,12 +254,8 @@ where
     }
 
     pub fn into_addr(self) -> Result<net::SocketAddr, socket::Error> {
-        let storage = *self.lane.project().addr.get_mut();
+        let storage = self.lane.project().addr.get_mut();
         storage.to_std().map_err(socket::Error::from)
-    }
-
-    pub fn discard(self) {
-        *self.lane.project().addr.get_mut() = Storage::<Length>::empty();
     }
 }
 

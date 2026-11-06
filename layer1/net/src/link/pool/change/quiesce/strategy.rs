@@ -15,8 +15,8 @@ use crate::{
 pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
     storage::raw::Mode + drain::Strategy<W> + Finish<W>
 {
-    fn credits<'a, 'd, ID: Identity, T, S>(
-        _: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self>>,
+    fn credits<'a, 'd, ID: Identity, T, S, R>(
+        _: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self, R>>,
     ) -> Option<&'a credit::Storage<'d>> {
         None
     }
@@ -41,8 +41,8 @@ where
     W: wire::Spec,
     <W::Receive as Policy<W>>::Reserve: reserve::Immediate<W>,
 {
-    fn credits<'a, 'd, ID: Identity, T, S>(
-        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self>>,
+    fn credits<'a, 'd, ID: Identity, T, S, R>(
+        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self, R>>,
     ) -> Option<&'a credit::Storage<'d>> {
         Some(slab.credit())
     }
@@ -54,8 +54,8 @@ where
     R: reserve::Try<W>,
     W::Receive: Policy<W, Reserve = reserve::Waiting<R>>,
 {
-    fn credits<'a, 'd, ID: Identity, T, S>(
-        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self>>,
+    fn credits<'a, 'd, ID: Identity, T, S, C>(
+        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self, C>>,
     ) -> Option<&'a credit::Storage<'d>> {
         Some(slab.credit())
     }

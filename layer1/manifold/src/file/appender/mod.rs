@@ -122,13 +122,17 @@ where
 {
     pub(super) inner: dispatch::raw::Installed<'step, 'd, Appender<'p, 'd, ID, N, B>>,
 }
-#[pin_project::pin_project]
 pub struct Appender<'p, 'd, ID: Identity, const N: usize, const B: usize> {
     file: file::Locked,
     _route: lease::Owner<'d, ID>,
     pub(super) flights: flight::Slots<'d, <ID as route::Materialize<kind::Write>>::With>,
     pub(super) queue: Queue<'p, 'd, N, B>,
+    closed: bool,
 }
+
+// Buffers remain in borrowed Storage; no field retains its own address.
+impl<ID: Identity, const N: usize, const B: usize> Unpin for Appender<'_, '_, ID, N, B> {}
+
 impl<'p, 'd, ID: Identity, const N: usize, const B: usize> executor::raw::Finishes<'d, Self>
     for Appender<'p, 'd, ID, N, B>
 {
@@ -190,8 +194,8 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
                     storage,
                     current: None,
                     in_flight: None,
-                    closed: false,
                 },
+                closed: false,
             },
             end,
         ))
@@ -206,7 +210,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         if let Some(failure) = self.queue.storage.failure() {
             return Err(WriteError::Failed(failure));
         }
-        if self.queue.closed {
+        if self.closed {
             return Err(WriteError::Closed);
         }
         if limit > B {
@@ -215,27 +219,25 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
                 maximum: B,
             });
         }
-        loop {
-            let block = match self.queue.current.take() {
-                Some(block) => block,
-                None => self
-                    .queue
+        let block = match self.queue.current.take() {
+            Some(block) if limit <= B - block.get().len() => block,
+            current => {
+                if let Some(block) = current {
+                    block.push_back(());
+                }
+                self.queue
                     .storage
                     .pool
                     .try_acquire()
-                    .map_err(WriteError::Full)?,
-            };
-            if limit > B - block.get().len() {
-                block.push_back(());
-                continue;
+                    .map_err(WriteError::Full)?
             }
-            let block = self.queue.current.insert(block).get_mut();
-            let bytes = Staged::try_new(block, limit as u32).map_err(WriteError::Capacity)?;
-            return Ok(Record {
-                bytes,
-                driver: marker::PhantomData,
-            });
-        }
+        };
+        let block = self.queue.current.insert(block).get_mut();
+        let bytes = Staged::try_new(block, limit as u32).map_err(WriteError::Capacity)?;
+        Ok(Record {
+            bytes,
+            driver: marker::PhantomData,
+        })
     }
     pub(super) fn seal(&mut self) {
         let Some(block) = self.queue.current.take() else {
@@ -304,7 +306,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         }
     }
     pub(super) fn close(&mut self) {
-        self.queue.closed = true;
+        self.closed = true;
         self.seal();
     }
     pub(super) fn cancel(&mut self) {
@@ -354,6 +356,10 @@ impl<'step, 'p, 'd, ID: Identity, const N: usize, const B: usize> Control<'step,
 where
     'd: 'step,
 {
+    pub fn failure(&self) -> Option<Failure> {
+        self.inner.as_ref().get_ref().queue.storage.failure()
+    }
+
     pub fn confirmed(&self) -> u64 {
         self.inner.as_ref().get_ref().queue.storage.confirmed()
     }
@@ -382,7 +388,7 @@ where
         if let Some(failure) = this.queue.storage.failure() {
             return Err(Rejected::new(prepared, RotateError::Failed(failure)));
         }
-        if this.queue.closed {
+        if this.closed {
             return Err(Rejected::new(prepared, RotateError::Closed));
         }
         this.seal();

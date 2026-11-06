@@ -20,11 +20,11 @@ pub enum Extent {
     Lanes(usize),
 }
 
-pub struct Parking<'d> {
-    pub(crate) events: pool::Lanes<event::Completion<'d>>,
+pub struct Parking<'d, R = ()> {
+    pub(crate) events: pool::Lanes<event::Completion<'d, R>>,
 }
 
-impl<'d> Parking<'d> {
+impl<'d, R> Parking<'d, R> {
     pub(crate) fn try_new(conns: conn::Capacity, bufs: settings::Buffers) -> crate::Result<Self> {
         let conns = conns.entries().get();
         let events = usize::from(bufs.into_nonzero().get()) + conns;
@@ -37,12 +37,12 @@ impl<'d> Parking<'d> {
     }
 }
 
-pub struct Retained<'d> {
-    pub(crate) events: Parking<'d>,
+pub struct Retained<'d, R = ()> {
+    pub(crate) events: Parking<'d, R>,
     pub(crate) credit: credit::Storage<'d>,
 }
 
-impl<'d> Retained<'d> {
+impl<'d, R> Retained<'d, R> {
     pub(crate) fn try_new(
         conns: conn::Capacity,
         bufs: settings::Buffers,

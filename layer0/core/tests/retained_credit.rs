@@ -33,7 +33,7 @@ fn take_keeps_ready() {
             let slot = store.get(SlotIndex::ZERO).expect("credit slot");
             let control = slot.control();
             let activity = Tracker::begin();
-            let pending = control.arm(target, ready.target()).expect("idle credit");
+            let pending = slot.arm(target, ready.target()).expect("idle credit");
             assert!(pending.id().slot() == SlotIndex::ZERO);
             let held = pending.claim();
             assert!(held.id().slot() == SlotIndex::ZERO);

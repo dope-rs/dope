@@ -52,7 +52,7 @@ impl<'d> ConnectRetry<'d> {
             options: opts,
             send_window: window,
         } = self;
-        match link::Connect::new(fd, addr, target).submit(slots, driver.reborrow(), opts) {
+        match link::connect(fd, addr, target, slots, driver.reborrow(), opts) {
             Ok(pending) => (
                 Phase::Connecting(Connecting {
                     pending,

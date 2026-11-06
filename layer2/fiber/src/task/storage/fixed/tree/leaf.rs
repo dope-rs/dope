@@ -18,6 +18,10 @@ impl<S> Leaf<S> {
         self.project().storage
     }
 
+    pub(crate) fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
+    }
+
     pub(crate) fn into_inner(self) -> S {
         self.storage
     }
@@ -33,6 +37,8 @@ impl<'d, S> tree::Tree<'d> for Leaf<S>
 where
     S: tree::Member<'d>,
 {
+    type First = tree::Here;
+
     const TASKS: tree::Tasks = tree::Tasks::from(S::CAPACITY);
 }
 
@@ -41,8 +47,6 @@ where
     S: tree::Member<'d>,
 {
     type Member = S;
-
-    const OFFSET: tree::Offset = tree::Offset::new(0);
 
     fn project(self: pin::Pin<&mut Self>) -> pin::Pin<&mut S> {
         self.project().storage

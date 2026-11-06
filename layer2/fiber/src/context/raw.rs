@@ -58,16 +58,14 @@ impl<'a, F> Live<'a, F> {
     pub(crate) fn with<'turn, 'd: 'turn>(
         self,
         context: Pin<&mut Context<'turn, 'd>>,
-        permit: app::Permit<'turn, 'd>,
+        _permit: app::Permit<'turn, 'd>,
     ) -> Poll<F::Output>
     where
         F: abi::Fiber<'d>,
     {
-        permit.run(|| {
-            F::poll(PollCall {
-                fiber: self.fiber,
-                context,
-            })
+        F::poll(PollCall {
+            fiber: self.fiber,
+            context,
         })
     }
 

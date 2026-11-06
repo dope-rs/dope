@@ -153,7 +153,7 @@ impl<'arena> Releases<'arena> {
 impl<'a> Fixture<'a> {
     pub fn try_with<'region>(
         self,
-        proof: region::Proof<region::Identity<'region>>,
+        proof: region::Identity<'region>,
         run: impl for<'scope, 'arena, 'credits> FnOnce(State<'a, 'scope, 'arena, 'credits, 'region>),
     ) -> Result<(), Build> {
         let (capacity, limit, drops) = match self {
@@ -253,7 +253,7 @@ pub struct Never;
 
 pub struct Collected;
 
-pub struct RetainOne;
+pub struct RetainOne<const FIRST: bool = false>;
 
 pub struct DrainFailure;
 
@@ -294,11 +294,16 @@ impl<'s, 'arena, 'credits, 'region, 'a> recv::Extract<'s, 'arena, 'credits, 'reg
     }
 }
 
-impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
-    recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>> for RetainOne
+impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a, const FIRST: bool>
+    recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>> for RetainOne<FIRST>
 {
     type Output = Result<retain::Retained<'arena, 'credits, 'region, Counted<'a>>, Error>;
     type Context = ();
+    const ACCEPTANCE: recv::Acceptance = if FIRST {
+        recv::Acceptance::First
+    } else {
+        recv::Acceptance::Payload
+    };
 
     fn extract(
         _: &Self::Context,

@@ -30,13 +30,13 @@ pub(in crate::wire) struct Packet<'packet> {
 #[derive(Clone, Copy)]
 pub(in crate::wire) struct Bound<'packet, 'id> {
     packet: Packet<'packet>,
-    proof: region::Proof<region::Identity<'id>>,
+    proof: region::Identity<'id>,
 }
 
 #[derive(Clone, Copy)]
 pub(in crate::wire) struct Name<'id> {
     offset: Offset,
-    packet: region::Proof<region::Identity<'id>>,
+    packet: region::Identity<'id>,
 }
 
 #[derive(Clone, Copy)]

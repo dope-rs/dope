@@ -143,7 +143,9 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Bound<'queue, 'p, 'd, B, D> {
         let Self { credit, index } = self;
         let (rest, stored, value) = credit.take();
         commit(rest.queue(), token, index, value, stored);
-        rest.rollback(token);
+        if rest.amount() != credit::Amount::ZERO {
+            rest.rollback(token);
+        }
     }
 }
 

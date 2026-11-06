@@ -74,7 +74,7 @@ impl<'d, I, ID: Identity> Rejected<'d, I, ID> {
 
 /// Compact application intent materialized only when side transport admits it.
 pub trait Intent<'d, ID: Identity = KeyTag<0>>: Sized {
-    type Payload: data::raw::Payload<'d> + data::raw::StableOwner<'d> + 'd;
+    type Payload: data::raw::StableOwner<'d> + 'd;
 
     fn target(&self) -> conn::Id<'d, ID>;
 

@@ -58,19 +58,20 @@ pub(in crate::link::pool::recv) enum Observation<
     M: input::Mode<W>,
 > where
     'd: 'w,
+    input::Receipt<W, M>: 'a,
 {
     Complete(event::Dispatch<'d, ID>),
     Ready(
         Observed<'a, 'w, 'd, ID, W, S, M>,
-        <M::Ingress as storage::raw::Mode>::Bound<'a, 'd>,
+        <M::Ingress as storage::raw::Mode>::Bound<'a, 'd, input::Receipt<W, M>>,
     ),
 }
 
 /// Settles observations using the storage capability selected by the ingress mode.
-pub trait Delivery<'a, 'd: 'a, W: wire::Spec, P: storage::raw::Mode> {
+pub trait Delivery<'a, 'd: 'a, W: wire::Spec, P: storage::raw::Mode, R: 'a> {
     fn ready<'w, ID: Identity + 'w, S, M>(
         next: Observed<'a, 'w, 'd, ID, W, S, M>,
-        storage: P::Bound<'a, 'd>,
+        storage: P::Bound<'a, 'd, R>,
     ) -> event::Dispatch<'d, ID>
     where
         'd: 'w,
@@ -82,7 +83,7 @@ pub struct Direct;
 
 pub struct Buffered;
 
-impl<'a, 'd: 'a, W> Delivery<'a, 'd, W, mode::Disabled> for Direct
+impl<'a, 'd: 'a, W, R: 'a> Delivery<'a, 'd, W, mode::Disabled, R> for Direct
 where
     W: wire::Spec,
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
@@ -107,16 +108,16 @@ where
     }
 }
 
-impl<'a, 'd: 'a, W, P> Delivery<'a, 'd, W, P> for Buffered
+impl<'a, 'd: 'a, W, P, R: 'a> Delivery<'a, 'd, W, P, R> for Buffered
 where
     W: wire::Spec,
     P: storage::raw::Mode,
-    P::Bound<'a, 'd>: Write<'d>,
+    P::Bound<'a, 'd, R>: Write<'d, R>,
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
 {
     fn ready<'w, ID: Identity + 'w, S, M>(
         mut next: Observed<'a, 'w, 'd, ID, W, S, M>,
-        mut store: P::Bound<'a, 'd>,
+        mut store: P::Bound<'a, 'd, R>,
     ) -> event::Dispatch<'d, ID>
     where
         'd: 'w,
@@ -161,6 +162,7 @@ where
     where
         T: crate::Transport,
         D: demand::Mode,
+        input::Receipt<W, M>: 'a,
     {
         let key = match pool.keys.parse(item.token()) {
             Ok(key) => key,
@@ -168,7 +170,7 @@ where
                 return Observation::Complete(event::Dispatch::Retired(item.retire()));
             }
         };
-        let Some((slot, recv)) = pool.prepared.slab.get(key.parts()) else {
+        let Some((slot, recv)) = pool.prepared.slab.get_mut(key.parts()) else {
             return Observation::Complete(event::Dispatch::Retired(item.retire()));
         };
         let status = item.status();
@@ -194,7 +196,7 @@ where
                     arrival::Origin::Fresh,
                 )
             }
-            arrival::Timing::Replay => (
+            arrival::Timing::Replay(()) => (
                 slot.control.engine.operations.recv.is_armable(stop),
                 false,
                 arrival::Origin::Replay,

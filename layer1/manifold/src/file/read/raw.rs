@@ -62,7 +62,7 @@ impl Metadata {
             Ok(()) => {
                 // SAFETY: the matching original CQ ended native writes and filled output.
                 unsafe { scratch.output.try_result() }
-                    .map(|(kind, length)| (fs::Kind::from(kind), fs::Len::from(length)))
+                    .map(|(kind, length)| (kind, fs::Len::from(length)))
                     .map_err(MetadataError::Value)
             }
             Err(cause) => Err(MetadataError::Operation(Error::System(cause))),
@@ -148,6 +148,16 @@ pub(super) fn submit<'d, ID: Identity>(
                 }
                 .map(Active::Open)
             }
+            Request::Rename {
+                directory,
+                old,
+                new,
+            } => {
+                let operation = fs::Submission::rename(directory.rename(old, new), target);
+                // SAFETY: the fixed request owns the directory and both names
+                // through the original completion or native quiescence.
+                unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Sync)
+            }
             Request::Read(request) => {
                 // SAFETY: try_new admits capacity once; admission resets length.
                 // The private owner cannot grow or move its heap while submitted.
@@ -182,7 +192,7 @@ pub(super) fn submit<'d, ID: Identity>(
                     };
                     Scratch::release(free, scratch);
                 }
-                result.map(Active::Metadata)
+                result.map(Active::Sync)
             }
             Request::Prepare(Prepare(Preparation::Tail {
                 prepared,
@@ -416,11 +426,18 @@ impl<'d, ID: Identity> event::Drive<'d> for Reader<'_, 'd, ID> {
                 let entry = slot.state();
                 match entry.phase.take() {
                     Some(Phase::Active {
-                        flight: Active::Metadata(flight),
+                        flight: Active::Sync(flight),
                         ..
                     }) if flight.matches(done.token()) => {
                         drop(flight);
                         match entry.take() {
+                            request @ Request::Rename { .. } => {
+                                entry.insert(request);
+                                port.settle(
+                                    &slot,
+                                    Outcome::Rename(done.outcome().map_err(Error::System)),
+                                );
+                            }
                             Request::Metadata(request) => {
                                 let (file, result) =
                                     request.complete(done.outcome(), &mut this.free);

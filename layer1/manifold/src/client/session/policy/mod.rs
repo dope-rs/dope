@@ -110,7 +110,10 @@ pub trait Lifecycle<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>
         _: &State<'life, 'd, P, Self, ID, MAX>,
         _: conn::Id<'d, ID>,
         failure: conn::Transmit,
-        _: &mut region::Token<region::Identity<'d>>,
+        _: &mut (
+            region::Token<region::Identity<'d>>,
+            region::Token<region::Identity<'d, 1>>,
+        ),
     ) -> Option<conn::Transmit> {
         Some(failure)
     }

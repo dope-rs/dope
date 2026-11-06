@@ -1,6 +1,4 @@
-use std::time;
-
-use dope::{core::driver::schedule::clock, runtime::civil};
+use dope::runtime::civil;
 use lookup::{create, refresh};
 use o3::base::cell::region;
 use storage::{
@@ -22,14 +20,6 @@ impl<'s, 'd, const LANES: usize, const ADDRESSES: usize> State<'s, 'd, LANES, AD
             index,
             owner: &self.queries,
         }
-    }
-
-    pub(crate) fn apply<'state, R>(
-        &'state self,
-        now: clock::Moment<'d>,
-        apply: impl FnOnce(&'state queries::Queries<'s, 'd, LANES, ADDRESSES>, time::Instant) -> R,
-    ) -> R {
-        now.at(&self.queries).apply(apply)
     }
 
     pub(crate) fn discovery<P: refresh::Policy>(

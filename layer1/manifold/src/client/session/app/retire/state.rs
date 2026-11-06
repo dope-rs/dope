@@ -26,7 +26,7 @@ where
     let (id, conn, mut close, mut work, ready) = entry.into_retire();
     close.transmit_failed(|failure| {
         app.session
-            .transmit_failed(id, failure, driver.region_token())
+            .transmit_failed(id, failure, driver.reborrow().into_regions())
     });
     let close = 'settle: {
         let mut close = match close.enter(reason) {

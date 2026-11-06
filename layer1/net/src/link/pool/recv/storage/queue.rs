@@ -3,20 +3,20 @@ use pool::Front;
 
 use crate::link::event;
 
-pub type Vacant<'a, 'd> =
-    slots::Vacant<event::Completion<'d>, slots::Bound<'a, event::Completion<'d>>>;
+pub type Vacant<'a, 'd, R = ()> =
+    slots::Vacant<event::Completion<'d, R>, slots::Bound<'a, event::Completion<'d, R>>>;
 
-pub trait Ops<'d> {
-    fn prepare_pop(&mut self) -> Option<Front<'_, event::Completion<'d>, ()>>;
+pub trait Ops<'d, R = ()> {
+    fn prepare_pop(&mut self) -> Option<Front<'_, event::Completion<'d, R>, ()>>;
     fn has_queued(&self) -> bool;
 }
 
-pub trait Write<'d>: Ops<'d> {
-    fn prepare_push(&mut self) -> Option<Vacant<'_, 'd>>;
+pub trait Write<'d, R = ()>: Ops<'d, R> {
+    fn prepare_push(&mut self) -> Option<Vacant<'_, 'd, R>>;
 }
 
-impl<'d> Ops<'d> for &mut () {
-    fn prepare_pop(&mut self) -> Option<Front<'_, event::Completion<'d>, ()>> {
+impl<'d, R> Ops<'d, R> for &mut () {
+    fn prepare_pop(&mut self) -> Option<Front<'_, event::Completion<'d, R>, ()>> {
         None
     }
     fn has_queued(&self) -> bool {
@@ -24,8 +24,8 @@ impl<'d> Ops<'d> for &mut () {
     }
 }
 
-impl<'d> Ops<'d> for pool::Lane<'_, event::Completion<'d>> {
-    fn prepare_pop(&mut self) -> Option<Front<'_, event::Completion<'d>, ()>> {
+impl<'d, R> Ops<'d, R> for pool::Lane<'_, event::Completion<'d, R>> {
+    fn prepare_pop(&mut self) -> Option<Front<'_, event::Completion<'d, R>, ()>> {
         self.front_mut()
     }
     fn has_queued(&self) -> bool {
@@ -33,8 +33,8 @@ impl<'d> Ops<'d> for pool::Lane<'_, event::Completion<'d>> {
     }
 }
 
-impl<'d> Write<'d> for pool::Lane<'_, event::Completion<'d>> {
-    fn prepare_push(&mut self) -> Option<Vacant<'_, 'd>> {
+impl<'d, R> Write<'d, R> for pool::Lane<'_, event::Completion<'d, R>> {
+    fn prepare_push(&mut self) -> Option<Vacant<'_, 'd, R>> {
         self.vacant()
     }
 }

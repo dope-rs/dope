@@ -179,6 +179,7 @@ impl Policy<Wire> for Receive {
     type Reserve = reserve::Waiting<Self>;
     type Credit = mode::Disabled;
     type Discard = mode::Disabled;
+    type Publication = wire::receive::publication::Decoded;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: Transaction,
@@ -286,15 +287,8 @@ impl<'d, ID: Identity, I: receive::Mode<Wire>> handler::Application<'d, ID> for 
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, ()>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, ()>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, ()>) {
         self.state.closed.hit();
-        conn
     }
 }
 

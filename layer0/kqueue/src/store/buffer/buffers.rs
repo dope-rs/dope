@@ -22,7 +22,7 @@ impl dope_sys::Buffer for Buffer {
     }
 
     fn recycle(self) {
-        self.0.recycle();
+        drop(self.0);
     }
 }
 
@@ -30,7 +30,7 @@ impl Recycle for Buffer {
     type Deferred = Infallible;
 
     fn recycle(self) -> Option<Self::Deferred> {
-        self.0.recycle();
+        drop(self.0);
         None
     }
 }

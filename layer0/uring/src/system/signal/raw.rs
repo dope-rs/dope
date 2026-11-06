@@ -50,12 +50,8 @@ impl signal::raw::Receiver for Receiver {
         // SAFETY: mask contains SIGTERM and -1 requests a new descriptor.
         let raw = unsafe { libc::signalfd(-1, &mask, libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) };
         // SAFETY: signalfd returns a fresh descriptor or -1 with unchanged errno.
-        let fd = unsafe {
-            <OwnedFd as fd::raw::Adopt>::try_adopt::<Errno>(raw, || {
-                kernel::raw::Code::last::<Uring>().into()
-            })
-        }
-        .map_err(Acquire::SignalFd)?;
+        let fd = unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Uring, Errno>(raw) }
+            .map_err(Acquire::SignalFd)?;
         let mut previous = mem::MaybeUninit::<libc::sigset_t>::uninit();
         // SAFETY: mask is initialized and previous is writable for one set.
         // Blocking last leaves the original mask unchanged on every acquisition failure.

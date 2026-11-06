@@ -1,12 +1,8 @@
 use std::os::fd;
 
-use dope_sys::{
-    Errno,
-    io::{
-        fd::Fd,
-        file,
-        reactor::complete::{Decode, Outcome as _},
-    },
+use dope_sys::io::{
+    file,
+    reactor::complete::{Decode, Outcome as _},
 };
 
 use crate::{
@@ -31,9 +27,5 @@ unsafe impl file::raw::Completion for Uring {
             Decode::Error(code) => Ok(Err(code)),
             Decode::Invalid(invalid) => Err(invalid),
         }
-    }
-
-    fn close(file: fd::OwnedFd) -> Result<(), Errno> {
-        <Uring as Fd>::close(file)
     }
 }

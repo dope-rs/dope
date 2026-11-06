@@ -7,7 +7,7 @@ use crate::{
         pool::{
             self,
             recv::{
-                arrival, delivery, input,
+                arrival, input,
                 reserve::plan::{Plan, Queued},
             },
         },
@@ -27,14 +27,16 @@ pub trait Choice<W: wire::Spec, P: Flag> {
     fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
         pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         done: A,
-    ) -> event::Reservation<'d, ID, delivery::Data<'a, 'w, 'd, ID, W, M::Kind>>
+        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = P>,
+        input::Receipt<W, M>: 'a,
         D: demand::Mode,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>;
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>;
 }
 
 impl<W, R> Choice<W, mode::Disabled> for R
@@ -46,16 +48,18 @@ where
     fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
         pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         done: A,
-    ) -> event::Reservation<'d, ID, delivery::Data<'a, 'w, 'd, ID, W, M::Kind>>
+        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Disabled>,
+        input::Receipt<W, M>: 'a,
         D: demand::Mode,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done) {
+        let plan = match Plan::observe(pool, done, capture) {
             Ok(plan) => plan,
             Err(err) => return err,
         };
@@ -72,16 +76,18 @@ where
     fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
         pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         done: A,
-    ) -> event::Reservation<'d, ID, delivery::Data<'a, 'w, 'd, ID, W, M::Kind>>
+        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Parking>,
+        input::Receipt<W, M>: 'a,
         D: demand::Mode,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done) {
+        let plan = match Plan::observe(pool, done, capture) {
             Ok(plan) => plan,
             Err(err) => return err,
         };
@@ -101,16 +107,18 @@ where
     fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
         pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         done: A,
-    ) -> event::Reservation<'d, ID, delivery::Data<'a, 'w, 'd, ID, W, M::Kind>>
+        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Enabled>,
+        input::Receipt<W, M>: 'a,
         D: demand::Mode,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done) {
+        let plan = match Plan::observe(pool, done, capture) {
             Ok(plan) => plan,
             Err(err) => return err,
         };
@@ -133,16 +141,18 @@ where
     fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
         pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         done: A,
-    ) -> event::Reservation<'d, ID, delivery::Data<'a, 'w, 'd, ID, W, M::Kind>>
+        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Waiting<R>>,
+        input::Receipt<W, M>: 'a,
         D: demand::Mode,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done) {
+        let plan = match Plan::observe(pool, done, capture) {
             Ok(plan) => plan,
             Err(err) => return err,
         };

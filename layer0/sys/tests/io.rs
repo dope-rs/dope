@@ -1,5 +1,4 @@
 use std::{
-    cell::Cell,
     mem,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     num::NonZero,
@@ -7,12 +6,9 @@ use std::{
 };
 
 use addr::{Error, Internet, Storage};
-use dope_sys::{
-    Errno, io,
-    io::socket::{
-        addr,
-        route::selector::{Frame, PrefixError, PrefixPlan},
-    },
+use dope_sys::io::socket::{
+    addr,
+    route::selector::{Frame, PrefixError, PrefixPlan},
 };
 use o3::buffer::bytes::scope;
 
@@ -83,37 +79,6 @@ fn prefix_admission_retains_packet_borrows() {
             .err()),
         Some(PrefixError::Inner(0x15))
     );
-}
-
-#[test]
-fn empty_skips_errno() {
-    let input = b"data";
-    let called = Cell::new(false);
-    let output = unsafe {
-        io::raw::Buffer::try_native::<Errno>(&input[..], 0, || {
-            called.set(true);
-            Errno::BAD_DESCRIPTOR
-        })
-    }
-    .expect("empty output is valid");
-    assert!(!called.get(), "success must not read errno");
-    assert!(output.is_empty());
-    assert!(ptr::eq(output.as_ptr(), input.as_ptr()));
-}
-
-#[test]
-fn failure_reads_errno_once() {
-    let input = b"data";
-    let calls = Cell::new(0);
-    let errno = || {
-        calls.set(calls.get() + 1);
-        Errno::BAD_DESCRIPTOR
-    };
-    assert_eq!(
-        unsafe { io::raw::Buffer::try_native::<Errno>(&input[..], -1, errno) },
-        Err(Errno::BAD_DESCRIPTOR)
-    );
-    assert_eq!(calls.get(), 1);
 }
 
 #[test]

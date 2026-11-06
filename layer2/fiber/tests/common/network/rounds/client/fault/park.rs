@@ -124,6 +124,7 @@ impl receive::Policy<Wire> for Receive {
     type Reserve = reserve::Waiting<Self>;
     type Credit = mode::Disabled;
     type Discard = mode::Disabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: Transaction<'a, 'w>,

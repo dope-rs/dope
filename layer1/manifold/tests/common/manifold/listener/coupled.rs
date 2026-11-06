@@ -70,15 +70,11 @@ impl<'d, ID: route::Identity> Application<'d, ID> for App {
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, (), Self::Egress>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, (), Self::Egress>
-    where
-        'd: 'w,
-    {
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, (), Self::Egress>,
+    ) {
         self.get_mut().closed.hit();
-        conn
     }
 }
 
@@ -190,17 +186,13 @@ impl<'d, ID: route::Identity> Application<'d, ID> for DynamicApp {
         conn.state().phase == 1
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>
-    where
-        'd: 'w,
-    {
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
+    ) {
         let gated = conn.state().1;
         assert_eq!(conn.map_state(|state| &mut state.0).state().phase, 4);
         assert_eq!(conn.state().1, gated);
-        conn
     }
 }
 
@@ -395,6 +387,7 @@ impl input::Policy<BorrowedWire> for BorrowedWire {
     type Reserve = input::reserve::Waiting<Self>;
     type Credit = input::mode::Disabled;
     type Discard = input::mode::Disabled;
+    type Publication = input::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: route::Identity + 'w>(
         txn: Reserved,
@@ -493,15 +486,8 @@ impl<'d, ID: route::Identity> Application<'d, ID> for BorrowedApp {
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, BorrowedWire, ()>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, BorrowedWire, ()>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, BorrowedWire, ()>) {
         self.closed.hit();
-        conn
     }
 }
 

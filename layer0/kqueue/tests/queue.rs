@@ -306,7 +306,7 @@ fn keeps_buffered_entries() {
     let first = {
         let (_, mut entries) = dir.entries();
         entries
-            .try_next::<Errno>()
+            .try_next()
             .expect("first read")
             .expect("first entry")
             .name
@@ -314,7 +314,7 @@ fn keeps_buffered_entries() {
     };
     let mut names = vec![first];
     let (_, mut entries) = dir.entries();
-    while let Some(entry) = entries.try_next::<Errno>().expect("remaining entries") {
+    while let Some(entry) = entries.try_next().expect("remaining entries") {
         if let Some(kind) = entry.kind {
             assert_eq!(kind.is_regular(), entry.name == c"data");
         }

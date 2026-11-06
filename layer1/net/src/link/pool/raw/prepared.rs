@@ -56,7 +56,7 @@ where
         files: table::Capacity,
         driver: &driver::Context<'_, 'd>,
     ) -> crate::Result<Self> {
-        let slots = base.slab.view().capacity();
+        let slots = base.slab.capacity();
         if files.count().get() < slots.count().get() {
             return Err(crate::Resource::Config(
                 crate::ConfigError::PhysicalBelowLogical {

@@ -177,20 +177,16 @@ where
         }
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, I::Conn, Shared>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, I::Conn, Shared>
-    where
-        'd: 'w,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
+    ) {
         let this = self.get_mut();
         if let Some(conn::Failure::Application(cause)) = conn.failure() {
             this.events.push(Event::Application(*cause));
         }
         this.events.push(Event::Close);
         this.close.hit();
-        conn
     }
 
     fn is_blocked(

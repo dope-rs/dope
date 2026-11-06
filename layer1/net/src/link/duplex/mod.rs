@@ -79,9 +79,10 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
         flights: &flight::Slots<'d, ID>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> setup::Submission {
-        let (next, step) = self.establish.take().created(made, opts, |fd, opts| {
-            link::Connect::new(fd, addr, target).submit(flights, driver.reborrow(), opts)
-        });
+        let (next, step) = self
+            .establish
+            .take()
+            .created(made, opts, addr, target, flights, driver);
         self.establish = next;
         step
     }
@@ -152,12 +153,9 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
 
     pub(in crate::link) fn discard<E>(&mut self, end: &mut terminal::State<E>) {
         self.operations.lifecycle.discard();
-        if end.is_pending() && self.operations.recv.resume_app(true).is_some() {
+        let resumed = end.is_pending() && self.operations.recv.resume_app(true).is_some();
+        if matches!(end.finish_send(), terminal::Wake::Ready) || resumed {
             self.ready_handle().activate();
-        }
-        match end.finish_send() {
-            terminal::Wake::Idle => {}
-            terminal::Wake::Ready => self.ready_handle().activate(),
         }
     }
 

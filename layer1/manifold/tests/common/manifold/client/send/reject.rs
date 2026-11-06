@@ -49,6 +49,7 @@ impl<'d> Session<'d> for Reject<'_> {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Enabled;
     type Send = Shared;
 

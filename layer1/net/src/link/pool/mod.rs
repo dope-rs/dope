@@ -22,6 +22,7 @@ use self::{
     recv::{
         input::{self, Dispatch},
         reserve::Reserve,
+        storage::queue::Ops as _,
     },
 };
 use crate::{
@@ -50,6 +51,14 @@ pub use key::Key;
 pub(in crate::link) use key::Keyspace;
 pub use outbound::Outbound;
 pub(in crate::link) use outbound::Stored;
+
+type Sending<'a, 'p, 'w, 'd, ID, W, S, B, const IOV: usize, D, R = bool> =
+    Option<(transmit::Sender<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D>, R)>;
+
+pub enum Released<'a, S, B> {
+    Payload(B),
+    State(&'a mut S),
+}
 
 /// Connection storage which exclusively owns the route of every retained target.
 pub struct Connections<
@@ -89,8 +98,7 @@ where
 {
     fn drop(&mut self) {
         // Preserve issued generations before the route owner releases its claim.
-        self.keys
-            .advance_to(self.prepared.slab.view().next_generation());
+        self.keys.advance_to(self.prepared.slab.next_generation());
     }
 }
 
@@ -207,7 +215,7 @@ where
     pub fn finish_keyed(
         &mut self,
         finish: &mut finish::Finish<'_, 'd>,
-        free: impl FnMut(Key<'d, ID>, B),
+        free: impl FnMut(Key<'d, ID>, Released<'_, S, B>),
     ) where
         M::Ingress: drain::Policy<W>,
     {
@@ -248,7 +256,7 @@ where
     }
 
     pub fn suspend(&mut self, key: Key<'d, ID>) {
-        let Some((slot, mut recv)) = self.prepared.slab.get(key.parts()) else {
+        let Some((slot, mut recv)) = self.prepared.slab.get_mut(key.parts()) else {
             return;
         };
         if slot.engine.operations.recv.pause_app().is_exhausted() {
@@ -297,17 +305,44 @@ where
     where
         B: data::raw::Payload<'d>,
     {
+        let (sender, ()) = self.sender_with(key, |_| ())?;
+        Some(sender)
+    }
+
+    pub fn sender_with_recv(
+        &mut self,
+        key: Key<'d, ID>,
+    ) -> Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>
+    where
+        B: data::raw::Payload<'d>,
+    {
+        self.sender_with(key, |recv| recv.storage.has_queued())
+    }
+
+    fn sender_with<'a, R>(
+        &'a mut self,
+        key: Key<'d, ID>,
+        query: impl FnOnce(recv::Borrow<'a, 'd, ID, M::Ingress, input::Receipt<W, M>>) -> R,
+    ) -> Sending<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D, R>
+    where
+        B: data::raw::Payload<'d>,
+        input::Receipt<W, M>: 'a,
+    {
         let prepared = &mut self.prepared;
         let slots = &prepared.flights;
         let wait = prepared.pending.handle(key)?;
-        let slot = prepared.slab.access().get(key.parts())?;
+        let (slot, recv) = prepared.slab.get_mut(key.parts())?;
+        let result = query(recv);
         let queue = prepared.egress.bind_queue(key);
-        Some(transmit::Sender {
-            flights: slots,
-            connection: slot,
-            pending: wait,
-            queue,
-        })
+        Some((
+            transmit::Sender {
+                flights: slots,
+                connection: slot,
+                pending: wait,
+                queue,
+            },
+            result,
+        ))
     }
 
     pub fn update_target(
@@ -340,7 +375,6 @@ where
         if self
             .prepared
             .slab
-            .view()
             .get(key.parts())
             .is_none_or(|slot| slot.send_status().is_closed())
         {

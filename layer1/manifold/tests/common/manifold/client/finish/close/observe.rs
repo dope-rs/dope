@@ -111,6 +111,7 @@ impl<'d, C: Codec> session::Session<'d> for Session<'d, C> {
     type Connect = Full;
     type ConnState = ();
     type Failure = Controlled;
+    type Receipt = ();
     type Requests = request::Disabled;
     type Send = Shared;
 

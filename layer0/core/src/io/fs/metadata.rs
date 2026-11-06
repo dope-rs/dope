@@ -48,7 +48,7 @@ impl Metadata {
         use crate::Backend;
         let raw = Backend::stat::<dope_sys::Errno>(path)?;
         Ok(Self {
-            kind: Kind::from(raw.kind()),
+            kind: raw.kind(),
             length: raw.size(),
         })
     }

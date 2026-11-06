@@ -126,7 +126,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Send
             self.pending.clear();
         }
         let slots = &mut self.in_flight;
-        for slot in slots.view().capacity() {
+        for slot in slots.capacity() {
             let Some(entry) = slots.access().at(slot) else {
                 continue;
             };
@@ -156,7 +156,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Send
         }
         let slots = &mut self.in_flight;
         let space = self.space;
-        for slot in slots.view().capacity() {
+        for slot in slots.capacity() {
             let Some(entry) = slots.access().at(slot) else {
                 continue;
             };

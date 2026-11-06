@@ -306,7 +306,12 @@ where
                 egress
                     .connection
                     .progress(driver.driver_ref().clock().now());
-                A::chunk(this.app.as_mut(), egress.context(turn.app()), chunk, driver)
+                A::chunk(
+                    this.app.as_mut(),
+                    egress.context(turn.app()),
+                    chunk.0,
+                    driver,
+                )
             }
             None => Outcome::Continue,
         };

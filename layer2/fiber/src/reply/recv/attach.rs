@@ -58,6 +58,9 @@ pub trait Attach<'s, 'arena, 'credits, 'region, D, E = D, K = ()> {
     }
 
     fn detach(&mut self);
+
+    /// Detaches, returning `Linked` only while the original order remains queued.
+    fn detach_order(&mut self, token: &region::Token<region::Identity<'region>>) -> order::State;
 }
 
 const _: () = assert!(mem::size_of::<Error>() == 5 * mem::size_of::<usize>());

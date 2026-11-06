@@ -1,9 +1,6 @@
 use std::{mem, ptr};
 
-use dope_sys::{
-    Errno,
-    kernel::raw::{Code, Status},
-};
+use dope_sys::{Errno, kernel::raw::Status};
 use dope_uring::Uring;
 
 #[derive(Debug)]
@@ -74,8 +71,7 @@ fn install(filter: &mut [libc::sock_filter]) -> Result<(), Error> {
     };
     // SAFETY: all prctl arguments are scalars; the flag changes only this thread.
     unsafe {
-        Status::new(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
-            .try_zero::<Errno>(|| Code::last::<Uring>().into())
+        Status::new(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)).try_zero::<Uring, Errno>()
     }
     .map_err(Error::NoNewPrivileges)?;
     // SAFETY: the complete program remains live during installation. Zero flags
@@ -87,7 +83,7 @@ fn install(filter: &mut [libc::sock_filter]) -> Result<(), Error> {
             0,
             ptr::from_ref(&program),
         ) as libc::c_int)
-        .try_zero::<Errno>(|| Code::last::<Uring>().into())
+        .try_zero::<Uring, Errno>()
     }
     .map_err(Error::Filter)
 }

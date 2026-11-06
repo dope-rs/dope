@@ -38,10 +38,8 @@ impl<'a, 'h, I, A> Failure<'a, 'h, I, A> {
         backoff: &mut health::Backoff,
         now: clock::Moment<'d>,
     ) {
-        let health = &mut self.entry.get_mut().health;
-        let retry_at = backoff.retry_at(&mut health.failures, now);
-        let retry = queues::Retry::new(health.generation, retry_at);
-        queue.backoff(self, retry);
+        let retry_at = backoff.retry_at(&mut self.entry.get_mut().health.failures, now);
+        queue.backoff(self, retry_at);
     }
 
     pub(super) fn key(&self) -> capacity::Key<'h, key::Handle<Member>> {

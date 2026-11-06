@@ -19,7 +19,7 @@ impl<'a> View<'a> {
 
     #[must_use]
     pub fn into_parts(self) -> (&'a [u8], transfer::Len) {
-        let bytes = self.0.into_slice();
+        let bytes = self.0.as_slice();
         (bytes, self.len())
     }
 

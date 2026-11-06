@@ -1,10 +1,7 @@
 mod entry;
 use std::{mem, ops};
 
-use dope_core::{
-    driver::route::{self, kind},
-    io::{socket::msg, transfer, transfer::progress},
-};
+use dope_core::io::{socket::msg, transfer, transfer::progress};
 use entry::Buffer;
 pub(in crate::link::egress) use entry::{Entry, Lease};
 use o3::{base::cell::region, buffer::resident, depot::arena::pool::recycle};
@@ -23,7 +20,7 @@ use crate::{
 
 pub(in crate::link::egress) struct Flight<'a, 'p, 'd, const IOV: usize> {
     lease: &'a mut Option<Lease<'p, 'd, IOV>>,
-    flights: &'p recycle::Store<Entry<'d, IOV>>,
+    flights: &'p recycle::Store<Entry<IOV>>,
 }
 
 pub(in crate::link::egress) enum Completion<'a, 'p, 'd, const IOV: usize> {
@@ -35,7 +32,7 @@ pub(in crate::link::egress) enum Completion<'a, 'p, 'd, const IOV: usize> {
 impl<'a, 'p, 'd, const IOV: usize> Flight<'a, 'p, 'd, IOV> {
     pub(in crate::link::egress) fn new(
         lease: &'a mut Option<Lease<'p, 'd, IOV>>,
-        flights: &'p recycle::Store<Entry<'d, IOV>>,
+        flights: &'p recycle::Store<Entry<IOV>>,
     ) -> Self {
         Self { lease, flights }
     }
@@ -54,16 +51,11 @@ impl<'a, 'p, 'd, const IOV: usize> Flight<'a, 'p, 'd, IOV> {
 
     pub(in crate::link::egress) fn complete(
         &mut self,
-        target: route::Erased<'d, kind::Send>,
         bytes: transfer::Len,
     ) -> Completion<'_, 'p, 'd, IOV> {
         let Some(active) = self.reborrow().take() else {
             return Completion::Stale;
         };
-        if !active.matches(target) {
-            active.restore();
-            return Completion::Stale;
-        }
         let maximum = active.lease.get().len();
         if bytes > maximum {
             active.restore();
@@ -88,8 +80,7 @@ pub(in crate::link::egress) struct Active<'a, 'p, 'd, const IOV: usize> {
 }
 
 impl<'a, 'p, 'd, const IOV: usize> Prepared<'a, 'p, 'd, IOV> {
-    pub(in crate::link::egress) fn retain(mut self, target: route::Erased<'d, kind::Send>) {
-        self.reservation.get_mut().mark(target);
+    pub(in crate::link::egress) fn retain(self) {
         *self.lease = Some(self.reservation);
     }
 
@@ -119,10 +110,6 @@ impl<'a, 'p, 'd, const IOV: usize> Prepared<'a, 'p, 'd, IOV> {
 }
 
 impl<'a, 'p, 'd, const IOV: usize> Active<'a, 'p, 'd, IOV> {
-    pub(in crate::link::egress) fn matches(&self, target: route::Erased<'d, kind::Send>) -> bool {
-        self.lease.get().matches(target)
-    }
-
     pub(in crate::link::egress) fn restore(self) {
         *self.slot = Some(self.lease);
     }
@@ -134,7 +121,7 @@ const _: () = {
     assert!(mem::size_of::<Option<Lease<'static, 'static, 32>>>() == 3 * word);
     assert!(mem::size_of::<Flight<'static, 'static, 'static, 32>>() == 2 * word);
     assert!(mem::size_of::<Released<'static, 'static, 'static, 32>>() == 5 * word);
-    assert!(mem::size_of::<Entry<'static, 32>>() <= 768);
+    assert!(mem::size_of::<Entry<32>>() <= 768);
     assert!(
         mem::size_of::<
             Plan<
@@ -187,7 +174,7 @@ impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> Output<'a, 'p, 'd, IOV, B
             credit::Ready<'p, 'd>,
             D,
         >,
-        flights: &'p recycle::Store<Entry<'d, IOV>>,
+        flights: &'p recycle::Store<Entry<IOV>>,
     ) -> Self {
         let (lane, entries) = slot.into_parts();
         Self {
@@ -199,13 +186,8 @@ impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> Output<'a, 'p, 'd, IOV, B
     pub(in crate::link) fn is_active(&self) -> bool {
         self.flight.lease.is_some()
     }
-    pub(in crate::link) fn abort(&mut self, target: route::Erased<'d, kind::Send>) {
-        let Some(active) = self.flight.reborrow().take() else {
-            return;
-        };
-        if !active.matches(target) {
-            active.restore();
-        }
+    pub(in crate::link) fn abort(&mut self) {
+        drop(self.flight.lease.take());
     }
 }
 
@@ -233,11 +215,10 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
     pub(in crate::link) fn complete(
         &mut self,
         token: &mut region::Token<region::Identity<'d>>,
-        target: route::Erased<'d, kind::Send>,
         bytes: transfer::Len,
         mut release: impl FnMut(B),
     ) -> queue::Change {
-        let released = match self.flight.complete(target, bytes) {
+        let released = match self.flight.complete(bytes) {
             Completion::Stale => return queue::Change::Stale,
             Completion::Invalid(error) => return queue::Change::Invalid(error),
             Completion::Ready(released) => released,
@@ -337,7 +318,7 @@ impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: de
             }
             ops::ControlFlow::Break(())
         });
-        flight.bytes = bytes;
+        flight.bytes = bytes.len();
         let reserved = flight::Prepared {
             lease: self.active.lease,
             reservation: Lease { buffer, prefix },

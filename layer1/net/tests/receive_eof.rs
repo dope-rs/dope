@@ -4,7 +4,7 @@ use std::net::Shutdown;
 
 use common::{
     discard::{self, eof},
-    wire::Input,
+    wire::{Input, Receipt},
 };
 use dope_core::{
     Errno,
@@ -55,11 +55,60 @@ fn settled(reports: Vec<Reclaimed>) {
 }
 
 #[test]
+fn parked_receipt_is_preserved() {
+    let (reports, input) = eof::run::<Receipt>(|pool, key, scope, peer| {
+        let (flow, done) = eof::final_byte(pool, key, scope, &peer).expect("native data");
+        let mut publication = true;
+        let mut captures = 0;
+        pool.suspend(key);
+        assert!(matches!(
+            pool.reserve().data(done, |_, _| {
+                captures += 1;
+                publication
+            }),
+            Reservation::Parked(ParkRecv::Deferred)
+        ));
+        assert!(pool.sender_with_recv(key).expect("send owner").1);
+        publication = false;
+        pool.resume(key);
+        let resumed = match pool.recv().resume(key.target()) {
+            recv::Resumption::Ready(resumed) => resumed,
+            _ => panic!("receive owner"),
+        };
+        let done = match pool.recv().pop_ready(&resumed) {
+            recv::Ready::Completion(done) => match done.classify() {
+                dope_net::link::event::Kind::Data(done) => done,
+                _ => panic!("queued data"),
+            },
+            _ => panic!("queued completion"),
+        };
+        assert!(!pool.sender_with_recv(key).expect("send owner").1);
+        let data = match pool.reserve().data(done, |_, _| {
+            captures += 1;
+            publication
+        }) {
+            Reservation::Ready(data) => data,
+            _ => panic!("replay admission"),
+        };
+        let (chunk, receipt) = match data.retained() {
+            DispatchRecv::Chunk(_, output) => output,
+            _ => panic!("retained data"),
+        };
+        assert!(receipt);
+        assert_eq!(captures, 1);
+        eof::cancel(pool, scope, flow, |_, _, _| {}).expect("native cancellation");
+        drop(chunk);
+    });
+    assert_eq!(input, Input::Final);
+    settled(reports);
+}
+
+#[test]
 fn tail_keeps_cancel() {
     let (reports, input) = eof::run::<input::Scoped>(|pool, key, scope, peer| {
         let (flow, done) = eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
         assert!(flow == Flow::More || std::env::consts::OS != "linux");
-        let data = match pool.reserve().data(done) {
+        let data = match pool.reserve().data(done, |_, _| ()) {
             Reservation::Ready(data) => Some(data),
             _ => None,
         }
@@ -145,13 +194,13 @@ fn tail_keeps_cancel() {
 fn credit_return_keeps_eof() {
     let (reports, input) = eof::run::<input::Retained>(|pool, key, scope, peer| {
         let (flow, done) = eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
-        let data = match pool.reserve().data(done) {
+        let data = match pool.reserve().data(done, |_, _| ()) {
             Reservation::Ready(data) => Some(data),
             _ => None,
         }
         .expect("credit reservation");
         let (seen, chunk) = match data.retained() {
-            DispatchRecv::Chunk(seen, chunk) => Some((seen, chunk)),
+            DispatchRecv::Chunk(seen, (chunk, ())) => Some((seen, chunk)),
             _ => None,
         }
         .expect("retained plaintext");
@@ -166,7 +215,10 @@ fn credit_return_keeps_eof() {
                 _ => None,
             }
             .expect("late native buffer");
-            assert!(matches!(pool.reserve().data(late), Reservation::Drop));
+            assert!(matches!(
+                pool.reserve().data(late, |_, _| ()),
+                Reservation::Drop
+            ));
         }
         eof::cancel(pool, scope, flow, |flow, status, dispatch| {
             assert_eq!(flow, Flow::Last);
@@ -410,7 +462,7 @@ fn closing_wakes_exhaustion() {
             }
             .expect("native buffer");
             assert!(matches!(
-                pool.reserve().data(done),
+                pool.reserve().data(done, |_, _| ()),
                 Reservation::Parked(ParkRecv::Deferred)
             ));
         }

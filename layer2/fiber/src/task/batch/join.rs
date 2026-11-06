@@ -17,8 +17,6 @@ use crate::{
     },
 };
 
-const LIMIT: usize = 32;
-
 enum Progress<const N: usize> {
     Done(Completed<N>),
     More,
@@ -121,12 +119,8 @@ where
             }
         }
 
-        let mut budget = LIMIT;
         let mut initial = true;
-        while budget != 0 {
-            let Some(fresh) = this.state.fresh() else {
-                break;
-            };
+        while let Some(fresh) = this.state.fresh() {
             let index = slots::Index::from_vacant(fresh.slot());
             let permit = if initial {
                 initial = false;
@@ -148,56 +142,45 @@ where
                 root,
             )
             .map_err(Error::Task)?;
-            budget -= 1;
             if let state::Status::Done(all) = fresh.commit(done) {
                 return Ok(Progress::Done(all));
             }
         }
 
-        if budget == 0 {
-            if this.state.has_fresh() {
-                return Ok(Progress::More);
-            }
-        } else {
-            let Some(mut drain) = pool.ready.drain() else {
-                return Ok(Progress::Parked);
+        let Some(mut drain) = pool.ready.drain() else {
+            return Ok(Progress::Parked);
+        };
+        loop {
+            let pending = match this.state.pending() {
+                state::PendingState::Live(pending) => pending,
+                state::PendingState::Done(done) => return Ok(Progress::Done(done)),
             };
-            loop {
-                let pending = match this.state.pending() {
-                    state::PendingState::Live(pending) => pending,
-                    state::PendingState::Done(done) => return Ok(Progress::Done(done)),
-                };
-                let (index, permit) = if initial {
-                    let Some(index) = drain.pop() else {
-                        break;
-                    };
-                    initial = false;
-                    (index, None)
-                } else {
-                    match context.as_ref().work().next(&mut drain, &mut ()) {
-                        app::Next::Item(index, permit) => (index, Some(permit)),
-                        app::Next::Empty => break,
-                        app::Next::Exhausted(_) => return Ok(Progress::More),
-                    }
-                };
-                let attach = pool.ready.attach(index);
-                budget -= 1;
-                let done = poll_slot(
-                    this.table.as_mut(),
-                    context.as_mut(),
-                    index,
-                    attach,
-                    permit,
-                    &pool.tasks,
-                    root,
-                )
-                .map_err(Error::Task)?;
-                if let state::Status::Done(all) = pending.commit(done) {
-                    return Ok(Progress::Done(all));
-                }
-                if budget == 0 {
+            let (index, permit) = if initial {
+                let Some(index) = drain.pop() else {
                     break;
+                };
+                initial = false;
+                (index, None)
+            } else {
+                match context.as_ref().work().next(&mut drain, &mut ()) {
+                    app::Next::Item(index, permit) => (index, Some(permit)),
+                    app::Next::Empty => break,
+                    app::Next::Exhausted(_) => return Ok(Progress::More),
                 }
+            };
+            let attach = pool.ready.attach(index);
+            let done = poll_slot(
+                this.table.as_mut(),
+                context.as_mut(),
+                index,
+                attach,
+                permit,
+                &pool.tasks,
+                root,
+            )
+            .map_err(Error::Task)?;
+            if let state::Status::Done(all) = pending.commit(done) {
+                return Ok(Progress::Done(all));
             }
         }
         Ok(if pool.ready.is_empty() {

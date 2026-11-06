@@ -4,8 +4,8 @@ use dope_core::io::{
 };
 use o3::buffer::{
     self,
-    raw::Scatter as _,
-    segments::scatter::{self, Source as _},
+    raw::{Chunks as _, Scatter as _},
+    segments::scatter,
 };
 
 use crate::common::file::Message;

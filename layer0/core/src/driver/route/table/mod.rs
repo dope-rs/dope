@@ -21,7 +21,7 @@ use crate::driver::route;
 
 const PARTITIONS: usize = 2;
 
-type Storage<T, Tag> = external::Exclusive<T, route::Epoch, Tag, { u32::MAX }, PARTITIONS>;
+type Storage<T, Tag> = external::Exclusive<T, route::Epoch, Tag, PARTITIONS>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Invalid {

@@ -1,19 +1,9 @@
-use o3::depot::arena::slab::{entries, external};
+use o3::depot::arena::slab::external::shared;
 
 use crate::driver::{route, route::table::Key};
 
 pub struct Current<'a, T, Tag: route::Tag>(
-    pub(in crate::driver::route)  external::Borrowed<
-        entries::Busy<
-            'a,
-            external::Stamped<T, route::Epoch>,
-            { u32::MAX },
-            entries::Interior<true>,
-            1,
-        >,
-        Tag,
-        true,
-    >,
+    pub(in crate::driver::route) shared::Borrowed<'a, T, route::Epoch, Tag>,
 );
 
 impl<'a, T, Tag: route::Tag> Current<'a, T, Tag> {

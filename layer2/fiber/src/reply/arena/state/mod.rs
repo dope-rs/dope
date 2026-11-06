@@ -7,7 +7,8 @@ use head::Head;
 use keys::EntryTag;
 use o3::{
     alloc,
-    depot::{arena::slab, capacity, queue::round},
+    base::cell::region,
+    depot::{self, arena::slab, capacity, index::Initialized},
 };
 
 use crate::{
@@ -15,7 +16,6 @@ use crate::{
     reply::{
         Attachment, LaneIndex, layout,
         order::Depth,
-        recv,
         retain::{grant::entries, pool, pool::Pool},
     },
 };
@@ -56,7 +56,6 @@ impl<'credits, K> Ordered<'credits, K> {
 
 pub(super) struct Entry<'arena, 'credits, 'region, D, E> {
     pub(super) body: EntryBody<'arena, D, E>,
-    pub(super) acceptance: recv::Acceptance,
     pub(super) owners: pool::Owner<'arena, 'credits, 'region>,
     pub(super) signal: Signal<'region>,
 }
@@ -127,6 +126,20 @@ pub(in crate::reply::arena) struct Book<'arena, 'credits, 'region, D, E, K> {
     pub(in crate::reply::arena) limit: layout::Limit,
 }
 
+impl<'arena, 'credits, 'region, D, E, K> reply::Arena<'arena, 'credits, 'region, D, E, K> {
+    pub(in crate::reply) fn registered_order<P>(
+        token: &region::Token<region::Identity<'region>>,
+        registered: depot::raw::Proof<(&Self, EntryKey), Initialized<P>>,
+    ) -> reply::order::State {
+        // SAFETY: the retained arena owns this exact initialized entry; the
+        // region loan keeps its owner unchanged throughout the projection.
+        let live = unsafe {
+            registered.map(|(arena, key)| (&token.borrow(&arena.state).slots.0, key.index().into()))
+        };
+        slab::Store::value(live).source().owners.order()
+    }
+}
+
 impl<'arena, 'credits, 'region, D, E, K> Book<'arena, 'credits, 'region, D, E, K> {
     pub(in crate::reply::arena) fn try_new(layout: layout::Layout) -> Result<Self, alloc::Error> {
         Ok(Self {
@@ -150,13 +163,36 @@ impl<'arena, 'credits, 'region, D, E, K> Book<'arena, 'credits, 'region, D, E, K
         Depth::from_order(self.order.view(lane.index).count())
     }
 
+    pub(in crate::reply::arena) fn cutoff(
+        &self,
+        lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
+    ) -> reply::order::Cutoff<'arena> {
+        reply::order::Cutoff::new(
+            self.order.view(lane.index).back().map(|entry| entry.key),
+            lane.arena.domain(),
+        )
+    }
+
+    pub(in crate::reply::arena) fn contains_cutoff(
+        &self,
+        lane: LaneIndex,
+        cutoff: reply::order::Cutoff<'arena>,
+    ) -> bool {
+        let Some(end) = cutoff.key() else {
+            return false;
+        };
+        self.slots.0.try_get(end.raw()).is_ok_and(|entry| {
+            entry.owners.order() == reply::order::State::Linked && entry.owners.lane() == lane
+        })
+    }
+
     pub(in crate::reply::arena) fn activate(
         &mut self,
         lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
     ) {
         use crate::reply::retain::pool::Lane;
 
-        if self.order.insert::<0>(lane.index.into()) == round::Insertion::Present {
+        if !self.order.insert::<0>(lane.index.into()) {
             return;
         }
         let credit = Lane::new(lane);
@@ -178,7 +214,7 @@ impl<'arena, 'credits, 'region, D, E, K> Book<'arena, 'credits, 'region, D, E, K
 
     pub(in crate::reply::arena) fn clear(&mut self) {
         self.order.clear();
-        for entry in slab::Slots::new(&mut self.slots.0).entries() {
+        for entry in self.slots.0.entries() {
             let slab::Entry::Occupied(entry) = entry else {
                 continue;
             };

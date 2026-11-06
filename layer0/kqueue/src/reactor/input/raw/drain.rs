@@ -122,8 +122,7 @@ where
             socket::raw::Receive::recv(file, buffer.output())
         };
         let errno = match received {
-            Ok(Some(complete)) => {
-                complete.commit();
+            Ok(Some(())) => {
                 vacant.push(E::received(key, buffer, E::MORE));
                 return Ok(Outcome::Yield);
             }

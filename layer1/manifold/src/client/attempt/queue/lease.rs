@@ -25,7 +25,7 @@ impl<'source, 'd, T: dope_net::Transport, ID: Identity> Lease<'source, 'd, T, ID
         }
     }
 
-    pub const fn id(&self) -> attempt::Id<'d, ID> {
+    pub fn id(&self) -> attempt::Id<'d, ID> {
         *self.held.item().key()
     }
 

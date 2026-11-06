@@ -20,7 +20,6 @@ pub mod ready;
 pub mod sequence;
 #[doc(hidden)]
 pub mod state;
-mod timers;
 
 pub const LIMIT: usize = 256;
 
@@ -166,7 +165,7 @@ const _: () = assert!(
 );
 
 enum Reason<'d> {
-    Event(region::Proof<region::Identity<'d>>),
+    Event(region::Identity<'d>),
     Until(clock::Deadline<'d>),
 }
 

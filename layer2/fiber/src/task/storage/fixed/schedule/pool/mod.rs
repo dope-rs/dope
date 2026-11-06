@@ -1,8 +1,12 @@
 use std::{marker, num, ops::ControlFlow, pin, task::Poll};
 
-use o3::{alloc, depot::capacity};
-use queue::Backend as _;
+use o3::{
+    alloc,
+    base::num::Epoch,
+    depot::{self, arena::slab::external, capacity, index::Initialized},
+};
 use schedule::{
+    Id,
     ready::{Global, Path, linked},
     result::Outcome,
     selected,
@@ -21,24 +25,20 @@ use crate::{
         },
     },
     task::storage::{
-        Id, Owner, caps,
+        Owner, caps,
         fixed::{local, schedule, schedule::queue, tree},
     },
 };
 
 mod poll;
 mod proof;
-mod slab;
 
 pub(crate) use proof::Proof;
-use slab::Slab;
 
-pub type Pool<'d, F, const N: usize, D, T = (), const MAX: u32 = { u32::MAX }> =
-    Storage<'d, F, N, D, T, MAX, ()>;
+pub type Pool<'d, F, const N: usize, D, T = ()> = Storage<'d, F, N, D, T, ()>;
 
 /// Scheduled stream retaining its slot until EOF or explicit removal.
-pub type Stream<'d, F, const N: usize, D, T = (), const MAX: u32 = { u32::MAX }> =
-    Storage<'d, F, N, D, T, MAX, poll::Stream>;
+pub type Stream<'d, F, const N: usize, D, T = ()> = Storage<'d, F, N, D, T, poll::Stream>;
 
 #[pin_project::pin_project]
 struct Entry<'d, F, T: Copy, M> {
@@ -63,17 +63,16 @@ impl<'d, F, T: Copy, M: poll::Mode<'d, F>> Entry<'d, F, T, M> {
     }
 }
 
-/// Fixed task storage that retires each slot after `MAX` generations.
-/// The queue binding, target, and driver lease are fiber lifecycle concerns, so
-/// only the slots and their pinned access are delegated to o3.
 #[pin_project::pin_project(!Unpin)]
-pub struct Storage<'d, F, const N: usize, D, T: Copy, const MAX: u32, M> {
+pub struct Storage<'d, F, const N: usize, D, T: Copy, M> {
     #[pin]
-    inner: Slab<Entry<'d, F, T, M>, D, N, MAX>,
+    inner: external::Pinned<Entry<'d, F, T, M>, Epoch>,
+    base: u32,
     driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
+    domain: marker::PhantomData<fn(D) -> D>,
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32, M> Storage<'d, F, N, D, T, MAX, M>
+impl<'d, F, const N: usize, D, T, M> Storage<'d, F, N, D, T, M>
 where
     M: poll::Mode<'d, F>,
     T: Copy,
@@ -83,16 +82,67 @@ where
     }
 
     fn try_new_with_capacity(physical: capacity::Count) -> Result<Self, alloc::Error> {
-        let inner = Slab::try_new(caps::Tasks::new(), physical)?;
+        let count = physical.min(capacity::Count::new(
+            caps::Tasks::<N>::new().nonzero().get(),
+        ));
         Ok(Self {
-            inner,
+            inner: external::Pinned::try_new(count)?,
+            base: 0,
             driver: marker::PhantomData,
+            domain: marker::PhantomData,
         })
+    }
+
+    fn try_prepare<'a, S>(
+        member: pin::Pin<&'a mut Self>,
+        queue: pin::Pin<&'a S>,
+        input: S::Input,
+        parent: wake::RootWaker<'d>,
+    ) -> Result<impl FnOnce((F, T)) -> external::Key<Epoch>, S::Error>
+    where
+        S: queue::Backend<'d>,
+    {
+        let this = member.project();
+        let Ok(entry) = this.inner.try_grant() else {
+            return Err(S::Error::from(Error::Capacity {
+                requested: num::NonZero::<usize>::MIN,
+                available: 0,
+            }));
+        };
+        // SAFETY: layout bounds this extent within the original u32 task domain;
+        // the native reservation proves index below its physical capacity.
+        let position = unsafe { num::NonZero::new_unchecked(*this.base + entry.index() + 1) };
+        let global = Global::new(position);
+        let (binding, prepared) = S::try_prepare(queue, global, input, parent)?;
+        Ok(move |(fiber, target)| {
+            let (key, occupied) = entry.occupy(Entry::new(fiber, target, binding, global));
+            let fields = occupied.into_ref().project_ref();
+            S::admit(prepared, fields.ready);
+            key
+        })
+    }
+
+    fn selected<'a>(entry: selected::EntryRef<'a, Self>) -> &'a Entry<'d, F, T, M> {
+        let (member, index) = entry.into_parts();
+        let index = index.local(member.base);
+        // SAFETY: selection retains this exact pool's initialized entry and
+        // shared plane loan, excluding removal or reuse until the borrow ends.
+        unsafe { depot::raw::Proof::<_, Initialized<()>>::new((&member.inner, index)) }.into()
+    }
+
+    fn selected_mut<'a>(
+        entry: selected::Entry<'a, Self>,
+    ) -> external::Anchored<'a, Entry<'d, F, T, M>, Epoch> {
+        let (member, index) = entry.into_parts();
+        let index = index.local(member.as_ref().get_ref().base);
+        let owner = member.project().inner;
+        // SAFETY: selection retains this pool's live entry and its exclusive
+        // pinned plane loan through the occupied projection.
+        unsafe { depot::raw::Proof::<_, Initialized<()>>::new((owner, index)) }.into()
     }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32, M> schedule::Ops<'d>
-    for Storage<'d, F, N, D, T, MAX, M>
+impl<'d, F, const N: usize, D, T, M> schedule::Ops<'d> for Storage<'d, F, N, D, T, M>
 where
     M: poll::Mode<'d, F>,
     T: Copy,
@@ -101,7 +151,7 @@ where
     type Item = M::Item;
 
     fn target_index(entry: EntryRef<'_, Self>) -> T {
-        Slab::selected(entry).target
+        Self::selected(entry).target
     }
 
     fn try_admit<'a, S, R, P>(
@@ -114,23 +164,10 @@ where
         S: queue::Backend<'d>,
         R: tree::At<'d, P, Member = Self>,
     {
-        let (member, proof) = path.split();
+        let member = path.split();
         let owner = Owner::of(member.as_ref().get_ref());
-        let this = member.project();
-        let Some(entry) = this.inner.vacant() else {
-            return Err(S::Error::from(Error::Capacity {
-                requested: num::NonZero::<usize>::MIN,
-                available: 0,
-            }));
-        };
-        let global = Path::<R, P>::index(proof, entry.index());
-        let (binding, prepared) = S::try_prepare(queue, global, input, parent)?;
-        Ok(move |(fiber, target)| {
-            let (key, occupied) = entry.occupy(Entry::new(fiber, target, binding, global));
-            let fields = occupied.into_ref().project_ref();
-            S::admit(prepared, fields.ready);
-            Id::from_raw(key, owner)
-        })
+        let insert = Self::try_prepare(member, queue, input, parent)?;
+        Ok(move |input| Id::new(insert(input), owner))
     }
 
     fn try_spawn<'a, R, P>(
@@ -139,22 +176,12 @@ where
         parent: wake::RootWaker<'d>,
     ) -> Result<impl FnOnce((F, T)) + 'a, Error>
     where
-        R: tree::At<'d, P, Member = Self>,
+        R: tree::At<'d, P, Member = Self> + 'a,
+        P: 'a,
     {
-        let (member, proof) = path.split();
-        let this = member.project();
-        let Some(entry) = this.inner.vacant() else {
-            return Err(Error::Capacity {
-                requested: num::NonZero::<usize>::MIN,
-                available: 0,
-            });
-        };
-        let global = Path::<R, P>::index(proof, entry.index());
-        let (binding, prepared) = queue.try_prepare(global, (), parent)?;
-        Ok(move |(fiber, target)| {
-            let occupied = entry.insert(Entry::new(fiber, target, binding, global));
-            let fields = occupied.into_ref().project_ref();
-            queue::Flat::admit(prepared, fields.ready);
+        let insert = Self::try_prepare(path.split(), queue, (), parent)?;
+        Ok(move |input| {
+            let _ = insert(input);
         })
     }
 
@@ -168,7 +195,7 @@ where
     where
         S: queue::Backend<'d> + 'queue,
     {
-        let mut occupied = Slab::selected_mut(entry);
+        let mut occupied = Self::selected_mut(entry);
         let mut entry = occupied.value();
         let fields = entry.as_mut().project();
         let target = *fields.target;
@@ -177,10 +204,11 @@ where
         let waker = wake::Waker::from_parent(waker);
         let (result, wake) =
             context::Context::with_waker(waker, parent, work, driver.reborrow(), |mut cx| {
-                let result =
-                    context::PollCall::delegated(fields.fiber, cx.as_mut(), permit, |call| {
-                        fields.mode.poll(call)
-                    });
+                let result = fields.mode.poll(context::PollCall::delegated(
+                    fields.fiber,
+                    cx.as_mut(),
+                    permit,
+                ));
                 let wake = cx.as_ref().get_ref().take_requeue();
                 (result, wake)
             });
@@ -218,26 +246,22 @@ where
         S: queue::Backend<'d>,
         R: tree::At<'d, P, Member = Self>,
     {
-        let (member, proof) = path.split();
-        let Some(key) = id.key_for(Owner::of(member.as_ref().get_ref())) else {
+        let member = path.split();
+        let Some(key) = id.raw_for(Owner::of(member.as_ref().get_ref())) else {
             return local::Removal::Absent;
         };
         let this = member.project();
-        let removed = this.inner.remove_with(key.parts(), |index, mut entry| {
-            let fields = entry.as_mut().project();
-            let global = Path::<R, P>::index(proof, index);
-            queue::Backend::detach(queue, fields.ready.as_ref(), global);
-        });
-        if removed.is_some() {
-            local::Removal::Removed
-        } else {
-            local::Removal::Absent
-        }
+        let Ok(mut occupied) = this.inner.try_occupied(key) else {
+            return local::Removal::Absent;
+        };
+        let mut entry = occupied.value();
+        queue::Backend::detach(queue, entry.as_mut().project().ready.as_ref());
+        occupied.discard();
+        local::Removal::Removed
     }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32, M> tree::Build<'d>
-    for tree::Leaf<Storage<'d, F, N, D, T, MAX, M>>
+impl<'d, F, const N: usize, D, T, M> tree::Build<'d> for tree::Leaf<Storage<'d, F, N, D, T, M>>
 where
     M: poll::Mode<'d, F>,
     T: Copy,
@@ -247,19 +271,20 @@ where
     }
 }
 
-impl<'d, F, const N: usize, D, T: Copy, const MAX: u32> Stream<'d, F, N, D, T, MAX> {
+impl<'d, F, const N: usize, D, T: Copy> Stream<'d, F, N, D, T> {
     fn held_entry(
         self: pin::Pin<&mut Self>,
         id: &Id<'d, D>,
     ) -> Result<pin::Pin<&mut Entry<'d, F, T, poll::Stream>>, schedule::result::Error> {
         let key = id
-            .key_for(Owner::of(self.as_ref().get_ref()))
+            .raw_for(Owner::of(self.as_ref().get_ref()))
             .ok_or(schedule::result::Error::Absent)?;
         let entry = self
             .project()
             .inner
-            .parts_mut(key.parts())
-            .ok_or(schedule::result::Error::Absent)?;
+            .try_occupied(key)
+            .map_err(|_| schedule::result::Error::Absent)?
+            .into_value();
         if !entry.as_ref().project_ref().mode.held {
             return Err(schedule::result::Error::Active);
         }
@@ -267,8 +292,7 @@ impl<'d, F, const N: usize, D, T: Copy, const MAX: u32> Stream<'d, F, N, D, T, M
     }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32> schedule::StreamOps<'d>
-    for Stream<'d, F, N, D, T, MAX>
+impl<'d, F, const N: usize, D, T> schedule::StreamOps<'d> for Stream<'d, F, N, D, T>
 where
     F: abi::Stream<'d>,
     T: Copy,
@@ -288,19 +312,29 @@ where
     }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32, M> schedule::PlaneTree<'d>
-    for tree::Leaf<Storage<'d, F, N, D, T, MAX, M>>
+impl<'d, F, const N: usize, D, T, M> schedule::PlaneTree<'d>
+    for tree::Leaf<Storage<'d, F, N, D, T, M>>
 where
     M: poll::Mode<'d, F>,
     T: Copy,
 {
-    fn wake_global(access: Access<'_, Self>) {
-        let entry = Slab::selected_mut(access.entry()).into_value();
-        wake::RootWaker::from(entry.as_ref().project_ref().binding.parent()).wake();
+    fn layout(&mut self, base: u32) -> capacity::Count {
+        let storage = self.storage_mut();
+        storage.base = base;
+        storage.inner.capacity()
+    }
+
+    fn first_base(&self) -> u32 {
+        <Self as tree::At<'d, tree::Here>>::project_ref(self).base
+    }
+
+    fn root_waker(access: Access<'_, Self>) -> wake::RootWaker<'d> {
+        let entry = Storage::selected_mut(access.entry()).into_value();
+        wake::RootWaker::from(entry.as_ref().project_ref().binding.parent())
     }
 
     fn merge_ready(access: Access<'_, Self>, queue: pin::Pin<&queue::Flat<'d>>) {
-        let entry = Slab::selected_mut(access.entry()).into_value();
+        let entry = Storage::selected_mut(access.entry()).into_value();
         let fields = entry.into_ref().project_ref();
         queue.queue().merge(fields.ready);
         wake::RootWaker::from(fields.binding.parent()).wake();
@@ -310,20 +344,20 @@ where
     where
         S: queue::Backend<'d> + 'queue,
     {
-        let entry = Slab::selected_mut(access.entry()).into_value();
+        let entry = Storage::selected_mut(access.entry()).into_value();
         let fields = entry.into_ref().project_ref();
         S::commit(dequeued, fields.ready, queue::Disposition::Ready);
         wake::RootWaker::from(fields.binding.parent()).wake();
     }
 }
 
-impl<'d, F, const N: usize, D, T: Copy, const MAX: u32, M> Proof
-    for Storage<'d, F, N, D, T, MAX, M>
-{
+impl<'d, F, const N: usize, D, T: Copy, M> Proof for Storage<'d, F, N, D, T, M> {
+    fn base(&self) -> u32 {
+        self.base
+    }
 }
 
-impl<'d, F, const N: usize, D, T, const MAX: u32, M> tree::Member<'d>
-    for Storage<'d, F, N, D, T, MAX, M>
+impl<'d, F, const N: usize, D, T, M> tree::Member<'d> for Storage<'d, F, N, D, T, M>
 where
     M: poll::Mode<'d, F>,
     T: Copy,

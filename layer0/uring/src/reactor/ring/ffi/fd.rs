@@ -51,12 +51,7 @@ impl Fd {
         };
         // SAFETY: io_uring_setup returns -1 or transfers one live c_int descriptor;
         // failure reads its unchanged errno before any other native call.
-        unsafe {
-            <OwnedFd as fd::raw::Adopt>::try_adopt(result as RawFd, || {
-                kernel::raw::Code::last::<Uring>().into()
-            })
-        }
-        .map(Self)
+        unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Uring, _>(result as RawFd) }.map(Self)
     }
 
     pub(crate) fn register<P, const VALUE: c_int, const COUNT: u32, const OPCODE: u32>(
@@ -66,11 +61,7 @@ impl Fd {
     ) -> Result<(), kernel::Errno<error::Register<OPCODE>>> {
         self.try_register(op, payload, |status| {
             // SAFETY: op admits exactly VALUE or -1, retaining the syscall's errno.
-            unsafe {
-                status
-                    .admit_exact::<VALUE>()
-                    .try_admit(|| kernel::raw::Code::last::<Uring>().into())
-            }
+            unsafe { status.admit_exact::<VALUE>().try_admit::<Uring, _>() }
         })
     }
 
@@ -137,11 +128,7 @@ impl Fd {
     ) -> Result<bounded::U32<0, { i32::MAX as u32 }>, kernel::Errno<error::Register<24>>> {
         self.try_register(ring::ffi::REGISTER_SYNC_CANCEL, payload, |status| {
             // SAFETY: synchronous cancel returns a c_int count or -1 with unchanged errno.
-            let count = unsafe {
-                status.try_count::<kernel::Errno<error::Register<24>>>(|| {
-                    kernel::raw::Code::last::<Uring>().into()
-                })
-            }?;
+            let count = unsafe { status.try_count::<Uring, kernel::Errno<error::Register<24>>>() }?;
             Ok(count.bounded())
         })
     }
@@ -176,11 +163,7 @@ impl Fd {
             )
         };
         // SAFETY: io_uring_enter consumes at most the `submit` submissions it was given.
-        unsafe {
-            Uring::status(result).try_count::<kernel::Errno<error::Enter>>(|| {
-                kernel::raw::Code::last::<Uring>().into()
-            })
-        }?;
+        unsafe { Uring::status(result).try_count::<Uring, kernel::Errno<error::Enter>>() }?;
         Ok(())
     }
 }

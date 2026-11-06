@@ -8,10 +8,10 @@ use o3::base::{Call as _, cell::region};
 
 use crate::{
     link::{
-        egress::{self, reserve::demand},
+        egress::reserve::demand,
         event,
         pool::{
-            Key,
+            Key, Released,
             change::{self, drain, quiesce::Strategy},
             recv::{
                 input,
@@ -39,30 +39,30 @@ where
     ) where
         M::Ingress: Strategy<W>,
     {
-        self.retire(finish, |egress, key, finish| {
-            egress.finish(key, finish, &mut free)
+        self.retire(finish, |_, released, token| {
+            if let Released::Payload(payload) = released {
+                free(payload, token);
+            }
         });
     }
 
     pub(in crate::link::pool::change) fn keyed(
         &mut self,
         finish: &mut finish::Finish<'_, 'd>,
-        mut free: impl FnMut(Key<'d, ID>, B),
+        mut free: impl FnMut(Key<'d, ID>, Released<'_, S, B>),
     ) where
         M::Ingress: Strategy<W>,
     {
-        self.retire(finish, |egress, key, finish| {
-            egress.finish(key, finish, |payload, _| free(key, payload))
-        });
+        self.retire(finish, |key, released, _| free(key, released));
     }
 
     fn retire(
         &mut self,
         finish: &mut finish::Finish<'_, 'd>,
         mut free: impl FnMut(
-            &mut egress::Storage<'p, 'd, ID, B, IOV, D>,
             Key<'d, ID>,
-            &mut finish::Finish<'_, 'd>,
+            Released<'_, S, B>,
+            &mut region::Token<region::Identity<'d, 1>>,
         ),
     ) where
         M::Ingress: Strategy<W>,
@@ -70,19 +70,24 @@ where
         if let Some(storage) = <M::Ingress as Strategy<W>>::credits(&self.slab) {
             finish.credit().detach(storage);
         }
-        if self.slab.view().is_empty() {
+        if self.slab.is_empty() {
             return;
         }
-        for index in self.slab.view().capacity() {
-            let released = {
-                let Some((entry, mut recv)) = Slot::at::<M::Ingress>(&mut self.slab, index) else {
+        for index in self.slab.capacity() {
+            let (key, released, mut state) = {
+                let Some((entry, mut recv)) = Slot::at::<M::Ingress, _>(&mut self.slab, index)
+                else {
                     continue;
                 };
                 if let Some(handle) = self.pending.handle(entry.get().key) {
                     handle.wait_send(false);
                 }
                 let target = credit::Id::new(entry.get().key.target().dispatch());
-                if let Some(cancel) = <M::Ingress as drain::Strategy<W>>::cancel(&recv.storage) {
+                if let Some(cancel) = <M::Ingress as drain::Strategy<W>>::cancel::<
+                    ID,
+                    input::Receipt<W, M>,
+                >(&recv.storage)
+                {
                     cancel.call((&mut self.runtime, target));
                 }
                 while let Some(front) = recv.storage.prepare_pop() {
@@ -97,12 +102,17 @@ where
                     Ok(reg) => reg.retire(),
                     Err(Absent) => entry.get_mut().engine.operations.recv.exhaustion().cancel(),
                 }
-                free(&mut self.egress, entry.get().key, finish);
-                entry.remove().control.send.release()
+                let key = entry.get().key;
+                self.egress.finish(key, finish, |payload, token| {
+                    free(key, Released::Payload(payload), token)
+                });
+                let conn = entry.remove();
+                (key, conn.control.send.release(), conn.state)
             };
             if let Some(release) = <M::Ingress as Finish<W>>::release::<ID>(released) {
                 release.call(&mut self.runtime);
             }
+            free(key, Released::State(&mut state), finish.state_token());
         }
     }
 }

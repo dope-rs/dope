@@ -40,17 +40,11 @@ impl Server {
             let mut cursor = packet.cursor(Offset::ZERO);
             let mut cookie = None;
             while cursor.position().get() < options.len() {
-                let offset = cursor.position();
                 let code = cursor.u16().map_err(error::Cookie::Packet)?;
                 let length = cursor.u16().map_err(error::Cookie::Packet)?;
                 let data = cursor.bytes(length).map_err(error::Cookie::Packet)?;
-                if code != OPTION {
+                if code != OPTION || cookie.is_some() {
                     continue;
-                }
-                if cookie.is_some() {
-                    return Err(error::Cookie::Duplicate {
-                        offset: offset.raw(),
-                    });
                 }
                 let [a, b, c, d, e, f, g, h, server @ ..] = data else {
                     return Err(error::Cookie::ClientLength {

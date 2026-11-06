@@ -8,12 +8,12 @@ pub trait Adopt: fd::FromRawFd + Sized {
     ///
     /// # Safety
     /// `raw` is -1 or transfers ownership of one live nonnegative descriptor.
-    unsafe fn try_adopt<E: From<Errno>>(
+    /// On failure, `S` reads this call's positive, unchanged errno.
+    unsafe fn try_adopt<S: kernel::raw::Source + ?Sized, E: From<Errno>>(
         raw: fd::RawFd,
-        errno: impl FnOnce() -> Errno,
     ) -> Result<Self, E> {
-        // SAFETY: the caller retains the native descriptor-or-minus-one return proof.
-        let value = unsafe { kernel::raw::Status::new(raw).try_value::<E>(errno) }?;
+        // SAFETY: the caller retains the native return and unchanged failure errno.
+        let value = unsafe { kernel::raw::Status::new(raw).try_value::<S, E>() }?;
         // SAFETY: the nonnegative syscall result transfers this descriptor.
         Ok(unsafe { Self::from_raw_fd(value.get()) })
     }
@@ -36,13 +36,13 @@ impl Pair {
     ///
     /// # Safety
     /// `raw` is that call's unchanged return and this is its exact destination.
-    pub unsafe fn try_adopt<E: From<Errno>>(
+    /// On failure, `S` reads this call's positive, unchanged errno.
+    pub unsafe fn try_adopt<S: kernel::raw::Source + ?Sized, E: From<Errno>>(
         self,
         raw: libc::c_int,
-        errno: impl FnOnce() -> Errno,
     ) -> Result<(fd::OwnedFd, fd::OwnedFd), E> {
-        // SAFETY: every native producer of a descriptor pair returns exactly zero or -1.
-        unsafe { kernel::raw::Status::new(raw).try_zero::<E>(errno) }?;
+        // SAFETY: the native producer returns zero or -1 and retains its failure errno.
+        unsafe { kernel::raw::Status::new(raw).try_zero::<S, E>() }?;
         let [left, right] = self.0;
         // SAFETY: that success transferred two distinct live descriptors to this caller once.
         Ok(unsafe {

@@ -5,18 +5,16 @@ use state::State;
 
 use crate::driver::{
     route,
-    route::{indices, table},
+    route::table,
     schedule::{
         ready,
         ready::{
             arena::{
                 layout::{Layout, TILE_SLOTS},
                 payload::{Bound, Payload, Task},
-                set,
             },
             key::{
-                DispatchKey, FreeIndex, Index, Local, ReservedKey, Staged, TaskIndex, TaskKey,
-                TopologyKey,
+                DispatchKey, FreeIndex, Index, ReservedKey, Staged, TaskIndex, TaskKey, TopologyKey,
             },
             kind::Kind,
             state,
@@ -138,11 +136,6 @@ pub(in crate::driver::schedule::ready) enum Entry<'a> {
     Task(Bound<'a>, TaskIndex),
 }
 
-pub(in crate::driver::schedule::ready) enum Drain {
-    Descriptor(indices::SlotIndex),
-    Dispatch(route::Token),
-}
-
 #[repr(transparent)]
 pub(in crate::driver::schedule::ready) struct Slots {
     pub(in crate::driver::schedule::ready) block: tail::Block<Header, Tile>,
@@ -172,50 +165,6 @@ impl Table {
 impl Slots {
     pub(in crate::driver::schedule::ready) fn header(&self) -> Header {
         *tail::View::new(&self.block).header()
-    }
-
-    pub(in crate::driver::schedule::ready) fn descriptor(
-        &self,
-        index: ready::DynamicIndex,
-    ) -> Option<indices::SlotIndex> {
-        (index.get() < self.header().descriptor_end.count().get())
-            .then_some(indices::SlotIndex::from(index.0.get() - 1))
-    }
-
-    pub(in crate::driver::schedule::ready) fn resolve(
-        &self,
-        key: ready::Stored,
-    ) -> Option<Entry<'_>> {
-        let index = key.index();
-        let header = self.header();
-        if index < header.descriptor_end.raw() || index >= u32::from(header.capacity.raw()) {
-            return None;
-        }
-        let code = key.index_code();
-        let resident = self.resident(Local(code));
-        if resident.generation() != key.epoch() {
-            return None;
-        }
-        match resident.kind() {
-            Kind::Dispatch => Some(Entry::Dispatch(ready::DynamicIndex(code))),
-            Kind::Task => {
-                let task = Resident::<state::Task> {
-                    cell: resident.cell,
-                    index: code,
-                    proof: marker::PhantomData,
-                };
-                Some(Entry::Task(task.bound(), TaskIndex::from_code(code)))
-            }
-            Kind::Free | Kind::Reserved | Kind::Topology | Kind::Retired => None,
-        }
-    }
-
-    pub(in crate::driver::schedule::ready) fn drain(&self, index: set::Queued) -> Drain {
-        let index = index.0;
-        if index.get() < self.header().descriptor_end.count().get() {
-            return Drain::Descriptor(indices::SlotIndex::from(index.0.get() - 1));
-        }
-        Drain::Dispatch(self.resident(Local(index.0)).payload().dispatch())
     }
 
     pub(in crate::driver::schedule::ready) fn resident<I: Index>(
@@ -341,7 +290,6 @@ const _: () = {
     assert!(mem::size_of::<Resident<'static>>() == 2 * mem::size_of::<usize>());
     assert!(mem::size_of::<Entry<'static>>() == mem::size_of::<Resident<'static>>());
     assert!(mem::size_of::<Option<Entry<'static>>>() == mem::size_of::<Entry<'static>>());
-    assert!(mem::size_of::<Drain>() == 2 * mem::size_of::<usize>());
     assert!(
         mem::size_of::<Resident<'static, state::Task>>() == mem::size_of::<Resident<'static>>()
     );

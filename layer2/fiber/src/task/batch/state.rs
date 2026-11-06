@@ -61,10 +61,6 @@ impl<const N: usize> State<N> {
         Some(Completed(self.len))
     }
 
-    pub(super) fn has_fresh(&self) -> bool {
-        self.next < self.len
-    }
-
     pub(super) fn vacancy(&mut self) -> Option<Push<'_, N>> {
         if !self.next.is_empty() {
             return None;

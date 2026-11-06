@@ -5,7 +5,7 @@ use crate::{
     core::driver::schedule::ready::task::{self, pool, topology},
 };
 
-#[pin_project::pin_project(PinnedDrop)]
+#[pin_project::pin_project]
 #[repr(transparent)]
 pub(crate) struct Binding<'d, I: topology::raw::Index> {
     #[pin]
@@ -90,12 +90,5 @@ impl<'d, I: topology::raw::Index> Binding<'d, I> {
         if let Some(bound) = task::raw::Binding::get(node) {
             unsafe { bound.reclaim_pool(pool, root) };
         }
-    }
-}
-
-#[pin_project::pinned_drop]
-impl<I: topology::raw::Index> PinnedDrop for Binding<'_, I> {
-    fn drop(self: pin::Pin<&mut Self>) {
-        task::raw::Binding::unbind(self.as_ref().project_ref().node);
     }
 }

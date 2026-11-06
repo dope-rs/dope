@@ -75,10 +75,6 @@ impl<T, Tag: route::Tag, S, R> Table<T, Tag, S, R> {
     pub(in crate::link::pool) fn access(&mut self) -> borrows::Access<'_, T, Tag> {
         self.slab.access()
     }
-
-    pub(in crate::link::pool) fn vacancy(&mut self) -> borrows::Vacancy<'_, T, Tag> {
-        self.slab.vacancy()
-    }
 }
 
 impl<T, Tag: route::Tag, S, R> Deref for Table<T, Tag, S, R> {
@@ -90,12 +86,12 @@ impl<T, Tag: route::Tag, S, R> Deref for Table<T, Tag, S, R> {
 }
 
 impl<T, ID: Identity, S> Table<T, ID, S> {
-    pub(in crate::link::pool) fn try_storage<'d, P: storage::raw::Mode>(
+    pub(in crate::link::pool) fn try_storage<'d, P: storage::raw::Mode, R>(
         self,
-        storage: recv::State<'d, ID, P>,
-    ) -> crate::Result<Table<T, ID, S, recv::State<'d, ID, P>>> {
-        let entries = self.slab.view().capacity().count().get();
-        if let storage::Extent::Lanes(lanes) = P::extent(&storage.storage)
+        storage: recv::State<'d, ID, P, R>,
+    ) -> crate::Result<Stored<'d, T, ID, S, P, R>> {
+        let entries = self.slab.capacity().count().get();
+        if let storage::Extent::Lanes(lanes) = P::extent::<R>(&storage.storage)
             && lanes != entries
         {
             return Err(crate::Resource::Config(
@@ -117,13 +113,13 @@ impl<T, ID: Identity, S> Table<T, ID, S> {
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S, P: storage::raw::Mode>
-    Table<types::Connection<'w, 'd, ID, W, U>, ID, S, recv::State<'d, ID, P>>
+impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S, P: storage::raw::Mode, R>
+    Stored<'d, types::Connection<'w, 'd, ID, W, U>, ID, S, P, R>
 {
-    pub(in crate::link::pool) fn get<'a>(
+    pub(in crate::link::pool) fn get_mut<'a>(
         &'a mut self,
         parts: table::Parts<ID>,
-    ) -> Option<Borrowed<'a, 'd, ID, P, &'a mut types::Connection<'w, 'd, ID, W, U>>> {
+    ) -> Borrowed<'a, 'd, ID, P, &'a mut types::Connection<'w, 'd, ID, W, U>, R> {
         let entry = self.slab.access().get(parts)?;
         // SAFETY: construction pairs all fixed extents; this resident supplies the exact key.
         use o3::depot::raw::Proof;
@@ -134,7 +130,7 @@ impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S, P: storage::r
     pub(in crate::link::pool) fn try_entry<'a>(
         &'a mut self,
         parts: table::Parts<ID>,
-    ) -> Result<Occupied<'a, 'w, 'd, ID, W, U, P>, errors::Lookup<route::Epoch, ID>> {
+    ) -> Occupied<'a, 'w, 'd, ID, W, U, P, R> {
         let entry = self.slab.access().try_occupied(parts)?;
         // SAFETY: the occupied entry belongs to this table's validated fixed domain.
         use o3::depot::raw::Proof;
@@ -151,22 +147,22 @@ impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S, P: storage::r
     }
 }
 
-impl<'d, T, ID: Identity, S, P: storage::raw::Mode> Table<T, ID, S, recv::State<'d, ID, P>> {
+impl<'d, T, ID: Identity, S, P: storage::raw::Mode, R> Stored<'d, T, ID, S, P, R> {
     pub(in crate::link::pool) fn read(&self, parts: table::Parts<ID>) -> Option<(&T, bool)> {
         use o3::depot::raw::Proof;
 
-        let entry = self.slab.view().get(parts)?;
+        let entry = self.slab.get(parts)?;
         // SAFETY: try_storage paired the fixed extents; this lookup admits the exact index.
         let slot =
             unsafe { Proof::new((&self.storage.storage, parts.slot().index().into_usize())) };
-        let lane = P::has_queued(slot);
+        let lane = P::has_queued::<R>(slot);
         Some((entry, lane))
     }
 }
 
-impl<'d, T, ID: Identity, S, P> Table<T, ID, S, recv::State<'d, ID, P>>
+impl<'d, T, ID: Identity, S, P, R> Stored<'d, T, ID, S, P, R>
 where
-    P: storage::raw::Mode<Storage<'d> = storage::Retained<'d>>,
+    P: storage::raw::Mode<Storage<'d, R> = storage::Retained<'d, R>>,
 {
     pub(in crate::link::pool) fn credit(&self) -> &credit::Storage<'d> {
         &self.storage.storage.credit
@@ -346,10 +342,10 @@ impl<'a, 'w, 'd: 'w, T, Tag: route::Tag, W: wire::Spec + 'w> Slot<'a, T, Tag, Qu
 impl<'a, 'w: 'a, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S>
     Slot<'a, types::Connection<'w, 'd, ID, W, U>, ID, S>
 {
-    pub(in crate::link::pool) fn receive<P: storage::raw::Mode>(
-        table: &'a mut Table<types::Connection<'w, 'd, ID, W, U>, ID, S, recv::State<'d, ID, P>>,
+    pub(in crate::link::pool) fn receive<P: storage::raw::Mode, R>(
+        table: &'a mut Stored<'d, types::Connection<'w, 'd, ID, W, U>, ID, S, P, R>,
         parts: table::Parts<ID>,
-    ) -> Option<Borrowed<'a, 'd, ID, P, Self>> {
+    ) -> Borrowed<'a, 'd, ID, P, Self, R> {
         let entry = table.slab.access().occupied(parts)?;
         // SAFETY: Table owns matching fixed extents and this exact occupied resident.
         use o3::depot::raw::Proof;
@@ -363,10 +359,10 @@ impl<'a, 'w: 'a, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S>
         ))
     }
 
-    pub(in crate::link::pool) fn at<P: storage::raw::Mode>(
-        table: &'a mut Table<types::Connection<'w, 'd, ID, W, U>, ID, S, recv::State<'d, ID, P>>,
+    pub(in crate::link::pool) fn at<P: storage::raw::Mode, R>(
+        table: &'a mut Stored<'d, types::Connection<'w, 'd, ID, W, U>, ID, S, P, R>,
         index: SlotIndex,
-    ) -> Option<Borrowed<'a, 'd, ID, P, Self>> {
+    ) -> Borrowed<'a, 'd, ID, P, Self, R> {
         let entry = table.slab.access().at(index)?;
         // SAFETY: the occupied resident comes from this same paired table.
         use o3::depot::raw::Proof;
@@ -381,9 +377,14 @@ impl<'a, 'w: 'a, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S>
     }
 }
 
-type Occupied<'a, 'w, 'd, ID, W, U, P> = (
-    occupied::Entry<'a, types::Connection<'w, 'd, ID, W, U>, ID>,
-    recv::Borrow<'a, 'd, ID, P>,
-);
+type Stored<'d, T, ID, S, P, R> = Table<T, ID, S, recv::State<'d, ID, P, R>>;
 
-type Borrowed<'a, 'd, ID, P, T> = (T, recv::Borrow<'a, 'd, ID, P>);
+type Occupied<'a, 'w, 'd, ID, W, U, P, R> = Result<
+    (
+        occupied::Entry<'a, types::Connection<'w, 'd, ID, W, U>, ID>,
+        recv::Borrow<'a, 'd, ID, P, R>,
+    ),
+    errors::Lookup<route::Epoch, ID>,
+>;
+
+type Borrowed<'a, 'd, ID, P, T, R> = Option<(T, recv::Borrow<'a, 'd, ID, P, R>)>;

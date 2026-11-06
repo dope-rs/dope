@@ -189,7 +189,7 @@ fn receive_binds_lease() {
                     {
                         let shared = buffer.into_shared();
                         copy(&shared, &budget);
-                        assert_eq!(shared.as_slice(), b"typed");
+                        assert_eq!(shared.as_ref(), b"typed");
                     }
                     Descriptor::from(socket).close(&mut driver);
                 }
@@ -303,7 +303,7 @@ fn account_recycles_owner() {
                         "the third receive must reuse the exact terminally returned buffer"
                     );
                 }
-                assert_eq!(second.as_slice(), b"second");
+                assert_eq!(second.as_ref(), b"second");
                 (sock2, sock3)
             };
             Descriptor::from(sock1).close(&mut driver);

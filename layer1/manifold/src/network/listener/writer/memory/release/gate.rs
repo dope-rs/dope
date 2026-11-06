@@ -18,18 +18,14 @@ use o3::{
 use crate::network::listener::writer::memory;
 
 pub(in crate::network::listener) struct Gate<'s, 'd, T, ID: Identity> {
-    pub(super) permits: staged::Table<
-        ready::Retained<'d>,
-        (),
-        Unique<'s, T, recycle::Header<T>>,
-        pool::raw::Physical<'d, ID>,
-    >,
+    pub(super) permits:
+        staged::Table<ready::Retained<'d>, (), Unique<'s, T>, pool::raw::Physical<'d, ID>>,
     pub(super) store: &'s recycle::Store<T>,
     owner: driver::Reference<'d>,
 }
 
 impl<'s, 'd, T, ID: Identity> Gate<'s, 'd, T, ID> {
-    pub(super) fn wake(&self, lease: Unique<'s, T, recycle::Header<T>>) {
+    pub(super) fn wake(&self, lease: Unique<'s, T>) {
         loop {
             // SAFETY: this core owns the queue; each front is consumed before the next access.
             let Some(entry) = staged::Slot::<_, _, _, staged::Queued, _>::first(unsafe {

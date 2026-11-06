@@ -76,6 +76,11 @@ impl Metadata {
 /// One request owns every descriptor, path, option, and output it submits.
 pub enum Request<'d> {
     Open(fs::OpenRequest),
+    Rename {
+        directory: fs::Dir,
+        old: fs::path::Owned,
+        new: fs::path::Owned,
+    },
     Read(Read<'d>),
     Metadata(Metadata),
     Prepare(Prepare),
@@ -86,6 +91,12 @@ pub enum Completion<'d> {
     Open {
         request: fs::OpenRequest,
         result: Result<fs::File, Error>,
+    },
+    Rename {
+        directory: fs::Dir,
+        old: fs::path::Owned,
+        new: fs::path::Owned,
+        result: Result<(), Error>,
     },
     Read {
         request: Read<'d>,
@@ -240,6 +251,7 @@ pub enum Poll<'p, 'd> {
 
 enum Outcome {
     Open(Result<fs::File, Error>),
+    Rename(Result<(), Error>),
     Read(Result<transfer::Len, Error>),
     Metadata,
     Prepare,
@@ -248,7 +260,7 @@ enum Outcome {
 enum Active<'d> {
     Open(flight::Flight<'d, route::kind::Open>),
     Read(flight::Flight<'d, route::kind::Read>),
-    Metadata(flight::Flight<'d, route::kind::Sync>),
+    Sync(flight::Flight<'d, route::kind::Sync>),
     Tail(flight::Flight<'d, route::kind::Read>),
 }
 
@@ -335,6 +347,19 @@ impl<'p, 'd> Ticket<'p, 'd> {
                     (Request::Open(request), Outcome::Open(result)) => {
                         Completion::Open { request, result }
                     }
+                    (
+                        Request::Rename {
+                            directory,
+                            old,
+                            new,
+                        },
+                        Outcome::Rename(result),
+                    ) => Completion::Rename {
+                        directory,
+                        old,
+                        new,
+                        result,
+                    },
                     (Request::Read(request), Outcome::Read(result)) => {
                         Completion::Read { request, result }
                     }
@@ -414,6 +439,7 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
         let entry = slot.state();
         let (request, outcome) = match entry.take() {
             Request::Open(request) => (Request::Open(request), Outcome::Open(Err(cause))),
+            request @ Request::Rename { .. } => (request, Outcome::Rename(Err(cause))),
             Request::Read(request) => (Request::Read(request), Outcome::Read(Err(cause))),
             Request::Metadata(request) => (
                 Request::Metadata(Metadata {
@@ -559,7 +585,7 @@ impl<'d> Active<'d> {
         match self {
             Self::Open(flight) => flight.try_stop(driver),
             Self::Read(flight) | Self::Tail(flight) => flight.try_stop(driver),
-            Self::Metadata(flight) => flight.try_stop(driver),
+            Self::Sync(flight) => flight.try_stop(driver),
         }
     }
 }

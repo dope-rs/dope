@@ -55,15 +55,11 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
         receive::Outcome::Continue
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Identity, ()>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Identity, ()>
-    where
-        'd: 'w,
-    {
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Identity, ()>,
+    ) {
         self.closed.hit();
-        conn
     }
 }
 

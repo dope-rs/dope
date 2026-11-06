@@ -152,11 +152,7 @@ impl<'d, L> Queue<'d, L> {
     /// Cancels the registration, forwarding a taken wake within its original lane.
     /// Active drains retain their work; successful admission uses `clear`.
     pub fn cancel(&self, slot: &mut Registration<'_, 'd, L>) -> Once {
-        let Some(target) = slot.inner.cancel() else {
-            return Once::Empty;
-        };
-        target.wake(self.driver);
-        Once::Woke
+        one(self.driver, slot.inner.cancel())
     }
 
     /// Registers one wake in the constructor-proved first lane.
@@ -174,11 +170,7 @@ impl<'d, L> Queue<'d, L> {
     }
 
     pub fn wake_next(&self) -> Once {
-        let Some(target) = self.inner.take_next() else {
-            return Once::Empty;
-        };
-        target.wake(self.driver);
-        Once::Woke
+        one(self.driver, self.inner.take_next())
     }
 
     pub fn has_waiters(&self) -> bool {

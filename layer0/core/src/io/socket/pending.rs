@@ -104,10 +104,7 @@ impl<'d> Tuning<'d> {
         }
     }
 
-    fn commit<P>(self) -> Tuning<'d, Cancelled>
-    where
-        Engine: engine::Cancel<indices::SlotIndex, Permit = P>,
-    {
+    fn commit(self) -> Tuning<'d, Cancelled> {
         Tuning {
             fd: self.fd,
             flight: self.flight,
@@ -117,6 +114,9 @@ impl<'d> Tuning<'d> {
     }
 
     pub fn cancel(self, driver: &mut driver::Context<'_, 'd>) -> Cancellation<'d> {
+        if !self.flight.is_pending() {
+            return Cancellation::Submitted(self.commit());
+        }
         match engine::Cancel::cancel(driver.native().as_mut(), &self.permit, self.fd.index()) {
             Ok(()) => Cancellation::Submitted(self.commit()),
             Err(error) => Cancellation::Retry {

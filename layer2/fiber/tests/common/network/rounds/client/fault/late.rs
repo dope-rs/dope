@@ -163,6 +163,7 @@ impl receive::Policy<Wire> for Recv {
     type Reserve = reserve::Direct;
     type Credit = mode::Disabled;
     type Discard = mode::Disabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Guard<ID, Wire>,

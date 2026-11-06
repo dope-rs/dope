@@ -131,12 +131,14 @@ where
                     turn::Status::Active => {}
                     turn::Status::Shutdown => return Attempt::Cancel(root, drive::Error::Shutdown),
                 }
-                let resolved = parked.resolve(self.source, |idle| {
-                    let state = idle.progress();
-                    Ok(turn::Resolved::Wait(idle, state))
-                });
-                if let Err(source) = resolved {
-                    return Attempt::Cancel(root, source);
+                let idle = match parked.sync() {
+                    Ok(Some(idle)) => idle,
+                    Ok(None) => continue,
+                    Err(error) => return Attempt::Cancel(root, error.into()),
+                };
+                let progress = idle.progress();
+                if let Err(error) = idle.wait(progress, self.source) {
+                    return Attempt::Cancel(root, error.into());
                 }
             }
         };
@@ -146,21 +148,21 @@ where
                 turn::Status::Active => {}
                 turn::Status::Shutdown => break Err(drive::Error::Shutdown),
             }
-            let drained = match parked.resolve(self.source, |idle| {
-                let state = idle.progress();
-                if !matches!(state, schedule::Progress::Quiescent) {
-                    return Ok(turn::Resolved::Wait(idle, state));
-                }
-                Ok(match idle.sync()? {
-                    poll::Commit::Drained => turn::Resolved::Done,
-                    poll::Commit::Pending => turn::Resolved::Again,
-                })
-            }) {
-                Ok(drained) => drained,
-                Err(error) => break Err(error),
+            let idle = match parked.sync() {
+                Ok(idle) => idle,
+                Err(error) => break Err(error.into()),
             };
-            if drained {
-                break Ok(output);
+            if let Some(idle) = idle {
+                let progress = idle.progress();
+                if matches!(progress, schedule::Progress::Quiescent) {
+                    match idle.sync() {
+                        Ok(poll::Commit::Drained) => break Ok(output),
+                        Ok(poll::Commit::Pending) => {}
+                        Err(error) => break Err(error.into()),
+                    }
+                } else if let Err(error) = idle.wait(progress, self.source) {
+                    break Err(error.into());
+                }
             }
             let tick = self.source.tick();
             polled = match self.state.next_root(&self.slot, tick, &mut shutdown) {
@@ -287,10 +289,10 @@ where
                             turn::Status::Active => {}
                             turn::Status::Shutdown => return Ok(Outcome::Shutdown(None)),
                         }
-                        parked.resolve(self.source, |idle| {
-                            let state = idle.progress();
-                            Ok(turn::Resolved::Wait(idle, state))
-                        })?;
+                        if let Some(idle) = parked.sync()? {
+                            let progress = idle.progress();
+                            idle.wait(progress, self.source)?;
+                        }
                     }
                 }
             }
@@ -307,10 +309,7 @@ where
                 return Ok(Outcome::Complete(output, proof));
             }
             let tick = tick(self.source)?;
-            polled = self
-                .state
-                .next_root(&self.slot, tick, &mut shutdown)?
-                .skip();
+            polled = self.state.next_app(tick, &mut shutdown)?.skip();
         }
     }
 }

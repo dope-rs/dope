@@ -1,7 +1,7 @@
 mod binding;
 mod root;
 
-use std::{cell, marker};
+use std::{cell, marker, pin};
 
 pub use binding::Binding;
 use o3::{
@@ -114,8 +114,8 @@ impl<'d> Return for Recycle<'_, 'd> {
     }
 }
 
-/// Pinned storage whose binding can only be removed as an affine guard.
-#[pin_project::pin_project(!Unpin)]
+/// Pinned storage for an optional task binding.
+#[pin_project::pin_project(!Unpin, PinnedDrop)]
 pub struct Node<'d, I: topology::raw::Index> {
     #[pin]
     binding: cell::Cell<Option<State<'d>>>,
@@ -136,6 +136,15 @@ impl<'d, I: topology::raw::Index> Node<'d, I> {
 impl<I: topology::raw::Index> Default for Node<'_, I> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[pin_project::pinned_drop]
+impl<I: topology::raw::Index> PinnedDrop for Node<'_, I> {
+    fn drop(self: pin::Pin<&mut Self>) {
+        if let Some(state) = self.binding.take() {
+            state.return_item(());
+        }
     }
 }
 

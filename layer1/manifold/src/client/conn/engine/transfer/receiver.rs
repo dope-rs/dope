@@ -2,8 +2,11 @@ use std::{convert, pin};
 
 use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
-    link::pool,
-    wire::receive::{Chunk, batch::Items},
+    link::pool::{self, recv::input},
+    wire::{
+        self,
+        receive::{Chunk, Policy, batch::Items, publication::Policy as _},
+    },
 };
 use effect::Effect as _;
 
@@ -89,15 +92,16 @@ where
         })
     }
 
-    fn retained<'turn, 'driver, 'context>(
+    fn retained<'turn, 'driver, 'context, R: Default>(
         mut self,
         key: pool::Key<'d, ID>,
         chunk: Chunk<'w, 'd, A::Wire>,
+        receipt: input::Receipt<A::Wire, receive::Owned<R>>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
-        A: app::Owned<'w, 'd, ID>,
+        A: app::Owned<'w, 'd, ID, R>,
     {
         let outcome = {
             let this = self.as_mut().project();
@@ -113,10 +117,19 @@ where
 
             slot.state.record_recv(driver.driver_ref().clock().now());
             match State::active(slot, |active| {
+                let receipt =
+                    <<A::Wire as wire::Spec>::Receive as Policy<A::Wire>>::Publication::publish(
+                        receipt,
+                        || {
+                            this.app
+                                .receipt(active.id(), active.conn(), driver.region_token())
+                        },
+                    );
                 this.app.chunk(
                     conn::Ctx::new(active, turn.reborrow().app()),
                     egress.reborrow(),
                     chunk,
+                    receipt,
                     driver,
                 )
             }) {

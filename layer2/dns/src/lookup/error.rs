@@ -76,9 +76,6 @@ pub enum Packet {
 pub enum Cookie {
     Capacity(consume::Error),
     Packet(Packet),
-    Duplicate {
-        offset: u16,
-    },
     ClientLength {
         actual: usize,
         required: usize,

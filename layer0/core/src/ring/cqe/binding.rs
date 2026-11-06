@@ -1,5 +1,7 @@
 use dope_sys::{
+    Errno,
     io::{
+        fd::Fd,
         file,
         reactor::complete::{Decode, Outcome as _, Packet as _, resolve::Reclaimed},
         socket,
@@ -334,10 +336,7 @@ impl<'q, 'd> Binding<'q, 'd> {
         let subject = fault::Subject::Target(route::Erased::from(&this.flight).into_token());
         let echo = fault::Echo::new(this.flight.bind(proof).end(Flow::Last));
         let (outcome, close) = match opened {
-            Ok(file) => (
-                Ok(()),
-                Some(<Backend as file::raw::Completion>::close(file)),
-            ),
+            Ok(file) => (Ok(()), Some(<Backend as Fd>::close::<Errno>(file))),
             Err(errno) => (Err(errno), None),
         };
         let (buffer, result) = match close {

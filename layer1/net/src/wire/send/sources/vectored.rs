@@ -1,5 +1,5 @@
 use dope_core::io::{socket::msg, transfer};
-use o3::buffer::segments::scatter::Source as _;
+use o3::buffer::raw::Chunks as _;
 
 use crate::wire::send::{self, Either, Payload, sources::plain::Slice};
 

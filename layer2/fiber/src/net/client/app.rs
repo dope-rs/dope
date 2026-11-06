@@ -128,6 +128,7 @@ impl<'scope, 'w, 'd: 'w, T: net::Transport, W: input::Execution + 'd, ID: Identi
         conn: conn::Ctx<'_, 'd, ID, Self::Wire, Self::Conn, O>,
         _out: egress::Queue<'_, '_, 'd, { client::IOV_CAP }, Self::Send>,
         chunk: Chunk<'w, 'd, W>,
+        _: (),
         drv: &mut driver::Context<'_, 'd>,
     ) -> app::ChunkOutcome {
         if !matches!(
@@ -241,6 +242,7 @@ impl<'scope, 'w, 'd: 'w, T: net::Transport, W: input::Execution + 'd, ID: Identi
     fn prepare<O>(
         &mut self,
         conn: conn::Ctx<'_, 'd, ID, Self::Wire, Self::Conn, O>,
+        _: bool,
         out: egress::Queue<'_, '_, 'd, { client::IOV_CAP }, Self::Send>,
         _drv: &mut driver::Context<'_, 'd>,
     ) {

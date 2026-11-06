@@ -109,7 +109,12 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
             }
             Err(cause) => {
                 let cause = match Acquire::new(cause) {
-                    Acquire::Backpressure(cause) if acceptance == recv::Acceptance::Collected => {
+                    Acquire::Backpressure(cause)
+                        if matches!(
+                            acceptance,
+                            recv::Acceptance::Collected | recv::Acceptance::First
+                        ) =>
+                    {
                         Acquire::Capacity(usage::Capacity::Unavailable(cause))
                     }
                     cause => cause,
@@ -164,20 +169,6 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         }
         if bytes != 0 {
             self.refund_axis(BYTES);
-        }
-    }
-
-    pub(super) fn refund(&self, grant: payload::Grant<'credits, payload::Used>) {
-        let amount = grant.amount();
-        grant.into_inner().release();
-        match amount {
-            payload::Used::Values { bytes, .. } => {
-                self.refund_axis(VALUES);
-                if bytes != usage::Bytes::ZERO {
-                    self.refund_axis(BYTES);
-                }
-            }
-            payload::Used::Bytes(_) => self.refund_axis(BYTES),
         }
     }
 

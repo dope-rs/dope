@@ -1,7 +1,4 @@
-use dope_core::{
-    driver::route::{self, kind},
-    io::transfer,
-};
+use dope_core::io::transfer;
 use o3::base::cell::region;
 
 use crate::{
@@ -42,8 +39,8 @@ impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: de
         self.flight.vectored()
     }
 
-    pub(in crate::link) fn retain(self, target: route::Erased<'d, kind::Send>) {
-        self.flight.retain(target);
+    pub(in crate::link) fn retain(self) {
+        self.flight.retain();
     }
 
     pub(in crate::link) fn release(

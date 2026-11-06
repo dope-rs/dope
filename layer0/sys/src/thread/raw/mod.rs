@@ -34,9 +34,7 @@ pub(super) fn entropy<S: kernel::raw::Source + ?Sized, const N: usize>(
     let result = unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), N) };
     // SAFETY: getentropy handles interruptions internally and returns zero or -1
     // with unchanged native errno; success initializes the complete requested extent.
-    unsafe {
-        kernel::raw::Status::new(result).try_zero::<Errno>(|| kernel::raw::Code::last::<S>().into())
-    }?;
+    unsafe { kernel::raw::Status::new(result).try_zero::<S, Errno>() }?;
     // SAFETY: success initializes all N bytes, including the empty array.
     Ok(unsafe { bytes.assume_init_mut() })
 }

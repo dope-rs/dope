@@ -83,6 +83,7 @@ impl<'d> Session<'d> for Flight<'_> {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Disabled;
     type Send = Shared;
 

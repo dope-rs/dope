@@ -125,6 +125,8 @@ fn owned_releases_after_send_or_abort() {
             .egress(queue)
             .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
                 App {
+                    response: RESPONSE,
+                    admitted: Gate::new(),
                     closed: closed.clone(),
                     released: released.clone(),
                     returned: returned.clone(),

@@ -82,7 +82,7 @@ pub trait Policy<W: wire::Spec>: Sized {
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
         D: demand::Mode,
-        F: FnMut(pool::Key<'d, ID>, B);
+        F: FnMut(pool::Key<'d, ID>, pool::Released<'_, S, B>);
 }
 
 impl<W, I> Policy<W> for I
@@ -133,7 +133,7 @@ where
         } = handler;
         let branch = 'close: {
             let Some((entry, storage)) =
-                Slot::receive::<M::Ingress>(&mut pool.prepared.slab, key.parts())
+                Slot::receive::<M::Ingress, _>(&mut pool.prepared.slab, key.parts())
             else {
                 break 'close Branch::Missing;
             };
@@ -143,7 +143,9 @@ where
             };
             let target = resident.get().key.target();
             let id = credit::Id::new(target.dispatch());
-            if let Some(cancel) = <Self as Strategy<W>>::cancel(&storage.storage) {
+            if let Some(cancel) =
+                <Self as Strategy<W>>::cancel::<ID, input::Receipt<W, M>>(&storage.storage)
+            {
                 cancel.call((&mut pool.prepared.runtime, id));
             }
             let mut entry = tail::Store::clear(resident);
@@ -189,7 +191,6 @@ where
             let waiting = pool
                 .prepared
                 .slab
-                .view()
                 .get(key.parts())
                 .is_some_and(|slot| slot.send_status().is_waiting());
             if !waiting || matches!(&branch, Branch::Owner(_)) {
@@ -253,7 +254,7 @@ where
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
         D: demand::Mode,
-        F: FnMut(pool::Key<'d, ID>, B),
+        F: FnMut(pool::Key<'d, ID>, pool::Released<'_, S, B>),
     {
         pool.prepared.keyed(finish, free);
     }

@@ -142,7 +142,7 @@ impl request::Execute for Request<'_> {
                 return done.write(result);
             }
             State::WriteCurrent { file, input } => {
-                let result = Kqueue::write(file, input.into_slice())
+                let result = Kqueue::write(file, input.as_slice())
                     .map(|written| bytes::Prefix::<MAX>::new(written).len());
                 return done.write(result);
             }

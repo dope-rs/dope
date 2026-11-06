@@ -214,3 +214,82 @@ fn build_failure_rolls_back() {
 
     assert_eq!(drops.count(), 4);
 }
+
+#[test]
+fn first_retains_until_terminal() {
+    use dope_fiber::reply::{Arena, layout, order::Front, usage};
+
+    use crate::common::storage::replies::support::{Cause, Error, RetainOne, limit};
+
+    for failed in [false, true] {
+        let drops = Drops::new();
+        let failures = Drops::new();
+        region::Token::scope(|mut token| {
+            let layout = layout::Layout::single(layout::Entries::new(1), limit(1, 1, 1))
+                .expect("reply layout");
+            Arena::try_with(layout, token.proof(), |arena| {
+                let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+                let mut reply = recv::Response::<_, RetainOne<true>>::new();
+                assert!(reply.try_attach(&mut token, lane).is_ok());
+                let reserve = lane
+                    .try_reserve(usage::Usage::new(usage::Bytes::ZERO, usage::Values::new(1)))
+                    .expect("reserve value credit");
+                assert!(matches!(
+                    lane.select(&mut token).try_build(Fail),
+                    Err(PushError::Capacity {
+                        cause: usage::Capacity::Unavailable(_),
+                        ..
+                    })
+                ));
+                drop(reserve);
+                assert!(matches!(
+                    lane.select(&mut token).try_build(Fail),
+                    Err(PushError::Build { error: Reject, .. })
+                ));
+                assert!(
+                    lane.select(&mut token)
+                        .try_push(Counted::mixed(&drops))
+                        .is_ok()
+                );
+                let mut built = false;
+                assert!(
+                    lane.select(&mut token)
+                        .try_build(Probe {
+                            built: &mut built,
+                            drops: &drops,
+                        })
+                        .is_ok()
+                );
+                assert!(!built);
+                assert!(
+                    lane.select(&mut token)
+                        .try_push(Counted::data(&drops))
+                        .is_ok()
+                );
+                assert_eq!(drops.count(), 1);
+                assert!(matches!(lane.select(&mut token).front(), Front::Open));
+                assert!(reply.try_take(&mut token).is_none());
+                if failed {
+                    assert!(
+                        lane.select(&mut token)
+                            .try_fail(Counted::from(&Cause::new(7, &failures)))
+                            .is_ok()
+                    );
+                } else {
+                    lane.complete(&mut token);
+                }
+                let output = reply.try_take(&mut token).expect("terminal reply");
+                if failed {
+                    assert!(matches!(output, Err(Error::Failed(Some(7)))));
+                } else {
+                    let (first, _credits) = output.expect("first retained item").into_parts();
+                    assert_eq!(first.bytes, 1);
+                    assert_eq!(drops.count(), 1);
+                }
+            })
+            .expect("reply arena");
+        });
+        assert_eq!(drops.count(), 2);
+        assert_eq!(failures.count(), usize::from(failed));
+    }
+}

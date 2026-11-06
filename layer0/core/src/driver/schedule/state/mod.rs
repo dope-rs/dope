@@ -6,7 +6,7 @@ use crate::{
     driver,
     driver::{
         schedule,
-        schedule::{ready, timers},
+        schedule::{clock::timer, ready},
     },
 };
 
@@ -49,7 +49,7 @@ pub(super) struct Lanes {
     pub(super) ready: quota::Ledger<ready::Lane>,
     pub(super) coord: quota::Ledger<CoordLane>,
     pub(super) app: quota::Ledger<AppLane>,
-    pub(super) timers: quota::Ledger<timers::Lane>,
+    pub(super) timers: quota::Ledger<timer::Tag>,
     pub(super) maint: quota::Ledger<MaintLane>,
 }
 

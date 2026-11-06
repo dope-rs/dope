@@ -1,6 +1,6 @@
 use std::{mem, task, time};
 
-use o3::mem::{Lease, Return};
+use o3::mem::{Lease, Return, quota};
 
 use crate::{
     driver,
@@ -81,6 +81,14 @@ pub enum Poll<'a, 'd> {
 }
 
 impl<'d> Command<'_, 'd> {
+    fn due(
+        &mut self,
+        now: time::Instant,
+    ) -> Option<heap::Minimum<'_, 'd, time::Instant, slot::Slot, Tag>> {
+        let minimum = self.minimum()?;
+        (*minimum.priority() <= now).then_some(minimum)
+    }
+
     fn set_target(&mut self, slot: &heap::Lease<'d, Tag>, wake: &wake::Waker<'d>) {
         self.resident(slot).set(*wake.key());
     }
@@ -154,16 +162,17 @@ impl<'d> Timer<'d> {
         self.command(|mut cmd| cmd.clear_alarm(slot));
     }
 
-    pub(in crate::driver) fn expire_one(self, now: clock::Moment<'d>) -> Option<()> {
+    pub(in crate::driver) fn expire(self, ledger: &quota::Ledger<Tag>) {
+        let now = self.driver.clock().now().into_raw();
         self.command(|mut cmd| {
-            let min = cmd.minimum()?;
-            if *min.priority() > now.into_raw() {
-                return None;
+            let Some(first) = cmd.due(now) else { return };
+            let mut budget = quota::Lease::<Tag>::reserve_all(ledger);
+            let mut next = budget.admit_with(|| Some(first));
+            while let quota::Admission::Item(minimum) = next {
+                minimum.fire().resident().wake_once(self.driver);
+                next = budget.admit_with(|| cmd.due(now));
             }
-            let fired = min.fire();
-            fired.resident().wake_once(self.driver);
-            Some(())
-        })
+        });
     }
 
     fn command<T>(self, op: impl for<'turn> FnOnce(Command<'turn, 'd>) -> T) -> T {

@@ -33,7 +33,7 @@ impl Len {
     pub const fn try_new(bytes: usize) -> Result<Self, Overflow> {
         match bounded::U32::try_usize(bytes) {
             Ok(bytes) => Ok(Self(bytes)),
-            Err(error) => Err(Overflow::from_num(error)),
+            Err(error) => Err(error),
         }
     }
 

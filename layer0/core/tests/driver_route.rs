@@ -301,13 +301,13 @@ fn slabs_bound_keys() {
     let capacity = settings::FileSlots::fixed::<0, 1>().outbound();
     let mut slab =
         (Slab::<_, KeyTag<ROUTE, kind::Send>>::try_new(capacity)).expect("slab allocation failed");
-    let vacant = (slab.vacancy().try_reserve()).expect("empty slab rejected its slot");
+    let vacant = (slab.access().try_reserve()).expect("empty slab rejected its slot");
     let key = vacant.key();
     vacant.insert(7);
     let token = Token::from_parts(key.parts());
     assert!(token.slot() == SlotIndex::ZERO);
     assert!((token.kind()) == (Ok(kind::Kind::Send)));
-    assert_eq!(slab.view().get(key.parts()), Some(&7));
+    assert_eq!(slab.get(key.parts()), Some(&7));
 
     let overflow = SLOT_MASK as usize + 2;
     assert!(Capacity::try_from(overflow).is_err());

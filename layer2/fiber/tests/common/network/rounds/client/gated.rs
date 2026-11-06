@@ -170,6 +170,7 @@ impl receive::Policy<Wire> for Recv {
     type Reserve = reserve::Borrowed;
     type Credit = mode::Enabled;
     type Discard = mode::Disabled;
+    type Publication = receive::publication::Decoded;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Transaction<'a, 'w, ID, Wire>,

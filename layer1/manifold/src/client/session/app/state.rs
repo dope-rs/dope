@@ -90,7 +90,7 @@ where
     type Failure = N::Failure;
     type Wire = W;
     type Send = N::Send;
-    type Input = receive::Owned;
+    type Input = receive::Owned<N::Receipt>;
     type Requests = N::Requests;
 
     fn try_conn(&self) -> Result<Self::Conn, rc::Error> {
@@ -104,6 +104,15 @@ where
     W: input::Execution + 'd,
 {
     type Continuation = resume::Retained;
+
+    fn receipt(
+        &self,
+        id: conn::Id<'d, ID>,
+        conn: &Self::Conn,
+        region: &region::Token<region::Identity<'d>>,
+    ) -> N::Receipt {
+        self.session.receipt(id, &conn.conn_state, region)
+    }
 
     fn withdraw(&mut self, id: conn::Id<'d, ID>, conn: &mut Self::Conn) -> app::Fence {
         self.session.withdraw(id, &mut conn.conn_state)
@@ -199,7 +208,7 @@ where
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, N, W> app::Owned<'w, 'd, ID> for State<'w, 'd, ID, N, W>
+impl<'w, 'd: 'w, ID: Identity, N, W> app::Owned<'w, 'd, ID, N::Receipt> for State<'w, 'd, ID, N, W>
 where
     N: session::Parser<'d, ID> + session::Retirement<'d, ID> + session::Scheduling<'d, ID>,
     W: input::Execution + 'd,
@@ -211,6 +220,7 @@ where
         conn: conn::Ctx<'_, 'd, ID, Self::Wire, Self::Conn, O>,
         egress: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Self::Send>,
         chunk: Chunk<'w, 'd, Self::Wire>,
+        receipt: N::Receipt,
         driver: &mut driver::Context<'_, 'd>,
     ) -> <Self::Continuation as resume::Mode>::Outcome {
         let (id, conn, close, work, ready) = conn.into_parts();
@@ -220,10 +230,12 @@ where
             continuation: flow,
             ..
         } = conn;
+        let has_prefix = !input.is_empty();
         if input.try_push(chunk).is_err() {
             return Resumed::Complete(app::ChunkOutcome::failed(receive::Failure::Contract));
         }
         let mut ctx = turns::Context::new(id, state, egress, ready, driver.reborrow(), close);
+        self.session.received(receipt, has_prefix, &mut ctx);
         let next = parser::Parser::new(&mut self.session, input, self.ingress.budget(), &mut ctx)
             .run_retained(flow, work);
         next.finish(&mut ctx)
@@ -280,6 +292,7 @@ where
     fn prepare<'e, O>(
         &mut self,
         entry: conn::Ctx<'_, 'd, ID, Self::Wire, Self::Conn, O>,
+        queued: bool,
         egress: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Self::Send>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
@@ -287,7 +300,7 @@ where
             return;
         };
         let (id, conn, close, ready) = entry.into_io();
-        let input = conn.input();
+        let input = conn.input(queued);
         flush.call((
             &mut self.session,
             &mut turns::Context::new(

@@ -34,12 +34,14 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         None::<Infallible>
     }
 
-    fn credit<'s, 'a, 'd: 'a>(_: &'s Self::Bound<'a, 'd>) -> Option<credit::Slot<'s, 'd>> {
+    fn credit<'s, 'a, 'd: 'a, R: 'a>(
+        _: &'s Self::Bound<'a, 'd, R>,
+    ) -> Option<credit::Slot<'s, 'd>> {
         None
     }
 
-    fn cancel<'w, 'd: 'w, ID: Identity + 'w>(
-        _: &Self::Bound<'_, 'd>,
+    fn cancel<'w, 'd: 'w, ID: Identity + 'w, C>(
+        _: &Self::Bound<'_, 'd, C>,
     ) -> Option<impl for<'a> Call<(&'a mut W::Runtime<'w, 'd, ID>, credit::Id<'d, ID>)>>
     where
         W: 'w + 'd,
@@ -73,6 +75,7 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         'd: 'w,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        input::Receipt<W, M>: 'a,
         D: demand::Mode,
         <W::Receive as Policy<W>>::Eof: Capture<W>,
         H: for<'x, 'c, 'i, 'v> FnMut(
@@ -83,7 +86,8 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         ) -> Decision<'d, ID>,
         K: for<'x, 'c, 'v> FnMut(Commit<'x, 'c, 'v, 'r, 'd, C, X, S>) -> Approval<S, R>,
     {
-        let wake = Self::credit(&plan.storage.recv.storage).map(credit::Slot::take);
+        let wake = Self::credit::<input::Receipt<W, M>>(&plan.storage.recv.storage)
+            .map(credit::Slot::take);
         match wake {
             Some(credit::Take::Ready(wake)) => {
                 let rearm = plan
@@ -113,7 +117,8 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
             Step::Done(branch) => return branch,
             Step::Continue => {}
         }
-        let active = Self::credit(&plan.storage.recv.storage).is_some_and(credit::Slot::is_active);
+        let active = Self::credit::<input::Receipt<W, M>>(&plan.storage.recv.storage)
+            .is_some_and(credit::Slot::is_active);
         if active || plan.storage.recv.storage.has_queued() {
             Branch::Pending
         } else {
@@ -131,7 +136,9 @@ where
     W: wire::Spec,
     <W::Receive as Policy<W>>::Reserve: reserve::Immediate<W>,
 {
-    fn credit<'s, 'a, 'd: 'a>(storage: &'s Self::Bound<'a, 'd>) -> Option<credit::Slot<'s, 'd>> {
+    fn credit<'s, 'a, 'd: 'a, R: 'a>(
+        storage: &'s Self::Bound<'a, 'd, R>,
+    ) -> Option<credit::Slot<'s, 'd>> {
         Some(storage.get())
     }
 }
@@ -142,8 +149,8 @@ where
     R: reserve::Try<W>,
     W::Receive: Policy<W, Reserve = reserve::Waiting<R>>,
 {
-    fn cancel<'w, 'd: 'w, ID: Identity + 'w>(
-        storage: &Self::Bound<'_, 'd>,
+    fn cancel<'w, 'd: 'w, ID: Identity + 'w, C>(
+        storage: &Self::Bound<'_, 'd, C>,
     ) -> Option<impl for<'a> Call<(&'a mut W::Runtime<'w, 'd, ID>, credit::Id<'d, ID>)>>
     where
         W: 'w + 'd,
@@ -167,7 +174,9 @@ where
         }
     }
 
-    fn credit<'s, 'a, 'd: 'a>(storage: &'s Self::Bound<'a, 'd>) -> Option<credit::Slot<'s, 'd>> {
+    fn credit<'s, 'a, 'd: 'a, C: 'a>(
+        storage: &'s Self::Bound<'a, 'd, C>,
+    ) -> Option<credit::Slot<'s, 'd>> {
         Some(storage.get())
     }
 }

@@ -21,10 +21,11 @@ use dope_fiber::{
             result::{Outcome, Selection},
             selected::route::{Entry, Routes},
         },
-        tree::{Branch, Here, Leaf, Left, Right},
+        tree::{Branch, Build, Here, Leaf, Left, Right},
     },
 };
 use dope_test::alloc::Tracker;
+use o3::depot::capacity::Count;
 
 use crate::common::{
     runtime::{self, Setup},
@@ -183,13 +184,18 @@ fn drop_preserves_routes() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch()))
             .expect("ready slot allocation failed");
             let parent = RootWaker::from(ready.target());
-            let first = Pool::<'_, abi::Ready<()>, 2, (), u8>::try_new().expect("first task pool");
+            let first =
+                Leaf::<Pool<'_, abi::Ready<()>, 2, (), u8>>::try_build_with_capacity(Count::new(1))
+                    .expect("first task pool");
             let middle =
-                Pool::<'_, abi::Ready<()>, 3, (), u8>::try_new().expect("middle task pool");
-            let last = Pool::<'_, abi::Ready<()>, 4, (), u8>::try_new().expect("last task pool");
+                Leaf::<Pool<'_, abi::Ready<()>, 3, (), u8>>::try_build_with_capacity(Count::EMPTY)
+                    .expect("empty task pool");
+            let last =
+                Leaf::<Pool<'_, abi::Ready<()>, 4, (), u8>>::try_build_with_capacity(Count::new(2))
+                    .expect("last task pool");
             let mut plane = pin::pin!(Plane::from_routes(Branch::new(
-                Leaf::new(first),
-                Branch::new(Leaf::new(middle), Leaf::new(last)),
+                first,
+                Branch::new(middle, last),
             )));
             Scope::with(plane.as_mut(), |mut plane| {
                 let first = plane
@@ -199,7 +205,7 @@ fn drop_preserves_routes() {
                     .expect("task admission")((Ready::new(()), 10));
                 let middle = plane
                     .as_mut()
-                    .route::<Right<Left<Here>>>()
+                    .route::<Right<Right<Here>>>()
                     .try_admit((), parent)
                     .expect("task admission")((Ready::new(()), 20));
                 let last = plane
@@ -275,7 +281,7 @@ fn drop_preserves_routes() {
                         Removal::Absent,
                     ));
                     assert!(matches!(
-                        plane.as_mut().route::<Right<Left<Here>>>().remove(middle),
+                        plane.as_mut().route::<Right<Right<Here>>>().remove(middle),
                         Removal::Absent,
                     ));
                     assert!(matches!(

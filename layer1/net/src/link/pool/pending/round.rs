@@ -9,7 +9,7 @@ use o3::{depot::arena::slab::external::Generation as _, mem::quota};
 use crate::link::pool::{
     self,
     pending::{
-        self, Busy, Chain, Detached, Disposition, Lock, Next, Queue, State, Status, Topology, Wake,
+        self, Busy, Chain, Detached, Disposition, Lock, Next, Queue, State, Status, Topology,
     },
 };
 
@@ -98,25 +98,25 @@ impl<'d, ID: Identity> Front<'_, '_, 'd, ID> {
             Next::End => Topology::Empty,
             Next::Slot(head) => Topology::Occupied(Chain { head, tail }),
         };
-        node.wake.set(Wake::Quiet);
         node.state.set(State::Claimed);
         queue.claimed.set(Lock::Held(head));
         let outcome = run(key);
         queue.end_capacity(head);
-        node.state.set(State::Idle);
         queue.claimed.set(Lock::Free);
         match outcome {
             pending::Disposition::Gone => {
+                node.state.set(State::Idle);
                 queue.clear_wait(head);
                 match key.epoch().next() {
                     Some(epoch) => node.epoch.set(epoch),
                     None => node.state.set(State::Retired),
                 }
             }
-            pending::Disposition::Idle => match node.wake.get() {
-                Wake::Quiet => {}
-                Wake::Pending => queue.enqueue(Detached { index: head, node }),
-            },
+            pending::Disposition::Idle => {
+                if matches!(node.state.replace(State::Idle), State::Awakened) {
+                    queue.enqueue(Detached { index: head, node });
+                }
+            }
         }
     }
 }

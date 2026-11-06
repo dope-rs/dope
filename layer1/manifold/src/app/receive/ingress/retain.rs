@@ -20,7 +20,7 @@ where
     <W::Receive as receive::Policy<W>>::Credit: delivery::Ownership<W>,
 {
     type Value<'input, 'w, 'd>
-        = Chunk<'w, 'd, W>
+        = (Chunk<'w, 'd, W>, input::Receipt<W, M>)
     where
         'd: 'w,
         'w: 'input,
@@ -49,21 +49,8 @@ where
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        work.drive(
-            policy,
-            data,
-            |prep| prep.retained(),
-            |policy, next, turn, driver| {
-                flow::apply_done(
-                    policy,
-                    next,
-                    turn,
-                    driver,
-                    |policy, key, input, turn, driver| P::receive(policy, key, input, turn, driver),
-                )
-            },
-        )
+        work.drive(policy, data, |prep| prep.retained(), flow::apply_done)
     }
 }

@@ -247,8 +247,8 @@ fn retains_native_failure_and_rotates() {
             let dir = file::Directory::try_with(&env::temp_dir(), "appender_failure", |result| {
                 result.expect("remove appender fixture")
             }).expect("temporary directory");
-            let directory = native_file::Dir::open(dir.path()).expect("candidate directory");
             for (name, retry) in [("dropped", false), ("retried", true)] {
+                let directory = native_file::Dir::open(dir.path()).expect("candidate directory");
                 let path = dir.path().join(name);
                 let old = dir.path().join(format!("{name}.old"));
                 let candidate_path = dir.path().join(format!("{name}.candidate"));
@@ -324,7 +324,26 @@ fn retains_native_failure_and_rotates() {
                             }
                             drop(contender);
 
-                            fs::rename(&path, &old).expect("rename retained inode");
+                            let mut rename = read::Request::Rename {
+                                directory,
+                                old: native_file::path::Component::parse_os(path.file_name().expect("current name"))
+                                    .expect("current component").try_to_owned().expect("current name owner"),
+                                new: native_file::path::Component::parse_os(old.file_name().expect("previous name"))
+                                    .expect("previous component").try_to_owned().expect("previous name owner"),
+                            };
+                            let missing = read::Error::System(dope_core::Errno::try_from(libc::ENOENT).expect("ENOENT"));
+                            for expected in [Ok(()), Err(missing)] {
+                                let completed = TEST.try_run(&mut app, Operation::new(&port, rename))
+                                    .expect("rename operation").ok().expect("rename admission");
+                                let read::Completion::Rename { directory, old, new, result } = completed else {
+                                    panic!("rename completion")
+                                };
+                                assert_eq!(result, expected);
+                                rename = read::Request::Rename { directory, old, new };
+                            }
+                            let read::Request::Rename { directory, .. } = rename else {
+                                panic!("returned names")
+                            };
                             fs::write(&path, []).expect("replacement pathname");
                             native.request.set(Some(Request::Retry));
                             assert_eq!(TEST.try_wait(&mut app, &done, 4).expect("explicit retry drain"), Wait::Reached);

@@ -21,7 +21,7 @@ pub struct Route<'s, R> {
 }
 
 impl<'s, R> Route<'s, R> {
-    pub(super) fn new(source: R, proof: region::Proof<region::Identity<'s>>) -> Self {
+    pub(super) fn new(source: R, proof: region::Identity<'s>) -> Self {
         Self {
             inner: Scope::new(source, proof),
         }
@@ -90,13 +90,14 @@ where
         &mut self,
         input: S::Input,
         parent: wake::RootWaker<'d>,
-    ) -> Result<impl FnOnce(schedule::Input<'d, M>) -> Scoped<'s, 'd, M::Domain>, S::Error> {
+    ) -> Result<impl FnOnce(schedule::Input<'d, M>) -> schedule::Scoped<'s, 'd, M::Domain>, S::Error>
+    {
         let proof = self.inner.proof;
         let permit = self.inner.source.try_admit(input, parent)?;
         Ok(move |input| permit(input).bind(proof))
     }
 
-    pub fn remove(&mut self, id: Scoped<'s, 'd, M::Domain>) -> local::Removal {
+    pub fn remove(&mut self, id: schedule::Scoped<'s, 'd, M::Domain>) -> local::Removal {
         self.inner.source.remove(id.original())
     }
 }
@@ -124,7 +125,7 @@ where
 {
     pub fn get_mut<'b>(
         &'b mut self,
-        id: &Scoped<'s, 'd, M::Domain>,
+        id: &schedule::Scoped<'s, 'd, M::Domain>,
     ) -> Result<pin::Pin<&'b mut M::Fiber>, schedule::result::Error>
     where
         M: 'b,
@@ -134,7 +135,7 @@ where
 
     pub fn resume(
         &mut self,
-        id: &Scoped<'s, 'd, M::Domain>,
+        id: &schedule::Scoped<'s, 'd, M::Domain>,
     ) -> Result<(), schedule::result::Error> {
         self.inner.source.resume(&id.original())
     }

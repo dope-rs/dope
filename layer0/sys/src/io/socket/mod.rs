@@ -300,16 +300,13 @@ pub trait Socket: errno::Source {
         protocol: libc::c_int,
     ) -> Result<OwnedFd, E> {
         let raw = unsafe { libc::socket(domain, kind, protocol) };
-        unsafe {
-            <OwnedFd as fd::raw::Adopt>::try_adopt(raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Self, E>(raw) }
     }
 
     fn listen<E: From<Errno>>(file: BorrowedFd<'_>, backlog: libc::c_int) -> Result<(), E> {
         // SAFETY: listen returns exactly zero or minus one; errno is read immediately.
         unsafe {
-            kernel::raw::Status::new(libc::listen(file.as_raw_fd(), backlog))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
+            kernel::raw::Status::new(libc::listen(file.as_raw_fd(), backlog)).try_zero::<Self, E>()
         }
     }
 
@@ -318,7 +315,7 @@ pub trait Socket: errno::Source {
         // SAFETY: shutdown returns exactly zero or minus one; errno is read immediately.
         unsafe {
             kernel::raw::Status::new(libc::shutdown(file.as_raw_fd(), how.raw()))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
+                .try_zero::<Self, E>()
         }
     }
 
@@ -333,9 +330,7 @@ pub trait Socket: errno::Source {
         let raw =
             unsafe { libc::getpeername(file.as_raw_fd(), ptr::from_mut(storage).cast(), len) };
         // SAFETY: getpeername returns zero or -1; errno is captured immediately.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }
     }
 
     /// Makes closing this exclusively owned connection send a reset.
@@ -355,9 +350,7 @@ pub trait Socket: errno::Source {
             )
         };
         // SAFETY: setsockopt returns zero or -1; errno is captured immediately.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }
     }
 
     /// Observes the socket type of one adopted descriptor.
@@ -414,9 +407,7 @@ pub trait Socket: errno::Source {
             )
         };
         // SAFETY: getsockopt returns exactly zero or minus one.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?;
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }?;
         Ok(value)
     }
 
@@ -436,9 +427,7 @@ pub trait Socket: errno::Source {
             )
         };
         // SAFETY: setsockopt returns exactly zero or minus one.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }
     }
 
     fn send<'a, const FLAGS: libc::c_int, E: From<Errno>>(
@@ -449,9 +438,7 @@ pub trait Socket: errno::Source {
         let raw =
             unsafe { libc::send(file.as_raw_fd(), input.as_ptr().cast(), input.len(), FLAGS) };
         // SAFETY: send returns minus one or a count within the supplied input.
-        unsafe {
-            io::raw::Buffer::try_native(input, raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { io::raw::Buffer::try_native::<Self, E>(input, raw) }
     }
 
     fn recv<'a, const FLAGS: libc::c_int, E: From<Errno>>(
@@ -469,9 +456,7 @@ pub trait Socket: errno::Source {
         };
         // SAFETY: the admitted flags exclude MSG_TRUNC, so recv cannot report a
         // successful count beyond the supplied output capacity.
-        unsafe {
-            io::raw::Buffer::try_native(output, raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { io::raw::Buffer::try_native::<Self, E>(output, raw) }
     }
 
     fn recv_now<'a, E: From<Errno>>(
@@ -500,9 +485,7 @@ pub trait Socket: errno::Source {
             )
         };
         // SAFETY: sendto returns -1 or a count within this exact input extent.
-        unsafe {
-            io::raw::Buffer::try_native(input, raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { io::raw::Buffer::try_native::<Self, E>(input, raw) }
     }
 
     /// Receives one datagram and its source into caller-owned storage.
@@ -525,17 +508,13 @@ pub trait Socket: errno::Source {
             )
         };
         // SAFETY: without MSG_TRUNC, recvfrom returns -1 or initializes at most output.len().
-        unsafe {
-            io::raw::Buffer::try_native(output, raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { io::raw::Buffer::try_native::<Self, E>(output, raw) }
     }
 
     fn try_pair<E: From<Errno>>(kind: libc::c_int) -> Result<(OwnedFd, OwnedFd), E> {
         let mut fds = [-1; 2];
         let raw = unsafe { libc::socketpair(libc::AF_UNIX, kind, 0, fds.as_mut_ptr()) };
         // SAFETY: socketpair just returned on this thread and `fds` is its exact destination.
-        unsafe {
-            fd::raw::Pair::new(fds).try_adopt::<E>(raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { fd::raw::Pair::new(fds).try_adopt::<Self, E>(raw) }
     }
 }

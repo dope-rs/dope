@@ -9,7 +9,7 @@ use retire::{Retiring, Settled, Stage, Starting};
 
 use crate::client::{
     close,
-    conn::{self, ClosePhase, CloseStatus, CloseTarget, CloseUpdate, claim, drain, state},
+    conn::{self, ClosePhase, CloseStatus, CloseTarget, claim, drain, state},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,16 +133,8 @@ impl Packed {
         self
     }
 
-    pub(super) fn outcome(&self) -> CloseUpdate {
-        match self.phase {
-            ClosePhase::Withdrawing
-            | ClosePhase::Requested
-            | ClosePhase::Quarantining
-            | ClosePhase::Retiring
-            | ClosePhase::Settled
-            | ClosePhase::Finalized => CloseUpdate::Applied(self.effective()),
-            ClosePhase::Claimed => CloseUpdate::Sealed(self.effective()),
-        }
+    pub(super) const fn is_claimed(&self) -> bool {
+        matches!(self.phase, ClosePhase::Claimed)
     }
 
     pub(super) const fn status(self) -> CloseStatus {

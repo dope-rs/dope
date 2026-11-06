@@ -14,7 +14,7 @@ pub(crate) struct Arena {
 #[derive(Clone, Copy)]
 pub struct Alloc<'d> {
     arena: &'d Arena,
-    proof: region::Proof<region::Identity<'d>>,
+    proof: region::Identity<'d>,
 }
 
 impl Arena {

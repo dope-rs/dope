@@ -133,7 +133,7 @@ impl<'life, 's, 'd: 'life, const LANES: usize, const ADDRESSES: usize, R: Report
             let Some(buf) = pool.cursor() else {
                 return;
             };
-            let next = db.apply(now, |set, raw| {
+            let next = now.at(&db.queries).apply(|set, raw| {
                 set.admit_udp(token, raw, work, buf, rng, |buf, server| {
                     match sock.as_mut().queue(buf, *server.get(sources)) {
                         Ok(()) => queries::Submission::Committed,
@@ -206,7 +206,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const ADDRESSES: us
             }
         };
         let this = self.get_mut();
-        this.db.apply(now, |set, raw| {
+        now.at(&this.db.queries).apply(|set, raw| {
             receive::udp(set, token, addr, pkt.as_ref(), raw);
         });
     }
@@ -241,7 +241,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const ADDRESSES: us
             };
             (datagram.transaction(), cause)
         };
-        this.db.apply(at, |set, raw| {
+        at.at(&this.db.queries).apply(|set, raw| {
             set.fail_udp(token, id, epoch, addr, cause, raw);
         });
     }

@@ -29,8 +29,8 @@ mod receiver;
 pub mod reserve;
 pub mod storage;
 
-pub enum Ready<'d> {
-    Completion(event::Completion<'d>),
+pub enum Ready<'d, R = ()> {
+    Completion(event::Completion<'d, R>),
     Empty,
     Paused,
     Stale,
@@ -69,22 +69,22 @@ pub enum Deferral<'w, 'd, W: wire::Spec + 'w> {
     Occupied(Chunk<'w, 'd, W, Disabled>),
 }
 
-pub(in crate::link::pool) struct State<'d, ID: Identity, P: storage::raw::Mode> {
-    pub(in crate::link::pool) rearm:
-        fifo::List<pool::Key<'d, ID>, pool::raw::Physical<'d, ID>, exact::Policy>,
-    pub(in crate::link::pool) storage: P::Storage<'d>,
+pub(in crate::link::pool) struct State<'d, ID: Identity, P: storage::raw::Mode, R = ()> {
+    pub(in crate::link::pool) rearm: fifo::List<pool::Key<'d, ID>, pool::raw::Physical<'d, ID>>,
+    pub(in crate::link::pool) storage: P::Storage<'d, R>,
 }
 
-pub(in crate::link::pool) struct Borrow<'a, 'd: 'a, ID: Identity, P: storage::raw::Mode> {
+pub(in crate::link::pool) struct Borrow<'a, 'd: 'a, ID: Identity, P: storage::raw::Mode, R: 'a = ()>
+{
     pub(in crate::link::pool) rearm: Rearm<'a, 'd, ID>,
-    pub(in crate::link::pool) storage: P::Bound<'a, 'd>,
+    pub(in crate::link::pool) storage: P::Bound<'a, 'd, R>,
 }
 
-impl<'d, ID: Identity, P: storage::raw::Mode> State<'d, ID, P> {
+impl<'d, ID: Identity, P: storage::raw::Mode, R> State<'d, ID, P, R> {
     /// Pairs one admitted rearm allocation with the storage its mode built.
     pub(in crate::link::pool) fn try_new(
         cap: conn::Capacity,
-        storage: P::Storage<'d>,
+        storage: P::Storage<'d, R>,
     ) -> crate::Result<Self> {
         Ok(Self {
             rearm: fifo::List::try_count(table::Capacity::from(cap))
@@ -135,10 +135,10 @@ impl<'d, ID: Identity> Rearm<'_, 'd, ID> {
 }
 
 // SAFETY: the input Live retains the original State and a resident of its paired table.
-unsafe impl<'a, 'd: 'a, ID: Identity, P: storage::raw::Mode> depot::raw::Project<pool::Key<'d, ID>>
-    for &'a mut State<'d, ID, P>
+unsafe impl<'a, 'd: 'a, ID: Identity, P: storage::raw::Mode, R: 'a>
+    depot::raw::Project<pool::Key<'d, ID>> for &'a mut State<'d, ID, P, R>
 {
-    type Output = Borrow<'a, 'd, ID, P>;
+    type Output = Borrow<'a, 'd, ID, P, R>;
 
     unsafe fn project(self, key: pool::Key<'d, ID>) -> Self::Output {
         use o3::depot::raw::Proof;
@@ -147,7 +147,7 @@ unsafe impl<'a, 'd: 'a, ID: Identity, P: storage::raw::Mode> depot::raw::Project
         let entry = unsafe { Proof::new((&mut self.rearm, index)) }.into();
         // SAFETY: table admission checked the selected storage against that same fixed extent.
         let slot = unsafe { Proof::new((&mut self.storage, key.index().into_usize())) };
-        let storage = P::bind(slot);
+        let storage = P::bind::<R>(slot);
         Borrow {
             rearm: Rearm { entry, key },
             storage,

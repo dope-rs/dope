@@ -53,6 +53,7 @@ impl<'d> Session<'d> for Lane {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Enabled;
     type Send = Shared;
     fn codec(&self) -> &Self::Codec {

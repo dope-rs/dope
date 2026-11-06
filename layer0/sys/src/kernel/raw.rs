@@ -86,10 +86,10 @@ impl Status<-1, 0> {
     /// Decodes a native zero-or-minus-one operation without erasing errno.
     ///
     /// # Safety
-    /// `errno` reads that thread's slot before another syscall.
-    pub unsafe fn try_zero<E: From<Errno>>(self, errno: impl FnOnce() -> Errno) -> Result<(), E> {
-        // SAFETY: -1..=0 is Exact<0>'s domain; errno keeps the caller's contract.
-        unsafe { Exact::<0>(self.0).try_admit(errno) }
+    /// On failure, `S` reads this call's positive, unchanged errno.
+    pub unsafe fn try_zero<S: Source + ?Sized, E: From<Errno>>(self) -> Result<(), E> {
+        // SAFETY: -1..=0 is Exact<0>'s domain; S keeps the caller's errno contract.
+        unsafe { Exact::<0>(self.0).try_admit::<S, E>() }
     }
 }
 
@@ -103,12 +103,13 @@ impl Status<-1, { i32::MAX }> {
     }
 
     /// Converts the retained native scalar domain without checking its range again.
-    pub fn try_value<E: From<Errno>>(
-        self,
-        errno: impl FnOnce() -> Errno,
-    ) -> Result<kernel::Value, E> {
+    ///
+    /// # Safety
+    /// On failure, `S` reads this call's positive, unchanged errno.
+    pub unsafe fn try_value<S: Source + ?Sized, E: From<Errno>>(self) -> Result<kernel::Value, E> {
         if self.0 == -1 {
-            Err(E::from(errno()))
+            // SAFETY: the caller retains this failed call's positive, unchanged errno.
+            Err(E::from(unsafe { Code::last::<S>() }.into()))
         } else {
             Ok(kernel::Value(self.0))
         }
@@ -117,12 +118,10 @@ impl Status<-1, { i32::MAX }> {
     /// Decodes one count-returning operation against the exact extent it was given.
     ///
     /// # Safety
-    /// `errno` reads that thread's slot before another syscall.
-    pub unsafe fn try_count<E: From<Errno>>(
-        self,
-        errno: impl FnOnce() -> Errno,
-    ) -> Result<Count, E> {
-        Ok(Count::new(self.try_value(errno)?))
+    /// On failure, `S` reads this call's positive, unchanged errno.
+    pub unsafe fn try_count<S: Source + ?Sized, E: From<Errno>>(self) -> Result<Count, E> {
+        // SAFETY: the caller retains this failed call's positive, unchanged errno.
+        Ok(Count::new(unsafe { self.try_value::<S, E>() }?))
     }
 
     /// Tightens this scalar to one operation's exact `-1`-or-`VALUE` return.
@@ -145,12 +144,13 @@ impl<const VALUE: libc::c_int> Exact<VALUE> {
     /// Decodes the admitted success value without re-deriving its domain.
     ///
     /// # Safety
-    /// `errno` reads that thread's slot before another syscall.
-    pub unsafe fn try_admit<E: From<Errno>>(self, errno: impl FnOnce() -> Errno) -> Result<(), E> {
+    /// On failure, `S` reads this call's positive, unchanged errno.
+    pub unsafe fn try_admit<S: Source + ?Sized, E: From<Errno>>(self) -> Result<(), E> {
         if self.0 == VALUE {
             Ok(())
         } else {
-            Err(E::from(errno()))
+            // SAFETY: the caller retains this failed call's positive, unchanged errno.
+            Err(E::from(unsafe { Code::last::<S>() }.into()))
         }
     }
 }

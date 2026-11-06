@@ -4,12 +4,19 @@ use dope_core::driver::{self, route, route::Identity, schedule};
 use dope_net::{
     link::{
         egress::data::{self, compose, exec},
-        event::ParkError,
-        pool::{self, pending},
+        event::{self, ParkError},
+        pool::{
+            self, pending,
+            recv::{
+                arrival, input,
+                reserve::{Choice, Reservation},
+            },
+        },
     },
     wire::terminal,
 };
 use handler::{failures, policy::Policy};
+use o3::base::cell::region;
 
 use crate::{
     app::{
@@ -42,6 +49,28 @@ where
 
     fn storage<'a>(self: pin::Pin<&'a mut Self>) -> &'a mut crate::Inbound<'n, 'w, 'd, ID, Self> {
         &mut *self.project().owner.pool_mut()
+    }
+
+    fn reserve<'a, R>(
+        self: pin::Pin<&'a mut Self>,
+        data: R,
+        _: &region::Token<region::Identity<'d, 0>>,
+    ) -> Reservation<'a, 'w, 'd, ID, Self::Wire, Self::Input>
+    where
+        R: arrival::Arrival<
+                'd,
+                input::Receipt<Self::Wire, Self::Input>,
+                Observed = event::Data<'d>,
+            >,
+        input::Receipt<Self::Wire, Self::Input>: 'a,
+        <Self::Input as input::Mode<Self::Wire>>::Reserve:
+            Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>,
+    {
+        self.project()
+            .owner
+            .pool_mut()
+            .reserve()
+            .data(data, |_, _| Default::default())
     }
 
     fn admit(

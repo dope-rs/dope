@@ -54,12 +54,6 @@ impl Data {
     }
 }
 
-impl capacity::Extent for Data {
-    fn get(self) -> usize {
-        self.0
-    }
-}
-
 impl Lanes {
     pub const fn new(lanes: usize) -> Self {
         Self(lanes)

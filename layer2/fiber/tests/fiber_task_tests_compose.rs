@@ -93,17 +93,21 @@ fn returns_keep_admission() {
                     )
                     .expect("ready slot");
                 let entered = Cell::new(0);
+                let mapped = Cell::new(0);
                 let retained = Rc::new(());
-                let mut fiber = pin!(dope_fiber::abi::Task::new(lexical_scope(
-                    failed,
-                    &entered,
-                    Rc::clone(&retained),
+                let mut fiber = pin!(dope_fiber::abi::Task::new(dope_fiber::abi::Map::new(
+                    lexical_scope(failed, &entered, Rc::clone(&retained)),
+                    |outcome: Result<(), usize>| {
+                        mapped.set(mapped.get() + 1);
+                        outcome.map(|()| 41)
+                    },
                 )));
                 let outcome =
                     Context::with_target(root.target(), turn.turn().app(), driver, |context| {
                         context.poll(fiber.as_mut())
                     });
-                assert_eq!(outcome, Poll::Ready(if failed { Err(7) } else { Ok(()) }));
+                assert_eq!(outcome, Poll::Ready(if failed { Err(7) } else { Ok(41) }));
+                assert_eq!(mapped.get(), 1);
                 assert_eq!(entered.get(), 2);
                 assert_eq!(Rc::strong_count(&retained), 1);
                 assert!(turn.turn().app().permit().is_none());

@@ -94,7 +94,7 @@ impl<'a, 'd, Source> Prepared<'a, 'd, Source, ()> {
         parent: task::Parent<'d>,
     ) -> Result<(Edge<'a, 'd, Global>, Prepared<'a, 'd, Source>), task::Error> {
         let queue = self.0.queue;
-        if index.get() >= queue.store.block.extent().tasks.get() as usize {
+        if index.get() >= queue.store.block.extent().tasks.get() {
             return Err(task::Error::Capacity {
                 requested: NonZero::<usize>::MIN,
                 available: 0,
@@ -166,7 +166,7 @@ impl<'a, 'd, Source> Entry<'a, 'd, Source> {
 
 impl<'d, Source> Queue<'d, Source> {
     pub(in crate::task::storage) fn try_new(
-        tasks: NonZero<u32>,
+        tasks: depot::capacity::Count,
         owners: owner::Capacity,
     ) -> Result<Self, Error> {
         Ok(Self {

@@ -2,7 +2,7 @@ use std::convert;
 
 use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
-    link::pool,
+    link::pool::{self, recv::input},
     wire::receive::{Chunk, batch},
 };
 
@@ -23,13 +23,14 @@ where
         'd: 'input,
         A: app::Borrowed<'d, ID>;
 
-    fn retained<'turn, 'driver, 'context>(
+    fn retained<'turn, 'driver, 'context, R: Default>(
         self,
         key: pool::Key<'d, ID>,
         chunk: Chunk<'w, 'd, A::Wire>,
+        receipt: input::Receipt<A::Wire, crate::app::receive::Owned<R>>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
-        A: app::Owned<'w, 'd, ID>;
+        A: app::Owned<'w, 'd, ID, R>;
 }

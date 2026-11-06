@@ -76,9 +76,9 @@ where
         H: for<'b, 'id> FnOnce(
             &mut C,
             &'b mut [u8; write::Prefix::CAPACITY],
-            region::Proof<region::Identity<'id>>,
+            region::Identity<'id>,
         ) -> Result<
-            write::Commit<region::Proof<region::Identity<'id>>, B, R>,
+            write::Commit<region::Identity<'id>, B, R>,
             error::Error<B, R, E>,
         >,
     {
@@ -219,6 +219,7 @@ where
                 >())) {
                     Ok(plan) => plan,
                     Err(cause) => {
+                        queue.cancel_wait(driver.region_token());
                         slot.cancel_idle(queue.pending());
                         return Err(error::Error::Capacity(write::Reject::Geometry(Full::Lane(
                             cause,

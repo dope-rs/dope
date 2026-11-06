@@ -10,11 +10,15 @@ use dope_net::{
         event,
         pool::{
             self,
-            recv::{input, reserve::Choice},
+            recv::{
+                arrival, input,
+                reserve::{Choice, Reservation},
+            },
         },
     },
     wire,
 };
+use o3::base::cell::region;
 
 use crate::app::receive::{
     End, Mode,
@@ -31,6 +35,21 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
     type Input: Mode<Self::Wire> + Dispatch<Self::Wire>;
 
     fn storage<'a>(self: pin::Pin<&'a mut Self>) -> &'a mut crate::Inbound<'p, 'w, 'd, ID, Self>;
+
+    fn reserve<'a, A>(
+        self: pin::Pin<&'a mut Self>,
+        data: A,
+        token: &region::Token<region::Identity<'d, 0>>,
+    ) -> Reservation<'a, 'w, 'd, ID, Self::Wire, Self::Input>
+    where
+        A: arrival::Arrival<
+                'd,
+                input::Receipt<Self::Wire, Self::Input>,
+                Observed = event::Data<'d>,
+            >,
+        input::Receipt<Self::Wire, Self::Input>: 'a,
+        <Self::Input as input::Mode<Self::Wire>>::Reserve:
+            Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>;
 
     /// Admits input before its native completion or held tail is consumed.
     fn admit(

@@ -25,7 +25,7 @@ pub enum Reply<'a> {
     Alias(Option<[u8; 4]>, &'a [u8]),
     Aliases([&'a [u8]; 2]),
     Empty,
-    Cut,
+    Cut(u8),
     Refused,
     Name,
 }
@@ -88,7 +88,8 @@ impl<B: AsRef<[u8]>> Query<B> {
             Reply::Addrs(vals, root, _) => vals.len() + usize::from(root),
             Reply::Alias(addr, _) => 1 + usize::from(addr.is_some()),
             Reply::Aliases(_) => 3,
-            Reply::Empty | Reply::Cut | Reply::Refused | Reply::Name => 0,
+            Reply::Cut(count) => usize::from(count),
+            Reply::Empty | Reply::Refused | Reply::Name => 0,
         };
         let count = u8::try_from(count).map_err(Server::Length)?;
         let code = match reply {
@@ -96,7 +97,7 @@ impl<B: AsRef<[u8]>> Query<B> {
             Reply::Name => 3,
             _ => 0,
         };
-        let cut = u16::from(matches!(reply, Reply::Cut)) << 9;
+        let cut = u16::from(matches!(reply, Reply::Cut(_))) << 9;
         let flags: u16 = 0x8180 | cut | code;
         let mut out = Vec::from([buf[0], buf[1]]);
         out.extend_from_slice(&flags.to_be_bytes());
@@ -126,7 +127,12 @@ impl<B: AsRef<[u8]>> Query<B> {
                 }
                 record(&mut out, &ptr(pos)?, A, &[192, 0, 2, 2])?;
             }
-            Reply::Empty | Reply::Cut | Reply::Refused | Reply::Name => {}
+            Reply::Cut(count) => {
+                for _ in 0..count {
+                    record(&mut out, &owner, CNAME, b"\x04edge\x07example\0")?;
+                }
+            }
+            Reply::Empty | Reply::Refused | Reply::Name => {}
         }
         if client.is_some() || edns {
             out.extend_from_slice(&[0, 0, 41, 4, 208, 0, 0, 0, 0, 0]);
@@ -174,7 +180,7 @@ fn cookie<'a>(buf: &'a mut [u8], key: &[u8; 8]) -> Result<&'a mut [u8; 50], Serv
 }
 
 #[derive(Clone, Copy)]
-pub enum Reject {
+pub enum Alter {
     Wrong,
     Duplicate,
     Trailing,
@@ -182,7 +188,7 @@ pub enum Reject {
     AliasConflict,
 }
 
-impl Reject {
+impl Alter {
     fn apply(self, buf: &mut Vec<u8>, query: Query<&[u8]>) -> Result<(), Server> {
         match self {
             Self::Wrong => {
@@ -190,9 +196,8 @@ impl Reject {
             }
             Self::Duplicate => {
                 let option = cookie(buf, &query.client()?)?;
-                let copy = option[6..].to_vec();
-                option[4..6].copy_from_slice(&88u16.to_be_bytes());
-                buf.extend_from_slice(&copy);
+                option[4..6].copy_from_slice(&48u16.to_be_bytes());
+                buf.extend_from_slice(&[0, COOKIE as u8, 0, 0]);
             }
             Self::Trailing => buf.push(0),
             Self::Forward => {
@@ -229,7 +234,7 @@ pub enum Mode<'a> {
     Follow(&'a [u8]),
     Oversized(&'a [u8]),
     Refused,
-    Reject(Reject),
+    Alter(Alter),
     Delay(Duration),
     Malformed(bool),
     Close(bool),
@@ -338,14 +343,14 @@ impl Mode<'_> {
                     Reply::Refused
                 }
                 Self::Refused => Reply::Empty,
-                Self::Reject(mode) if query.kind == A => {
-                    let mut stale =
+                Self::Alter(mode) if query.kind == A => {
+                    let mut first =
                         query.reply(Reply::Addrs(&[[192, 0, 2, 9]], false, false), true)?;
-                    mode.apply(&mut stale, query)?;
-                    udp.send_to(&stale, peer).map_err(Server::Io)?;
+                    mode.apply(&mut first, query)?;
+                    udp.send_to(&first, peer).map_err(Server::Io)?;
                     Reply::Addrs(&[[192, 0, 2, 10]], false, false)
                 }
-                Self::Reject(_) => Reply::Empty,
+                Self::Alter(_) => Reply::Empty,
                 Self::Delay(delay) => {
                     let edge = !query.buf[QOFF..query.end - 4]
                         .windows(4)
@@ -361,10 +366,10 @@ impl Mode<'_> {
                     )
                 }
                 Self::Cookie(_) if query.kind == A => Reply::Addrs(&[[192, 0, 2, 8]], false, false),
-                Self::Partial => Reply::Cut,
-                Self::Stream(_) if query.kind == A => Reply::Cut,
+                Self::Partial => Reply::Cut(0),
+                Self::Stream(_) if query.kind == A => Reply::Cut(33),
                 Self::Stream(_) => Reply::Empty,
-                Self::Malformed(_) | Self::Close(_) if query.kind == A => Reply::Cut,
+                Self::Malformed(_) | Self::Close(_) if query.kind == A => Reply::Cut(0),
                 Self::Malformed(_) | Self::Close(_) | Self::Cookie(_) | Self::Code(_) => {
                     Reply::Empty
                 }
@@ -392,7 +397,10 @@ impl Mode<'_> {
         }
         match self {
             Self::Stream(reply) => {
-                let conn = listen.accept().map_err(Server::Io)?;
+                let conn = listen
+                    .accept_for(LIMIT)
+                    .map_err(Server::Io)?
+                    .ok_or(Server::Stream)?;
                 let query = read(&conn)?;
                 write(&conn, &query.reply(reply, false)?)?;
             }
@@ -445,7 +453,7 @@ impl Mode<'_> {
             | Self::Follow(_)
             | Self::Oversized(_)
             | Self::Refused
-            | Self::Reject(_)
+            | Self::Alter(_)
             | Self::Code(_)
             | Self::Delay(_) => {}
         }

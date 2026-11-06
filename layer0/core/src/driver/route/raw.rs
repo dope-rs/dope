@@ -5,7 +5,7 @@ use o3::{
     depot,
     depot::{
         arena::slab::{
-            self, entries, external,
+            self, entries,
             external::{errors, shared},
             lookup,
         },
@@ -56,24 +56,11 @@ type Allocation<'a, T, Tag> = depot::raw::Proof<
     Initialized<entries::Allocated>,
 >;
 
-type Vacancy<'a, T, Tag> = external::Vacant<
-    entries::Pending<
-        'a,
-        external::Stamped<T, route::Epoch>,
-        { u32::MAX },
-        entries::Interior<true>,
-        1,
-    >,
-    Tag,
-    true,
-    route::Epoch,
->;
-
 /// A position admitted in the retained route storage allocation.
 pub struct Slot<'a, T, Tag: route::Tag>(Allocation<'a, T, Tag>);
 
 impl<'a, T, Tag: route::Tag> Slot<'a, T, Tag> {
-    pub fn vacancy(self) -> Result<Vacancy<'a, T, Tag>, slab::Vacancy> {
+    pub fn vacancy(self) -> Result<shared::Vacancy<'a, T, route::Epoch, Tag>, slab::Vacancy> {
         self.0.vacancy()
     }
 

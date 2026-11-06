@@ -4,25 +4,9 @@ use o3::{
     depot::{arena::slab::key, capacity, heap::keyed, queue::round::set},
 };
 
-use crate::service::{
-    health,
-    pool::members::{Member, Occupied, Unlinked, backoff, failure},
-};
+use crate::service::pool::members::{Member, Occupied, Unlinked, backoff, failure};
 
-/// The heap owns backoff eligibility; health is ordering metadata captured at insertion.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Retry<'d> {
-    pub(super) retry_at: clock::Deadline<'d>,
-    health: health::Generation,
-}
-
-impl<'d> Retry<'d> {
-    pub(super) const fn new(health: health::Generation, retry_at: clock::Deadline<'d>) -> Self {
-        Self { retry_at, health }
-    }
-}
-
-type Heap<'h, 'd> = keyed::Min<key::Handle<Member>, Retry<'d>, u32, capacity::Domain<'h>>;
+type Heap<'h, 'd> = keyed::Min<key::Handle<Member>, clock::Deadline<'d>, u32, capacity::Domain<'h>>;
 
 pub(super) struct Queue<'h, 'd> {
     retries: Heap<'h, 'd>,
@@ -35,15 +19,16 @@ impl<'h, 'd> Queue<'h, 'd> {
 
     pub(super) fn first(
         &mut self,
-    ) -> Option<keyed::Occupied<'_, key::Handle<Member>, Retry<'d>, u32, capacity::Domain<'h>>>
-    {
+    ) -> Option<
+        keyed::Occupied<'_, key::Handle<Member>, clock::Deadline<'d>, u32, capacity::Domain<'h>>,
+    > {
         self.retries.first_entry()
     }
 
     pub(super) fn backoff<I, A>(
         &mut self,
         failure: failure::Failure<'_, 'h, I, A>,
-        retry: Retry<'d>,
+        retry_at: clock::Deadline<'d>,
     ) {
         let key = failure.key();
         // SAFETY: admitted Healthy/Probing residents have no retry in this joint owner.
@@ -51,7 +36,7 @@ impl<'h, 'd> Queue<'h, 'd> {
         let (entry, failure) = keyed::Vacant::from_live(unsafe {
             depot::raw::Proof::new(((&mut self.retries, failure), key))
         });
-        entry.insert(retry);
+        entry.insert(retry_at);
         failure.commit();
     }
 
@@ -94,6 +79,6 @@ impl<'h, 'd> Queue<'h, 'd> {
     }
 
     pub(super) fn retry_at(&self) -> Option<clock::Deadline<'d>> {
-        self.retries.peek().map(|entry| entry.1.retry_at)
+        self.retries.peek().map(|entry| *entry.1)
     }
 }

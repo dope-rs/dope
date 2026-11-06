@@ -1,5 +1,3 @@
-use std::time;
-
 use dope_core::{
     driver,
     driver::{result::poll, schedule, schedule::clock},
@@ -27,7 +25,13 @@ where
         driver::Context::commit(&mut self.core.driver, work)
     }
 
-    pub(crate) fn wait(mut self, span: Option<time::Duration>) -> Result<(), poll::Error> {
+    pub(crate) fn wait(
+        mut self,
+        progress: schedule::Progress<'d>,
+        source: impl Time,
+    ) -> Result<(), poll::Error> {
+        let span = self.core.timeout(progress, source);
+        let span = source.limit(span);
         driver::Context::wait(&mut self.core.driver, self.core.turn.reactor(), span)
     }
 
@@ -37,14 +41,6 @@ where
 
     pub(crate) fn now(&self) -> clock::Moment<'d> {
         self.core.driver.driver_ref().clock().now()
-    }
-
-    pub(crate) fn timeout(
-        &self,
-        state: schedule::Progress<'d>,
-        source: impl Time,
-    ) -> Option<time::Duration> {
-        self.core.timeout(state, source)
     }
 }
 

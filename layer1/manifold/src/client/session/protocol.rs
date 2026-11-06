@@ -3,7 +3,10 @@
 use bindings::endpoint::State;
 use dope_core::driver::route::Identity;
 use dope_net::link::egress::data;
-use o3::buffer::{self, hold, resident};
+use o3::{
+    base::cell::region,
+    buffer::{self, hold, resident},
+};
 
 use crate::{
     client::{
@@ -22,9 +25,27 @@ pub trait Spec<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>: Siz
     type Connect: connect::Mode;
     type ConnState: Default;
     type Failure: failure::Mode;
+    type Receipt: Default;
     type Send: data::raw::Payload<'d>;
 
     fn codec<'a>(owner: &'a State<'life, 'd, P, Self, ID, MAX>) -> &'a Self::Codec;
+
+    fn receipt(
+        _: &State<'life, 'd, P, Self, ID, MAX>,
+        _: conn::Id<'d, ID>,
+        _: &Self::ConnState,
+        _: &region::Token<region::Identity<'d>>,
+    ) -> Self::Receipt {
+        Self::Receipt::default()
+    }
+
+    fn received<'e>(
+        _: &mut State<'life, 'd, P, Self, ID, MAX>,
+        _: Self::Receipt,
+        _: bool,
+        _: &mut session::Context<'_, 'e, 'life, 'd, P, Self, ID, MAX>,
+    ) {
+    }
 
     fn mode(
         _: &State<'life, 'd, P, Self, ID, MAX>,

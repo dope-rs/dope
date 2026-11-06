@@ -82,6 +82,7 @@ impl<'d> Session<'d> for Retry<'d> {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Disabled;
     type Send = Shared;
     fn codec(&self) -> &Decode {

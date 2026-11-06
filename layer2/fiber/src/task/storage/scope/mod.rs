@@ -1,6 +1,6 @@
 use std::{marker, ops, pin};
 
-use o3::base::cell::region;
+use o3::{base::cell::region, depot::arena::slab::key};
 
 use crate::{
     core::driver::schedule::{app, ready::task::owner},
@@ -28,19 +28,16 @@ pub struct Domain<'s, D> {
 }
 
 /// A task identity bound to one exclusive storage access scope.
-pub type Scoped<'s, 'd, D> = Id<'d, Domain<'s, D>>;
+pub type Scoped<'s, 'd, D, K = key::Parts> = Id<'d, Domain<'s, D>, K>;
 
 /// Exclusive access carrying the original storage's invariant identity proof.
 pub struct Scope<'s, S> {
     pub(in crate::task::storage) source: S,
-    pub(in crate::task::storage) proof: region::Proof<region::Identity<'s>>,
+    pub(in crate::task::storage) proof: region::Identity<'s>,
 }
 
 impl<'s, S> Scope<'s, S> {
-    pub(in crate::task::storage) fn new(
-        source: S,
-        proof: region::Proof<region::Identity<'s>>,
-    ) -> Self {
+    pub(in crate::task::storage) fn new(source: S, proof: region::Identity<'s>) -> Self {
         Self { source, proof }
     }
 }

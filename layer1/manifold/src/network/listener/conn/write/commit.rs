@@ -23,9 +23,9 @@ pub struct Commit<H, B, R> {
     pub(in crate::network::listener::conn::write) end: write::End,
 }
 
-impl<'id, B, R> Commit<region::Proof<region::Identity<'id>>, B, R> {
+impl<'id, B, R> Commit<region::Identity<'id>, B, R> {
     pub(in crate::network::listener) fn new(
-        header: region::Proof<region::Identity<'id>>,
+        header: region::Identity<'id>,
         written: memory::Len,
         total: Option<transfer::NonZero>,
         body: Option<Value<B>>,
@@ -63,9 +63,8 @@ impl<H, B, R> Commit<H, B, R> {
         call: impl for<'b, 'id> FnOnce(
             &mut C,
             &'b mut [u8; memory::WRITE_BUF_CAP],
-            region::Proof<region::Identity<'id>>,
-        )
-            -> Result<Commit<region::Proof<region::Identity<'id>>, B, R>, E>,
+            region::Identity<'id>,
+        ) -> Result<Commit<region::Identity<'id>, B, R>, E>,
     ) -> Result<Self, E>
     where
         H: AsMut<[u8; memory::WRITE_BUF_CAP]>,
@@ -149,9 +148,8 @@ fn part<'p, 's, 'd, ID: Identity, B>(
 const _: () = {
     let word = mem::size_of::<usize>();
     assert!(
-        mem::size_of::<
-            Commit<region::Proof<region::Identity<'static>>, resident::Shared<'static>, ()>,
-        >() == 8 * word
+        mem::size_of::<Commit<region::Identity<'static>, resident::Shared<'static>, ()>>()
+            == 8 * word
     );
     assert!(
         mem::size_of::<

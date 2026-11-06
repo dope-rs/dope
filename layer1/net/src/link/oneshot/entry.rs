@@ -37,14 +37,14 @@ pub(super) struct Access<'a, 'd, ID: Identity, A: 'd, P: socket::Prepared, B: 'd
     index: routes::Index,
     slot: route::raw::Slot<'a, oneshot::raw::Cell<'d, A, P, B>, ID>,
     routes: &'a routes::Routes<'d, ID>,
-    retry: &'a mut fifo::List<routes::Local<'d, ID>, indices::SlotIndex, exact::Policy>,
+    retry: &'a mut fifo::List<routes::Local<'d, ID>, indices::SlotIndex>,
     flights: &'a flight::Slots<'d, ID>,
     deadlines: &'a mut keyed::Min<routes::Index, routes::Due<'d>>,
 }
 
 impl<'a, 'd, ID: Identity, A: 'd, P: socket::Prepared, B: 'd> Access<'a, 'd, ID, A, P, B>
 where
-    B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
+    B: data::raw::StableOwner<'d>,
 {
     pub(super) fn new(live: Allocated<'a, 'd, ID, A, P, B>) -> Self {
         let (pool, index) = live.into_inner();
@@ -150,7 +150,7 @@ pub(super) struct Entry<'a, 'd, ID: Identity, A: 'd, P: socket::Prepared, B: 'd>
 impl<'a, 'd, ID: Identity, A: 'd, P, B: 'd> Entry<'a, 'd, ID, A, P, B>
 where
     P: socket::Prepared,
-    B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
+    B: data::raw::StableOwner<'d>,
 {
     pub(super) fn try_new(
         access: Access<'a, 'd, ID, A, P, B>,

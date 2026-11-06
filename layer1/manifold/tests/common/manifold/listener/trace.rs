@@ -114,16 +114,12 @@ impl<'d, ID: route::Identity, F: for<'a, 'b> Fn(Event<'a, 'b, ID>)> Application<
         Outcome::Continue
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>
-    where
-        'd: 'w,
-    {
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
+    ) {
         (self.observe)(Event::Close(conn.state(), conn.id()));
         self.as_ref().get_ref().trace.closed.hit();
-        conn
     }
 }
 
@@ -233,18 +229,14 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Active {
         Outcome::Continue
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>,
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, ()>,
         _: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>
-    where
-        'd: 'w,
-    {
+    ) {
         let this = self.as_ref().get_ref();
         this.hits.set(this.hits.get() + 1);
         this.gate.hit();
-        conn
     }
 }
 

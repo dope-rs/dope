@@ -72,15 +72,11 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> handler::Applicati
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>
-    where
-        'd: 'w,
-    {
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, State<'d>, Self::Egress>,
+    ) {
         self.as_ref().get_ref().closed.hit();
-        conn
     }
 }
 
@@ -173,18 +169,15 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Applicat
         None
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, State<'d>, Self::Egress>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>
-    where
-        'd: 'w,
-    {
+    ) {
         let this = self.as_ref().get_ref();
         let called = &this.called;
         if called.get() {
-            return conn;
+            return;
         }
         let mut body = None;
         let result = conn.write().try_commit(driver, |state, mut prefix| {
@@ -199,18 +192,13 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Applicat
                 .map_err(|cause| cause.close_after())
         });
         (this.observe)(BoundedEvent::Activated { body, result });
-        conn
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>
-    where
-        'd: 'w,
-    {
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, State<'d>, Self::Egress>,
+    ) {
         self.as_ref().get_ref().closed.hit();
-        conn
     }
 }
 

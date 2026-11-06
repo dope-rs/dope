@@ -191,10 +191,7 @@ fn bpf<T>(op: Operation, command: libc::c_uint, attr: &T) -> Result<kernel::Valu
     };
     // SAFETY: these commands return -1, zero or a live c_int descriptor;
     // failure reads its unchanged errno before any other native call.
-    unsafe {
-        Uring::status(rc).try_value::<dope_sys::Errno>(|| kernel::raw::Code::last::<Uring>().into())
-    }
-    .map_err(|errno| Error {
+    unsafe { Uring::status(rc).try_value::<Uring, dope_sys::Errno>() }.map_err(|errno| Error {
         operation: op,
         errno,
     })

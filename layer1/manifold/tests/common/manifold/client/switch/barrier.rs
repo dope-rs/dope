@@ -24,7 +24,10 @@ use dope_net::{
     link::{egress, pool::change::opening},
     wire,
 };
-use dope_test::harness::signals::{self, Progress as _};
+use dope_test::harness::{
+    observe::Trace,
+    signals::{self, Progress as _},
+};
 use o3::{
     base::{Call, cell::region},
     buffer::{self, hold, resident, storage::Shared},
@@ -71,6 +74,7 @@ pub struct Gates<'d> {
     pub(crate) settlements: Rc<Cell<usize>>,
     pub(crate) input: Rc<Cell<Option<session::Input>>>,
     pub(crate) pending_input: Rc<Cell<Option<session::Input>>>,
+    pub(crate) receipts: Rc<Trace<(u32, bool), 2>>,
     pub(crate) head: signals::Gate,
     pub(crate) duplex: signals::Gate,
     pub(crate) quarantine: signals::Gate,
@@ -95,10 +99,29 @@ impl<'d> Session<'d> for Barrier<'d> {
     type Requests = request::Disabled;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = u32;
     type Send = Shared;
 
     fn codec(&self) -> &Decode {
         &self.decode
+    }
+
+    fn receipt(
+        &self,
+        _: conn::Id<'d, KeyTag<0>>,
+        _: &Self::ConnState,
+        _: &region::Token<region::Identity<'d>>,
+    ) -> u32 {
+        self.decode.prefix.hits()
+    }
+
+    fn received(
+        &mut self,
+        receipt: u32,
+        has_prefix: bool,
+        _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
+    ) {
+        self.gates.receipts.record((receipt, has_prefix));
     }
 
     fn mode(&self, _: conn::Id<'d, KeyTag<0>>, _: &()) -> ReceiveMode {

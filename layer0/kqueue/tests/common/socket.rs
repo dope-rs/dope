@@ -11,7 +11,7 @@ use dope_sys::{
     io::{
         fd::Fd as _, reactor::ready::Poll as _, socket, socket::Prepare as _, socket::Socket as _,
     },
-    kernel::raw::{Code, Status},
+    kernel::raw::Status,
     table::{self, Files as _, change},
 };
 use o3::base::{marker::ThreadBound, num::bounded};
@@ -100,7 +100,7 @@ pub fn try_pair() -> Result<(Handle, Peer), Error> {
             ptr::from_ref(&timeout).cast(),
             mem::size_of::<libc::timeval>() as libc::socklen_t,
         ))
-        .try_zero::<Errno>(|| Code::last::<Kqueue>().into())
+        .try_zero::<Kqueue, Errno>()
     }
     .map_err(Error::Timeout)?;
     let handle = Kqueue::adopt(stream).map_err(Error::Adopt)?;

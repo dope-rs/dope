@@ -42,7 +42,7 @@ pub(in crate::link::oneshot) struct Cell<'d, A: 'd, P: Prepared, B: 'd> {
 impl<'d, A: 'd, P, B: 'd> Cell<'d, A, P, B>
 where
     P: Prepared,
-    B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
+    B: data::raw::StableOwner<'d>,
 {
     pub(in crate::link::oneshot) fn new(
         req: Request<'d, A, P, B>,

@@ -1,14 +1,12 @@
 use std::{cell, mem, num};
 
 use drain::Drain;
-pub(in crate::driver::schedule::ready) use drain::Queued;
 use o3::{
     alloc,
     alloc::{Error, array},
     depot::{
         self,
         index::{bitmap, bitmap::entry},
-        queue::Removal,
     },
     mem::Return,
 };
@@ -47,8 +45,12 @@ impl Set {
         self.store.insert(self.store.state().active(), index)
     }
 
-    pub(in crate::driver::schedule::ready) fn remove(&self, index: ready::DynamicIndex) -> Removal {
-        self.store.remove(index, Removal::Removed, Removal::Absent)
+    pub(in crate::driver::schedule::ready) fn remove(
+        &self,
+        index: ready::DynamicIndex,
+    ) -> ready::Readiness {
+        self.store
+            .remove(index, ready::Readiness::Ready, ready::Readiness::Idle)
     }
 
     pub(in crate::driver::schedule::ready) fn clear(&self, index: ready::DynamicIndex) {
@@ -180,12 +182,13 @@ impl Store {
         &self.cells.state().0
     }
 
-    /// The packed position of one ready code, admitted once into this extent.
-    ///
-    /// The validated plan's nonempty descriptor table makes the packed domain
-    /// nonempty, so the row carries the transition's word and both planes.
-    fn at(&self, index: usize) -> entry::Row<&Store> {
-        entry::Row::clamp(self, index / ENTRIES_PER_WORD)
+    fn at(&self, index: ready::DynamicIndex) -> entry::Row<&Store> {
+        let row = (index.get() / ENTRIES_PER_WORD) as u32 + 1;
+        // SAFETY: private callers supply this arena's admitted index.
+        // Its u16 bound keeps the one-based packed row nonzero.
+        entry::Row::from_source(unsafe {
+            depot::raw::Proof::new((self, num::NonZero::<u32>::new_unchecked(row)))
+        })
     }
 
     /// Publishes one insertion or removal on the caller's exact side.
@@ -206,7 +209,7 @@ impl Store {
     }
 
     fn insert(&self, side: Side, index: ready::DynamicIndex) {
-        let row = self.at(index.get());
+        let row = self.at(index);
         let shift = (index.get() % ENTRIES_PER_WORD) * 2;
         // SAFETY: the row retains this exact packed position inside the extent.
         let word = unsafe { self.base().get_unchecked(row.index()) };
@@ -224,7 +227,7 @@ impl Store {
 
     /// Removes the sole side encoded by an insertion into an empty packed position.
     fn remove<R>(&self, index: ready::DynamicIndex, removed: R, absent: R) -> R {
-        let row = self.at(index.get());
+        let row = self.at(index);
         let shift = (index.get() % ENTRIES_PER_WORD) * 2;
         // SAFETY: the row retains this exact packed position inside the extent.
         let word = unsafe { self.base().get_unchecked(row.index()) };

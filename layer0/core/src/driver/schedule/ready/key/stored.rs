@@ -29,10 +29,6 @@ impl Stored {
         self.0.index
     }
 
-    pub(in crate::driver) fn index(self) -> u32 {
-        u32::from(self.index_code().get() - 1)
-    }
-
     pub(in crate::driver) const fn dense(self) -> DynamicIndex {
         DynamicIndex(self.0.index)
     }

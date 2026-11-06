@@ -39,7 +39,9 @@ static ALLOCATOR: alloc::Tracker = Tracker::new();
 #[test]
 fn rejects_another_pool() {
     type TaskRoutes<'d> =
-        Branch<Leaf<Pool<'d, Ready<u8>, 16384, (), u8>>, Leaf<Pool<'d, Ready<u8>, 1, (), u8>>>;
+        Branch<Leaf<Pool<'d, Ready<u8>, 16384, (), u8>>, Leaf<Pool<'d, Ready<u8>, 2, (), u8>>>;
+    type PhysicalRoutes<'d> =
+        Branch<Leaf<Pool<'d, Ready<u8>, 1, (), u8>>, Leaf<Pool<'d, Ready<u8>, 1, (), u8>>>;
     let mut reports = Vec::new();
 
     Setup::for_profile::<profile::Tasks>().with_turn(
@@ -56,15 +58,25 @@ fn rejects_another_pool() {
             let parent = RootWaker::from(ready.target());
             let owners = owner::Capacity::new(NonZero::<u32>::MIN);
             let (full, full_memory) = Tracker::usage(|| {
-                Plan::<'_, TaskRoutes<'_>>::new(Limit::new(2)).try_prepare::<Tasks>(owners)
+                Plan::<'_, PhysicalRoutes<'_>>::new(Limit::new(2)).try_prepare::<Tasks>(owners)
             });
-            drop(full.expect("declared task extents"));
+            drop(full.expect("physical reference"));
+            let (empty, memory) = Tracker::usage(|| {
+                Plan::<'_, TaskRoutes<'_>>::new(Limit::new(0)).try_prepare::<Tasks>(owners)
+            });
+            assert_eq!(memory.0, 1);
+            let mut empty = pin::pin!(empty.expect("empty task extents"));
+            Scope::with(empty.as_mut(), |mut plane| {
+                assert!(matches!(
+                    plane.as_mut().select(owner::Scope::Any, turn.turn().app()),
+                    Selection::Idle
+                ));
+            });
             let (plane, memory) = Tracker::usage(|| {
                 Plan::<'_, TaskRoutes<'_>>::new(Limit::new(2))
                     .try_prepare_with_capacity::<Tasks>(owners, Count::new(1))
             });
-            assert_eq!(memory.0, full_memory.0);
-            assert!(memory.1 < full_memory.1);
+            assert_eq!(memory, full_memory);
             let mut plane = pin::pin!(plane.expect("physical task extents"));
             Scope::with(plane.as_mut(), |mut plane| {
                 let owner = owner::Owner::from(Stamp::try_new(0, 0).expect("owner"));
@@ -124,9 +136,28 @@ fn rejects_another_pool() {
                         ));
                         receipt.settle(Flow::Batch);
                     }
+                    let current = plane
+                        .as_mut()
+                        .route::<Right<Here>>()
+                        .try_admit(owner, parent)
+                        .ok()
+                        .expect("reused physical slot")((
+                        Ready::new(13),
+                        13,
+                    ));
                     assert!(matches!(
                         plane.as_mut().route::<Right<Here>>().remove(other),
                         Removal::Absent
+                    ));
+                    assert!(matches!(
+                        plane.as_mut().route::<Right<Here>>().remove(current),
+                        Removal::Removed
+                    ));
+                    assert!(matches!(
+                        plane
+                            .as_mut()
+                            .select(owner::Scope::Exact(owner), turn.turn().app()),
+                        Selection::Idle
                     ));
                     assert!(plane.as_ref().owners().try_retire(owner).is_ok());
                 });
@@ -140,102 +171,6 @@ fn rejects_another_pool() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-#[test]
-fn retired_slots_stay_full() {
-    type TaskPool<'d> = Leaf<Pool<'d, Ready<u8>, 2, (), u8, 1>>;
-    for (physical, capacity) in [(None, 2), (Some(Count::new(1)), 1)] {
-        for complete in [false, true] {
-            let mut reports = Vec::new();
-            Setup::for_profile::<profile::Tasks>().with_turn(
-                |turn, mut driver| {
-                    let view = driver.driver_ref();
-                    let ready = view
-                        .ready()
-                        .make_slot(
-                            view.targets::<KeyTag<0>>()
-                                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                                .dispatch(),
-                        )
-                        .expect("ready slot");
-                    let parent = RootWaker::from(ready.target());
-                    let owners = owner::Capacity::new(NonZero::<u32>::MIN);
-                    let plan = Plan::<'_, TaskPool<'_>>::new(Limit::new(1));
-                    let plane = match physical {
-                        None => plan.try_prepare::<Tasks>(owners),
-                        Some(physical) => plan.try_prepare_with_capacity::<Tasks>(owners, physical),
-                    }
-                    .expect("single generation plane");
-                    let mut plane = pin::pin!(plane);
-                    Scope::with(plane.as_mut(), |mut plane| {
-                        let owner = owner::Owner::from(Stamp::try_new(0, 0).expect("owner"));
-                        assert!(plane.as_ref().owners().register(owner).is_ok());
-                        let activity = Tracker::during(|| {
-                            for _ in 0..capacity {
-                                let id = plane
-                                    .as_mut()
-                                    .route::<Here>()
-                                    .try_admit(owner, parent)
-                                    .ok()
-                                    .expect("remaining physical identity")((Ready::new(17), 7));
-                                assert!(matches!(
-                                    plane
-                                        .as_mut()
-                                        .route::<Here>()
-                                        .try_admit(owner, parent),
-                                    Err(queue::Error::Task(task::Error::Capacity { requested, available: 0 }))
-                                    if requested == NonZero::<usize>::MIN
-                                ));
-                                if complete {
-                                    let selected = match plane.as_mut().select(
-                                        owner::Scope::Exact(owner),
-                                        turn.turn().app(),
-                                    ) {
-                                        Selection::Ready(selected) => Some(selected),
-                                        Selection::Idle | Selection::Yielded => None,
-                                    }
-                                    .expect("task ready");
-                                    let (outcome, receipt) = selected.only().step(&mut driver);
-                                    assert!(matches!(
-                                        outcome,
-                                        Outcome::Complete { target: 7, output: 17 }
-                                    ));
-                                    receipt.settle(Flow::Batch);
-                                    assert!(matches!(
-                                        plane.as_mut().route::<Here>().remove(id),
-                                        Removal::Absent
-                                    ));
-                                } else {
-                                    assert!(matches!(
-                                        plane.as_mut().route::<Here>().remove(id),
-                                        Removal::Removed
-                                    ));
-                                }
-                            }
-                            assert!(matches!(
-                                plane
-                                    .as_mut()
-                                    .route::<Here>()
-                                    .try_admit(owner, parent),
-                                Err(queue::Error::Task(task::Error::Capacity { requested, available: 0 }))
-                                if requested == NonZero::<usize>::MIN
-                            ));
-                            assert!(matches!(
-                                plane.as_mut().select(owner::Scope::Exact(owner), turn.turn().app()),
-                                Selection::Idle
-                            ));
-                            assert!(plane.as_ref().owners().try_retire(owner).is_ok());
-                        });
-                        assert_eq!(activity, (0, 0));
-                    });
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                runtime::check_scope,
-            );
-            assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
-        }
-    }
 }
 
 #[test]

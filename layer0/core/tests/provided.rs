@@ -1,7 +1,7 @@
 use dope_core::{
     driver,
     driver::life::{creation, recovery},
-    io::{fd::handles::Descriptor, socket::install::Install},
+    io::{fd::handles::Descriptor, socket::install::Install, transfer::Length as _},
 };
 
 use crate::common::contract::{provided::Joined, reclaim::Canceled};
@@ -17,10 +17,7 @@ use dope_core::{
     io::{event, event::net::recv::Outcome},
 };
 use dope_test::reclaim::Reports;
-use o3::{
-    alloc,
-    buffer::{Residency as _, storage::provided},
-};
+use o3::buffer::{Residency as _, storage::provided};
 
 use crate::common::rt::{Runtime, recover};
 
@@ -29,11 +26,9 @@ fn joined_arenas() {
     let mut reports = Vec::new();
     let drops = cell::Cell::new(0);
     let first =
-        provided::Arena::<_, _>::try_with(num::NonZero::<u32>::MIN, || Ok::<_, alloc::Error>(()))
-            .expect("first arena");
+        provided::Arena::<_, _>::try_allocate(num::NonZero::<u32>::MIN).expect("first arena")(());
     let second =
-        provided::Arena::<_, _>::try_with(num::NonZero::<u32>::MIN, || Ok::<_, alloc::Error>(()))
-            .expect("second arena");
+        provided::Arena::<_, _>::try_allocate(num::NonZero::<u32>::MIN).expect("second arena")(());
     let mut creation = creation::Attempt::new();
     let driver = creation.try_driver(Runtime::quic::<2, 8>().config());
     let driver = driver

@@ -3,18 +3,19 @@ use std::mem;
 use dope_core::{
     driver,
     driver::{
-        retained::flight::cancel,
-        route::{Identity, KeyTag},
+        retained::flight::{self, cancel},
+        route::{self, Identity, KeyTag},
         schedule::ready,
     },
     io::{
         event::net::{connect, tuning},
         fd::handles,
-        socket::{option, pending},
+        socket::{self, option, pending},
     },
 };
 
 use crate::link::{
+    self,
     duplex::state,
     pool::{self, change::close},
 };
@@ -75,8 +76,8 @@ pub(crate) enum Retire<'d, ID: Identity> {
         close: Close<'d, ID>,
         handle: ready::Handle<'d>,
     },
-    Pending(ready::Target<'d>),
-    Unavailable,
+    Pending(Setup<'d, ID>),
+    Unavailable(Setup<'d, ID>),
 }
 
 impl<'d, ID: Identity> Setup<'d, ID> {
@@ -126,14 +127,14 @@ impl<'d, ID: Identity> Setup<'d, ID> {
         }
     }
 
-    pub(in crate::link) fn created(
+    pub(in crate::link) fn created<A: socket::Prepared>(
         self,
         made: handles::CreatedSlot<'d>,
         opts: option::Set,
-        submit: impl FnOnce(
-            handles::Descriptor<'d>,
-            option::Set,
-        ) -> Result<pending::Connection<'d>, pending::Rejection<'d>>,
+        addr: &A,
+        target: route::Target<'d, ID>,
+        flights: &flight::Slots<'d, ID>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> (Self, Submission) {
         let targeted = match self {
             Self::CreatingTargeted(targeted) => targeted,
@@ -150,7 +151,7 @@ impl<'d, ID: Identity> Setup<'d, ID> {
                 );
             }
         };
-        match submit(fd, opts) {
+        match link::connect(fd, addr, target, flights, driver.reborrow(), opts) {
             Ok(conn) => (
                 Self::Connecting(Targeted::new(conn, stored), Intent::Live),
                 Submission::Pending,
@@ -246,41 +247,21 @@ impl<'d, ID: Identity> Setup<'d, ID> {
         }
     }
 
-    pub(crate) fn retire(self) -> (Self, Retire<'d, ID>) {
+    #[inline]
+    pub(crate) fn retire(self) -> Retire<'d, ID> {
         let (handle, close) = match self {
-            Self::CreatingTargeted(targeted) => {
-                (targeted.inner().ready_handle(), Close::Creating(targeted))
-            }
-            Self::Idle(fd) => (fd.ready_handle(), Close::Idle(fd)),
-            Self::Done(fd) => (fd.ready_handle(), Close::Done(fd)),
-            Self::IdleTargeted(targeted) => (
-                targeted.inner().ready_handle(),
-                Close::IdleTargeted(targeted),
-            ),
-            Self::Connected(targeted) => {
-                (targeted.inner().ready_handle(), Close::Connected(targeted))
-            }
-            Self::Tuning(item) => {
-                let target = item.fd().ready_handle().target();
-                return (Self::Tuning(item), Retire::Pending(target));
-            }
-            Self::TuningCancelled(item) => {
-                let target = item.fd().ready_handle().target();
-                return (Self::TuningCancelled(item), Retire::Pending(target));
-            }
-            Self::Connecting(targeted, intent) => {
-                let target = targeted.inner().fd().ready_handle().target();
-                return (Self::Connecting(targeted, intent), Retire::Pending(target));
-            }
-            Self::ConnectingCancelled(targeted) => {
-                let target = targeted.inner().fd().ready_handle().target();
-                return (Self::ConnectingCancelled(targeted), Retire::Pending(target));
-            }
-            Self::Detached(handle) => {
-                return (Self::Detached(handle), Retire::Unavailable);
-            }
+            Self::CreatingTargeted(value) => (value.inner().ready_handle(), Close::Creating(value)),
+            Self::Idle(value) => (value.ready_handle(), Close::Idle(value)),
+            Self::Done(value) => (value.ready_handle(), Close::Done(value)),
+            Self::IdleTargeted(value) => (value.inner().ready_handle(), Close::IdleTargeted(value)),
+            Self::Connected(value) => (value.inner().ready_handle(), Close::Connected(value)),
+            pending @ (Self::Tuning(_)
+            | Self::TuningCancelled(_)
+            | Self::Connecting(..)
+            | Self::ConnectingCancelled(_)) => return Retire::Pending(pending),
+            unavailable @ Self::Detached(_) => return Retire::Unavailable(unavailable),
         };
-        (Self::Detached(handle), Retire::Ready { close, handle })
+        Retire::Ready { close, handle }
     }
 
     pub(crate) fn pending_fd(&self) -> Option<&handles::Descriptor<'d>> {

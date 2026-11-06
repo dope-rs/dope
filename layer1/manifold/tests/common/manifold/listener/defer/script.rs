@@ -145,15 +145,12 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
         Outcome::Continue
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>,
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>
-    where
-        'd: 'w,
-    {
-        self.as_ref().get_ref().attempt(conn, driver)
+    ) {
+        self.as_ref().get_ref().attempt(conn, driver);
     }
 
     fn close_gate(
@@ -166,13 +163,7 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
         }
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State>) {
         (self.observe)(Event::Close {
             state: *conn.state(),
             index: conn.id().index().into_usize(),
@@ -181,7 +172,6 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
             closed: self.closed.hits(),
         });
         self.as_ref().get_ref().closed.hit();
-        conn
     }
 }
 

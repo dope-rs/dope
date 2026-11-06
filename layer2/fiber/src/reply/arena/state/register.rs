@@ -186,8 +186,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'reg
             let key = unsafe { state::EntryKey::from_raw(raw) };
             state::Entry {
                 body: state::EntryBody::Attached(state::Attached(reply::State::new(data))),
-                acceptance: accept,
-                owners: pool::Owner::new(entry, key),
+                owners: pool::Owner::new(entry, key, accept),
                 signal: state::Signal::new(),
             }
         });

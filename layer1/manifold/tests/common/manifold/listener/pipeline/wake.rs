@@ -99,29 +99,18 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Wake {
         None
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, u8>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, u8>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, u8>
-    where
-        'd: 'w,
-    {
+    ) {
         let this = self.get_mut();
         this.wakes.set(this.wakes.get() + 1);
         this.drain(&mut conn, driver);
-        conn
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, u8>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, u8>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, u8>) {
         self.get_mut().gate.hit();
-        conn
     }
 }
 
@@ -183,15 +172,8 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Zero {
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, ()>) {
         self.get_mut().gate.hit();
-        conn
     }
 }
 

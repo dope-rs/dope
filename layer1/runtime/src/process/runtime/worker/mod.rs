@@ -211,7 +211,7 @@ impl<'run, I, E, X> Slots<'run, I, E, X> {
             }
             // SAFETY: scope reserves one slot for each registered worker.
             // finish yields each started worker once, with at most one failure.
-            unsafe { o3::alloc::raw::VecExt::vacancy(&mut failures) }.insert(failure);
+            (unsafe { o3::alloc::raw::VecExt::vacancy(&mut failures) })(failure);
         }
         (failures, missing)
     }

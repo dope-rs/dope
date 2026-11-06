@@ -94,6 +94,7 @@ impl<'d> Session<'d> for State<'_> {
     type Requests = request::Disabled;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Send = Shared;
     fn codec(&self) -> &Self::Codec {
         &self.codec

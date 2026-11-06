@@ -41,7 +41,7 @@ impl Receiver {
                 &action,
                 previous.as_mut_ptr(),
             ))
-            .try_zero::<Errno>(|| kernel::raw::Code::last::<Kqueue>().into())
+            .try_zero::<Kqueue, Errno>()
         }
         .map_err(Acquire::Ignore)?;
         Ok(previous)
@@ -55,7 +55,7 @@ impl Receiver {
                 previous.as_ptr(),
                 ptr::null_mut(),
             ))
-            .try_zero::<Errno>(|| kernel::raw::Code::last::<Kqueue>().into())
+            .try_zero::<Kqueue, Errno>()
         }
     }
 }

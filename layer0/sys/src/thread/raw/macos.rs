@@ -18,17 +18,13 @@ pub(in crate::thread) fn try_crc32(errno: impl Fn() -> i32) -> Result<bool, Errn
                 0,
             )
         };
-        // SAFETY: Thread supplies Source::read; a failed sysctlbyname leaves
-        // its positive native errno unchanged until this immediate leaf decode.
-        match unsafe {
-            kernel::raw::Status::new(result)
-                .try_zero::<Errno>(|| kernel::raw::Code::new(errno()).into())
-        } {
-            Ok(()) if len == mem::size_of_val(&enabled) && enabled != 0 => return Ok(true),
-            Ok(()) => {}
-            Err(error) => {
-                failure.get_or_insert(error);
-            }
+        if result == -1 {
+            // SAFETY: Thread supplies Source::read; a failed sysctlbyname leaves
+            // its positive native errno unchanged until this immediate leaf decode.
+            let error = unsafe { kernel::raw::Code::new(errno()) }.into();
+            failure.get_or_insert(error);
+        } else if len == mem::size_of_val(&enabled) && enabled != 0 {
+            return Ok(true);
         }
     }
     failure.map_or(Ok(false), Err)

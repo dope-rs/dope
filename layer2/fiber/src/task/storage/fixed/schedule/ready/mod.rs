@@ -7,10 +7,7 @@ use crate::{
         task,
         task::{Error, Parent, topology},
     },
-    task::storage::{
-        caps,
-        fixed::{schedule, schedule::selected, tree},
-    },
+    task::storage::fixed::{schedule, schedule::selected, tree},
 };
 
 pub mod linked;
@@ -38,30 +35,16 @@ impl<M> Clone for Resident<M> {
 }
 
 impl<M> Resident<M> {
-    pub(in crate::task::storage::fixed::schedule) fn local<'d, const N: usize>(
-        self,
-        _: caps::Tasks<N>,
-    ) -> raw::Local<N>
-    where
-        M: tree::Member<'d>,
-    {
-        const { assert!(M::CAPACITY.nonzero().get() == caps::Tasks::<N>::new().nonzero().get()) };
-        // SAFETY: the resident index is within the member capacity proved equal to N.
-        unsafe { raw::Local::from_raw(self.0.index.get() as u32) }
+    pub(in crate::task::storage::fixed::schedule) fn local(self, base: u32) -> u32 {
+        self.0.raw() - base
     }
 
-    pub(in crate::task::storage::fixed::schedule) fn root<'d, R, P>(
-        self,
-        _: caps::Path<R, P>,
-    ) -> TreeIndex<R>
+    pub(in crate::task::storage::fixed::schedule) fn root<'d, R, P>(self) -> TreeIndex<R>
     where
         R: tree::At<'d, P, Member = M>,
     {
-        // SAFETY: the resident is below its member capacity and Path proves
-        // offset + capacity <= the root's nonzero u32 task count.
-        let index = unsafe { NonZero::new_unchecked(self.0.index.0.get() - R::OFFSET.into_u32()) };
         TreeIndex {
-            index: Global(index),
+            index: self.0.index,
             tree: marker::PhantomData,
         }
     }
@@ -97,25 +80,18 @@ impl<R> TreeIndex<R> {
 }
 
 impl<L, R> TreeIndex<tree::Branch<L, R>> {
-    pub(in crate::task::storage::fixed::schedule) fn split<'d>(
+    pub(in crate::task::storage::fixed::schedule) fn split(
         self,
-    ) -> Result<TreeIndex<L>, TreeIndex<R>>
-    where
-        L: tree::Tree<'d>,
-        R: tree::Tree<'d>,
-    {
-        let tasks = L::TASKS.nonzero().get();
-        if self.raw() < tasks {
+        right: u32,
+    ) -> Result<TreeIndex<L>, TreeIndex<R>> {
+        if self.raw() < right {
             Ok(TreeIndex {
                 index: self.index,
                 tree: marker::PhantomData,
             })
         } else {
-            // SAFETY: this branch proves local >= tasks, so adding tasks to
-            // its nonzero complement cannot overflow or produce zero.
-            let index = unsafe { NonZero::new_unchecked(self.index.0.get() + tasks) };
             Err(TreeIndex {
-                index: Global(index),
+                index: self.index,
                 tree: marker::PhantomData,
             })
         }
@@ -128,7 +104,8 @@ where
     R: tree::At<'d, P>,
 {
     member: pin::Pin<&'a mut R::Member>,
-    proof: caps::Path<R, P>,
+    tree: marker::PhantomData<fn(R) -> R>,
+    path: marker::PhantomData<fn(P) -> P>,
     driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
@@ -141,25 +118,14 @@ where
     ) -> Self {
         Self {
             member,
-            proof: caps::Path::<R, P>::new(),
+            tree: marker::PhantomData,
+            path: marker::PhantomData,
             driver: marker::PhantomData,
         }
     }
 
-    pub(in crate::task::storage::fixed::schedule) fn split(
-        self,
-    ) -> (pin::Pin<&'a mut R::Member>, caps::Path<R, P>) {
-        (self.member, self.proof)
-    }
-
-    pub(in crate::task::storage::fixed::schedule) fn index<const N: usize>(
-        proof: caps::Path<R, P>,
-        local: raw::Local<N>,
-    ) -> Global {
-        let offset = proof.local::<N>();
-        // SAFETY: Path proves offset + N <= u32::MAX and raw::Local proves local < N,
-        // so subtracting offset from the complemented local index stays nonzero.
-        Global(unsafe { NonZero::new_unchecked(!local.raw() - offset.into_u32()) })
+    pub(in crate::task::storage::fixed::schedule) fn split(self) -> pin::Pin<&'a mut R::Member> {
+        self.member
     }
 }
 
@@ -203,8 +169,6 @@ const _: () = {
     assert!(mem::align_of::<Proof<'_, '_>>() == mem::align_of::<usize>());
     assert!(!mem::needs_drop::<Proof<'_, '_>>());
     assert!(mem::size_of::<Global>() == mem::size_of::<u32>());
-    assert!(mem::size_of::<raw::Local<1>>() == mem::size_of::<u32>());
-    assert!(mem::size_of::<Option<raw::Local<1>>>() == mem::size_of::<u32>());
     assert!(mem::size_of::<Option<Global>>() == mem::size_of::<Global>());
     assert!(mem::size_of::<Resident<Tree<'_>>>() == mem::size_of::<u32>());
     assert!(!mem::needs_drop::<Resident<Tree<'_>>>());

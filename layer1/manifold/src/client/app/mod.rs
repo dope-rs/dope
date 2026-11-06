@@ -56,8 +56,8 @@ pub trait Borrowed<'d, ID: Identity = KeyTag<0>>:
     ) -> ChunkOutcome;
 }
 
-pub trait Owned<'w, 'd: 'w, ID: Identity = KeyTag<0>>:
-    Receive<'d, ID, Input = receive::Owned>
+pub trait Owned<'w, 'd: 'w, ID: Identity = KeyTag<0>, R: Default = ()>:
+    Receive<'d, ID, Input = receive::Owned<R>>
 {
     const RETENTION: limits::Retention;
 
@@ -71,6 +71,7 @@ pub trait Owned<'w, 'd: 'w, ID: Identity = KeyTag<0>>:
         conn: conn::Ctx<'_, 'd, ID, Self::Wire, Self::Conn, O>,
         egress: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Self::Send>,
         chunk: Chunk<'w, 'd, Self::Wire>,
+        receipt: R,
         driver: &mut driver::Context<'_, 'd>,
     ) -> <Self::Continuation as resume::Mode>::Outcome;
 }
@@ -179,6 +180,15 @@ pub trait Application<'d, ID: Identity = KeyTag<0>>: Sized {
 
 pub trait Receive<'d, ID: Identity = KeyTag<0>>: Application<'d, ID> {
     type Continuation: resume::Mode;
+
+    fn receipt(
+        &self,
+        _: conn::Id<'d, ID>,
+        _: &Self::Conn,
+        _: &region::Token<region::Identity<'d, 0>>,
+    ) -> <Self::Input as input::Mode<Self::Wire>>::Receipt {
+        Default::default()
+    }
 
     /// Stops new admission; pending work keeps receiving until the next inspection.
     fn withdraw(&mut self, _: conn::Id<'d, ID>, _: &mut Self::Conn) -> Fence {
@@ -314,6 +324,7 @@ pub trait Lifecycle<'w, 'd: 'w, ID: Identity = KeyTag<0>>: Receive<'d, ID> {
     fn prepare<'e, O>(
         &mut self,
         conn: conn::Ctx<'_, 'd, ID, Self::Wire, Self::Conn, O>,
+        queued: bool,
         egress: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Self::Send>,
         driver: &mut driver::Context<'_, 'd>,
     );

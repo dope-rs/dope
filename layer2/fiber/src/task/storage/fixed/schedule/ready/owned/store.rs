@@ -100,9 +100,10 @@ pub(super) struct Store<S> {
 }
 
 impl<S> Store<S> {
-    /// Both nonzero u32 extent counts bound their initialization indices below u32::MAX,
-    /// so each cast and one-based NonZero addition below preserves the exact position.
-    pub(super) fn try_new(tasks: NonZero<u32>, owners: owner::Capacity) -> Result<Self, Error> {
+    pub(super) fn try_new(
+        tasks: depot::capacity::Count,
+        owners: owner::Capacity,
+    ) -> Result<Self, Error> {
         let extent = Extent { tasks, owners };
         let block = alloc::raw::Block::try_from_fn(
             extent,

@@ -8,30 +8,25 @@ use dope_sys::{
     io::{socket, socket::Socket as _},
 };
 use libc::socklen_t;
-use o3::buffer::{self, pool};
+use o3::buffer;
 
 use crate::{Kqueue, sockets::Handle};
 
 impl socket::raw::Receive for Handle {
-    fn recv<'a>(
-        &self,
-        mut output: buffer::raw::Output<'a>,
-    ) -> Result<Option<pool::Complete<'a>>, Errno> {
+    fn recv(&self, mut output: buffer::raw::Output<'_>) -> Result<Option<()>, Errno> {
         let bytes = Kqueue::recv::<0, Errno>(self.as_fd(), output.as_mut_slice())?;
         let Some(actual) = num::NonZero::new(bytes.len()) else {
             return Ok(None);
         };
         // SAFETY: recv returned this positive prefix of the exact borrowed output.
-        Ok(Some(unsafe { output.complete(actual) }))
+        unsafe { output.complete(actual) };
+        Ok(Some(()))
     }
 
-    unsafe fn receive<'a>(
-        &self,
-        mut output: buffer::raw::Output<'a>,
-    ) -> Result<pool::Complete<'a>, Errno> {
+    unsafe fn receive(&self, mut output: buffer::raw::Output<'_>) -> Result<(), Errno> {
         use std::{mem, ptr};
 
-        use dope_sys::kernel::raw::{Code, Status};
+        use dope_sys::kernel::raw::Status;
 
         const NAME: usize = mem::size_of::<libc::sockaddr_storage>();
         const MIN: usize = 16 + NAME;
@@ -58,15 +53,13 @@ impl socket::raw::Receive for Handle {
         // SAFETY: the originating memory::raw::Layout bounds this output by
         // i32::MAX. recvmsg completes at most its exact payload.len(), or returns
         // -1 with unchanged errno.
-        let received = unsafe {
-            Status::from_count(raw).try_count::<Errno>(|| Code::last::<Kqueue>().into())
-        }?
-        .get();
+        let received = unsafe { Status::from_count(raw).try_count::<Kqueue, Errno>() }?.get();
         let total = num::NonZero::<usize>::MIN.saturating_add(MIN - 1 + received);
         prefix[0..4].copy_from_slice(&(header.msg_namelen as u32).to_ne_bytes());
         prefix[4..8].copy_from_slice(&0u32.to_ne_bytes());
         prefix[8..12].copy_from_slice(&(received as u32).to_ne_bytes());
         prefix[12..16].copy_from_slice(&(header.msg_flags as u32).to_ne_bytes());
-        Ok(unsafe { output.complete(total) })
+        unsafe { output.complete(total) };
+        Ok(())
     }
 }

@@ -41,4 +41,12 @@ where
     pub fn cancel(&mut self) {
         self.connection.slot.cancel_app();
     }
+
+    pub fn reject(self, cause: Error) {
+        self.connection
+            .slot
+            .state
+            .fail(conn::Failure::Deadline(cause));
+        self.connection.slot.close_after();
+    }
 }

@@ -84,6 +84,7 @@ impl<'d> Session<'d> for State<'d> {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Send = Shared;
     type Requests = request::Disabled;
 

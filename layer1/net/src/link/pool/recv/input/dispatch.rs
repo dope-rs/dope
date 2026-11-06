@@ -28,7 +28,7 @@ use crate::{
 
 pub trait Dispatch<W: wire::Spec>: storage::raw::Mode + drain::Policy<W> + send::Finish<W> {
     /// Selects direct or buffered delivery under this exact storage loan.
-    type Delivery<'a, 'd: 'a>: observed::Delivery<'a, 'd, W, Self>;
+    type Delivery<'a, 'd: 'a, R: 'a>: observed::Delivery<'a, 'd, W, Self, R>;
 
     fn dispatch<'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
         pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
@@ -44,7 +44,9 @@ pub trait Dispatch<W: wire::Spec>: storage::raw::Mode + drain::Policy<W> + send:
         let (item, timing) = item.into_parts();
         match Observed::<ID, W, S, M>::observe(pool, item, timing) {
             Observation::Complete(done) => done,
-            Observation::Ready(next, storage) => Self::Delivery::ready(next, storage),
+            Observation::Ready(next, storage) => {
+                Self::Delivery::<'_, 'd, input::Receipt<W, M>>::ready(next, storage)
+            }
         }
     }
 
@@ -68,7 +70,7 @@ pub trait Dispatch<W: wire::Spec>: storage::raw::Mode + drain::Policy<W> + send:
     fn pop<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
         pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         item: &'a delivery::Resumed<'d, ID>,
-    ) -> Ready<'d>
+    ) -> Ready<'d, input::Receipt<W, M>>
     where
         'd: 'w,
         T: crate::Transport,
@@ -77,7 +79,7 @@ pub trait Dispatch<W: wire::Spec>: storage::raw::Mode + drain::Policy<W> + send:
         D: demand::Mode,
     {
         let key = item.key();
-        let Some((slot, mut events)) = pool.prepared.slab.get(key.parts()) else {
+        let Some((slot, mut events)) = pool.prepared.slab.get_mut(key.parts()) else {
             return Ready::Stale;
         };
         if slot.engine.operations.recv.is_paused() && !slot.terminal.is_read_done() {
@@ -100,7 +102,7 @@ pub trait Dispatch<W: wire::Spec>: storage::raw::Mode + drain::Policy<W> + send:
         D: demand::Mode,
     {
         let Some((slot, mut recv)) =
-            tail::Slot::receive::<M::Ingress>(&mut pool.prepared.slab, key.parts())
+            tail::Slot::receive::<M::Ingress, _>(&mut pool.prepared.slab, key.parts())
         else {
             return;
         };
@@ -153,7 +155,7 @@ where
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
     <W::Receive as receive::Policy<W>>::Reserve: reserve::Immediate<W>,
 {
-    type Delivery<'a, 'd: 'a> = observed::Direct;
+    type Delivery<'a, 'd: 'a, R: 'a> = observed::Direct;
 }
 
 impl<W> Dispatch<W> for mode::Parking
@@ -162,7 +164,7 @@ where
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
     <W::Receive as receive::Policy<W>>::Reserve: reserve::Immediate<W>,
 {
-    type Delivery<'a, 'd: 'a> = observed::Buffered;
+    type Delivery<'a, 'd: 'a, R: 'a> = observed::Buffered;
 }
 
 impl<W> Dispatch<W> for mode::Enabled
@@ -171,7 +173,7 @@ where
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
     <W::Receive as receive::Policy<W>>::Reserve: reserve::Immediate<W>,
 {
-    type Delivery<'a, 'd: 'a> = observed::Buffered;
+    type Delivery<'a, 'd: 'a, R: 'a> = observed::Buffered;
 
     fn resume<'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
         pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
@@ -198,7 +200,7 @@ where
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
     W::Receive: receive::Policy<W, Reserve = reserve::Waiting<R>>,
 {
-    type Delivery<'a, 'd: 'a> = observed::Buffered;
+    type Delivery<'a, 'd: 'a, C: 'a> = observed::Buffered;
 
     fn resume<'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
         pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,

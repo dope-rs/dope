@@ -203,7 +203,7 @@ impl<'d, F, O, const N: usize> Table<'d, F, O, N> {
     pub(crate) fn vacant() -> Self {
         Self {
             bindings: Bindings::new(),
-            slots: [const { Task::vacant() }; N],
+            slots: core::array::from_fn(|_| Task::vacant()),
         }
     }
 

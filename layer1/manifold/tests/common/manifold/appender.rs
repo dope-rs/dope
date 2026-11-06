@@ -125,6 +125,9 @@ unsafe impl<'p, 'd, const N: usize, const B: usize> dispatch::raw::Manifold<'d>
                     }
                     Request::Paused => {
                         assert!(
+                            matches!(control.failure(), Some(Failure::System(errno)) if errno.code().get() == libc::EFBIG)
+                        );
+                        assert!(
                             matches!(control.record(0), Err(WriteError::Failed(Failure::System(errno))) if errno.code().get() == libc::EFBIG)
                         );
                         native.done.handle().hit();
@@ -132,6 +135,7 @@ unsafe impl<'p, 'd, const N: usize, const B: usize> dispatch::raw::Manifold<'d>
                     }
                     Request::Retry => {
                         control.try_retry().expect("explicit retry");
+                        assert!(control.failure().is_none());
                         true
                     }
                     Request::Rotate(candidate) => {
@@ -230,7 +234,7 @@ impl Resource for FileSize {
         // SAFETY: success initializes the complete object; failure retains errno.
         unsafe {
             Status::<-1, 0>::new(libc::getrlimit(libc::RLIMIT_FSIZE, value.as_mut_ptr()))
-                .try_zero::<Errno>(|| Code::last::<Backend>().into())?;
+                .try_zero::<Backend, Errno>()?;
             Ok(value.assume_init())
         }
     }
@@ -246,7 +250,7 @@ impl Resource for FileSize {
         // SAFETY: the native object remains borrowed; errno is read on failure only.
         unsafe {
             Status::<-1, 0>::new(libc::setrlimit(libc::RLIMIT_FSIZE, limits))
-                .try_zero(|| Code::last::<Backend>().into())
+                .try_zero::<Backend, Errno>()
         }
     }
 

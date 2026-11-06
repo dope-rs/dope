@@ -1,7 +1,11 @@
 use std::{marker, mem::size_of};
 
 use mem::{lease, quota};
-use o3::{base::marker::ThreadBound, mem};
+use o3::{
+    base::{cell::region, marker::ThreadBound},
+    depot::queue::pool::fair,
+    mem,
+};
 use state::lanes;
 
 use crate::driver::{
@@ -30,6 +34,31 @@ pub trait Drain<C = ()> {
         context: &mut C,
         take: impl FnOnce() -> Option<P>,
     ) -> Selection<Self::Item<'_>, P, Self::Candidate<'_>>;
+}
+
+impl<'lane, 'd, T, S> Drain<region::Token<region::Identity<'d>>>
+    for fair::Binding<'lane, 'd, T, S>
+{
+    type Candidate<'a>
+        = ()
+    where
+        Self: 'a;
+    type Item<'a>
+        = (T, fair::Permit<'lane, 'd, T, S>)
+    where
+        Self: 'a;
+
+    fn next_when<P>(
+        &mut self,
+        token: &mut region::Token<region::Identity<'d>>,
+        take: impl FnOnce() -> Option<P>,
+    ) -> Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
+        let front = self.front_entry(token)?;
+        Some(match take() {
+            Some(permit) => Ok((front(), permit)),
+            None => Err(()),
+        })
+    }
 }
 
 #[derive(Clone, Copy)]

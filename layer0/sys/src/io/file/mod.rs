@@ -101,15 +101,9 @@ pub struct Entry<'a> {
     pub kind: Option<Kind>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReadError<E> {
-    Syscall(E),
-    Invalid(kernel::Invalid),
-}
-
 impl<S: raw::Directory> Entries<'_, S> {
     /// The next read requires the previous name's borrow to end.
-    pub fn try_next<E: From<Errno>>(&mut self) -> Result<Option<Entry<'_>>, ReadError<E>> {
+    pub fn try_next(&mut self) -> Result<Option<Entry<'_>>, Errno> {
         S::next(self.0)
     }
 }
@@ -128,18 +122,14 @@ pub trait File: errno::Source + raw::Directory {
         Self: 'a;
     fn open<E: From<Errno>>(path: &std::ffi::CStr, flags: Open, mode: Mode) -> Result<OwnedFd, E> {
         let raw = unsafe { libc::open(path.as_ptr(), flags.raw(), mode.raw() as libc::c_uint) };
-        unsafe {
-            <OwnedFd as fd::raw::Adopt>::try_adopt(raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Self, E>(raw) }
     }
 
     fn metadata<E: From<Errno>>(file: BorrowedFd<'_>) -> Result<Metadata, E> {
         let mut value = mem::MaybeUninit::uninit();
         let raw = unsafe { libc::fstat(file.as_raw_fd(), value.as_mut_ptr()) };
         // SAFETY: fstat returns zero after filling value or -1 on failure.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?;
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }?;
         Ok(Metadata::new(unsafe { value.assume_init() }))
     }
 
@@ -147,17 +137,14 @@ pub trait File: errno::Source + raw::Directory {
         let mut value = mem::MaybeUninit::uninit();
         let raw = unsafe { libc::stat(path.as_ptr(), value.as_mut_ptr()) };
         // SAFETY: stat returns zero after filling value or -1 on failure.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?;
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }?;
         Ok(Metadata::new(unsafe { value.assume_init() }))
     }
 
     fn mkdir<E: From<Errno>>(path: &std::ffi::CStr, mode: Mode) -> Result<(), E> {
         // SAFETY: the terminated path stays borrowed; mkdir returns zero or -1.
         unsafe {
-            kernel::raw::Status::new(libc::mkdir(path.as_ptr(), mode.raw()))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
+            kernel::raw::Status::new(libc::mkdir(path.as_ptr(), mode.raw())).try_zero::<Self, E>()
         }
     }
 
@@ -177,25 +164,19 @@ pub trait File: errno::Source + raw::Directory {
             )
         };
         // SAFETY: fstatat returns zero with initialized metadata or -1 with errno.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?;
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }?;
         Ok(Metadata::new(unsafe { value.assume_init() }))
     }
 
     fn unlink<E: From<Errno>>(path: &std::ffi::CStr) -> Result<(), E> {
         // SAFETY: path is terminated and retained; unlink returns zero or -1.
-        unsafe {
-            kernel::raw::Status::new(libc::unlink(path.as_ptr()))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { kernel::raw::Status::new(libc::unlink(path.as_ptr())).try_zero::<Self, E>() }
     }
 
     fn rename<E: From<Errno>>(from: &std::ffi::CStr, to: &std::ffi::CStr) -> Result<(), E> {
         // SAFETY: both terminated paths remain borrowed; rename returns zero or -1.
         unsafe {
-            kernel::raw::Status::new(libc::rename(from.as_ptr(), to.as_ptr()))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
+            kernel::raw::Status::new(libc::rename(from.as_ptr(), to.as_ptr())).try_zero::<Self, E>()
         }
     }
 
@@ -204,23 +185,19 @@ pub trait File: errno::Source + raw::Directory {
         // SAFETY: the descriptor remains borrowed; nonblocking flock returns zero or -1.
         unsafe {
             kernel::raw::Status::new(libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
+                .try_zero::<Self, E>()
         }
     }
 
     fn sync<E: From<Errno>>(file: BorrowedFd<'_>) -> Result<(), E> {
         // SAFETY: the descriptor remains borrowed; fsync returns zero or -1.
-        unsafe {
-            kernel::raw::Status::new(libc::fsync(file.as_raw_fd()))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { kernel::raw::Status::new(libc::fsync(file.as_raw_fd())).try_zero::<Self, E>() }
     }
 
     fn truncate<E: From<Errno>>(file: BorrowedFd<'_>, len: i64) -> Result<(), E> {
         // SAFETY: the descriptor remains borrowed; ftruncate returns zero or -1.
         unsafe {
-            kernel::raw::Status::new(libc::ftruncate(file.as_raw_fd(), len))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
+            kernel::raw::Status::new(libc::ftruncate(file.as_raw_fd(), len)).try_zero::<Self, E>()
         }
     }
 
@@ -228,7 +205,7 @@ pub trait File: errno::Source + raw::Directory {
         // SAFETY: the descriptor and terminated name remain borrowed; unlinkat returns zero or -1.
         unsafe {
             kernel::raw::Status::new(libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0))
-                .try_zero(|| kernel::raw::Code::last::<Self>().into())
+                .try_zero::<Self, E>()
         }
     }
 
@@ -244,7 +221,7 @@ pub trait File: errno::Source + raw::Directory {
                 name.as_ptr(),
                 libc::AT_REMOVEDIR,
             ))
-            .try_zero(|| kernel::raw::Code::last::<Self>().into())
+            .try_zero::<Self, E>()
         }
     }
 
@@ -262,9 +239,7 @@ pub trait File: errno::Source + raw::Directory {
                 mode.raw() as libc::c_uint,
             )
         };
-        unsafe {
-            <OwnedFd as fd::raw::Adopt>::try_adopt(raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Self, E>(raw) }
     }
 
     fn rename_at<E: From<Errno>>(
@@ -280,7 +255,7 @@ pub trait File: errno::Source + raw::Directory {
                 dir.as_raw_fd(),
                 new.as_ptr(),
             ))
-            .try_zero(|| kernel::raw::Code::last::<Self>().into())
+            .try_zero::<Self, E>()
         }
     }
 
@@ -312,7 +287,7 @@ pub trait File: errno::Source + raw::Directory {
         use kernel::raw::Status;
 
         const { assert!(libc::off_t::MAX as u64 == i64::MAX as u64) };
-        let input = input.into_slice();
+        let input = input.as_slice();
         // SAFETY: the offset's admitted nonnegative range fits the native ABI.
         let raw = unsafe {
             libc::pwrite(
@@ -324,9 +299,6 @@ pub trait File: errno::Source + raw::Directory {
         };
         // SAFETY: pwrite returns -1 or a count within this Prefix's i32::MAX-bound
         // input; failure reads the unchanged errno on this thread.
-        Ok(unsafe {
-            Status::from_count(raw).try_count::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?
-        .bounded())
+        Ok(unsafe { Status::from_count(raw).try_count::<Self, E>() }?.bounded())
     }
 }

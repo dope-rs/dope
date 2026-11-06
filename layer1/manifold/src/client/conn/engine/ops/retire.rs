@@ -31,27 +31,13 @@ type Participants<'app, 'ctrl, A, S> = (&'app mut A, &'ctrl mut S);
 pub(super) enum Outcome<'d, ID: Identity, V> {
     Retired(V),
     Pending,
-    Missing(drain::Absent<'d, ID>),
     Obsolete(drain::Obsolete<'d, ID>),
 }
 
 pub(in crate::client) enum OwnedOutcome<'d, ID: Identity, V> {
     Retired(Retired<'d, ID, V>),
     Pending,
-    Missing(Missing<'d, ID>),
     Obsolete(Obsolete<'d, ID>),
-}
-
-pub(in crate::client) struct Missing<'d, ID: Identity> {
-    owner: attempt::Id<'d, ID>,
-    proof: drain::Absent<'d, ID>,
-}
-
-impl<'d, ID: Identity> Missing<'d, ID> {
-    pub(super) fn resolve<T>(self, resolve: impl FnOnce(attempt::Id<'d, ID>) -> T) -> T {
-        self.proof.resolve();
-        resolve(self.owner)
-    }
 }
 
 pub(in crate::client) struct Obsolete<'d, ID: Identity> {
@@ -84,7 +70,6 @@ impl<'d, ID: Identity, V> drain::BindOwner<'d, ID> for Outcome<'d, ID, V> {
         match self {
             Self::Retired(value) => OwnedOutcome::Retired(Retired { owner, value }),
             Self::Pending => OwnedOutcome::Pending,
-            Self::Missing(proof) => OwnedOutcome::Missing(Missing { owner, proof }),
             Self::Obsolete(proof) => OwnedOutcome::Obsolete(Obsolete { owner, proof }),
         }
     }
@@ -147,7 +132,6 @@ where
         };
         match self.drain_close(drain, turn, driver, |_| ()) {
             Outcome::Retired(()) | Outcome::Pending => {}
-            Outcome::Missing(proof) => proof.resolve(),
             Outcome::Obsolete(proof) => proof.resolve(),
         }
     }
@@ -317,18 +301,15 @@ where
             },
             |pool, ctx, driver, outcome| match outcome {
                 close::Outcome::Retired(retired) => {
-                    let output = retired.resolve(
-                        |rule| (rule.reason(), output(rule)),
-                        |retired, state| ctx.0.drained(retired, state, driver),
-                    );
-                    Outcome::Retired(output)
+                    Outcome::Retired(retired.resolve(ctx.0, driver, output))
                 }
                 close::Outcome::Pending(drain) => match drain.release(pool) {
                     drain::Recovery::Restored | drain::Recovery::Rescheduled => Outcome::Pending,
                     drain::Recovery::Obsolete(proof) => Outcome::Obsolete(proof),
                 },
-                close::Outcome::Stale(drain) => Outcome::Obsolete(drain.obsolete()),
-                close::Outcome::Missing(drain) => Outcome::Missing(drain.absent()),
+                close::Outcome::Stale(drain) | close::Outcome::Missing(drain) => {
+                    Outcome::Obsolete(drain.obsolete())
+                }
             },
         )
     }

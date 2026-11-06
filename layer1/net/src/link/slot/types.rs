@@ -321,7 +321,7 @@ where
         if self.control.terminal.is_read_done() {
             return slot::Control::NoChunk { needs_rearm: false };
         }
-        <<W::Receive as receive::Policy<W>>::Eof as Capture<W>>::capture(self);
+        <<W::Receive as receive::Policy<W>>::Eof as Capture<W>>::capture(&mut self.control);
         slot::Control::Eof
     }
 
@@ -350,7 +350,7 @@ where
                 Retirement::Ready
             }
             ControlKind::Eof => {
-                <<W::Receive as receive::Policy<W>>::Eof as Capture<W>>::capture(self);
+                <<W::Receive as receive::Policy<W>>::Eof as Capture<W>>::capture(&mut self.control);
                 Retirement::Ready
             }
             ControlKind::Cancelled => Retirement::Ready,

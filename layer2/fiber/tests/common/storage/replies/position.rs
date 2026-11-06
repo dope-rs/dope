@@ -126,6 +126,7 @@ impl<'w, 'd: 'w> app::Lifecycle<'w, 'd> for Session<'_> {
     fn prepare<'e, O>(
         &mut self,
         _: conn::Ctx<'_, 'd, KeyTag<0>, Identity, (), O>,
+        _: bool,
         _: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Shared>,
         _: &mut driver::Context<'_, 'd>,
     ) {

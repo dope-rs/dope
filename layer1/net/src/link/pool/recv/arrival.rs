@@ -2,9 +2,9 @@ use dope_core::io::event::{batch::Flow, net::recv};
 
 use crate::link::event;
 
-pub(in crate::link::pool::recv) enum Timing {
+pub(in crate::link::pool::recv) enum Timing<R = ()> {
     Fresh(Flow),
-    Replay,
+    Replay(R),
 }
 
 #[derive(Clone, Copy)]
@@ -15,27 +15,27 @@ pub(in crate::link::pool::recv) enum Origin {
 
 /// A completion retaining whether its kernel flight still needs observation.
 /// Only receive dispatch can separate the payload from that authority.
-pub struct Input<T> {
+pub struct Input<T, R = ()> {
     value: T,
-    timing: Timing,
+    timing: Timing<R>,
 }
 
-impl<T> Input<T> {
-    pub(in crate::link::pool::recv) fn into_parts(self) -> (T, Timing) {
+impl<T, R> Input<T, R> {
+    pub(in crate::link::pool::recv) fn into_parts(self) -> (T, Timing<R>) {
         (self.value, self.timing)
     }
 }
 
-pub trait Arrival<'d> {
+pub trait Arrival<'d, R = ()> {
     type Observed;
 
-    fn observe(self) -> Input<Self::Observed>;
+    fn observe(self) -> Input<Self::Observed, R>;
 }
 
-impl<'d> Arrival<'d> for recv::Data<'d> {
+impl<'d, R> Arrival<'d, R> for recv::Data<'d> {
     type Observed = event::Data<'d>;
 
-    fn observe(self) -> Input<Self::Observed> {
+    fn observe(self) -> Input<Self::Observed, R> {
         let (token, more, lease) = self.into_parts();
         Input {
             value: event::Data::new(token, lease),
@@ -44,13 +44,14 @@ impl<'d> Arrival<'d> for recv::Data<'d> {
     }
 }
 
-impl<'d> Arrival<'d> for event::Data<'d> {
-    type Observed = Self;
+impl<'d, R> Arrival<'d, R> for event::Data<'d, R> {
+    type Observed = event::Data<'d>;
 
-    fn observe(self) -> Input<Self::Observed> {
+    fn observe(self) -> Input<Self::Observed, R> {
+        let (value, receipt) = self.into_parts();
         Input {
-            value: self,
-            timing: Timing::Replay,
+            value,
+            timing: Timing::Replay(receipt),
         }
     }
 }
@@ -73,7 +74,7 @@ impl<'d> Arrival<'d> for event::Control<'d> {
     fn observe(self) -> Input<Self::Observed> {
         Input {
             value: self,
-            timing: Timing::Replay,
+            timing: Timing::Replay(()),
         }
     }
 }

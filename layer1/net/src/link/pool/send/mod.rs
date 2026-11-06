@@ -137,10 +137,7 @@ where
         B: data::raw::Payload<'d>,
     {
         let key = egress.connection.key();
-        egress
-            .connection
-            .sending()
-            .abort_queue(&mut egress.queue, key);
+        egress.connection.sending().abort_queue(&mut egress.queue);
         match result {
             Data::Sent(sent) => {
                 egress.connection.discard();
@@ -262,40 +259,28 @@ where
                                 acknowledged: used,
                             },
                             Err(error) => {
-                                egress
-                                    .connection
-                                    .sending()
-                                    .abort_queue(&mut egress.queue, key);
+                                egress.connection.sending().abort_queue(&mut egress.queue);
                                 egress.connection.discard();
                                 SendOutcome::Invalid { key, error }
                             }
                         }
                     }
                     Terminal::Queued(Data::Rejected(error)) => {
-                        egress
-                            .connection
-                            .sending()
-                            .abort_queue(&mut egress.queue, key);
+                        egress.connection.sending().abort_queue(&mut egress.queue);
                         SendOutcome::Rejected {
                             key,
                             failure: SendFailure::Queued(error),
                         }
                     }
                     Terminal::Queued(Data::Failed(error)) => {
-                        egress
-                            .connection
-                            .sending()
-                            .abort_queue(&mut egress.queue, key);
+                        egress.connection.sending().abort_queue(&mut egress.queue);
                         SendOutcome::Failed {
                             key,
                             failure: SendFailure::Queued(error),
                         }
                     }
                     Terminal::Queued(Data::Closed) => {
-                        egress
-                            .connection
-                            .sending()
-                            .abort_queue(&mut egress.queue, key);
+                        egress.connection.sending().abort_queue(&mut egress.queue);
                         SendOutcome::Close(key)
                     }
                     Terminal::Direct(result) => mode(&mut egress, result),
@@ -319,10 +304,7 @@ where
                     Terminal::Write(End::Sent) => SendOutcome::WriteShutdown { key },
                     Terminal::Write(End::Closed) => SendOutcome::Close(key),
                     Terminal::Invalid(error) => {
-                        egress
-                            .connection
-                            .sending()
-                            .abort_queue(&mut egress.queue, key);
+                        egress.connection.sending().abort_queue(&mut egress.queue);
                         SendOutcome::Invalid {
                             key,
                             error: error.into(),

@@ -38,9 +38,7 @@ unsafe impl file::raw::Directory for Uring {
         unsafe { kernel::raw::Descriptor::new(stream.file.as_raw_fd()) }
     }
 
-    fn next<E: From<Errno>>(
-        stream: &mut Stream,
-    ) -> Result<Option<file::Entry<'_>>, file::ReadError<E>> {
+    fn next(stream: &mut Stream) -> Result<Option<file::Entry<'_>>, Errno> {
         if stream.offset == stream.filled {
             // SAFETY: the exclusively borrowed buffer supplies exactly CAPACITY
             // writable bytes; getdents64 reports complete native directory records.
@@ -55,13 +53,12 @@ unsafe impl file::raw::Directory for Uring {
             // SAFETY: the exact syscall operand bounds every successful count by
             // CAPACITY; failure leaves this thread's positive errno unchanged.
             let count = unsafe {
-                kernel::raw::Status::from_count(result as libc::ssize_t)
-                    .try_count::<Errno>(|| kernel::raw::Code::last::<Self>().into())
+                kernel::raw::Status::from_count(result as libc::ssize_t).try_count::<Self, Errno>()
             };
             stream.filled = match count {
                 Ok(count) => count.get(),
                 Err(Errno::NOT_FOUND) => 0,
-                Err(error) => return Err(file::ReadError::Syscall(E::from(error))),
+                Err(error) => return Err(error),
             };
             stream.offset = 0;
             if stream.filled == 0 {

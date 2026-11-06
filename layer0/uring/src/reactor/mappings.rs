@@ -71,10 +71,8 @@ impl<T> Mapping<T> {
                 libc::MADV_POPULATE_WRITE,
             )
         };
-        // SAFETY: try_zero calls this only when madvise returned -1 on this thread.
-        let errno = || unsafe { kernel::raw::Code::last::<Uring>().into() };
         // SAFETY: madvise returns exactly zero or -1 and sets errno on failure.
-        match unsafe { Status::new(result).try_zero::<dope_sys::Errno>(errno) } {
+        match unsafe { Status::new(result).try_zero::<Uring, dope_sys::Errno>() } {
             Ok(()) => Ok(mapping),
             Err(cause) => Err(Open::close(
                 Error::Populate {

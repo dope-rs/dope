@@ -74,6 +74,7 @@ impl<'d> Session<'d> for Half {
     type Connect = Full;
     type ConnState = Option<ready::Target<'d>>;
     type Failure = Observed;
+    type Receipt = ();
     type Requests = request::Disabled;
     type Send = Shared;
     fn codec(&self) -> &Self::Codec {

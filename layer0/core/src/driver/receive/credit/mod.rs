@@ -131,21 +131,7 @@ pub struct Control<'d> {
     driver: driver::Invariant<'d>,
 }
 
-/// Route-bound credit control awaiting one exact readiness owner.
-#[derive(Clone, Copy)]
-pub struct Binding<'d, ID: route::Tag> {
-    control: Control<'d>,
-    target: route::Operation<'d, ID>,
-}
-
 impl<'d> Control<'d> {
-    pub const fn bind<ID: route::Tag>(self, target: route::Operation<'d, ID>) -> Binding<'d, ID> {
-        Binding {
-            control: self,
-            target,
-        }
-    }
-
     pub fn arm<ID: route::Tag>(
         self,
         target: route::Operation<'d, ID>,
@@ -158,12 +144,6 @@ impl<'d> Control<'d> {
             driver: self.driver,
             target,
         })
-    }
-}
-
-impl<'d, ID: route::Tag> Binding<'d, ID> {
-    pub fn into_parts(self) -> (Control<'d>, route::Operation<'d, ID>) {
-        (self.control, self.target)
     }
 }
 
@@ -199,6 +179,20 @@ impl<'d> Slot<'_, 'd> {
         }
     }
 
+    pub fn arm<ID: route::Tag>(
+        self,
+        target: route::Operation<'d, ID>,
+        ready: ready::Target<'d>,
+    ) -> Result<Pending<'d, ID>, error::Arm> {
+        let (_, ready) = ready.receive();
+        let lease = self.entry.arm(ready)?;
+        Ok(Pending {
+            lease,
+            driver: self.driver,
+            target,
+        })
+    }
+
     pub fn is_active(self) -> bool {
         self.entry.is_active()
     }
@@ -225,11 +219,6 @@ const _: () = {
     assert!(size_of::<Slot<'static, 'static>>() == size_of::<usize>());
     assert!(size_of::<route::Operation<'static, route::KeyTag<0>>>() == 2 * size_of::<usize>());
     assert!(size_of::<Control<'static>>() == 2 * size_of::<usize>());
-    assert!(
-        size_of::<Binding<'static, route::KeyTag<0>>>()
-            == size_of::<Control<'static>>()
-                + size_of::<route::Operation<'static, route::KeyTag<0>>>()
-    );
     assert!(size_of::<Id<'static, route::KeyTag<0>>>() == 2 * size_of::<usize>());
     assert!(size_of::<Storage<'static>>() == 4 * size_of::<usize>());
     assert!(size_of::<Pending<'static, route::KeyTag<0>>>() == 4 * size_of::<usize>());

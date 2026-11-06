@@ -9,7 +9,7 @@ use dope_core::driver::{
 use dope_net::{
     link::{
         event,
-        pool::recv::{arrival, delivery, reserve::Choice},
+        pool::recv::{arrival, delivery, input, reserve::Choice},
     },
     wire,
 };
@@ -51,7 +51,9 @@ impl<'a, 'c, 'd> Single<'a, 'c, 'd> {
         self,
         mut policy: pin::Pin<&mut P>,
         data: A,
-        emit: impl FnOnce(delivery::Data<'_, 'w, 'd, ID, W, M::Kind>) -> event::DispatchRecv<'d, ID, C>,
+        emit: impl FnOnce(
+            delivery::Data<'_, 'w, 'd, ID, W, M::Kind, input::Receipt<W, M>>,
+        ) -> event::DispatchRecv<'d, ID, C>,
         apply: impl FnOnce(
             pin::Pin<&mut P>,
             event::DispatchRecv<'d, ID, C>,
@@ -65,9 +67,9 @@ impl<'a, 'c, 'd> Single<'a, 'c, 'd> {
         M: Dispatch<W>,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = P::storage(policy.as_mut()).reserve().data(data).map(emit);
+        let plan = P::reserve(policy.as_mut(), data, self.driver.region_token()).map(emit);
         let next = match plan {
             event::Reservation::Ready(next) => next,
             event::Reservation::Control(next) => event::DispatchRecv::Control(next),

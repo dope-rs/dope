@@ -179,6 +179,7 @@ impl<'d, ID: route::Identity, F: Fn() -> egress::NonEmpty<Shared>> app::Lifecycl
     fn prepare<O>(
         &mut self,
         _: conn::Ctx<'_, 'd, ID, Identity, State, O>,
+        _: bool,
         _: egress::Queue<'_, '_, 'd, 32>,
         _: &mut driver::Context<'_, 'd>,
     ) {

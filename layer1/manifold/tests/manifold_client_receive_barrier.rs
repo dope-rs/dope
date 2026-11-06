@@ -39,7 +39,9 @@ use dope_runtime::executor::session::{Completion, Scope};
 use dope_test::{
     fibers,
     harness::{
-        GUARD, peer,
+        GUARD,
+        observe::Trace,
+        peer,
         signals::{self, Progress as _},
     },
     reclaim::Reports,
@@ -102,6 +104,7 @@ fn owner_survives_barrier() {
                 let settled = Rc::new(Cell::new(0));
                 let input = Rc::new(Cell::new(None));
                 let pending_input = Rc::new(Cell::new(None));
+                let receipts = Rc::new(Trace::new());
                 let audit = Rc::new(Report::default());
                 let app = Barrier {
                     audit: Rc::clone(&audit),
@@ -119,6 +122,7 @@ fn owner_survives_barrier() {
                         settlements: settled.clone(),
                         input: input.clone(),
                         pending_input: pending_input.clone(),
+                        receipts: receipts.clone(),
                         head: head.clone(),
                         duplex: duplex.clone(),
                         quarantine: held.clone(),
@@ -197,6 +201,9 @@ fn owner_survives_barrier() {
             }
             assert_eq!(prefix.hits(), u32::from(staged));
             assert_eq!(growth.hits(), u32::from(staged));
+            if staged {
+                assert_eq!(&*receipts.values().expect("source receipts"), &[(0, false), (1, true)]);
+            }
                     },
                 );
                 assert!(result.is_ok(), "create transition connector");

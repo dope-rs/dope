@@ -3,7 +3,7 @@ use std::mem;
 use dope_core::driver::{
     self,
     retained::flight,
-    route::{self, Identity, KeyTag, kind},
+    route::{self, Identity, KeyTag},
 };
 use send::{Store as _, reclaim};
 
@@ -134,7 +134,7 @@ where
         let free = match released {
             Ok(reclaim::Submission::Reclaim(free)) => free,
             Ok(reclaim::Submission::Retain) => {
-                flight.retain(target.operation::<kind::Send>().erase_route());
+                flight.retain();
                 return Attempt::Waiting;
             }
             Err(error) => {

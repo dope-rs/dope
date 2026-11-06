@@ -49,7 +49,7 @@ impl<ID: Identity, B, M: send::Mode, F> Sender<'_, ID, B, M, F> {
     pub(in crate::network::datagram) fn next_generation(&self) -> Option<route::Epoch> {
         self.pending
             .next_generation()
-            .zip(self.in_flight.view().next_generation())
+            .zip(self.in_flight.next_generation())
             .map(|(queued, flight)| queued.max(flight))
     }
 }
@@ -186,7 +186,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         &self,
         region: &region::Token<region::Identity<'d>>,
     ) -> schedule::Progress<'d> {
-        let live = self.in_flight.view();
+        let live = &self.in_flight;
         if self.pending.is_empty() {
             return if live.is_empty() {
                 schedule::Progress::Quiescent
@@ -214,7 +214,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
     }
 
     pub(in crate::network::datagram) fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.in_flight.view().is_empty()
+        self.pending.is_empty() && self.in_flight.is_empty()
     }
 }
 
@@ -310,7 +310,7 @@ mod raw {
             loop {
                 let step = work.run(|| {
                     let front = queue.front()?;
-                    let slot = match slots.vacancy().try_reserve() {
+                    let slot = match slots.access().try_reserve() {
                         Ok(slot) => slot,
                         Err(Vacancy::Full) => return None,
                         Err(Vacancy::IdentityExhausted) => {

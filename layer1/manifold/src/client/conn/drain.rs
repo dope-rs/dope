@@ -1,4 +1,4 @@
-use dope_core::driver::route::Identity;
+use dope_core::driver::{self, route::Identity};
 use dope_net::{
     Transport,
     link::{
@@ -11,7 +11,7 @@ use dope_net::{
 
 use crate::client::{
     app, attempt,
-    close::{Directive, Reason},
+    close::Directive,
     conn::{self, State, claim, closing},
 };
 
@@ -33,15 +33,18 @@ pub(in crate::client) struct Retired<'d, ID: Identity, C> {
 }
 
 impl<'d, ID: Identity, C> Retired<'d, ID, C> {
-    pub(in crate::client) fn resolve<A, V>(
+    pub(in crate::client) fn resolve<'w, A, V>(
         self,
-        resolve: impl FnOnce(Directive) -> (Reason, V),
-        notify: impl FnOnce(conn::Retired<'d, ID, A>, &mut C),
+        app: &mut A,
+        driver: &mut driver::Context<'_, 'd>,
+        output: impl FnOnce(Directive) -> V,
     ) -> V
     where
-        A: app::Application<'d, ID, Conn = C>,
+        'd: 'w,
+        A: app::Lifecycle<'w, 'd, ID, Conn = C>,
     {
-        let (reason, value) = resolve(self.rule);
+        let reason = self.rule.reason();
+        let value = output(self.rule);
         match self.app {
             Application::Detached => {}
             Application::Drained {
@@ -49,7 +52,11 @@ impl<'d, ID: Identity, C> Retired<'d, ID, C> {
                 mut conn,
                 transmit,
             } => {
-                notify(conn::Retired::new(proof, reason, transmit), &mut conn);
+                app.drained(
+                    conn::Retired::new(proof, reason, transmit),
+                    &mut conn,
+                    driver,
+                );
             }
         }
         value
@@ -111,15 +118,6 @@ impl<ID: Identity> Obsolete<'_, ID> {
     }
 }
 
-#[must_use = "absent drain evidence must reach owner reconciliation"]
-pub(in crate::client) struct Absent<'d, ID: Identity>(Drain<'d, ID>);
-
-impl<ID: Identity> Absent<'_, ID> {
-    pub(in crate::client) fn resolve(self) {
-        let Self(Drain { conn: _ }) = self;
-    }
-}
-
 pub(in crate::client) enum Access {
     Current(claim::Transport),
     Stale,
@@ -169,10 +167,6 @@ impl<'d, ID: Identity> Drain<'d, ID> {
 
     pub(in crate::client) fn obsolete(self) -> Obsolete<'d, ID> {
         Obsolete(self)
-    }
-
-    pub(in crate::client) fn absent(self) -> Absent<'d, ID> {
-        Absent(self)
     }
 
     pub(in crate::client) fn authorize<'w, C, O, W>(

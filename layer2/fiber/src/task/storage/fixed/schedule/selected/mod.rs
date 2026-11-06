@@ -142,7 +142,7 @@ impl<'a, L, R> Access<'a, tree::Branch<L, R>> {
         R: schedule::PlaneTree<'d>,
     {
         let (left, right) = self.routes.split();
-        match self.index.split() {
+        match self.index.split(right.as_ref().get_ref().first_base()) {
             Ok(index) => Ok(Access::new(left, index)),
             Err(index) => Err(Access::new(right, index)),
         }
@@ -314,7 +314,7 @@ where
             // SAFETY: queue was retained from this exact claim before driving;
             // the returned exclusive Active still owns every queued admission.
             let index = unsafe { ready::raw::admitted(global) };
-            R::wake_global(Access::new(routes, index));
+            R::root_waker(Access::new(routes, index)).wake();
         }
         receipt.settle(step::Flow::Yield);
         outcome

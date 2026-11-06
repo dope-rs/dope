@@ -1,3 +1,5 @@
+use std::marker;
+
 use o3::mem::quota;
 pub(in crate::driver::schedule::ready) mod cells;
 pub(in crate::driver::schedule::ready) mod layout;
@@ -6,7 +8,7 @@ pub(in crate::driver::schedule::ready) mod pool;
 pub(in crate::driver::schedule::ready) mod set;
 pub(in crate::driver::schedule::ready) mod topology;
 
-use o3::{alloc, depot::queue::Removal};
+use o3::alloc;
 use state::lanes;
 
 use crate::{
@@ -16,8 +18,8 @@ use crate::{
         receive,
         receive::credit,
         route,
-        route::kind,
-        schedule::{ready, state},
+        route::{indices, kind},
+        schedule::{ready, ready::Kind, state},
         settings,
     },
     io::fd::{domain, identity},
@@ -75,13 +77,34 @@ impl Arena {
 
     fn resolve(&self, key: ready::Stored) -> Option<ready::Entry<'_>> {
         let index = key.dense();
-        if let Some(slot) = self.entries.slots.descriptor(index) {
-            return self
-                .descriptors
-                .target_for(slot, key.epoch())
-                .map(|_| ready::Entry::Dispatch(index));
+        let header = self.entries.slots.header();
+        if index.get() < header.descriptor_end.count().get() {
+            let slot = indices::SlotIndex::from(index.0.get() - 1);
+            self.descriptors.target_for(slot, key.epoch())?;
+            return Some(ready::Entry::Dispatch(index));
         }
-        self.entries.slots.resolve(key)
+        if index.get() >= usize::from(header.capacity.raw()) {
+            return None;
+        }
+        let resident = self.entries.slots.resident(ready::key::Local(index.0));
+        if resident.generation() != key.epoch() {
+            return None;
+        }
+        match resident.kind() {
+            Kind::Dispatch => Some(ready::Entry::Dispatch(index)),
+            Kind::Task => {
+                let task = ready::Resident::<ready::state::Task> {
+                    cell: resident.cell,
+                    index: index.0,
+                    proof: marker::PhantomData,
+                };
+                Some(ready::Entry::Task(
+                    task.bound(),
+                    ready::TaskIndex::from_code(index.0),
+                ))
+            }
+            Kind::Free | Kind::Reserved | Kind::Topology | Kind::Retired => None,
+        }
     }
 
     fn queue_entry<'a, 'd>(&'a self, access: ready::Access<'a, 'd>, entry: ready::Entry<'a>)
@@ -132,16 +155,22 @@ impl Arena {
         let mut drained = 0;
         while let quota::Admission::Item(index) = budget.admit(|| ready.next()) {
             drained += 1;
-            match self.entries.slots.drain(index) {
-                ready::Drain::Descriptor(slot) => {
-                    if let Some(target) = self.descriptors.target_at(slot) {
-                        activate(route::Erased::new(target, access.driver));
-                    }
-                }
-                ready::Drain::Dispatch(target) => {
-                    activate(route::Erased::new(target, access.driver));
-                }
-            }
+            let index = index.0;
+            let header = self.entries.slots.header();
+            let target = if index.get() < header.descriptor_end.count().get() {
+                let slot = indices::SlotIndex::from(index.0.get() - 1);
+                let Some(target) = self.descriptors.target_at(slot) else {
+                    continue;
+                };
+                target
+            } else {
+                self.entries
+                    .slots
+                    .resident(ready::key::Local(index.0))
+                    .payload()
+                    .dispatch()
+            };
+            activate(route::Erased::new(target, access.driver));
         }
         drained
     }
@@ -173,7 +202,10 @@ impl Arena {
         self.ready.insert(key.key().raw().dense());
     }
 
-    pub(in crate::driver::schedule::ready) fn take(&self, key: &ready::DispatchKey<'_>) -> Removal {
+    pub(in crate::driver::schedule::ready) fn take(
+        &self,
+        key: &ready::DispatchKey<'_>,
+    ) -> ready::Readiness {
         self.ready.remove(key.key().raw().dense())
     }
 

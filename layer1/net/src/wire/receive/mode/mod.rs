@@ -4,7 +4,7 @@ use std::marker;
 
 use dope_core::driver::{
     receive::{credit, credit::error::Arm},
-    route::Identity,
+    route::{self, Identity},
     schedule::ready,
 };
 
@@ -18,7 +18,7 @@ pub(crate) use kind::Kind;
 /// A compile-time capability flag.
 pub trait Flag: Kind {
     /// Route binding selected by this capability.
-    type Binding<'d, ID: Identity>: Copy;
+    type Binding<'a, 'd: 'a, ID: Identity>: Copy;
 
     /// Union of this capability and another capability.
     type Or<Rhs: Flag>: Flag;
@@ -37,8 +37,9 @@ pub trait Credit: Flag {
 /// Ingress capability backed by one stored receive-credit binding.
 pub(crate) trait Stored: Flag {
     /// Arms the exact route-branded binding for its current readiness owner.
-    fn arm<'d, ID: Identity>(
-        binding: Self::Binding<'d, ID>,
+    fn arm<'a, 'd: 'a, ID: Identity>(
+        binding: Self::Binding<'a, 'd, ID>,
+        target: route::Operation<'d, ID>,
         ready: ready::Target<'d>,
     ) -> Result<credit::Pending<'d, ID>, Arm>;
 }
@@ -71,45 +72,45 @@ impl Credit for Enabled {
 }
 
 impl Stored for Enabled {
-    fn arm<'d, ID: Identity>(
-        binding: Self::Binding<'d, ID>,
+    fn arm<'a, 'd: 'a, ID: Identity>(
+        binding: Self::Binding<'a, 'd, ID>,
+        target: route::Operation<'d, ID>,
         ready: ready::Target<'d>,
     ) -> Result<credit::Pending<'d, ID>, Arm> {
-        let (control, target) = binding.into_parts();
-        control.arm(target, ready)
+        binding.arm(target, ready)
     }
 }
 
 impl<R> Stored for Waiting<R> {
-    fn arm<'d, ID: Identity>(
-        binding: Self::Binding<'d, ID>,
+    fn arm<'a, 'd: 'a, ID: Identity>(
+        binding: Self::Binding<'a, 'd, ID>,
+        target: route::Operation<'d, ID>,
         ready: ready::Target<'d>,
     ) -> Result<credit::Pending<'d, ID>, Arm> {
-        let (control, target) = binding.into_parts();
-        control.arm(target, ready)
+        binding.arm(target, ready)
     }
 }
 
 impl Flag for Disabled {
-    type Binding<'d, ID: Identity> = Direct<'d, ID>;
+    type Binding<'a, 'd: 'a, ID: Identity> = Direct<'d, ID>;
     type Or<Rhs: Flag> = Rhs;
     type WithParking = Parking;
 }
 
 impl Flag for Parking {
-    type Binding<'d, ID: Identity> = Direct<'d, ID>;
+    type Binding<'a, 'd: 'a, ID: Identity> = Direct<'d, ID>;
     type Or<Rhs: Flag> = Rhs::WithParking;
     type WithParking = Parking;
 }
 
 impl Flag for Enabled {
-    type Binding<'d, ID: Identity> = credit::Binding<'d, ID>;
+    type Binding<'a, 'd: 'a, ID: Identity> = credit::Slot<'a, 'd>;
     type Or<Rhs: Flag> = Enabled;
     type WithParking = Enabled;
 }
 
 impl<R> Flag for Waiting<R> {
-    type Binding<'d, ID: Identity> = credit::Binding<'d, ID>;
+    type Binding<'a, 'd: 'a, ID: Identity> = credit::Slot<'a, 'd>;
     type Or<Rhs: Flag> = Self;
     type WithParking = Self;
 }

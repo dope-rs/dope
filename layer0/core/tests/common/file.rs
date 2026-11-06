@@ -31,9 +31,7 @@ impl Identity {
         let result = unsafe { libc::stat(path.as_ptr(), stat.as_mut_ptr()) };
         // SAFETY: stat returns zero or -1 with this thread's unchanged errno.
         unsafe {
-            dope_sys::kernel::raw::Status::new(result).try_zero::<Errno>(|| {
-                dope_sys::kernel::raw::Code::last::<dope_core::Backend>().into()
-            })
+            dope_sys::kernel::raw::Status::new(result).try_zero::<dope_core::Backend, Errno>()
         }
         .map_err(IdentityError::Syscall)?;
         // SAFETY: successful stat initialized the complete value.

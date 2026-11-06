@@ -114,38 +114,37 @@ impl Name {
                 }
                 if index != 0 {
                     let Some(dot) = output.get_mut(offset) else {
-                        return Err(Error::NameLength {
-                            actual: offset + 1,
-                            minimum: MIN_PRESENTATION_LEN,
-                            maximum: MAX_PRESENTATION_LEN,
-                        });
+                        unreachable!("name");
                     };
                     *dot = b'.';
                     offset += 1;
                 }
-                validate_label(label, index, offset)?;
+                if label.first() == Some(&b'-') {
+                    return Err(Error::LabelHyphen { index, offset });
+                }
+                if label.last() == Some(&b'-') {
+                    return Err(Error::LabelHyphen {
+                        index,
+                        offset: offset + label.len() - 1,
+                    });
+                }
+                for (relative, &value) in label.iter().enumerate() {
+                    if !(value.is_ascii_alphanumeric() || value == b'-' || value == b'_') {
+                        return Err(Error::LabelCharacter {
+                            index,
+                            offset: offset + relative,
+                            value,
+                        });
+                    }
+                }
                 let end = offset + label.len();
                 let Some(dst) = output.get_mut(offset..end) else {
-                    return Err(Error::NameLength {
-                        actual: end,
-                        minimum: MIN_PRESENTATION_LEN,
-                        maximum: MAX_PRESENTATION_LEN,
-                    });
+                    unreachable!("name");
                 };
-                for (dst, &byte) in dst.iter_mut().zip(label) {
-                    *dst = byte.to_ascii_lowercase();
+                for (dst, &value) in dst.iter_mut().zip(label) {
+                    *dst = value.to_ascii_lowercase();
                 }
                 offset = end;
-            }
-            if offset == 0 {
-                return Err(Error::NoLabels);
-            }
-            if offset != total {
-                return Err(Error::NameLength {
-                    actual: offset,
-                    minimum: MIN_PRESENTATION_LEN,
-                    maximum: MAX_PRESENTATION_LEN,
-                });
             }
             Ok(())
         })?;
@@ -153,10 +152,7 @@ impl Name {
     }
 
     pub fn as_str(&self) -> &str {
-        // SAFETY: `assemble` admits only ASCII label bytes joined by ASCII dots
-        // (`validate_label` accepts only ASCII alphanumerics, '-' and '_'), so
-        // the stored presentation is ASCII and therefore valid UTF-8.
-        // The immutable Name borrow retains those validated bytes.
+        // SAFETY: assemble stores only ASCII labels and dots; this borrow retains them.
         unsafe { str::from_utf8_unchecked(self.bytes.as_ref()) }
     }
 
@@ -169,31 +165,6 @@ impl<'a> From<&'a Name> for bytes::Prefix<'a, MAX_PRESENTATION_LEN> {
     fn from(name: &'a Name) -> Self {
         Self::from(&name.bytes)
     }
-}
-
-fn validate_label(label: &[u8], index: usize, start: usize) -> Result<(), Error> {
-    if label.first() == Some(&b'-') {
-        return Err(Error::LabelHyphen {
-            index,
-            offset: start,
-        });
-    }
-    if label.last() == Some(&b'-') {
-        return Err(Error::LabelHyphen {
-            index,
-            offset: start + label.len() - 1,
-        });
-    }
-    for (relative, &value) in label.iter().enumerate() {
-        if !(value.is_ascii_alphanumeric() || value == b'-' || value == b'_') {
-            return Err(Error::LabelCharacter {
-                index,
-                offset: start + relative,
-                value,
-            });
-        }
-    }
-    Ok(())
 }
 
 const _: () = assert!(mem::size_of::<Name>() == MAX_PRESENTATION_LEN + 1);

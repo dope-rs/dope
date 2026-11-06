@@ -1,7 +1,6 @@
 use std::pin;
 
 use o3::{alloc, depot::capacity};
-use tree::Member as _;
 
 use crate::task::storage::fixed::tree;
 
@@ -23,6 +22,14 @@ impl<L, R> Branch<L, R> {
         (branch.left, branch.right)
     }
 
+    pub(crate) fn parts_mut(&mut self) -> (&mut L, &mut R) {
+        (&mut self.left, &mut self.right)
+    }
+
+    pub(crate) fn left(&self) -> &L {
+        &self.left
+    }
+
     pub(crate) fn into_parts(self) -> (L, R) {
         (self.left, self.right)
     }
@@ -39,6 +46,8 @@ where
     L: tree::Tree<'d>,
     R: tree::Tree<'d>,
 {
+    type First = tree::Left<L::First>;
+
     const TASKS: tree::Tasks = L::TASKS.add(R::TASKS);
 }
 
@@ -62,12 +71,6 @@ where
 {
     type Member = L::Member;
 
-    const OFFSET: tree::Offset = {
-        let offset = L::OFFSET;
-        assert!(L::TASKS.contains(offset, L::Member::CAPACITY));
-        offset
-    };
-
     fn project(self: pin::Pin<&mut Self>) -> pin::Pin<&mut Self::Member> {
         let branch = self.project();
         L::project(branch.left)
@@ -85,8 +88,6 @@ where
     R: tree::At<'d, P>,
 {
     type Member = R::Member;
-
-    const OFFSET: tree::Offset = R::OFFSET.shift(L::TASKS);
 
     fn project(self: pin::Pin<&mut Self>) -> pin::Pin<&mut Self::Member> {
         let branch = self.project();

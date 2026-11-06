@@ -4,12 +4,19 @@ use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{
         egress::reserve::demand,
-        event::ParkError,
-        pool::{self, pending},
+        event::{self, ParkError},
+        pool::{
+            self, pending,
+            recv::{
+                arrival, input,
+                reserve::{Choice, Reservation},
+            },
+        },
     },
     wire::terminal,
 };
 use engine::ops::close::{self, ClosePhase as _};
+use o3::base::cell::region;
 
 use crate::{
     app::{
@@ -59,6 +66,31 @@ where
 
     fn storage<'a>(self: pin::Pin<&'a mut Self>) -> &'a mut crate::Inbound<'p, 'w, 'd, ID, Self> {
         self.project().links.pool_mut()
+    }
+
+    fn reserve<'a, R>(
+        self: pin::Pin<&'a mut Self>,
+        data: R,
+        token: &region::Token<region::Identity<'d, 0>>,
+    ) -> Reservation<'a, 'w, 'd, ID, Self::Wire, Self::Input>
+    where
+        R: arrival::Arrival<
+                'd,
+                input::Receipt<Self::Wire, Self::Input>,
+                Observed = event::Data<'d>,
+            >,
+        input::Receipt<Self::Wire, Self::Input>: 'a,
+        <Self::Input as input::Mode<Self::Wire>>::Reserve:
+            Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>,
+    {
+        let this = self.project();
+        this.links
+            .pool_mut()
+            .reserve()
+            .data(data, |key, state| match state.conn() {
+                Some(conn) => this.app.receipt(conn::Id::from_key(key), conn, token),
+                None => Default::default(),
+            })
     }
 
     fn receive<'input>(

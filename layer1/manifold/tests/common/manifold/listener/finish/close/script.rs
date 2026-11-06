@@ -71,16 +71,9 @@ impl<'d, ID: Identity> Application<'d, ID> for App {
         handler::Drain::Complete
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, u8>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, u8>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, u8>) {
         assert!(*conn.state() <= 1);
         self.as_ref().get_ref().close.hit();
-        conn
     }
 }
 

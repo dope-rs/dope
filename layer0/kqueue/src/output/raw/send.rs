@@ -20,7 +20,7 @@ impl<C: retry::Context> retry::raw::Send<C> for Data<C> {
     fn bytes(input: bytes::Prefix<'_, { MAX }>) -> Self {
         let len = input.len::<{ MAX as u32 }>().into();
         Self(Payload::Bytes {
-            ptr: input.into_slice().as_ptr(),
+            ptr: input.as_slice().as_ptr(),
             len,
         })
     }

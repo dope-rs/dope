@@ -55,9 +55,9 @@ where
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, A> Policy<'w, 'd, ID, A> for Owned
+impl<'w, 'd: 'w, ID: Identity, A, Receipt: Default> Policy<'w, 'd, ID, A> for Owned<Receipt>
 where
-    A: app::Owned<'w, 'd, ID>,
+    A: app::Owned<'w, 'd, ID, Receipt>,
     <<A::Wire as wire::Spec>::Receive as receive::Policy<A::Wire>>::Credit:
         delivery::Ownership<A::Wire>,
 {
@@ -72,6 +72,6 @@ where
         'w: 'input,
         R: app::Receiver<'w, 'd, ID, A>,
     {
-        recv.retained(key, input, turn, driver)
+        recv.retained::<Receipt>(key, input.0, input.1, turn, driver)
     }
 }

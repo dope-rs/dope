@@ -1,6 +1,6 @@
 use std::{mem, num, pin};
 
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 
 mod proof;
 pub(crate) use proof::Proof;
@@ -8,13 +8,10 @@ pub(crate) use proof::Proof;
 use crate::{
     context::wake,
     core::driver::schedule::ready::task::{self, owner},
-    task::storage::fixed::{
-        schedule::ready::{
-            self,
-            linked::{self, Prepared, Queue},
-            owned,
-        },
-        tree,
+    task::storage::fixed::schedule::ready::{
+        self,
+        linked::{self, Prepared, Queue},
+        owned,
     },
 };
 
@@ -181,11 +178,11 @@ impl<'a, 'd, Source> Owners<'a, 'd, Source> {
 
 impl<'d, Source> Owned<'d, Source> {
     pub(super) fn try_new(
-        tasks: tree::Tasks,
+        tasks: capacity::Count,
         owners: owner::Capacity,
     ) -> Result<Self, PrepareError> {
         Ok(Self {
-            ready: owned::Queue::try_new(tasks.nonzero(), owners).map_err(PrepareError::Queue)?,
+            ready: owned::Queue::try_new(tasks, owners).map_err(PrepareError::Queue)?,
         })
     }
 
@@ -232,7 +229,7 @@ pub trait Backend<'d>: Proof {
         next: Disposition,
     );
 
-    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>, global: ready::Global);
+    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>);
 }
 
 impl<'d, Source> Backend<'d> for Owned<'d, Source> {
@@ -301,7 +298,7 @@ impl<'d, Source> Backend<'d> for Owned<'d, Source> {
         }
     }
 
-    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>, _: ready::Global) {
+    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>) {
         self.queue().detach(entry);
     }
 }
@@ -380,7 +377,7 @@ impl<'d> Backend<'d> for Flat<'d> {
         }
     }
 
-    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>, _: ready::Global) {
+    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>) {
         self.queue().detach(entry);
     }
 }

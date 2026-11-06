@@ -116,7 +116,7 @@ fn stale_ready_is_inert() {
                     stale_to.wake();
                     assert_eq!(turn.ready_round(|_| {}), 0);
 
-                    current.activate();
+                    current.target().wake();
                     let mut active = None;
                     assert_eq!(
                         turn.ready_round(|target| {

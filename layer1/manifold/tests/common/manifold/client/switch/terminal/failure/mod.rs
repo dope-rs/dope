@@ -65,6 +65,7 @@ impl receive::Policy<Fault> for Ingress {
     type Reserve = reserve::Borrowed;
     type Credit = Disabled;
     type Discard = Disabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Transaction<'a, 'w, ID, Fault>,
@@ -196,6 +197,7 @@ impl<'d> Session<'d> for Failure {
     type Connect = Full;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Send = Shared;
     type Requests = request::Disabled;
 

@@ -96,7 +96,10 @@ fn preserves_root_admission() {
             )
             .expect("application teardown");
         assert!(result);
-        assert!(activated.get().is_some());
+        assert_eq!(
+            activated.get(),
+            Some(dope_core::driver::schedule::LIMIT - 1)
+        );
     });
 }
 

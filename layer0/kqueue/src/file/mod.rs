@@ -28,8 +28,7 @@ fn sync(file: fd::BorrowedFd<'_>, mode: file::Sync) -> Result<(), Errno> {
         file::Sync::Data => {
             // SAFETY: the borrowed descriptor remains live; fdatasync returns zero or -1.
             unsafe {
-                kernel::raw::Status::new(sync_data(file.as_raw_fd()))
-                    .try_zero(|| kernel::raw::Code::last::<Kqueue>().into())
+                kernel::raw::Status::new(sync_data(file.as_raw_fd())).try_zero::<Kqueue, Errno>()
             }
         }
         file::Sync::All => Kqueue::sync(file),

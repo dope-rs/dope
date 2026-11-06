@@ -43,18 +43,14 @@ pub trait Fd: errno::Source {
         // SAFETY: ownership is transferred exactly once to this close attempt.
         let raw = unsafe { libc::close(file.into_raw_fd()) };
         // SAFETY: close returns zero or -1; no intervening syscall changes errno.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero(|| kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }
     }
 
     fn duplicate<E: From<Errno>>(file: BorrowedFd<'_>) -> Result<OwnedFd, E> {
         // SAFETY: the descriptor is live; F_DUPFD_CLOEXEC creates a new owned descriptor.
         let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         // SAFETY: a successful result is the fresh descriptor returned above.
-        unsafe {
-            <OwnedFd as fd::raw::Adopt>::try_adopt(raw, || kernel::raw::Code::last::<Self>().into())
-        }
+        unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Self, E>(raw) }
     }
 
     fn set<const COMMAND: libc::c_int, E: From<Errno>>(
@@ -78,22 +74,14 @@ pub trait Fd: errno::Source {
         // SAFETY: output exclusively owns the writable extent until read returns.
         let raw = unsafe { libc::read(file.as_raw_fd(), output.as_mut_ptr().cast(), output.len()) };
         // SAFETY: read returns -1 or initializes at most this exact output extent.
-        unsafe {
-            crate::io::raw::Buffer::try_native(output, raw, || {
-                kernel::raw::Code::last::<Self>().into()
-            })
-        }
+        unsafe { crate::io::raw::Buffer::try_native::<Self, E>(output, raw) }
     }
 
     fn write<'a, E: From<Errno>>(file: BorrowedFd<'_>, input: &'a [u8]) -> Result<&'a [u8], E> {
         // SAFETY: input retains the complete readable extent until write returns.
         let raw = unsafe { libc::write(file.as_raw_fd(), input.as_ptr().cast(), input.len()) };
         // SAFETY: write returns -1 or a count no larger than this exact input extent.
-        unsafe {
-            crate::io::raw::Buffer::try_native(input, raw, || {
-                kernel::raw::Code::last::<Self>().into()
-            })
-        }
+        unsafe { crate::io::raw::Buffer::try_native::<Self, E>(input, raw) }
     }
 }
 
@@ -114,7 +102,7 @@ fn update<S: Fd + ?Sized, E: Flags, const RETRY: bool, const ENABLED: bool>(
         kernel::raw::try_retry::<_, E, RETRY>(
             || {
                 kernel::raw::Status::new(libc::fcntl(file.as_raw_fd(), E::READ))
-                    .try_value::<Errno>(|| kernel::raw::Code::last::<S>().into())
+                    .try_value::<S, Errno>()
             },
             |error| E::from(Failure::Get(error)),
         )
@@ -144,7 +132,7 @@ fn set<S: Fd + ?Sized, E, const COMMAND: libc::c_int, const RETRY: bool>(
         kernel::raw::try_retry::<_, E, RETRY>(
             || {
                 kernel::raw::Status::new(libc::fcntl(file.as_raw_fd(), COMMAND, flags))
-                    .try_zero::<Errno>(|| kernel::raw::Code::last::<S>().into())
+                    .try_zero::<S, Errno>()
             },
             classify,
         )

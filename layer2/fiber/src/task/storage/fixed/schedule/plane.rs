@@ -1,6 +1,6 @@
 use std::{marker, pin};
 
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 use schedule::{result::Selection, selected};
 
 use crate::{
@@ -51,6 +51,17 @@ where
 }
 
 impl<R, Q> Active<R, Q> {
+    pub(super) fn new<'d>(mut routes: R, quota: Q) -> (Self, capacity::Count)
+    where
+        R: schedule::PlaneTree<'d>,
+    {
+        const {
+            let _ = R::TASKS;
+        };
+        let count = routes.layout(0);
+        (Self { routes, quota }, count)
+    }
+
     pub(super) fn split(self: pin::Pin<&mut Self>) -> (pin::Pin<&mut R>, &mut Q) {
         let active = self.project();
         (active.routes, active.quota)
@@ -73,17 +84,13 @@ where
 
 impl<'d, R> Plane<'d, R, quota::Physical, queue::Flat<'d>>
 where
-    R: tree::Tree<'d>,
-{
-    pub fn from_routes(routes: R) -> Self {
-        Self::from_parts(routes, quota::Physical, queue::Flat::new())
-    }
-}
-
-impl<'d, R> Plane<'d, R, quota::Physical, queue::Flat<'d>>
-where
     R: schedule::PlaneTree<'d>,
 {
+    pub fn from_routes(routes: R) -> Self {
+        let (active, _) = Active::new(routes, quota::Physical);
+        Self::from_parts(active, queue::Flat::new())
+    }
+
     pub fn try_new() -> Result<Self, alloc::Error> {
         Ok(Self::from_routes(R::try_build()?))
     }
@@ -91,15 +98,12 @@ where
 
 impl<'d, R> Plane<'d, R, quota::Bounded, queue::Flat<'d>>
 where
-    R: tree::Tree<'d>,
+    R: schedule::PlaneTree<'d>,
 {
     pub fn bounded(routes: R, limit: quota::Limit) -> Self {
         let tasks = R::TASKS;
-        Self::from_parts(
-            routes,
-            quota::Bounded::new(limit, tasks),
-            queue::Flat::new(),
-        )
+        let (active, _) = Active::new(routes, quota::Bounded::new(limit, tasks));
+        Self::from_parts(active, queue::Flat::new())
     }
 
     /// Returns the remaining global admission quota.
@@ -110,11 +114,12 @@ where
 
 impl<'d, R, Source> Plane<'d, R, quota::Physical, queue::Owned<'d, Source>>
 where
-    R: tree::Tree<'d>,
+    R: schedule::PlaneTree<'d>,
 {
     pub fn try_owned(routes: R, owners: owner::Capacity) -> Result<Self, queue::PrepareError> {
-        let queue = queue::Owned::try_new(R::TASKS, owners)?;
-        Ok(Self::from_parts(routes, quota::Physical, queue))
+        let (active, count) = Active::new(routes, quota::Physical);
+        let queue = queue::Owned::try_new(count, owners)?;
+        Ok(Self::from_parts(active, queue))
     }
 }
 
@@ -124,9 +129,9 @@ where
     Q: State,
     S: queue::Backend<'d>,
 {
-    pub(super) fn from_parts(routes: R, quota: Q, queue: S) -> Self {
+    pub(super) fn from_parts(active: Active<R, Q>, queue: S) -> Self {
         Self {
-            active: Active { routes, quota },
+            active,
             driver: marker::PhantomData,
             scheduler: queue,
         }
@@ -194,10 +199,11 @@ where
             app::Next::Exhausted(global) => {
                 ready.pause();
                 let (routes, _) = active.split();
-                R::wake_global(selected::Access::from_ready(Ready {
+                R::root_waker(selected::Access::from_ready(Ready {
                     routes,
                     index: global,
-                }));
+                }))
+                .wake();
                 Selection::Yielded
             }
         }
@@ -224,13 +230,13 @@ where
                 app::Next::Empty => return Selection::Idle,
                 app::Next::Exhausted(index) => {
                     let (routes, _) = active.as_mut().split();
-                    R::wake_global(selected::Access::from_ready(Ready { routes, index }));
+                    R::root_waker(selected::Access::from_ready(Ready { routes, index })).wake();
                     return Selection::Yielded;
                 }
             };
             if let Some(index) = moved {
                 let (routes, _) = active.as_mut().split();
-                R::wake_global(selected::Access::from_ready(Ready { routes, index }));
+                R::root_waker(selected::Access::from_ready(Ready { routes, index })).wake();
             }
             if let Some(dequeued) = dequeued {
                 return Selection::Ready(selected::Item::new(
@@ -254,10 +260,11 @@ where
             None => return queue::Wake::Idle,
         };
         let (routes, _) = plane.active.split();
-        R::wake_global(selected::Access::from_ready(Ready {
+        R::root_waker(selected::Access::from_ready(Ready {
             routes,
             index: task,
-        }));
+        }))
+        .wake();
         wake
     }
 }

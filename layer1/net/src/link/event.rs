@@ -140,34 +140,49 @@ pub enum ParkRecv<'d, ID: Identity> {
 /// twice.
 #[must_use = "an observed receive completion must be delivered or dropped"]
 #[repr(transparent)]
-pub struct Completion<'d>(Kind<'d>);
+pub struct Completion<'d, R = ()>(Kind<'d, R>);
 
-pub enum Kind<'d> {
-    Data(Data<'d>),
+pub enum Kind<'d, R = ()> {
+    Data(Data<'d, R>),
     Control(Control<'d>),
 }
 
 #[must_use = "observed receive data must be delivered, deferred, or dropped"]
-pub struct Data<'d> {
+pub struct Data<'d, R = ()> {
     token: route::Erased<'d, kind::Recv>,
     lease: Lease<'d>,
+    receipt: R,
 }
 
 #[must_use = "observed receive control must be dispatched or dropped"]
 #[repr(transparent)]
 pub struct Control<'d>(recv::Control<'d>);
 
-impl<'d> Completion<'d> {
-    pub fn classify(self) -> Kind<'d> {
+impl<'d, R> Completion<'d, R> {
+    pub fn classify(self) -> Kind<'d, R> {
         self.0
     }
 }
 
 impl<'d> Data<'d> {
     pub(in crate::link) fn new(token: route::Erased<'d, kind::Recv>, lease: Lease<'d>) -> Self {
-        Self { token, lease }
+        Self {
+            token,
+            lease,
+            receipt: (),
+        }
     }
 
+    pub(in crate::link) fn with_receipt<R>(self, receipt: R) -> Data<'d, R> {
+        Data {
+            token: self.token,
+            lease: self.lease,
+            receipt,
+        }
+    }
+}
+
+impl<'d, R> Data<'d, R> {
     pub(in crate::link) const fn token(&self) -> route::Erased<'d, kind::Recv> {
         self.token
     }
@@ -176,11 +191,15 @@ impl<'d> Data<'d> {
         &mut self.lease
     }
 
-    pub(in crate::link) fn into_lease(self) -> Lease<'d> {
-        self.lease
+    pub(in crate::link) fn into_parts(self) -> (Data<'d>, R) {
+        (Data::new(self.token, self.lease), self.receipt)
     }
 
-    pub(in crate::link) fn complete(self) -> Completion<'d> {
+    pub(in crate::link) fn into_lease(self) -> (Lease<'d>, R) {
+        (self.lease, self.receipt)
+    }
+
+    pub(in crate::link) fn complete(self) -> Completion<'d, R> {
         Completion(Kind::Data(self))
     }
 }
@@ -211,7 +230,7 @@ impl<'d> Control<'d> {
         self.0.rejoin()
     }
 
-    pub(in crate::link) fn complete(self) -> Completion<'d> {
+    pub(in crate::link) fn complete<R>(self) -> Completion<'d, R> {
         Completion(Kind::Control(self))
     }
 }

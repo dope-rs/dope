@@ -168,6 +168,7 @@ impl Policy<Wire> for Receive {
     type Reserve = reserve::Waiting<Self>;
     type Credit = mode::Disabled;
     type Discard = mode::Disabled;
+    type Publication = wire::receive::publication::Decoded;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: Reservation,
@@ -348,6 +349,7 @@ impl<'d, ID: Identity> app::Lifecycle<'d, 'd, ID> for Parked {
     fn prepare<'e, O>(
         &mut self,
         _: conn::Ctx<'_, 'd, ID, Wire, State, O>,
+        _: bool,
         _: egress::Queue<'_, 'e, 'd, 32, Shared>,
         _: &mut driver::Context<'_, 'd>,
     ) {

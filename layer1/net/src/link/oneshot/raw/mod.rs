@@ -21,7 +21,7 @@ use crate::link::{
 /// Retained operations on one exact installed pool and its driver turn.
 pub struct Io<'a, 'turn, 'd, ID: Identity, A: 'd, P: socket::Prepared, B: 'd>
 where
-    B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
+    B: data::raw::StableOwner<'d>,
 {
     pool: &'a mut Pool<'d, ID, A, P, B>,
     driver: &'a mut driver::Context<'turn, 'd>,
@@ -29,7 +29,7 @@ where
 
 impl<'a, 'turn, 'd, ID: Identity, A: 'd, P: socket::Prepared, B: 'd> Io<'a, 'turn, 'd, ID, A, P, B>
 where
-    B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
+    B: data::raw::StableOwner<'d>,
 {
     /// # Safety
     /// This pool belongs to `driver`'s installed owner; retain its fixed backing,

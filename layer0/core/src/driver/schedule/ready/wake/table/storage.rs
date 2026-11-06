@@ -85,12 +85,8 @@ impl<W> Registry<W> {
                     let view = slot.view();
                     // SAFETY: admission cannot reenter this table, so the selected
                     // front still belongs to its exact reciprocal chain and store.
-                    let (_, vacant) = unsafe {
-                        depot::raw::Hooks::chain_pop(
-                            resident::raw::Slice::new(&self.entries),
-                            &self.links,
-                            slot.key.0,
-                        )
+                    let vacant = unsafe {
+                        depot::raw::Hooks::chain_pop(self.entries.as_ref(), &self.links, slot.key.0)
                     };
                     vacant.park();
                     // SAFETY: the detached front owned one initialized value, and
@@ -205,13 +201,7 @@ impl<'a, W> Slot<'a, W> {
         let table = self.table;
         // SAFETY: the checked slot is vacant and initialized above. Only this
         // table mutates its stable hooks, preserving the chain's reciprocal ends.
-        unsafe {
-            depot::raw::Hooks::chain_push(
-                resident::raw::Slice::new(&table.entries),
-                &table.links,
-                self.key.0,
-            )
-        };
+        unsafe { depot::raw::Hooks::chain_push(table.entries.as_ref(), &table.links, self.key.0) };
         Ok(Occupied { slot: self })
     }
 
@@ -220,13 +210,7 @@ impl<'a, W> Slot<'a, W> {
         // SAFETY: take_one proves this slot linked; Occupied's exclusive
         // registration otherwise owns either this linked slot or its parked
         // marker. Its drop calls here only after excluding that parked state.
-        unsafe {
-            depot::raw::Hooks::chain_unlink(
-                resident::raw::Slice::new(&table.entries),
-                &table.links,
-                self.key.0,
-            )
-        }
+        unsafe { depot::raw::Hooks::chain_unlink(table.entries.as_ref(), &table.links, self.key.0) }
     }
 }
 
@@ -247,7 +231,7 @@ impl<W> Occupied<'_, W> {
             // the detached hook and the active chain's reciprocal endpoints.
             unsafe {
                 depot::raw::Hooks::push(
-                    resident::raw::Slice::new(&self.slot.table.entries),
+                    self.slot.table.entries.as_ref(),
                     vacant,
                     &self.slot.table.links,
                 )

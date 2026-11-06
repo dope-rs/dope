@@ -180,12 +180,12 @@ impl<'d, C, O> State<'d, C, O> {
     where
         W: wire::Spec + 'd,
     {
-        match slot.state.closing.apply(rule).outcome() {
-            conn::CloseUpdate::Applied(_) => Apply::Applied(Self::reconcile(slot, ())),
-            conn::CloseUpdate::Sealed(_) => {
-                let _ = Self::reconcile(slot, ());
-                Apply::Sealed
-            }
+        let claimed = slot.state.closing.apply(rule).is_claimed();
+        let flow = Self::reconcile(slot, ());
+        if claimed {
+            Apply::Sealed
+        } else {
+            Apply::Applied(flow)
         }
     }
 
@@ -225,6 +225,10 @@ impl<'d, C, O> State<'d, C, O> {
 
     pub(super) fn conn_mut(&mut self) -> Option<&mut C> {
         Some(&mut self.phase.as_mut()?.conn)
+    }
+
+    pub(super) fn conn(&self) -> Option<&C> {
+        Some(&self.phase.as_ref()?.conn)
     }
 
     pub(super) fn record_recv(&mut self, now: clock::Moment<'d>) {

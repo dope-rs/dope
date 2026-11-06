@@ -20,6 +20,7 @@ pub mod batch;
 pub mod discard;
 pub mod eof;
 pub mod mode;
+pub mod publication;
 pub mod raw;
 pub mod reserve;
 pub mod scoped;
@@ -38,6 +39,7 @@ pub trait Policy<W: wire::Spec> {
     type Reserve: reserve::Kind<W>;
     type Credit: mode::Credit;
     type Discard: discard::Policy;
+    type Publication: publication::Policy;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: <Self::Reserve as reserve::Kind<W>>::Transaction<'a, 'w, 'd, ID>,
@@ -83,6 +85,7 @@ where
     type Reserve = reserve::Direct;
     type Credit = mode::Disabled;
     type Discard = D;
+    type Publication = publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Guard<ID, W>,

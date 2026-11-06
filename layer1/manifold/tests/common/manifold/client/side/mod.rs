@@ -143,6 +143,7 @@ impl<'d> session::Session<'d> for Session<'_, '_, 'd> {
     type Requests = request::Disabled;
     type ConnState = ();
     type Failure = Observed;
+    type Receipt = ();
     type Send = Inline<16>;
     fn codec(&self) -> &Self::Codec {
         &codec::Pending

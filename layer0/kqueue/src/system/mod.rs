@@ -28,10 +28,7 @@ impl Queue {
         // SAFETY: raw retains that native result; failure reads its unchanged errno.
         let queue = Self(
             unsafe {
-                <OwnedFd as fd::raw::Adopt>::try_adopt::<Errno>(raw, || {
-                    kernel::raw::Code::last::<Kqueue>().into()
-                })
-                .map_err(Create::Open)
+                <OwnedFd as fd::raw::Adopt>::try_adopt::<Kqueue, Errno>(raw).map_err(Create::Open)
             }?,
             ThreadBound::NEW,
         );
@@ -73,11 +70,7 @@ impl Queue {
         };
         // SAFETY: kevent completes at most `slots`, the exact output count borrowed
         // for this call, and failure retains its unchanged errno.
-        let count = unsafe {
-            kernel::raw::Status::new(raw)
-                .try_count::<Errno>(|| kernel::raw::Code::last::<Kqueue>().into())
-        }?
-        .get();
+        let count = unsafe { kernel::raw::Status::new(raw).try_count::<Kqueue, Errno>() }?.get();
         Ok(unsafe { slice::from_raw_parts(events.as_ptr().cast(), count) })
     }
 }

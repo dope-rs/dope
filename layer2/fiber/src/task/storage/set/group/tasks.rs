@@ -144,11 +144,11 @@ where
         policy: P,
         run: impl for<'a> FnOnce(Tasks<'a, 'd, F, M, P, D>) -> R,
     ) -> Result<R, Error> {
-        let plan = map::Plan::new(capacity.get() as usize).map_err(Error::Capacity)?;
+        let capacity = capacity::Count::new(capacity.get());
+        let plan = map::Plan::new(capacity.get()).map_err(Error::Capacity)?;
         let ready = owned::Queue::try_new(capacity, owners).map_err(Error::Ready)?;
         let ready = pin::pin!(ready);
-        let tasks =
-            set::Set::try_new(capacity::Count::new(capacity.get())).map_err(Error::Tasks)?;
+        let tasks = set::Set::try_new(capacity).map_err(Error::Tasks)?;
         let orders = flat::Table::try_new(plan).map_err(Error::Orders)?;
         let result = run(Tasks {
             tasks,

@@ -1,11 +1,10 @@
-use dope_core::driver::schedule::clock;
 use o3::depot::queue::round::set;
 
 use crate::service::{
     health::{Failures, Generation, Next},
     pool::{
         MemberKey, Target,
-        members::{Occupied, Unlinked, Update, backoff, failure, queues},
+        members::{Occupied, Unlinked, Update, backoff, failure},
     },
 };
 
@@ -152,10 +151,6 @@ const _: () = {
     assert!(size_of::<Idle>() == 1);
     assert!(size_of::<Option<Demand>>() == size_of::<bool>());
     assert!(size_of::<Record<u32, u32>>() == size_of::<Health>() + size_of::<[u32; 2]>());
-    assert!(
-        size_of::<queues::Retry<'static>>()
-            == size_of::<Generation>() + size_of::<clock::Deadline<'static>>()
-    );
     assert!(
         size_of::<backoff::Backoff<'static, 'static, u32, u32, true>>()
             == size_of::<Unlinked<'static, 'static, u32, u32>>()

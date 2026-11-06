@@ -39,7 +39,13 @@ fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>(
     engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: retire::RetirePhase<'w, 'd, ID, A, S, E>,
 {
     let outcome = close.run(|drain| {
-        retire::RetirePhase::drain_close(machine.as_mut(), drain, turn, driver, |rule| rule)
+        retire::RetirePhase::drain_close(
+            machine.as_mut(),
+            drain,
+            turn,
+            driver,
+            std::convert::identity,
+        )
     });
     let this = machine.project();
     let (owner, result) = match outcome {
@@ -66,9 +72,6 @@ fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>(
             (owner, result)
         }),
         retire::OwnedOutcome::Pending => return,
-        retire::OwnedOutcome::Missing(proof) => {
-            proof.resolve(|owner| (owner, this.controller.kill(owner, None)))
-        }
         retire::OwnedOutcome::Obsolete(proof) => {
             proof.resolve(|owner| (owner, this.controller.kill(owner, None)))
         }

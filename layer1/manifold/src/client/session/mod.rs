@@ -86,8 +86,9 @@ impl<'w, 'd: 'w, ID: Identity, N: Parser<'d, ID>, W: wire::Spec + 'd> Connection
         &mut self.conn_state
     }
 
-    fn input(&self) -> Input {
+    fn input(&self, queued: bool) -> Input {
         match self.continuation.settlement() {
+            Settlement::Ready if queued => Input::Yield,
             Settlement::Ready if self.ingress.is_empty() => Input::Empty,
             Settlement::Ready => Input::Partial,
             Settlement::Yield => Input::Yield,
@@ -158,10 +159,28 @@ pub trait Session<'d, ID: Identity = KeyTag<0>>: Sized {
     type Connect: connect::Mode;
     type ConnState: Default;
     type Failure: failure::Mode;
+    type Receipt: Default;
     type Requests: Mode;
     type Send: data::raw::Payload<'d>;
 
     fn codec(&self) -> &Self::Codec;
+
+    fn receipt(
+        &self,
+        _: Id<'d, ID>,
+        _: &Self::ConnState,
+        _: &region::Token<region::Identity<'d>>,
+    ) -> Self::Receipt {
+        Self::Receipt::default()
+    }
+
+    fn received<'e>(
+        &mut self,
+        _: Self::Receipt,
+        _: bool,
+        _: &mut turns::Context<'_, 'e, 'd, Self::ConnState, Self::Send, ID>,
+    ) {
+    }
 
     /// Selects framed, transition-barrier, or opaque receive semantics for
     /// one exact connection generation. The default adds no connection state.
@@ -369,7 +388,10 @@ pub trait Retirement<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
         &self,
         _: Id<'d, ID>,
         failure: conn::Transmit,
-        _: &mut region::Token<region::Identity<'d>>,
+        _: &mut (
+            region::Token<region::Identity<'d>>,
+            region::Token<region::Identity<'d, 1>>,
+        ),
     ) -> Option<conn::Transmit> {
         Some(failure)
     }

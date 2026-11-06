@@ -58,7 +58,7 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
     pub(in crate::reply) fn try_new(
         backing: &'arena Backing<'credits, 'region, D>,
         layout: layout::Layout,
-        proof: region::Proof<region::Identity<'region>>,
+        proof: region::Identity<'region>,
     ) -> Result<Self, alloc::Error> {
         Ok(Self {
             state: proof.bind(state::Book::try_new(layout)?),
@@ -133,7 +133,7 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
                 }
                 Retirement::Released => {
                     if let Some(released) = self.backing.resources.pop_released() {
-                        return Retire::new(token.borrow_mut(&self.state))
+                        return Retire(token.borrow_mut(&self.state))
                             .retained(released)
                             .map(|lane| Released::new(lane, self.domain()));
                     }
@@ -156,14 +156,14 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
             Some(active) => active,
             None => {
                 let retired = self.retire.pop()?;
-                match Retire::new(token.borrow_mut(&self.state)).begin(retired) {
+                match Retire(token.borrow_mut(&self.state)).begin(retired) {
                     Start::Drained(lane) => return Some(Some(Released::new(lane, self.domain()))),
                     Start::Draining(active) => active,
                 }
             }
         };
         Some(
-            match Retire::new(token.borrow_mut(&self.state)).advance(active) {
+            match Retire(token.borrow_mut(&self.state)).advance(active) {
                 Advance::Draining(active) => {
                     self.retire.active.set(Some(active));
                     None
@@ -235,7 +235,7 @@ impl<'region, D, E, K> Arena<'_, '_, 'region, D, E, K> {
     /// teardown of its registered entries and detached batches.
     pub fn try_with<R>(
         layout: layout::Layout,
-        proof: region::Proof<region::Identity<'region>>,
+        proof: region::Identity<'region>,
         run: impl for<'scope, 'arena, 'credits> FnOnce(
             &'scope Arena<'arena, 'credits, 'region, D, E, K>,
         ) -> R,
@@ -248,7 +248,7 @@ impl<'region, D, E, K> Arena<'_, '_, 'region, D, E, K> {
     /// Allocation completes before lending; the stored owner cannot be replaced.
     pub fn try_batches<R>(
         layout: layout::Layout,
-        proof: region::Proof<region::Identity<'region>>,
+        proof: region::Identity<'region>,
         run: impl for<'scope, 'arena, 'credits> FnOnce(
             &'scope Arena<'arena, 'credits, 'region, D, E, K>,
             &'scope reply::Batches<'arena, 'credits, 'region, D>,

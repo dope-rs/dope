@@ -132,12 +132,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
             }
             reclaim::Completion::Retained => {
                 let bytes = sent.into_len();
-                match queue.complete(
-                    token,
-                    key.target().operation::<kind::Send>().erase_route(),
-                    bytes,
-                    |body| release(key, body),
-                ) {
+                match queue.complete(token, bytes, |body| release(key, body)) {
                     egress::Change::Applied => Ok(bytes),
                     egress::Change::Stale => Err(Invalid::SettleStale),
                     egress::Change::Invalid(error) => Err(Invalid::Egress(error)),
@@ -149,7 +144,6 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
     pub(in crate::link) fn abort_queue<const IOV: usize, B, D: demand::Mode>(
         &mut self,
         queue: &mut egress::Output<'_, '_, 'd, IOV, B, D>,
-        key: pool::Key<'d, ID>,
     ) {
         let acks = &mut self.slot.engine.operations.acknowledgements;
         let held = matches!(
@@ -157,7 +151,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
             reclaim::Abort::Retained
         );
         if held {
-            queue.abort(key.target().operation::<kind::Send>().erase_route());
+            queue.abort();
         }
     }
 

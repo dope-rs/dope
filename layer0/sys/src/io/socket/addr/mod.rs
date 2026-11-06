@@ -309,10 +309,7 @@ impl<'a> Addr<'a> {
         let status =
             unsafe { libc::getsockname(file.as_raw_fd(), ptr::from_mut(address).cast(), length) };
         // SAFETY: getsockname returns zero or -1; failure reads its unchanged errno.
-        unsafe {
-            kernel::raw::Status::new(status).try_zero::<E>(|| kernel::raw::Code::last::<S>().into())
-        }
-        .map_err(Local::Syscall)?;
+        unsafe { kernel::raw::Status::new(status).try_zero::<S, E>() }.map_err(Local::Syscall)?;
         let actual = *length as usize;
         let len = Socklen::try_from_len(actual).ok_or(Local::Length {
             actual,
@@ -328,9 +325,7 @@ impl<'a> Addr<'a> {
         // SAFETY: the borrowed native payload retains its exact admitted extent.
         let status = unsafe { libc::bind(file.as_raw_fd(), self.addr.as_ptr(), self.len.raw()) };
         // SAFETY: bind returns zero or -1; failure reads its unchanged errno.
-        unsafe {
-            kernel::raw::Status::new(status).try_zero(|| kernel::raw::Code::last::<S>().into())
-        }
+        unsafe { kernel::raw::Status::new(status).try_zero::<S, E>() }
     }
 
     pub fn try_connect<S: kernel::raw::Source + ?Sized, E: From<Errno>>(
@@ -340,8 +335,6 @@ impl<'a> Addr<'a> {
         // SAFETY: the borrowed native payload retains its exact admitted extent.
         let status = unsafe { libc::connect(file.as_raw_fd(), self.addr.as_ptr(), self.len.raw()) };
         // SAFETY: connect returns zero or -1; failure reads its unchanged errno.
-        unsafe {
-            kernel::raw::Status::new(status).try_zero(|| kernel::raw::Code::last::<S>().into())
-        }
+        unsafe { kernel::raw::Status::new(status).try_zero::<S, E>() }
     }
 }

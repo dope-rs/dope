@@ -7,6 +7,8 @@ use common::{
     manifold::{
         Pattern,
         listener::{
+            coupled::QUEUED_BODY,
+            egress::{App as Egress, Event},
             finish::{
                 close::host,
                 drain::Drain,
@@ -34,10 +36,11 @@ use dope_core::{
 };
 use dope_manifold::{
     app::{Host, env::Bundle},
-    network::listener::{self, Domain, config},
+    network::listener::{self, Domain, config, handler},
     timing::Throughput,
 };
 use dope_net::{
+    link::egress,
     tcp::Tcp,
     wire::{Identity, domain},
 };
@@ -49,11 +52,97 @@ use dope_test::{
     fibers::{self, Wait},
     harness::{
         GUARD,
+        observe::Trace,
         peer::Peer,
         signals::{Gate, LocalGate, Progress as _},
     },
     reclaim::Reports,
 };
+
+#[test]
+fn forced_releases_direct_owner() {
+    let cfg = config::Prepared::<Tcp> {
+        connections: Capacity::fixed::<4>(),
+        per_ip: None,
+        direct_flights: 1.into(),
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        backlog: Backlog::fixed::<16>(),
+        stream: dope_net::tcp::StreamConfig {
+            send_buffer_size: Some(
+                dope_core::io::socket::option::Buffer::try_from(1024_usize).expect("socket buffer"),
+            ),
+            ..Default::default()
+        },
+        transport: Default::default(),
+        egress: egress::Config::shared(egress::Credit::fixed::<0, 0>()),
+    };
+    let driver = try_config(cfg.connections()).expect("listener settings");
+    let mut finish = Completion::new();
+    let admitted = Gate::new();
+    let released = Gate::new();
+    let returned = Gate::new();
+    let events = Rc::new(Trace::new());
+    Runtime::new(driver).with_scope(
+        |mut session| {
+            let hash = session.hash_state(Domain::DEFAULT);
+            listener::Install::<KeyTag<0>, Bundle<Tcp, Identity, Throughput>, _>::new(
+                cfg,
+                domain::Local::new(Identity),
+            )
+            .with_driver(
+                Egress {
+                    response: &QUEUED_BODY,
+                    admitted: admitted.clone(),
+                    closed: Gate::new(),
+                    released: released.clone(),
+                    returned: returned.clone(),
+                    retired: Gate::new(),
+                    abort: false,
+                    events: Rc::clone(&events),
+                },
+                hash,
+                &mut session,
+                session::Scope::driver,
+                |listener, _wait, session| {
+                    let peer = Peer::at(listener.local_addr())
+                        .try_connect()
+                        .expect("connect peer");
+                    peer.write_all(b"request").expect("write request");
+                    let result = session.with_quiesce(
+                        &mut finish,
+                        Host::new(listener),
+                        Duration::ZERO,
+                        |mut app| {
+                            reached(
+                                fibers::TEST.try_wait(&mut app, &admitted, 1),
+                                admitted.hits(),
+                                1,
+                            );
+                            assert_eq!((returned.hits(), released.hits()), (0, 0));
+                        },
+                    );
+                    assert!(matches!(
+                        result,
+                        Err(session::Error::Quiesce {
+                            output: (),
+                            drive: drive::Error::QuiescenceTimeout,
+                            disarm: None,
+                        })
+                    ));
+                    drop(peer);
+                },
+            )
+            .expect("install listener");
+        },
+        recovery::Policy::new(|_| {}, recover),
+    );
+    assert_eq!((returned.hits(), released.hits()), (1, 1));
+    assert!(matches!(&*events.values().expect("release events"), [
+        Event::Chunk(_, _),
+        Event::Admitted(_, _, _, _),
+        Event::Released(_, body, 0, handler::Disposition::Closed),
+    ] if body == &QUEUED_BODY));
+}
 
 #[test]
 fn forced_detaches_credit() {

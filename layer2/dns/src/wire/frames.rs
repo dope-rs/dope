@@ -111,7 +111,7 @@ impl<'a> Builder<'a> {
         tail[6..8].copy_from_slice(&records::Kind::OPT.wire().to_be_bytes());
         tail[8..10].copy_from_slice(&EDNS_PAYLOAD.to_be_bytes());
         let mut out = data::Inline::new();
-        let fill = inline::Fill::new(&mut out.0);
+        let fill = inline::Fill::new(&mut out);
         let (fill, header) = fill.write::<PREFIX, { NAME + TAIL }>((&header).into());
         let (fill, name) = fill.write::<NAME, TAIL>(self.name.into());
         Self::name(&mut header[STREAM_PREFIX_BYTES + HEADER_BYTES], name);

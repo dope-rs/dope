@@ -32,6 +32,7 @@ where
         &'a mut liveness::State<'d, ID, <E::Transport as dope_net::Transport>::Prepared, X>,
     pub(super) key: pool::Key<'d, ID>,
     pub(super) target: ready::Target<'d>,
+    pub(super) queued_recv: bool,
 }
 impl<'a, 'p, 'w, 'd: 'p + 'w, ID: Identity, A, E, X> Sender<'a, 'p, 'w, 'd, ID, A, E, X>
 where
@@ -40,6 +41,10 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
+    pub(in crate::client::conn::engine) fn has_queued_recv(&self) -> bool {
+        self.queued_recv
+    }
+
     pub(in crate::client::conn::engine) fn view(
         &mut self,
     ) -> liveness::Egress<'_, 'p, 'w, 'd, ID, A, E, X> {

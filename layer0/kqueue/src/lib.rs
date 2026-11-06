@@ -200,11 +200,8 @@ impl pipe::Pipe for Kqueue {
         // SAFETY: `fds` is writable storage for exactly two descriptors.
         let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
         // SAFETY: pipe just returned on this thread and `fds` is its exact destination.
-        let (read, write) = unsafe {
-            fd::raw::Pair::new(fds)
-                .try_adopt::<Errno>(rc, || kernel::raw::Code::last::<Self>().into())
-        }
-        .map_err(pipe::Error::Open)?;
+        let (read, write) = unsafe { fd::raw::Pair::new(fds).try_adopt::<Self, Errno>(rc) }
+            .map_err(pipe::Error::Open)?;
         for (file, end) in [(&read, pipe::End::Read), (&write, pipe::End::Write)] {
             Self::cloexec(AsFd::as_fd(file))
                 .map_err(|failure| pipe::Error::CloseOnExec { end, failure })?;
@@ -269,9 +266,7 @@ impl socket::Socket for Kqueue {
             )
         };
         // SAFETY: getsockopt returns zero or -1; errno is captured immediately.
-        unsafe {
-            kernel::raw::Status::new(raw).try_zero::<E>(|| kernel::raw::Code::last::<Self>().into())
-        }?;
+        unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }?;
         if len == 0 || len > capacity {
             unreachable!("length");
         }

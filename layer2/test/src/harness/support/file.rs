@@ -7,10 +7,7 @@ use std::{
 
 use dope_core::{
     Backend, Errno,
-    dope_sys::{
-        io::file::{self, Dir, File as _, Mode, Open},
-        kernel,
-    },
+    dope_sys::io::file::{self, Dir, File as _, Mode, Open},
     io::fs::path::{self, CStrExt as _},
 };
 use o3::base::marker::ThreadBound;
@@ -22,7 +19,6 @@ pub enum Error {
     Syscall(Errno),
     Path(path::CopyError),
     Allocation(o3::alloc::Exhausted),
-    Invalid(kernel::Invalid),
     Time(time::SystemTimeError),
     Exhausted,
 }
@@ -107,7 +103,7 @@ fn remove(parent: Option<BorrowedFd<'_>>, name: &CStr) -> Result<(), Error> {
     };
     let mut directory = Dir::<Backend>::from_fd::<Errno>(file)?;
     let (parent_fd, mut entries) = directory.entries();
-    while let Some(entry) = entries.try_next::<Errno>()? {
+    while let Some(entry) = entries.try_next()? {
         if entry.name == c"." || entry.name == c".." {
             continue;
         }
@@ -138,15 +134,6 @@ impl From<file::OpenError<Errno>> for Error {
         match error {
             file::OpenError::Syscall(error) => Self::Syscall(error),
             file::OpenError::Allocation(error) => Self::Allocation(error),
-        }
-    }
-}
-
-impl From<file::ReadError<Errno>> for Error {
-    fn from(error: file::ReadError<Errno>) -> Self {
-        match error {
-            file::ReadError::Syscall(error) => Self::Syscall(error),
-            file::ReadError::Invalid(error) => Self::Invalid(error),
         }
     }
 }

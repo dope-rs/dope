@@ -45,11 +45,6 @@ impl<'node, 'd, I: topology::raw::Index> Binding<'node, 'd, I> {
         self.state().waker()
     }
 
-    /// Revokes the generational wake slot and removes its topology membership.
-    pub fn release(self) {
-        self.into_state().return_item(());
-    }
-
     /// # Safety
     /// This binding must have been admitted by this exact domain.
     pub unsafe fn reclaim<Tag, const N: usize>(
@@ -87,12 +82,6 @@ impl<'node, 'd, I: topology::raw::Index> Binding<'node, 'd, I> {
 
     fn state(&self) -> &task::raw::State<'d> {
         self.state.item()
-    }
-
-    pub fn unbind(node: pin::Pin<&'node task::raw::Node<'d, I>>) {
-        if let Some(binding) = Self::get(node) {
-            binding.release();
-        }
     }
 }
 

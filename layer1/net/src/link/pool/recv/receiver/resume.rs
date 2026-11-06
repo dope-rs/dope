@@ -27,10 +27,11 @@ pub(in crate::link::pool::recv) struct Resume<
     M: input::Mode<W>,
 > where
     'd: 'w,
+    input::Receipt<W, M>: 'a,
 {
     entry: occupied::Entry<'a, types::Connection<'w, 'd, ID, W, S>, ID>,
     runtime: &'a mut W::Runtime<'w, 'd, ID>,
-    recv: recv::Borrow<'a, 'd, ID, M::Ingress>,
+    recv: recv::Borrow<'a, 'd, ID, M::Ingress, input::Receipt<W, M>>,
     pending: &'a pending::Queue<'d, ID>,
 }
 
@@ -39,6 +40,7 @@ where
     'd: 'w,
     W: wire::Spec + 'w + 'd,
     M: input::Mode<W>,
+    input::Receipt<W, M>: 'a,
 {
     pub(in crate::link::pool::recv) fn try_new<'p, T, B, const IOV: usize, D>(
         pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
@@ -73,7 +75,9 @@ where
         release: impl FnOnce(&mut W::Runtime<'w, 'd, ID>),
     ) -> delivery::Resumed<'d, ID>
     where
-        M::Ingress: storage::raw::Mode<Bound<'a, 'd> = storage::Loan<'a, 'd>>,
+        M::Ingress: storage::raw::Mode<
+                Bound<'a, 'd, input::Receipt<W, M>> = storage::Loan<'a, 'd, input::Receipt<W, M>>,
+            >,
     {
         let wake = self.prepare();
         match &wake {
@@ -101,7 +105,9 @@ where
 
     fn prepare(&mut self) -> credit::Take
     where
-        M::Ingress: storage::raw::Mode<Bound<'a, 'd> = storage::Loan<'a, 'd>>,
+        M::Ingress: storage::raw::Mode<
+                Bound<'a, 'd, input::Receipt<W, M>> = storage::Loan<'a, 'd, input::Receipt<W, M>>,
+            >,
     {
         self.resume();
         let slot = self.entry.get_mut();

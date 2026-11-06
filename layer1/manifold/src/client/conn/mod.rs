@@ -212,12 +212,6 @@ enum CloseTarget<'a> {
     Retiring(closing::RetireRef<'a>),
 }
 
-#[must_use = "close request must distinguish an applied and sealed directive"]
-pub enum CloseUpdate {
-    Applied(close::Directive),
-    Sealed(close::Directive),
-}
-
 /// Exact progress of one connection's close machine.
 ///
 /// The machine only exists once a close request has sealed its generation, so

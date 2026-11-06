@@ -215,12 +215,10 @@ fn pending_accept_identity() {
                 drop(spare);
                 assert!(!capacity.can_defer(&mut scope.context()));
                 scope.quiesce();
-                let done = match lanes.get_mut(0).expect("lane").retire(retired) {
-                    accept::Retire::Done(accept::Retired::Terminal(done)) => Some(done),
-                    _ => None,
-                }
-                .expect("terminal accept");
-                done.discard();
+                assert!(matches!(
+                    lanes.get_mut(0).expect("lane").retire(retired),
+                    accept::Retire::Done(accept::Retired::Terminal(_))
+                ));
                 for _ in 0..2 {
                     {
                         let mut driver = scope.context();
@@ -283,7 +281,6 @@ fn pending_accept_identity() {
                         done.can_defer(&capacity, &mut scope.context()),
                         OS == "macos"
                     );
-                    done.discard();
                     retired = token;
                     drop(next_peer);
                     scope.quiesce();

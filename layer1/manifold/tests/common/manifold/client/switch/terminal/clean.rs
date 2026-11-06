@@ -43,6 +43,7 @@ impl<const EOF: bool> receive::Policy<Clean<EOF>> for Ingress<EOF> {
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
     type Discard = mode::Disabled;
+    type Publication = receive::publication::Raw;
 
     fn process<'id, 'a, 'input, 'w, 'd, ID: Identity + 'w>(
         txn: reserve::Transaction<'a, 'w, ID, Clean<EOF>>,

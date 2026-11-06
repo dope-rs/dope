@@ -313,7 +313,7 @@ impl<'credits> Return for LeaseEdge<'_, 'credits, '_> {
 
     fn return_item(self, grant: Self::Item) {
         let parts = self.active.parts();
-        parts.core.lanes.refund(grant);
+        parts.core.lanes.release_data(grant);
     }
 }
 

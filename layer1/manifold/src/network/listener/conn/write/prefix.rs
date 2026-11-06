@@ -12,7 +12,7 @@ use crate::network::listener::{conn::write, writer::memory};
 /// Callback-scoped proof that a committed prefix belongs to the owned header.
 pub struct Prefix<'a, 'id> {
     bytes: Array<'a, { Prefix::CAPACITY }>,
-    owner: region::Proof<region::Identity<'id>>,
+    owner: region::Identity<'id>,
 }
 
 impl<'a, 'id> Prefix<'a, 'id> {
@@ -20,7 +20,7 @@ impl<'a, 'id> Prefix<'a, 'id> {
 
     pub(in crate::network::listener::conn::write) fn new(
         bytes: &'a mut [u8; memory::WRITE_BUF_CAP],
-        owner: region::Proof<region::Identity<'id>>,
+        owner: region::Identity<'id>,
     ) -> Self {
         Self {
             bytes: Array::new(bytes),
@@ -32,7 +32,7 @@ impl<'a, 'id> Prefix<'a, 'id> {
         self,
         body: Option<egress::Load<B>>,
         receipt: R,
-    ) -> Result<write::Commit<region::Proof<region::Identity<'id>>, B, R>, error::Build<B, R>> {
+    ) -> Result<write::Commit<region::Identity<'id>, B, R>, error::Build<B, R>> {
         let written = memory::Len::from(self.bytes.finish());
         let prefix = written.transfer();
         let (total, body) = match body {

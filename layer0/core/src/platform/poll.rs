@@ -18,7 +18,7 @@ impl<'fd> Set<'fd> {
         let sources = first.chain(second);
         let mut entries = Vec::try_new(sources.size_hint().0)?;
         for source in sources {
-            alloc::Vacant::try_new(&mut entries)?.insert(poll::Entry::readable(source));
+            alloc::try_vacant(&mut entries)?(poll::Entry::readable(source));
         }
         if poll::nfds_t::try_from(entries.len()).is_err() {
             return Err(alloc::Error::Overflow);

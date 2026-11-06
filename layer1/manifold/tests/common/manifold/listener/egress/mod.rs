@@ -43,6 +43,8 @@ impl Drop for Release {
 }
 
 pub struct App {
+    pub(crate) response: &'static [u8],
+    pub(crate) admitted: Gate,
     pub(crate) closed: Gate,
     pub(crate) released: Gate,
     pub(crate) returned: Gate,
@@ -83,15 +85,11 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for App {
         None
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, (), Self::Egress>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, (), Self::Egress>
-    where
-        'd: 'w,
-    {
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, (), Self::Egress>,
+    ) {
         self.get_mut().closed.hit();
-        conn
     }
 }
 
@@ -148,7 +146,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
         if !abort {
             conn.close_after();
         }
-        let payload = compose::Tagged::new(Shared::from(RESPONSE), Release(released));
+        let payload = compose::Tagged::new(Shared::from(self.response), Release(released));
         let before = conn.work().remaining();
         let payload = match egress::NonEmpty::try_new(payload) {
             Ok(payload) => payload,
@@ -164,6 +162,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
             before,
             conn.work().remaining(),
         ));
+        self.admitted.hit();
         if abort {
             Outcome::Failed(Failure::Contract)
         } else {
