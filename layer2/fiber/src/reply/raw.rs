@@ -6,17 +6,27 @@ use crate::reply::{
 };
 
 pub(in crate::reply) fn try_map<C, T, E>(
-    batch: &Batch<'_, '_, '_, '_, C>,
+    mut batch: Batch<'_, '_, '_, '_, C>,
     mut make: impl for<'slot> FnMut(&C, array::Slot<'slot, T>) -> Result<array::Written<'slot>, E>,
 ) -> Result<Result<Vec<T>, E>, alloc::Error> {
-    let block = array::Block::try_new(batch.len().get(), ())?;
-    // SAFETY: Batch detaches one completed slot's entire FIFO and payload sum
-    // together. Each original item contributed exactly one count, and every
-    // prior removal refunded that same item's amount. This shared Batch borrow
-    // retains both owners and the immutable detached partition through mapping
-    // and cleanup; neither its count nor its iterator can come from elsewhere.
-    let values =
-        unsafe { alloc::raw::try_map(block, batch.iter(), move |slot, item| make(item, slot)) };
+    let count = batch.len().get();
+    let block = array::Block::try_new(count, ())?;
+    // SAFETY: this consumed batch retains the FIFO and its exact count together.
+    // Each iteration borrows its current row through the callback, then retires
+    // that row once. Callback failure leaves the remainder owned by Batch.
+    let values = unsafe {
+        alloc::raw::try_map(block, 0..count, move |slot, _| {
+            let Some(owned) = batch.owned.take() else {
+                unreachable!("batch")
+            };
+            let Some(item) = owned.data.iter().next() else {
+                unreachable!("row")
+            };
+            let value = make(&item.value, slot);
+            batch.owned = owned.retire();
+            value
+        })
+    };
     Ok(values.map(array::Block::into_vec))
 }
 

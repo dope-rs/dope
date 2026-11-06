@@ -102,6 +102,7 @@ struct Owned<'arena, 'credits, 'region, C> {
 }
 
 impl<C> Owned<'_, '_, '_, C> {
+    #[inline(always)]
     fn retire(self) -> Option<Self> {
         let Self { data, mut credit } = self;
         let data = {
@@ -219,9 +220,9 @@ impl<'s, 'arena, 'credits, 'region, C> Batch<'s, 'arena, 'credits, 'region, C> {
 
     /// Maps this retained batch into one exactly sized allocation. Each slot's
     /// consuming insertion commits its value before further callback work.
-    /// Allocation and callback errors stay separate; this borrow is not retired.
+    /// Visited rows retire after their callbacks; errors defer the remaining rows.
     pub fn try_map<T, E>(
-        &self,
+        self,
         make: impl for<'slot> FnMut(&C, array::Slot<'slot, T>) -> Result<array::Written<'slot>, E>,
     ) -> Result<Result<Vec<T>, E>, alloc::Error> {
         raw::try_map(self, make)
