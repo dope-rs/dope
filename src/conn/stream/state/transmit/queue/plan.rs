@@ -153,6 +153,7 @@ impl<'a, D: buffer::raw::Segment, W> Plan<'a, D, W> {
         owner: W,
         queue: &'a mut queue::Map<D>,
         terminal: impl FnOnce(&mut queue::Map<D>) -> Option<admit::Cause>,
+        observe: impl FnOnce(&W),
     ) -> Result<Self, Reject<W>>
     where
         W: send::raw::Batch<D>,
@@ -164,7 +165,9 @@ impl<'a, D: buffer::raw::Segment, W> Plan<'a, D, W> {
             })?;
         if let Err(denied) = queue.data.budget.check(charge) {
             if let Some(cause) = terminal(queue) {
-                recycle(queue, owner.into_owner().into_parts());
+                let owner = owner.into_owner();
+                observe(&owner);
+                recycle(queue, owner.into_parts());
                 return Err(Reject::Discarded(cause));
             }
             return Err(match denied {
@@ -214,7 +217,7 @@ impl<'a, D: buffer::raw::Segment, C, W> Observed<'a, D, C, W> {
     pub(in crate::conn) fn try_new(
         source: admit::Source,
         owner: W,
-        commit: C,
+        mut commit: C,
         queue: &'a mut queue::Map<D>,
         terminal: impl FnOnce(&mut queue::Map<D>) -> Option<admit::Cause>,
     ) -> Result<Self, Rejected<C, W>>
@@ -222,7 +225,7 @@ impl<'a, D: buffer::raw::Segment, C, W> Observed<'a, D, C, W> {
         C: admit::Commit<D, W>,
         W: send::raw::Batch<D>,
     {
-        let plan = match Plan::try_new(owner, queue, terminal) {
+        let plan = match Plan::try_new(owner, queue, terminal, |owner| commit.observe(owner)) {
             Ok(plan) => plan,
             Err(error) => return Err(error.observe(source, commit)),
         };
@@ -284,13 +287,15 @@ impl<'a, D: buffer::raw::Segment, C, W> Observed<'a, D, C, W> {
                     queue,
                     charge,
                 },
-            commit,
+            mut commit,
         } = self;
         let bytes = charge.wire_bytes;
         let mut occupied = match select(queue) {
             Ok(Some(occupied)) => occupied,
             Ok(None) => {
-                recycle(queue, owner.into_owner().into_parts());
+                let owner = owner.into_owner();
+                commit.observe(&owner);
+                recycle(queue, owner.into_parts());
                 return admit::Outcome::Discarded(
                     commit.discarded(admit::Discard::new(source, admit::Cause::Retired)),
                 );
@@ -307,7 +312,9 @@ impl<'a, D: buffer::raw::Segment, C, W> Observed<'a, D, C, W> {
         let open = match entry.open() {
             Ok(open) => open,
             Err(cause) => {
-                budget.recycle(buffers, owner.into_owner().into_parts());
+                let owner = owner.into_owner();
+                commit.observe(&owner);
+                budget.recycle(buffers, owner.into_parts());
                 return admit::Outcome::Discarded(
                     commit.discarded(admit::Discard::new(source, cause)),
                 );

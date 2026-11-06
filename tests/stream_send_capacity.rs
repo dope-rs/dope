@@ -2,7 +2,7 @@ pub mod common;
 
 use common::{
     peer::{Bind as _, Config, Pair, Receiver as _, Scope as _},
-    suite::{commit::Retain, peers::config::try_budget},
+    suite::{commit::Observe, peers::config::try_budget},
 };
 use dope_quic::{
     conn::stream::{Error, SendOutcome, abandon},
@@ -13,7 +13,11 @@ use dope_quic::{
     stream::send::{self, admit},
     wire::stream::Id,
 };
-use std::time::{Duration, Instant};
+use o3::buffer::storage;
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
 #[test]
 fn terminal_send_preserves_cause_when_full() {
@@ -65,6 +69,11 @@ fn terminal_send_preserves_cause_when_full() {
             SendOutcome::Accepted
         ));
         pair.client.with_scope(|mut scope| {
+            let observations = Cell::new(0);
+            let observe = |owner: &send::Buffer<storage::Shared>| {
+                assert_eq!(owner.len(), 4);
+                observations.set(observations.get() + 1);
+            };
             let mut streams = scope.streams();
             let terminal = streams.view().resolve_send(terminal).expect("send access");
             assert_eq!(
@@ -80,19 +89,21 @@ fn terminal_send_preserves_cause_when_full() {
             assert!(matches!(
                 streams
                     .send()
-                    .try_admit(terminal, send::Buffer::Owned(vec![3; 4]), Retain),
+                    .try_admit(terminal, send::Buffer::Owned(vec![3; 4]), Observe(observe)),
                 admit::Outcome::Discarded(discarded)
                     if discarded.source().id() == terminal.id() && discarded.cause() == cause
             ));
+            assert_eq!(observations.get(), 1);
             let handle = streams
                 .resident()
                 .handle(terminal.id())
                 .expect("terminal resident");
             assert!(matches!(
-                streams.try_write(handle, send::Buffer::Owned(vec![4; 4]), Retain),
+                streams.try_write(handle, send::Buffer::Owned(vec![4; 4]), Observe(observe)),
                 admit::Outcome::Discarded(discarded)
                     if discarded.source().id() == terminal.id() && discarded.cause() == cause
             ));
+            assert_eq!(observations.get(), 2);
         });
         assert_eq!(pair.client.stream_state().active_bytes(), 64);
     }
@@ -214,9 +225,13 @@ fn implicit_send_capacity() {
     .expect("resident capacity must reject the unchanged owner");
     assert_eq!(owner.as_slice().as_ptr(), pointer);
     let owner = pair.server.with_scope(|mut scope| {
+        let observations = Cell::new(0);
+        let commit = Observe(|_: &send::Buffer<storage::Shared>| {
+            observations.set(observations.get() + 1);
+        });
         let mut streams = scope.streams();
         let id = streams.view().resolve_send(low.id()).expect("send access");
-        let (owner, Retain) = match streams.send().try_admit(id, owner, Retain) {
+        let (owner, _) = match streams.send().try_admit(id, owner, commit) {
             admit::Outcome::Failed {
                 owner,
                 commit,
@@ -228,6 +243,7 @@ fn implicit_send_capacity() {
             _ => None,
         }
         .expect("observed admission must preserve owner and commit");
+        assert_eq!(observations.get(), 0);
         owner
     });
     assert_eq!(owner.as_slice().as_ptr(), pointer);

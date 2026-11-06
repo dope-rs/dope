@@ -1,8 +1,11 @@
 use crate::common::peer;
 pub mod common;
-use common::suite::commit::Retain;
+use common::suite::commit::{Observe, Retain};
 use common::suite::peers::config;
-use std::time::{Duration, Instant};
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
 use dope_quic::conn::stream::{Error, SendOutcome};
 use dope_quic::errors::Code;
@@ -161,19 +164,30 @@ fn atomic_parts_resume() {
     let second = vec![3; 2];
     let ptr_one = first.as_ptr();
     let ptr_two = second.as_ptr();
-    let blocked = client.send_streams().try_parts(
-        stream,
-        send::Parts::new(
-            send::Buffer::Owned(first),
-            Some(send::Buffer::Owned(second)),
-            send::Boundary::More,
-        ),
+    let mut parts = send::Parts::new(
+        send::Buffer::Owned(first),
+        Some(send::Buffer::Owned(second)),
+        send::Boundary::More,
     );
-    let (parts,) = match blocked {
-        SendOutcome::Blocked(parts) => Some((parts,)),
-        _ => None,
+    let observations = Cell::new(0);
+    let mut commit = Observe(|_: &send::Parts<storage::Shared>| {
+        observations.set(observations.get() + 1);
+    });
+    for _ in 0..2 {
+        (parts, commit) = client.with_scope(|mut scope| {
+            let mut streams = scope.streams();
+            let id = streams
+                .view()
+                .resolve_send(stream.id())
+                .expect("send access");
+            match streams.send().try_admit(id, parts, commit) {
+                admit::Outcome::Blocked { owner, commit } => Some((owner, commit)),
+                _ => None,
+            }
+            .expect("five-byte atomic write must block behind four retained bytes")
+        });
+        assert_eq!(observations.get(), 0);
     }
-    .expect("five-byte atomic write must block behind four retained bytes");
     let (first, tail, boundary) = parts.into_tail();
     let (second,) = match tail {
         Some(send::Tail::Buffer(second)) => Some((second,)),
@@ -194,10 +208,18 @@ fn atomic_parts_resume() {
 
     assert!(client.poll().poll_event() == Some(Event::Writable));
     assert!(client.poll().poll_event().is_none());
-    assert!(matches!(
-        client.send_streams().try_parts(stream, parts),
-        SendOutcome::Accepted
-    ));
+    client.with_scope(|mut scope| {
+        let mut streams = scope.streams();
+        let id = streams
+            .view()
+            .resolve_send(stream.id())
+            .expect("send access");
+        assert!(matches!(
+            streams.send().try_admit(id, parts, commit),
+            admit::Outcome::Retained(_)
+        ));
+    });
+    assert_eq!(observations.get(), 1);
     assert!(client.view().lifecycle().is_ready() && server.view().lifecycle().is_ready());
 }
 

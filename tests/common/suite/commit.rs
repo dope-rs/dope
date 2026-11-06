@@ -4,6 +4,23 @@ use o3::buffer::storage;
 
 pub struct Retain;
 
+pub struct Observe<F>(pub F);
+
+impl<W, F: FnMut(&W)> admit::Commit<storage::Shared, W> for Observe<F> {
+    type Retained = ();
+    type Discarded = admit::Discard<W>;
+
+    fn observe(&mut self, owner: &W) {
+        (self.0)(owner);
+    }
+
+    fn retained(self, _: admit::Admission<'_, storage::Shared, W>) {}
+
+    fn discarded(self, cause: admit::Discard<W>) -> Self::Discarded {
+        cause
+    }
+}
+
 impl<W> admit::Commit<storage::Shared, W> for Retain {
     type Retained = (Id, send::Boundary, Vec<*const u8>);
     type Discarded = admit::Discard<W>;

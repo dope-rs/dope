@@ -4,6 +4,7 @@ use o3::{buffer, depot::capacity};
 /// # Safety
 /// Demand matches unchanged `into_parts` owners' wire/resident bytes; discarded empty buffers count zero.
 /// Nonempty buffers need one segment/node; chains need their exact segment count and one node.
+/// Shared access preserves these owners and counts until consumption.
 pub unsafe trait Batch<O: buffer::raw::Segment>: Sized {
     fn demand(&self) -> Result<send::Demand, send::Overflow>;
     fn into_parts(self) -> send::Parts<O>;

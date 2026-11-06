@@ -168,11 +168,12 @@ unsafe impl<O: buffer::raw::Segment, W: send::raw::Batch<O>, C: admit::Commit<O,
     depot::raw::Start<chunk::Node<O>> for Observed<W, C>
 {
     fn start(
-        self,
+        mut self,
     ) -> (
         impl depot::raw::Exact<Item = Self::Item, Output = Self::Output>,
         (),
     ) {
+        self.commit.observe(&self.input.owner);
         let nodes = Nodes::new(self.input.owner.into_parts(), |parts| {
             (
                 parts.boundary,

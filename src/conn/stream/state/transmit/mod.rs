@@ -143,10 +143,15 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let mode = queue::Preparation::new(stream);
         let state = &mut self.streams.state;
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
-        let plan = match plan::Plan::try_new(parts, &mut transmit.map, |queue| {
-            let slot = registry.read().find::<true>(id).map(|(_, slot)| slot);
-            plan::terminal(queue, slot, stream.is_local())
-        }) {
+        let plan = match plan::Plan::try_new(
+            parts,
+            &mut transmit.map,
+            |queue| {
+                let slot = registry.read().find::<true>(id).map(|(_, slot)| slot);
+                plan::terminal(queue, slot, stream.is_local())
+            },
+            |_| {},
+        ) {
             Ok(plan) => plan,
             Err(rejected) => return rejected.into_outcome(),
         };
@@ -159,7 +164,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         owner: W,
         params: Option<&param::Set>,
         ready: bool,
-        commit: C,
+        mut commit: C,
     ) -> admit::Outcome<D, C, Error, W>
     where
         C: admit::Commit<D, W>,
@@ -174,6 +179,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         }
         let source = admit::Source::new(id);
         if self.is_send_done(id) {
+            commit.observe(&owner);
             plan::recycle(&mut self.transmit.map, owner.into_parts());
             return admit::Outcome::Discarded(
                 commit.discarded(admit::Discard::new(source, admit::Cause::PeerRetired)),
@@ -201,7 +207,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         owner: W,
         params: Option<&param::Set>,
         ready: bool,
-        commit: C,
+        mut commit: C,
     ) -> admit::Outcome<D, C, resident::Error, W>
     where
         C: admit::Commit<D, W>,
@@ -217,6 +223,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         }
         let source = admit::Source::new(id);
         if self.is_send_done(id) {
+            commit.observe(&owner);
             plan::recycle(&mut self.transmit.map, owner.into_parts());
             return admit::Outcome::Discarded(
                 commit.discarded(admit::Discard::new(source, admit::Cause::PeerRetired)),
