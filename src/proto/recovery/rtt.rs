@@ -29,13 +29,15 @@ impl Default for RttTracker {
 }
 
 impl RttTracker {
-    pub(crate) fn update(&mut self, sample: time::Duration, delay: time::Duration) {
+    /// Returns whether this is the first sample.
+    pub(crate) fn update(&mut self, sample: time::Duration, delay: time::Duration) -> bool {
         let min_rtt = self.min_rtt.map_or(sample, |prior| prior.min(sample));
         let adjusted = match Self::difference(sample, delay) {
             (Ordering::Equal | Ordering::Greater, adjusted) if adjusted >= min_rtt => adjusted,
             _ => sample,
         };
-        let (smoothed, variance) = match self.smoothed_rtt {
+        let prior = self.smoothed_rtt;
+        let (smoothed, variance) = match prior {
             None => (adjusted, time::Duration::ZERO.average::<2>(adjusted)),
             Some(prev) => (
                 prev.average::<8>(adjusted),
@@ -46,6 +48,7 @@ impl RttTracker {
         self.min_rtt = Some(min_rtt);
         self.smoothed_rtt = Some(smoothed);
         self.rttvar = variance;
+        prior.is_none()
     }
 
     /// Orders the operands once and retains the borrow when normalizing nanoseconds.

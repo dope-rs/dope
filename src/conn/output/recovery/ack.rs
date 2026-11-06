@@ -3,7 +3,7 @@ use o3::buffer;
 
 use std::time;
 
-use crate::conn::output::recovery::{delivery, losses, timer};
+use crate::conn::output::recovery::{Streak, delivery, losses, timer};
 use crate::conn::output::{self, cc};
 use crate::{conn, stream, wire::frame::ack::ranges};
 
@@ -62,7 +62,15 @@ where
     }
     result?;
     if elicits && let Some(sample) = sample {
-        egress.recovery.rtt.update(sample, delay);
+        let recovery = &mut egress.recovery;
+        if recovery.rtt.update(sample, delay) {
+            for (streak, space) in recovery.streaks.iter_mut().zip(&recovery.spaces) {
+                *streak = Streak {
+                    first: None,
+                    next_pn: space.next_pn,
+                };
+            }
+        }
     }
     let outcome = losses::try_run(egress, &mut delivery, now, changed)?;
     if changed || matches!(outcome, losses::Outcome::Lost) {

@@ -21,7 +21,7 @@ pub(in crate::conn) mod timer;
 #[derive(Clone, Copy, Default)]
 pub(in crate::conn) struct Streak {
     first: Option<(header::Number, time::Instant)>,
-    last_pn: Option<header::Number>,
+    next_pn: u64,
 }
 
 pub(super) enum Finding {
@@ -45,10 +45,10 @@ impl Streak {
         limit: time::Duration,
     ) -> Finding {
         // Out-of-order losses cannot move this retained run backwards.
-        if self.last_pn.is_some_and(|previous| pn <= previous) {
+        if pn.get() < self.next_pn {
             return Finding::Pending;
         }
-        self.last_pn = Some(pn);
+        self.next_pn = pn.get() + 1;
         let finding = if elicits {
             let first = self.first.get_or_insert((pn, sent)).1;
             if sent.saturating_duration_since(first) >= limit {

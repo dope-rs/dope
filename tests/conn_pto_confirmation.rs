@@ -4,7 +4,7 @@ use common::peer::Receiver as _;
 use common::suite::peers::life;
 use dope_quic::conn::Epoch;
 use dope_quic::wire::packet::long;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[test]
 fn pto_waits_for_confirm() {
@@ -79,5 +79,67 @@ fn pto_waits_for_confirm() {
             .next_timer()
             .expect("confirmed application flight must arm PTO")
             > at
+    );
+}
+
+#[test]
+fn handshake_loss_uses_peer_ack_delay() {
+    let pair = life::try_pair(0).expect("idle-free peers");
+    let now = Instant::now();
+    let (mut server, mut client, mut work) = pair.into_parts();
+    server
+        .receive_from(&mut work, &mut client, now)
+        .expect("client Initial");
+    let mut sent_at = now + Duration::from_millis(10);
+    client
+        .receive_from(&mut work, &mut server, sent_at)
+        .expect("server handshake flight");
+    assert_eq!(
+        client.view().recovery().smoothed_rtt(),
+        Some(Duration::from_millis(10))
+    );
+    client
+        .with_scope(|mut scope| scope.output().send(sent_at))
+        .1
+        .expect("lost client Finished");
+
+    let mut last = Vec::new();
+    for _ in 0..3 {
+        sent_at = client
+            .view()
+            .recovery()
+            .next_timer()
+            .expect("Handshake PTO");
+        client
+            .with_scope(|mut scope| scope.recovery().try_loss(sent_at))
+            .expect("Handshake probes");
+        let (mut packets, result) = client.with_scope(|mut scope| scope.output().send(sent_at));
+        result.expect("Handshake probe flight");
+        last = packets.pop().expect("last probe");
+    }
+    assert!(
+        long::Parsed::parse(last.as_slice())
+            .expect("Handshake probe")
+            .kind()
+            == long::Type::Handshake
+    );
+    let ack_at = sent_at + Duration::from_millis(10);
+    server
+        .receive(&mut work, &mut last, ack_at)
+        .expect("last Handshake probe");
+    let (packets, result) = server.with_scope(|mut scope| scope.output().send(ack_at));
+    result.expect("Handshake ACK and confirmation");
+    for mut packet in packets {
+        if packet[0] & 0x80 != 0 {
+            client
+                .receive(&mut work, &mut packet, ack_at)
+                .expect("Handshake ACK");
+        }
+    }
+    assert!(!client.view().lifecycle().is_confirmed());
+    assert_eq!(client.view().recovery().unacked(Epoch::Handshake), 1);
+    assert!(
+        client.view().recovery().window() > client.view().path().mtu() * 2,
+        "Handshake persistent congestion includes the peer's maximum ACK delay"
     );
 }

@@ -116,27 +116,24 @@ fn initial_ack_backoff() {
         .expect("client Initial prefix");
     let mut seal = Raw::initial(prefix.dcid.into_slice(), rustls::Side::Server, 0)
         .expect("server Initial keys");
-    let mut ack = Vec::new();
-    frame::Borrowed::ack(VarInt::from_u8(1), VarInt::ZERO, VarInt::ZERO, &[])
-        .expect("ACK must cover only the first probe packet")
-        .encode(&mut ack)
-        .expect("ACK frame allocation");
-    let mut ack = Initial::new(prefix.scid.into_slice(), prefix.dcid.into_slice(), 0)
-        .seal_with(&ack, &mut seal)
-        .expect("server must authenticate its Initial ACK");
-    let fired = client
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("original Initial must arm PTO")
-        + Duration::from_millis(1);
-    client
-        .with_scope(|mut scope| scope.recovery().try_loss(fired))
-        .expect("Initial PTO must arm probes");
-    let (mut probes, send_result) = client.with_scope(|mut scope| scope.output().send(fired));
-    send_result.expect("client must emit both Initial probes");
+    let mut fired = now;
+    let mut probes = Vec::new();
+    for _ in 0..2 {
+        fired = client
+            .view()
+            .recovery()
+            .next_timer()
+            .expect("Initial flight must arm PTO")
+            + Duration::from_millis(1);
+        client
+            .with_scope(|mut scope| scope.recovery().try_loss(fired))
+            .expect("Initial PTO must arm probes");
+        let (packets, send_result) = client.with_scope(|mut scope| scope.output().send(fired));
+        send_result.expect("client must emit both Initial probes");
+        probes = packets;
+    }
     assert_eq!(probes.len(), 2);
-    assert_eq!(client.view().recovery().unacked(Epoch::Initial), 3);
+    assert_eq!(client.view().recovery().unacked(Epoch::Initial), 5);
     for packet in &probes {
         assert!(
             long::Parsed::parse(packet.as_slice())
@@ -148,10 +145,19 @@ fn initial_ack_backoff() {
     server
         .receive(
             &mut work,
-            probes.first_mut().expect("first Initial probe"),
+            probes.first_mut().expect("acknowledged Initial probe"),
             fired,
         )
-        .expect("server must authenticate the acknowledged first probe");
+        .expect("server must authenticate the acknowledged probe");
+
+    let mut ack = Vec::new();
+    frame::Borrowed::ack(VarInt::from_u8(3), VarInt::ZERO, VarInt::ZERO, &[])
+        .expect("ACK must cover only the selected probe")
+        .encode(&mut ack)
+        .expect("ACK frame allocation");
+    let mut ack = Initial::new(prefix.scid.into_slice(), prefix.dcid.into_slice(), 0)
+        .seal_with(&ack, &mut seal)
+        .expect("server must authenticate its Initial ACK");
 
     let ack_at = fired + Duration::from_millis(10);
     client
@@ -168,7 +174,11 @@ fn initial_ack_backoff() {
     );
     assert_eq!(
         client.view().recovery().next_timer(),
-        Some(fired + Duration::from_millis(60)),
+        Some(fired + Duration::from_millis(120)),
         "Initial ACK must preserve PTO backoff until server validation"
+    );
+    assert!(
+        client.view().recovery().window() > client.view().path().mtu() * 2,
+        "packets sent before the first RTT sample cannot establish persistent congestion"
     );
 }
