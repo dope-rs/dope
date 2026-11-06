@@ -40,20 +40,23 @@ impl<'d> Lane<'d> {
     };
 
     fn next(&self) -> Option<Entry<'d>> {
-        let fixed = deadline::Fixed::ALL
-            .into_iter()
-            .zip(self.fixed.iter().copied())
-            .filter_map(|(kind, at)| {
-                at.map(|at| Entry {
-                    at,
-                    kind: kind.kind(),
-                })
-            });
-        let inbound = self.reception.map(|recv| Entry {
+        let mut next = self.reception.map(|recv| Entry {
             at: recv.at,
             kind: deadline::Kind::Inbound,
         });
-        fixed.chain(inbound).min()
+        for kind in deadline::Fixed::ALL {
+            let Some(at) = self.fixed[kind.index()] else {
+                continue;
+            };
+            let entry = Entry {
+                at,
+                kind: kind.kind(),
+            };
+            if next.is_none_or(|next| entry < next) {
+                next = Some(entry);
+            }
+        }
+        next
     }
 
     fn arm<K: depot::raw::Address>(

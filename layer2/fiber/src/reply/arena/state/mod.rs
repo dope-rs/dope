@@ -1,6 +1,6 @@
 //! Reply arena state transitions.
 
-use std::mem;
+use std::{marker, mem};
 
 use dope::core::driver::schedule::ready::wake::Waker;
 use head::Head;
@@ -33,6 +33,9 @@ pub use push::Push;
 pub(in crate::reply::arena) use register::Register;
 pub(in crate::reply::arena) use retire::{Advance, Retire, Start};
 pub(in crate::reply::arena) use terminal::{Completion, Failure, Terminal};
+
+pub(in crate::reply) type Registered<'s, A, P> =
+    depot::raw::Proof<(&'s A, EntryKey), Initialized<P>>;
 
 pub(super) struct Ordered<'credits, K = ()> {
     key: EntryKey,
@@ -127,9 +130,40 @@ pub(in crate::reply::arena) struct Book<'arena, 'credits, 'region, D, E, K> {
 }
 
 impl<'arena, 'credits, 'region, D, E, K> reply::Arena<'arena, 'credits, 'region, D, E, K> {
+    pub(in crate::reply) fn slot<'a, 's: 'a, P: 'a>(
+        token: &'a mut region::Token<region::Identity<'region>>,
+        registered: Registered<'s, Self, P>,
+    ) -> Option<(
+        reply::Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
+        &'a mut Signal<'region>,
+    )> {
+        // SAFETY: the registration and region loan retain the exact occupied slot.
+        let live = unsafe {
+            registered.map(|(arena, key)| {
+                (
+                    (&mut token.borrow_mut(&arena.state).slots.0, ()),
+                    key.index().into(),
+                )
+            })
+        };
+        let (entry, ()) = slab::Occupied::from_live(live);
+        let entry = entry.into_mut();
+        let EntryBody::Attached(slot) = &mut entry.body else {
+            return None;
+        };
+        Some((
+            reply::Slot {
+                state: slot.state(),
+                owners: &mut entry.owners,
+                owner: marker::PhantomData,
+            },
+            &mut entry.signal,
+        ))
+    }
+
     pub(in crate::reply) fn registered_order<P>(
         token: &region::Token<region::Identity<'region>>,
-        registered: depot::raw::Proof<(&Self, EntryKey), Initialized<P>>,
+        registered: Registered<'_, Self, P>,
     ) -> reply::order::State {
         // SAFETY: the retained arena owns this exact initialized entry; the
         // region loan keeps its owner unchanged throughout the projection.
@@ -259,13 +293,6 @@ impl<'arena, 'credits, 'region, D, E> Entries<'arena, 'credits, 'region, D, E> {
 
     pub(in crate::reply::arena) fn is_exhausted(&self) -> bool {
         self.0.remaining().get() == 0
-    }
-
-    pub(in crate::reply::arena) fn get_mut(
-        &mut self,
-        key: EntryKey,
-    ) -> Option<&mut Entry<'arena, 'credits, 'region, D, E>> {
-        self.0.get_mut(key.raw())
     }
 }
 

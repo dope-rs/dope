@@ -6,7 +6,7 @@ use dope::core::driver::{route::Identity, schedule::app};
 use o3::{alloc, base::cell::region, depot::capacity};
 
 use crate::reply::{
-    self, Length, Slot, Storage,
+    self, Length, Storage,
     arena::state::{Advance, Retire, Start},
     layout,
 };
@@ -203,29 +203,6 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
     /// Whether every reply-entry identity is permanently retired.
     pub fn is_exhausted(&self, token: &region::Token<region::Identity<'region>>) -> bool {
         token.borrow(&self.state).slots.is_exhausted()
-    }
-
-    pub(super) fn slot<'a, 's: 'a>(
-        &'s self,
-        token: &'a mut region::Token<region::Identity<'region>>,
-        key: state::EntryKey,
-    ) -> Option<(
-        Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
-        &'a mut state::Signal<'region>,
-    )> {
-        let state = token.borrow_mut(&self.state);
-        let entry = state.slots.get_mut(key)?;
-        let state::EntryBody::Attached(slot) = &mut entry.body else {
-            return None;
-        };
-        Some((
-            Slot {
-                state: slot.state(),
-                owners: &mut entry.owners,
-                owner: marker::PhantomData,
-            },
-            &mut entry.signal,
-        ))
     }
 }
 

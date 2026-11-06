@@ -5,10 +5,7 @@ pub mod outcome;
 
 use std::{mem, pin, task};
 
-use o3::{
-    base::cell::region,
-    depot::{self, index::Initialized},
-};
+use o3::{base::cell::region, depot};
 
 use crate::{
     abi, context,
@@ -53,6 +50,15 @@ pub trait Extract<'s, 'arena, 'credits, 'region, D, E = D> {
 struct Registration<'s, 'arena, 'credits, 'region, D, E, K> {
     lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
     key: state::EntryKey,
+}
+
+impl<'s, 'arena, 'credits, 'region, D, E, K> Registration<'s, 'arena, 'credits, 'region, D, E, K> {
+    fn live(
+        &self,
+    ) -> state::Registered<'s, reply::Arena<'arena, 'credits, 'region, D, E, K>, &Self> {
+        // SAFETY: this registration retains its exact occupied entry until retirement.
+        unsafe { depot::raw::Proof::new((self.lane.arena, self.key)) }
+    }
 }
 
 impl<D, E, K> Drop for Registration<'_, '_, '_, '_, D, E, K> {
@@ -139,7 +145,7 @@ impl<'s, 'arena, 'credits, 'region, D, E, K> Handle<'s, 'arena, 'credits, 'regio
     }
 
     fn slot<'a>(
-        &self,
+        &'a self,
         token: &'a mut region::Token<region::Identity<'region>>,
     ) -> Option<(
         reply::Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
@@ -149,7 +155,7 @@ impl<'s, 'arena, 'credits, 'region, D, E, K> Handle<'s, 'arena, 'credits, 'regio
         's: 'a,
     {
         let reg = self.reg.as_ref()?;
-        reg.lane.arena.slot(token, reg.key)
+        reply::Arena::slot(token, reg.live())
     }
 
     fn detach(&mut self) {
@@ -160,15 +166,7 @@ impl<'s, 'arena, 'credits, 'region, D, E, K> Handle<'s, 'arena, 'credits, 'regio
         let Some(reg) = self.reg.as_ref() else {
             return order::State::Detached;
         };
-        // SAFETY: Registration retains this exact occupied entry until detach;
-        // this proof is consumed before its retirement is deferred.
-        let registered = unsafe {
-            depot::raw::Proof::<_, Initialized<Registration<'_, '_, '_, '_, D, E, K>>>::new((
-                reg.lane.arena,
-                reg.key,
-            ))
-        };
-        let order = reply::Arena::registered_order(token, registered);
+        let order = reply::Arena::registered_order(token, reg.live());
         self.detach();
         order
     }
