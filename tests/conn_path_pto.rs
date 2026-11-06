@@ -126,3 +126,98 @@ fn candidate_preserves_pto() {
     );
     assert!(server.handler().errors.is_empty());
 }
+
+#[test]
+fn candidate_preserves_journal() {
+    use common::runtime::gso::{self, Capture};
+    use common::suite::peers::config::Parameters as _;
+    use dope_quic::conn::life::options::Options;
+    use std::pin::Pin;
+
+    let mut pair = gso::Pair::new(|| {
+        Options::try_journal()
+            .expect("two packet slots")
+            .into_builder()
+            .security(|security| security.reset(Some([0x51; 32])))
+            .try_build()
+            .expect("spare connection IDs")
+    })
+    .expect("connected peers");
+    let server = pair.server.sole().expect("server connection");
+    let at = pair.now + Duration::from_secs(1);
+    Capture::send(&mut pair.server, server, vec![0x31; 1_150], at).expect("active datagram");
+    let held = Capture::output(&mut pair.server, at).expect("active flight");
+    assert_eq!(held.len(), 1);
+    let due = pair
+        .server
+        .conn(server)
+        .expect("active connection")
+        .view()
+        .recovery()
+        .next_timer()
+        .expect("active PTO");
+    let target = SocketAddr::from(([10, 0, 0, 1], 50_001));
+    let token = *b"pto-path";
+    Capture::access(&mut pair.client, pair.handle, at, |mut conn| {
+        conn.path().try_probe(token)
+    })
+    .expect("client connection")
+    .expect("path challenge");
+    let challenge = Capture::output(&mut pair.client, at).expect("client challenge");
+    Capture::deliver_at(&mut pair.server, target, challenge, at).expect("candidate ingress");
+    let at = pair
+        .server
+        .conn(server)
+        .expect("candidate connection")
+        .view()
+        .recovery()
+        .send_at(at + Duration::from_millis(1));
+    assert!(at < due);
+    let flight = Capture::output(&mut pair.server, at).expect("journal pressure defers candidate");
+    assert!(flight.iter().all(|packet| packet.addr() != target));
+    Capture::deliver_at(&mut pair.client, gso::SERVER, flight, at).expect("active ACK delivery");
+    assert!(
+        Pin::new(&mut pair.server)
+            .observe(at, |turn| turn.deadline())
+            .is_none_or(|deadline| deadline > at),
+        "journal pressure must wait for recovery or ingress",
+    );
+
+    let fired = due + Duration::from_nanos(1);
+    let probe = Capture::output(&mut pair.server, fired).expect("reserved PTO slot");
+    assert!(probe.iter().any(|packet| packet.addr() == gso::CLIENT));
+    Capture::deliver_at(&mut pair.client, gso::SERVER, held, fired).expect("active delivery");
+    Capture::deliver_at(&mut pair.client, gso::SERVER, probe, fired).expect("PTO delivery");
+    let mut resumed = false;
+    let mut at = fired;
+    for _ in 0..4 {
+        at = Pin::new(&mut pair.client)
+            .observe(at, |turn| turn.deadline())
+            .expect("peer ACK deadline")
+            .max(at);
+        let ack = Capture::output(&mut pair.client, at).expect("capacity-restoring ACK");
+        Capture::deliver_at(&mut pair.server, gso::CLIENT, ack, at).expect("ACK ingress");
+        at = pair
+            .server
+            .conn(server)
+            .expect("acknowledged connection")
+            .view()
+            .recovery()
+            .send_at(at);
+        let flight = Capture::output(&mut pair.server, at).expect("pending output");
+        resumed |= flight.iter().any(|packet| packet.addr() == target);
+        Capture::deliver_at(&mut pair.client, gso::SERVER, flight, at).expect("output delivery");
+        if resumed {
+            break;
+        }
+    }
+    assert!(resumed, "the original candidate response must resume");
+    assert!(
+        pair.client
+            .conn(pair.handle)
+            .expect("client connection")
+            .view()
+            .path()
+            .has_token(&token),
+    );
+}

@@ -259,9 +259,10 @@ pub(super) fn can_app<
     }
     let ready = conn.control.ready();
     if route.path().is_some() {
-        return control(permit, ready.responses(), route, limit)
-            .or_else(|| control(permit, ready.challenges(), route, limit))
-            .unwrap_or(false);
+        return permit.can_track()
+            && control(permit, ready.responses(), route, limit)
+                .or_else(|| control(permit, ready.challenges(), route, limit))
+                .unwrap_or(false);
     }
     if ack::minimum::<kind::OneRtt, false>(&conn.receive.packet_numbers, now)
         .is_some_and(|needed| needed <= limit)
