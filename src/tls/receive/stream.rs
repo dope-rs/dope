@@ -179,7 +179,6 @@ pub(super) enum Backing<'input, 'w: 'input, 'd: 'input> {
 pub struct Current<'input, 'w: 'input, 'd: 'input> {
     pub(super) backing: HeadBacking<'input, 'w, 'd>,
     left: &'input mut transfer::Len,
-    before: usize,
 }
 
 pub(super) enum HeadBacking<'input, 'w: 'input, 'd: 'input> {
@@ -193,7 +192,6 @@ impl<'input, 'w: 'input, 'd: 'input> Current<'input, 'w, 'd> {
         left: &'input mut transfer::Len,
     ) -> Self {
         Self {
-            before: staged.len(),
             backing: HeadBacking::Staged(bytes::Cursor::new(staged)),
             left,
         }
@@ -201,7 +199,6 @@ impl<'input, 'w: 'input, 'd: 'input> Current<'input, 'w, 'd> {
 
     fn plain(head: Head<'input, 'd>, left: &'input mut transfer::Len) -> Self {
         Self {
-            before: buffer::Source::remaining(&head),
             backing: HeadBacking::Plain(head),
             left,
         }
@@ -297,17 +294,17 @@ impl consume::Consume for Current<'_, '_, '_> {
 }
 
 impl<'w, 'd> access::Head<'d> for Current<'_, 'w, 'd> {
-    fn commit(self) {
-        let consumed = self.before - self.as_ref().len();
-        match self.backing {
+    fn commit(self) -> usize {
+        let consumed = match self.backing {
             HeadBacking::Staged(head) => head.commit(),
             HeadBacking::Plain(head) => access::Head::commit(head),
-        }
+        };
         *self.left = transfer::Len::prefix(self.left.into_raw() - consumed, *self.left);
+        consumed
     }
 }
 
 const _: () = {
-    assert!(mem::size_of::<Current<'_, '_, '_>>() <= 6 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Current<'_, '_, '_>>() <= 5 * mem::size_of::<usize>());
     assert!(mem::size_of::<Retention<'_, '_, '_>>() == 4 * mem::size_of::<usize>());
 };

@@ -170,6 +170,7 @@ const _: () = {
             tls::Tls<R>: 'w,
             'd: 'w;
         type Access = access::Segments;
+        type Publication = wire::receive::publication::Decoded;
         type Eof = eof::State;
         type Reserve = reserve::Waiting<policy::Policy<R>>;
         type Credit = mode::Enabled;

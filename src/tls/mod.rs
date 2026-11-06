@@ -11,7 +11,7 @@ use dope::{
 use o3::{
     base::marker::ThreadBound,
     buffer::{pool, write::consume},
-    depot::arena::pool::{Unique, recycle},
+    depot::arena::pool::Unique,
     mem::{Lease, Return, lease},
 };
 
@@ -81,7 +81,7 @@ pub struct Connection<
     pub(crate) peer_closed: bool,
     pub(crate) local_closed: bool,
     pub(crate) failed: bool,
-    _lease: Unique<'d, (), recycle::Header<()>>,
+    _lease: Unique<'d, ()>,
     _thread: ThreadBound,
     role: marker::PhantomData<fn() -> (R, ID)>,
 }
@@ -90,7 +90,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
     pub(crate) fn new(
         native: rustls::Connection,
         buffers: buffers::Buffers<'d>,
-        lease: Unique<'d, (), recycle::Header<()>>,
+        lease: Unique<'d, ()>,
         mut send: SendState<'d>,
     ) -> Result<(Self, SendState<'d>), error::Error> {
         let mut conn = Self {

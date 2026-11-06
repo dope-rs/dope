@@ -147,15 +147,8 @@ impl<'d, ID: Identity> Application<'d, ID> for Reply<'_> {
         }
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
-        self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, bool>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, bool>
-    where
-        'd: 'w,
-    {
+    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, bool>) {
         self.get_mut().closes.hit();
-        conn
     }
 }
 
@@ -249,14 +242,11 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
         None
     }
 
-    fn activate<'e, 'a, 'p, 's, 'w>(
+    fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Wire, bool>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool>,
         driver: &mut Context<'_, 'd>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Wire, bool>
-    where
-        'd: 'w,
-    {
+    ) {
         let this = self.get_mut();
         if this.armed.get() && !*conn.state() {
             *conn.state_mut() = true;
@@ -267,18 +257,13 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
             (this.observe)(Change::Activated);
             conn.close_after();
         }
-        conn
     }
 
-    fn close<'e, 'a, 'p, 's, 'w>(
+    fn close<'e>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Wire, bool>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Wire, bool>
-    where
-        'd: 'w,
-    {
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool>,
+    ) {
         self.get_mut().reply.closes.hit();
-        conn
     }
 }
 

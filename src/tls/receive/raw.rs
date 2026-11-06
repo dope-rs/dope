@@ -181,7 +181,6 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Current<'_, 'w, 'd> {
         match &plan.backing {
             Backing::Empty => Ok(resident::Shared::new()),
             Backing::Staged(plan) => plan
-                .reborrow()
                 .try_own()
                 .map(resident::Shared::from)
                 .map_err(resident::AllocError::Retain)

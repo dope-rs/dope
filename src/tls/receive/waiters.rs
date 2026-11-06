@@ -19,24 +19,9 @@ const HANDSHAKE_EGRESS: usize = 1;
 const LANES: usize = 2;
 
 enum Proof<'a, 'd, ID: route::Identity> {
-    Recv(
-        tagged::Linked<
-            lanes::Position<'a, credit::Held<'d, ID>, LANES, RECV, conn::Capacity, true>,
-            lanes::Rollback,
-        >,
-    ),
+    Recv(lanes::Rollback<'a, credit::Held<'d, ID>, LANES, RECV, conn::Capacity>),
     HandshakeEgress(
-        tagged::Linked<
-            lanes::Position<
-                'a,
-                credit::Held<'d, ID>,
-                LANES,
-                HANDSHAKE_EGRESS,
-                conn::Capacity,
-                true,
-            >,
-            lanes::Rollback,
-        >,
+        lanes::Rollback<'a, credit::Held<'d, ID>, LANES, HANDSHAKE_EGRESS, conn::Capacity>,
     ),
 }
 

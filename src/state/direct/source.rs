@@ -138,8 +138,10 @@ impl consume::Consume for Head<'_, '_> {
 }
 
 impl<'d> access::Head<'d> for Head<'_, 'd> {
-    fn commit(self) {
+    fn commit(self) -> usize {
+        let consumed = self.cursor.len - self.remaining;
         self.cursor.len = self.remaining;
+        consumed
     }
 }
 

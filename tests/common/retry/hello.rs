@@ -70,7 +70,7 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                     recv::Kind::Data(bytes) => bytes,
                     recv::Kind::Control(_) => return Err(Error::RecvEvent),
                 };
-                let data = match pool.reserve().data(bytes) {
+                let data = match pool.reserve().data(bytes, |_, _| ()) {
                     Reservation::Ready(data) => data.scoped(),
                     Reservation::Control(control) => DispatchRecv::Control(control),
                     _ => return Err(Error::Reserve),
