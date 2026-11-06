@@ -399,14 +399,17 @@ unsafe impl<'d, const ID: u8, C> endpoint::raw::Control<'d, ID, RecvBuffer<'d>>
 pub struct Commit;
 
 impl<O: buffer::raw::Segment, W> admit::Commit<O, W> for Commit {
+    type Observation = ();
     type Retained = Id;
     type Discarded = admit::Discard<W>;
 
-    fn retained(self, grant: admit::Admission<'_, O, W>) -> Id {
+    fn observe(&mut self, _: &W) {}
+
+    fn retained(self, (): (), grant: admit::Admission<'_, O, W>) -> Id {
         grant.source().id()
     }
 
-    fn discarded(self, cause: admit::Discard<W>) -> admit::Discard<W> {
+    fn discarded(self, (): (), cause: admit::Discard<W>) -> admit::Discard<W> {
         cause
     }
 }

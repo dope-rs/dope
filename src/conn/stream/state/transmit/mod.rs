@@ -179,11 +179,12 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         }
         let source = admit::Source::new(id);
         if self.is_send_done(id) {
-            commit.observe(&owner);
+            let observation = commit.observe(&owner);
             plan::recycle(&mut self.transmit.map, owner.into_parts());
-            return admit::Outcome::Discarded(
-                commit.discarded(admit::Discard::new(source, admit::Cause::PeerRetired)),
-            );
+            return admit::Outcome::Discarded(commit.discarded(
+                observation,
+                admit::Discard::new(source, admit::Cause::PeerRetired),
+            ));
         }
         let stream = streams::Relative::new(id, self.state.local());
         let credit = queue::Entry::limit(params, stream);
@@ -223,11 +224,12 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         }
         let source = admit::Source::new(id);
         if self.is_send_done(id) {
-            commit.observe(&owner);
+            let observation = commit.observe(&owner);
             plan::recycle(&mut self.transmit.map, owner.into_parts());
-            return admit::Outcome::Discarded(
-                commit.discarded(admit::Discard::new(source, admit::Cause::PeerRetired)),
-            );
+            return admit::Outcome::Discarded(commit.discarded(
+                observation,
+                admit::Discard::new(source, admit::Cause::PeerRetired),
+            ));
         }
         let stream = streams::Relative::new(id, self.state.local());
         let credit = queue::Entry::limit(params, stream);

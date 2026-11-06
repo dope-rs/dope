@@ -102,14 +102,16 @@ impl<W> Discard<W> {
 }
 
 pub trait Commit<O: buffer::raw::Segment, W> {
+    type Observation;
     type Retained;
     type Discarded;
 
     /// Borrows the original owner once before retention or discard, never on Blocked/Failed.
-    fn observe(&mut self, _owner: &W) {}
+    fn observe(&mut self, owner: &W) -> Self::Observation;
 
-    fn retained(self, admit: Admission<'_, O, W>) -> Self::Retained;
-    fn discarded(self, cause: Discard<W>) -> Self::Discarded;
+    fn retained(self, observation: Self::Observation, admit: Admission<'_, O, W>)
+    -> Self::Retained;
+    fn discarded(self, observation: Self::Observation, cause: Discard<W>) -> Self::Discarded;
 }
 
 #[must_use]

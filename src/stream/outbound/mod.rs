@@ -173,12 +173,12 @@ unsafe impl<O: buffer::raw::Segment, W: send::raw::Batch<O>, C: admit::Commit<O,
         impl depot::raw::Exact<Item = Self::Item, Output = Self::Output>,
         (),
     ) {
-        self.commit.observe(&self.input.owner);
+        let observation = self.commit.observe(&self.input.owner);
         let nodes = Nodes::new(self.input.owner.into_parts(), |parts| {
             (
                 parts.boundary,
                 self.commit
-                    .retained(admit::Admission::new(self.source, parts)),
+                    .retained(observation, admit::Admission::new(self.source, parts)),
             )
         });
         (nodes, ())

@@ -73,6 +73,7 @@ fn terminal_send_preserves_cause_when_full() {
             let observe = |owner: &send::Buffer<storage::Shared>| {
                 assert_eq!(owner.len(), 4);
                 observations.set(observations.get() + 1);
+                owner.as_slice()[0]
             };
             let mut streams = scope.streams();
             let terminal = streams.view().resolve_send(terminal).expect("send access");
@@ -90,7 +91,7 @@ fn terminal_send_preserves_cause_when_full() {
                 streams
                     .send()
                     .try_admit(terminal, send::Buffer::Owned(vec![3; 4]), Observe(observe)),
-                admit::Outcome::Discarded(discarded)
+                admit::Outcome::Discarded((3, discarded))
                     if discarded.source().id() == terminal.id() && discarded.cause() == cause
             ));
             assert_eq!(observations.get(), 1);
@@ -100,7 +101,7 @@ fn terminal_send_preserves_cause_when_full() {
                 .expect("terminal resident");
             assert!(matches!(
                 streams.try_write(handle, send::Buffer::Owned(vec![4; 4]), Observe(observe)),
-                admit::Outcome::Discarded(discarded)
+                admit::Outcome::Discarded((4, discarded))
                     if discarded.source().id() == terminal.id() && discarded.cause() == cause
             ));
             assert_eq!(observations.get(), 2);

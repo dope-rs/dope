@@ -172,6 +172,7 @@ fn atomic_parts_resume() {
     let observations = Cell::new(0);
     let mut commit = Observe(|_: &send::Parts<storage::Shared>| {
         observations.set(observations.get() + 1);
+        observations.get()
     });
     for _ in 0..2 {
         (parts, commit) = client.with_scope(|mut scope| {
@@ -216,7 +217,7 @@ fn atomic_parts_resume() {
             .expect("send access");
         assert!(matches!(
             streams.send().try_admit(id, parts, commit),
-            admit::Outcome::Retained(_)
+            admit::Outcome::Retained(1)
         ));
     });
     assert_eq!(observations.get(), 1);
