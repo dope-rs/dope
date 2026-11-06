@@ -36,12 +36,8 @@ impl<'stage, 'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         self.session.driver()
     }
 
-    pub fn with_stage<R>(
-        &mut self,
-        install: impl FnOnce(&mut topology::Stage<'_, 'scope, 'life, 'p, 'd, S, Q>) -> R,
-    ) -> R {
-        let mut stage = topology::Stage::new(self.session);
-        install(&mut stage)
+    pub fn stage(&mut self) -> topology::Stage<'_, 'scope, 'life, 'p, 'd, S, Q> {
+        topology::Stage::new(self.session)
     }
 
     /// Establishes provider residence without issuing a client or installing it.

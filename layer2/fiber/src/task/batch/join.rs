@@ -106,15 +106,10 @@ where
         }
 
         let pool = *this.pool;
-        let root = match pool.tasks.try_root(context.as_ref().waker().0) {
-            Ok(root) => root,
-            Err(pool::RootError::Foreign) => {
-                return Err(Error::Root(RootError::Foreign));
-            }
-            Err(pool::RootError::Invalid(error)) => {
-                return Err(Error::Root(RootError::Invalid(error)));
-            }
-        };
+        let root = pool
+            .tasks
+            .try_root(context.as_ref().waker().0)
+            .map_err(|error| Error::Root(RootError::Invalid(error)))?;
         match *this.root {
             None => *this.root = Some(root),
             Some(active) if active == root => {}
@@ -179,7 +174,7 @@ where
                     initial = false;
                     (index, None)
                 } else {
-                    match context.as_ref().work().next(&mut drain) {
+                    match context.as_ref().work().next(&mut drain, &mut ()) {
                         app::Next::Item(index, permit) => (index, Some(permit)),
                         app::Next::Empty => break,
                         app::Next::Exhausted(_) => return Ok(Progress::More),

@@ -20,7 +20,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    pub(crate) const fn merge(self, next: Self) -> Self {
+    const fn merge(self, next: Self) -> Self {
         match self {
             Self::Remote => next,
             reason => reason,
@@ -154,10 +154,10 @@ impl Directive {
     pub const fn policy(self) -> Policy {
         self.policy
     }
-    pub(crate) fn merge(self, policy: Policy) -> Self {
+    pub(crate) fn merge(self, next: Self) -> Self {
         Self {
-            reason: self.reason,
-            policy: self.policy.merge(policy),
+            reason: self.reason.merge(next.reason),
+            policy: self.policy.merge(next.policy),
         }
     }
     pub(crate) fn resume(self) -> Self {

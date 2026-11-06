@@ -5,7 +5,7 @@ use dope_core::{
         self,
         life::finish,
         receive, result,
-        retained::{self, arm, flight},
+        retained::{arm, flight},
         route::{self, Identity, kind::Recv},
         schedule::{self, app, ready},
     },
@@ -71,16 +71,13 @@ impl<'d, ID: Identity> Receive<'d, ID> {
         }
     }
 
-    pub(in crate::network::datagram) fn arm<'turn, 'owner>(
+    pub(in crate::network::datagram) fn arm<'turn>(
         self: pin::Pin<&mut Self>,
         fd: &handles::Datagram<'d>,
         flights: &flight::Slots<'d, <ID as route::Materialize<Recv>>::With>,
         work: app::Work<'turn, 'd>,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
-    ) -> Result<(), result::SubmitError>
-    where
-        'd: 'owner,
-    {
+        driver: &mut driver::Context<'_, 'd>,
+    ) -> Result<(), result::SubmitError> {
         let this = self.project();
         let arm = this.arm;
         let result = work.run(|| {
@@ -131,7 +128,7 @@ impl<'d, ID: Identity> Receive<'d, ID> {
     ) -> ControlFlow<Completion<'d>, Received<'d>> {
         let this = self.project();
         let mode = this.arm.complete(done.token(), done.flow());
-        if mode == arm::Disposition::Discard {
+        if matches!(mode, arm::Disposition::Discard | arm::Disposition::Retiring) {
             return ControlFlow::Break(done);
         }
         done.dispatch(|_, _, outcome| {

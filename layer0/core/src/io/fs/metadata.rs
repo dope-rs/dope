@@ -1,6 +1,10 @@
 use std::mem;
 
+pub use dope_sys::io::file::MetadataError as Error;
+
 use crate::io::fs::{Kind, Len};
+
+pub type Output = <crate::Backend as dope_sys::io::file::File>::Metadata;
 
 /// Exact signed file length rejected before entering the filesystem domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,7 +48,7 @@ impl Metadata {
         use crate::Backend;
         let raw = Backend::stat::<dope_sys::Errno>(path)?;
         Ok(Self {
-            kind: Kind::from_meta(raw),
+            kind: Kind::from(raw.kind()),
             length: raw.size(),
         })
     }

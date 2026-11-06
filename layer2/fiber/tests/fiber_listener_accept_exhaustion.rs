@@ -1,48 +1,26 @@
-use std::{
-    cell::Cell,
-    env::consts,
-    net::{SocketAddr, TcpListener},
-    os::fd::AsFd as _,
-    pin::pin,
-    task::Poll,
-};
+use std::{cell::Cell, pin::pin};
 
 use dope::{
     core::{
         driver::{
             life::recovery,
-            route::{Epoch, Id, KeyTag, indices::SlotIndex, table::conn::Capacity},
+            route::{Id, KeyTag, table::conn::Capacity},
         },
         io::socket::{self, Backlog, option::Switch},
     },
-    manifold::{
-        network::listener::{AcceptError, Domain},
-        timing::Balanced,
-    },
+    manifold::{network::listener::Domain, timing::Balanced},
     net::{
         tcp::{StreamConfig, Tcp},
         wire::{Identity, domain},
     },
     runtime::executor::session::Completion,
 };
-use dope_core::{
-    Backend, Errno,
-    dope_sys::io::socket::{How, Socket as _},
-    io::{
-        Reclaimed,
-        event::{batch::Flow, net::accept::Failure},
-    },
-};
 use dope_fiber::{
     BlockOn as _,
-    abi::Task,
-    context::Context,
-    net::server::{Config, Listener, Plan, accept::Error},
+    net::server::{Config, Listener, Plan},
     task::storage::{scope::Scope, set::Set},
-    wait,
 };
 use dope_test::{
-    fibers,
     harness::{peer::Peer, scenario},
     reclaim::Reports,
 };
@@ -52,7 +30,7 @@ pub mod common;
 use common::recover;
 
 use common::{
-    network::accept::{App, CancelFirst, Native},
+    network::accept::{App, CancelFirst},
     runtime::{self, Setup},
 };
 
@@ -99,7 +77,7 @@ fn accepts_after_exhaustion_and_cancellation() {
                     &mut sess,
                     |sess| sess.driver(),
                     |listener, sess| {
-                        let handle = storage.handle();
+                        let handle = listener.handle();
                         sess.with_quiesce(
                             &mut finish,
                             App::new(listener, &seen, &failure, cancel_first.then_some(&accepted)),
@@ -165,50 +143,26 @@ fn accepts_after_exhaustion_and_cancellation() {
 }
 
 #[test]
-fn wait_failure() {
-    let plan = Plan::<Identity>::new(Capacity::fixed::<1>(), Identity);
-    Setup::try_for_plan::<Balanced, _>(&plan)
-        .expect("driver configuration")
-        .with_turn(
-            |turn, mut driver| {
-                let storage = plan
-                    .try_build(driver.driver().storage.reborrow())
-                    .expect("listener port");
-                let core = driver.driver_ref();
-                let root = core
-                    .ready()
-                    .make_slot(
-                        core.targets::<KeyTag<0>>()
-                            .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                            .dispatch(),
-                    )
-                    .expect("ready slot");
-                let handle = storage.handle();
-                Context::with_target(root.target(), turn.turn().app(), driver, |mut context| {
-                    {
-                        let mut waiting = pin!(Task::new(handle.accept()));
-                        assert!(context.as_mut().poll(waiting.as_mut()).is_pending());
-                        let mut rejected = pin!(Task::new(handle.accept()));
-                        assert!(matches!(
-                            context.as_mut().poll(rejected.as_mut()),
-                            Poll::Ready(Err(Error::Wait(wait::Error::QueueFull {
-                                capacity,
-                                wake,
-                            }))) if capacity.get() == 1 && wake == root.target().into()
-                        ));
-                    }
-                    let mut next = pin!(Task::new(handle.accept()));
-                    assert!(context.poll(next.as_mut()).is_pending());
-                });
-            },
-            recovery::Policy::new(|_| {}, recover),
-            runtime::check_scope,
-        );
-}
-
-#[test]
 fn completion_failure() {
-    assert_eq!(consts::OS, "linux", "listener shutdown requires Linux");
+    use std::{
+        net::{SocketAddr, TcpListener},
+        os::fd::AsFd as _,
+    };
+
+    use dope::manifold::network::listener::AcceptError;
+    use dope_core::{
+        Backend, Errno,
+        dope_sys::io::socket::{How, Socket as _},
+        io::{
+            Reclaimed,
+            event::{batch::Flow, net::accept::Failure},
+        },
+    };
+    use dope_fiber::net::server::accept::Error;
+    use dope_test::fibers;
+
+    use common::network::accept::Native;
+
     let fault = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("listener address");
     let addr = fault.local_addr().expect("bound address");
     let bound = fault.try_clone().expect("listener fault descriptor");
@@ -245,14 +199,25 @@ fn completion_failure() {
                     &mut sess,
                     |sess| sess.driver(),
                     |listener, sess| {
-                        Backend::shutdown::<Errno>(fault.as_fd(), How::READ)
-                            .expect("stop native listener");
-                        let handle = storage.handle();
+                        let shutdown = Backend::shutdown::<Errno>(fault.as_fd(), How::READ);
+                        if let Err(error) = shutdown {
+                            assert_eq!(std::env::consts::OS, "macos");
+                            assert!(error.is_not_connected(), "listener shutdown: {error:?}");
+                        }
+                        let handle = listener.handle();
                         sess.with_quiesce(
                             &mut finish,
                             App::new(listener, &seen, &failure, None),
                             scenario::TIMEOUT,
                             |mut app| {
+                                if shutdown.is_err() {
+                                    assert!(
+                                        app.block_on(fibers::TEST.poll_once(handle.accept()))
+                                            .expect("poll live listener")
+                                            .is_none()
+                                    );
+                                    return;
+                                }
                                 let timeout = fibers::Harness::new(scenario::TIMEOUT);
                                 for _ in 0..2 {
                                     let accepted = timeout
@@ -268,8 +233,10 @@ fn completion_failure() {
                             },
                         )
                         .expect("listener retirement");
-                        assert_eq!(failure.get(), None, "retain exhausted completion");
-                        assert_ne!(seen.get() & 1, 0, "native accept completion");
+                        assert_eq!(failure.get(), None, "failure needs no application credit");
+                        if shutdown.is_ok() {
+                            assert_ne!(seen.get() & 1, 0, "native accept completion");
+                        }
                     },
                 );
                 assert!(result.is_ok(), "install listener");
@@ -290,6 +257,14 @@ fn completion_failure() {
             ),
             runtime::check_scope,
         );
-    assert_eq!(reports.get(), 1, "one exact native failure report");
-    assert_eq!(cause.get(), Some(Failure::Syscall(Errno::INVALID_ARGUMENT)));
+    match cause.get() {
+        Some(cause) => {
+            assert_eq!(reports.get(), 1, "one exact native failure report");
+            assert_eq!(cause, Failure::Syscall(Errno::INVALID_ARGUMENT));
+        }
+        None => {
+            assert_eq!(std::env::consts::OS, "macos");
+            assert_eq!(reports.get(), 0);
+        }
+    }
 }

@@ -73,14 +73,12 @@ where
     unsafe fn advance<const MAX: usize>(
         &mut self,
         cap: NonZero<usize>,
-        left: NonZero<usize>,
     ) -> buffer::raw::Chunk<'a, MAX> {
         match self {
-            // SAFETY: either branch is the complete cursor, so `left` is its
-            // exact remaining length.
-            Self::Left(cursor) => unsafe { cursor.advance(cap, left) },
+            // SAFETY: the active cursor retains the admitted remaining bytes.
+            Self::Left(cursor) => unsafe { cursor.advance(cap) },
             // SAFETY: same proof as the left branch.
-            Self::Right(cursor) => unsafe { cursor.advance(cap, left) },
+            Self::Right(cursor) => unsafe { cursor.advance(cap) },
         }
     }
 }
@@ -201,15 +199,14 @@ unsafe impl<'a> buffer::raw::Scatter<'a> for pair::Cursor<'a> {
     unsafe fn advance<const MAX: usize>(
         &mut self,
         cap: NonZero<usize>,
-        left: NonZero<usize>,
     ) -> buffer::raw::Chunk<'a, MAX> {
         if let Some(child) = NonZero::new(self.prefix.len()) {
             // SAFETY: child is the prefix's exact remaining length; the smaller
             // cap preserves the caller's MAX bound and the prefix borrow.
-            unsafe { buffer::raw::Scatter::advance(&mut self.prefix, cap.min(child), child) }
+            unsafe { buffer::raw::Scatter::advance(&mut self.prefix, cap.min(child)) }
         } else {
-            // SAFETY: the empty prefix proves left is the body's exact length.
-            unsafe { buffer::raw::Scatter::advance(&mut self.body, cap, left) }
+            // SAFETY: the empty prefix leaves all admitted bytes in the body.
+            unsafe { buffer::raw::Scatter::advance(&mut self.body, cap) }
         }
     }
 }

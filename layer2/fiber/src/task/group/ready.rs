@@ -156,6 +156,7 @@ impl<'queue, const N: usize> app::Drain for Drain<'queue, '_, N> {
 
     fn next_when<P>(
         &mut self,
+        (): &mut (),
         take: impl FnOnce() -> Option<P>,
     ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
         let (index, permit) = if let Some(index) = self.members.front() {
@@ -165,7 +166,7 @@ impl<'queue, const N: usize> app::Drain for Drain<'queue, '_, N> {
             self.members.take(index);
             (index, permit)
         } else {
-            match self.endpoint.as_mut()?.next_when(take)? {
+            match self.endpoint.as_mut()?.next_when(&mut (), take)? {
                 Ok(admitted) => admitted,
                 Err(index) => return Some(Err(index)),
             }

@@ -1,7 +1,7 @@
 use std::mem;
 
 use dope_core::{
-    driver::{retained, retained::flight, route, route::Identity},
+    driver::{self, retained, retained::flight, route, route::Identity},
     io::{
         fd::handles,
         socket,
@@ -53,15 +53,14 @@ impl<'addr, 'd, ID: Identity, A: socket::Prepared> Connect<'addr, 'd, ID, A> {
         Self { fd, addr, target }
     }
 
-    pub(crate) fn submit<'owner>(
+    pub(crate) fn submit(
         self,
         slots: &flight::Slots<'d, ID>,
-        driver: retained::Context<'_, 'owner, 'd>,
+        driver: driver::Context<'_, 'd>,
         opts: option::Set,
     ) -> Result<pending::Connection<'d>, pending::Rejection<'d>>
     where
-        'd: 'owner,
-        'owner: 'addr,
+        'd: 'addr,
     {
         let Self { fd, addr, target } = self;
         // SAFETY: the address is already installed in its slab-indexed stable

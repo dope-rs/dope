@@ -114,10 +114,6 @@ impl<'a, T, Tag: route::Tag> Vacancy<'a, T, Tag> {
         })
     }
 
-    pub fn try_at(self, slot: indices::SlotIndex) -> Result<Grant<'a, T, Tag>, slab::Vacancy> {
-        self.0.try_grant_at(slot.raw()).map(Grant)
-    }
-
     pub fn try_head(self, capacity: conn::Capacity) -> Result<Grant<'a, T, Tag>, slab::Vacancy> {
         self.0.try_grant_in(0..capacity.count().get()).map(Grant)
     }

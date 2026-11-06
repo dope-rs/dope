@@ -61,7 +61,6 @@ fn full_queue_retries_once() {
                             );
                         }
                         let target = targets.bind(SlotIndex::fixed::<8>(), Epoch::INITIAL);
-                        let owner = retained::raw::Owner::from_driver(driver.driver_ref());
                         let mut admitted = 0;
                         for _ in 0..17 {
                             let request = retained::raw::Submission::send(
@@ -73,7 +72,7 @@ fn full_queue_retries_once() {
                             // retained until dispatch below or driver quiescence.
                             let sent = unsafe {
                                 request.try_submit(
-                                    retained::Context::new(driver.reborrow(), owner),
+                                    driver.reborrow(),
                                     &sends,
                                 )
                             };
@@ -141,7 +140,7 @@ fn full_queue_retries_once() {
                             // retained through driver quiescence.
                             let sent = unsafe {
                                 request.try_submit(
-                                    retained::Context::new(driver.reborrow(), owner),
+                                    driver.reborrow(),
                                     &sends,
                                 )
                             };
@@ -321,7 +320,6 @@ fn socket_retries_once() {
                                     .expect("fill SQ"),
                             );
                         }
-                        let owner = retained::raw::Owner::from_driver(driver.driver_ref());
                         let targets = driver.driver_ref().targets::<KeyTag<1>>();
                         let mut sockets = sockets.into_iter();
                         let mut started = Vec::with_capacity(8);
@@ -335,11 +333,7 @@ fn socket_retries_once() {
                                 // generation until every connection is quiescent.
                                 let result = unsafe {
                                     retained::raw::Connect::new(socket.into(), &address, target)
-                                        .try_connect(
-                                            retained::Context::new(driver.reborrow(), owner),
-                                            &controls,
-                                            &options,
-                                        )
+                                        .try_connect(driver.reborrow(), &controls, &options)
                                 };
                                 result.map(|connect| started.push(connect))
                             } else {

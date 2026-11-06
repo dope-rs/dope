@@ -89,20 +89,6 @@ impl executor::Build for Source {
     }
 }
 
-impl<'run> executor::Build for ReadySource<'run> {
-    type Shutdown = Self;
-
-    fn try_build(
-        self,
-        attempt: &mut creation::Attempt,
-        config: settings::Config,
-    ) -> Result<executor::Executor<(), Self::Shutdown>, create::Error<'_>> {
-        executor::Executor::new(attempt, config)?
-            .shutdown(self)
-            .map_err(create::Error::from)
-    }
-}
-
 impl executor::Startup for Source {
     fn installed(&self) -> Result<(), executor::InstallError> {
         Ok(())

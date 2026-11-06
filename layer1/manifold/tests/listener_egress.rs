@@ -7,7 +7,7 @@ use dope_core::driver::life::recovery;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use std::{alloc, cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc};
 
 use common::{
     manifold::listener::{
@@ -24,14 +24,10 @@ use dope_core::driver::route::{FrameworkTag, KeyTag, Tag, kind};
 use dope_manifold::{
     BuildError, ConfigError,
     app::{creation, env::Bundle},
-    network::listener::{Install, conn::write, handler},
-    timing::{Balanced, Throughput},
+    network::listener::{conn::write, handler},
+    timing::Throughput,
 };
-use dope_net::{
-    link::egress,
-    tcp::Tcp,
-    wire::{Identity, domain},
-};
+use dope_net::{link::egress, tcp::Tcp, wire::Identity};
 use dope_runtime::executor::session::Completion;
 use dope_test::{
     alloc::Tracker,
@@ -180,28 +176,6 @@ fn owned_releases_after_send_or_abort() {
             "unexpected reclaimed operations: {reports:?}"
         );
     }
-}
-
-#[test]
-fn timing_keeps_layout() {
-    assert_eq!(
-        alloc::Layout::new::<
-            Install<
-                'static,
-                KeyTag<0>,
-                Bundle<Tcp, Identity, Throughput>,
-                domain::Local<'static, Identity, KeyTag<0>>,
-            >,
-        >(),
-        alloc::Layout::new::<
-            Install<
-                'static,
-                KeyTag<0>,
-                Bundle<Tcp, Identity, Balanced>,
-                domain::Local<'static, Identity, KeyTag<0>>,
-            >,
-        >()
-    );
 }
 
 #[test]

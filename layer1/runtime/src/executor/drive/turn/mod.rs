@@ -19,6 +19,13 @@ const _: () = {
     assert!(mem::align_of::<Option<Event<'static>>>() == mem::align_of::<Event<'static>>());
 };
 
+pub(crate) fn shutdown(source: &impl crate::executor::Startup) -> impl FnMut() -> Status {
+    move || {
+        source.observed(crate::shutdown::Requested::new());
+        Status::Shutdown
+    }
+}
+
 /// Resolution of one idle turn supplied to [`Parked::resolve`].
 pub(crate) enum Resolved<'turn, 'd, M> {
     /// Re-poll the current turn without blocking.

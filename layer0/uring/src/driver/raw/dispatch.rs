@@ -27,7 +27,7 @@ where
     ) -> C::Dispatch {
         let Self { host, quota } = self;
         quota.reclaim(host);
-        C::with(host, |backend| backend.ring.acquire());
+        C::backend(host).ring.acquire();
         let result = {
             let limit = quota.remaining();
             let mut budget = quota.budget::<Completion>(limit);
@@ -46,11 +46,12 @@ where
                 }
             }
         };
-        let pending = C::with(host, |backend| {
+        let pending = {
+            let backend = C::backend(host);
             let complete = backend.ring.refresh();
             backend.ring.flush();
             complete.get() != 0 || backend.tuning.has_pending()
-        });
+        };
         let state = if pending {
             task::Poll::Pending
         } else {

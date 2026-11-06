@@ -137,7 +137,7 @@ struct Address<'d> {
 
 impl PartialEq for Address<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.driver.is_same(other.driver) && self.key == other.key
+        self.key == other.key
     }
 }
 

@@ -32,12 +32,14 @@ pub use len::Len;
 pub struct Kind(file::Kind);
 
 impl Kind {
-    pub(crate) const fn from_meta(raw: file::Metadata) -> Self {
-        Self(raw.kind())
-    }
-
     pub const fn is_regular(self) -> bool {
         self.0.is_regular()
+    }
+}
+
+impl From<file::Kind> for Kind {
+    fn from(kind: file::Kind) -> Self {
+        Self(kind)
     }
 }
 
@@ -87,7 +89,7 @@ impl Offset {
         }
     }
 
-    pub(crate) const fn get(self) -> u64 {
+    pub const fn get(self) -> u64 {
         self.0.get()
     }
 
@@ -215,7 +217,7 @@ where
     /// nonempty output. The native file backend may complete during submission.
     pub fn read_at(
         fd: fd::BorrowedFd<'a>,
-        output: bytes::bounded::Value<&'a mut [u8]>,
+        output: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
         offset: Offset,
         target: route::Target<'d, Tag>,
     ) -> Self
@@ -233,6 +235,20 @@ impl<'a, 'd, Tag> Submission<'a, 'd, Tag, kind::Sync>
 where
     Tag: route::Tag,
 {
+    pub fn metadata(
+        fd: fd::BorrowedFd<'a>,
+        output: &'a mut metadata::Output,
+        target: route::Target<'d, Tag>,
+    ) -> Self
+    where
+        Tag: route::Select<kind::Sync>,
+    {
+        Self::bind(
+            Request::metadata(fd, output),
+            target.operation::<kind::Sync>(),
+        )
+    }
+
     /// Submit a durability barrier for all writes completed before this operation.
     pub fn sync(fd: fd::BorrowedFd<'a>, mode: Sync, target: route::Target<'d, Tag>) -> Self
     where
@@ -346,7 +362,7 @@ impl File {
     pub fn metadata(&self) -> Result<Metadata, Errno> {
         let value = Backend::metadata::<dope_sys::Errno>(fd::AsFd::as_fd(self))?;
         Ok(Metadata {
-            kind: Kind::from_meta(value),
+            kind: Kind::from(value.kind()),
             length: value.size(),
         })
     }

@@ -9,7 +9,7 @@ use crate::{
         egress::reserve::demand,
         pool::{
             change::{
-                close::{Approval, Commit, Decision, Deferred, Failed, Owner, Resume},
+                close::{Approval, Commit, Decision, Failed, Owner, Resume},
                 drain::{Branch, Plan, plan::Step},
             },
             recv::{input, storage, storage::queue::Ops as _},
@@ -51,7 +51,6 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         'a,
         'm,
         'r,
-        'o,
         'p,
         'w,
         'd,
@@ -68,21 +67,21 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         K,
         H,
     >(
-        mut plan: Plan<'a, 'm, 'r, 'o, 'p, 'w, 'd, ID, W, S, M, B, IOV, D, C, X, O, K, H>,
+        mut plan: Plan<'a, 'm, 'r, 'p, 'w, 'd, ID, W, S, M, B, IOV, D, C, X, O, K, H>,
     ) -> Branch<'d, ID, R, B>
     where
-        'd: 'w + 'o,
+        'd: 'w,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
         D: demand::Mode,
         <W::Receive as Policy<W>>::Eof: Capture<W>,
         H: for<'x, 'c, 'i, 'v> FnMut(
-            Failed<'x, 'c, 'i, 'v, 'r, 'o, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>,
+            Failed<'x, 'c, 'i, 'v, 'r, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>,
         ),
         O: for<'x, 'c, 'f, 's, 'v> FnMut(
-            Owner<'x, 'c, 'f, 's, 'v, 'r, 'o, 'w, 'd, ID, W, S, C, X>,
+            Owner<'x, 'c, 'f, 's, 'v, 'r, 'w, 'd, ID, W, S, C, X>,
         ) -> Decision<'d, ID>,
-        K: for<'x, 'c, 'v> FnMut(Commit<'x, 'c, 'v, 'r, 'o, 'd, C, X, S>) -> Approval<S, R>,
+        K: for<'x, 'c, 'v> FnMut(Commit<'x, 'c, 'v, 'r, 'd, C, X, S>) -> Approval<S, R>,
     {
         let wake = Self::credit(&plan.storage.recv.storage).map(credit::Slot::take);
         match wake {
@@ -116,7 +115,7 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         }
         let active = Self::credit(&plan.storage.recv.storage).is_some_and(credit::Slot::is_active);
         if active || plan.storage.recv.storage.has_queued() {
-            Branch::Pending(Deferred::Ingress)
+            Branch::Pending
         } else {
             plan.retire()
         }

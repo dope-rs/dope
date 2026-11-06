@@ -84,18 +84,23 @@ where
     pub(crate) fn run_boot<R>(
         start: Result<Self, drive::Error>,
         root: R,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<R::Output, drive::Error>
     where
         R: boot::Root<'d>,
     {
         match start {
-            Ok(block) => block.poll_boot(root),
+            Ok(block) => block.poll_boot(root, shutdown),
             Err(source) => Attempt::Cancel(root, source),
         }
         .finish()
     }
 
-    fn poll_boot<R>(mut self, mut root: R) -> Attempt<R, R::Output>
+    fn poll_boot<R>(
+        mut self,
+        mut root: R,
+        mut shutdown: impl FnMut() -> turn::Status,
+    ) -> Attempt<R, R::Output>
     where
         R: boot::Root<'d>,
     {
@@ -104,7 +109,7 @@ where
             let mut cause = boot::Cause::Start;
             loop {
                 let tick = self.source.tick();
-                let ready = match self.state.next_root(&self.slot, tick) {
+                let ready = match self.state.next_root(&self.slot, tick, &mut shutdown) {
                     Ok(ready) => ready,
                     Err(source) => return Attempt::Cancel(root, source),
                 };
@@ -158,7 +163,7 @@ where
                 break Ok(output);
             }
             let tick = self.source.tick();
-            polled = match self.state.next_root(&self.slot, tick) {
+            polled = match self.state.next_root(&self.slot, tick, &mut shutdown) {
                 Ok(ready) => ready.skip(),
                 Err(error) => break Err(error),
             };
@@ -194,12 +199,13 @@ where
         self,
         root: R,
         tick: impl Fn(C) -> Result<Sample, drive::Error>,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<R::Output, drive::Error>
     where
         R: root::Root<'d>,
     {
         let (output, ()) = self
-            .drive(root, tick, |idle| {
+            .drive(root, tick, shutdown, |idle| {
                 Ok(matches!(idle.sync()?, poll::Commit::Drained).then_some(()))
             })?
             .complete()?;
@@ -210,12 +216,13 @@ where
         self,
         root: R,
         tick: impl Fn(C) -> Result<Sample, drive::Error>,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<ControlFlow<R::Output>, drive::Error>
     where
         R: root::Root<'d>,
     {
         Ok(
-            match self.drive(root, tick, |idle| {
+            match self.drive(root, tick, shutdown, |idle| {
                 Ok(matches!(idle.sync()?, poll::Commit::Drained).then_some(()))
             })? {
                 Outcome::Complete(output, ()) | Outcome::Shutdown(Some(output)) => {
@@ -230,12 +237,13 @@ where
         self,
         root: R,
         tick: impl Fn(C) -> Result<Sample, drive::Error>,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<Fixed<'d, R::Output>, drive::Error>
     where
         R: root::Root<'d>,
     {
         let (output, now) = self
-            .drive(root, tick, |idle| {
+            .drive(root, tick, shutdown, |idle| {
                 let fixed = idle.is_fixed();
                 let now = idle.now();
                 let commit = idle.sync()?;
@@ -249,6 +257,7 @@ where
         mut self,
         root: R,
         tick: impl Fn(C) -> Result<Sample, drive::Error>,
+        mut shutdown: impl FnMut() -> turn::Status,
         complete: impl for<'turn> Fn(
             turn::Idle<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
         ) -> Result<Option<P>, drive::Error>,
@@ -262,7 +271,7 @@ where
             let mut first = true;
             loop {
                 let tick = tick(self.source)?;
-                let ready = self.state.next_root(&self.slot, tick)?;
+                let ready = self.state.next_root(&self.slot, tick, &mut shutdown)?;
                 let poll = first || ready.is_root();
                 let (polled, output) = if poll {
                     ready.poll(root.as_mut(), wake)
@@ -298,7 +307,10 @@ where
                 return Ok(Outcome::Complete(output, proof));
             }
             let tick = tick(self.source)?;
-            polled = self.state.next_root(&self.slot, tick)?.skip();
+            polled = self
+                .state
+                .next_root(&self.slot, tick, &mut shutdown)?
+                .skip();
         }
     }
 }

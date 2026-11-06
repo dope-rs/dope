@@ -151,12 +151,11 @@ impl<'d, F: abi::Fiber<'d>, M, D, G> Slot<'d, F, M, D, G> {
         if !self.matches(key.parts()) {
             return Err(set::WakeError::Missing);
         }
-        match self.state() {
-            State::Running => self.project_ref().value.root().poll().1.wake(),
-            State::Queued | State::Completed | State::External => {}
-            State::Free | State::Admitting | State::Retiring | State::Retired => {
-                return Err(set::WakeError::Inactive);
-            }
+        if self.state() == State::Admitting {
+            return Err(set::WakeError::Inactive);
+        }
+        if self.state() == State::Running {
+            self.project_ref().value.root().poll().1.wake();
         }
         Ok(())
     }
@@ -216,6 +215,11 @@ impl<'a, 'd, F: abi::Fiber<'d>, M, D, G> Vacated<'a, 'd, F, M, D, G> {
 }
 
 impl<'a, 'd, F: abi::Fiber<'d>, M, D, G> Running<'a, 'd, F, M, D, G> {
+    pub(in crate::task::storage::set) fn start(self) -> Self {
+        self.0.value.transition(State::Running);
+        self
+    }
+
     pub(in crate::task::storage::set) fn data(&self) -> &M {
         self.0.project_ref().value.data()
     }

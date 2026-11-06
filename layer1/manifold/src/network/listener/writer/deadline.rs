@@ -1,6 +1,6 @@
 //! One-allocation exact deadline authority for a listener lane.
 
-use std::{mem, ops, time};
+use std::{mem, ops};
 
 use dope_core::driver::{
     route::{Identity, KeyTag},
@@ -22,9 +22,8 @@ use o3::{
 
 use crate::{
     network::listener::{
-        conn::deadline::{Arm, Overflow},
+        conn::{self, deadline::Error},
         handler,
-        writer::flow,
     },
     timing,
 };
@@ -35,9 +34,9 @@ struct Deadline<'d> {
     kind: Kind,
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
-pub(in crate::network::listener) enum Kind {
+pub enum Kind {
     Inbound,
     Send,
     Absolute,
@@ -221,52 +220,49 @@ impl<'d, ID: Identity> Entry<'_, 'd, ID> {
     }
 }
 
-fn try_after<'d>(
-    now: clock::Moment<'d>,
-    window: time::Duration,
-) -> Result<clock::Deadline<'d>, Overflow<'d>> {
-    now.try_add(window).map_err(|range| Overflow {
-        now,
-        window: range.duration(),
-    })
-}
-
-enum Mode<'a, 'd, ID: Identity> {
-    Open(&'a mut Schedule<'d, ID>),
-    Sealed,
-}
-
-/// The original source connection and its paired immutable-capacity schedule.
+/// The original connection and its paired immutable-capacity schedule.
 #[repr(C)]
 pub(in crate::network::listener) struct Slot<
     'a,
+    'p,
+    's,
     'w,
     'd: 'w,
     ID: Identity,
     W: wire::Spec + 'w + 'd,
-    S,
+    C,
+    B,
 > {
-    source: &'a mut types::Connection<'w, 'd, ID, W, S>,
-    mode: Mode<'a, 'd, ID>,
+    pub(in crate::network::listener) source: &'a mut types::Control<'w, 'd, ID, W>,
+    pub(in crate::network::listener) state: &'a mut conn::state::Control<'p, 's, 'd, ID, B>,
+    pub(in crate::network::listener) conn: &'a mut C,
+    schedule: Option<&'a mut Schedule<'d, ID>>,
 }
 
-impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, ID, W, S> {
-    pub(in crate::network::listener) fn closed(
-        source: &'a mut types::Connection<'w, 'd, ID, W, S>,
-    ) -> Self {
-        Self {
-            source,
-            mode: Mode::Sealed,
-        }
+impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
+    Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>
+{
+    pub(in crate::network::listener) fn reborrow(
+        &mut self,
+    ) -> Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B> {
+        self.project(|state| state)
     }
 
-    pub(in crate::network::listener) fn reborrow(&mut self) -> Slot<'_, 'w, 'd, ID, W, S> {
+    pub(in crate::network::listener) fn sealed(&mut self) -> Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B> {
+        let mut slot = self.reborrow();
+        slot.schedule = None;
+        slot
+    }
+
+    pub(in crate::network::listener) fn project<'view, T>(
+        &'view mut self,
+        select: impl FnOnce(&'view mut C) -> &'view mut T,
+    ) -> Slot<'view, 'p, 's, 'w, 'd, ID, W, T, B> {
         Slot {
             source: self.source,
-            mode: match &mut self.mode {
-                Mode::Open(book) => Mode::Open(book),
-                Mode::Sealed => Mode::Sealed,
-            },
+            state: self.state,
+            conn: select(self.conn),
+            schedule: self.schedule.as_deref_mut(),
         }
     }
 
@@ -314,43 +310,42 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
 
     pub(in crate::network::listener) fn cancel_idle(&mut self, pending: egress::Pending)
     where
-        types::Connection<'w, 'd, ID, W, S>: flow::SlotFlow<'d, ID>,
+        B: dope_net::link::egress::data::raw::Payload<'d>,
     {
-        if matches!(
-            flow::SlotFlow::flow(self.source, pending),
-            flow::Flow::Clear
-        ) {
+        if matches!(self.flow(pending), super::flow::Flow::Clear) {
             self.cancel_send();
         }
     }
 
-    pub(in crate::network::listener) fn try_ensure(&mut self, now: clock::Moment<'d>) -> Arm<'d> {
-        self.with(Arm::Sealed, |entry| {
+    pub(in crate::network::listener) fn try_ensure(
+        &mut self,
+        now: clock::Moment<'d>,
+    ) -> Result<(), Error> {
+        self.with(Err(Error::Sealed), |entry| {
             let policy = entry.policy;
             let Some(window) = policy.application.delay() else {
-                return Arm::Disabled;
+                return Err(Error::Disabled);
             };
             if entry.is_armed(Kind::Application) {
-                return Arm::Armed;
+                return Ok(());
             }
-            match try_after(now, window) {
-                Ok(at) => {
-                    entry.arm_at(Kind::Application, at);
-                    Arm::Armed
-                }
-                Err(cause) => Arm::Overflow(cause),
-            }
+            let at = now.try_add(window).map_err(Error::Overflow)?;
+            entry.arm_at(Kind::Application, at);
+            Ok(())
         })
     }
 
-    pub(in crate::network::listener) fn try_arm(&mut self, at: clock::Deadline<'d>) -> Arm<'d> {
-        self.with(Arm::Sealed, |entry| {
+    pub(in crate::network::listener) fn try_arm(
+        &mut self,
+        at: clock::Deadline<'d>,
+    ) -> Result<(), Error> {
+        self.with(Err(Error::Sealed), |entry| {
             let policy = entry.policy;
             if !policy.application.is_managed() {
-                return Arm::Disabled;
+                return Err(Error::Disabled);
             }
             entry.arm_at(Kind::Application, at);
-            Arm::Armed
+            Ok(())
         })
     }
 
@@ -364,11 +359,11 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
         &mut self,
         update: handler::Deadline<'d>,
         now: clock::Moment<'d>,
-    ) -> Arm<'d> {
+    ) -> Result<(), Error> {
         match update {
-            handler::Deadline::Ensure(since) => self.with(Arm::Sealed, |entry| {
+            handler::Deadline::Ensure(since) => self.with(Err(Error::Sealed), |entry| {
                 let Some(window) = entry.policy.application.delay() else {
-                    return Arm::Disabled;
+                    return Err(Error::Disabled);
                 };
                 let stored = match &entry.entry {
                     resident::Entry::Occupied(current) => {
@@ -378,20 +373,17 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
                 };
                 let at = match stored {
                     Some(at) => at,
-                    None => match try_after(since, window) {
-                        Ok(at) => at,
-                        Err(cause) => return Arm::Overflow(cause),
-                    },
+                    None => since.try_add(window).map_err(Error::Overflow)?,
                 };
                 // Keep overdue application work due without preceding this
                 // turn's built-in bounds, which also win equal-time ties.
                 entry.arm_at(Kind::Application, at.max(now.into()));
-                Arm::Armed
+                Ok(())
             }),
             handler::Deadline::Arm(at) => self.try_arm(at.max(now.into())),
             handler::Deadline::Clear => {
                 self.cancel_app();
-                Arm::Armed
+                Ok(())
             }
         }
     }
@@ -436,7 +428,7 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
     }
 
     fn with<O>(&mut self, sealed: O, run: impl FnOnce(Entry<'_, 'd, ID>) -> O) -> O {
-        let Mode::Open(book) = &mut self.mode else {
+        let Some(book) = &mut self.schedule else {
             return sealed;
         };
         let key = self.source.key().into();
@@ -452,17 +444,17 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> Slot<'a, 'w, 'd, 
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> ops::Deref
-    for Slot<'_, 'w, 'd, ID, W, S>
+impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B> ops::Deref
+    for Slot<'_, '_, '_, 'w, 'd, ID, W, C, B>
 {
-    type Target = types::Connection<'w, 'd, ID, W, S>;
+    type Target = types::Control<'w, 'd, ID, W>;
     fn deref(&self) -> &Self::Target {
         self.source
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> ops::DerefMut
-    for Slot<'_, 'w, 'd, ID, W, S>
+impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B> ops::DerefMut
+    for Slot<'_, '_, '_, 'w, 'd, ID, W, C, B>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.source
@@ -470,29 +462,30 @@ impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S> ops::DerefMut
 }
 
 const _: () = assert!(
-    mem::size_of::<Slot<'static, 'static, 'static, KeyTag<0>, wire::Identity, ()>>()
-        == 2 * mem::size_of::<usize>()
+    mem::size_of::<
+        Slot<'static, 'static, 'static, 'static, 'static, KeyTag<0>, wire::Identity, (), ()>,
+    >() == 4 * mem::size_of::<usize>()
 );
 
-impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S>
+impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
     From<
         depot::raw::Proof<
             (
                 (
-                    &'a mut types::Connection<'w, 'd, ID, W, S>,
+                    &'a mut types::Connection<'w, 'd, ID, W, conn::State<'p, 's, 'd, ID, C, B>>,
                     &'a mut Schedule<'d, ID>,
                 ),
                 pool::Key<'d, ID>,
             ),
             Initialized<()>,
         >,
-    > for Slot<'a, 'w, 'd, ID, W, S>
+    > for Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
     fn from(
         proof: depot::raw::Proof<
             (
                 (
-                    &'a mut types::Connection<'w, 'd, ID, W, S>,
+                    &'a mut types::Connection<'w, 'd, ID, W, conn::State<'p, 's, 'd, ID, C, B>>,
                     &'a mut Schedule<'d, ID>,
                 ),
                 pool::Key<'d, ID>,
@@ -501,9 +494,12 @@ impl<'a, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, S>
         >,
     ) -> Self {
         let ((source, book), _) = proof.into_inner();
+        let (state, source) = source.split();
         Self {
             source,
-            mode: Mode::Open(book),
+            state: &mut state.control,
+            conn: &mut state.conn,
+            schedule: Some(book),
         }
     }
 }

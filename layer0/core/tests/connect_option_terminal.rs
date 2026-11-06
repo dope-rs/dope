@@ -4,7 +4,7 @@ use std::net::UdpSocket;
 use dope_core::{
     driver::{
         life::recovery,
-        retained::{self, raw::Connect},
+        retained::raw::Connect,
         route::{FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind},
     },
     io::socket::{Inet, install::Install, option},
@@ -42,8 +42,6 @@ fn completed_connect_cancel() {
                     let target = driver
                         .driver_ref()
                         .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-                    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                    let mut driver = retained::Context::new(driver, owner);
                     // SAFETY: address remains fixed outside the driver scope,
                     // through completion and final native quiescence.
                     let pending = unsafe {
@@ -57,13 +55,13 @@ fn completed_connect_cancel() {
                     .expect("connect submission");
                     let done = driver.wait_connect(turn).ok().expect("connect completion");
                     let pending = pending
-                        .try_cancel(driver.driver())
+                        .try_cancel(&mut driver)
                         .map_err(|(_, error)| error)
                         .expect("completed cancellation");
                     let (socket, outcome) = pending.complete(done).ok().expect("matching connect");
                     assert!(matches!(outcome, Ok(())));
                     assert_eq!(source.peer_addr().expect("connected source"), peer);
-                    socket.close(driver.driver());
+                    socket.close(&mut driver);
                 })
                 .expect("connect flight");
         },
@@ -94,16 +92,13 @@ fn connect_completion_matches_native_flight() {
     runtime.with_scope(
         |scope| {
             scope
-                .with_flights::<KeyTag<1>, 2>(|driver, turn, flights| {
+                .with_flights::<KeyTag<1>, 2>(|mut driver, turn, flights| {
                     let target = driver
                         .driver_ref()
                         .tuned_target::<KeyTag<1>>(SlotIndex::ZERO);
-                    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                    let mut driver = retained::Context::new(driver, owner);
                     let [(first, first_done), (second, second_done)] = sources.map(|source| {
-                        let (socket, _) =
-                            Install::adopt_udp(driver.driver().reborrow(), source.into())
-                                .expect("source descriptor");
+                        let (socket, _) = Install::adopt_udp(driver.reborrow(), source.into())
+                            .expect("source descriptor");
                         // SAFETY: address remains fixed outside the driver scope,
                         // through both completions and final native quiescence.
                         let pending = unsafe {
@@ -135,8 +130,8 @@ fn connect_completion_matches_native_flight() {
                         ),
                     };
                     completed = first.1.is_ok() && second.1.is_ok();
-                    first.0.close(driver.driver());
-                    second.0.close(driver.driver());
+                    first.0.close(&mut driver);
+                    second.0.close(&mut driver);
                 })
                 .expect("connect flights");
         },

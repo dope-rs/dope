@@ -18,10 +18,7 @@ use dope_fiber::{
 use dope_test::{alloc, alloc::Tracker, harness::observe::Trace};
 use o3::depot::capacity::Count;
 
-use crate::common::{
-    runtime::{self, Setup},
-    schedule::tasks::retained::Retain as _,
-};
+use crate::common::runtime::{self, Setup};
 pub mod common;
 use common::recover;
 
@@ -240,76 +237,75 @@ fn wake_next_keeps_owner() {
 
     Setup::throughput().with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
-                let core = context.driver_ref();
-                let targets = core.targets::<KeyTag<0>>();
-                let root1 = core
-                    .ready()
-                    .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
-                let root1 = (root1).expect("first ready slot");
-                let root2 = core.ready().make_slot(
-                    targets
-                        .bind(SlotIndex::from(1_u16), Epoch::INITIAL)
-                        .dispatch(),
+            let (_, context, mut control) = scope.split();
+            let core = context.driver_ref();
+            let targets = core.targets::<KeyTag<0>>();
+            let root1 = core
+                .ready()
+                .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
+            let root1 = (root1).expect("first ready slot");
+            let root2 = core.ready().make_slot(
+                targets
+                    .bind(SlotIndex::from(1_u16), Epoch::INITIAL)
+                    .dispatch(),
+            );
+            let root2 = (root2).expect("second ready slot");
+            let polls = Rc::new(Cell::new(0));
+            let tasks: Result<Set<'_, PendingCount, usize, Domain>, _> =
+                Set::try_new(Count::new(2));
+            let tasks = (tasks).expect("task set allocation");
+            let mut tasks = pin!(tasks);
+            Scope::with(tasks.as_mut(), |mut tasks| {
+                let first = tasks.try_insert(
+                    PendingCount(Rc::clone(&polls)),
+                    10,
+                    RootWaker::from(root1.target()),
                 );
-                let root2 = (root2).expect("second ready slot");
-                let polls = Rc::new(Cell::new(0));
-                let tasks: Result<Set<'_, PendingCount, usize, Domain>, _> =
-                    Set::try_new(Count::new(2));
-                let tasks = (tasks).expect("task set allocation");
-                let mut tasks = pin!(tasks);
-                Scope::with(tasks.as_mut(), |mut tasks| {
-                    let first = tasks.try_insert(
-                        PendingCount(Rc::clone(&polls)),
-                        10,
-                        RootWaker::from(root1.target()),
+                let first = (first).expect("first task");
+                let second = tasks.try_insert(
+                    PendingCount(Rc::clone(&polls)),
+                    11,
+                    RootWaker::from(root2.target()),
+                );
+                let second = (second).expect("second task");
+
+                {
+                    let turn = control.begin();
+                    assert_eq!(turn.ready_round(|_| {}), 2);
+                }
+
+                for _ in 0..2 {
+                    let (allocs, bytes) = Tracker::during(|| tasks.wake_next());
+                    assert_eq!((allocs, bytes), (0, 0));
+                    assert_eq!(polls.get(), 0, "wake handoff must not poll the task");
+                    assert!(
+                        tasks.work() == Work::Pending,
+                        "wake handoff must preserve queue ownership"
                     );
-                    let first = (first).expect("first task");
-                    let second = tasks.try_insert(
-                        PendingCount(Rc::clone(&polls)),
-                        11,
-                        RootWaker::from(root2.target()),
-                    );
-                    let second = (second).expect("second task");
 
                     {
                         let turn = control.begin();
-                        assert_eq!(turn.ready_round(|_| {}), 2);
-                    }
-
-                    for _ in 0..2 {
-                        let (allocs, bytes) = Tracker::during(|| tasks.wake_next());
-                        assert_eq!((allocs, bytes), (0, 0));
-                        assert_eq!(polls.get(), 0, "wake handoff must not poll the task");
-                        assert!(
-                            tasks.work() == Work::Pending,
-                            "wake handoff must preserve queue ownership"
+                        let woken = Trace::<_, 1>::new();
+                        assert_eq!(
+                            turn.ready_round(|target| {
+                                woken.record(target);
+                            }),
+                            1
                         );
-
-                        {
-                            let turn = control.begin();
-                            let woken = Trace::<_, 1>::new();
-                            assert_eq!(
-                                turn.ready_round(|target| {
-                                    woken.record(target);
-                                }),
-                                1
-                            );
-                            assert!(
-                                woken
-                                    .matches(&[targets
-                                        .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                                        .dispatch()])
-                                    .expect("wake observations")
-                            );
-                        }
+                        assert!(
+                            woken
+                                .matches(&[targets
+                                    .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                                    .dispatch()])
+                                .expect("wake observations")
+                        );
                     }
+                }
 
-                    assert!(tasks.remove(first).is_ok());
-                    assert!(tasks.remove(second).is_ok());
-                    assert!(tasks.len() == Length::ZERO);
-                    tasks.wake_next();
-                });
+                assert!(tasks.remove(first).is_ok());
+                assert!(tasks.remove(second).is_ok());
+                assert!(tasks.len() == Length::ZERO);
+                tasks.wake_next();
             });
         },
         Policy::new(|event| reports.push(event), recover),
@@ -324,44 +320,43 @@ fn stale_root_is_noop() {
 
     Setup::throughput().with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
-                let core = context.driver_ref();
-                let targets = core.targets::<KeyTag<0>>();
-                let mut driver = context.retained();
-                let polls = Rc::new(Cell::new(0));
-                let tasks: Result<Set<'_, PendingCount, usize, Domain>, _> =
-                    Set::try_new(Count::new(1));
-                let tasks = (tasks).expect("task set allocation");
-                let mut tasks = pin!(tasks);
-                Scope::with(tasks.as_mut(), |mut tasks| {
-                    let task = {
-                        let root = core
-                            .ready()
-                            .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
-                        let root = (root).expect("ready slot");
-                        let parent = RootWaker::from(root.target());
-                        let task = tasks.try_insert(PendingCount(Rc::clone(&polls)), 0, parent);
-                        let task = (task).expect("task admission");
+            let (_, context, mut control) = scope.split();
+            let core = context.driver_ref();
+            let targets = core.targets::<KeyTag<0>>();
+            let mut driver = context;
+            let polls = Rc::new(Cell::new(0));
+            let tasks: Result<Set<'_, PendingCount, usize, Domain>, _> =
+                Set::try_new(Count::new(1));
+            let tasks = (tasks).expect("task set allocation");
+            let mut tasks = pin!(tasks);
+            Scope::with(tasks.as_mut(), |mut tasks| {
+                let task = {
+                    let root = core
+                        .ready()
+                        .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
+                    let root = (root).expect("ready slot");
+                    let parent = RootWaker::from(root.target());
+                    let task = tasks.try_insert(PendingCount(Rc::clone(&polls)), 0, parent);
+                    let task = (task).expect("task admission");
 
-                        {
-                            let turn = control.begin();
-                            assert_eq!(turn.ready_round(|_| {}), 1);
-                            assert_eq!(tasks.poll_ready(turn.turn().app(), &mut driver).get(), 0);
-                            assert_eq!(polls.get(), 1);
-                        }
-                        task
-                    };
-
-                    assert!(tasks.try_wake(&task).is_ok());
                     {
                         let turn = control.begin();
-                        assert_eq!(turn.ready_round(|_| {}), 0);
+                        assert_eq!(turn.ready_round(|_| {}), 1);
                         assert_eq!(tasks.poll_ready(turn.turn().app(), &mut driver).get(), 0);
-                        assert_eq!(polls.get(), 2);
-                        assert!(tasks.work() == Work::Idle);
+                        assert_eq!(polls.get(), 1);
                     }
-                    assert!(tasks.remove(task).is_ok());
-                });
+                    task
+                };
+
+                assert!(tasks.try_wake(&task).is_ok());
+                {
+                    let turn = control.begin();
+                    assert_eq!(turn.ready_round(|_| {}), 0);
+                    assert_eq!(tasks.poll_ready(turn.turn().app(), &mut driver).get(), 0);
+                    assert_eq!(polls.get(), 2);
+                    assert!(tasks.work() == Work::Idle);
+                }
+                assert!(tasks.remove(task).is_ok());
             });
         },
         Policy::new(|event| reports.push(event), recover),

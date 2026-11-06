@@ -7,12 +7,6 @@ use crate::{
     driver::{life::native::create, result, storage},
 };
 
-/// One unstarted generation with the teardown state its session borrows.
-pub struct Domain<Q = ()> {
-    live: Option<Generation<Q>>,
-    teardown: Teardown,
-}
-
 /// Teardown state retained from one started generation until its backend closes.
 pub struct Teardown {
     closing: runtime::Closing,
@@ -31,8 +25,8 @@ pub(super) struct Source<Q: ?Sized> {
 }
 
 impl<Q: ?Sized> Source<Q> {
-    pub(in crate::driver::life) fn descriptor(&self) -> Option<fd::BorrowedFd<'_>> {
-        self.descriptor.as_ref().map(fd::AsFd::as_fd)
+    pub(in crate::driver::life) fn descriptor(&self) -> Option<register::Source<'_>> {
+        self.descriptor.as_ref().map(raw::Descriptor::source)
     }
 }
 
@@ -40,34 +34,6 @@ mod raw;
 pub(crate) mod runtime;
 mod session;
 pub use session::Session;
-
-impl Domain<()> {
-    pub fn new(driver: driver::Driver) -> Self {
-        Self {
-            live: Some(Generation::new(driver)),
-            teardown: Teardown::default(),
-        }
-    }
-
-    /// Retains the one external source this generation owns, keeping its teardown state.
-    pub fn fd<Q: fd::AsFd>(self, source: Q) -> Result<Domain<Q>, Register> {
-        let Self { live, teardown } = self;
-        let Some(epoch) = live else {
-            return Err(Register::Closed);
-        };
-        Ok(Domain {
-            live: Some(epoch.fd(source)?),
-            teardown,
-        })
-    }
-}
-
-impl<Q> Domain<Q> {
-    /// Acquires the generation once; its exclusive loan retains every source through teardown.
-    pub fn start(&mut self) -> Option<Session<'_, Q>> {
-        Some(self.live.take()?.start(&mut self.teardown))
-    }
-}
 
 impl<Q> Generation<Q> {
     /// Starts the generation this value owns; its session borrows this teardown
@@ -92,7 +58,6 @@ impl Default for Teardown {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Register {
-    Closed,
     Full(result::SubmitError),
     Register(crate::Errno),
 }
@@ -186,11 +151,22 @@ impl Generation<()> {
 
     /// Registers the one external source this generation retains through teardown.
     pub fn fd<Q: fd::AsFd>(self, source: Q) -> Result<Generation<Q>, Register> {
+        self.poll(source, register::Interest::Readable)
+    }
+
+    pub fn poll<Q: fd::AsFd>(
+        self,
+        source: Q,
+        interest: register::Interest,
+    ) -> Result<Generation<Q>, Register> {
         let Generation {
             mut driver,
             source: Source { value: (), .. },
         } = self;
-        let fd = source.as_fd();
+        let fd = register::Source {
+            fd: source.as_fd(),
+            interest,
+        };
         // SAFETY: only shared source loans escape; the descriptor owner stays
         // retained through quiescence and every teardown retry. Native registration
         // fails before publication, so an error retains no descriptor obligation.

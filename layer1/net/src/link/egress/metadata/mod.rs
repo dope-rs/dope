@@ -172,15 +172,13 @@ impl<'p, T, M, D: demand::Mode> Clone for Queue<'_, 'p, '_, T, M, D> {
 impl<'p, T, M, D: demand::Mode> Copy for Queue<'_, 'p, '_, T, M, D> {}
 
 impl<'queue, 'p, 'd, T> Queue<'queue, 'p, 'd, T> {
-    /// Inspects the current head without detaching it.
-    pub fn inspect<K>(
-        self,
-        token: &region::Token<region::Identity<'d>>,
-        f: impl FnOnce(&T) -> K,
-    ) -> Option<K> {
+    /// Borrows the current head without detaching it.
+    pub fn front<'a>(self, token: &'a region::Token<region::Identity<'d>>) -> Option<&'a T>
+    where
+        'queue: 'a,
+    {
         let index = self.state().head()?;
-        let value = self.pool.store.value(token, index);
-        Some(f(value.as_inner()))
+        Some(self.pool.store.value(token, index).as_inner())
     }
 
     /// Detaches the head while exclusively retaining the exact region token.

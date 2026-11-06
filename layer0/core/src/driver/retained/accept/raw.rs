@@ -1,6 +1,7 @@
 use dope_sys::io::socket::addr::{Length, Storage};
 
 use crate::{
+    driver,
     driver::{
         flight, retained,
         retained::{accept, arm},
@@ -28,15 +29,16 @@ where
 
     /// Defers admission until prior descriptor retirements return.
     /// # Safety
-    /// `driver` must retain this pinned lane through terminal completion or owner quiescence.
-    pub unsafe fn submit<'owner>(
+    /// `fd` and `slots` belong to `driver`. Retain this pinned lane and descriptor
+    /// through terminal completion or quiescence.
+    pub unsafe fn submit(
         mut self,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         slots: &flight::Slots<'d, Tag>,
         fd: &handles::Descriptor<'d>,
     ) -> arm::Submission
     where
-        'owner: 'a,
+        'd: 'a,
     {
         if !matches!(
             accept::Readiness::from(driver.driver_ref()),

@@ -55,11 +55,11 @@ fn retires_listener_while_existing_connection_drains() {
                             domain::Local::new(Identity),
                         )
                         .with_driver(
-                            seal::App::new(),
+                            seal::App::default(),
                             hash,
                             &mut session,
                             session::Scope::driver,
-                            |listener, session| {
+                            |listener, _wait, session| {
                                 let addr = listener.local_addr();
                                 let mut finish = Completion::new();
                                 Peer::at(addr)

@@ -5,7 +5,7 @@ pub mod set;
 use std::{array, cell::Cell, pin::Pin, rc::Rc, task::Poll};
 
 use dope::core::driver::{
-    retained,
+    self,
     route::{Epoch, Erased, KeyTag, indices::SlotIndex, kind},
     schedule::{
         self,
@@ -184,7 +184,7 @@ pub struct WideTarget(pub(crate) u128);
 pub fn poll_twice<'d, F>(
     mut fiber: Pin<&mut Task<F>>,
     turn: schedule::Turn<'_, 'd>,
-    mut driver: retained::Context<'_, 'd, 'd>,
+    mut driver: driver::Context<'_, 'd>,
 ) -> Result<(usize, [Option<bool>; 2], bool), Capacity>
 where
     F: Fiber<'d>,

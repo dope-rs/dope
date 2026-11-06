@@ -71,35 +71,34 @@ impl<W> Registry<W> {
 
     /// Takes the next value in drain order and ends draining at quiescence.
     pub(super) fn drain_next(&self, work: app::Work<'_, '_>) -> quota::Admission<W> {
-        match self.draining.drain(|| {
-            let slot = Slot {
-                table: self,
-                key: Key(self.links.first()?),
-            };
-            let Some(permit) = work.permit() else {
-                work.defer();
-                return Some(quota::Admission::Exhausted);
-            };
-            Some(quota::Admission::Item(permit.run(|| {
-                let view = slot.view();
-                // SAFETY: admission cannot reenter this table, so the selected
-                // front still belongs to its exact reciprocal chain and store.
-                let (_, vacant) = unsafe {
-                    depot::raw::Hooks::chain_pop(
-                        resident::raw::Slice::new(&self.entries),
-                        &self.links,
-                        slot.key.0,
-                    )
+        self.draining
+            .drain(|| {
+                let slot = Slot {
+                    table: self,
+                    key: Key(self.links.first()?),
                 };
-                vacant.park();
-                // SAFETY: the detached front owned one initialized value, and
-                // parking preserved that value in its original table slot.
-                unsafe { view.take() }
-            })))
-        }) {
-            resident::Drain::Done => quota::Admission::Empty,
-            resident::Drain::Item(value) => value,
-        }
+                let Some(permit) = work.permit() else {
+                    work.defer();
+                    return Some(quota::Admission::Exhausted);
+                };
+                Some(quota::Admission::Item(permit.run(|| {
+                    let view = slot.view();
+                    // SAFETY: admission cannot reenter this table, so the selected
+                    // front still belongs to its exact reciprocal chain and store.
+                    let (_, vacant) = unsafe {
+                        depot::raw::Hooks::chain_pop(
+                            resident::raw::Slice::new(&self.entries),
+                            &self.links,
+                            slot.key.0,
+                        )
+                    };
+                    vacant.park();
+                    // SAFETY: the detached front owned one initialized value, and
+                    // parking preserved that value in its original table slot.
+                    unsafe { view.take() }
+                })))
+            })
+            .unwrap_or(quota::Admission::Empty)
     }
 
     fn try_key(&self, index: usize) -> Result<Key, resident::Bounds<usize>> {
@@ -124,14 +123,14 @@ impl<'a, W> Slot<'a, W> {
         token.try_keep(self, value)
     }
 
-    pub fn take_one(self) -> resident::Take<W> {
+    pub fn take_one(self) -> Option<W> {
         let view = self.view();
         if !self.key.0.is_linked(view.hook()) {
-            return resident::Take::Empty;
+            return None;
         }
         self.unlink().park();
         // SAFETY: the linked slot owns one initialized value; unlink removed its only delivery.
-        resident::Take::Item(unsafe { view.take() })
+        Some(unsafe { view.take() })
     }
 }
 

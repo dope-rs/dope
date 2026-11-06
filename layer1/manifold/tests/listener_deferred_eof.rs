@@ -96,7 +96,7 @@ fn shutdown_keeps_close() {
                     hash,
                     &mut session,
                     session::Scope::driver,
-                    |listener, session| {
+                    |listener, _wait, session| {
                         let addr = listener.local_addr();
                         let result = session.with_quiesce(
                             &mut finish,

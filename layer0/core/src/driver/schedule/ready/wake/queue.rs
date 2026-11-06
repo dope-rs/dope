@@ -198,10 +198,7 @@ impl<'d, L> Queue<'d, L> {
             self.driver,
             work,
             || self.inner.is_draining() && self.inner.has_waiters(),
-            || match self.inner.drain_next() {
-                resident::Drain::Done => None,
-                resident::Drain::Item(target) => Some(Step::Item(target)),
-            },
+            || self.inner.drain_next().map(Step::Item),
         )
     }
 }

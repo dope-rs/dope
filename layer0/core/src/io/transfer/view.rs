@@ -8,6 +8,10 @@ use crate::io::transfer;
 pub struct View<'a>(bytes::Prefix<'a, { transfer::MAX_BYTES }>);
 
 impl<'a> View<'a> {
+    pub(crate) const fn from_prefix(bytes: bytes::Prefix<'a, { transfer::MAX_BYTES }>) -> Self {
+        Self(bytes)
+    }
+
     #[must_use]
     pub fn prefix(bytes: &'a [u8]) -> Self {
         Self(bytes::Prefix::new(bytes))

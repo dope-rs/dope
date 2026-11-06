@@ -2,7 +2,7 @@ use std::{convert, pin};
 
 use dope_core::{
     driver::{
-        retained,
+        self,
         route::{Identity, table::conn::Capacity},
         schedule,
     },
@@ -29,7 +29,7 @@ use crate::{
             ingress::{self, Dispatch, batch},
         },
     },
-    network::listener::{self, handler},
+    network::listener::{self, conn, handler},
 };
 
 pub(in crate::network::listener) trait Policy<'w, 'd: 'w, ID: Identity, A>:
@@ -37,27 +37,14 @@ pub(in crate::network::listener) trait Policy<'w, 'd: 'w, ID: Identity, A>:
 where
     A: handler::Application<'d, ID>,
 {
-    fn send<'listener, 'turn, 'driver, 'region, 'owner, E>(
-        work: send::Pending<
-            'listener,
-            '_,
-            '_,
-            '_,
-            'turn,
-            'driver,
-            'region,
-            'owner,
-            'w,
-            'd,
-            ID,
-            A,
-            E,
-        >,
-    ) where
-        'd: 'owner,
-        E: env::Spec<Wire = A::Wire>,
-    {
-        <A::Send as send::Policy<'d, ID, A>>::settle(work);
+    const SEND: bool = <A::Send as send::Policy<'d, ID, A>>::NOTIFY;
+
+    fn send(
+        app: pin::Pin<&mut A>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
+        <A::Send as send::Policy<'d, ID, A>>::send(app, scope, driver);
     }
 
     /// Retains no receive credit unless this policy requires it.
@@ -73,13 +60,9 @@ where
     fn receive<'input, E>(
         port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
         key: pool::Key<'d, ID>,
-        input: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> crate::Receiving<'w, 'd, A::Wire, Self>
     where
         E: env::Spec<Wire = A::Wire>,
@@ -91,7 +74,7 @@ fn receive_borrowed<'input, 'w, 'd, ID: Identity, A, E>(
     key: pool::Key<'d, ID>,
     items: Items<'input, A::Wire>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> ingress::Progress<convert::Infallible>
 where
     'd: 'w,
@@ -127,13 +110,9 @@ where
     fn receive<'input, E>(
         port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
         key: pool::Key<'d, ID>,
-        batch: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
         E: env::Spec<Wire = A::Wire>,
@@ -153,13 +132,9 @@ where
     fn receive<'input, E>(
         port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
         key: pool::Key<'d, ID>,
-        batch: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
         E: env::Spec<Wire = A::Wire>,
@@ -178,41 +153,22 @@ where
         + input::Mode<A::Wire, Kind = input::Coupled>
         + Dispatch<A::Wire, Strategy = ingress::Batched>,
 {
-    fn send<'listener, 'turn, 'driver, 'region, 'owner, E>(
-        work: send::Pending<
-            'listener,
-            '_,
-            '_,
-            '_,
-            'turn,
-            'driver,
-            'region,
-            'owner,
-            'w,
-            'd,
-            ID,
-            A,
-            E,
-        >,
-    ) where
-        'd: 'owner,
-        E: env::Spec<Wire = A::Wire>,
-    {
-        if let Some(work) = work.gate() {
-            <A::Send as send::Policy<'d, ID, A>>::settle(work);
-        }
+    const SEND: bool = true;
+
+    fn send(
+        app: pin::Pin<&mut A>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
+        send::gated(app, scope, driver);
     }
 
     fn receive<'input, E>(
         port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
         key: pool::Key<'d, ID>,
-        batch: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
         E: env::Spec<Wire = A::Wire>,
@@ -227,7 +183,7 @@ fn receive_scoped<'e, 'w, 'd: 'w, ID: Identity, A, E>(
     key: pool::Key<'d, ID>,
     mut chunk: Chunk<'w, 'd, A::Wire, Disabled>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
 where
     A: handler::Scoped<'w, 'd, ID>,
@@ -270,13 +226,9 @@ where
     fn receive<'input, E>(
         port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
         key: pool::Key<'d, ID>,
-        chunk: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
     where
         E: env::Spec<Wire = A::Wire>,
@@ -295,29 +247,14 @@ where
         input::Mode<A::Wire, Kind = input::Scoped> + Dispatch<A::Wire, Strategy = ingress::Scope>,
     <GatedScoped as input::Mode<A::Wire>>::Kind: input::Replay<A::Wire>,
 {
-    fn send<'listener, 'turn, 'driver, 'region, 'owner, E>(
-        work: send::Pending<
-            'listener,
-            '_,
-            '_,
-            '_,
-            'turn,
-            'driver,
-            'region,
-            'owner,
-            'w,
-            'd,
-            ID,
-            A,
-            E,
-        >,
-    ) where
-        'd: 'owner,
-        E: env::Spec<Wire = A::Wire>,
-    {
-        if let Some(work) = work.gate() {
-            <A::Send as send::Policy<'d, ID, A>>::settle(work);
-        }
+    const SEND: bool = true;
+
+    fn send(
+        app: pin::Pin<&mut A>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
+        send::gated(app, scope, driver);
     }
 
     fn resident(app: &A, count: Capacity) -> Result<domain::Resident, crate::ConfigError> {
@@ -327,13 +264,9 @@ where
     fn receive<'input, E>(
         port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
         key: pool::Key<'d, ID>,
-        chunk: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
     where
         E: env::Spec<Wire = A::Wire>,
@@ -359,13 +292,9 @@ where
     fn receive<'input, E>(
         mut port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
         key: pool::Key<'d, ID>,
-        chunk: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
         E: env::Spec<Wire = A::Wire>,

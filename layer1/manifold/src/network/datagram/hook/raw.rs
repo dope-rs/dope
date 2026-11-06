@@ -1,7 +1,7 @@
 use std::pin;
 
 use dope_core::{
-    driver::{result, retained, route::Identity, schedule},
+    driver::{self, result, route::Identity, schedule},
     io::datagram::ReceiveError,
 };
 
@@ -26,7 +26,7 @@ where
     unsafe fn pre_park<'a, 'turn>(
         endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>>;
 }
 
@@ -53,7 +53,7 @@ where
     unsafe fn pre_park<'a, 'turn>(
         mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
         let this = endpoint.as_mut().project();
         let mut socket = this.socket;
@@ -86,7 +86,7 @@ where
     unsafe fn pre_park<'a, 'turn>(
         mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
         let this = endpoint.as_mut().project();
         let mut socket = this.socket;
@@ -120,7 +120,7 @@ where
     unsafe fn pre_park<'a, 'turn>(
         mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
         let mut this = endpoint.as_mut().project();
         let mut socket = this.socket;
@@ -155,7 +155,7 @@ where
     unsafe fn pre_park<'a, 'turn>(
         mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>> {
         let mut this = endpoint.as_mut().project();
         let mut socket = this.socket;
@@ -185,7 +185,7 @@ where
 fn submitted<'a, 'd, ID: Identity, H>(
     mut endpoint: pin::Pin<&'a mut Endpoint<'d, ID, H>>,
     result: Result<(), result::SubmitError>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> pin::Pin<&'a mut Endpoint<'d, ID, H>>
 where
     H: datagram::Ingress<'d, ID>,

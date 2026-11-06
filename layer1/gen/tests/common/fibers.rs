@@ -65,25 +65,19 @@ unsafe impl<'d> dispatch::raw::Manifold<'d> for Dummy {
     type PrePark = dispatch::raw::Plain;
     type Shutdown = dispatch::raw::Plain;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         self: Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         self: Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         self
     }
 }

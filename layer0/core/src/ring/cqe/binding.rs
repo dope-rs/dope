@@ -1,14 +1,13 @@
 use dope_sys::{
     io::{
         file,
-        reactor::complete::{Decode, Outcome as _, Packet as _, Value as _, resolve::Reclaimed},
+        reactor::complete::{Decode, Outcome as _, Packet as _, resolve::Reclaimed},
         socket,
     },
     kernel::Returned as _,
     probe::Stopped,
     table::token::host::Flight as _,
 };
-use o3::base::num::bounded;
 
 use crate::{
     Backend,
@@ -236,7 +235,6 @@ impl<'q, 'd> Binding<'q, 'd> {
     }
 
     fn accepted(&self, value: Value) -> Result<handles::Accepted, Violation> {
-        let value: bounded::U32<0, { i32::MAX as u32 }> = value.into();
         let slot = SlotIndex::try_from(value.get()).map_err(Violation::SlotIndex)?;
         let end = self.flight.driver().descriptors().domain().accept_cap();
         handles::Accepted::try_from((slot, end)).map_err(Violation::Descriptor)
@@ -262,7 +260,7 @@ impl<'q, 'd> Binding<'q, 'd> {
 
         let flow = self.packet.flow();
         let outcome = match self.packet.0.parts().outcome.decode() {
-            Decode::Value(value) if !value.is_zero() => {
+            Decode::Value(value) if value.get() != 0 => {
                 let vacant = match self.flight.driver().receive().owners().try_vacant() {
                     Ok(vacant) => vacant,
                     Err(cause) => return Err(self.reject(Violation::Provided(cause))),
@@ -270,7 +268,7 @@ impl<'q, 'd> Binding<'q, 'd> {
                 let Some(buffer) = self.packet.0.buffer_mut().take() else {
                     return Err(self.reject(Violation::Buffer));
                 };
-                let len = transfer::Len::from_bound(value.into());
+                let len = transfer::Len::from_bound(value);
                 let lease = match buffer.try_complete(len) {
                     Ok(token) => recv::Lease::new(token.bind(vacant)),
                     Err((buffer, actual, capacity)) => {
@@ -379,7 +377,7 @@ impl<'q, 'd> Binding<'q, 'd> {
         let empty = self.packet.0.buffer().is_none();
         let outcome = match self.packet.0.parts().outcome.decode() {
             Decode::Value(value) => {
-                if value.is_zero() != empty {
+                if (value.get() == 0) != empty {
                     return Err(self.reject(Violation::Buffer));
                 }
                 Ok(value)
@@ -394,10 +392,7 @@ impl<'q, 'd> Binding<'q, 'd> {
         };
         let flow = self.packet.flow();
         let echo = fault::Echo::new(self.flight.bind(proof).end(flow));
-        let result = outcome.map(|value| {
-            let value: bounded::U32<0, { i32::MAX as u32 }> = value.into();
-            value.get() as usize
-        });
+        let result = outcome.map(|value| value.get() as usize);
         Ok(Reclaimed {
             buffer: self.packet.0.into_parts().1,
             report: Some(io::Reclaimed::Recv { echo, result, flow }),

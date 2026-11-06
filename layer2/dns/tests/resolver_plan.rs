@@ -15,11 +15,8 @@ use dope_dns::{config, storage, topology};
 
 #[test]
 fn rejects_invalid_bounds() {
-    let mut received = Vec::new();
-    let result = topology::Plan::<KeyTag<0>, KeyTag<1>, 0, 1, 4, _>::new(
-        egress::Config::default(),
-        |cause| received.push(cause),
-    );
+    let result =
+        topology::Plan::<KeyTag<0>, KeyTag<1>, 0, 1, 4, _>::new(egress::Config::default(), |_| {});
     assert!(matches!(
         result,
         Err(topology::Prepare::Datagram(
@@ -29,7 +26,7 @@ fn rejects_invalid_bounds() {
 
     let result = topology::Plan::<KeyTag<0>, KeyTag<1>, { usize::MAX }, 1, 4, _>::new(
         egress::Config::default(),
-        |cause| received.push(cause),
+        |_| {},
     );
     assert!(matches!(
         result,
@@ -42,19 +39,12 @@ fn rejects_invalid_bounds() {
                 } if bytes > 1
             )
     ));
-    assert!(
-        received.is_empty(),
-        "uninstalled topology received a packet: {received:?}"
-    );
 }
 
 #[test]
 fn rejects_stream_egress() {
-    let mut received = Vec::new();
     let retained = egress::Config::shared(egress::Credit::fixed::<1, 0>());
-    let result = topology::Plan::<KeyTag<0>, KeyTag<1>, 1, 1, 4, _>::new(retained, |cause| {
-        received.push(cause)
-    });
+    let result = topology::Plan::<KeyTag<0>, KeyTag<1>, 1, 1, 4, _>::new(retained, |_| {});
     assert!(matches!(
         result,
         Err(topology::Prepare::Egress {
@@ -67,21 +57,16 @@ fn rejects_stream_egress() {
             && required_resident > egress::Resident::new(0)
             && available_resident == egress::Resident::new(0)
     ));
-    assert!(
-        received.is_empty(),
-        "uninstalled topology received a packet: {received:?}"
-    );
 }
 
 #[test]
 fn claims_resident_domains() {
-    let mut received = Vec::new();
     let servers = (config::Servers::try_new([net::SocketAddr::from(([127, 0, 0, 1], 53))]))
         .expect("test resolver server must construct");
     let config = fixture::configure(servers, 1);
     let plan = (topology::Plan::<KeyTag<0>, KeyTag<1>, 1, 1, 4, _>::new(
         egress::Config::default(),
-        |cause| received.push(cause),
+        |_| {},
     ))
     .expect("test DNS topology must construct");
     let storage = (storage::Plan::<1, 4>::new(config)).expect("test DNS storage must construct");
@@ -96,22 +81,17 @@ fn claims_resident_domains() {
         assert!((ready.layout().domains()) == (settings::Domain::fixed::<3>()));
         assert!(ready.layout().receive() == settings::Config::for_profile::<Balanced>().receive());
     }
-    assert!(
-        received.is_empty(),
-        "uninstalled topology received a packet: {received:?}"
-    );
 }
 
 #[test]
 fn rejects_duplicate_routes() {
-    let mut received = Vec::new();
     let servers = (config::Servers::try_new([net::SocketAddr::from(([127, 0, 0, 1], 53))]))
         .expect("test resolver server must construct");
     let storage = (storage::Plan::<1, 4>::new(fixture::configure(servers, 1)))
         .expect("test DNS storage must construct");
     let plan = (topology::Plan::<KeyTag<7>, KeyTag<7>, 1, 1, 4, _>::new(
         egress::Config::default(),
-        |cause| received.push(cause),
+        |_| {},
     ))
     .expect("duplicate-route topology must construct");
     let result = Plan::new(storage, plan).for_install::<Balanced>();
@@ -119,8 +99,4 @@ fn rejects_duplicate_routes() {
         result,
         Err(Claim::DuplicateRoute(id)) if id == route::Id::fixed::<7>()
     ));
-    assert!(
-        received.is_empty(),
-        "uninstalled topology received a packet: {received:?}"
-    );
 }

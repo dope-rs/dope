@@ -1,7 +1,6 @@
 mod branch;
 mod plan;
 mod policy;
-pub mod release;
 mod strategy;
 
 pub(in crate::link::pool::change) use branch::Branch;

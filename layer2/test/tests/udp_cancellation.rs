@@ -37,7 +37,7 @@ fn standalone_datagram_and_timeout() {
     let (count, source) = receiver.recv_from(&mut byte).expect("receive");
     assert_eq!(
         (count, source, byte),
-        (1, sender.local_addr().expect("source"), [b'a'])
+        (1, sender.local_addr().expect("source"), *b"a")
     );
     sender.send_to(b"b", address).expect("second send");
     assert_eq!(receiver.recv(&mut byte).expect("receive payload"), 1);

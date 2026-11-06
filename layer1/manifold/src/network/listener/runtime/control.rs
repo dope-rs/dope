@@ -1,7 +1,6 @@
 use std::{ops::ControlFlow, pin};
 
-use conn::deadline::Arm;
-use dope_core::driver::{retained, route, route::Identity, schedule, schedule::clock};
+use dope_core::driver::{self, route, route::Identity, schedule, schedule::clock};
 use dope_net::link::pool::{self, pending, recv};
 use o3::mem::quota;
 
@@ -15,7 +14,7 @@ pub(in crate::network::listener) fn admit_deadline<'w, 'd: 'w, ID: Identity, A, 
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     target: impl FnOnce() -> Option<route::Target<'d, ID>>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> ControlFlow<schedule::ready::Target<'d>>
 where
     A: handler::Application<'d, ID>,
@@ -50,7 +49,7 @@ where
 pub(in crate::network::listener) fn admit<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -85,7 +84,7 @@ pub(in crate::network::listener) fn admit<'w, 'd: 'w, ID: Identity, A, E>(
 pub(in crate::network::listener) fn shutdown<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -124,13 +123,15 @@ pub(in crate::network::listener) fn shutdown<'w, 'd: 'w, ID: Identity, A, E>(
 pub(in crate::network::listener) fn discard_slot<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     key: pool::Key<'d, ID>,
+    cause: conn::Failure,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
     if let Some(slot) = root.as_mut().project().owner.pool_mut().get_mut(key) {
+        slot.state.fail(cause);
         slot.discard();
     }
     close_slot(root, key, turn, driver);
@@ -140,7 +141,7 @@ pub(in crate::network::listener) fn receive_failed<'w, 'd: 'w, ID: Identity, A, 
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     failure: recv::Failure<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -161,7 +162,7 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     now: clock::Moment<'d>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -179,7 +180,13 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
 
         permit.run(|| match kind {
             Kind::Inbound | Kind::Send | Kind::Drain => {
-                discard_slot(root.as_mut(), key, turn.reborrow(), driver);
+                discard_slot(
+                    root.as_mut(),
+                    key,
+                    conn::Failure::Timeout(kind),
+                    turn.reborrow(),
+                    driver,
+                );
             }
             Kind::Absolute => {
                 let drain = {
@@ -187,7 +194,13 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                     this.owner.drain()
                 };
                 let Some(drain) = drain else {
-                    discard_slot(root.as_mut(), key, turn.reborrow(), driver);
+                    discard_slot(
+                        root.as_mut(),
+                        key,
+                        conn::Failure::Timeout(kind),
+                        turn.reborrow(),
+                        driver,
+                    );
                     return;
                 };
                 let drain = {
@@ -213,7 +226,13 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                         phase::close_ready(root.as_mut(), key, turn.reborrow(), driver);
                     }
                     Some(handler::Drain::Discard) => {
-                        discard_slot(root.as_mut(), key, turn.reborrow(), driver);
+                        discard_slot(
+                            root.as_mut(),
+                            key,
+                            conn::Failure::Timeout(kind),
+                            turn.reborrow(),
+                            driver,
+                        );
                     }
                     None => {}
                 }
@@ -222,7 +241,7 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                 enum Timeout {
                     Continue,
                     CloseAfter,
-                    Discard,
+                    Discard(conn::Failure),
                 }
                 let action = {
                     let mut this = root.as_mut().project();
@@ -232,19 +251,18 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                             egress.context(turn.reborrow().app()),
                             driver,
                         ) {
-                            handler::Timeout::Discard => Timeout::Discard,
+                            handler::Timeout::Discard => {
+                                Timeout::Discard(conn::Failure::Timeout(kind))
+                            }
                             handler::Timeout::CloseAfter => {
                                 egress.connection.end_discard();
                                 egress.connection.close_after();
                                 Timeout::CloseAfter
                             }
                             handler::Timeout::Continue(update) => {
-                                let arm = egress.connection.apply(update, now);
-                                match arm {
-                                    Arm::Armed => Timeout::Continue,
-                                    Arm::Disabled | Arm::Sealed | Arm::Overflow(_) => {
-                                        Timeout::Discard
-                                    }
+                                match egress.connection.apply(update, now) {
+                                    Ok(()) => Timeout::Continue,
+                                    Err(cause) => Timeout::Discard(conn::Failure::Deadline(cause)),
                                 }
                             }
                         },
@@ -252,7 +270,9 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                     }
                 };
                 match action {
-                    Timeout::Discard => discard_slot(root.as_mut(), key, turn.reborrow(), driver),
+                    Timeout::Discard(cause) => {
+                        discard_slot(root.as_mut(), key, cause, turn.reborrow(), driver)
+                    }
                     Timeout::CloseAfter => {
                         phase::close_ready(root.as_mut(), key, turn.reborrow(), driver)
                     }
@@ -268,7 +288,7 @@ pub(in crate::network::listener) fn close_slot<'w, 'd: 'w, ID: Identity, A, E>(
     root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     key: pool::Key<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,

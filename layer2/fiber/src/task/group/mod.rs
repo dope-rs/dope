@@ -162,7 +162,7 @@ where
                 initial = false;
                 (member, None)
             } else {
-                match context.as_ref().work().next(&mut drain) {
+                match context.as_ref().work().next(&mut drain, &mut ()) {
                     app::Next::Item(member, permit) => (member, Some(permit)),
                     app::Next::Empty => break,
                     app::Next::Exhausted(_) => {

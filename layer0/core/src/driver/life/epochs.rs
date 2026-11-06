@@ -94,6 +94,8 @@ const _: () = {
     assert!(mem::size_of::<Final<'static, 'static>>() == mem::size_of::<usize>());
 };
 
+type End<'d> = fixed::End<'d, Engine, Closed>;
+
 impl Closed {
     fn retired(_done: Recovered<'_, '_>) -> Self {
         Self { _seal: () }
@@ -108,20 +110,24 @@ impl Closed {
         (closed, state.local.backend)
     }
 
-    pub(super) fn retire<'d>(state: State<'d>) -> fixed::End<'d, Engine, Closed> {
+    pub(super) fn retire<'d>(state: State<'d>) -> End<'d> {
         let (closed, backend) = Self::finish(state);
         backend.finish(closed)
     }
 
     /// Retires a known failure while retaining the operation which has not run.
-    pub(super) fn reject<'d, E, O, T>(
+    pub(super) fn reject<'d, S, Q, E, O>(
         state: State<'d>,
+        source: &Q,
         cause: E,
         op: O,
-    ) -> (
-        Result<T, domain::Rejected<E, O>>,
-        fixed::End<'d, Engine, Closed>,
-    ) {
+    ) -> (Result<O::Output, domain::Rejected<E, O>>, End<'d>)
+    where
+        S: storage::Plan,
+        Q: ?Sized,
+        O: Operation<S, Q>,
+    {
+        op.rejected(source);
         let end = Self::retire(state);
         let error = domain::Rejected {
             cause,
@@ -136,7 +142,7 @@ impl Closed {
         store: Pin<&S::Output<'p, 'd>>,
         source: &'d Q,
         op: O,
-    ) -> (O::Output, fixed::End<'d, Engine, Closed>)
+    ) -> (O::Output, End<'d>)
     where
         S: storage::Plan + 'd,
         Q: ?Sized + 'd,

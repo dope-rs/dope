@@ -105,7 +105,7 @@ fn hoarder_yields_to_peer() {
                     &mut sess,
                     |sess| sess.driver(),
                     |server, sess| {
-                        let pool = store.handle();
+                        let pool = server.handle();
                         let result = sess.with_quiesce(&mut finish,
                             Host::new(server), scenario::TIMEOUT,
                             |mut app| -> Result<(), drive::Error> {

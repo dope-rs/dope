@@ -364,58 +364,56 @@ fn failure_uses_budget() {
 
     Setup::throughput().with_scope(
         |scope| {
-            scope.with_driver(|mut driver, mut control| {
-                Fixture::Queue(&drops)
-                    .try_with(driver.region_token().proof(), |state| {
-                        let lane = state.arena.try_lane(LaneIndex::ZERO);
-                        let lane = (lane).expect("required fixture outcome");
-                        let mut replies = [const { recv::Response::<_, Never>::new() }; 3];
-                        for response in &mut replies {
-                            assert!((response.try_attach(driver.region_token(), lane)) == (Ok(())));
-                        }
-                        let cause = Cause::new(17, &drops);
-                        for expected in [2, 1, 0] {
-                            let turn = control.begin();
-                            let measure = Tracker::begin();
-                            let progress =
-                                turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
-                                    let progress = Retirement::new(driver.region_token()).fail(
+            let (_, mut driver, mut control) = scope.split();
+            Fixture::Queue(&drops)
+                .try_with(driver.region_token().proof(), |state| {
+                    let lane = state.arena.try_lane(LaneIndex::ZERO);
+                    let lane = (lane).expect("required fixture outcome");
+                    let mut replies = [const { recv::Response::<_, Never>::new() }; 3];
+                    for response in &mut replies {
+                        assert!((response.try_attach(driver.region_token(), lane)) == (Ok(())));
+                    }
+                    let cause = Cause::new(17, &drops);
+                    for expected in [2, 1, 0] {
+                        let turn = control.begin();
+                        let measure = Tracker::begin();
+                        let progress = turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                            let progress = Retirement::new(driver.region_token()).fail(
+                                share.work(),
+                                lane,
+                                &cause,
+                            );
+                            if expected == 0 {
+                                assert_eq!(share.work().remaining(), 0);
+                                assert!(
+                                    Retirement::new(driver.region_token()).fail(
                                         share.work(),
                                         lane,
                                         &cause,
-                                    );
-                                    if expected == 0 {
-                                        assert_eq!(share.work().remaining(), 0);
-                                        assert!(
-                                            Retirement::new(driver.region_token()).fail(
-                                                share.work(),
-                                                lane,
-                                                &cause,
-                                            ) == progress
-                                        );
-                                    }
-                                    progress
-                                });
-                            assert_eq!(measure.finish().allocations, 0);
-                            if expected == 0 {
-                                assert!(progress == Progress::Complete(Depth::ZERO));
-                            } else {
-                                assert!(matches!(progress, Progress::Pending(depth)
-                                    if depth.get() == expected));
+                                    ) == progress
+                                );
                             }
-                            assert_eq!(drops.count(), 0);
+                            progress
+                        });
+                        assert_eq!(measure.finish().allocations, 0);
+                        if expected == 0 {
+                            assert!(progress == Progress::Complete(Depth::ZERO));
+                        } else {
+                            assert!(matches!(progress, Progress::Pending(depth)
+                                    if depth.get() == expected));
                         }
-                        let turn = control.begin();
-                        assert!(
-                            (Retirement::new(driver.region_token()).fail(
-                                turn.turn().app(),
-                                lane,
-                                &cause
-                            )) == (Progress::Complete(Depth::ZERO))
-                        );
-                    })
-                    .expect("reply storage construction");
-            });
+                        assert_eq!(drops.count(), 0);
+                    }
+                    let turn = control.begin();
+                    assert!(
+                        (Retirement::new(driver.region_token()).fail(
+                            turn.turn().app(),
+                            lane,
+                            &cause
+                        )) == (Progress::Complete(Depth::ZERO))
+                    );
+                })
+                .expect("reply storage construction");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,

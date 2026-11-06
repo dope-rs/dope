@@ -39,6 +39,9 @@ type Inbound<'p, 'w, 'd, ID, P> = pool::Connections<
 
 type Ingress<W, M> = <M as ingress::Dispatch<W>>::Strategy;
 
+type Incoming<'input, 'w, 'd, W, M> =
+    <Ingress<W, M> as ingress::Strategy<W, M>>::Value<'input, 'w, 'd>;
+
 type Receiving<'w, 'd, W, M> =
     ingress::Progress<<Ingress<W, M> as ingress::Strategy<W, M>>::Pending<'w, 'd>>;
 

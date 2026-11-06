@@ -50,7 +50,7 @@ impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
         token: &mut region::Token<region::Identity<'d>>,
         value: V,
     ) -> Self {
-        let (index, claim, value) = vacancy.reserve(token, claim, value);
+        let index = vacancy.reserve(token);
         Self::new(claim, index, value)
     }
 

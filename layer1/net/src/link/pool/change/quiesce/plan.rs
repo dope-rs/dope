@@ -98,7 +98,7 @@ where
                     Err(Absent) => entry.get_mut().engine.operations.recv.exhaustion().cancel(),
                 }
                 free(&mut self.egress, entry.get().key, finish);
-                entry.remove().send.release()
+                entry.remove().control.send.release()
             };
             if let Some(release) = <M::Ingress as Finish<W>>::release::<ID>(released) {
                 release.call(&mut self.runtime);

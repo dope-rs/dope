@@ -1,7 +1,7 @@
 use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -53,7 +53,7 @@ impl Body {
     fn submit<'d, ID: route::Identity>(
         &self,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State, Payload<'d>>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let event = Event::Submit(*conn.state());
         self.events.push(event);
@@ -138,7 +138,7 @@ impl<'d, ID: route::Identity> send::Drive<'d, ID> for Body {
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State, Self::Egress>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         match *conn.state() {
             State::Done => conn.close_after(),
@@ -154,7 +154,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Body {
         self: Pin<&mut Self>,
         conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State, Self::Egress>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let event = Event::Chunk(chunk.as_ref().len());
         self.events.push(event);

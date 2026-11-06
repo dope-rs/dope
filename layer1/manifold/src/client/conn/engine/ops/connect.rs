@@ -2,7 +2,7 @@ use std::pin;
 
 use attempt::Report as _;
 use dope_core::{
-    driver::{retained, route::Identity, schedule},
+    driver::{self, route::Identity, schedule},
     io::event::net::{connect, socket},
 };
 use dope_net::link::event;
@@ -36,14 +36,14 @@ where
         self: pin::Pin<&mut Self>,
         done: socket::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     fn try_connect(
         self: pin::Pin<&mut Self>,
         done: connect::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), connect::Completion<'d>>;
 }
 
@@ -67,7 +67,7 @@ where
         mut self: pin::Pin<&mut Self>,
         done: socket::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let step = {
             let this = self.as_mut().project();
@@ -97,7 +97,7 @@ where
         mut self: pin::Pin<&mut Self>,
         done: connect::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), connect::Completion<'d>> {
         let now = driver.driver_ref().clock().now();
         let step = self.as_mut().try_finish(done, driver)?;

@@ -62,12 +62,12 @@ impl<'queue, 'token, 'p, 'd, B, D: demand::Mode> Vacant<'queue, 'token, 'p, 'd, 
         let (token, slots) = match shape {
             Shape::First => {
                 let claim = credit::Claim::from(credit);
-                let (token, index, claim, ()) = slots.reserve(claim, ());
+                let (token, index) = slots.reserve();
                 (token, Slots::First(pool::Vacant::new(claim, index, ())))
             }
             Shape::Second => {
                 let claim = credit::Claim::from(credit);
-                let (token, index, claim, ()) = slots.reserve(claim, ());
+                let (token, index) = slots.reserve();
                 (token, Slots::Second(pool::Vacant::new(claim, index, ())))
             }
             Shape::Pair(pair) => {
@@ -80,8 +80,7 @@ impl<'queue, 'token, 'p, 'd, B, D: demand::Mode> Vacant<'queue, 'token, 'p, 'd, 
                 };
                 let first = credit::Claim::from(credit.split_pair(pair));
                 let second = credit::Claim::from(credit);
-                let (token, (idx, first, ()), (next, second, ())) =
-                    slots.reserve((first, ()), (second, ()));
+                let (token, idx, next) = slots.reserve();
                 (
                     token,
                     Slots::Pair(

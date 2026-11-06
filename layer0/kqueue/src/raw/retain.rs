@@ -44,11 +44,9 @@ where
                     &mut state.write(),
                     key,
                     slot,
-                    || {
-                        <<C::Context as Exec>::Send as retry::raw::Send<
-                            <C::Context as Exec>::Writer,
-                        >>::bytes(input)
-                    },
+                    <<C::Context as Exec>::Send as retry::raw::Send<
+                        <C::Context as Exec>::Writer,
+                    >>::bytes(input),
                     vacant,
                 )
             },
@@ -57,11 +55,9 @@ where
                     &mut state.write(),
                     key,
                     slot,
-                    || {
-                        <<C::Context as Exec>::Send as retry::raw::Send<
-                            <C::Context as Exec>::Writer,
-                        >>::message(msg)
-                    },
+                    <<C::Context as Exec>::Send as retry::raw::Send<
+                        <C::Context as Exec>::Writer,
+                    >>::message(msg),
                     vacant,
                 )
             },

@@ -103,8 +103,7 @@ fn check_packet<'d>(this: &mut Packet, event: handler::Event<'_, '_, '_, '_, 'd>
             let rejected = socket
                 .as_mut()
                 .queue_packet(packet, source)
-                .err()
-                .expect("a packet retains its complete receive slot");
+                .expect_err("a packet retains its complete receive slot");
             let (packet, cause) = rejected.into_parts();
             assert!(matches!(cause, datagram::RejectCause::Resident { .. }));
             assert_eq!(packet.as_ref(), []);

@@ -26,12 +26,6 @@ pub struct Root<'d>(ready::Key<'d>);
 #[repr(transparent)]
 pub struct RootId(u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootError {
-    Foreign,
-    Invalid(task::Error),
-}
-
 impl<'d> Root<'d> {
     pub(super) fn initial(parent: task::Parent<'d>) -> Result<Self, task::Error> {
         parent.validate(task::MAX_WAKE_HOPS - 1)?;
@@ -61,11 +55,8 @@ impl<'d, Tag, const N: usize> Pool<'d, Tag, N> {
         })
     }
 
-    pub fn try_root(&self, parent: task::Parent<'d>) -> Result<Root<'d>, RootError> {
-        if !parent.belongs_to(self.driver) {
-            return Err(RootError::Foreign);
-        }
-        Root::initial(parent).map_err(RootError::Invalid)
+    pub fn try_root(&self, parent: task::Parent<'d>) -> Result<Root<'d>, task::Error> {
+        Root::initial(parent)
     }
 
     pub fn parent(&self, root: Root<'d>) -> task::Parent<'d> {

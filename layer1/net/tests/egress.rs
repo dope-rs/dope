@@ -1,4 +1,4 @@
-use dope_net::link::egress::{self, data, data::compose::Either};
+use dope_net::link::egress::{self, data::compose::Either};
 use dope_test::alloc::Tracker;
 use o3::buffer::{
     self,
@@ -72,20 +72,6 @@ fn unbounded_moves_owner() {
     let source = bounded.into_inner().into_inner();
     assert_eq!(source.as_ptr(), bytes.as_ptr());
     assert_eq!(source, bytes);
-}
-
-#[test]
-fn preserves_bound_layout() {
-    use std::mem;
-
-    assert_eq!(
-        mem::size_of::<egress::Excess<resident::Shared<'static>>>(),
-        mem::size_of::<egress::Load<resident::Shared<'static>>>() + mem::size_of::<usize>(),
-    );
-    assert_eq!(
-        mem::size_of::<egress::Load<data::Bound<resident::Shared<'static>, bound::AtMost<4096>>>>(),
-        mem::size_of::<egress::Load<resident::Shared<'static>>>(),
-    );
 }
 
 #[test]

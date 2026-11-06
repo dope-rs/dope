@@ -226,6 +226,7 @@ impl pipe::Pipe for Kqueue {
 
 impl File for Kqueue {
     type Options = Options;
+    type Metadata = raw::Metadata;
     type Request<'a> = file::Request<'a>;
 }
 

@@ -193,7 +193,6 @@ pub mod contract {
     use dope_core::{
         driver::{
             life::{self, recovery},
-            retained,
             route::{KeyTag, Tag, table::conn},
             settings::{Config, FileSlots},
         },
@@ -495,9 +494,6 @@ pub mod contract {
                                                 return Err(Error::Unavailable);
                                             }
                                         }
-                                        let owner =
-                                            retained::raw::Owner::from_driver(driver.driver_ref());
-                                        let mut driver = retained::Context::new(driver, owner);
                                         match pool
                                             .sender(key)
                                             .ok_or(Error::Sender)?
@@ -528,12 +524,9 @@ pub mod contract {
                                     let mut buffered = false;
                                     {
                                         let mut driver = scope.context();
-                                        let owner =
-                                            retained::raw::Owner::from_driver(driver.driver_ref());
-                                        let mut driver =
-                                            retained::Context::new(driver.reborrow(), owner);
                                         let settled = pool.settle(done).settle_owned(
                                             &mut driver,
+                                            |_| {},
                                             |slot, _| {
                                                 buffered = matches!(
                                                     slot.send_status().retention(),

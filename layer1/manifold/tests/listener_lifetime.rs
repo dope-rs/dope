@@ -27,7 +27,13 @@ use o3::base::time::Positive;
 
 #[test]
 fn persistent_and_clear_deadline() {
-    for (expiry, count) in [(Expiry::Discard, 0), (Expiry::Clear, 1)] {
+    for (expiry, count) in [
+        (Expiry::Discard, 0),
+        (Expiry::Clear, 1),
+        (Expiry::Overflow, 1),
+        (Expiry::Disabled, 1),
+    ] {
+        let closes = u32::from(matches!(expiry, Expiry::Overflow | Expiry::Disabled));
         let mut finish = Completion::new();
         let accept = Gate::new();
         let expire = Gate::new();
@@ -60,11 +66,15 @@ fn persistent_and_clear_deadline() {
                     if count != 0 {
                         reached(case.try_wait(&expire, count), expire.hits(), count);
                     }
-                    case.try_pause(Duration::from_millis(50))
-                        .expect("drive pause");
+                    if closes != 0 {
+                        reached(case.try_wait(&closed, closes), closed.hits(), closes);
+                    } else {
+                        case.try_pause(Duration::from_millis(50))
+                            .expect("drive pause");
+                    }
                     assert_eq!(expire.hits(), count);
                     assert_eq!(begun.hits(), 0);
-                    assert_eq!(closed.hits(), 0);
+                    assert_eq!(closed.hits(), closes);
                     assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
@@ -357,7 +367,7 @@ fn retained_native_input_cannot_cancel_expired_application_deadline() {
                         hash,
                         &mut session,
                         session::Scope::driver,
-                        |listener, session| {
+                        |listener, _wait, session| {
                             let addr = listener.local_addr();
                             let start = session.driver().driver_ref().clock().now().into();
                             let expired = session

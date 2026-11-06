@@ -13,6 +13,7 @@ pub struct Manual<'app, 'life: 'app, 'd: 'life, D: executor::raw::Layout<'d>, Q 
 impl<'app, 'life: 'app, 'd: 'life, D, Q> Manual<'app, 'life, 'd, D, Q>
 where
     D: executor::raw::App<'d>,
+    Q: executor::Startup,
 {
     pub fn drive<R>(
         &mut self,

@@ -1,7 +1,7 @@
 use std::{mem, ops, pin, ptr};
 
 use dope_core::{
-    driver::{retained, schedule, settings},
+    driver::{self, schedule, settings},
     io,
 };
 use o3::base::cell::region;
@@ -83,23 +83,23 @@ where
         )
     }
 
-    unsafe fn park<'call, 'driver, 'turn, 'root>(
+    unsafe fn park<'call, 'driver, 'turn>(
         app: pin::Pin<&'call mut Self>,
         plan: &mut Self::ParkPlan,
-        park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         // SAFETY: this bound retains the same prepared plan and pinned pair.
         unsafe { forward::park(app, plan, park) }
     }
 
-    unsafe fn activate<'call, 'driver, 'turn, 'root>(
+    unsafe fn activate<'call, 'driver, 'turn>(
         app: pin::Pin<&'call mut Self>,
-        activate: executor::raw::Activate<'driver, 'turn, 'root, 'd>,
+        activate: executor::raw::Activate<'driver, 'turn, 'd>,
     ) -> bool
     where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         // SAFETY: this bound retains the installed pair and its wake routes.
         unsafe { forward::activate(app, activate) }
@@ -127,13 +127,9 @@ where
         forward::install(call)
     }
 
-    fn dispatch<'call, 'driver, 'turn, 'root>(
-        call: executor::raw::Dispatch<'call, 'driver, 'turn, 'root, 'd, Self>,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root,
-    {
+    fn dispatch<'call, 'driver, 'turn>(
+        call: executor::raw::Dispatch<'call, 'driver, 'turn, 'd, Self>,
+    ) -> ops::ControlFlow<io::Event<'d>> {
         forward::dispatch(call)
     }
 
@@ -157,12 +153,9 @@ where
         )
     }
 
-    fn shutdown<'call, 'turn, 'driver, 'owner>(
-        call: executor::raw::Shutdown<'call, 'turn, 'driver, 'owner, 'd, Self>,
-    ) -> executor::raw::Shutdown<'call, 'turn, 'driver, 'owner, 'd, Self>
-    where
-        'd: 'owner,
-    {
+    fn shutdown<'call, 'turn, 'driver>(
+        call: executor::raw::Shutdown<'call, 'turn, 'driver, 'd, Self>,
+    ) -> executor::raw::Shutdown<'call, 'turn, 'driver, 'd, Self> {
         let (mut app, turn, driver) = call.into_parts();
         let tail = app.as_mut().project().inner.project().tail;
         let call = executor::raw::Shutdown::new(tail, turn, driver);
@@ -234,7 +227,7 @@ where
     fn begin(
         self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         executor::raw::Drain::begin(self.project().inner, turn, driver);
     }
@@ -249,7 +242,7 @@ where
     fn force(
         self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         executor::raw::Drain::force(self.project().inner, turn, driver);
     }

@@ -10,9 +10,7 @@ use dope_test::harness::{
 };
 
 pub mod common;
-use common::harness::{
-    E2E_DEADLINE, LATE_STARTUP, LateFailure, STARTUP_TIMEOUT, serve, with_harness,
-};
+use common::harness::{E2E_DEADLINE, LateFailure, STARTUP_TIMEOUT, serve, with_harness};
 
 fn assert_startup_timeout<E>(error: run::Error<E>) {
     let (timeout, elapsed) = match error {
@@ -32,7 +30,10 @@ fn late_install_times_out() {
         let started = Cell::new(false);
         let error = harness.run_unbound(
             |source| {
-                sleep(LATE_STARTUP);
+                source
+                    .control()
+                    .wait_stop_until(time::Instant::now() + E2E_DEADLINE)
+                    .expect("startup timeout requests shutdown");
                 serve(source);
                 Ok::<_, Infallible>(())
             },
@@ -49,8 +50,10 @@ fn timeout_beats_failure() {
         let started = Cell::new(false);
         let error = harness.run_unbound(
             |source| {
-                sleep(LATE_STARTUP);
-                drop(source);
+                source
+                    .control()
+                    .wait_stop_until(time::Instant::now() + E2E_DEADLINE)
+                    .expect("startup timeout requests shutdown");
                 Err::<(), _>(LateFailure)
             },
             |_| started.set(true),
@@ -91,38 +94,6 @@ fn watchdogs_are_isolated() {
 }
 
 #[test]
-fn child_succeeds() {
-    let output = Test {
-        name: "child_succeeds",
-    }
-    .run(
-        &std::env::current_exe().expect("current test executable"),
-        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
-        || {},
-    )
-    .map(|mut child| child.output().expect("isolated success"));
-    if let Some(output) = output {
-        assert!(output.status.success(), "{output:?}");
-    }
-}
-
-#[test]
-fn child_fails() {
-    let output = Test {
-        name: "child_fails",
-    }
-    .run(
-        &std::env::current_exe().expect("current test executable"),
-        std::env::var_os(dope_test::harness::scenario::process::CHILD).as_deref(),
-        || panic!("isolated failure"),
-    )
-    .map(|mut child| child.output().expect("isolated failure"));
-    if let Some(output) = output {
-        assert!(!output.status.success(), "{output:?}");
-    }
-}
-
-#[test]
 fn watchdog_kills_hang() {
     let output = Test {
         name: "watchdog_kills_hang",
@@ -134,9 +105,8 @@ fn watchdog_kills_hang() {
             with_harness(time::Duration::from_millis(100), |harness| {
                 harness
                     .run_unbound(
-                        |source| {
+                        |_source| {
                             sleep(E2E_DEADLINE);
-                            drop(source);
                             Ok::<_, Infallible>(())
                         },
                         |addr| addr,

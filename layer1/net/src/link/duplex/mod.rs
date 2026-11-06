@@ -14,7 +14,7 @@ use dope_core::{
     driver::{
         self,
         receive::{Absent, Registration, Stale},
-        retained::{self, flight},
+        retained::flight,
         route,
         schedule::ready,
     },
@@ -77,7 +77,7 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
         addr: &A,
         target: route::Target<'d, ID>,
         flights: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> setup::Submission {
         let (next, step) = self.establish.take().created(made, opts, |fd, opts| {
             link::Connect::new(fd, addr, target).submit(flights, driver.reborrow(), opts)

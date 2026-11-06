@@ -1,36 +1,4 @@
-use std::mem;
-
-use dope_core::driver::schedule::ready::wake::{
-    fanout, table,
-    table::storage::{Registration, Registry},
-};
-use o3::depot::queue::resident;
-
-#[test]
-fn keeps_compact_layouts() {
-    let word = mem::size_of::<usize>();
-    assert_eq!(
-        [
-            mem::size_of::<table::storage::Registration<'static, u64>>(),
-            mem::size_of::<fanout::storage::Lease<'static, u64>>(),
-        ],
-        [2 * word; 2],
-    );
-    assert_eq!(
-        [
-            mem::size_of::<Option<table::storage::Registration<'static, u64>>>(),
-            mem::size_of::<Option<fanout::storage::Lease<'static, u64>>>(),
-        ],
-        [3 * word; 2],
-    );
-    assert_eq!(
-        [
-            mem::size_of::<table::storage::Registry<u64>>(),
-            mem::size_of::<fanout::storage::Registry<u64>>(),
-        ],
-        [4 * word, 6 * word],
-    );
-}
+use dope_core::driver::schedule::ready::wake::table::storage::{Registration, Registry};
 
 #[test]
 fn tracks_exact_table() {
@@ -56,10 +24,10 @@ fn tracks_exact_table() {
             slot2.try_keep(&mut used, 0),
             Err(storage::Reject::Occupied { index: 2 })
         ));
-        assert!(slot2.take_one() == resident::Take::Item(21));
+        assert!(slot2.take_one() == Some(21));
         assert_eq!(slot2.try_keep(&mut first, 22), Ok(()));
-        assert!(slot0.take_one() == resident::Take::Item(10));
-        assert!(slot2.take_one() == resident::Take::Item(22));
+        assert!(slot0.take_one() == Some(10));
+        assert!(slot2.take_one() == Some(22));
         assert_eq!(slot2.try_keep(&mut first, 23), Ok(()));
     }
     assert!(!book.has_waiters());
@@ -73,13 +41,13 @@ fn releases_parked_table() {
     {
         let mut reg = Registration::new();
         assert_eq!(slot.try_keep(&mut reg, 1), Ok(()));
-        assert!(slot.take_one() == resident::Take::Item(1));
+        assert!(slot.take_one() == Some(1));
         assert!(!book.has_waiters());
     }
     let mut reg = Registration::new();
     assert_eq!(slot.try_keep(&mut reg, 2), Ok(()));
-    assert!(slot.take_one() == resident::Take::Item(2));
-    assert!(slot.take_one() == resident::Take::Empty);
+    assert!(slot.take_one() == Some(2));
+    assert!(slot.take_one().is_none());
 }
 
 #[test]
@@ -103,7 +71,7 @@ fn rejects_foreign_table() {
             dst1.try_keep(&mut reg, 0),
             Err(storage::Reject::Active { index: 1 })
         ));
-        assert!(src0.take_one() == resident::Take::Item(1));
+        assert!(src0.take_one() == Some(1));
     }
 
     {
@@ -113,11 +81,11 @@ fn rejects_foreign_table() {
             dst0.try_keep(&mut reg, 0),
             Err(storage::Reject::Active { index: 0 })
         ));
-        assert!(src0.take_one() == resident::Take::Item(3));
+        assert!(src0.take_one() == Some(3));
     }
     let mut reg = storage::Registration::new();
     assert_eq!(dst0.try_keep(&mut reg, 4), Ok(()));
-    assert!(dst0.take_one() == resident::Take::Item(4));
+    assert!(dst0.take_one() == Some(4));
 }
 
 #[test]

@@ -17,17 +17,15 @@ impl<'s, 'arena, 'credits, 'region, 'a> recv::Extract<'s, 'arena, 'credits, 'reg
 {
     type Output = Counted<'a>;
 
-    type Context = &'a Cell<bool>;
+    type Context = &'a Cell<(bool, usize)>;
 
     fn extract(
-        enabled: &Self::Context,
+        state: &Self::Context,
         slot: &mut reply::Slot<'_, 's, 'arena, 'credits, 'region, Counted<'a>>,
     ) -> Option<Self::Output> {
-        if enabled.get() {
-            slot.pop_error()
-        } else {
-            None
-        }
+        let (enabled, polls) = state.get();
+        state.set((enabled, polls + 1));
+        if enabled { slot.pop_error() } else { None }
     }
 }
 

@@ -27,7 +27,7 @@ pub(crate) fn generate(app: &Spec) -> proc_macro2::TokenStream {
             fn begin(
                 self: ::core::pin::Pin<&mut Self>,
                 #vturn: #core::driver::schedule::Turn<'_, #lifetime>,
-                #vdriver: &mut #core::driver::retained::Context<'_, '_, #lifetime>,
+                #vdriver: &mut #core::driver::Context<'_, #lifetime>,
             ) {
                 #runtime::executor::raw::Drain::begin(
                     self.project().#field,
@@ -51,7 +51,7 @@ pub(crate) fn generate(app: &Spec) -> proc_macro2::TokenStream {
             fn force(
                 self: ::core::pin::Pin<&mut Self>,
                 #vturn: #core::driver::schedule::Turn<'_, #lifetime>,
-                #vdriver: &mut #core::driver::retained::Context<'_, '_, #lifetime>,
+                #vdriver: &mut #core::driver::Context<'_, #lifetime>,
             ) {
                 #runtime::executor::raw::Drain::force(
                     self.project().#field,

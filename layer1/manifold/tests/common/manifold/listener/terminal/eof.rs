@@ -2,7 +2,7 @@ use std::{cell::Cell, convert, num, pin::Pin, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
-        retained,
+        self,
         route::Identity,
         schedule::{clock, ready::task::owner::Identity as _},
     },
@@ -89,7 +89,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
     fn timeout(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> handler::Timeout<'d> {
         if matches!(*conn.state(), State::Eof) && self.finish.hits() != 0 {
             *conn.state_mut() = State::Closed;
@@ -113,8 +113,8 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Shared>,
         _: receive::End,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> handler::Eof {
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
         let this = self.get_mut();
         let (lane, epoch) = conn.id().parts();
         this.events.push(Event::Generation(lane, epoch));
@@ -130,7 +130,6 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
                 },
             )));
         }
-        handler::Eof::Hold
     }
 
     fn close_gate(
@@ -227,7 +226,7 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, State, Shared>,
         chunk: scoped::Input<'_, 'w, 'd, Wire>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         this.ready.hit();

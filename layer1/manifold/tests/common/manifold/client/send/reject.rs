@@ -164,10 +164,10 @@ impl<'d> Source<'d> for Reject<'_> {
         }
         let value = load(b"xx");
         let outcome = match turn.admit(value) {
-            request::Admission::Rejected(rejected) => Ok(rejected),
-            request::Admission::Ready(_) => Err(Error::AdmissionReady),
-            request::Admission::Exhausted(_) => Err(Error::AdmissionExhausted),
-            request::Admission::Saturated(_) => Err(Error::AdmissionSaturated),
+            Ok(request::Admission::Rejected(rejected)) => Ok(rejected),
+            Ok(request::Admission::Ready(_)) => Err(Error::AdmissionReady),
+            Err(_) => Err(Error::AdmissionExhausted),
+            Ok(request::Admission::Saturated(_)) => Err(Error::AdmissionSaturated),
         };
         self.pending.set(false);
         let rejected = match outcome {

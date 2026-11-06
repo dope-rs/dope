@@ -2,7 +2,7 @@ use std::{net::SocketAddr, pin::Pin};
 
 use dope_core::{
     driver::{
-        retained,
+        self,
         route::KeyTag,
         schedule::{self, app, clock},
     },
@@ -111,7 +111,7 @@ where
         socket: Pin<&mut Socket<'d, KeyTag<0>, pool::Cursor, M>>,
         now: clock::Moment<'d>,
         work: app::Work<'turn, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         let this = self.get_mut();
         (this.callback)(&mut this.state, Event::Park(socket, now, work));

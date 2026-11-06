@@ -9,6 +9,7 @@ pub(super) fn run<'app, 'd: 'app, D, S, C>(
     mut state: scope::Scope<'_, '_, 'app, 'd, D, S>,
     source: C,
     tick: impl Fn(C) -> Result<Sample, drive::Error>,
+    mut shutdown: impl FnMut() -> turn::Status,
 ) -> Result<(), drive::Error>
 where
     D: executor::raw::App<'d>,
@@ -16,7 +17,7 @@ where
 {
     loop {
         let tick = tick(source)?;
-        let ready = state.next_app(tick)?;
+        let ready = state.next_app(tick, &mut shutdown)?;
         if ready.is_quiet() && matches!(ready.shutdown(), schedule::Progress::Quiescent) {
             match ready.sync()? {
                 poll::Commit::Drained => return Ok(()),

@@ -56,7 +56,7 @@ fn admission_and_lifecycle() {
                                 .map(|fixed| fixed.into_output())
                         },
                     );
-                    let driven = result.ok().expect("application teardown");
+                    let driven = result.expect("application teardown");
                     assert!(
                         driven.is_ok(),
                         "saturated watchdog must reach a fixed point"

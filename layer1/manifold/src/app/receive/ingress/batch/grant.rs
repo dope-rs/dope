@@ -1,7 +1,7 @@
 use std::mem::size_of;
 
 use dope_core::driver::{
-    retained,
+    self,
     schedule::{
         self,
         app::batch::{Bound, Reserved},
@@ -13,18 +13,16 @@ use o3::mem;
 
 use crate::app::receive::ingress::{Admission, Replay};
 
-pub(crate) struct Grant<'a, 'c, 'owner, 'd: 'owner, W: wire::Spec> {
-    driver: &'a mut retained::Context<'c, 'owner, 'd>,
+pub(crate) struct Grant<'a, 'c, 'd, W: wire::Spec> {
+    driver: &'a mut driver::Context<'c, 'd>,
     turn: schedule::Turn<'a, 'd>,
     reservation: Reserved<'a, 'd, batch::Capacity<'d, W>>,
 }
 
-impl<'a, 'c: 'a, 'owner: 'a, 'd: 'a + 'c + 'owner, W: wire::Spec + 'd> Admission<'a, 'c, 'owner, 'd>
-    for Grant<'a, 'c, 'owner, 'd, W>
-{
+impl<'a, 'c: 'a, 'd: 'a + 'c, W: wire::Spec + 'd> Admission<'a, 'c, 'd> for Grant<'a, 'c, 'd, W> {
     fn fresh(
         turn: schedule::Turn<'a, 'd>,
-        driver: &'a mut retained::Context<'c, 'owner, 'd>,
+        driver: &'a mut driver::Context<'c, 'd>,
     ) -> schedule::Capacity<Self> {
         match Self::reserve(turn, false) {
             schedule::Capacity::Available(held) => {
@@ -38,7 +36,7 @@ impl<'a, 'c: 'a, 'owner: 'a, 'd: 'a + 'c + 'owner, W: wire::Spec + 'd> Admission
         replay: Replay,
         ready: ready::Key<'d>,
         turn: schedule::Turn<'a, 'd>,
-        driver: &'a mut retained::Context<'c, 'owner, 'd>,
+        driver: &'a mut driver::Context<'c, 'd>,
     ) -> schedule::Capacity<Self> {
         match Self::reserve(turn, !matches!(replay, Replay::First)) {
             schedule::Capacity::Available(held) => {
@@ -52,7 +50,7 @@ impl<'a, 'c: 'a, 'owner: 'a, 'd: 'a + 'c + 'owner, W: wire::Spec + 'd> Admission
     }
 }
 
-impl<'a, 'c, 'owner, 'd: 'owner, W: wire::Spec + 'd> Grant<'a, 'c, 'owner, 'd, W> {
+impl<'a, 'c, 'd, W: wire::Spec + 'd> Grant<'a, 'c, 'd, W> {
     fn reserve(
         turn: schedule::Turn<'a, 'd>,
         prior: bool,
@@ -68,7 +66,7 @@ impl<'a, 'c, 'owner, 'd: 'owner, W: wire::Spec + 'd> Grant<'a, 'c, 'owner, 'd, W
     }
 
     fn new(
-        driver: &'a mut retained::Context<'c, 'owner, 'd>,
+        driver: &'a mut driver::Context<'c, 'd>,
         turn: schedule::Turn<'a, 'd>,
         held: Reserved<'a, 'd, batch::Capacity<'d, W>>,
     ) -> Self {
@@ -82,7 +80,7 @@ impl<'a, 'c, 'owner, 'd: 'owner, W: wire::Spec + 'd> Grant<'a, 'c, 'owner, 'd, W
     pub(in crate::app::receive::ingress) fn with<R>(
         self,
         apply: impl for<'id> FnOnce(
-            &'a mut retained::Context<'c, 'owner, 'd>,
+            &'a mut driver::Context<'c, 'd>,
             schedule::Turn<'a, 'd>,
             Bound<'id, batch::Capacity<'d, W>>,
         ) -> (R, mem::raw::Unused<'id>),
@@ -98,18 +96,15 @@ impl<'a, 'c, 'owner, 'd: 'owner, W: wire::Spec + 'd> Grant<'a, 'c, 'owner, 'd, W
     }
 }
 
-impl<'a, 'c, 'owner, 'd: 'owner, W: wire::Spec + 'd> From<Grant<'a, 'c, 'owner, 'd, W>>
-    for (
-        &'a mut retained::Context<'c, 'owner, 'd>,
-        schedule::Turn<'a, 'd>,
-    )
+impl<'a, 'c, 'd, W: wire::Spec + 'd> From<Grant<'a, 'c, 'd, W>>
+    for (&'a mut driver::Context<'c, 'd>, schedule::Turn<'a, 'd>)
 {
-    fn from(work: Grant<'a, 'c, 'owner, 'd, W>) -> Self {
+    fn from(work: Grant<'a, 'c, 'd, W>) -> Self {
         work.with(|driver, turn, bound| ((driver, turn), bound.empty()))
     }
 }
 
 const _: () = assert!(
-    size_of::<schedule::Capacity<Grant<'static, 'static, 'static, 'static, wire::Identity>>>()
-        == size_of::<Option<Grant<'static, 'static, 'static, 'static, wire::Identity>>>()
+    size_of::<schedule::Capacity<Grant<'static, 'static, 'static, wire::Identity>>>()
+        == size_of::<Option<Grant<'static, 'static, 'static, wire::Identity>>>()
 );

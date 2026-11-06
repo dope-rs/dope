@@ -114,7 +114,7 @@ fn replay_preserves_wake() {
                     hash,
                     &mut scope,
                     session::Scope::driver,
-                    |listener, scope| {
+                    |listener, _wait, scope| {
                         let addr = listener.local_addr();
                         let result = scope.with_quiesce(
                             &mut finish,

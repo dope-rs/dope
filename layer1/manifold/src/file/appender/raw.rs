@@ -11,10 +11,10 @@ use crate::{
     file::appender::{self, state::State},
 };
 
-pub(super) fn bytes<'a, const N: usize, const B: usize>(
-    pending: &'a appender::Pending<'_, N, B>,
+pub(super) fn bytes<'a, const N: usize>(
+    pending: &'a appender::Pending<'_, N>,
 ) -> Prefix<'a, { bounded::MAX }> {
-    let bytes = &pending.block().bytes;
+    let bytes = pending.bytes();
     // SAFETY: new bounds remaining by this unchanged exclusive lease's length.
     // advance only reduces remaining, whose Len bound also proves bounded::MAX.
     // release consumes the owner, so the admitted extent stays unchanged.
@@ -41,14 +41,11 @@ unsafe impl<'p, 'd, ID: Identity, const N: usize, const B: usize> dispatch::raw:
 
     const COORDS: usize = 0;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         let this = self.as_mut().get_mut();
         if let Some(pending) = this.prepare() {
             this.submit(pending, driver);
@@ -56,14 +53,11 @@ unsafe impl<'p, 'd, ID: Identity, const N: usize, const B: usize> dispatch::raw:
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         self.as_mut().get_mut().close();
         self
     }

@@ -2,7 +2,7 @@ use std::{cell::Cell, rc::Rc};
 
 use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
-    app::{admit::Automatic, connect::Full, failure::Controlled, request},
+    app::{self, admit::Automatic, connect::Full, failure::Controlled, request},
     attempt,
     close::Reason,
     conn,
@@ -84,6 +84,7 @@ pub struct Session<'d, C: Codec> {
     pub(crate) errors: Rc<Trace<C::Error, 16>>,
     pub(crate) events: Rc<Cell<Events<'d>>>,
     pub(crate) gate: Gate,
+    pub(crate) wait_reply: Option<Gate>,
 }
 
 impl<C: Codec> Session<'_, C> {
@@ -94,6 +95,7 @@ impl<C: Codec> Session<'_, C> {
             errors: Rc::default(),
             events: Rc::default(),
             gate: Gate::default(),
+            wait_reply: None,
         }
     }
 }
@@ -244,6 +246,21 @@ impl<'d, C: Codec> session::Exhausted<'d> for Session<'d, C> {
 
 impl<'d, C: Codec> Retirement<'d> for Session<'d, C> {
     type Drain = Ready;
+
+    fn withdraw(&mut self, _: conn::Id<'d, KeyTag<0>>, _: &mut ()) -> app::Fence {
+        let Some(wait) = &self.wait_reply else {
+            return app::Fence::Ready;
+        };
+        wait.hit();
+        let events = self.events.take();
+        let pending = events.replies == Some(0);
+        self.events.set(events);
+        if pending {
+            app::Fence::Pending
+        } else {
+            app::Fence::Ready
+        }
+    }
 
     fn io_fail(
         &mut self,

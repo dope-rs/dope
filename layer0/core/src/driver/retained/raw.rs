@@ -1,18 +1,11 @@
-//! Raw construction of retained-owner authority.
-use std::{marker, mem};
-
-use dope_sys::io::socket::{
-    addr::{Length, Storage},
-    option::tuning,
-};
-use o3::base::marker::ThreadBound;
+use std::mem;
 
 use crate::{
     Engine, driver,
     driver::{
         flight,
         life::native::{request, request::bound},
-        result, retained, route,
+        result, route,
         route::kind,
     },
     io::{
@@ -21,6 +14,10 @@ use crate::{
         socket::{msg, option, pending},
         transfer,
     },
+};
+use dope_sys::io::socket::{
+    addr::{Length, Storage},
+    option::tuning,
 };
 
 /// A native operation tied to every resource borrowed by its request.
@@ -98,24 +95,23 @@ where
     C: kind::Flight,
 {
     /// # Safety
-    /// Retain these exact borrowed resources at their submitted addresses until
-    /// completion or quiescence; the context brand alone does not prove ownership.
-    pub unsafe fn try_submit<'a, 'owner>(
+    /// Handles, target and slots belong to `context`'s driver. Retain the exact
+    /// borrowed resources in place through terminal completion or quiescence.
+    pub unsafe fn try_submit<'a>(
         self,
-        mut context: retained::Context<'a, 'owner, 'd>,
+        mut context: driver::Context<'a, 'd>,
         slots: &'a flight::Slots<'d, Tag>,
     ) -> Result<flight::Flight<'d, C>, result::SubmitError>
     where
-        'd: 'owner,
-        'owner: 'borrow,
+        'd: 'borrow,
         Tag: route::Tag,
         C: kind::Flight,
     {
         let (raw, target) = self.into_parts();
-        let raw = bound::Captured::new(raw, context.token());
-        let (permit, space) = slots.try_admit(&mut context.driver, target)?;
+        let (permit, space) = slots.try_admit(&mut context, target)?;
         let entry = bound::Bound::new(raw, space);
-        Ok(permit.retain(entry))
+        // SAFETY: the caller retains the exact inputs for this driver's flight.
+        Ok(unsafe { permit.retain(entry) })
     }
 }
 
@@ -125,24 +121,23 @@ where
     C: kind::Flight,
 {
     /// # Safety
-    /// Retain these exact borrowed resources at their submitted addresses until
-    /// completion or quiescence; the context brand alone does not prove ownership.
-    pub unsafe fn try_file<'a, 'owner>(
-        mut context: retained::Context<'a, 'owner, 'd>,
+    /// Target and slots belong to `context`'s driver. Retain every descriptor,
+    /// path and buffer borrow through terminal completion or quiescence.
+    pub unsafe fn try_file<'a>(
+        mut context: driver::Context<'a, 'd>,
         slots: &'a flight::Slots<'d, Tag>,
         entry: fs::Submission<'borrow, 'd, Tag, C>,
     ) -> Result<flight::Flight<'d, C>, result::SubmitError>
     where
-        'd: 'owner,
-        'owner: 'borrow,
+        'd: 'borrow,
         Tag: route::Tag,
         C: kind::Flight,
     {
         let (raw, target) = entry.into_parts();
-        let raw = bound::Captured::new(raw, context.token());
-        let (permit, space) = slots.try_admit(&mut context.driver, target)?;
+        let (permit, space) = slots.try_admit(&mut context, target)?;
         let entry = bound::Bound::new(raw, space);
-        Ok(permit.file(entry))
+        // SAFETY: the caller retains the exact file borrows for this flight.
+        Ok(unsafe { permit.file(entry) })
     }
 }
 
@@ -151,26 +146,23 @@ where
     Tag: route::Tag + route::Select<kind::Connect>,
 {
     /// # Safety
-    /// Retain this exact address storage in place until completion or quiescence;
-    /// the context brand alone does not prove that ownership relation.
-    pub unsafe fn try_connect<'a, 'owner>(
+    /// The descriptor, target and slots belong to `context`'s driver. Retain the
+    /// exact address in place through terminal completion or quiescence.
+    pub unsafe fn try_connect<'a>(
         self,
-        mut context: retained::Context<'a, 'owner, 'd>,
+        mut context: driver::Context<'a, 'd>,
         slots: &'a flight::Slots<'d, Tag>,
         options: &'a option::Set,
     ) -> Result<pending::Connection<'d>, pending::Rejection<'d>>
     where
-        'd: 'owner,
-        'owner: 'borrow,
+        'd: 'borrow,
         Tag: route::Tag + route::Select<kind::Connect>,
     {
         use tuning::device::{Owner as _, Source};
-        // SAFETY: try_connect requires the exact pinned owner to retain the
-        // address borrowed by this entry through quiescence.
-        let (fd, entry) = unsafe { request::raw::Connect::bind(&context, self) };
-        let host = request::Connect::new(context.native(), slots, fd, options, entry);
+        // SAFETY: the caller retains this address for the same driver's flight.
+        let host = unsafe { request::Connect::new(context.native(), slots, options, self) };
         let socket = <crate::Backend as Source>::Socket::new(host);
-        // SAFETY: Captured retains the address through completion or quiescence;
+        // SAFETY: the caller retains the address through completion or quiescence;
         // the affine descriptor and native borrow share this driver's slot table.
         unsafe {
             tuning::raw::Connect::<Engine, _, _, { option::MAX_STREAM_OPTIONS }>::try_connect(
@@ -202,44 +194,6 @@ impl<'addr, 'd, Tag: route::Tag> Connect<'addr, 'd, Tag> {
         route::Target<'d, Tag>,
     ) {
         (self.fd, self.submission, self.target)
-    }
-}
-
-/// Zero-sized, thread-bound authority for retained driver storage.
-/// Each raw submission must additionally prove that its borrowed resources
-/// belong to an owner retained through completion or quiescence.
-#[derive(Clone, Copy)]
-pub struct Owner<'owner, 'd: 'owner> {
-    owner: marker::PhantomData<(&'owner (), ThreadBound)>,
-    _driver: driver::Invariant<'d>,
-}
-
-/// One affine capture of a retained owner's driver-bound proof.
-pub(crate) struct Token<'owner, 'd: 'owner>(Owner<'owner, 'd>);
-
-impl<'owner, 'd: 'owner> Token<'owner, 'd> {
-    pub(super) const fn new(owner: Owner<'owner, 'd>) -> Self {
-        Self(owner)
-    }
-}
-
-impl<'d> Token<'d, 'd> {
-    pub(crate) fn scoped() -> Self {
-        Self(Owner {
-            owner: marker::PhantomData,
-            _driver: driver::Invariant(marker::PhantomData),
-        })
-    }
-}
-
-impl<'d> Owner<'d, 'd> {
-    /// Carries one driver's brand into its retained submission context.
-    /// Each raw submission still requires its exact resource-retention proof.
-    pub fn from_driver(driver: driver::Reference<'d>) -> Self {
-        Self {
-            owner: marker::PhantomData,
-            _driver: driver.brand,
-        }
     }
 }
 
@@ -276,10 +230,4 @@ const _: () = {
                 route::Target<'static, route::KeyTag<1>>,
             )>()
     );
-};
-const _: () = {
-    assert!(mem::size_of::<Owner<'static, 'static>>() == 0);
-    assert!(mem::align_of::<Owner<'static, 'static>>() == 1);
-    assert!(mem::size_of::<Token<'static, 'static>>() == 0);
-    assert!(mem::align_of::<Token<'static, 'static>>() == 1);
 };

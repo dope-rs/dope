@@ -145,26 +145,20 @@ where
 
     const COORDS: usize = L::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         unsafe { L::pre_park(self.as_mut().project().inner, turn, driver) };
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         L::shutdown(self.as_mut().project().inner, turn, driver);
         self
     }
@@ -176,7 +170,7 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -184,19 +178,19 @@ where
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         let (owner, (), (done, turn, driver)) = call.into_parts();
         let kind = done.into_kind();
-        let bit = match &kind {
-            Kind::Accept(_) => 1,
-            Kind::Tuning(_) => 2,
-            _ => 0,
+        let (bit, deferred) = match &kind {
+            Kind::Accept(done) => (
+                1,
+                matches!(done.outcome(), io::event::net::accept::Outcome::Accepted(_)),
+            ),
+            Kind::Tuning(done) => (2, done.outcome().is_ok()),
+            _ => (0, false),
         };
         let this = owner.project();
         let blocked = this.seen.get() & bit == 0 && bit != 0;
@@ -211,7 +205,10 @@ where
             (),
             (kind.into(), turn, driver),
         ));
-        if blocked && matches!(&result, ControlFlow::Continue(())) && this.failure.get().is_none() {
+        if blocked
+            && matches!(&result, ControlFlow::Break(_)) != deferred
+            && this.failure.get().is_none()
+        {
             this.failure.set(Some(if bit == 1 {
                 Error::Accept
             } else {

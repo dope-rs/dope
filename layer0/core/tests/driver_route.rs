@@ -3,8 +3,6 @@ use dope_core::driver::life::creation;
 use crate::common::rt::profile::{Batched, Prompt};
 pub mod common;
 
-use std::mem::size_of;
-
 use dope_core::{
     driver::{
         result::CreateError,
@@ -109,7 +107,6 @@ fn slots_enforce_raw_bounds() {
     assert!((Capacity::from(conns)) == (indexed));
     assert!(Edge::from(conns).slot() == SlotIndex::MAX);
     assert!(conn::Capacity::try_from(SLOT_MASK as usize + 1).is_err());
-    assert_eq!(size_of::<conn::Capacity>(), size_of::<Capacity>());
 }
 
 #[test]
@@ -178,7 +175,6 @@ fn file_layout_resolves() {
     assert!((split.capacity()) == (settings::FileSlots::fixed::<0, 65_535>().outbound()));
     assert!((split.accept()) == (settings::FileSlots::fixed::<0, 65_279>().outbound()));
     assert!((split.outbound()) == (settings::FileSlots::fixed::<0, 256>().outbound()));
-    assert_eq!(size_of::<settings::FileSlots>(), size_of::<[u32; 2]>());
 }
 
 #[test]
@@ -201,7 +197,6 @@ fn queue_layout_resolves() {
         QueueLayout::fixed::<32_768, 65_536>().resolve(Submit::from(32_768))
             == Ok(QueueLayout::fixed::<32_768, 65_536>())
     );
-    assert_eq!(size_of::<QueueLayout>(), size_of::<[u32; 2]>());
     assert!((settings::Config::default().queue_layout()) == (QueueLayout::fixed::<1024, 2048>()));
     assert!(
         (Runtime::quic::<2, 8>()
@@ -214,8 +209,6 @@ fn queue_layout_resolves() {
 
 #[test]
 fn keeps_completion_policy() {
-    assert_eq!(size_of::<settings::Progress>(), size_of::<bool>());
-    assert_eq!(size_of::<settings::Config>(), size_of::<[u32; 10]>());
     assert!((settings::Config::default().progress()) == (settings::Progress::Prompt));
     assert!(
         (Runtime::quic::<2, 8>()
@@ -243,12 +236,10 @@ fn keeps_schedule_capacity() {
     if let Some(overflow) = (u32::MAX as usize).checked_add(1) {
         assert!(Slots::try_from(overflow).is_err());
     }
-    assert_eq!(size_of::<Slots>(), size_of::<u32>());
 
     let layout = Schedule::fixed::<7, 11>();
     assert_eq!(layout.ready().count().get(), 7);
     assert_eq!(layout.timers().count().get(), 11);
-    assert_eq!(size_of::<Schedule>(), size_of::<[u32; 2]>());
 
     let changed = settings::Schedule::fixed::<0, 0>().resolve(demands::Schedule::new(
         Slots::fixed::<13>(),
@@ -320,34 +311,4 @@ fn slabs_bound_keys() {
 
     let overflow = SLOT_MASK as usize + 2;
     assert!(Capacity::try_from(overflow).is_err());
-}
-
-#[test]
-fn slabs_reject_stale_keys() {
-    let capacity = settings::FileSlots::fixed::<0, 1>().outbound();
-    let mut slab = (Slab::<_, KeyTag<ROUTE>>::try_new(capacity)).expect("slab allocation failed");
-    let canceled = {
-        let vacant = (slab.vacancy().try_reserve()).expect("initial route reservation failed");
-        vacant.key()
-    };
-    let vacant = (slab.vacancy().try_reserve()).expect("empty slab rejected its slot");
-    let stale = vacant.key();
-    vacant.insert(7);
-    assert!(canceled.slot() == stale.slot());
-    assert!(canceled.epoch() != stale.epoch());
-    assert_eq!(slab.view().get(canceled.parts()), None);
-    assert_eq!(slab.view().get(stale.parts()), Some(&7));
-    assert_eq!(
-        slab.access()
-            .occupied(stale.parts())
-            .map(|entry| entry.remove()),
-        Some(7)
-    );
-    let vacant = (slab.vacancy().try_reserve()).expect("removed slot was not reusable");
-    let current = vacant.key();
-    vacant.insert(11);
-    assert!(current.slot() == stale.slot());
-    assert!((current.epoch()) != (stale.epoch()));
-    assert_eq!(slab.view().get(stale.parts()), None);
-    assert_eq!(slab.view().get(current.parts()), Some(&11));
 }

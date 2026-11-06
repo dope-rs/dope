@@ -94,14 +94,11 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Eager<ID> {
 
     const COORDS: usize = 0;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         let this = self.as_ref().get_ref();
         if this.active.get() {
             while let Some(permit) = turn.app().permit() {
@@ -111,14 +108,11 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Eager<ID> {
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         self: Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         self
     }
 }
@@ -313,12 +307,12 @@ unsafe impl<'d> executor::raw::App<'d> for PlanOwner {
     /// # Safety
     /// The installed pinned owner must match this prepared plan and park
     /// authority; the plan retains observations for that same owner.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         app: Pin<&'app mut Self>,
         plan: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         let this = app.as_ref().get_ref();
         let observed = plan

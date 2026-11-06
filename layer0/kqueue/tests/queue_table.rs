@@ -1,7 +1,7 @@
 pub mod common;
 
 use std::{
-    iter, mem,
+    iter,
     num::NonZeroUsize,
     os::fd::{AsFd as _, AsRawFd as _},
 };
@@ -327,16 +327,15 @@ fn rejects_plan_reuse() {
 }
 
 #[test]
-fn forgets_plan_reuse() {
+fn abandons_plan_reuse() {
     use change::{Delete as _, Filter, Id as _};
 
     let mut files = Files::try_new(Layout).expect("file table");
     let id = ChangeId::new(Physical::at::<1>(), 41);
-    let plan = files
+    let _ = files
         .edit()
         .try_delete([Ok(Some((id, Filter::Write)))].into_iter())
         .expect("deletion plan");
-    mem::forget(plan);
     files
         .edit()
         .write(id)

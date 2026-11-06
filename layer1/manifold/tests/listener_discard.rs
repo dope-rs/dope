@@ -38,7 +38,7 @@ use dope_test::{
 };
 
 fn observe(event: Event<'_, '_>) {
-    use dope_manifold::network::listener::conn::{deadline::Arm, write};
+    use dope_manifold::network::listener::conn::write;
     use dope_net::wire::receive::discard;
     assert!(match event {
         Event::Request(bytes) => bytes == REQUEST,
@@ -46,7 +46,7 @@ fn observe(event: Event<'_, '_>) {
         Event::Length(len) => len == PAYLOAD.len(),
         Event::Discard(start) => matches!(start, discard::Start::Started),
         Event::Discarded => true,
-        Event::Deadline(armed) => matches!(armed, Arm::Armed),
+        Event::Deadline(armed) => armed.is_ok(),
         Event::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
     });
 }

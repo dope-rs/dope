@@ -27,10 +27,10 @@ fn layout() {
         .expect("the snapshot test driver must initialize");
     let mut reports = Vec::new();
 
+    let mut teardown = domain::Teardown::default();
     assert!(
-        domain::Domain::new(driver)
-            .start()
-            .expect("fresh generation")
+        domain::Generation::new(driver)
+            .start(&mut teardown)
             .enter_with(
                 (),
                 |mut life, _, _| {

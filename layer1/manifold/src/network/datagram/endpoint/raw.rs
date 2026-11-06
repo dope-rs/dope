@@ -45,14 +45,11 @@ where
         <H::Hooks as hook::Bundle>::Settlement,
     >>::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         // SAFETY: the caller retains this exact installed endpoint through quiescence.
         unsafe {
             <<H::Hooks as hook::Bundle>::Drive as hook::raw::Drive<
@@ -64,14 +61,11 @@ where
         }
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         <<H::Hooks as hook::Bundle>::Shutdown as hook::Shutdown<
             'd,
             ID,
@@ -125,7 +119,7 @@ unsafe impl<'d, ID: Identity, H, B, M: send::Mode> dispatch::raw::Activate<'d, I
         self: pin::Pin<&mut Self>,
         _: route::Target<'d, ID>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
     ) {
         self.project().socket.project().receive.resume();
     }

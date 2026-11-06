@@ -2,8 +2,8 @@ use std::{cell::Cell, convert::Infallible, marker::PhantomData, pin::Pin, ptr};
 
 use dope_core::{
     driver::{
+        self,
         receive::credit,
-        retained,
         route::{Identity, table::conn::Capacity},
         schedule::clock,
     },
@@ -329,7 +329,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for App<'_, receive::Borrowed> 
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, ()>,
         _: R,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         self.state.events.record(Event::Chunk);
         receive::Outcome::CloseAfter
@@ -345,7 +345,7 @@ impl<'w, 'd: 'w, ID: Identity> handler::Scoped<'w, 'd, ID> for App<'_, receive::
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, ()>,
         _: scoped::Input<'_, 'w, 'd, Wire>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         self.state.events.record(Event::Chunk);
         receive::Outcome::CloseAfter

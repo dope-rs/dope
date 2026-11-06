@@ -2,7 +2,7 @@ use std::{cell::Cell, rc::Rc, thread, time::Instant};
 
 use dope_core::{
     driver::{
-        retained::{self},
+        self,
         route::{Erased, KeyTag, kind},
         schedule::ready::Slot,
     },
@@ -27,7 +27,7 @@ impl<'d> dispatch::Hooks<'d, Slot<'d, KeyTag<254>>> for Cascade {
         &mut self,
         ready: &mut Slot<'d, KeyTag<254>>,
         _: Erased<'d, kind::Any>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         let polls = self.polls.get().and_then(|polls| polls.checked_add(1));
         self.polls.set(polls);
@@ -38,7 +38,7 @@ impl<'d> dispatch::Hooks<'d, Slot<'d, KeyTag<254>>> for Cascade {
 }
 
 impl<'d> dispatch::Park<'d, Slot<'d, KeyTag<254>>> for Cascade {
-    fn pre_park(&mut self, _: &mut Slot<'d, KeyTag<254>>, _: &mut retained::Context<'_, '_, 'd>) {
+    fn pre_park(&mut self, _: &mut Slot<'d, KeyTag<254>>, _: &mut driver::Context<'_, 'd>) {
         if self.first.get().is_none() {
             self.first.set(self.polls.get());
         }
@@ -58,7 +58,7 @@ impl<'d> dispatch::Hooks<'d, Slot<'d, KeyTag<254>>> for Clock {
         &mut self,
         _: &mut Slot<'d, KeyTag<254>>,
         _: Erased<'d, kind::Any>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let start = driver.driver_ref().clock().now();
         let tick = Instant::now();
@@ -128,7 +128,7 @@ impl<'d> dispatch::Hooks<'d, Box<[Slot<'d, KeyTag<254>>]>> for Storm {
         &mut self,
         _: &mut Box<[Slot<'d, KeyTag<254>>]>,
         _: Erased<'d, kind::Any>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         self.polls
             .set(self.polls.get().and_then(|polls| polls.checked_add(1)));
@@ -136,11 +136,7 @@ impl<'d> dispatch::Hooks<'d, Box<[Slot<'d, KeyTag<254>>]>> for Storm {
 }
 
 impl<'d> dispatch::Park<'d, Box<[Slot<'d, KeyTag<254>>]>> for Storm {
-    fn pre_park(
-        &mut self,
-        _: &mut Box<[Slot<'d, KeyTag<254>>]>,
-        _: &mut retained::Context<'_, '_, 'd>,
-    ) {
+    fn pre_park(&mut self, _: &mut Box<[Slot<'d, KeyTag<254>>]>, _: &mut driver::Context<'_, 'd>) {
         if self.first.get().is_none() {
             self.first.set(self.polls.get());
         }

@@ -1,5 +1,5 @@
 use dope_sys::{
-    io::reactor::complete::{self, Decode, Value as _},
+    io::reactor::complete::{self, Decode},
     kernel::Returned as _,
 };
 use o3::base::num::bounded;
@@ -70,7 +70,7 @@ impl complete::Outcome for Outcome {
 
     fn unit(self) -> Result<Result<(), dope_sys::Errno>, Returned> {
         match self.decode() {
-            Decode::Value(value) if value.is_zero() => Ok(Ok(())),
+            Decode::Value(value) if value.get() == 0 => Ok(Ok(())),
             Decode::Value(value) => Err(Returned::value(value)),
             Decode::Error(code) => Ok(Err(code)),
             Decode::Invalid(invalid) => Err(Returned::invalid(invalid)),
@@ -78,10 +78,7 @@ impl complete::Outcome for Outcome {
     }
 
     fn shutdown(self) -> Result<(), Returned> {
-        if self.0 >= 0
-            && (self.0 & !(i32::from(libc::POLLHUP) | i32::from(libc::POLLRDHUP)))
-                == i32::from(libc::POLLIN)
-        {
+        if self.0 != 0 && self.0 & !i32::from(libc::POLLIN | libc::POLLHUP | libc::POLLRDHUP) == 0 {
             Ok(())
         } else {
             Err(Returned::from(self))

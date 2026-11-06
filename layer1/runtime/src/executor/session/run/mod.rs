@@ -22,6 +22,7 @@ where
 impl<'app, 'life: 'app, 'd: 'life, D, Q> Run<'app, 'life, 'd, D, Q>
 where
     D: executor::raw::App<'d>,
+    Q: executor::Startup,
 {
     pub(crate) fn app(&mut self) -> session::App<'_, 'life, 'd, D, Q> {
         session::App {
@@ -48,6 +49,7 @@ where
         self.owner
             .admit(self.core.scope.token())
             .and_then(|()| Q::installed(self.core.lifecycle))
+            .inspect_err(|_| Q::failed(self.core.lifecycle))
     }
 
     fn shutdown<C>(
@@ -62,10 +64,11 @@ where
     {
         let Self { core, owner } = self;
         let tick = source.start();
-        let owner = core.scope.with_turn(|token, mut driver, mut schedule| {
+        let owner = {
+            let (token, mut driver, mut schedule) = core.scope.split();
             let turn = schedule.begin_at(tick);
             owner.shutdown(token, turn.turn(), driver.reborrow())
-        });
+        };
         (core, owner)
     }
 
@@ -124,10 +127,9 @@ where
     {
         let view = owner.view();
         let pending = &mut core.pending;
-        core.scope.with_turn(|token, mut driver, schedule| {
-            let state = scope::Scope::new(&mut driver, view, token, schedule, pending);
-            quiesce::run(state, source, tick)
-        })
+        let (token, mut driver, schedule) = core.scope.split();
+        let state = scope::Scope::new(&mut driver, view, token, schedule, pending);
+        quiesce::run(state, source, tick, turn::shutdown(core.lifecycle))
     }
 
     pub(crate) fn finish_for<'report, R, C>(
@@ -162,6 +164,7 @@ impl<'app, 'parent: 'app, 'life: 'app, 'd: 'life + 'parent, H, T, Q>
 where
     H: lending::raw::Resume<'d>,
     T: executor::raw::App<'d>,
+    Q: executor::Startup,
 {
     pub(super) fn finish_lent<C>(
         self,
@@ -208,6 +211,7 @@ pub(crate) fn finish_parent<'report, 'parent, 'life, 'd: 'life + 'parent, H, Q, 
 where
     H: lending::raw::Resume<'d>,
     C: clock::Time,
+    Q: executor::Startup,
 {
     parent.with_owner(core, |core, owner| match outcome {
         Ok((output, source, result)) => {

@@ -8,6 +8,6 @@ pub trait Context<H> {
     type Dispatch: From<(task::Poll<()>, Option<Self::Event>)>
         + From<(task::Poll<()>, Self::Failure)>;
 
-    fn with<R>(host: &mut H, run: impl FnOnce(&mut Self::Backend) -> R) -> R;
+    fn backend(host: &mut H) -> &mut Self::Backend;
     fn resolve(host: &mut H) -> Option<Result<Option<Self::Event>, Self::Failure>>;
 }

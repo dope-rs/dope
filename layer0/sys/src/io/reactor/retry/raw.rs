@@ -69,7 +69,7 @@ pub trait Write<'a, C: Context, E: Complete<C>, P>: Sized {
         &mut self,
         key: C::Key,
         slot: <C::Slots as change::raw::Slots>::Physical,
-        make: impl FnOnce() -> Self::Send,
+        write: Self::Send,
         vacant: impl complete::Vacancy<Event = E>,
     );
 }

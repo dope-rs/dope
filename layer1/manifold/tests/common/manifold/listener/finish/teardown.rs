@@ -4,7 +4,7 @@ use std::{convert, pin::Pin};
 
 use dope_core::{
     driver::{
-        retained, route,
+        self, route,
         route::table::conn::Capacity,
         schedule::clock,
         settings,
@@ -176,7 +176,7 @@ impl<'w, 'd: 'w, ID: route::Identity, F: Fn() + Unpin> handler::Owned<'w, 'd, ID
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Teardown, ()>,
         chunk: Chunk<'w, 'd, Teardown>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         this.held = Some(chunk);

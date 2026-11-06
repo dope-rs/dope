@@ -246,15 +246,21 @@ where
         self.project().engine.project().app.session_mut()
     }
 
-    /// Applies one bounded mutation to an exact connector generation.
-    pub fn with_conn<T>(
-        self: pin::Pin<&mut Self>,
-        conn: Id<'d, ID>,
-        apply: impl FnOnce(&mut N::ConnState) -> T,
-    ) -> Option<T> {
-        self.project()
+    pub fn session_admission<'a>(
+        self: pin::Pin<&'a mut Self>,
+    ) -> (&'a mut N, impl Fn(Id<'d, ID>) -> bool + 'a)
+    where
+        D: discover::Driver<'d, Feedback = discover::Notify>,
+    {
+        let (app, current) = self
+            .project()
             .engine
-            .with_conn(conn, |state| apply(state.state_mut()))
+            .session_admission(|control, key| control.is_current(key) == Some(true));
+        (app.session_mut(), current)
+    }
+
+    pub fn conn_mut(self: pin::Pin<&mut Self>, conn: Id<'d, ID>) -> Option<&mut N::ConnState> {
+        Some(self.project().engine.conn_mut(conn)?.state_mut())
     }
 
     /// Wakes one exact connector generation.
@@ -286,7 +292,9 @@ where
             &mut service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, ENDPOINTS, D::Feedback>,
             crate::client::attempt::Id<'d, ID>,
         ) -> bool,
-    ) {
+    ) where
+        N: session::Retirement<'d, ID> + session::Scheduling<'d, ID>,
+    {
         let work = turn.maint();
         work.share::<2, _>(|| {
             loop {

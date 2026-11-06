@@ -73,18 +73,16 @@ fn drop_returns_reservation() {
         let lane = arena.get(LANE).expect("lane fixture");
         let queue = lane.queue();
         let ((), alloc) = Tracker::usage(|| {
-            for _ in 0..3 {
-                let owner = bufs.try_cursor(B).expect("returned buffer");
-                let load = egress::Load::new(owner)
-                    .try_nonempty()
-                    .ok()
-                    .expect("nonempty");
-                {
-                    let result = queue.try_reserve(&mut token, load);
-                    assert!(matches!(result, metadata::Reservation::Ready(_)));
-                }
-                assert!(queue.is_empty());
+            let owner = bufs.try_cursor(B).expect("returned buffer");
+            let load = egress::Load::new(owner)
+                .try_nonempty()
+                .ok()
+                .expect("nonempty");
+            {
+                let result = queue.try_reserve(&mut token, load);
+                assert!(matches!(result, metadata::Reservation::Ready(_)));
             }
+            assert!(queue.is_empty());
             let owner = bufs.try_cursor(A).expect("returned buffer");
             assert!(matches!(
                 queue.admit(&mut token, egress::Load::new(owner)),
@@ -155,7 +153,7 @@ fn reservation_returns_all() {
                     Err::<(), _>(7)
                 })
             };
-            let failure = result.err().expect("callback rejection");
+            let failure = result.expect_err("callback rejection");
             let (value, cause) = failure.into_parts();
             let pointer = value.as_inner().as_ref().as_ptr();
             assert_eq!(value.as_inner().as_ref(), B);

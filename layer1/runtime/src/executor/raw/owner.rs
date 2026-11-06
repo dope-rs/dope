@@ -4,7 +4,7 @@ use dope_core::{
     driver::{
         self,
         life::{self, finish},
-        retained, route, schedule,
+        route, schedule,
         schedule::clock,
     },
     io,
@@ -75,7 +75,6 @@ unsafe impl<'app, 'd: 'app, D> life::raw::Root<'app> for Key<'app, 'd, D> {
 /// Affine ownership of one exact pinned application lifecycle phase.
 pub(crate) struct Owner<'app, 'd: 'app, D: executor::raw::Layout<'d>, S> {
     stored: pin::Pin<&'app brand::Value<brand::Identity<'d>, Stored<D, D::ParkPlan>>>,
-    retained: retained::raw::Owner<'app, 'd>,
     install: life::Install<'app, 'd>,
     state: marker::PhantomData<fn(S) -> S>,
 }
@@ -104,10 +103,8 @@ where
         let install = life::Install::new(key, driver);
         let install = executor::raw::Install::new(token.pin_mut(stored).project().app, install);
         let install = D::install(install);
-        let retained = retained::raw::Owner::from_driver(driver);
         Self {
             stored,
-            retained,
             install: install.into_install(),
             state: marker::PhantomData,
         }
@@ -136,14 +133,12 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: driver::Context<'_, 'd>,
     ) -> Owner<'app, 'd, D, Draining> {
-        let retained = retained::Context::new(driver, self.retained);
         let mut app = token.pin_mut(self.stored).project().app;
         let _ = D::released(executor::raw::Released::new(app.as_mut()));
-        let shutdown = executor::raw::Shutdown::new(app, turn, retained);
+        let shutdown = executor::raw::Shutdown::new(app, turn, driver);
         let _ = D::shutdown(shutdown);
         Owner {
             stored: self.stored,
-            retained: self.retained,
             install: self.install,
             state: marker::PhantomData,
         }
@@ -172,7 +167,6 @@ where
         ));
         Self {
             stored,
-            retained: retained::raw::Owner::from_driver(driver),
             install: life::Install::new(key, driver),
             state: marker::PhantomData,
         }
@@ -247,7 +241,6 @@ where
 /// Copyable hot-path view borrowed from an affine application owner.
 pub(crate) struct View<'app, 'd: 'app, D, S, Plan> {
     stored: pin::Pin<&'app brand::Value<brand::Identity<'d>, Stored<D, Plan>>>,
-    retained: retained::raw::Owner<'app, 'd>,
     state: marker::PhantomData<fn(S) -> S>,
 }
 
@@ -269,13 +262,6 @@ impl<'app, 'd: 'app, D, S, Plan> View<'app, 'd, D, S, Plan> {
     {
         token.borrow_pin(self.stored).project_ref().app
     }
-
-    pub(crate) fn context<'borrow>(
-        self,
-        driver: driver::Context<'borrow, 'd>,
-    ) -> retained::Context<'borrow, 'app, 'd> {
-        retained::Context::new(driver, self.retained)
-    }
 }
 
 impl<'app, 'd: 'app, D, S, Plan> View<'app, 'd, D, S, Plan>
@@ -290,7 +276,6 @@ where
         }
         Self {
             stored: owner.stored,
-            retained: owner.retained,
             state: marker::PhantomData,
         }
     }
@@ -302,9 +287,8 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> ops::ControlFlow<io::Event<'d>> {
-        let ctx = self.context(driver.reborrow());
         let app = token.pin_mut(self.stored).project().app;
-        let call = executor::raw::Dispatch::new(app, event, turn, ctx);
+        let call = executor::raw::Dispatch::new(app, event, turn, driver.reborrow());
         match D::dispatch(call) {
             ops::ControlFlow::Continue(()) => ops::ControlFlow::Continue(()),
             ops::ControlFlow::Break(event) => driver.retire(event),
@@ -318,8 +302,7 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        let ctx = self.context(driver.reborrow());
-        let wake = executor::raw::Activate::new(target, turn, ctx);
+        let wake = executor::raw::Activate::new(target, turn, driver.reborrow());
         wake.wake::<D>(token.pin_mut(self.stored).project().app);
     }
 
@@ -329,8 +312,7 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        let ctx = self.context(driver.reborrow());
-        let park = executor::raw::Park::new(turn, ctx);
+        let park = executor::raw::Park::new(turn, driver.reborrow());
         let stored = token.pin_mut(self.stored).project();
         park.run::<D>(stored.app, stored.park);
     }
@@ -365,12 +347,11 @@ where
         self,
         token: &mut brand::Token<brand::Identity<'d>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: driver::Context<'driver, 'd>,
+        mut driver: driver::Context<'driver, 'd>,
     ) where
         D: Drain<'d>,
     {
-        let mut ctx = self.context(driver);
-        D::begin(token.pin_mut(self.stored).project().app, turn, &mut ctx);
+        D::begin(token.pin_mut(self.stored).project().app, turn, &mut driver);
     }
 
     pub(crate) fn draining(
@@ -388,11 +369,10 @@ where
         self,
         token: &mut brand::Token<brand::Identity<'d>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: driver::Context<'driver, 'd>,
+        mut driver: driver::Context<'driver, 'd>,
     ) where
         D: Drain<'d>,
     {
-        let mut ctx = self.context(driver);
-        D::force(token.pin_mut(self.stored).project().app, turn, &mut ctx);
+        D::force(token.pin_mut(self.stored).project().app, turn, &mut driver);
     }
 }

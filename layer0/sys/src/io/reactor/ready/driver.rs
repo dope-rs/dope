@@ -14,5 +14,7 @@ pub trait Driver {
     type State: State<Self::Context>;
     type Queue: complete::Queue<Event = <Self::Context as Exec>::Event>;
 
-    fn shutdown() -> <<Self::Context as Context>::Slots as change::raw::Slots>::Data;
+    fn shutdown(
+        interest: crate::engine::register::Interest,
+    ) -> <<Self::Context as Context>::Slots as change::raw::Slots>::Data;
 }

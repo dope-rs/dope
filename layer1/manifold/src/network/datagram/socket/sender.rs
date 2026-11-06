@@ -2,18 +2,14 @@ use std::{net, num::NonZero};
 
 use dope_core::{
     driver::{
-        result,
-        retained::{Context, flight},
+        Context, result,
+        retained::flight,
         route,
         route::{Identity, kind::Send, table},
         schedule,
         schedule::app,
     },
-    io::{
-        datagram::{self, source},
-        fd::handles,
-        recv,
-    },
+    io::{datagram, fd::handles, recv},
 };
 use o3::{
     alloc,
@@ -134,19 +130,6 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
                 M::control(addr, Some(segment)),
             ))
         })
-    }
-
-    pub(super) fn sourced(&mut self, value: B, source: source::Source) -> Result<(), Rejected<B>>
-    where
-        M: send::Mode<Queued = source::Control>,
-    {
-        self.try_queue(
-            value,
-            source.peer(),
-            source.control(),
-            kernel::Payload::Buffer,
-        )?;
-        Ok(())
     }
 
     fn enqueue<P, F>(
@@ -301,15 +284,15 @@ mod raw {
     impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode>
         Sender<'d, ID, B, M>
     {
-        pub(in crate::network::datagram) fn flush_with<'fd, 'turn, 'owner>(
+        pub(in crate::network::datagram) fn flush_with<'fd, 'turn>(
             &mut self,
             mut select: impl FnMut(&M::Queued) -> &'fd handles::Datagram<'d>,
             work: app::Work<'turn, 'd>,
-            driver: &mut Context<'_, 'owner, 'd>,
+            driver: &mut Context<'_, 'd>,
             mut transfer: impl FnMut(send::Transfer<'d, ID>),
         ) -> Result<(), result::SubmitError>
         where
-            'd: 'fd + 'owner,
+            'd: 'fd,
         {
             let Self {
                 pending: queue,

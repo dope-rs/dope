@@ -2,7 +2,7 @@ use std::marker;
 
 use dope_core::driver::{
     route::Identity,
-    settings::{self, claim, demands, errors},
+    settings::{self, claim, errors},
 };
 
 use crate::file::appender::InFlight;
@@ -18,14 +18,10 @@ impl<ID: Identity> Default for Layout<ID> {
 
 impl<ID: Identity> settings::Resource for Layout<ID> {
     fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, errors::Claim> {
-        needs.include(
-            claim::Claim::new(settings::Routes::singleton::<ID>())
-                .files(demands::Files::only_out(demands::Outbound::fixed::<1>()))
-                .schedule(demands::Schedule::fixed::<1, 1>()),
-        )
+        needs.include(claim::Claim::new(settings::Routes::singleton::<ID>()))
     }
 }
 
 const _: () = assert!(
-    std::mem::size_of::<InFlight<'static, 'static, 1, 1>>() == 4 * std::mem::size_of::<usize>()
+    std::mem::size_of::<InFlight<'static, 'static, 1>>() == 4 * std::mem::size_of::<usize>()
 );

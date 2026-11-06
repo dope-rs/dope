@@ -16,32 +16,30 @@ where
     executor::raw::Install::new(app, install)
 }
 
-pub(super) fn dispatch<'app, 'driver, 'turn, 'root, 'd: 'root, P>(
-    call: executor::raw::Dispatch<'app, 'driver, 'turn, 'root, 'd, P>,
+pub(super) fn dispatch<'app, 'driver, 'turn, 'd, P>(
+    call: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, P>,
 ) -> ops::ControlFlow<io::Event<'d>>
 where
-    P: lending::raw::Project + 'root,
-    P::App: executor::raw::App<'d> + 'root,
+    P: lending::raw::Project,
+    P::App: executor::raw::App<'d>,
 {
-    call.map(|app, event, turn, driver| {
-        <P::App as executor::raw::App<'d>>::dispatch(executor::raw::Dispatch::new(
-            app.exclusive(),
-            event,
-            turn,
-            driver,
-        ))
-    })
-    .map_break(executor::raw::Dispatch::into_event)
+    let (app, event, turn, driver) = call.into_parts();
+    <P::App as executor::raw::App<'d>>::dispatch(executor::raw::Dispatch::new(
+        app.exclusive(),
+        event,
+        turn,
+        driver,
+    ))
 }
 
 /// # Safety
 /// The prepared plan and park authority belong to this exact pinned projection.
-pub(super) unsafe fn park<'app, 'driver, 'turn, 'root, 'd, P: lending::raw::Project>(
+pub(super) unsafe fn park<'app, 'driver, 'turn, 'd, P: lending::raw::Project>(
     app: pin::Pin<&'app mut P>,
     plan: &mut <P::App as executor::raw::Layout<'d>>::ParkPlan,
-    park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+    park: executor::raw::Park<'driver, 'turn, 'd>,
 ) where
-    'd: 'driver + 'turn + 'root,
+    'd: 'driver + 'turn,
     P::App: executor::raw::App<'d>,
 {
     // SAFETY: preparation and invocation use the same application projection.
@@ -50,21 +48,21 @@ pub(super) unsafe fn park<'app, 'driver, 'turn, 'root, 'd, P: lending::raw::Proj
 
 /// # Safety
 /// The activation retains the installed root and route of this exact projection.
-pub(super) unsafe fn activate<'app, 'driver, 'turn, 'root, 'd, P: lending::raw::Project>(
+pub(super) unsafe fn activate<'app, 'driver, 'turn, 'd, P: lending::raw::Project>(
     app: pin::Pin<&'app mut P>,
-    activate: executor::raw::Activate<'driver, 'turn, 'root, 'd>,
+    activate: executor::raw::Activate<'driver, 'turn, 'd>,
 ) -> bool
 where
-    'd: 'driver + 'turn + 'root,
+    'd: 'driver + 'turn,
     P::App: executor::raw::App<'d>,
 {
     // SAFETY: the caller retains the installed root and route through this projection.
     unsafe { <P::App as executor::raw::App<'d>>::activate(app.exclusive(), activate) }
 }
 
-pub(super) fn shutdown<'app, 'turn, 'driver, 'owner, 'd: 'owner, P: lending::raw::Project>(
-    call: executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, P>,
-) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, P>
+pub(super) fn shutdown<'app, 'turn, 'driver, 'd, P: lending::raw::Project>(
+    call: executor::raw::Shutdown<'app, 'turn, 'driver, 'd, P>,
+) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'd, P>
 where
     P::App: executor::raw::App<'d>,
 {

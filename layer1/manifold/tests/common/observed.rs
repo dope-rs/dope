@@ -1,7 +1,7 @@
 use std::{cell::Cell, convert::Infallible, ops::ControlFlow, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route::KeyTag, schedule, schedule::clock},
+    driver::{self, route::KeyTag, schedule, schedule::clock},
     io,
     random::Seed,
 };
@@ -74,7 +74,7 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App {
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Control, bool>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Control, bool>
     where
         'd: 'w,
@@ -97,7 +97,7 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for App {
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Control, bool>,
         chunk: R,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         self.0
             .early
@@ -158,14 +158,11 @@ where
     const COORDS: usize =
         <<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         let mut this = self.as_mut().project();
         if !this.state.hold.get()
             && let Some(done) = this.pending.take()
@@ -184,14 +181,11 @@ where
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         self.as_ref().project_ref().state.hold.set(false);
         dispatch::raw::Manifold::shutdown(self.as_mut().project().listener, turn, driver);
         self
@@ -201,7 +195,7 @@ where
 impl<'d, M: event::Turn<'d, Access = dispatch::raw::Retained>> event::Turn<'d> for Observed<'d, M> {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -209,13 +203,10 @@ impl<'d, M: event::Turn<'d, Access = dispatch::raw::Retained>> event::Turn<'d> f
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         let (owner, (), (done, turn, driver)) = call.into_parts();
         let this = owner.project();
         let kind = match done.into_kind() {

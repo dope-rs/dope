@@ -2,7 +2,7 @@ use std::pin;
 
 use dope_core::{
     driver::{
-        retained,
+        self,
         route::{Identity, table},
         schedule,
     },
@@ -35,7 +35,7 @@ where
     fn flush<'p>(
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         A::Continuation: Flush<'p, 'w, 'd, ID, A, S, E, Self>,
         Self: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
@@ -48,7 +48,7 @@ where
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: send::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), send::Completion<'d>>
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: wakes::Completion<'d>,
@@ -61,7 +61,7 @@ where
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: socket::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: Connect<'d, ID, A, S, E>,
     {
@@ -72,7 +72,7 @@ where
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: connect::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), connect::Completion<'d>>
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: Connect<'d, ID, A, S, E>,
@@ -106,7 +106,7 @@ where
     fn flush<'p>(
         mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         A::Continuation: Flush<'p, 'w, 'd, ID, A, S, E, Self>,
         Self: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
@@ -122,7 +122,7 @@ where
         mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: send::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), send::Completion<'d>>
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: wakes::Completion<'d>,
@@ -140,7 +140,7 @@ where
         mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: socket::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: Connect<'d, ID, A, S, E>,
     {
@@ -156,7 +156,7 @@ where
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
         done: connect::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), connect::Completion<'d>>
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: Connect<'d, ID, A, S, E>,

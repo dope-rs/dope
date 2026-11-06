@@ -13,6 +13,10 @@ impl<'d> Completion<'d> {
         self.0.target()
     }
 
+    pub const fn outcome(&self) -> Result<(), Errno> {
+        *self.0.value()
+    }
+
     pub(in crate::io) fn resolve(
         self,
         expected: route::Erased<'d, kind::Tuning>,

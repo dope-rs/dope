@@ -28,23 +28,19 @@ unsafe impl<'d, const N: usize> executor::raw::App<'d> for &Trace<route::Erased<
 
     /// # Safety
     /// The selected plan is uninhabited, so this operation cannot be invoked.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
         plan: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         match *plan {}
     }
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
-        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'root, 'd, Self>,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root,
-    {
+    fn dispatch<'app, 'driver, 'turn>(
+        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
+    ) -> ControlFlow<io::Event<'d>> {
         ControlFlow::Continue(())
     }
 
@@ -58,12 +54,12 @@ unsafe impl<'d, const N: usize> executor::raw::App<'d> for &Trace<route::Erased<
 
     /// # Safety
     /// The runtime supplies this exact pinned reference and route-zero event.
-    unsafe fn activate<'app, 'driver, 'turn, 'root>(
+    unsafe fn activate<'app, 'driver, 'turn>(
         app: Pin<&'app mut Self>,
-        event: executor::raw::Activate<'driver, 'turn, 'root, 'd>,
+        event: executor::raw::Activate<'driver, 'turn, 'd>,
     ) -> bool
     where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         app.get_mut().record(event.target());
         true

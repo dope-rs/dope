@@ -104,13 +104,14 @@ fn grant_before_probe() {
                     pool.reserve().data(first),
                     event::Reservation::Drop
                 ));
-                scope.with_driver(|mut driver, mut control| {
+                {
+                    let (_, mut driver, mut control) = scope.split();
                     let mut turn = control.begin();
                     assert!(matches!(
                         driver.commit(turn.reactor()),
                         Ok(poll::Commit::Drained)
                     ));
-                });
+                };
                 let mut wakes = 0;
                 let found = eof::take_ready(scope, |token| {
                     assert!(key.target().dispatch().matches(token));

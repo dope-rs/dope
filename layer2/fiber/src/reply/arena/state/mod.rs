@@ -1,6 +1,6 @@
 //! Reply arena state transitions.
 
-use std::{mem, task};
+use std::mem;
 
 use dope::core::driver::schedule::ready::wake::Waker;
 use head::Head;
@@ -62,34 +62,22 @@ pub(super) struct Entry<'arena, 'credits, 'region, D, E> {
 }
 
 pub(in crate::reply) struct Signal<'region> {
-    notified: bool,
     wake: Option<Waker<'region>>,
 }
 
 impl<'region> Signal<'region> {
     pub(super) const fn new() -> Self {
-        Self {
-            notified: false,
-            wake: None,
-        }
+        Self { wake: None }
     }
 
     pub(in crate::reply) fn notify(&mut self) {
-        self.notified = true;
         if let Some(wake) = self.wake.take() {
             wake.wake();
         }
     }
 
-    pub(in crate::reply) fn poll(&mut self, wake: Waker<'region>) -> task::Poll<()> {
-        if self.notified {
-            self.notified = false;
-            self.wake = None;
-            task::Poll::Ready(())
-        } else {
-            self.wake = Some(wake);
-            task::Poll::Pending
-        }
+    pub(in crate::reply) fn register(&mut self, wake: Waker<'region>) {
+        self.wake = Some(wake);
     }
 }
 

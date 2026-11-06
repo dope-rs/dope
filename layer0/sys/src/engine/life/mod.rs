@@ -1,7 +1,7 @@
 mod error;
 mod step;
 
-use std::{ops::ControlFlow, os::fd::BorrowedFd};
+use std::ops::ControlFlow;
 
 pub use error::Error;
 pub use step::Step;
@@ -66,7 +66,7 @@ pub trait Terminal {
     fn has_flights(&self) -> bool;
     fn has_inflight(&self) -> bool;
     fn has_pending(&self) -> bool;
-    fn source(&self) -> Option<BorrowedFd<'_>>;
+    fn source(&self) -> Option<engine::register::Source<'_>>;
 }
 
 /// Lends the disjoint backend and host state for final retirement and resumption.

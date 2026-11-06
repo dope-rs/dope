@@ -8,16 +8,6 @@ use o3::depot::array;
 static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
-fn reconcile_policy_layout() {
-    assert_eq!(
-        std::mem::align_of::<service::sync::Preserve>(),
-        std::mem::align_of::<service::sync::Replace>()
-    );
-    assert_eq!(std::mem::size_of::<service::sync::Preserve>(), 0);
-    assert_eq!(std::mem::size_of::<service::sync::Replace>(), 0);
-}
-
-#[test]
 fn accepts_endpoint_limit() {
     let snap = Snapshot::<_, { service::MAX_ENDPOINTS }>::from_vec(
         Revision::new(1),

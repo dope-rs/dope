@@ -28,20 +28,17 @@ pub trait Complete<'d>: Sized {
 pub trait Drive<'d>: Sized {
     type Access;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root;
+    ) -> ops::ControlFlow<io::Event<'d>>;
 }
 
 /// Event-only completion capability.
@@ -51,7 +48,7 @@ pub struct Observe;
 pub trait Turn<'d>: Sized {
     type Access;
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -59,10 +56,8 @@ pub trait Turn<'d>: Sized {
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root;
+    ) -> ops::ControlFlow<io::Event<'d>>;
 }

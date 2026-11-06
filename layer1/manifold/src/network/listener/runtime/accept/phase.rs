@@ -1,7 +1,7 @@
 use std::pin;
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule},
+    driver::{self, route::Identity, schedule},
     io::{
         event::net::{accept, tuning},
         socket::pending,
@@ -30,7 +30,7 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     done: accept::Completion<'d>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     A::WireFailure: failures::Policy<'w, 'd, A, ID>,
@@ -46,7 +46,7 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
                 if let Some(peer) = <A::WireFailure as failures::Policy<'w, 'd, A, ID>>::peer() {
                     peer.call((this.app.as_mut(), cause));
                 }
-                fd.close(driver.driver());
+                fd.close(driver);
                 return;
             }
             Incoming::Failed {
@@ -58,9 +58,7 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
                 let retry = if cause.is_retryable() || defer {
                     true
                 } else if cause.is_resource() {
-                    this.accept
-                        .as_mut()
-                        .defer(turn.clock().now(), driver.driver());
+                    this.accept.as_mut().defer(turn.clock().now(), driver);
                     true
                 } else {
                     false
@@ -72,14 +70,14 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
                 }
                 driver.accept_error(target, cause, flow);
                 if !retry {
-                    this.accept.as_mut().stop_accept(driver.driver());
+                    this.accept.as_mut().stop_accept(driver);
                 }
                 return;
             }
             Incoming::Rejected => return,
         };
         if !this.schedule.is_open() {
-            fd.close(driver.driver());
+            fd.close(driver);
             return;
         }
         let mut accept = this.accept.as_mut();
@@ -111,7 +109,7 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
             driver,
         );
         if this.owner.pool().inspect().available() == capacity::Count::EMPTY {
-            accept.pause(driver.driver());
+            accept.pause(driver);
         }
         result
     };
@@ -138,7 +136,7 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
                 .project()
                 .accept
                 .failed(listener::AcceptError::IdentityExhausted);
-            root.as_mut().seal(driver.driver());
+            root.as_mut().seal(driver);
         }
         Ok(Outcome::Rejected(Rejection::Application(cause))) => {
             A::build_failed(root.as_mut().project().app, cause);
@@ -156,7 +154,7 @@ pub(in crate::network::listener) fn tune<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     done: tuning::Completion<'d>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> Result<(), tuning::Completion<'d>>
 where
     A: handler::Application<'d, ID>,
@@ -187,7 +185,7 @@ pub(in crate::network::listener) fn finish<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     key: pool::Key<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     A::WireFailure: failures::Policy<'w, 'd, A, ID>,

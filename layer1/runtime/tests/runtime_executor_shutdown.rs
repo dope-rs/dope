@@ -183,13 +183,72 @@ fn ready_install_shutdown() {
 }
 
 #[test]
+fn readiness_is_not_shutdown() {
+    use crate::common::runtime::executor::client::Pending;
+    use dope_runtime::executor::{Startup as _, drive};
+
+    let (main, worker) = lifecycle::Main::try_pair().expect("worker lifecycle");
+    let mut finish = Completion::new();
+    let mut create = Attempt::new();
+    let executor = Configured::quic::<2, 8>()
+        .try_source(&mut create, &main)
+        .unwrap_or_else(|error| panic!("observer creation: {:?}", error.kind()));
+    executor.run(|executor| {
+        executor
+            .enter_with(
+                |mut session| {
+                    session
+                        .with_app(&mut finish, Empty {}, |mut app| {
+                            assert!(matches!(
+                                app.drive_for(time::Duration::from_millis(1), Pending),
+                                Err(drive::Error::Timeout)
+                            ));
+                            let outcome = worker.run(|source| {
+                                source.installed().expect("publish installation");
+                                for consumed in [false, true] {
+                                    if consumed {
+                                        main.wait_ready(time::Duration::ZERO)
+                                            .expect("installation record");
+                                    }
+                                    assert!(matches!(
+                                        app.drive_for(time::Duration::from_millis(1), Pending),
+                                        Err(drive::Error::Timeout)
+                                    ));
+                                }
+                                source.terminal().fail().expect("publish terminal failure");
+                                let _request = app
+                                    .run_for(TIMEOUT)
+                                    .expect("terminal shutdown before worker cleanup");
+                                main.wait_done(time::Duration::ZERO)
+                                    .expect("retained failure record");
+                                Ok::<_, Infallible>(())
+                            });
+                            assert!(matches!(
+                                outcome,
+                                lifecycle::Outcome::Failed { output: Ok(()), .. }
+                            ));
+                        })
+                        .expect("observer cleanup");
+                },
+                recovery::Policy::new(
+                    |event| panic!("unexpected reclamation: {event:?}"),
+                    common::recover,
+                ),
+            )
+            .as_ref()
+            .map_err(|error| error.cause())
+            .expect("observer completion");
+    });
+}
+
+#[test]
 fn cancelled_ready() {
     let (main, worker) = lifecycle::Main::try_pair().expect("ready shutdown pair");
     assert!(matches!(
         main.wait_ready(time::Duration::ZERO),
         Err(lifecycle::WaitError::Timeout { .. })
     ));
-    let main = main.stop().expect("pre-install shutdown");
+    main.request().expect("pre-install shutdown");
     let outcome = worker.run(|source| {
         source
             .control()

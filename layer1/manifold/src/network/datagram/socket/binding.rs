@@ -23,18 +23,17 @@ pub(in crate::network::datagram) struct Binding<'d, ID: Identity> {
     bound_addr: net::SocketAddr,
 }
 
+type Installed<'d, ID> = (
+    Binding<'d, ID>,
+    route::Target<'d, <ID as route::Materialize<Recv>>::With>,
+    Option<route::Epoch>,
+);
+
 impl<'d, ID: Identity> Binding<'d, ID> {
     pub(in crate::network::datagram) fn bind(
         addr: net::SocketAddr,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<
-        (
-            Self,
-            route::Target<'d, <ID as route::Materialize<Recv>>::With>,
-            Option<route::Epoch>,
-        ),
-        creation::Error,
-    > {
+    ) -> Result<Installed<'d, ID>, creation::Error> {
         let config =
             socket::Config::for_datagram((addr.port() != 0).then_some(socket::Reuse::Port));
         Self::install(driver, |driver| {
@@ -45,14 +44,7 @@ impl<'d, ID: Identity> Binding<'d, ID> {
     pub(in crate::network::datagram) fn adopt(
         binding: Lease,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<
-        (
-            Self,
-            route::Target<'d, <ID as route::Materialize<Recv>>::With>,
-            Option<route::Epoch>,
-        ),
-        creation::Error,
-    > {
+    ) -> Result<Installed<'d, ID>, creation::Error> {
         Self::install(driver, |driver| {
             Install::adopt_routed(driver.reborrow(), binding)
         })
@@ -64,14 +56,7 @@ impl<'d, ID: Identity> Binding<'d, ID> {
             &mut driver::Context<'_, 'd>,
         )
             -> Result<(handles::Datagram<'d>, net::SocketAddr), install::Error>,
-    ) -> Result<
-        (
-            Self,
-            route::Target<'d, <ID as route::Materialize<Recv>>::With>,
-            Option<route::Epoch>,
-        ),
-        creation::Error,
-    > {
+    ) -> Result<Installed<'d, ID>, creation::Error> {
         let mut route = lease::Owner::try_reserve(driver).map_err(creation::Error::Route)?;
         let bound = install(route.driver());
         let (fixed_fd, addr) = bound

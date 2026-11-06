@@ -30,11 +30,11 @@ const _: () = {
     assert!(mem::size_of::<Datagram<'static>>() == mem::size_of::<request::Lowered>());
     assert!(mem::align_of::<Datagram<'static>>() == mem::align_of::<request::Lowered>());
     assert!(
-        mem::size_of::<bound::Bound<'static, 'static, Datagram<'static>>>()
-            == mem::size_of::<bound::Bound<'static, 'static>>()
+        mem::size_of::<bound::Bound<'static, Datagram<'static>>>()
+            == mem::size_of::<bound::Bound<'static>>()
     );
     assert!(
-        mem::align_of::<bound::Bound<'static, 'static, Datagram<'static>>>()
-            == mem::align_of::<bound::Bound<'static, 'static>>()
+        mem::align_of::<bound::Bound<'static, Datagram<'static>>>()
+            == mem::align_of::<bound::Bound<'static>>()
     );
 };

@@ -1,6 +1,6 @@
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{
         egress::reserve::demand,
@@ -64,12 +64,9 @@ where
     fn receive<'input>(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        input: <crate::Ingress<Self::Wire, Self::Input> as ingress::Strategy<
-            Self::Wire,
-            Self::Input,
-        >>::Value<'input, 'w, 'd>,
+        input: crate::Incoming<'input, 'w, 'd, Self::Wire, Self::Input>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input> {
         <A::Input as app::Policy<'w, 'd, ID, A>>::receive(self, key, input, turn, driver)
     }
@@ -79,7 +76,7 @@ where
         key: pool::Key<'d, ID>,
         finish: ingress::Finish,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         match finish {
             ingress::Finish::Empty(ingress::Empty::NoChunk | ingress::Empty::Discarded { .. }) => {
@@ -111,7 +108,7 @@ where
         mut self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Terminal {
         {
             let this = self.as_mut().project();
@@ -158,7 +155,7 @@ where
         key: pool::Key<'d, ID>,
         end: receive::End,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let (eof, reason) = {
             let this = self.as_mut().project();
@@ -212,7 +209,7 @@ where
         key: pool::Key<'d, ID>,
         cause: ingress::CloseCause,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let reason = match cause {
             ingress::CloseCause::Local => Reason::Local(LocalOrigin::OperationCancelled),

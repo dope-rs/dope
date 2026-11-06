@@ -5,8 +5,8 @@ use dope_core::driver::route::{Identity, KeyTag};
 use crate::client::{
     close,
     conn::{
-        self,
-        closing::{Closing, Quarantine, RetireState, SettledState},
+        self, ClosePhase,
+        closing::{Closing, Packed, RetireRef},
         state,
     },
 };
@@ -52,43 +52,34 @@ pub(in crate::client) enum Stage<'a, 'd, ID: Identity> {
 
 #[must_use = "starting close proof must run quarantine"]
 pub(in crate::client) struct Starting<'a, 'd, ID: Identity> {
-    state: Quarantine<'a>,
-    reason: close::Reason,
+    state: &'a mut Packed,
     proof: state::Enter<'d, ID>,
 }
 
 impl<'a, 'd, ID: Identity> Starting<'a, 'd, ID> {
-    pub(super) fn new(
-        state: Quarantine<'a>,
-        reason: close::Reason,
-        proof: state::Enter<'d, ID>,
-    ) -> Self {
-        Self {
-            state,
-            reason,
-            proof,
-        }
+    pub(super) fn new(state: &'a mut Packed, proof: state::Enter<'d, ID>) -> Self {
+        Self { state, proof }
     }
 
     pub(in crate::client) fn quarantine(
         self,
         run: impl FnOnce(close::Reason),
     ) -> Retiring<'a, 'd, ID> {
-        let reason = self.reason;
-        run(reason);
-        Retiring::new(self.state.complete(), self.proof)
+        run(self.state.rule.reason());
+        *self.state = self.state.with_phase(ClosePhase::Retiring);
+        Retiring::new(self.state, self.proof)
     }
 }
 
 #[repr(transparent)]
 #[must_use = "retiring close proof must be settled"]
 pub(in crate::client) struct Retiring<'a, 'd, ID: Identity> {
-    state: RetireState<'a>,
+    state: &'a mut Packed,
     brand: marker::PhantomData<fn(conn::Id<'d, ID>) -> conn::Id<'d, ID>>,
 }
 
 impl<'a, 'd, ID: Identity> Retiring<'a, 'd, ID> {
-    pub(super) fn new(state: RetireState<'a>, _: state::Enter<'d, ID>) -> Self {
+    pub(super) fn new(state: &'a mut Packed, _: state::Enter<'d, ID>) -> Self {
         Self {
             state,
             brand: marker::PhantomData,
@@ -97,28 +88,29 @@ impl<'a, 'd, ID: Identity> Retiring<'a, 'd, ID> {
 
     pub(in crate::client) fn reborrow(&mut self) -> conn::CloseRequest<'_, 'd, ID> {
         conn::CloseRequest {
-            target: conn::CloseTarget::Retiring(self.state.reborrow()),
+            target: conn::CloseTarget::Retiring(RetireRef(&mut *self.state)),
             brand: marker::PhantomData,
         }
     }
 
     pub(in crate::client) fn reason(&self) -> close::Reason {
-        self.state.reason()
+        self.state.effective().reason()
     }
 
     pub(in crate::client) fn settle(self) -> Settled<'a, 'd, ID> {
-        Settled::new(self.state.settle())
+        *self.state = self.state.with_phase(ClosePhase::Settled);
+        Settled::new(self.state)
     }
 }
 
 #[repr(transparent)]
 pub(in crate::client) struct Settled<'a, 'd, ID: Identity> {
-    state: SettledState<'a>,
+    state: &'a Packed,
     brand: marker::PhantomData<fn(conn::Id<'d, ID>) -> conn::Id<'d, ID>>,
 }
 
 impl<'a, 'd, ID: Identity> Settled<'a, 'd, ID> {
-    pub(super) fn new(state: SettledState<'a>) -> Self {
+    pub(super) fn new(state: &'a Packed) -> Self {
         Self {
             state,
             brand: marker::PhantomData,
@@ -126,7 +118,7 @@ impl<'a, 'd, ID: Identity> Settled<'a, 'd, ID> {
     }
 
     pub(in crate::client) fn reason(&self) -> close::Reason {
-        self.state.reason()
+        self.state.effective().reason()
     }
 }
 

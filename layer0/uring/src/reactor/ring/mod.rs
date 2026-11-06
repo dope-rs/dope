@@ -346,6 +346,7 @@ impl<T> inspect::Inspect for Ring<T> {
             controls::CANCEL,
             sockets::CONNECT,
             files::CLOSE,
+            files::METADATA,
             files::READ,
             files::WRITE,
             files::SYNC,

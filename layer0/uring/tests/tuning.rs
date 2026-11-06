@@ -44,130 +44,121 @@ type Timeout<'a> = <<Uring as Source>::Enter<'a, Token> as Enter>::Timeout;
 
 #[test]
 fn retire_waits_terminal() {
-    assert!(
-        backend::with(|backend| {
-            let mut observed = Vec::new();
-            occupy(backend, num::NonZero::<u64>::MIN).expect("gate state");
-            assert_eq!(queued(backend), 0);
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_pending()
-            );
-            assert_eq!(queued(backend), 1);
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_pending()
-            );
-            assert_eq!(queued(backend), 1, "waiting retirement queues no duplicate");
-            assert_eq!(
-                observed.as_slice(),
-                [],
-                "cancel does not commit close authority"
-            );
-            backend.tuning().retry_cancel(1);
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_pending()
-            );
-            assert_eq!(queued(backend), 2, "failed cancel permits another attempt");
-            assert_eq!(observed.as_slice(), []);
-            backend
-                .tuning()
-                .bind(1)
-                .expect("terminal owns target")
-                .clear();
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_ready()
-            );
-            assert_eq!(queued(backend), 4, "terminal releases shutdown and close");
-            assert_eq!(
-                observed.as_slice(),
-                [Some(1)],
-                "only close consumes host authority"
-            );
+    backend::with(|backend| {
+        let mut observed = Vec::new();
+        occupy(backend, num::NonZero::<u64>::MIN).expect("gate state");
+        assert_eq!(queued(backend), 0);
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_pending()
+        );
+        assert_eq!(queued(backend), 1);
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_pending()
+        );
+        assert_eq!(queued(backend), 1, "waiting retirement queues no duplicate");
+        assert_eq!(
+            observed.as_slice(),
+            [],
+            "cancel does not commit close authority"
+        );
+        backend.tuning().retry_cancel(1);
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_pending()
+        );
+        assert_eq!(queued(backend), 2, "failed cancel permits another attempt");
+        assert_eq!(observed.as_slice(), []);
+        backend
+            .tuning()
+            .bind(1)
+            .expect("terminal owns target")
+            .clear();
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_ready()
+        );
+        assert_eq!(queued(backend), 4, "terminal releases shutdown and close");
+        assert_eq!(
+            observed.as_slice(),
+            [Some(1)],
+            "only close consumes host authority"
+        );
 
-            let fresh = num::NonZero::new(2).expect("fresh tuning target");
-            occupy(backend, fresh).expect("gate state");
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_pending()
-            );
-            assert_eq!(queued(backend), 5);
-            backend.tuning().retry_cancel(1);
-            assert_eq!(
-                backend.tuning().bind(1).expect("fresh terminal").target(),
-                fresh
-            );
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_pending()
-            );
-            assert_eq!(
-                queued(backend),
-                6,
-                "late reply permits retry without clearing"
-            );
-            assert_eq!(
-                observed.as_slice(),
-                [Some(1)],
-                "late reply grants no close authority"
-            );
-            backend.tuning().bind(1).expect("fresh terminal").clear();
-        })
-        .is_ok()
-    );
+        let fresh = num::NonZero::new(2).expect("fresh tuning target");
+        occupy(backend, fresh).expect("gate state");
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_pending()
+        );
+        assert_eq!(queued(backend), 5);
+        backend.tuning().retry_cancel(1);
+        assert_eq!(
+            backend.tuning().bind(1).expect("fresh terminal").target(),
+            fresh
+        );
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_pending()
+        );
+        assert_eq!(
+            queued(backend),
+            6,
+            "late reply permits retry without clearing"
+        );
+        assert_eq!(
+            observed.as_slice(),
+            [Some(1)],
+            "late reply grants no close authority"
+        );
+        backend.tuning().bind(1).expect("fresh terminal").clear();
+    });
 }
 
 #[test]
 fn cancellation_keeps_owner() {
-    assert!(
-        backend::with(|first| {
+    backend::with(|first| {
+        backend::with(|second| {
+            let mut observed = Vec::new();
+            occupy(first, num::NonZero::<u64>::MIN).expect("gate state");
+            occupy(second, num::NonZero::<u64>::MIN).expect("gate state");
             assert!(
-                backend::with(|second| {
-                    let mut observed = Vec::new();
-                    occupy(first, num::NonZero::<u64>::MIN).expect("gate state");
-                    occupy(second, num::NonZero::<u64>::MIN).expect("gate state");
-                    assert!(
-                        try_retire(first, &mut observed)
-                            .expect("retirement observation")
-                            .is_pending()
-                    );
-                    assert_eq!(queued(first), 1);
-                    second.tuning().bind(1).expect("second terminal").clear();
-                    assert!(
-                        try_retire(second, &mut observed)
-                            .expect("retirement observation")
-                            .is_ready()
-                    );
-                    assert_eq!(queued(second), 2);
-                    assert!(
-                        try_retire(first, &mut observed)
-                            .expect("retirement observation")
-                            .is_pending()
-                    );
-                    assert_eq!(queued(first), 1, "other owner cannot clear first target");
-                    assert_eq!(observed.as_slice(), [Some(1)]);
-                    first.tuning().bind(1).expect("first terminal").clear();
-                    assert!(
-                        try_retire(first, &mut observed)
-                            .expect("retirement observation")
-                            .is_ready()
-                    );
-                    assert_eq!(queued(first), 3);
-                    assert_eq!(observed.as_slice(), [Some(1), Some(1)]);
-                })
-                .is_ok()
+                try_retire(first, &mut observed)
+                    .expect("retirement observation")
+                    .is_pending()
             );
-        })
-        .is_ok()
-    );
+            assert_eq!(queued(first), 1);
+            second.tuning().bind(1).expect("second terminal").clear();
+            assert!(
+                try_retire(second, &mut observed)
+                    .expect("retirement observation")
+                    .is_ready()
+            );
+            assert_eq!(queued(second), 2);
+            assert!(
+                try_retire(first, &mut observed)
+                    .expect("retirement observation")
+                    .is_pending()
+            );
+            assert_eq!(queued(first), 1, "other owner cannot clear first target");
+            assert_eq!(observed.as_slice(), [Some(1)]);
+            first.tuning().bind(1).expect("first terminal").clear();
+            assert!(
+                try_retire(first, &mut observed)
+                    .expect("retirement observation")
+                    .is_ready()
+            );
+            assert_eq!(queued(first), 3);
+            assert_eq!(observed.as_slice(), [Some(1), Some(1)]);
+        });
+    });
 }
 
 #[test]
@@ -175,50 +166,47 @@ fn full_cancel_can_retry() {
     use dope_sys::io::reactor::submit::{Control as _, Ready as _, raw::Vacancy as _};
     use token::Codec as _;
 
-    assert!(
-        backend::with(|backend| {
-            let mut observed = Vec::new();
-            occupy(backend, num::NonZero::<u64>::MIN).expect("gate state");
-            let nop = Uring::nop(HostToken::prepare());
-            for _ in 0..16 {
-                backend
-                    .ring()
-                    .submission()
-                    .try_one()
-                    .expect("fixture has sixteen slots")
-                    .prepare(&nop)
-                    .push();
-            }
-            assert_eq!(queued(backend), 16);
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_pending()
-            );
-            assert_eq!(queued(backend), 16, "full queue publishes no cancellation");
-            assert_eq!(observed.as_slice(), []);
+    backend::with(|backend| {
+        let mut observed = Vec::new();
+        occupy(backend, num::NonZero::<u64>::MIN).expect("gate state");
+        let nop = Uring::nop(HostToken::prepare());
+        for _ in 0..16 {
             backend
                 .ring()
-                .enter()
-                .try_submit()
-                .expect("submit fixture nops");
-            backend.ring().submission().refresh();
-            assert_eq!(queued(backend), 0);
-            assert!(
-                try_retire(backend, &mut observed)
-                    .expect("retirement observation")
-                    .is_pending()
-            );
-            assert_eq!(queued(backend), 1, "failed reservation remains retryable");
-            assert_eq!(observed.as_slice(), []);
-            backend
-                .tuning()
-                .bind(1)
-                .expect("terminal owns target")
-                .clear();
-        })
-        .is_ok()
-    );
+                .submission()
+                .try_one()
+                .expect("fixture has sixteen slots")
+                .prepare(&nop)
+                .push();
+        }
+        assert_eq!(queued(backend), 16);
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_pending()
+        );
+        assert_eq!(queued(backend), 16, "full queue publishes no cancellation");
+        assert_eq!(observed.as_slice(), []);
+        backend
+            .ring()
+            .enter()
+            .try_submit()
+            .expect("submit fixture nops");
+        backend.ring().submission().refresh();
+        assert_eq!(queued(backend), 0);
+        assert!(
+            try_retire(backend, &mut observed)
+                .expect("retirement observation")
+                .is_pending()
+        );
+        assert_eq!(queued(backend), 1, "failed reservation remains retryable");
+        assert_eq!(observed.as_slice(), []);
+        backend
+            .tuning()
+            .bind(1)
+            .expect("terminal owns target")
+            .clear();
+    });
 }
 
 #[test]
@@ -341,7 +329,6 @@ fn reserves_exact_cells() {
                     .expect("successful chain completion");
                 assert_eq!(parts.token, Token(0));
                 assert!(seen < width, "duplicate completion");
-                let value: bounded::U32<0, { i32::MAX as u32 }> = value.into();
                 assert_eq!(value.get(), 0);
                 seen += 1;
             }
@@ -411,8 +398,7 @@ fn split_options_complete() {
                     .outcome
                     .bytes()
                     .expect("native outcome")
-                    .err()
-                    .expect("empty fixed slot");
+                    .expect_err("empty fixed slot");
                 if code == Errno::CANCELED {
                     canceled += 1;
                 } else {

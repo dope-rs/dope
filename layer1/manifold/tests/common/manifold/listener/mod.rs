@@ -120,28 +120,22 @@ where
     const COORDS: usize =
         <<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         unsafe {
             dispatch::raw::Manifold::pre_park(self.as_mut().project().listener, turn, driver);
         }
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         dispatch::raw::Manifold::shutdown(self.as_mut().project().listener, turn, driver);
         self
     }
@@ -154,7 +148,7 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -162,13 +156,10 @@ where
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         let (owner, (), (done, turn, mut driver)) = call.into_parts();
         let mut this = owner.project();
         let kind = match (done.into_kind(), &mut *this.at) {

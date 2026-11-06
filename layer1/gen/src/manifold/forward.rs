@@ -79,7 +79,6 @@ fn generate(mut input: syn::DeriveInput) -> Result<TokenStream, Failure> {
     let head = generics.split_for_impl().0;
     let owner = brand.fresh("__owner");
     let turn = brand.fresh("__turn");
-    let root = brand.fresh("__root");
     let mut projection = input.generics.clone();
     projection.params.insert(0, syn::parse_quote!(#owner));
     let (projection_head, _, projection_clause) = projection.split_for_impl();
@@ -120,13 +119,11 @@ fn generate(mut input: syn::DeriveInput) -> Result<TokenStream, Failure> {
 
                 /// SAFETY: the enclosing exact dispatcher installed this pinned
                 /// owner, and the body forwards that same projection.
-                unsafe fn pre_park<#owner, #turn, #root>(
+                unsafe fn pre_park<#owner, #turn>(
                     mut self: ::core::pin::Pin<&#owner mut Self>,
                     #vturn: #core::driver::schedule::Turn<#turn, #life>,
-                    #vctx: &mut #mf::app::dispatch::raw::Context<'_, #root, #life, Self::PrePark>,
+                    #vctx: &mut #mf::app::dispatch::raw::Context<'_, #life, Self::PrePark>,
                 ) -> ::core::pin::Pin<&#owner mut Self>
-                where
-                    Self: #root,
                 {
                     /// SAFETY: Forward::pre_park inherits the installed-owner precondition.
                     unsafe { #mf::app::dispatch::raw::Manifold::pre_park(
@@ -136,13 +133,11 @@ fn generate(mut input: syn::DeriveInput) -> Result<TokenStream, Failure> {
                     ) };
                     self
                 }
-                fn shutdown<#owner, #turn, #root>(
+                fn shutdown<#owner, #turn>(
                     mut self: ::core::pin::Pin<&#owner mut Self>,
                     #vturn: #core::driver::schedule::Turn<#turn, #life>,
-                    #vctx: &mut #mf::app::dispatch::raw::Context<'_, #root, #life, Self::Shutdown>,
+                    #vctx: &mut #mf::app::dispatch::raw::Context<'_, #life, Self::Shutdown>,
                 ) -> ::core::pin::Pin<&#owner mut Self>
-                where
-                    Self: #root,
                 {
                     #mf::app::dispatch::raw::Manifold::shutdown(
                         #mf::app::dispatch::raw::Projection::inner_mut(self.as_mut()),

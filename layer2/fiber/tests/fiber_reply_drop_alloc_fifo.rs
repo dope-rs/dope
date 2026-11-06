@@ -33,7 +33,7 @@ fn wakes_after_same_reply_consumption() {
 
     use crate::common::{
         runtime::profile,
-        schedule::tasks::{fixtures::Rounds as _, retained::Retain as _},
+        schedule::tasks::fixtures::Rounds as _,
         storage::replies::{
             TakeOne,
             support::{capacity, limit},
@@ -44,107 +44,102 @@ fn wakes_after_same_reply_consumption() {
     let mut reports = Vec::new();
     Setup::for_profile::<profile::Tasks>().with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
-                let core = context.driver_ref();
-                let route = core
-                    .targets::<KeyTag<0>>()
-                    .bind(SlotIndex::from(0), Epoch::INITIAL)
-                    .dispatch();
-                let root = core.ready().make_slot(route).expect("ready slot");
-                let mut driver = context.retained();
-                let layout = layout::Layout::new(capacity(1, 2, 4, 4, 4), limit(1, 1, 1))
-                    .expect("reply layout");
-                Arena::try_with(layout, driver.region_token().proof(), |arena| {
-                    let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
-                    lane.bind_retire(root.target());
-                    let mut older = recv::Stream::<_, TakeOne>::new();
-                    older
-                        .try_attach(driver.region_token(), lane)
-                        .expect("older reply");
-                    assert!(
-                        lane.select(driver.region_token())
-                            .try_push(Counted::mixed(&drops))
-                            .is_ok()
-                    );
-                    lane.complete(driver.region_token());
-                    let mut current = recv::Stream::<_, TakeOne>::new();
-                    current
-                        .try_attach(driver.region_token(), lane)
-                        .expect("current reply");
-                    let reserve = lane
-                        .try_reserve(usage::Usage::new(usage::Bytes::ZERO, usage::Values::new(3)))
-                        .expect("reserve remaining credit");
-                    let value = match lane
-                        .select(driver.region_token())
+            let (_, context, mut control) = scope.split();
+            let core = context.driver_ref();
+            let route = core
+                .targets::<KeyTag<0>>()
+                .bind(SlotIndex::from(0), Epoch::INITIAL)
+                .dispatch();
+            let root = core.ready().make_slot(route).expect("ready slot");
+            let mut driver = context;
+            let layout =
+                layout::Layout::new(capacity(1, 2, 4, 4, 4), limit(1, 1, 1)).expect("reply layout");
+            Arena::try_with(layout, driver.region_token().proof(), |arena| {
+                let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+                lane.bind_retire(root.target());
+                let mut older = recv::Stream::<_, TakeOne>::new();
+                older
+                    .try_attach(driver.region_token(), lane)
+                    .expect("older reply");
+                assert!(
+                    lane.select(driver.region_token())
                         .try_push(Counted::mixed(&drops))
-                    {
-                        Err(usage::InsertError::Backpressure { value, .. }) => value,
-                        _ => panic!("global pressure"),
-                    };
-                    drop(reserve);
-                    assert!(lane.select(driver.region_token()).try_push(value).is_ok());
-                    let failure = match lane
-                        .select(driver.region_token())
-                        .try_fail(Counted::data(&drops))
-                    {
-                        Err(usage::InsertError::Backpressure { value, cause }) => {
-                            assert_eq!(
-                                cause.into_parts(),
-                                (
-                                    usage::Resource::Values,
-                                    usage::Required::new(1),
-                                    usage::Available::new(0),
-                                )
-                            );
-                            value
-                        }
-                        _ => panic!("local pressure"),
-                    };
-                    assert_eq!(drops.count(), 0);
-                    control.begin().ready_round(|_| {});
+                        .is_ok()
+                );
+                lane.complete(driver.region_token());
+                let mut current = recv::Stream::<_, TakeOne>::new();
+                current
+                    .try_attach(driver.region_token(), lane)
+                    .expect("current reply");
+                let reserve = lane
+                    .try_reserve(usage::Usage::new(usage::Bytes::ZERO, usage::Values::new(3)))
+                    .expect("reserve remaining credit");
+                let value = match lane
+                    .select(driver.region_token())
+                    .try_push(Counted::mixed(&drops))
+                {
+                    Err(usage::InsertError::Backpressure { value, .. }) => value,
+                    _ => panic!("global pressure"),
+                };
+                drop(reserve);
+                assert!(lane.select(driver.region_token()).try_push(value).is_ok());
+                let failure = match lane
+                    .select(driver.region_token())
+                    .try_fail(Counted::data(&drops))
+                {
+                    Err(usage::InsertError::Backpressure { value, cause }) => {
+                        assert_eq!(
+                            cause.into_parts(),
+                            (
+                                usage::Resource::Values,
+                                usage::Required::new(1),
+                                usage::Available::new(0),
+                            )
+                        );
+                        value
+                    }
+                    _ => panic!("local pressure"),
+                };
+                assert_eq!(drops.count(), 0);
+                control.begin().ready_round(|_| {});
+                let turn = control.begin();
+                turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                    arena.maintain(share.work(), driver.region_token());
+                });
+                assert_eq!(
+                    turn.ready_round(|_| {}),
+                    0,
+                    "stale global link cannot wake a local wait"
+                );
+                assert!(matches!(arena.work(), Work::Idle));
+
+                let mut held = [None, None];
+                for (index, response) in [&mut older, &mut current].into_iter().enumerate() {
                     let turn = control.begin();
-                    turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
-                        arena.maintain(share.work(), driver.region_token());
+                    let result = Context::with_target(
+                        root.target(),
+                        turn.turn().app(),
+                        driver.reborrow(),
+                        |context| Pin::new(response).poll_next(context),
+                    );
+                    held[index] = Some(match result {
+                        Poll::Ready(Some(Ok(value))) => value,
+                        _ => panic!("queued value"),
                     });
                     assert_eq!(
-                        turn.ready_round(|_| {}),
-                        0,
-                        "stale global link cannot wake a local wait"
+                        turn.ready_round(|event| assert!(route.matches(event))),
+                        index
                     );
-                    assert!(matches!(arena.work(), Work::Idle));
-
-                    let mut held = [None, None];
-                    for (index, response) in [&mut older, &mut current].into_iter().enumerate() {
-                        let turn = control.begin();
-                        let result = Context::with_target(
-                            root.target(),
-                            turn.turn().app(),
-                            driver.reborrow(),
-                            |context| Pin::new(response).poll_next(context),
-                        );
-                        held[index] = Some(match result {
-                            Poll::Ready(Some(Ok(value))) => value,
-                            _ => panic!("queued value"),
-                        });
-                        assert_eq!(
-                            turn.ready_round(|event| assert!(route.matches(event))),
-                            index
-                        );
-                    }
-                    assert!(lane.select(driver.region_token()).try_fail(failure).is_ok());
-                    assert_eq!(lane.depth(driver.region_token()).get(), 0);
-                    assert_eq!(drops.count(), 0);
-                    assert!(
-                        held.iter().all(|value| value
-                            .as_ref()
-                            .expect("retained value")
-                            .get()
-                            .bytes
-                            == 1)
-                    );
-                })
-                .expect("reply arena");
-            });
+                }
+                assert!(lane.select(driver.region_token()).try_fail(failure).is_ok());
+                assert_eq!(lane.depth(driver.region_token()).get(), 0);
+                assert_eq!(drops.count(), 0);
+                assert!(
+                    held.iter()
+                        .all(|value| value.as_ref().expect("retained value").get().bytes == 1)
+                );
+            })
+            .expect("reply arena");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
@@ -166,154 +161,150 @@ fn wakes_each_waiter() {
         reply::{Arena, Work, layout, usage},
     };
 
-    use crate::common::{
-        runtime::profile,
-        schedule::tasks::{fixtures::Rounds as _, retained::Retain as _},
-    };
+    use crate::common::{runtime::profile, schedule::tasks::fixtures::Rounds as _};
 
     let drops = Drops::new();
     let mut reports = Vec::new();
     Setup::for_profile::<profile::Tasks>().with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
-                let core = context.driver_ref();
-                let routes = [0, 1, 2].map(|index| {
-                    core.targets::<KeyTag<0>>()
-                        .bind(SlotIndex::from(index), Epoch::INITIAL)
-                        .dispatch()
-                });
-                let roots = routes.map(|route| core.ready().make_slot(route).expect("ready slot"));
-                let mut driver = context.retained();
-                let layout = layout::Layout::new(
-                    layout::Capacity::new(
-                        layout::Lanes::new(3),
-                        layout::Entries::new(3),
-                        layout::Data::new(6),
-                        usage::Bytes::new(600),
-                        usage::Values::new(6),
-                    ),
-                    layout::Limit::new(
-                        layout::Data::new(1),
-                        usage::Bytes::new(400),
-                        usage::Values::new(1),
-                    ),
-                )
-                .expect("reply layout");
-                Arena::try_with(layout, driver.region_token().proof(), |arena| {
-                    let lanes = [
-                        LaneIndex::ZERO,
-                        LaneIndex::new::<1>(),
-                        LaneIndex::new::<2>(),
-                    ]
-                    .map(|index| arena.try_lane(index).expect("reply lane"));
-                    let mut source = recv::Response::<_, RetainOne>::new();
-                    source
-                        .try_attach(driver.region_token(), lanes[0])
-                        .expect("source");
-                    let value = Counted {
-                        failure: None,
-                        bytes: 400,
-                        drops: &drops,
-                    };
-                    assert!(
-                        lanes[0]
-                            .select(driver.region_token())
-                            .try_push(value)
-                            .is_ok()
-                    );
-                    lanes[0].complete(driver.region_token());
-                    let retained = {
-                        let turn = control.begin();
-                        let mut source = pin!(dope_fiber::abi::Task::new(source));
-                        let result = Context::with_target(
-                            roots[0].target(),
-                            turn.turn().app(),
-                            driver.reborrow(),
-                            |context| context.poll(source.as_mut()),
-                        );
-                        let result = match result {
-                            Poll::Ready(result) => Some(result),
-                            Poll::Pending => None,
-                        }
-                        .expect("source must be ready");
-                        turn.ready_round(|_| {});
-                        result.expect("retained reply")
-                    };
-                    let held = {
-                        let retained = retained.into_parts();
-                        retained.1
-                    };
-                    let mut replies = [
-                        recv::Response::<_, Never>::new(),
-                        recv::Response::<_, Never>::new(),
-                    ];
-                    let values;
-                    let measure = {
-                        let (bytes, retained) = held.into_parts();
-                        values = retained;
-                        assert!(bytes.is_some(), "retained reply owns byte credit");
-                        for (index, receiver) in replies.iter_mut().enumerate() {
-                            let lane = lanes[index + 1];
-                            lane.bind_retire(roots[index + 1].target());
-                            receiver
-                                .try_attach(driver.region_token(), lane)
-                                .expect("waiter");
-                            let value = Counted {
-                                failure: None,
-                                bytes: 200,
-                                drops: &drops,
-                            };
-                            assert!(matches!(
-                                lane.select(driver.region_token()).try_push(value),
-                                Err(usage::InsertError::Backpressure { .. })
-                            ));
-                        }
-                        control.begin().ready_round(|_| {});
-                        Tracker::begin()
-                    };
-                    let allocs = measure.finish();
-                    assert_eq!((allocs.allocations, allocs.allocated_bytes), (0, 0));
-                    assert!(values.is_some(), "retained reply keeps its value credit");
-                    assert!(matches!(arena.work(), Work::Pending));
-                    assert_eq!(control.begin().ready_round(|_| {}), 0);
-                    let mut done = [false; 2];
-                    for _ in 0..3 {
-                        let turn = control.begin();
-                        turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
-                            let work = share.work();
-                            assert_eq!(work.remaining(), 1);
-                            for _ in 0..3 {
-                                arena.maintain(work, driver.region_token());
-                            }
-                            assert_eq!(work.remaining(), 0);
-                        });
-                        turn.ready_round(|event| {
-                            let index = routes
-                                .iter()
-                                .position(|route| route.matches(event))
-                                .expect("waiter event");
-                            assert!(index > 0 && !done[index - 1]);
-                            let value = Counted {
-                                failure: None,
-                                bytes: 200,
-                                drops: &drops,
-                            };
-                            assert!(
-                                lanes[index]
-                                    .select(driver.region_token())
-                                    .try_push(value)
-                                    .is_ok()
-                            );
-                            done[index - 1] = true;
-                        });
-                        if done == [true; 2] {
-                            break;
-                        }
-                    }
-                    assert_eq!(done, [true; 2]);
-                })
-                .expect("reply arena");
+            let (_, context, mut control) = scope.split();
+            let core = context.driver_ref();
+            let routes = [0, 1, 2].map(|index| {
+                core.targets::<KeyTag<0>>()
+                    .bind(SlotIndex::from(index), Epoch::INITIAL)
+                    .dispatch()
             });
+            let roots = routes.map(|route| core.ready().make_slot(route).expect("ready slot"));
+            let mut driver = context;
+            let layout = layout::Layout::new(
+                layout::Capacity::new(
+                    layout::Lanes::new(3),
+                    layout::Entries::new(3),
+                    layout::Data::new(6),
+                    usage::Bytes::new(600),
+                    usage::Values::new(6),
+                ),
+                layout::Limit::new(
+                    layout::Data::new(1),
+                    usage::Bytes::new(400),
+                    usage::Values::new(1),
+                ),
+            )
+            .expect("reply layout");
+            Arena::try_with(layout, driver.region_token().proof(), |arena| {
+                let lanes = [
+                    LaneIndex::ZERO,
+                    LaneIndex::new::<1>(),
+                    LaneIndex::new::<2>(),
+                ]
+                .map(|index| arena.try_lane(index).expect("reply lane"));
+                let mut source = recv::Response::<_, RetainOne>::new();
+                source
+                    .try_attach(driver.region_token(), lanes[0])
+                    .expect("source");
+                let value = Counted {
+                    failure: None,
+                    bytes: 400,
+                    drops: &drops,
+                };
+                assert!(
+                    lanes[0]
+                        .select(driver.region_token())
+                        .try_push(value)
+                        .is_ok()
+                );
+                lanes[0].complete(driver.region_token());
+                let retained = {
+                    let turn = control.begin();
+                    let mut source = pin!(dope_fiber::abi::Task::new(source));
+                    let result = Context::with_target(
+                        roots[0].target(),
+                        turn.turn().app(),
+                        driver.reborrow(),
+                        |context| context.poll(source.as_mut()),
+                    );
+                    let result = match result {
+                        Poll::Ready(result) => Some(result),
+                        Poll::Pending => None,
+                    }
+                    .expect("source must be ready");
+                    turn.ready_round(|_| {});
+                    result.expect("retained reply")
+                };
+                let held = {
+                    let retained = retained.into_parts();
+                    retained.1
+                };
+                let mut replies = [
+                    recv::Response::<_, Never>::new(),
+                    recv::Response::<_, Never>::new(),
+                ];
+                let values;
+                let measure = {
+                    let (bytes, retained) = held.into_parts();
+                    values = retained;
+                    assert!(bytes.is_some(), "retained reply owns byte credit");
+                    for (index, receiver) in replies.iter_mut().enumerate() {
+                        let lane = lanes[index + 1];
+                        lane.bind_retire(roots[index + 1].target());
+                        receiver
+                            .try_attach(driver.region_token(), lane)
+                            .expect("waiter");
+                        let value = Counted {
+                            failure: None,
+                            bytes: 200,
+                            drops: &drops,
+                        };
+                        assert!(matches!(
+                            lane.select(driver.region_token()).try_push(value),
+                            Err(usage::InsertError::Backpressure { .. })
+                        ));
+                    }
+                    control.begin().ready_round(|_| {});
+                    Tracker::begin()
+                };
+                let allocs = measure.finish();
+                assert_eq!((allocs.allocations, allocs.allocated_bytes), (0, 0));
+                assert!(values.is_some(), "retained reply keeps its value credit");
+                assert!(matches!(arena.work(), Work::Pending));
+                assert_eq!(control.begin().ready_round(|_| {}), 0);
+                let mut done = [false; 2];
+                for _ in 0..3 {
+                    let turn = control.begin();
+                    turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                        let work = share.work();
+                        assert_eq!(work.remaining(), 1);
+                        for _ in 0..3 {
+                            arena.maintain(work, driver.region_token());
+                        }
+                        assert_eq!(work.remaining(), 0);
+                    });
+                    turn.ready_round(|event| {
+                        let index = routes
+                            .iter()
+                            .position(|route| route.matches(event))
+                            .expect("waiter event");
+                        assert!(index > 0 && !done[index - 1]);
+                        let value = Counted {
+                            failure: None,
+                            bytes: 200,
+                            drops: &drops,
+                        };
+                        assert!(
+                            lanes[index]
+                                .select(driver.region_token())
+                                .try_push(value)
+                                .is_ok()
+                        );
+                        done[index - 1] = true;
+                    });
+                    if done == [true; 2] {
+                        break;
+                    }
+                }
+                assert_eq!(done, [true; 2]);
+            })
+            .expect("reply arena");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
@@ -333,93 +324,92 @@ fn cancels_round_frontier() {
 
     use crate::common::{
         runtime::profile,
-        schedule::tasks::{fixtures::Rounds as _, retained::Retain as _},
+        schedule::tasks::fixtures::Rounds as _,
         storage::replies::support::{capacity, limit},
     };
 
     let drops = Drops::new();
     Setup::for_profile::<profile::Tasks>().with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
-                let core = context.driver_ref();
-                let routes = [2, 3].map(|index| {
-                    core.targets::<KeyTag<0>>()
-                        .bind(SlotIndex::from(index), Epoch::INITIAL)
-                        .dispatch()
-                });
-                let roots = routes.map(|route| core.ready().make_slot(route).expect("ready slot"));
-                let mut driver = context.retained();
-                let layout = layout::Layout::new(capacity(4, 4, 8, 800, 8), limit(1, 500, 1))
-                    .expect("reply layout");
-                Arena::try_with(layout, driver.region_token().proof(), |arena| {
-                    let lanes = [
-                        LaneIndex::ZERO,
-                        LaneIndex::new::<1>(),
-                        LaneIndex::new::<2>(),
-                        LaneIndex::new::<3>(),
-                    ]
-                    .map(|index| arena.try_lane(index).expect("reply lane"));
-                    let mut replies: [_; 4] = array::from_fn(|_| recv::Response::<_, Never>::new());
-                    for (lane, reply) in lanes.iter().zip(&mut replies) {
-                        reply
-                            .try_attach(driver.region_token(), *lane)
-                            .expect("reply attachment");
-                    }
-                    for (lane, root) in lanes[2..].iter().zip(&roots) {
-                        lane.bind_retire(root.target());
-                    }
-                    for (index, bytes) in [400, 200, 300, 300].into_iter().enumerate() {
-                        let result = lanes[index]
-                            .select(driver.region_token())
-                            .try_push(Counted {
-                                failure: None,
-                                bytes,
-                                drops: &drops,
-                            });
-                        assert_eq!(result.is_ok(), index < 2);
-                    }
-                    control.begin().ready_round(|_| {});
-
-                    replies[1].detach();
-                    lanes[1].complete(driver.region_token());
-                    for _ in 0..2 {
-                        let turn = control.begin();
-                        turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
-                            arena.maintain(share.work(), driver.region_token());
-                        });
-                        assert_eq!(turn.ready_round(|_| {}), 0);
-                    }
-                    lanes[3].control().deactivate(driver.region_token());
-                    for _ in 0..8 {
-                        let turn = control.begin();
-                        turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
-                            arena.maintain(share.work(), driver.region_token());
-                        });
-                        assert_eq!(turn.ready_round(|_| {}), 0);
-                    }
-                    assert!(matches!(arena.work(), Work::Idle));
-
-                    replies[0].detach();
-                    lanes[0].complete(driver.region_token());
-                    let mut woken = [0; 2];
-                    for _ in 0..8 {
-                        let turn = control.begin();
-                        turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
-                            arena.maintain(share.work(), driver.region_token());
-                        });
-                        turn.ready_round(|event| {
-                            for (route, count) in routes.iter().zip(&mut woken) {
-                                if route.matches(event) {
-                                    *count += 1;
-                                }
-                            }
-                        });
-                    }
-                    assert_eq!(woken, [1, 0]);
-                    assert!(matches!(arena.work(), Work::Idle));
-                })
-                .expect("reply arena");
+            let (_, context, mut control) = scope.split();
+            let core = context.driver_ref();
+            let routes = [2, 3].map(|index| {
+                core.targets::<KeyTag<0>>()
+                    .bind(SlotIndex::from(index), Epoch::INITIAL)
+                    .dispatch()
             });
+            let roots = routes.map(|route| core.ready().make_slot(route).expect("ready slot"));
+            let mut driver = context;
+            let layout = layout::Layout::new(capacity(4, 4, 8, 800, 8), limit(1, 500, 1))
+                .expect("reply layout");
+            Arena::try_with(layout, driver.region_token().proof(), |arena| {
+                let lanes = [
+                    LaneIndex::ZERO,
+                    LaneIndex::new::<1>(),
+                    LaneIndex::new::<2>(),
+                    LaneIndex::new::<3>(),
+                ]
+                .map(|index| arena.try_lane(index).expect("reply lane"));
+                let mut replies: [_; 4] = array::from_fn(|_| recv::Response::<_, Never>::new());
+                for (lane, reply) in lanes.iter().zip(&mut replies) {
+                    reply
+                        .try_attach(driver.region_token(), *lane)
+                        .expect("reply attachment");
+                }
+                for (lane, root) in lanes[2..].iter().zip(&roots) {
+                    lane.bind_retire(root.target());
+                }
+                for (index, bytes) in [400, 200, 300, 300].into_iter().enumerate() {
+                    let result = lanes[index]
+                        .select(driver.region_token())
+                        .try_push(Counted {
+                            failure: None,
+                            bytes,
+                            drops: &drops,
+                        });
+                    assert_eq!(result.is_ok(), index < 2);
+                }
+                control.begin().ready_round(|_| {});
+
+                replies[1].detach();
+                lanes[1].complete(driver.region_token());
+                for _ in 0..2 {
+                    let turn = control.begin();
+                    turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                        arena.maintain(share.work(), driver.region_token());
+                    });
+                    assert_eq!(turn.ready_round(|_| {}), 0);
+                }
+                lanes[3].control().deactivate(driver.region_token());
+                for _ in 0..8 {
+                    let turn = control.begin();
+                    turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                        arena.maintain(share.work(), driver.region_token());
+                    });
+                    assert_eq!(turn.ready_round(|_| {}), 0);
+                }
+                assert!(matches!(arena.work(), Work::Idle));
+
+                replies[0].detach();
+                lanes[0].complete(driver.region_token());
+                let mut woken = [0; 2];
+                for _ in 0..8 {
+                    let turn = control.begin();
+                    turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                        arena.maintain(share.work(), driver.region_token());
+                    });
+                    turn.ready_round(|event| {
+                        for (route, count) in routes.iter().zip(&mut woken) {
+                            if route.matches(event) {
+                                *count += 1;
+                            }
+                        }
+                    });
+                }
+                assert_eq!(woken, [1, 0]);
+                assert!(matches!(arena.work(), Work::Idle));
+            })
+            .expect("reply arena");
         },
         recovery::Policy::new(|_| {}, recover),
         runtime::check_scope,

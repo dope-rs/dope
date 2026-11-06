@@ -30,14 +30,11 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Budget<ID> {
     type PrePark = dispatch::raw::Plain;
     type Shutdown = dispatch::raw::Plain;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         let this = self.as_ref().get_ref();
         if this.first.get().is_some() {
             return self;
@@ -54,14 +51,11 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Budget<ID> {
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         self: Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         self
     }
 }

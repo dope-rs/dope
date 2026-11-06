@@ -19,6 +19,10 @@ impl<D: Copy> Range<D> {
         self.duration
     }
 
+    pub const fn origin(self) -> time::Instant {
+        self.origin.0
+    }
+
     #[cold]
     pub(super) fn furthest(self) -> time::Instant
     where

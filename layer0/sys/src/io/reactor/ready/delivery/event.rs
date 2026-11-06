@@ -4,5 +4,6 @@ use crate::Errno;
 pub trait Event {
     fn filter(&self) -> i16;
     fn error(&self) -> Option<Errno>;
+    fn eof(&self) -> bool;
     fn data(self) -> usize;
 }

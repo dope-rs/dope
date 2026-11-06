@@ -18,7 +18,7 @@ use dope::{
     },
     runtime::executor,
 };
-use o3::buffer::{bytes::bounded, resident, storage::Owned, write::SpareExt as _};
+use o3::buffer::{resident, storage::Owned};
 
 pub fn fixture(
     name: &str,
@@ -42,14 +42,8 @@ pub fn open(directory: &io::fs::Dir, name: &str) -> io::fs::OpenRequest {
     )
 }
 
-pub fn buffer<'d>(budget: &resident::Budget<'d>, byte: u8) -> read::Buffer<'d> {
-    let mut output = Owned::try_allocate(budget, 8).expect("charged output");
-    let mut spare = output.spare();
-    spare.fill(byte);
-    spare.commit();
-    bounded::Value::try_new(output)
-        .map_err(|error| error.into_parts().1)
-        .expect("bounded output")
+pub fn buffer<'d>(budget: &resident::Budget<'d>) -> read::Buffer<'d> {
+    Owned::try_allocate(budget, 8).expect("charged output")
 }
 
 pub struct Profile;
@@ -111,14 +105,11 @@ where
     type Shutdown = M::Shutdown;
     const COORDS: usize = M::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         // SAFETY: projection retains the exact installed owner and its loans.
         unsafe { M::pre_park(self.as_mut().project().reader, turn, driver) };
         let this = self.as_ref().project_ref();
@@ -135,14 +126,11 @@ where
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         M::shutdown(self.as_mut().project().reader, turn, driver);
         self
     }
@@ -154,21 +142,17 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         let (owner, (), (event, driver)) = call.into_parts();
         let this = owner.project();
         let event = event.into_kind();

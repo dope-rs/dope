@@ -1,4 +1,4 @@
-use std::{marker, mem, os::fd, pin};
+use std::{marker, mem, pin};
 
 use dope_sys::memory::Context as _;
 pub(in crate::driver) use epochs::Final;
@@ -47,6 +47,9 @@ pub mod raw;
 pub trait Operation<S: storage::Plan, Q: ?Sized>: Sized {
     type Output;
 
+    /// Reports storage rejection before native retirement.
+    fn rejected(&self, _source: &Q) {}
+
     fn run<'a, 'p, 'd>(
         self,
         scope: Scope<'a, 'd>,
@@ -80,7 +83,7 @@ pub(crate) struct Local<'d> {
 
 /// Generation-owned source and the policy responsible for its transitions.
 pub(crate) struct Lifecycle<'d> {
-    pub(crate) source: Option<fd::BorrowedFd<'d>>,
+    pub(crate) source: Option<dope_sys::engine::register::Source<'d>>,
     pub(crate) resuming: bool,
     pub(crate) pending: bool,
     pub(crate) report: &'d mut dyn FnMut(io::Reclaimed),
@@ -139,28 +142,17 @@ impl<'a, 'd> Scope<'a, 'd> {
         &mut self.state.token
     }
 
-    /// Runs with the sole schedule authority for this driver scope.
-    pub fn with_turn<R>(
+    #[inline]
+    pub fn split(
         &mut self,
-        run: impl for<'scope> FnOnce(
-            &'scope mut brand::Token<brand::Identity<'d>>,
-            driver::Context<'scope, 'd>,
-            scope::Scope<'scope, 'd>,
-        ) -> R,
-    ) -> R {
+    ) -> (
+        &mut brand::Token<brand::Identity<'d>>,
+        driver::Context<'_, 'd>,
+        scope::Scope<'_, 'd>,
+    ) {
         let state = &mut *self.state;
         let ctx = driver::Context::new(&mut state.local);
-        run(&mut state.token, ctx, scope::Scope::new(&mut state.work))
-    }
-
-    /// Runs a driver turn that performs no branded application projection.
-    pub fn with_driver<R>(
-        &mut self,
-        run: impl for<'scope> FnOnce(driver::Context<'scope, 'd>, scope::Scope<'scope, 'd>) -> R,
-    ) -> R {
-        let state = &mut *self.state;
-        let ctx = driver::Context::new(&mut state.local);
-        run(ctx, scope::Scope::new(&mut state.work))
+        (&mut state.token, ctx, scope::Scope::new(&mut state.work))
     }
 
     pub fn driver_ref(&self) -> driver::Reference<'d> {

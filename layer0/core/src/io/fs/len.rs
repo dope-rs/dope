@@ -26,11 +26,16 @@ impl TryFrom<i64> for Len {
     type Error = metadata::Negative;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
-        if value < 0 {
-            Err(metadata::Negative::new(value))
-        } else {
-            Ok(Self(file::Offset::clamp(value as u64)))
+        match file::Offset::new(value as u64) {
+            Some(value) => Ok(Self(value)),
+            None => Err(metadata::Negative::new(value)),
         }
+    }
+}
+
+impl From<file::Offset> for Len {
+    fn from(value: file::Offset) -> Self {
+        Self(value)
     }
 }
 

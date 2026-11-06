@@ -1,4 +1,4 @@
-use std::{cell, marker, num::NonZero};
+use std::{cell, marker, mem, num::NonZero};
 
 use o3::{
     alloc,
@@ -17,8 +17,7 @@ use crate::{
 
 pub(super) struct Node {
     pub(super) hook: links::Hook,
-    /// Admission writes the lane before publication; detached storage grants no read authority.
-    pub(super) lane: cell::Cell<owner::Lane>,
+    pub(super) lane: owner::Lane,
 }
 
 pub(super) struct Owner {
@@ -117,13 +116,7 @@ impl<S> Store<S> {
                     hook: links::Hook::new(index),
                 }
             },
-            |index| {
-                let index = NonZero::<u32>::MIN.saturating_add(index as u32).into();
-                Node {
-                    hook: links::Hook::new(index),
-                    lane: cell::Cell::new(owner::Lane::from(NonZero::<u32>::MIN)),
-                }
-            },
+            |_| cell::Cell::new(mem::MaybeUninit::uninit()),
         )?;
         Ok(Self {
             block,
@@ -132,10 +125,15 @@ impl<S> Store<S> {
         })
     }
 
-    pub(super) fn node(&self, index: Global) -> &Node {
-        // SAFETY: Queue admits Global against this extent before attachment;
-        // every stored or woken link retains that exact queue ownership.
+    pub(super) fn cell(&self, index: Global) -> &cell::Cell<mem::MaybeUninit<Node>> {
+        // SAFETY: Queue admits Global against this exact extent before attachment.
         unsafe { &*self.block.tail().as_ptr().add(index.get()) }
+    }
+
+    pub(super) fn node(&self, index: Global) -> &Node {
+        // SAFETY: attached residents and their links retain the initialized node;
+        // their loans end before the task vacancy permits another attachment.
+        unsafe { (&*self.cell(index).as_ptr()).assume_init_ref() }
     }
 
     pub(super) fn get(&self, lane: owner::Lane) -> Option<&Owner> {

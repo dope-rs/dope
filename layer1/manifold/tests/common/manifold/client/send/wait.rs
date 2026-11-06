@@ -135,19 +135,21 @@ impl<'d> Source<'d> for Wait {
             return;
         };
         match requests.admit(value) {
-            request::Admission::Ready(ready) => ready.push(),
-            request::Admission::Saturated(load) => {
+            Ok(request::Admission::Ready(ready)) => ready.push(),
+            Ok(request::Admission::Saturated(load)) => {
                 slot.set(Some(load));
                 if self.index.get().is_none() {
                     self.index.set(Some(index));
                     self.seen.hit();
                 }
             }
-            request::Admission::Exhausted(value) => {
+            Err(value) => {
                 slot.set(Some(value));
             }
-            request::Admission::Rejected(rejected) => {
-                self.audit.faults.record(error::Error::Admit(rejected));
+            Ok(request::Admission::Rejected(rejected)) => {
+                self.audit
+                    .faults
+                    .record(error::Error::Admit(rejected.cause()));
             }
         }
     }

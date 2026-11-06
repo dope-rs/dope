@@ -34,11 +34,10 @@ use dope_test::{
 fn terminal(event: Observation<'_>) {
     use dope_manifold::network::listener::conn::{
         Failure,
-        deadline::Arm,
         write::{self, body::Admit},
     };
     assert!(match event {
-        Observation::Deadline(armed) => matches!(armed, Arm::Armed),
+        Observation::Deadline(armed) => armed.is_ok(),
         Observation::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
         Observation::Owned(result) => matches!(result, Admit::Committed),
         Observation::Replay(result) => matches!(result, Some(Ok(()))),

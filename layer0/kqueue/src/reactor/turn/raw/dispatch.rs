@@ -25,13 +25,13 @@ where
         let result = (|| -> Result<C::Dispatch, <Engine<C> as ready::Backend<C>>::Failure> {
             let Self { host, quota } = self;
             quota.reclaim(host);
-            C::with(host, |backend| backend.check())?;
+            C::backend(host).check()?;
             let work = Work { quota };
             let quota = &work.quota;
             let cursor = if quota.remaining() == 0 {
                 0
             } else {
-                C::with(host, |backend| backend.cursor())
+                C::backend(host).cursor()
             };
             let mut resume = true;
             let mut kernel = true;
@@ -48,9 +48,9 @@ where
                         0 => {
                             if resume {
                                 let mut budget = quota.budget::<Resume>(quota.remaining());
-                                resume = C::with(host, |backend| unsafe {
-                                    ready::raw::Poll::resume(backend, &mut budget)
-                                })?
+                                resume = unsafe {
+                                    ready::raw::Poll::resume(C::backend(host), &mut budget)
+                                }?
                                 .is_continue();
                                 if !resume {
                                     // The blocked item consumed one credit without progress.
@@ -66,22 +66,27 @@ where
                             } else {
                                 0
                             };
-                            if kernel || C::with(host, |backend| backend.has_changes()) {
-                                kernel = C::with(host, |backend| unsafe {
-                                    work.poll(backend, Some(time::Duration::ZERO), remaining, done)
-                                })?;
+                            if kernel || C::backend(host).has_changes() {
+                                kernel = unsafe {
+                                    work.poll(
+                                        C::backend(host),
+                                        Some(time::Duration::ZERO),
+                                        remaining,
+                                        done,
+                                    )
+                                }?;
                             }
                         }
                         2 => {
                             if kernel {
-                                kernel = C::with(host, |backend| unsafe {
+                                kernel = unsafe {
                                     work.poll(
-                                        backend,
+                                        C::backend(host),
                                         Some(time::Duration::ZERO),
                                         0,
                                         quota.remaining(),
                                     )
-                                })?;
+                                }?;
                             }
                         }
                         3 => {
@@ -110,9 +115,10 @@ where
                     break;
                 }
             }
-            let more = C::with(host, |backend| {
+            let more = {
+                let backend = C::backend(host);
                 backend.has_pending() || backend.can_resume() || backend.has_changes()
-            });
+            };
             let state = if more || held.is_some() {
                 task::Poll::Pending
             } else {

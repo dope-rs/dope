@@ -75,7 +75,7 @@ impl<'a, T> Kind<'a, T> {
 pub(crate) struct Core<'a, 'd, Q> {
     pub(crate) scope: life::Scope<'a, 'd>,
     pub(super) pending: Option<Event<'d>>,
-    lifecycle: &'a Q,
+    pub(crate) lifecycle: &'a Q,
 }
 
 impl<'a, 'd, Q> Core<'a, 'd, Q> {

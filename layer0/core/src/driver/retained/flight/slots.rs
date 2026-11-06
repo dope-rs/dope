@@ -74,7 +74,7 @@ impl<'d, Tag: route::Tag> Slots<'d, Tag> {
         raw: request::Lowered,
     ) -> Result<flight::Flight<'d, C>, result::SubmitError> {
         let (permit, space) = self.try_admit(&mut driver, target)?;
-        Ok(permit.submit(bound::Bound::scoped(raw, space)))
+        Ok(permit.submit(bound::Bound::new(raw, space)))
     }
 }
 impl<'d, Tag: route::Tag + route::Select<kind::Recv>> Slots<'d, Tag> {
@@ -110,7 +110,7 @@ impl<'d, Tag: route::Tag> Slots<'d, Tag> {
     ) -> Result<flight::Flight<'d, kind::Recv>, result::SubmitError> {
         let recv = request::Datagram::new(fd);
         let (permit, space) = self.try_admit(&mut driver, target)?;
-        let entry = bound::Bound::scoped(recv, space);
+        let entry = bound::Bound::new(recv, space);
         Ok(permit.submit(entry.into_raw()))
     }
 }

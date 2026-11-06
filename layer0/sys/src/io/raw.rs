@@ -9,16 +9,16 @@ pub unsafe trait Message<'a> {
 /// A byte range that retains its owner through unchecked prefix projection.
 ///
 /// # Safety
-/// `prefix` must preserve the original owner and its admitted initialized bytes.
+/// `prefix` must preserve the original owner and its admitted byte extent.
 pub unsafe trait Buffer: Sized {
     /// # Safety
-    /// `len` must not exceed this buffer's initialized extent.
+    /// `len` must not exceed this buffer's admitted extent.
     unsafe fn prefix(self, len: usize) -> Self;
 
     /// Decodes an admitted completion, reading `errno` only for minus one.
     ///
     /// # Safety
-    /// `raw` is -1 or a nonnegative count within this owner's initialized extent.
+    /// `raw` is -1 or a nonnegative count within this owner's admitted extent.
     unsafe fn try_native<E: From<crate::Errno>>(
         self,
         raw: libc::ssize_t,
@@ -41,6 +41,13 @@ unsafe impl Buffer for &[u8] {
 
 // SAFETY: the exclusive slice retains its initialized byte extent.
 unsafe impl Buffer for &mut [u8] {
+    unsafe fn prefix(self, len: usize) -> Self {
+        unsafe { self.get_unchecked_mut(..len) }
+    }
+}
+
+// SAFETY: the exclusive slice retains its writable byte extent.
+unsafe impl Buffer for &mut [std::mem::MaybeUninit<u8>] {
     unsafe fn prefix(self, len: usize) -> Self {
         unsafe { self.get_unchecked_mut(..len) }
     }

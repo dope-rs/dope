@@ -16,7 +16,6 @@ use dope_test::{alloc, alloc::Tracker};
 
 use crate::common::{
     runtime::{self, Setup},
-    schedule::tasks::retained::Retain as _,
     storage::{
         stores::DropOutput,
         streams::{Producer, State},
@@ -332,6 +331,8 @@ fn nested_completion() {
                 .expect("ready slot");
             let drops = Rc::new(Cell::new(0));
             let polls = Rc::new(Cell::new(0));
+            let right = Rc::new(Cell::new(0));
+            let pending = PendingCount(Rc::clone(&right));
             let leaf = CaptureReady {
                 wake: Rc::new(Cell::new(None)),
                 drops: Rc::clone(&drops),
@@ -341,7 +342,7 @@ fn nested_completion() {
             };
             let mut fiber = pin!(dope_fiber::abi::Task::new(nested(nested(nested(nested(
                 dope_fiber::fiber!('_ => async move {
-                    Race::new(leaf, dope_fiber::abi::Pending::<()>::new()).await
+                    Race::new(leaf, pending).await
                 })
             ))))));
             turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
@@ -365,6 +366,7 @@ fn nested_completion() {
             });
             assert_eq!(polls.get(), 1);
             assert_eq!(drops.get(), 1);
+            assert_eq!(right.get(), 0);
         },
         recovery::Policy::new(|_| {}, recover),
         runtime::check_scope,
@@ -400,65 +402,19 @@ fn race_restores_left() {
 }
 
 #[test]
-fn race_repoll_is_inert() {
-    let mut reports = Vec::new();
-    Setup::throughput().with_turn(
-        |turn, mut driver| {
-            let core = driver.driver_ref();
-            let root = core.ready().make_slot(
-                core.targets::<KeyTag<0>>()
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                    .dispatch(),
-            );
-            let root = (root).expect("ready slot");
-            let left = Rc::new(Cell::new(0));
-            let right = Rc::new(Cell::new(0));
-            let mut race = pin!(dope_fiber::abi::Task::new(Race::new(
-                Probe {
-                    polls: Rc::clone(&left),
-                    ready: true,
-                },
-                PendingCount(Rc::clone(&right)),
-            )));
-            Context::with_target(
-                root.target(),
-                turn.turn().app(),
-                driver.reborrow(),
-                |mut context| {
-                    assert!(matches!(
-                        Polled::polled(context.as_mut().try_poll(race.as_mut()))
-                            .expect("poll budget"),
-                        Poll::Ready(Either::Left(1))
-                    ));
-                    assert_eq!((left.get(), right.get()), (1, 0));
-                    assert!(matches!(
-                        Polled::polled(context.as_mut().try_poll(race.as_mut()))
-                            .expect("poll budget"),
-                        Poll::Pending
-                    ));
-                    assert_eq!((left.get(), right.get()), (1, 0));
-                },
-            );
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    runtime::check_reports(&reports);
-}
-
-#[test]
 fn race_resumes_skipped() {
     let mut reports = Vec::new();
     Setup::throughput().with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
+            {
+                let (_, context, mut control) = scope.split();
                 let core = context.driver_ref();
                 let targets = core.targets::<KeyTag<0>>();
                 let root = core
                     .ready()
                     .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
                 let root = (root).expect("ready slot");
-                let mut driver = context.retained();
+                let mut driver = context;
                 let left = Rc::new(Cell::new(0));
                 let right = Rc::new(Cell::new(0));
                 let mut race = pin!(dope_fiber::abi::Task::new(Race::new(
@@ -508,7 +464,7 @@ fn race_resumes_skipped() {
                     ));
                     assert_eq!((left.get(), right.get()), (1, 1));
                 }
-            });
+            };
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,

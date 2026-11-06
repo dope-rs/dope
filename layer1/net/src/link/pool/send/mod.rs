@@ -1,6 +1,6 @@
 mod finish;
 use dope_core::{
-    driver::{retained, route::Identity},
+    driver::{self, route::Identity},
     io::event::net::send::Completion,
 };
 pub use finish::Finish;
@@ -92,7 +92,7 @@ where
 
     pub fn settle<O>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         direct: impl for<'scope> FnOnce(Direct<'scope, S>) -> O,
         free: impl FnMut(pool::Key<'d, ID>, B),
         complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, O>),
@@ -103,6 +103,7 @@ where
     {
         self.run(
             driver,
+            |_| {},
             move |egress, result| {
                 if egress.queue.is_active() || egress.connection.sending().has_ack() {
                     Self::close(egress, result)
@@ -117,14 +118,15 @@ where
 
     pub fn settle_owned(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
+        before: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
         complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, ()>),
     ) -> SendOutcome<'d, ID, ()>
     where
         B: data::raw::Payload<'d>,
         M::Ingress: Finish<W>,
     {
-        self.run(driver, Self::close, |_, body| drop(body), complete)
+        self.run(driver, before, Self::close, |_, body| drop(body), complete)
     }
 
     fn close<O>(
@@ -192,7 +194,8 @@ where
 
     fn run<O>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
+        before: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
         mode: impl FnOnce(
             &mut transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>,
             Data,
@@ -223,6 +226,7 @@ where
             {
                 return SendOutcome::Drop;
             }
+            before(egress.connection);
             let (end, space) = {
                 use crate::wire::send::Availability;
 

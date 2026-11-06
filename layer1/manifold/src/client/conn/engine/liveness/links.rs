@@ -1,6 +1,6 @@
 use dope_core::{
     driver::{
-        self, retained,
+        self,
         route::{Identity, table::conn::Capacity},
         schedule::{clock::timer, ready},
     },
@@ -161,7 +161,7 @@ where
     pub(in crate::client::conn::engine) fn try_finish<R>(
         &mut self,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         complete: impl for<'a> FnOnce(Transition<'a, 'd, ID, E, X, &'a Slot<'w, 'd, ID, A>>) -> R,
         target: ready::Target<'d>,
     ) -> Result<event::Connect<'d, ID, R, socket::Addr>, connect::Completion<'d>> {
@@ -174,7 +174,7 @@ where
     pub(in crate::client::conn::engine) fn try_attach<R>(
         &mut self,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         complete: impl for<'a> FnOnce(Transition<'a, 'd, ID, E, X, &'a Slot<'w, 'd, ID, A>>) -> R,
         target: ready::Target<'d>,
     ) -> Result<event::Connect<'d, ID, R, ()>, connect::Completion<'d>> {
@@ -187,7 +187,8 @@ where
     pub(in crate::client::conn::engine) fn settle(
         &mut self,
         done: Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
+        app: &A,
         complete: impl for<'a> FnOnce(
             Transition<'a, 'd, ID, E, X, &'a mut Slot<'w, 'd, ID, A>>,
             &event::SendOutcome<'d, ID, ()>,
@@ -196,14 +197,19 @@ where
     ) -> event::SendOutcome<'d, ID, ()>
     where
         <A::Input as input::Mode<A::Wire>>::Ingress: send::Finish<A::Wire>,
+        A: app::Lifecycle<'w, 'd, ID>,
     {
-        self.pool
-            .settle(done)
-            .settle_owned(driver, |slot, outcome| {
+        self.pool.settle(done).settle_owned(
+            driver,
+            |slot| {
+                let _ = crate::client::conn::State::poll_close(slot, app);
+            },
+            |slot, outcome| {
                 let key = slot.key();
                 // SAFETY: settlement retains this owner's original native sender and paired book.
                 let source = unsafe { engine::raw::reunite(&mut self.liveness, slot, key) };
                 complete(liveness::Change::new(source, target), outcome);
-            })
+            },
+        )
     }
 }

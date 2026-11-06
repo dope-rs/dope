@@ -5,7 +5,7 @@ use o3::mem::quota;
 use crate::{
     abi, context,
     core::driver::{
-        retained,
+        self,
         schedule::{app, ready::task::owner},
     },
     task::storage::{
@@ -71,7 +71,10 @@ pub(in crate::task::storage::set) fn wake<'d, F: abi::Fiber<'d>, M, D, G>(
 ) {
     if let Some((global, _)) = queue.front(owner::Scope::Any) {
         // SAFETY: queue membership or ingress retains this exact live root.
-        unsafe { slot::raw::Queued::new(view.scheduled(index(global))) }.wake();
+        unsafe { slot::Running::new(view.scheduled(index(global))) }
+            .wakers()
+            .0
+            .wake();
     }
 }
 
@@ -80,7 +83,7 @@ pub(in crate::task::storage::set) fn drive<'d, F: abi::Fiber<'d>, M, D, G>(
     entries: Entries<'_, 'd, F, M, D, G>,
     scope: owner::Scope<Source>,
     work: app::Work<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
     mut observe: impl FnMut(&M, pin::Pin<&mut F>),
 ) -> set::Length {
     let (view, mut token) = entries.into_parts();
@@ -93,15 +96,14 @@ pub(in crate::task::storage::set) fn drive<'d, F: abi::Fiber<'d>, M, D, G>(
         let (parent, waker) = running.wakers();
         let poll =
             context::Context::with_waker(waker, parent, work, driver.reborrow(), |mut context| {
-                running.poll_with(|mut fiber, data| {
-                    // SAFETY: the selected owner retains this live pinned slot. A
-                    // Ready result consumes Running and retires its fiber below.
-                    let result = unsafe {
-                        context::raw::Live::new(fiber.as_mut()).with(context.as_mut(), permit)
-                    };
-                    observe(data, fiber);
-                    result
-                })
+                let (mut fiber, data) = running.parts();
+                // SAFETY: the selected owner retains this live pinned slot. A
+                // Ready result consumes Running and retires its fiber below.
+                let result = unsafe {
+                    context::raw::Live::new(fiber.as_mut()).with(context.as_mut(), permit)
+                };
+                observe(data, fiber);
+                result
             });
         match poll {
             task::Poll::Pending => dequeued.idle(),

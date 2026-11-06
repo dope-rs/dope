@@ -1,7 +1,7 @@
 use std::pin;
 
 use attempt::Report as _;
-use dope_core::driver::{result, retained, route::Identity, schedule};
+use dope_core::driver::{self, result, route::Identity, schedule};
 use dope_net::link::{event, pool::change::opening};
 
 use crate::{
@@ -27,7 +27,7 @@ fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>(
     mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
     close: drain::OwnedDrain<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
     retry: impl FnOnce(&mut S, attempt::Id<'d, ID>, close::Reason) -> Result<(), S::Error>,
 ) where
     A: app::Lifecycle<'w, 'd, ID>,
@@ -98,7 +98,7 @@ where
         _: &mut A,
         _: attempt::Id<'d, ID>,
         _: close::Reason,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
     }
 
@@ -106,7 +106,7 @@ where
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         close: drain::OwnedDrain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 }
 
@@ -123,7 +123,7 @@ where
         app: &mut A,
         owner: attempt::Id<'d, ID>,
         reason: close::Reason,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let cause = match reason {
             close::Reason::Timeout(deadline::Kind::Connect) => {
@@ -156,7 +156,7 @@ where
         >,
         close: drain::OwnedDrain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         run(machine, close, turn, driver, |ctrl, owner, _| {
             ctrl.disconnect(owner)
@@ -192,7 +192,7 @@ where
         >,
         close: drain::OwnedDrain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let now = driver.driver_ref().clock().now();
         run(machine, close, turn, driver, |pool, owner, reason| {

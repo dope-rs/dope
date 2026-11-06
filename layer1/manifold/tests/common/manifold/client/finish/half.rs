@@ -204,7 +204,10 @@ impl<'d> Output<'d> for Half {
                     {
                         egress::Enqueue::Committed => {}
                         egress::Enqueue::Rejected(error) => {
-                            owner.audit.faults.record(error::Error::Enqueue(error));
+                            owner
+                                .audit
+                                .faults
+                                .record(error::Error::Enqueue(*error.error()));
                         }
                     }
                 }

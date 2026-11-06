@@ -1,4 +1,4 @@
-use std::{alloc::Layout, mem, num::NonZero};
+use std::{alloc::Layout, cell, mem, num::NonZero};
 
 use o3::alloc;
 
@@ -18,7 +18,7 @@ pub(super) struct Extent {
 // SAFETY: both immutable nonzero counts fit the bounded, disjoint Owner/Node layout.
 unsafe impl alloc::raw::Shape for Extent {
     type Root = Owner;
-    type Tail = Node;
+    type Tail = cell::Cell<mem::MaybeUninit<Node>>;
     type Extra = ();
     type Last = ();
 
@@ -33,14 +33,14 @@ unsafe impl alloc::raw::Shape for Extent {
     fn layout(&self) -> Layout {
         const {
             assert!(usize::BITS >= 64);
-            assert!(mem::align_of::<Owner>() >= mem::align_of::<Node>());
+            assert!(mem::align_of::<Owner>() >= mem::align_of::<Self::Tail>());
             assert!(
-                (u32::MAX as usize) * (mem::size_of::<Node>() + mem::size_of::<Owner>())
+                (u32::MAX as usize) * (mem::size_of::<Self::Tail>() + mem::size_of::<Owner>())
                     + mem::align_of::<Owner>()
                     <= isize::MAX as usize
             );
         }
-        let size = self.offset() + self.tasks.get() as usize * mem::size_of::<Node>();
+        let size = self.offset() + self.tasks.get() as usize * mem::size_of::<Self::Tail>();
         unsafe { Layout::from_size_align_unchecked(size, mem::align_of::<Owner>()) }
     }
 }

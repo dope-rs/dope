@@ -1,6 +1,6 @@
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule::clock};
+use dope_core::driver::{self, route::Identity, schedule::clock};
 use dope_net::link::pool;
 
 use crate::{
@@ -21,7 +21,7 @@ pub(in crate::client::conn::engine) fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A,
     mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
     key: pool::Key<'d, ID>,
     now: clock::Moment<'d>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: app::Lifecycle<'w, 'd, ID>,
     A::Continuation: liveness::Inspection<'d, ID, A>,

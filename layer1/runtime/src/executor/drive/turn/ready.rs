@@ -34,14 +34,16 @@ where
 {
     pub(super) fn new(
         core: Core<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<Self, drive::Error> {
-        let mut ready = Self::observe(core)?;
+        let mut ready = Self::observe(core, shutdown)?;
         ready.activate(None);
         Ok(ready)
     }
 
     fn observe(
         mut core: Core<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
+        mut shutdown: impl FnMut() -> turn::Status,
     ) -> Result<Self, drive::Error> {
         let mut status = turn::Status::Active;
         let events = {
@@ -54,6 +56,7 @@ where
                     &mut core.driver,
                     work.reborrow(),
                     &mut status,
+                    &mut shutdown,
                 ),
             };
             match held {
@@ -70,6 +73,7 @@ where
                                 driver,
                                 work.reborrow(),
                                 &mut status,
+                                &mut shutdown,
                             )
                         });
                     match batch {
@@ -96,10 +100,11 @@ where
         driver: &mut driver::Context<'_, 'd>,
         work: schedule::Turn<'_, 'd>,
         status: &mut turn::Status,
+        shutdown: &mut impl FnMut() -> turn::Status,
     ) -> ControlFlow<Event<'d>> {
         match event.into_kind() {
             Kind::Shutdown => {
-                *status = turn::Status::Shutdown;
+                *status = shutdown();
                 ControlFlow::Continue(())
             }
             event => mode.view.dispatch(mode.token, event.into(), work, driver),
@@ -123,12 +128,15 @@ where
                     &mut self.core.driver.reborrow(),
                 );
             });
+            if step.is_none() {
+                break;
+            }
             if let Some((slot, observed)) = root.as_mut()
                 && let ready::Readiness::Ready = slot.take()
             {
                 **observed = ready::Readiness::Ready;
             }
-            if step.is_none() || rounds.is_exhausted() {
+            if rounds.is_exhausted() {
                 break;
             }
         }
@@ -193,8 +201,9 @@ where
     pub(super) fn new_app(
         core: Core<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
         root: &ready::Slot<'d, routes::Wake>,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<Self, drive::Error> {
-        let mut ready = Ready::observe(core)?;
+        let mut ready = Ready::observe(core, shutdown)?;
         let mut observed = root.take();
         ready.activate(Some((root, &mut observed)));
         Ok(Self {
@@ -208,6 +217,7 @@ impl<'turn, 'd> RootReady<'turn, 'd, modes::Boot> {
     pub(super) fn new_boot(
         mut core: Core<'turn, 'd, modes::Boot>,
         root: &ready::Slot<'d, routes::Wake>,
+        mut shutdown: impl FnMut() -> turn::Status,
     ) -> Result<Self, drive::Error> {
         let mut status = turn::Status::Active;
         let events = {
@@ -215,7 +225,7 @@ impl<'turn, 'd> RootReady<'turn, 'd, modes::Boot> {
             let batch = driver::Context::dispatch(&mut core.driver, lane, |event, _source| {
                 match event.into_kind() {
                     Kind::Shutdown => {
-                        status = turn::Status::Shutdown;
+                        status = shutdown();
                         ControlFlow::Continue(())
                     }
                     event => ControlFlow::Break(event.into()),
@@ -292,12 +302,11 @@ where
         P: root::Root<'d>,
     {
         let core = &mut self.ready.core;
-        let state = core.mode.view.context(core.driver.reborrow());
         let output = P::poll(root::Context::new(
             root,
             wake,
             core.turn.turn().app(),
-            state,
+            core.driver.reborrow(),
         ));
         (self.skip(), output)
     }

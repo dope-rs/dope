@@ -1,8 +1,8 @@
 use std::{mem, pin};
 
 use dope_core::driver::{
+    self,
     receive::Stale,
-    retained,
     route::Identity,
     schedule::{self, ready},
 };
@@ -16,17 +16,15 @@ use dope_net::{
 
 use crate::app::receive::ingress::{self, Admission, Dispatch, Replay};
 
-pub(crate) struct Single<'a, 'c, 'owner, 'd: 'owner> {
-    driver: &'a mut retained::Context<'c, 'owner, 'd>,
+pub(crate) struct Single<'a, 'c, 'd> {
+    driver: &'a mut driver::Context<'c, 'd>,
     turn: schedule::Turn<'a, 'd>,
 }
 
-impl<'a, 'c: 'a, 'owner: 'a, 'd: 'a + 'c + 'owner> Admission<'a, 'c, 'owner, 'd>
-    for Single<'a, 'c, 'owner, 'd>
-{
+impl<'a, 'c: 'a, 'd: 'a + 'c> Admission<'a, 'c, 'd> for Single<'a, 'c, 'd> {
     fn fresh(
         turn: schedule::Turn<'a, 'd>,
-        driver: &'a mut retained::Context<'c, 'owner, 'd>,
+        driver: &'a mut driver::Context<'c, 'd>,
     ) -> schedule::Capacity<Self> {
         schedule::Capacity::Available(Self { driver, turn })
     }
@@ -35,7 +33,7 @@ impl<'a, 'c: 'a, 'owner: 'a, 'd: 'a + 'c + 'owner> Admission<'a, 'c, 'owner, 'd>
         replay: Replay,
         ready: ready::Key<'d>,
         turn: schedule::Turn<'a, 'd>,
-        driver: &'a mut retained::Context<'c, 'owner, 'd>,
+        driver: &'a mut driver::Context<'c, 'd>,
     ) -> schedule::Capacity<Self> {
         if matches!(replay, Replay::Waiting) {
             let Some(permit) = turn.app().permit() else {
@@ -48,7 +46,7 @@ impl<'a, 'c: 'a, 'owner: 'a, 'd: 'a + 'c + 'owner> Admission<'a, 'c, 'owner, 'd>
     }
 }
 
-impl<'a, 'c, 'owner, 'd: 'owner> Single<'a, 'c, 'owner, 'd> {
+impl<'a, 'c, 'd> Single<'a, 'c, 'd> {
     pub(in crate::app::receive::ingress) fn drive<'p, 'w, ID: Identity + 'd, W, M, P, A, C>(
         self,
         mut policy: pin::Pin<&mut P>,
@@ -58,12 +56,11 @@ impl<'a, 'c, 'owner, 'd: 'owner> Single<'a, 'c, 'owner, 'd> {
             pin::Pin<&mut P>,
             event::DispatchRecv<'d, ID, C>,
             schedule::Turn<'_, 'd>,
-            &mut retained::Context<'_, '_, 'd>,
+            &mut driver::Context<'_, 'd>,
         ),
     ) where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner + 'w + 'p,
+        'd: 'a + 'c + 'w + 'p,
         W: wire::Spec + 'w + 'd,
         M: Dispatch<W>,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
@@ -86,22 +83,15 @@ impl<'a, 'c, 'owner, 'd: 'owner> Single<'a, 'c, 'owner, 'd> {
     }
 }
 
-impl<'a, 'c, 'owner, 'd: 'owner> From<Single<'a, 'c, 'owner, 'd>>
-    for (
-        &'a mut retained::Context<'c, 'owner, 'd>,
-        schedule::Turn<'a, 'd>,
-    )
+impl<'a, 'c, 'd> From<Single<'a, 'c, 'd>>
+    for (&'a mut driver::Context<'c, 'd>, schedule::Turn<'a, 'd>)
 {
-    fn from(work: Single<'a, 'c, 'owner, 'd>) -> Self {
+    fn from(work: Single<'a, 'c, 'd>) -> Self {
         (work.driver, work.turn)
     }
 }
 
 const _: () = {
-    assert!(
-        mem::size_of::<Single<'static, 'static, 'static, 'static>>() == 2 * mem::size_of::<usize>()
-    );
-    assert!(
-        mem::align_of::<Single<'static, 'static, 'static, 'static>>() == mem::align_of::<usize>()
-    );
+    assert!(mem::size_of::<Single<'static, 'static, 'static>>() == 2 * mem::size_of::<usize>());
+    assert!(mem::align_of::<Single<'static, 'static, 'static>>() == mem::align_of::<usize>());
 };

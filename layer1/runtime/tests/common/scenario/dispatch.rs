@@ -4,7 +4,7 @@ use std::{convert::Infallible, marker, ops, pin};
 
 use dope_core::{
     driver::{
-        retained, route,
+        self, route,
         route::Identity,
         schedule,
         schedule::{clock, ready},
@@ -37,7 +37,7 @@ pub trait Hooks<'d, R>: Unpin {
         &mut self,
         _: &mut R,
         _: route::Erased<'d, kind::Any>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
     }
 
@@ -56,7 +56,7 @@ pub trait Hooks<'d, R>: Unpin {
 }
 
 pub trait Park<'d, R>: Hooks<'d, R> {
-    fn pre_park(&mut self, ready: &mut R, driver: &mut retained::Context<'_, '_, 'd>);
+    fn pre_park(&mut self, ready: &mut R, driver: &mut driver::Context<'_, 'd>);
 }
 
 pub struct On;
@@ -125,12 +125,12 @@ trait ParkCall<'d, R> {
 
     /// # Safety
     /// The root, prepared plan, and park authority belong to the same installation.
-    unsafe fn call<'app, 'driver, 'turn, 'root>(
+    unsafe fn call<'app, 'driver, 'turn>(
         app: pin::Pin<&'app mut R>,
         plan: &mut Self::Plan,
-        park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root;
+        'd: 'driver + 'turn;
 }
 
 impl<'d, R> ParkCall<'d, R> for Off {
@@ -140,12 +140,12 @@ impl<'d, R> ParkCall<'d, R> for Off {
         None
     }
 
-    unsafe fn call<'app, 'driver, 'turn, 'root>(
+    unsafe fn call<'app, 'driver, 'turn>(
         _: pin::Pin<&'app mut R>,
         plan: &mut Self::Plan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         match *plan {}
     }
@@ -165,12 +165,12 @@ where
     /// # Safety
     /// The pinned probe, prepared unit plan, and park authority must belong to
     /// the same installed root; its hooks retain no authority beyond this call.
-    unsafe fn call<'app, 'driver, 'turn, 'root>(
+    unsafe fn call<'app, 'driver, 'turn>(
         mut app: pin::Pin<&'app mut Probe<'d, R, H, ID>>,
         (): &mut Self::Plan,
-        park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         let mut driver = park.into_driver();
         let this = app.as_mut().get_mut();
@@ -211,24 +211,24 @@ where
         H::Park::select()
     }
 
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         app: pin::Pin<&'app mut Self>,
         plan: &mut Self::ParkPlan,
-        park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         // SAFETY: the exact installed probe, selected plan, and authority are unchanged.
         unsafe { H::Park::call(app, plan, park) }
     }
 
     // SAFETY: the route check retains this exact installed pinned probe.
-    unsafe fn activate<'app, 'driver, 'turn, 'root>(
+    unsafe fn activate<'app, 'driver, 'turn>(
         mut app: pin::Pin<&'app mut Self>,
-        wake: executor::raw::Activate<'driver, 'turn, 'root, 'd>,
+        wake: executor::raw::Activate<'driver, 'turn, 'd>,
     ) -> bool
     where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         if !Self::WAKE_ROUTES.has_route(wake.target().route()) {
             return false;
@@ -239,13 +239,10 @@ where
         true
     }
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
-        call: executor::raw::Dispatch<'app, 'driver, 'turn, 'root, 'd, Self>,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
-        let (app, event) = call.into_parts();
+    fn dispatch<'app, 'driver, 'turn>(
+        call: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
+    ) -> ops::ControlFlow<io::Event<'d>> {
+        let (app, event, _, _) = call.into_parts();
         if route::Id::try_from(event.route()) != Ok(ID::ID) {
             return ops::ControlFlow::Continue(());
         }
@@ -272,12 +269,9 @@ where
         Self::progress(app, view)
     }
 
-    fn shutdown<'app, 'turn, 'driver, 'owner>(
-        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>,
-    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>
-    where
-        'd: 'owner,
-    {
+    fn shutdown<'app, 'turn, 'driver>(
+        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self>,
+    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self> {
         let (mut app, turn, driver) = shutdown.into_parts();
         let this = app.as_mut().get_mut();
         this.hooks.shutdown(&mut this.ready);

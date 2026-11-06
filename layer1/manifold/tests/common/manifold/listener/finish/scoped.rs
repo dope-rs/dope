@@ -1,7 +1,7 @@
 use std::{convert, num, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -87,7 +87,7 @@ impl<'w, 'd: 'w, ID: route::Identity> handler::Scoped<'w, 'd, ID> for App {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, bool>,
         chunk: scoped::Input<'_, 'w, 'd, Identity>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         this.seen.record(Event::Chunk(chunk.as_ref().to_vec()));

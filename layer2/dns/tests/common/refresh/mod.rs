@@ -234,14 +234,11 @@ unsafe impl<'app, 's: 'app, 'd: 'app, B> dispatch::raw::Manifold<'d>
 
     const COORDS: usize = 0;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         let this = self.as_mut().project();
         let now = turn.clock().now();
         let token = driver.state_token();
@@ -258,14 +255,11 @@ unsafe impl<'app, 's: 'app, 'd: 'app, B> dispatch::raw::Manifold<'d>
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         _: Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         self.as_mut().project().next.set(None);
         self
     }

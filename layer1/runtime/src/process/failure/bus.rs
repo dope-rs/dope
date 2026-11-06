@@ -76,6 +76,7 @@ impl Event {
 pub enum Write {
     Syscall(dope_core::Errno),
     Record(RecordSize),
+    Shutdown(dope_core::Errno),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4,7 +4,7 @@ use dope_core::driver::{route::Identity, schedule::ready};
 
 mod accesses;
 pub(in crate::client) mod retire;
-pub(super) use accesses::{Quarantine, RetireRef, RetireState, SettledState};
+pub(super) use accesses::RetireRef;
 use retire::{Retiring, Settled, Stage, Starting};
 
 use crate::client::{
@@ -17,7 +17,7 @@ pub(super) struct Packed {
     phase: ClosePhase,
     rule: close::Directive,
     transport: claim::Transport,
-    deferred: Option<close::Directive>,
+    deferred: bool,
 }
 
 impl Packed {
@@ -26,7 +26,7 @@ impl Packed {
             phase,
             rule,
             transport: claim::Transport::Preserved,
-            deferred: None,
+            deferred: false,
         }
     }
 
@@ -39,36 +39,27 @@ impl Packed {
     }
 
     pub(super) const fn effective(&self) -> close::Directive {
-        match self.deferred {
-            Some(rule) => rule,
-            None => self.rule,
-        }
+        self.rule
     }
 
     fn merged(self, rule: close::Directive) -> Self {
-        self.with(Self::merge(self.effective(), rule))
+        self.with(self.effective().merge(rule))
     }
 
     fn defer(&mut self, rule: close::Directive) {
-        let current = self.effective();
-        self.deferred = Some(Self::merge(current, rule));
+        self.rule = self.rule.merge(rule);
+        self.deferred = true;
     }
 
     fn observe(&mut self, reason: close::Reason) {
-        let current = self.effective();
-        self.deferred = Some(close::Directive::with_policy(reason, current.policy()));
-    }
-
-    fn resolve(mut self) -> Self {
-        if let Some(rule) = self.deferred.take() {
-            self = self.with(rule);
-        }
-        self
+        self.rule = close::Directive::with_policy(reason, self.rule.policy());
+        self.deferred = true;
     }
 
     fn issue(&mut self) -> Claim {
-        *self = self.resolve().with_phase(ClosePhase::Claimed);
-        Claim { rule: self.rule }
+        self.phase = ClosePhase::Claimed;
+        self.deferred = false;
+        Claim(())
     }
 
     pub(super) fn claim_final(&mut self) -> ClaimState {
@@ -80,13 +71,13 @@ impl Packed {
     }
 
     fn restore(&mut self) -> drain::Resume {
-        if self.deferred.is_some() {
+        if mem::take(&mut self.deferred) {
             // Claims follow completed retirement or an unattached opening.
             // Reevaluate deferred policy without restarting retirement.
-            *self = self.resolve().with_phase(ClosePhase::Settled);
+            self.phase = ClosePhase::Settled;
             drain::Resume::Pending
         } else {
-            *self = self.with_phase(ClosePhase::Finalized);
+            self.phase = ClosePhase::Finalized;
             drain::Resume::Restored
         }
     }
@@ -102,21 +93,18 @@ impl Packed {
             }
             close::Policy::ImmediateReconnect | close::Policy::ImmediatePermanent => {}
         }
-        if matches!(self.phase, ClosePhase::Claimed) {
-            self.deferred = Some(rule.resume());
-        } else {
-            *self = self.with(rule.resume());
-        }
+        self.rule = rule.resume();
+        self.deferred |= matches!(self.phase, ClosePhase::Claimed);
         self.transport = claim::Transport::Discarded;
         claim::Urgency::Immediate
     }
 
     fn finalize(&mut self) -> (Claim, claim::Urgency) {
-        *self = self.resolve();
         let urgency = match self.rule.policy() {
             close::Policy::ImmediateReconnect | close::Policy::ImmediatePermanent => {
                 match self.phase {
-                    ClosePhase::Requested
+                    ClosePhase::Withdrawing
+                    | ClosePhase::Requested
                     | ClosePhase::Quarantining
                     | ClosePhase::Retiring
                     | ClosePhase::Settled => {
@@ -132,14 +120,9 @@ impl Packed {
         (self.issue(), urgency)
     }
 
-    fn merge(left: close::Directive, right: close::Directive) -> close::Directive {
-        let reason = left.reason().merge(right.reason());
-        let policy = left.policy().merge(right.policy());
-        close::Directive::with_policy(reason, policy)
-    }
-
     fn apply(&mut self, rule: close::Directive) -> &mut Self {
         match self.phase {
+            ClosePhase::Withdrawing => *self = self.with(rule).with_phase(ClosePhase::Requested),
             ClosePhase::Requested
             | ClosePhase::Quarantining
             | ClosePhase::Retiring
@@ -152,7 +135,8 @@ impl Packed {
 
     pub(super) fn outcome(&self) -> CloseUpdate {
         match self.phase {
-            ClosePhase::Requested
+            ClosePhase::Withdrawing
+            | ClosePhase::Requested
             | ClosePhase::Quarantining
             | ClosePhase::Retiring
             | ClosePhase::Settled
@@ -183,7 +167,8 @@ impl Callback {
         match closing.state {
             None => Self::Ready,
             Some(state) => match state.phase {
-                ClosePhase::Requested
+                ClosePhase::Withdrawing
+                | ClosePhase::Requested
                 | ClosePhase::Quarantining
                 | ClosePhase::Retiring
                 | ClosePhase::Settled => Self::Ready,
@@ -193,15 +178,7 @@ impl Callback {
     }
 }
 
-pub(in crate::client::conn) struct Claim {
-    rule: close::Directive,
-}
-
-impl Claim {
-    pub(in crate::client::conn) const fn into_rule(self) -> close::Directive {
-        self.rule
-    }
-}
+pub(in crate::client::conn) struct Claim(());
 
 pub(super) enum CutState {
     Issued(Claim, claim::Urgency),
@@ -215,6 +192,27 @@ pub(super) enum ClaimState {
 }
 
 impl Closing {
+    pub(super) fn withdraw(&mut self) -> bool {
+        if self.state.is_some() {
+            return false;
+        }
+        self.state = Some(Packed::new(
+            ClosePhase::Withdrawing,
+            close::Directive::reconnect(close::Reason::EndpointRetired),
+        ));
+        true
+    }
+
+    pub(super) fn is_withdrawing(&self) -> bool {
+        matches!(
+            self.state,
+            Some(Packed {
+                phase: ClosePhase::Withdrawing,
+                ..
+            })
+        )
+    }
+
     pub(in crate::client::conn) fn complete(
         &mut self,
         rule: close::Directive,
@@ -244,6 +242,11 @@ impl Closing {
                 ));
             }
             Some(state) => match state.phase {
+                ClosePhase::Withdrawing => {
+                    *state = state
+                        .with(close::Directive::reconnect(reason))
+                        .with_phase(ClosePhase::Requested);
+                }
                 ClosePhase::Requested
                 | ClosePhase::Quarantining
                 | ClosePhase::Retiring
@@ -307,20 +310,19 @@ impl Closing {
         let state = self
             .state
             .get_or_insert_with(|| Packed::new(ClosePhase::Quarantining, rule));
-        let reason = match state.phase {
+        match state.phase {
             // Enter comes only from an admitted ActiveMut, which excludes these phases.
             ClosePhase::Claimed | ClosePhase::Finalized => unreachable!("close"),
-            ClosePhase::Settled => return Stage::Settled(Settled::new(SettledState(state))),
+            ClosePhase::Settled => return Stage::Settled(Settled::new(state)),
             ClosePhase::Retiring => {
-                return Stage::Retiring(Retiring::new(RetireState(state), proof));
+                return Stage::Retiring(Retiring::new(state, proof));
             }
-            ClosePhase::Quarantining => state.effective().reason(),
-            ClosePhase::Requested => {
+            ClosePhase::Quarantining => {}
+            ClosePhase::Withdrawing | ClosePhase::Requested => {
                 *state = state.merged(rule).with_phase(ClosePhase::Quarantining);
-                state.rule.reason()
             }
-        };
-        Stage::Started(Starting::new(Quarantine(state), reason, proof))
+        }
+        Stage::Started(Starting::new(state, proof))
     }
 
     pub(super) fn cut(&mut self, rule: close::Directive) -> CutState {
@@ -334,7 +336,7 @@ impl Closing {
     }
 
     pub(super) const fn is_closing(&self) -> bool {
-        self.state.is_some()
+        !self.status().is_receiving()
     }
 
     pub(super) const fn status(&self) -> CloseStatus {
@@ -348,29 +350,25 @@ impl Closing {
         self.state.map(|state| state.effective().reason())
     }
 
-    pub(super) fn restore(&mut self, rule: close::Directive) -> drain::Restore {
+    pub(super) fn restore(&mut self) -> drain::Restore {
         match &mut self.state {
-            Some(state) if matches!(state.phase, ClosePhase::Claimed) && state.rule == rule => {
+            Some(state) if matches!(state.phase, ClosePhase::Claimed) => {
                 drain::Restore::Current(state.restore())
             }
             Some(_) | None => drain::Restore::Stale,
         }
     }
 
-    pub(super) fn authorize(&self, rule: close::Directive) -> Option<claim::Transport> {
+    pub(super) fn authorize(&self) -> Option<claim::Transport> {
         match self.state {
-            Some(state) if matches!(state.phase, ClosePhase::Claimed) && state.rule == rule => {
-                Some(state.transport)
-            }
+            Some(state) if matches!(state.phase, ClosePhase::Claimed) => Some(state.transport),
             Some(_) | None => None,
         }
     }
 
-    pub(super) fn commit(&self, rule: close::Directive) -> Option<close::Directive> {
+    pub(super) fn commit(&self) -> Option<close::Directive> {
         match self.state {
-            Some(state) if matches!(state.phase, ClosePhase::Claimed) && state.rule == rule => {
-                Some(Packed::merge(state.effective(), rule))
-            }
+            Some(state) if matches!(state.phase, ClosePhase::Claimed) => Some(state.rule),
             Some(_) | None => None,
         }
     }

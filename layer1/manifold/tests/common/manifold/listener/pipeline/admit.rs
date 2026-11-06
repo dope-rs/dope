@@ -1,7 +1,7 @@
 use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -80,7 +80,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Admit {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let event = Event::Chunk(chunk.as_ref().len());
         self.events.push(event);
@@ -172,7 +172,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Bounded {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, u8>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let called = &self.as_ref().get_ref().called;
         let result = conn.write().try_bounded(driver, move |state, prefix| {

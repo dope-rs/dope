@@ -21,7 +21,7 @@ use o3::alloc;
 use ready::Ready as _;
 
 use crate::common::{
-    cleanup::{Echo, Ring, Setup, Token},
+    cleanup::{Echo, Token},
     receive::Layout,
     ring::try_create,
 };
@@ -30,30 +30,6 @@ type Ready = <Uring as ring::Source>::Ready<Token, Layout>;
 type Storage = <Uring as provided::Source>::Context<Layout>;
 type Table = <Uring as tuning::Source>::Table<num::NonZero<u64>, 7>;
 type Owner = <Uring as engine::Source<Inputs>>::Backend;
-type Producer = <Ready as ready::Ready>::Producer;
-type Prepare = ready::Error<
-    Ring,
-    Producer,
-    <Producer as provided::Producer>::Error,
-    <Ready as ready::Ready>::Registration,
-    <Ready as ready::Ready>::Registered,
-    <Ready as ready::Ready>::BufferError,
->;
-
-pub enum Error {
-    Tuning(alloc::Error),
-    Ring(Setup),
-    Memory {
-        error: <Storage as provided::Context>::Error,
-        ring: Ring,
-    },
-    Ready {
-        error: Prepare,
-        storage: Storage,
-    },
-    Shutdown(<Owner as Shutdown>::State),
-}
-
 pub enum Inputs {}
 
 impl Context for Inputs {
@@ -111,24 +87,22 @@ impl reclaim::View for View<'_> {
     }
 }
 
-pub fn with(run: impl FnOnce(&mut Owner)) -> Result<(), Error> {
+pub fn with(run: impl FnOnce(&mut Owner)) {
     use ready::raw::Create as _;
-    let table =
-        Table::try_new(num::NonZero::<u32>::MIN.saturating_add(1)).map_err(Error::Tuning)?;
-    let ring = try_create::<Token, 16, 32>(false).map_err(Error::Ring)?;
-    let storage = match Storage::new(Layout::fixed::<2, 64>()) {
-        Ok(storage) => storage,
-        Err(error) => return Err(Error::Memory { error, ring }),
+    let table = Table::try_new(num::NonZero::<u32>::MIN.saturating_add(1)).expect("tuning");
+    let Ok(ring) = try_create::<Token, 16, 32>(false) else {
+        panic!("ring")
     };
-    // SAFETY: this exact storage is retained until the registered backend closes,
-    // including every failed registration or teardown owner returned to the caller.
-    let ready = match unsafe { Ready::new(ring, &storage) } {
-        Ok(ready) => ready,
-        Err(error) => return Err(Error::Ready { error, storage }),
+    let Ok(storage) = Storage::new(Layout::fixed::<2, 64>()) else {
+        panic!("storage")
+    };
+    // SAFETY: storage remains owned until this backend completes native shutdown.
+    let Ok(ready) = (unsafe { Ready::new(ring, &storage) }) else {
+        panic!("ready")
     };
     let mut backend = Owner::new(ready, table);
     run(&mut backend);
-    backend.try_shutdown(storage).map_err(Error::Shutdown)
+    assert!(backend.try_shutdown(storage).is_ok(), "native shutdown");
 }
 
 pub fn occupy(backend: &mut Owner, target: num::NonZero<u64>) -> Option<&mut [libc::c_int; 7]> {

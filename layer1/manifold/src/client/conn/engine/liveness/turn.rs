@@ -1,7 +1,7 @@
 use std::{pin, task};
 
 use dope_core::driver::{
-    retained,
+    self,
     route::Identity,
     schedule,
     schedule::{
@@ -64,7 +64,7 @@ where
 
     fn poll_alarm(
         &mut self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> task::Poll<(clock::Moment<'d>, ready::Target<'d>)> {
         let now = driver.driver_ref().clock().now();
         let target = self.machine.as_ref().backoff();
@@ -83,7 +83,7 @@ where
         &mut self,
         now: clock::Moment<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         loop {
             let step = turn.reborrow().maint().run(|| {
@@ -161,7 +161,7 @@ where
     pub(in crate::client::conn::engine) fn poll(
         mut self,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let task::Poll::Ready((now, target)) = self.poll_alarm(driver) else {
             return;
@@ -191,7 +191,7 @@ where
     pub(in crate::client::conn::engine) fn poll(
         mut self,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let task::Poll::Ready((now, target)) = self.poll_alarm(driver) else {
             return;

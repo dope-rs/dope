@@ -17,7 +17,6 @@ mod connect;
 mod datagram;
 pub(crate) use connect::Connect;
 pub(crate) mod permits;
-pub(crate) mod raw;
 pub(crate) use datagram::Datagram;
 
 pub(crate) enum Context {}

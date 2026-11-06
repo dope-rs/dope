@@ -4,7 +4,7 @@ pub(in crate::client) mod state;
 
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::link::oneshot;
 use engine::ops::close::{self, ClosePhase as _};
 
@@ -35,7 +35,7 @@ pub(crate) trait Drain<'d> {
     fn drain(
         self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 }
 
@@ -62,7 +62,7 @@ where
     fn drain(
         mut self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         loop {
             let step = turn.reborrow().maint().run(|| {
@@ -122,7 +122,7 @@ where
     fn drain(
         mut self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         loop {
             let step = turn.reborrow().maint().run(|| {

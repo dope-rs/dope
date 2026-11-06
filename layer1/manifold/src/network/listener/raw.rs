@@ -143,7 +143,7 @@ where
     pub unsafe fn drive<'turn>(
         self,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, '_, 'd, dispatch::raw::Retained>,
+        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
     ) {
         let Self { owner, id } = self;
         let target = id.key().target();
@@ -199,14 +199,11 @@ where
 
     const COORDS: usize = 0;
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         self: pin::Pin<&'a mut Self>,
         turn: Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         let mut this = self;
         {
             let fields = this.as_mut().project();
@@ -215,14 +212,11 @@ where
         control::shutdown(this.as_mut(), turn, driver);
         this
     }
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         self: pin::Pin<&'a mut Self>,
         turn: Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         use crate::network::listener::runtime::Phase;
 
         let mut this = self;
@@ -338,7 +332,7 @@ where
         self: pin::Pin<&mut Self>,
         target: route::Target<'d, ID>,
         turn: Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
     ) {
         // SAFETY: dispatch admitted this pinned listener and its canonical target together.
         unsafe { handler::raw::activate(self, target, turn, driver) }

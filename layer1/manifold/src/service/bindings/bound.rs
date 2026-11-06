@@ -194,10 +194,7 @@ where
         &mut self,
         input: codec::Input<'id, 'input, 'd, R>,
         ctx: &mut Context<'_, 'e, 'd, Self, ID>,
-    ) -> Result<
-        codec::Parse<'id, <Self::Codec as codec::Codec>::Head<'input, 'd, R>>,
-        <Self::Codec as codec::Codec>::Error,
-    >
+    ) -> codec::Parsed<'id, 'input, 'd, Self::Codec, R>
     where
         'd: 'input,
     {
@@ -329,20 +326,12 @@ impl<'life, 'd: 'life, P: ?Sized, L, F, ID: Identity, const MAX: usize> session:
 where
     L: policy::Output<'life, 'd, P, ID, MAX>,
 {
-    fn flush() -> Option<
-        impl for<'a, 'c, 't, 'e> Call<(
-            &'a mut Self,
-            &'c mut Context<'t, 'e, 'd, Self, ID>,
-            session::Input,
-        )>,
-    > {
+    fn flush()
+    -> Option<impl for<'a, 'c, 't, 'e> Call<policy::output::Args<'a, 'c, 't, 'e, 'd, Self, ID>>>
+    {
         let flush = L::flush()?;
         Some(
-            move |(owner, ctx, input): (
-                &mut Self,
-                &mut Context<'_, '_, 'd, Self, ID>,
-                session::Input,
-            )| {
+            move |(owner, ctx, input): policy::output::Args<'_, '_, '_, '_, 'd, Self, ID>| {
                 flush.call((&mut owner.endpoint, ctx, input));
             },
         )
@@ -387,6 +376,15 @@ where
     L::Drain: drain::Mode<'d, ID, Self>,
 {
     type Drain = L::Drain;
+
+    fn take_close(&self, conn: conn::Id<'d, ID>) -> Option<close::Directive> {
+        L::take_close(&self.endpoint, conn)
+    }
+
+    fn withdraw(&mut self, conn: conn::Id<'d, ID>, state: &mut Self::ConnState) -> app::Fence {
+        L::withdraw(&mut self.endpoint, conn, state)
+    }
+
     fn transmit_failed(
         &self,
         conn: conn::Id<'d, ID>,

@@ -5,6 +5,7 @@ pub mod handler;
 pub mod raw;
 mod runtime;
 pub mod topology;
+mod watch;
 mod writer;
 
 use std::{net, ops::ControlFlow, pin};
@@ -13,7 +14,7 @@ pub use control::Control;
 use dope_core::{
     driver,
     driver::{
-        result, retained,
+        result,
         route::Identity,
         schedule::{self, maint},
     },
@@ -39,6 +40,7 @@ use runtime::{
     accept::{Accept, phase},
     control::receive_failed,
 };
+pub use watch::{Wait, Watch};
 use wire::domain;
 use writer::phase::flush_dirty;
 
@@ -73,7 +75,7 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -81,13 +83,10 @@ where
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         use io::event::Kind;
 
         let (this, (), (ev, turn, mut driver)) = call.into_parts();
@@ -148,7 +147,7 @@ where
     app: A,
     receive_authority: <A::Input as receive::Resources>::Authority<'d>,
     #[pin]
-    accept: Accept<'d, ID>,
+    accept: Accept<'p, 'd, ID>,
     bound_addr: net::SocketAddr,
     schedule: runtime::Schedule,
 }
@@ -189,6 +188,7 @@ where
         context: impl for<'a> Fn(&'a mut C) -> driver::Context<'a, 'd>,
         build: impl for<'pool, 'gate, 'store> FnOnce(
             Listener<'pool, 'gate, 'store, 'w, 'd, ID, A, E>,
+            Wait<'gate, 'd>,
             &mut C,
         ) -> O,
     ) -> Result<O, creation::Error>
@@ -212,16 +212,14 @@ where
         self.bound_addr
     }
 
-    /// The terminal failure that stopped accept admission.
-    /// Native completion failures also reach the scope's reclamation observer.
-    pub fn accept_error(&self) -> Option<AcceptError> {
-        self.accept.failure()
+    pub const fn watch(&self) -> &'p Watch<'d> {
+        self.accept.watch
     }
 
     fn arm_accept(
         mut self: pin::Pin<&mut Self>,
         work: maint::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let sent = {
             let fields = self.as_mut().project();
@@ -233,14 +231,14 @@ where
                 .project()
                 .accept
                 .failed(AcceptError::Submit(error));
-            self.seal(driver.driver());
+            self.seal(driver);
         }
     }
 
     fn flush_recv(
         mut self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let received = self
             .as_mut()

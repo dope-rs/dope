@@ -1,7 +1,7 @@
 use std::{cell::Cell, convert::Infallible, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -88,7 +88,7 @@ impl Prefix {
     fn drive<'d, ID: route::Identity>(
         &self,
         conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         if *conn.state() != State::Queued {
             return;
@@ -145,7 +145,7 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for Prefix {
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State>
     where
         'd: 'w,
@@ -175,7 +175,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Prefix {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         let len = chunk.as_ref().len();
         let mut seen = self.seen.take();

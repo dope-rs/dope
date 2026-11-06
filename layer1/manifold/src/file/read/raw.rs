@@ -1,8 +1,7 @@
-use std::{cell, ops, os::fd::AsFd as _, pin};
+use std::{cell, mem, ops, os::fd::AsFd as _, pin};
 
 use dope_core::{
     driver::{
-        result::SubmitError,
         retained::flight,
         route::{self, Identity, indices},
         schedule::{self, ready::wake},
@@ -10,12 +9,76 @@ use dope_core::{
     io::{self, event::Kind, fs, transfer},
 };
 use dope_runtime::executor;
-use o3::buffer::bytes::bounded;
+use o3::{alloc, buffer::bytes::bounded};
 
 use crate::{
     app::{dispatch, dispatch::event},
-    file::read::{self, Active, Error, Outcome, Phase, Reader, Request},
+    file::{
+        self,
+        appender::{self, Preparation, Prepare},
+        read::{
+            self, Active, Error, Metadata, MetadataError, MetadataState, Outcome, Phase, Reader,
+            Request,
+        },
+    },
 };
+
+pub(super) struct Scratch {
+    output: fs::metadata::Output,
+    pub(super) next: Option<Box<Self>>,
+}
+
+impl Scratch {
+    fn acquire(free: &mut Option<Box<Self>>) -> Result<Box<Self>, Error> {
+        match free.take() {
+            Some(mut scratch) => {
+                *free = scratch.next.take();
+                Ok(scratch)
+            }
+            None => alloc::BoxExt::try_new(Self {
+                output: fs::metadata::Output::UNINIT,
+                next: None,
+            })
+            .map_err(Error::Allocation),
+        }
+    }
+
+    pub(super) fn release(free: &mut Option<Box<Self>>, mut scratch: Box<Self>) {
+        scratch.next = free.take();
+        *free = Some(scratch);
+    }
+}
+
+impl Metadata {
+    fn complete(
+        self,
+        native: Result<(), dope_core::Errno>,
+        free: &mut Option<Box<Scratch>>,
+    ) -> (fs::File, Result<(fs::Kind, fs::Len), MetadataError>) {
+        let MetadataState::Scratch(scratch) = self.state else {
+            unreachable!("metadata")
+        };
+        let result = match native {
+            Ok(()) => {
+                // SAFETY: the matching original CQ ended native writes and filled output.
+                unsafe { scratch.output.try_result() }
+                    .map(|(kind, length)| (fs::Kind::from(kind), fs::Len::from(length)))
+                    .map_err(MetadataError::Value)
+            }
+            Err(cause) => Err(MetadataError::Operation(Error::System(cause))),
+        };
+        Scratch::release(free, scratch);
+        (self.file, result)
+    }
+}
+
+impl read::Read<'_> {
+    pub fn output(&self) -> bounded::Value<&[u8]> {
+        // SAFETY: the private owner retains its admitted capacity, and initialized
+        // length cannot exceed it. This borrow prevents resubmission or mutation.
+        bounded::Value::from_raw(unsafe { bounded::raw::Input::new(self.output.as_ref()) })
+    }
+}
 
 pub(super) struct Entry<'d> {
     pub(super) index: indices::SlotIndex,
@@ -37,8 +100,8 @@ impl<'d> Entry<'d> {
     }
 
     pub(super) fn insert(&self, request: Request<'d>) {
-        // SAFETY: only a removed FREE membership admits insertion. No active
-        // flight or ticket can name this vacant slot until publication completes.
+        // SAFETY: callers own removed FREE membership or have taken an unsubmitted
+        // or terminal request. No native borrow or application call crosses publication.
         unsafe { *self.request.get() = Some(request) };
     }
 
@@ -54,7 +117,7 @@ impl<'d> Entry<'d> {
     pub(super) fn with_request<T>(&self, run: impl FnOnce(&mut Request<'d>) -> T) -> T {
         // SAFETY: private callers first take this slot's phase. They invoke no
         // application code and finish the loan before restoring or freeing it.
-        // In-flight reads are borrowed only after their matching terminal CQ.
+        // Submitted owners are borrowed only after their matching terminal CQ.
         let Some(request) = (unsafe { &mut *self.request.get() }).as_mut() else {
             unreachable!("request")
         };
@@ -65,16 +128,17 @@ impl<'d> Entry<'d> {
 pub(super) fn submit<'d, ID: Identity>(
     entry: &Entry<'d>,
     slots: &flight::Slots<'d, ID>,
-    driver: &mut dispatch::raw::Context<'_, '_, 'd, dispatch::raw::Retained>,
-) -> Result<Active<'d>, SubmitError> {
+    free: &mut Option<Box<Scratch>>,
+    driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
+) -> Result<Active<'d>, Error> {
     let target = driver
-        .driver()
         .driver_ref()
         .targets::<ID>()
         .bind(entry.index, route::Epoch::INITIAL);
     entry.with_request(|request| {
-        match request {
-            Request::Open(request) => {
+        let result = match request {
+            Request::Open(request)
+            | Request::Prepare(Prepare(Preparation::Opening { request, .. })) => {
                 // SAFETY: the fixed slot never moves this request's path or inline
                 // native options until its original completion or native quiescence.
                 unsafe {
@@ -85,11 +149,13 @@ pub(super) fn submit<'d, ID: Identity>(
                 .map(Active::Open)
             }
             Request::Read(request) => {
-                // SAFETY: Read retains a nonempty bounded extent, and neither the
-                // initialized allocation nor its extent changes while it is submitted.
-                let output = unsafe { o3::buffer::raw::Project::as_inner_mut(&mut request.output) };
+                // SAFETY: try_new admits capacity once; admission resets length.
+                // The private owner cannot grow or move its heap while submitted.
                 let output = bounded::Value::from_raw(unsafe {
-                    bounded::raw::Input::new(output.as_mut_slice())
+                    bounded::raw::Input::new(std::slice::from_raw_parts_mut(
+                        request.output.as_mut_ptr().cast(),
+                        request.length.widen().get(),
+                    ))
                 });
                 let operation =
                     fs::Submission::read_at(request.file.as_fd(), output, request.offset, target);
@@ -97,7 +163,46 @@ pub(super) fn submit<'d, ID: Identity>(
                 // stable heap through the original completion or native quiescence.
                 unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Read)
             }
-        }
+            Request::Metadata(request)
+            | Request::Prepare(Prepare(Preparation::Metadata { request, .. })) => {
+                request.state = MetadataState::Scratch(Scratch::acquire(free)?);
+                let MetadataState::Scratch(scratch) = &mut request.state else {
+                    unreachable!("metadata")
+                };
+                let operation =
+                    fs::Submission::metadata(request.file.as_fd(), &mut scratch.output, target);
+                // SAFETY: the Box is installed in the fixed request before this
+                // borrow and stays untouched through original completion or Finish.
+                let result = unsafe { driver.reborrow().submit_file(slots, operation) };
+                if result.is_err() {
+                    let MetadataState::Scratch(scratch) =
+                        mem::replace(&mut request.state, MetadataState::Idle)
+                    else {
+                        unreachable!("metadata")
+                    };
+                    Scratch::release(free, scratch);
+                }
+                result.map(Active::Metadata)
+            }
+            Request::Prepare(Prepare(Preparation::Tail {
+                prepared,
+                position,
+                output,
+                ..
+            })) => {
+                // SAFETY: one byte is inside the fixed transfer domain.
+                let output = bounded::Value::from_raw(unsafe {
+                    bounded::raw::Input::new(std::slice::from_mut(output))
+                });
+                let operation =
+                    fs::Submission::read_at(prepared.file.as_fd(), output, *position, target);
+                // SAFETY: the same fixed request retains its locked FD and byte
+                // through the original completion or completed native quiescence.
+                unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Tail)
+            }
+            Request::Prepare(Prepare(Preparation::Done(_))) => unreachable!("operation"),
+        };
+        result.map_err(Error::Submission)
     })
 }
 
@@ -114,26 +219,20 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Reader<'_, 'd, ID>
     type Shutdown = dispatch::raw::Plain;
     const COORDS: usize = 0;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         self.as_mut().get_mut().advance(turn, driver);
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         self.as_mut().get_mut().close();
         self
     }
@@ -177,29 +276,23 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Control<'d> for Reader<'_, 'd, ID> 
 impl<'d, ID: Identity> event::Drive<'d> for Reader<'_, 'd, ID> {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
-        let (app, (), (event, _)) = call.into_parts();
-        let this = app.as_ref().get_ref();
+    ) -> ops::ControlFlow<io::Event<'d>> {
+        let (mut app, (), (event, _)) = call.into_parts();
+        let this = app.as_mut().get_mut();
+        let port = this.port;
         match event.into_kind() {
             Kind::Read(done) => {
-                let Some(slot) = this
-                    .port
-                    .slots
-                    .get(done.token().slot().index().into_usize())
-                else {
+                let Some(slot) = port.slots.get(done.token().slot().index().into_usize()) else {
                     return ops::ControlFlow::Break(Kind::Read(done).into());
                 };
                 let entry = slot.state();
@@ -214,21 +307,50 @@ impl<'d, ID: Identity> event::Drive<'d> for Reader<'_, 'd, ID> {
                                 unreachable!("operation")
                             };
                             match done.outcome() {
-                                Ok(observed)
-                                    if observed.is_greater(transfer::Len::from_nonzero(
-                                        request.length,
-                                    )) =>
-                                {
-                                    Err(Error::Amount {
-                                        observed,
-                                        requested: request.length,
-                                    })
+                                Ok(amount) => {
+                                    // SAFETY: the matching terminal CQ ended native access
+                                    // and initialized this prefix within the admitted capacity.
+                                    unsafe { request.output.set_len(amount.into_raw()) };
+                                    Ok(amount)
                                 }
-                                Ok(amount) => Ok(amount),
                                 Err(cause) => Err(Error::System(cause)),
                             }
                         });
-                        this.port.settle(&slot, Outcome::Read(result));
+                        port.settle(&slot, Outcome::Read(result));
+                    }
+                    Some(Phase::Active {
+                        flight: Active::Tail(flight),
+                        ..
+                    }) if flight.matches(done.token()) => {
+                        drop(flight);
+                        let Request::Prepare(Prepare(Preparation::Tail {
+                            prepared,
+                            output,
+                            expected,
+                            ..
+                        })) = entry.take()
+                        else {
+                            unreachable!("operation")
+                        };
+                        let result = match done.outcome() {
+                            Err(cause) => Err(appender::OpenError::Read(cause)),
+                            Ok(amount) => {
+                                let observed = if amount.is_zero() {
+                                    None
+                                } else {
+                                    // SAFETY: the matching terminal CQ initialized this one byte.
+                                    Some(unsafe { output.assume_init() })
+                                };
+                                match appender::check_tail(expected, observed) {
+                                    Err(cause) => Err(cause),
+                                    Ok(()) if entry.detached.get() || !port.accepting.get() => {
+                                        Err(appender::OpenError::Request(Error::Shutdown))
+                                    }
+                                    Ok(()) => Ok(prepared),
+                                }
+                            }
+                        };
+                        this.prepare(&slot, Preparation::Done(result));
                     }
                     phase => {
                         entry.phase.set(phase);
@@ -237,11 +359,7 @@ impl<'d, ID: Identity> event::Drive<'d> for Reader<'_, 'd, ID> {
                 }
             }
             Kind::Open(done) => {
-                let Some(slot) = this
-                    .port
-                    .slots
-                    .get(done.token().slot().index().into_usize())
-                else {
+                let Some(slot) = port.slots.get(done.token().slot().index().into_usize()) else {
                     return ops::ControlFlow::Break(Kind::Open(done).into());
                 };
                 let entry = slot.state();
@@ -253,15 +371,121 @@ impl<'d, ID: Identity> event::Drive<'d> for Reader<'_, 'd, ID> {
                         drop(flight);
                         let result = match done.into_parts().1 {
                             io::event::file::open::Outcome::Opened(fd) => Ok(fs::File::from(fd)),
-                            io::event::file::open::Outcome::Failed(cause) => {
-                                Err(Error::System(cause))
-                            }
+                            io::event::file::open::Outcome::Failed(cause) => Err(cause),
                         };
-                        this.port.settle(&slot, Outcome::Open(result));
+                        match entry.take() {
+                            Request::Open(request) => {
+                                entry.insert(Request::Open(request));
+                                port.settle(&slot, Outcome::Open(result.map_err(Error::System)));
+                            }
+                            Request::Prepare(Prepare(Preparation::Opening { tail, .. })) => {
+                                let preparation = match result {
+                                    Err(cause) => Preparation::Done(Err(
+                                        appender::OpenError::Open(fs::open::Error::System(cause)),
+                                    )),
+                                    Ok(_) if entry.detached.get() || !port.accepting.get() => {
+                                        Preparation::Done(Err(appender::OpenError::Request(
+                                            Error::Shutdown,
+                                        )))
+                                    }
+                                    Ok(file) => match file.try_lock() {
+                                        Err(cause) => Preparation::Done(Err(
+                                            appender::OpenError::Lock(file::LockError::Lock(cause)),
+                                        )),
+                                        Ok(()) => Preparation::Metadata {
+                                            request: Metadata::new(file),
+                                            tail,
+                                        },
+                                    },
+                                };
+                                this.prepare(&slot, preparation);
+                            }
+                            _ => unreachable!("operation"),
+                        }
                     }
                     phase => {
                         entry.phase.set(phase);
                         return ops::ControlFlow::Break(Kind::Open(done).into());
+                    }
+                }
+            }
+            Kind::Sync(done) => {
+                let Some(slot) = port.slots.get(done.token().slot().index().into_usize()) else {
+                    return ops::ControlFlow::Break(Kind::Sync(done).into());
+                };
+                let entry = slot.state();
+                match entry.phase.take() {
+                    Some(Phase::Active {
+                        flight: Active::Metadata(flight),
+                        ..
+                    }) if flight.matches(done.token()) => {
+                        drop(flight);
+                        match entry.take() {
+                            Request::Metadata(request) => {
+                                let (file, result) =
+                                    request.complete(done.outcome(), &mut this.free);
+                                entry.insert(Request::Metadata(Metadata {
+                                    file,
+                                    state: MetadataState::Done(result),
+                                }));
+                                port.settle(&slot, Outcome::Metadata);
+                            }
+                            Request::Prepare(Prepare(Preparation::Metadata { request, tail })) => {
+                                let (file, result) =
+                                    request.complete(done.outcome(), &mut this.free);
+                                let preparation = match result {
+                                    Err(MetadataError::Operation(Error::System(cause))) => {
+                                        Preparation::Done(Err(appender::OpenError::Lock(
+                                            file::LockError::Metadata(cause),
+                                        )))
+                                    }
+                                    Err(MetadataError::Operation(cause)) => {
+                                        Preparation::Done(Err(appender::OpenError::Request(cause)))
+                                    }
+                                    Err(MetadataError::Value(cause)) => {
+                                        Preparation::Done(Err(appender::OpenError::Metadata(cause)))
+                                    }
+                                    Ok(_) if entry.detached.get() || !port.accepting.get() => {
+                                        Preparation::Done(Err(appender::OpenError::Request(
+                                            Error::Shutdown,
+                                        )))
+                                    }
+                                    Ok((kind, length)) => {
+                                        match file::Locked::from_locked(file, kind) {
+                                            Err(cause) => Preparation::Done(Err(
+                                                appender::OpenError::Lock(cause),
+                                            )),
+                                            Ok(file) => {
+                                                let prepared = appender::Prepared {
+                                                    file,
+                                                    end: fs::Offset::from(length),
+                                                };
+                                                if let Some(expected) = tail
+                                                    && let Ok(position) = prepared
+                                                        .end
+                                                        .checked_sub(transfer::Len::fixed::<1>())
+                                                {
+                                                    Preparation::Tail {
+                                                        prepared,
+                                                        position,
+                                                        output: mem::MaybeUninit::uninit(),
+                                                        expected,
+                                                    }
+                                                } else {
+                                                    Preparation::Done(Ok(prepared))
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+                                this.prepare(&slot, preparation);
+                            }
+                            _ => unreachable!("operation"),
+                        }
+                    }
+                    phase => {
+                        entry.phase.set(phase);
+                        return ops::ControlFlow::Break(Kind::Sync(done).into());
                     }
                 }
             }

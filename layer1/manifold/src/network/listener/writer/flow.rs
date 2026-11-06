@@ -1,15 +1,18 @@
-use dope_core::driver::{retained, route::Identity};
+use dope_core::driver::{self, route::Identity};
 use dope_net::{
     link::{
         egress::{self, data},
         pool::pending,
-        slot::{transmit::outcome, types},
+        slot::{
+            transmit::{direct::raw, outcome},
+            types,
+        },
     },
     wire::{self, send},
 };
 use send::reclaim;
 
-use crate::network::listener::{conn, writer::memory::access};
+use crate::network::listener::writer::{deadline::Slot, memory::access, state};
 
 pub(in crate::network::listener) enum Flow {
     Clear,
@@ -26,50 +29,56 @@ pub(in crate::network::listener) enum Handoff {
     Restage,
 }
 
-pub(in crate::network::listener) trait SlotFlow<'d, ID: Identity> {
-    fn flow(&self, pending: egress::Pending) -> Flow;
-    fn after_send(&mut self, pending: egress::Pending) -> Handoff;
-    fn advance_send(
-        &mut self,
-        slots: &crate::Flights<'d, ID>,
-        pending: pending::Handle<'_, 'd, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    );
+pub(in crate::network::listener) fn flow<
+    'p,
+    's,
+    'w,
+    'd: 'w,
+    ID: Identity,
+    W: wire::Spec + 'w + 'd,
+    B,
+>(
+    control: &types::Control<'w, 'd, ID, W>,
+    send: &state::Send<'p, 's, 'd, ID, B>,
+    pending: egress::Pending,
+) -> Flow {
+    use access::Motion;
+
+    if control.send_status().is_inflight() {
+        return Flow::Inflight;
+    }
+    let held = control.send_status().retention();
+    match send.motion() {
+        Motion::Empty => {}
+        Motion::Consumed => return Flow::Plain,
+        Motion::Waiting if held == outcome::Retention::Clear => return Flow::Stalled,
+        Motion::Ready | Motion::Waiting => {
+            let rule =
+                <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::direct(
+                );
+            return match (rule, held) {
+                (reclaim::Direct::Independent, outcome::Retention::Clear) => Flow::Stalled,
+                (reclaim::Direct::Retained, _) | (_, outcome::Retention::Held) => Flow::Plain,
+            };
+        }
+    }
+    if held == outcome::Retention::Held {
+        Flow::Held
+    } else if matches!(pending, egress::Pending::Present) || control.send_status().is_closing() {
+        Flow::Deferred
+    } else {
+        Flow::Clear
+    }
 }
 
 impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>>
-    SlotFlow<'d, ID> for types::Connection<'w, 'd, ID, W, conn::State<'p, 's, 'd, ID, C, B>>
+    Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B>
 {
-    fn flow(&self, pending: egress::Pending) -> Flow {
-        use access::Motion;
-
-        if self.send_status().is_inflight() {
-            return Flow::Inflight;
-        }
-        let held = self.send_status().retention();
-        match self.state.send.motion() {
-            Motion::Empty => {}
-            Motion::Consumed => return Flow::Plain,
-            Motion::Waiting if held == outcome::Retention::Clear => return Flow::Stalled,
-            Motion::Ready | Motion::Waiting => {
-                let rule =
-                    <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::direct();
-                return match (rule, held) {
-                    (reclaim::Direct::Independent, outcome::Retention::Clear) => Flow::Stalled,
-                    (reclaim::Direct::Retained, _) | (_, outcome::Retention::Held) => Flow::Plain,
-                };
-            }
-        }
-        if held == outcome::Retention::Held {
-            Flow::Held
-        } else if matches!(pending, egress::Pending::Present) || self.send_status().is_closing() {
-            Flow::Deferred
-        } else {
-            Flow::Clear
-        }
+    pub(in crate::network::listener) fn flow(&self, pending: egress::Pending) -> Flow {
+        flow(self.source, &self.state.send, pending)
     }
 
-    fn after_send(&mut self, pending: egress::Pending) -> Handoff {
+    pub(in crate::network::listener) fn after_send(&mut self, pending: egress::Pending) -> Handoff {
         match self.flow(pending) {
             Flow::Inflight => Handoff::Armed,
             Flow::Plain | Flow::Deferred => Handoff::Restage,
@@ -77,13 +86,13 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
         }
     }
 
-    fn advance_send(
+    pub(in crate::network::listener) fn advance_send(
         &mut self,
         slots: &crate::Flights<'d, ID>,
         pending: pending::Handle<'_, 'd, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
-        let (state, mut send) = self.split_send();
+        let state = &mut *self.state;
         let (result, step) = match state.send.prepare() {
             Err(error) => {
                 state.send.invalidate(error);
@@ -95,18 +104,24 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
                 // SAFETY: prepare borrows this connection's pinned Flight header.
                 // Its direct state keeps the exact lease until send retirement;
                 // completion or quiescence precedes releasing that owner.
-                (unsafe { send.submit_plain(slots, driver, input) }, step)
+                (
+                    unsafe { raw::submit_plain(self.source, slots, driver, input) },
+                    step,
+                )
             }
             Ok(access::Prepared::Many(input, step)) => {
                 // SAFETY: prepare derives the message, iovecs, header, and payload
                 // from this connection's pinned Flight. Its exact lease and source
                 // remain retained until completion or quiescence permits retirement.
-                (unsafe { send.submit_many(input, slots, driver) }, step)
+                (
+                    unsafe { raw::submit_many(self.source, input, slots, driver) },
+                    step,
+                )
             }
         };
         match step.finish(result) {
             access::Finish::Ready => {}
-            access::Finish::Rejected => send.discard(),
+            access::Finish::Rejected => self.source.discard(),
         }
         pending.wait_send(self.send_status().is_waiting());
     }

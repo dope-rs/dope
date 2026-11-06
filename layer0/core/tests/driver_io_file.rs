@@ -46,10 +46,10 @@ fn reuses_odd_tail() {
         .expect("driver creation");
     let mut reports = Reports::<_>::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
+    let mut teardown = domain::Teardown::default();
     assert!(
-        domain::Domain::new(driver)
-            .start()
-            .expect("fresh generation")
+        domain::Generation::new(driver)
+            .start(&mut teardown)
             .enter_with(
                 (),
                 |mut scope, _, _| {
@@ -187,7 +187,8 @@ fn close_before_fd_reuse() {
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
     runtime.with_scope(
-        |scope| scope.with_driver(|mut driver, mut schedule| {
+        |scope| {
+            let (_, mut driver, mut schedule) = scope.split();
             let before = Open.collect(0..4096);
             let old = Install::bind_udp(driver.reborrow(), LOCALHOST, DATAGRAM);
             let (old, old_addr) = old.expect("old socket");
@@ -259,10 +260,12 @@ fn close_before_fd_reuse() {
             }
             .expect("receive completion");
             assert!(new_key.operation::<kind::Recv>().matches(done.token()));
-            assert!(matches!(done.into_parts().2, Outcome::Data(buffer) if buffer.as_slice() == b"new"));
+            assert!(
+                matches!(done.into_parts().2, Outcome::Data(buffer) if buffer.as_slice() == b"new")
+            );
 
             Descriptor::from(new).close(&mut driver);
-        }),
+        },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
     );
@@ -288,12 +291,12 @@ fn close_retires_generation() {
     runtime.with_turn(
         |turn, mut driver| {
             let address = LOCALHOST;
-            let old = Install::bind_udp(driver.driver().reborrow(), address, DATAGRAM);
+            let old = Install::bind_udp(driver.reborrow(), address, DATAGRAM);
             let (old, _) = old.expect("old datagram slot");
             let slot = old.index();
-            Descriptor::from(old).close(driver.driver());
+            Descriptor::from(old).close(&mut driver);
 
-            let current = driver.driver().rebind(turn);
+            let current = driver.rebind(turn);
             let (current, addr2) = current.ok().expect("generation-reused datagram slot");
             assert!(current.index() == slot);
 
@@ -310,18 +313,14 @@ fn close_retires_generation() {
                 "send to current generation"
             );
             assert!(
-                driver::Context::wait(
-                    driver.driver(),
-                    turn.reactor(),
-                    Some(Duration::from_secs(1)),
-                )
-                .is_ok(),
+                driver::Context::wait(&mut driver, turn.reactor(), Some(Duration::from_secs(1)),)
+                    .is_ok(),
                 "current generation receive"
             );
 
             let mut done = None;
             assert!(matches!(
-                driver::Context::dispatch(driver.driver(), turn.reactor(), |event, _source| {
+                driver::Context::dispatch(&mut driver, turn.reactor(), |event, _source| {
                     assert!(done.replace(event).is_none());
                     ControlFlow::Continue(())
                 }),
@@ -342,7 +341,7 @@ fn close_retires_generation() {
                 .expect("current generation buffer");
                 assert_eq!(buffer.as_slice(), b"current");
             }
-            Descriptor::from(current).close(driver.driver());
+            Descriptor::from(current).close(&mut driver);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -365,7 +364,8 @@ fn kqueue_defers_work() {
 
     runtime.with_scope(
         |scope| {
-            scope.with_driver(|mut driver, mut ctl| {
+            {
+                let (_, mut driver, mut ctl) = scope.split();
                 let mut sockets = Vec::with_capacity(REGISTRATIONS);
                 for index in 0..REGISTRATIONS {
                     let socket = Install::bind_udp(driver.reborrow(), LOCALHOST, DATAGRAM);
@@ -412,7 +412,7 @@ fn kqueue_defers_work() {
                 for socket in sockets {
                     Descriptor::from(socket).close(&mut driver);
                 }
-            });
+            };
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -434,7 +434,8 @@ fn defers_maintenance() {
 
     runtime.with_scope(
         |scope| {
-            scope.with_driver(|mut driver, mut ctl| {
+            {
+                let (_, mut driver, mut ctl) = scope.split();
                 let address = LOCALHOST;
                 {
                     let sockets = (0..=schedule::LIMIT)
@@ -493,7 +494,7 @@ fn defers_maintenance() {
                     );
                     assert!(lease::Owner::<KeyTag<17>>::try_reserve(&mut driver).is_ok());
                 }
-            });
+            };
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,

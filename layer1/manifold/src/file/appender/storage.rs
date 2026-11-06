@@ -2,12 +2,13 @@ use std::cell::Cell;
 
 use o3::{alloc::VecExt as _, depot::queue::ring::inline};
 
-use crate::{app::creation, file::appender::block};
+use crate::app::creation;
 
 /// Fixed append buffers retained for every queued or submitted block lease.
 pub struct Storage<const N: usize, const B: usize> {
-    pub(super) pool: inline::Pool<block::Block<B>, N>,
+    pub(super) pool: inline::Pool<Vec<u8>, N>,
     pub(super) failure: Cell<Option<super::Failure>>,
+    pub(super) confirmed: Cell<u64>,
 }
 
 impl<const N: usize, const B: usize> Storage<N, B> {
@@ -20,8 +21,9 @@ impl<const N: usize, const B: usize> Storage<N, B> {
             *bytes = Vec::try_new(B).map_err(creation::Error::Allocation)?;
         }
         Ok(Self {
-            pool: inline::Pool::new(blocks.map(|bytes| block::Block { bytes })),
+            pool: inline::Pool::new(blocks),
             failure: Cell::new(None),
+            confirmed: Cell::new(0),
         })
     }
 
@@ -29,5 +31,10 @@ impl<const N: usize, const B: usize> Storage<N, B> {
     /// A successful open starts a new result; draining does not imply durability.
     pub fn failure(&self) -> Option<super::Failure> {
         self.failure.get()
+    }
+
+    /// Bytes confirmed by native writes, preserved across rotation and after finish.
+    pub fn confirmed(&self) -> u64 {
+        self.confirmed.get()
     }
 }

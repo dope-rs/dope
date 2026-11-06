@@ -118,8 +118,6 @@ impl<'d, F: abi::Fiber<'d>, M, D, G> Queue<'d, F, M, D, G> {
 const _: () = {
     use std::mem;
 
-    use slot::raw::Queued;
-
     let word = mem::size_of::<usize>();
     assert!(mem::size_of::<ready::raw::Index<()>>() == mem::size_of::<u32>());
     assert!(mem::size_of::<topology::Endpoint<'static, ready::raw::Index<()>>>() == 2 * word);
@@ -131,5 +129,5 @@ const _: () = {
         mem::size_of::<Queue<'static, abi::Ready<()>, (), (), [u64; 2]>>()
             == mem::size_of::<Queue<'static, abi::Ready<()>, (), (), ()>>()
     );
-    assert!(mem::size_of::<Queued<'static, 'static, abi::Ready<()>, (), ()>>() == word);
+    assert!(mem::size_of::<slot::Running<'static, 'static, abi::Ready<()>, (), ()>>() == word);
 };

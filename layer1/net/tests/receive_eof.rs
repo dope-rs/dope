@@ -8,7 +8,7 @@ use common::{
 };
 use dope_core::{
     Errno,
-    driver::{retained, schedule::ready},
+    driver::schedule::ready,
     io::{
         Reclaimed,
         event::{
@@ -96,13 +96,20 @@ fn tail_keeps_cancel() {
         }
         .expect("same generation");
         let mut receiver = pool.recv();
-        let (seen, tail) = receiver
+        {
+            let _tail = receiver
+                .take_tail(&resumed)
+                .continue_value()
+                .expect("receive gate open")
+                .expect("retained plaintext tail");
+            assert_eq!(resumed.key(), key);
+        }
+        let tail = receiver
             .take_tail(&resumed)
             .continue_value()
             .expect("receive gate open")
-            .expect("retained plaintext tail");
-        assert_eq!(seen, key);
-        let tail = tail.commit();
+            .expect("tail remains pending")
+            .commit();
         assert_eq!(tail.as_ref(), b"F");
         assert_eq!(tail.as_ref().as_ptr(), address);
         drop(tail);
@@ -256,8 +263,6 @@ fn close_after_keeps_pending_reply() {
         {
             let mut driver = scope.context();
             assert!(pool.try_right(driver.region_token(), key, bytes).is_ok());
-            let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-            let mut driver = retained::Context::new(driver.reborrow(), owner);
             assert!(matches!(
                 pool.sender(key).expect("send owner").submit(&mut driver),
                 Attempt::Waiting
@@ -270,10 +275,8 @@ fn close_after_keeps_pending_reply() {
         .expect("response completion");
         {
             let mut driver = scope.context();
-            let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-            let mut driver = retained::Context::new(driver.reborrow(), owner);
             assert!(matches!(
-                pool.settle(output).settle_owned(&mut driver, |_, _| {}),
+                pool.settle(output).settle_owned(&mut driver, |_| {}, |_, _| {}),
                 SendOutcome::Queued { key: seen, acknowledged }
                     if seen == key && acknowledged.into_raw() == 5
             ));
@@ -315,8 +318,6 @@ fn shutdown_wakes_terminal() {
                 _ => None,
             }
             .expect("shutdown request rejects deferred output");
-            let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-            let mut driver = retained::Context::new(driver.reborrow(), owner);
             assert!(matches!(
                 pool.sender(key).expect("send owner").submit(&mut driver),
                 Attempt::Waiting
@@ -353,10 +354,8 @@ fn shutdown_wakes_terminal() {
         ));
         {
             let mut driver = scope.context();
-            let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-            let mut driver = retained::Context::new(driver.reborrow(), owner);
             assert!(
-                matches!(pool.settle(output).settle_owned(&mut driver, |_, _| {}), SendOutcome::WriteShutdown { key: seen } if seen == key)
+                matches!(pool.settle(output).settle_owned(&mut driver, |_| {}, |_, _| {}), SendOutcome::WriteShutdown { key: seen } if seen == key)
             );
         }
         assert!(matches!(

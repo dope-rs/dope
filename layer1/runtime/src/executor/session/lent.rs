@@ -175,10 +175,11 @@ impl<'life, 'd: 'life, Q> session::Core<'life, 'd, Q> {
     {
         let app = lending::raw::Bound::new(owner, app);
         let backing = pin::pin!(executor::raw::Backing::new(self.scope.token(), app));
-        let owner = self.scope.with_turn(|token, driver, mut turn| {
+        let owner = {
+            let (token, driver, mut turn) = self.scope.split();
             turn.sample(start);
             executor::raw::Owner::install(backing.as_ref().pin(), token, driver.driver_ref())
-        });
+        };
         let mut scope = run::Run { core: self, owner };
         if let Err(error) = scope.admit() {
             let (parent, disarm) = scope.cancel_lent();

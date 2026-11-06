@@ -391,22 +391,21 @@ unsafe impl<'region> executor::raw::App<'region> for Maintenance<'_, '_, '_, '_,
 
     /// # Safety
     /// The root, prepared plan, and park authority belong to this installed owner.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         app: pin::Pin<&'app mut Self>,
         (): &mut Self::ParkPlan,
-        park: executor::raw::Park<'driver, 'turn, 'root, 'region>,
+        park: executor::raw::Park<'driver, 'turn, 'region>,
     ) where
-        'region: 'driver + 'turn + 'root,
+        'region: 'driver + 'turn,
     {
         let this = app.as_ref().get_ref();
-        park.map(|turn, mut driver| {
-            let before = this.state.drops.count();
-            if let Some(value) = this.state.arena.maintain(turn.app(), driver.region_token()) {
-                this.releases.push(value);
-            }
-            let after = this.state.drops.count();
-            this.releases.record_drops(after.saturating_sub(before));
-        });
+        let (turn, mut driver) = park.into_parts();
+        let before = this.state.drops.count();
+        if let Some(value) = this.state.arena.maintain(turn.app(), driver.region_token()) {
+            this.releases.push(value);
+        }
+        let after = this.state.drops.count();
+        this.releases.record_drops(after.saturating_sub(before));
     }
 }
 

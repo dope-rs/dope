@@ -225,6 +225,7 @@ pub enum CloseUpdate {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ClosePhase {
+    Withdrawing,
     Requested,
     Quarantining,
     Retiring,
@@ -238,6 +239,12 @@ pub enum ClosePhase {
 pub enum CloseStatus {
     Open,
     Closing(ClosePhase, close::Directive),
+}
+
+impl CloseStatus {
+    pub const fn is_receiving(&self) -> bool {
+        matches!(self, Self::Open | Self::Closing(ClosePhase::Withdrawing, _))
+    }
 }
 
 impl<'a, 'd, ID: Identity> CloseRequest<'a, 'd, ID> {

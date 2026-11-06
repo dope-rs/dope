@@ -3,7 +3,7 @@ use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 use conn::write;
 use dope_core::{
     BranchError,
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -91,7 +91,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> handler::Borrowed<
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State<'d>, Self::Egress>,
         _: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let mut consumed = None;
         let measure = Tracker::begin();
@@ -176,7 +176,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Applicat
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, State<'d>, Self::Egress>
     where
         'd: 'w,
@@ -221,7 +221,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Borrowed
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State<'d>, Self::Egress>,
         _: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         (self.observe)(BoundedEvent::Resident(
             conn.state()

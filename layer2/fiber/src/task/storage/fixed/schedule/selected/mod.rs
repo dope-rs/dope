@@ -4,7 +4,7 @@ use o3::mem::{Lease, Return, lease};
 
 use crate::{
     core::driver::{
-        retained,
+        self,
         schedule::{app, app::step},
     },
     task::storage::fixed::{
@@ -259,7 +259,7 @@ where
 
     fn drive_once(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> (
         Borrowed<'plane, R, Q>,
         Completed<'d, R::Member>,
@@ -289,7 +289,7 @@ where
 
     fn step(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> (Completed<'d, R::Member>, step::Receipt<'turn, 'd>) {
         let (_, outcome, receipt) = self.drive_once(driver);
         (outcome, receipt)
@@ -303,7 +303,7 @@ where
     R::Member: schedule::Ops<'d>,
     Q: quota::State,
 {
-    fn drive(self, driver: &mut retained::Context<'_, '_, 'd>) -> Completed<'d, R::Member> {
+    fn drive(self, driver: &mut driver::Context<'_, 'd>) -> Completed<'d, R::Member> {
         let queue = self.state.sink().dequeued.owner();
         let (mut active, outcome, receipt) = self.drive_once(driver);
         if let Some(ready) = queue.snapshot()

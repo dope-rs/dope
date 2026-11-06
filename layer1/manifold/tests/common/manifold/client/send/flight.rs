@@ -153,7 +153,7 @@ impl<'d> Output<'d> for Flight<'_> {
             session::Input,
         )>,
     > {
-        Some(output::Flush::<Infallible, _>::Context(
+        Some(
             |(owner, context, input): (
                 &mut Self,
                 &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
@@ -173,7 +173,7 @@ impl<'d> Output<'d> for Flight<'_> {
                     blocked.hit();
                 }
             },
-        ))
+        )
     }
 
     fn sent() -> impl for<'a, 't> Call<(
@@ -227,9 +227,10 @@ impl<'d> session::Connected<'d> for Flight<'_> {
             .try_enqueue(context.driver.region_token(), payload)
         {
             egress::Enqueue::Committed => {}
-            egress::Enqueue::Rejected(error) => {
-                self.audit.faults.record(error::Error::Enqueue(error))
-            }
+            egress::Enqueue::Rejected(error) => self
+                .audit
+                .faults
+                .record(error::Error::Enqueue(*error.error())),
         }
         if let Some((ready, _, shutdown)) = self.closing {
             ready.hit();

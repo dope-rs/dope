@@ -191,6 +191,7 @@ impl<'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
     pub(crate) fn drive<R>(&mut self, root: R) -> Result<R::Output, drive::Error>
     where
         R: boot::Root<'d>,
+        Q: executor::Startup,
     {
         use drive::{block, clock::wall, turn};
         use turn::scope;
@@ -198,11 +199,10 @@ impl<'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         let core = &mut *self.core;
         let admitted = core.scope.try_boot();
         let pending = &mut core.pending;
-        core.scope.with_driver(|mut driver, turn| {
-            let block = scope::Boot::try_new(&mut driver, turn, pending, admitted)
-                .and_then(|state| block::Block::new(state.driver_ref(), state, wall()));
-            block::Block::run_boot(block, root)
-        })
+        let (_, mut driver, turn) = core.scope.split();
+        let block = scope::Boot::try_new(&mut driver, turn, pending, admitted)
+            .and_then(|state| block::Block::new(state.driver_ref(), state, wall()));
+        block::Block::run_boot(block, root, turn::shutdown(core.lifecycle))
     }
 
     /// Keeps the pinned application in this frame through the aborting leaf.
@@ -223,10 +223,11 @@ impl<'scope, 'life: 'scope, 'p: 'life, 'd: 'p, S: storage::Plan + 'd, Q>
         let start = self.core.admit(start).map_err(session::Error::Drive)?;
         let cell = pin::pin!(executor::raw::Backing::new(self.core.scope.token(), app));
         let app = cell.as_ref().pin();
-        let owner = self.core.scope.with_turn(|token, driver, mut turn| {
+        let owner = {
+            let (token, driver, mut turn) = self.core.scope.split();
             turn.sample(start);
             executor::raw::Owner::install(app, token, driver.driver_ref())
-        });
+        };
         let scope = run::Run {
             core: &mut *self.core,
             owner,

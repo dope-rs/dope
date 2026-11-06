@@ -1,10 +1,16 @@
 pub mod common;
-use std::{cell, iter, mem};
+use std::{cell, convert::Infallible, iter, mem, rc::Rc, time};
 
-use dope_core::platform::affinity::Cpu;
-use dope_runtime::process;
+use dope_core::{
+    driver::life::{creation::Attempt, domain, recovery},
+    platform::affinity::Cpu,
+};
+use dope_runtime::{
+    executor::{self, Build as _},
+    process::{self, lifecycle},
+};
 use dope_test::alloc::Tracker;
-use o3::alloc;
+use o3::{alloc, depot::capacity};
 use process::failure::{config, create};
 
 use crate::common::process::{Cpus as _, Input, Resources, try_limit};
@@ -18,6 +24,7 @@ fn main() {
     accepts_unbounded_hint();
     rejects_huge_reservation();
     reports_alloc_failure();
+    reports_startup_failure();
     preserves_nofile_limit();
     rejects_invalid_iterator();
     maps_without_growth();
@@ -89,6 +96,55 @@ fn reports_alloc_failure() {
         Err(create::Error::Allocation(alloc::Error::Exhausted))
     ));
     assert_eq!(mapped.get(), 0);
+}
+
+fn reports_startup_failure() {
+    for allocation in [true, false] {
+        let (main, worker) = lifecycle::Main::try_pair().expect("lifecycle pair");
+        let outcome = worker.run(|source| {
+            let mut attempt = Attempt::new();
+            if allocation {
+                let result = Tracker::fail_after(0, || {
+                    source.try_build(&mut attempt, common::runtime::topology::PROFILE_CONFIG)
+                });
+                assert!(matches!(
+                    result,
+                    Err(executor::create::Error::Driver(
+                        dope_core::driver::result::CreateError::Allocation(alloc::Error::Exhausted)
+                    ))
+                ));
+            } else {
+                let executor = source
+                    .try_build(&mut attempt, common::runtime::topology::PROFILE_CONFIG)
+                    .unwrap_or_else(|error| panic!("executor: {:?}", error.kind()));
+                let borrowed = cell::Cell::new(7);
+                let plan = common::runtime::executor::storage::Collision {
+                    capacity: capacity::Count::new(1),
+                    borrowed: &borrowed,
+                    local: Rc::new(()),
+                };
+                executor.with_plan(plan).run(|executor| {
+                    let result =
+                        executor.try_create(|_| (), recovery::Policy::new(drop, common::recover));
+                    assert!(matches!(result, Err(domain::Error::Storage(_))));
+                });
+            }
+            assert!(matches!(
+                main.wait_ready(time::Duration::ZERO),
+                Err(lifecycle::WaitError::Event(
+                    process::failure::bus::Event::Failed
+                ))
+            ));
+            Ok::<_, Infallible>(())
+        });
+        assert!(matches!(
+            outcome,
+            lifecycle::Outcome::Failed {
+                output: Ok(()),
+                report: process::failure::bus::Report::Clean,
+            }
+        ));
+    }
 }
 
 fn preserves_nofile_limit() {

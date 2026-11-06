@@ -111,7 +111,7 @@ impl<'queue, 'p, 'd, B, D: demand::Mode, S> Offer<'queue, 'p, 'd, B, D, S> {
                     }
                 };
                 let claim = credit::Claim::from(credit);
-                let (token, index, claim, ()) = slot.reserve(claim, ());
+                let (token, index) = slot.reserve();
                 let node = pool::Vacant::new(claim, index, ());
                 Outcome::Ready(Prepared {
                     state: Guard::new(token, node),

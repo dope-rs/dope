@@ -4,7 +4,6 @@ use dope::core::io::Reclaimed;
 use dope::{
     core::driver::{
         life::creation::Attempt,
-        retained::Context,
         schedule::clock::Sample,
         settings::{Config, Schedule, demands, errors},
         storage::Value,
@@ -23,7 +22,6 @@ use dope::{
     core::driver::{
         self,
         life::{self, domain, recovery},
-        retained,
         schedule::state::scope::Guard,
         settings::{self, claim::Needs, demands::slots},
         storage,
@@ -100,18 +98,16 @@ impl Setup {
         self,
         run: impl for<'turn, 'scope, 'd> FnOnce(
             &'turn mut Guard<'scope, 'd>,
-            retained::Context<'turn, 'd, 'd>,
+            driver::Context<'turn, 'd>,
         ),
         policy: impl recovery::Observe,
         finish: impl for<'owner> FnOnce(Result<(), Error<'owner>>) -> R,
     ) -> R {
         self.with_scope(
             |scope| {
-                scope.with_driver(|context, mut sched| {
-                    let owner = retained::raw::Owner::from_driver(context.driver_ref());
-                    let mut turn = sched.begin_at(Sample::new(Instant::now()));
-                    run(&mut turn, Context::new(context, owner));
-                })
+                let (_, context, mut sched) = scope.split();
+                let mut turn = sched.begin_at(Sample::new(Instant::now()));
+                run(&mut turn, context);
             },
             policy,
             finish,
@@ -164,4 +160,9 @@ pub fn check_reports(reports: &[Reclaimed]) {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
+}
+
+pub fn terminate() {
+    // SAFETY: this single-threaded executable owns its SIGTERM receiver.
+    assert_eq!(unsafe { libc::kill(libc::getpid(), libc::SIGTERM) }, 0);
 }

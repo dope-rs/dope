@@ -1,6 +1,6 @@
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::link::pool::{self, pending};
 
 use crate::{
@@ -23,16 +23,16 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
+    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
         self,
         engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> receive::Outcome
     where
-        'd: 'p + 'owner,
+        'd: 'p,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         A::Requests: send::Policy<'w, 'd, ID, A>;
 }
@@ -45,16 +45,16 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
+    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
         self,
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> receive::Outcome
     where
-        'd: 'p + 'owner,
+        'd: 'p,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {
@@ -93,16 +93,16 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
+    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
         self,
         engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> receive::Outcome
     where
-        'd: 'p + 'owner,
+        'd: 'p,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {
@@ -121,16 +121,16 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context, 'owner>(
+    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
         self,
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> receive::Outcome
     where
-        'd: 'p + 'owner,
+        'd: 'p,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {

@@ -52,24 +52,21 @@ unsafe impl<'d, const COORDS: usize> executor::raw::App<'d> for Observer<'_, COO
 
     /// # Safety
     /// The runtime retains this exact installed owner and its admitted park plan.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         app: Pin<&'app mut Self>,
         _: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         if app.events.get() & 0xf != 6 {
             record(app.events, 6);
         }
     }
 
-    fn shutdown<'app, 'turn, 'driver, 'owner>(
-        call: executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>,
-    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>
-    where
-        'd: 'owner,
-    {
+    fn shutdown<'app, 'turn, 'driver>(
+        call: executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self>,
+    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self> {
         let (app, turn, driver) = call.into_parts();
         record(app.events, 2);
         executor::raw::Shutdown::new(app, turn, driver)

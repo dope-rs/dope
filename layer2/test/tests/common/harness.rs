@@ -9,7 +9,6 @@ use dope_test::harness::{observe::Trace, scenario::TIMEOUT, server::Pair};
 
 pub const STARTUP_TIMEOUT: time::Duration = time::Duration::from_millis(20);
 pub const E2E_DEADLINE: time::Duration = time::Duration::from_secs(2);
-pub const LATE_STARTUP: time::Duration = time::Duration::from_millis(50);
 
 #[derive(Debug)]
 pub struct LateFailure;

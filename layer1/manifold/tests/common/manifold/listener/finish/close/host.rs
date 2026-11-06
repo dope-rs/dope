@@ -1,7 +1,7 @@
 use std::{cell::Cell, convert::Infallible, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route::KeyTag, schedule::clock},
+    driver::{self, route::KeyTag, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -72,7 +72,7 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for App<'d> {
         self: Pin<&mut Self>,
         conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Identity, ()>,
         _: R,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         assert!(
             !conn.is_closing(),
@@ -110,7 +110,7 @@ impl<'n, 'p, 's, 'd> Host<'n, 'p, 's, 'd> {
     fn coordinate(mut this: host_coord::Fields<'_, 'n, 'p, 's, 'd>) -> control::Flow {
         if let Some(id) = this.id.take() {
             if let Some((matched, checked)) = this.checked.as_ref() {
-                matched.set(this.listener.with_conn(id, |state| *state).is_some());
+                matched.set(this.listener.conn_mut(id).is_some());
                 checked.hit();
             }
             this.listener.close_after(id);

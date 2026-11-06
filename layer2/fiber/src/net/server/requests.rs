@@ -43,7 +43,7 @@ pub(super) fn apply<
     >,
     reqs: Option<Requests<'_, 'd>>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut dispatch::raw::Context<'_, '_, 'd, dispatch::raw::Retained>,
+    driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
 ) where
     <W::Receive as Policy<W>>::Reserve: Choice<W, W::Retained>,
     <W::Receive as Policy<W>>::Credit: delivery::Ownership<W>,

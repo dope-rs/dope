@@ -1,7 +1,7 @@
 use std::{convert, mem, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule::clock},
+    driver::{self, route::Identity, schedule::clock},
     io::recv,
     random::Seed,
 };
@@ -305,7 +305,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for App {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Control, State<'d>>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         *conn.state_mut() = State::Seen(driver.driver_ref().clock().now());
         for &byte in chunk.as_ref() {
@@ -319,7 +319,7 @@ impl<'d, ID: Identity> send::Drive<'d, ID> for App {
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Control, State<'d>>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         assert!(
             matches!(conn.state(), State::Seen(input) if *input <= driver.driver_ref().clock().now())

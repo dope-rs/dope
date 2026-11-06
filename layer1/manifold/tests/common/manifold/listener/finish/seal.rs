@@ -1,7 +1,7 @@
 use std::{convert::Infallible, pin::Pin};
 
 use dope_core::{
-    driver::{retained, route::KeyTag, schedule, schedule::ready},
+    driver::{self, route::KeyTag, schedule, schedule::ready},
     random::Seed,
 };
 use dope_manifold::{
@@ -21,24 +21,18 @@ use o3::{
     depot::capacity,
 };
 
+#[derive(Default)]
 enum Phase {
+    #[default]
     Open,
     Sealing,
     Sealed,
 }
 
+#[derive(Default)]
 pub struct App<'d> {
     phase: Phase,
     wake: Option<ready::Target<'d>>,
-}
-
-impl App<'_> {
-    pub fn new() -> Self {
-        Self {
-            phase: Phase::Open,
-            wake: None,
-        }
-    }
 }
 
 impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
@@ -85,7 +79,7 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Identity, bool>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, KeyTag<0>, Identity, bool>
     where
         'd: 'w,
@@ -119,7 +113,7 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for App<'d> {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Identity, bool>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         let byte = match self.phase {
             Phase::Open => b'a',
@@ -161,9 +155,9 @@ unsafe impl<'n, 'p, 's, 'd> executor::raw::Drain<'d> for Host<'n, 'p, 's, 'd> {
     fn begin(
         self: Pin<&mut Self>,
         _: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
-        self.project().listener.seal(driver.driver());
+        self.project().listener.seal(driver);
     }
 
     fn progress(
@@ -177,10 +171,5 @@ unsafe impl<'n, 'p, 's, 'd> executor::raw::Drain<'d> for Host<'n, 'p, 's, 'd> {
         }
     }
 
-    fn force(
-        self: Pin<&mut Self>,
-        _: schedule::Turn<'_, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
-    ) {
-    }
+    fn force(self: Pin<&mut Self>, _: schedule::Turn<'_, 'd>, _: &mut driver::Context<'_, 'd>) {}
 }

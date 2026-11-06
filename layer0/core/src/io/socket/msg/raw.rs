@@ -64,6 +64,20 @@ impl<'a> Project<'a> for &'a msg::Iovec {
     }
 }
 
+impl<'a, const N: usize> super::Vectored<'a, N> {
+    /// Projects a sole descriptor with its admitted byte bound.
+    pub fn contiguous(&self) -> Option<transfer::View<'a>> {
+        let [iovec] = self.iovs else {
+            return None;
+        };
+        // SAFETY: the sole descriptor's length equals the admitted message length.
+        let bytes = unsafe { buffer::bytes::bounded::raw::Input::new(iovec.slice()) };
+        Some(transfer::View::from_prefix(
+            buffer::bytes::Prefix::from_raw(bytes),
+        ))
+    }
+}
+
 /// Compact exact cursor over one retained iovec graph.
 #[derive(Clone, Copy)]
 pub struct Cursor<'a> {
@@ -123,11 +137,9 @@ unsafe impl<'a: 'b, 'b> buffer::raw::Scatter<'b> for Cursor<'a> {
     unsafe fn advance<const MAX: usize>(
         &mut self,
         cap: NonZero<usize>,
-        _left: NonZero<usize>,
     ) -> buffer::raw::Chunk<'b, MAX> {
         loop {
-            // SAFETY: `left` is the exact positive remaining length and the
-            // retained graph's byte sum proves a backing iovec exists.
+            // SAFETY: admitted nonzero cap proves remaining bytes in this retained graph.
             let iovec = unsafe { self.iovecs.get_unchecked(self.index as usize) };
             if iovec.len() == self.local as usize {
                 self.index += 1;

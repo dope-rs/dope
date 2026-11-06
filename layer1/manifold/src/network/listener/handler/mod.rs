@@ -2,7 +2,7 @@ use std::{pin, time};
 
 use dope_core::{
     driver::{
-        retained,
+        self,
         route::{Identity, KeyTag},
         schedule::clock,
     },
@@ -35,7 +35,7 @@ pub trait Borrowed<'d, ID: Identity>: Application<'d, ID> {
         self: pin::Pin<&mut Self>,
         conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome;
 }
 
@@ -190,7 +190,7 @@ pub trait Scoped<'w, 'd: 'w, ID: Identity>: Application<'d, ID> {
         self: pin::Pin<&mut Self>,
         conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
         chunk: scoped::Input<'_, 'w, 'd, Self::Wire>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome;
 }
 
@@ -206,7 +206,7 @@ pub trait Owned<'w, 'd: 'w, ID: Identity>: Application<'d, ID, Input = receive::
         self: pin::Pin<&mut Self>,
         conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
         chunk: Chunk<'w, 'd, Self::Wire>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome;
 }
 
@@ -247,7 +247,7 @@ pub trait Application<'d, ID: Identity>: Sized {
     fn timeout<'e>(
         self: pin::Pin<&mut Self>,
         _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Timeout<'d> {
         Timeout::Discard
     }
@@ -255,9 +255,14 @@ pub trait Application<'d, ID: Identity>: Sized {
     fn drain<'e>(
         self: pin::Pin<&mut Self>,
         _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Drain {
         Drain::Discard
+    }
+
+    /// Selects whether this connection uses its input mode's causal gates.
+    fn is_gated(_conn: &Self::Conn) -> bool {
+        true
     }
 
     /// Returns whether the application gate for a gated input mode is closed.
@@ -282,7 +287,7 @@ pub trait Application<'d, ID: Identity>: Sized {
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: pin::Pin<&mut Self>,
         conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>
     where
         'd: 'w,
@@ -294,20 +299,17 @@ pub trait Application<'d, ID: Identity>: Sized {
     fn discarded<'e>(
         self: pin::Pin<&mut Self>,
         _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
     }
 
     /// Observes orderly input end before teardown.
-    /// `Hold` defers application retirement behind `close_gate`. Input end stops
-    /// receive admission while previously admitted output drains.
     fn eof<'e>(
         self: pin::Pin<&mut Self>,
         _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
         _: receive::End,
-        _: &mut retained::Context<'_, '_, 'd>,
-    ) -> Eof {
-        Eof::Close
+        _: &mut driver::Context<'_, 'd>,
+    ) {
     }
 
     fn close<'e, 'a, 'p, 's, 'w>(
@@ -333,13 +335,6 @@ pub trait Application<'d, ID: Identity>: Sized {
     ) -> receive::Outcome {
         receive::Outcome::Continue
     }
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub enum Eof {
-    #[default]
-    Close,
-    Hold,
 }
 
 /// Why an application egress owner left the listener transport.

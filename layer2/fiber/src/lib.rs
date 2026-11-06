@@ -27,6 +27,7 @@ pub trait BlockOn<'d> {
 impl<'app, 'life: 'app, 'd: 'life, D, Q> BlockOn<'d> for session::App<'app, 'life, 'd, D, Q>
 where
     D: executor::raw::App<'d>,
+    Q: executor::Startup,
 {
     fn block_on<F>(&mut self, fiber: F) -> Result<F::Output, drive::Error>
     where
@@ -35,5 +36,28 @@ where
         use task::done;
 
         self.drive(done::Once::new(fiber))
+    }
+}
+
+impl<'app, 'life: 'app, 'd: 'life, D, Q> BlockOn<'d>
+    for runtime::signal::App<'_, 'app, 'life, 'd, D, Q>
+where
+    D: executor::raw::App<'d>,
+    Q: executor::Startup,
+{
+    fn block_on<F>(&mut self, fiber: F) -> Result<F::Output, drive::Error>
+    where
+        F: abi::Fiber<'d>,
+    {
+        self.drive(task::done::Once::new(fiber))
+    }
+}
+
+impl<'d> abi::Fiber<'d> for &mut runtime::signal::Wait<'_, 'd> {
+    type Output = Result<(), runtime::signal::Error>;
+
+    fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> std::task::Poll<Self::Output> {
+        let (this, context) = call.into_parts();
+        this.get_mut().poll(context.as_ref().completion())
     }
 }

@@ -36,12 +36,6 @@ pub struct State<'d, Tag: route::Tag> {
     flight: Option<flight::Flight<'d, Tag::Class>>,
 }
 
-pub(super) enum End {
-    Stale,
-    Terminal,
-    Cancelled,
-}
-
 impl<'d, Tag: route::Tag> State<'d, Tag> {
     pub fn new(target: route::Target<'d, Tag>) -> Self {
         Self {
@@ -144,43 +138,15 @@ impl<'d, Tag: route::Tag> State<'d, Tag> {
         self.phase = Phase::Idle;
     }
 
-    pub(super) fn retire(&mut self, token: route::Erased<'d, Tag::Class>) -> End {
-        if !self
-            .flight
-            .as_ref()
-            .is_some_and(|flight| flight.matches(token))
-        {
-            return End::Stale;
-        }
-        let (phase, end) = match self.phase {
-            Phase::Armed => (Phase::Ready, End::Terminal),
-            Phase::CancelDeferred | Phase::Cancelling => (Phase::Idle, End::Cancelled),
-            Phase::Ready
-            | Phase::Deferred
-            | Phase::Idle
-            | Phase::Waiting
-            | Phase::Probing
-            | Phase::ProbeDeferred => return End::Stale,
-        };
-        let Some(flight) = self.flight.take_if(|flight| !flight.is_pending()) else {
-            return End::Stale;
-        };
-        drop(flight);
-        self.phase = phase;
-        end
-    }
-
     fn cancel(&mut self, driver: &mut driver::Context<'_, 'd>) {
         let Some(flight) = self.flight.as_mut() else {
             unreachable!("flight");
         };
         match flight.try_stop(driver) {
-            Ok(cancel::Outcome::Submitted | cancel::Outcome::Queued) => {
+            Ok(
+                cancel::Outcome::Submitted | cancel::Outcome::Queued | cancel::Outcome::Completed,
+            ) => {
                 self.phase = Phase::Cancelling;
-            }
-            Ok(cancel::Outcome::Completed) => {
-                self.flight = None;
-                self.phase = Phase::Idle;
             }
             Ok(cancel::Outcome::Deferred) => self.phase = Phase::CancelDeferred,
             Err(failure) => {
@@ -197,6 +163,7 @@ pub enum Disposition {
     Deliver,
     Discard,
     Probe,
+    Retiring,
 }
 
 #[must_use]
@@ -274,7 +241,7 @@ impl<'d, Tag: route::Tag> State<'d, Tag> {
         let (phase, result) = match self.phase {
             Phase::Armed => (Phase::Ready, Disposition::Deliver),
             Phase::Probing => (Phase::Ready, Disposition::Probe),
-            Phase::CancelDeferred | Phase::Cancelling => (Phase::Idle, Disposition::Discard),
+            Phase::CancelDeferred | Phase::Cancelling => (Phase::Idle, Disposition::Retiring),
             Phase::Ready
             | Phase::Deferred
             | Phase::Idle
@@ -317,16 +284,16 @@ impl<'d, Tag: route::Tag> Arming<'_, 'd, Tag> {
         self.state.apply(flight)
     }
 
-    pub fn recv<'owner>(
+    pub fn recv(
         self,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         slots: &flight::Slots<'d, Tag>,
         fd: &handles::Datagram<'d>,
     ) -> Submission
     where
         Tag: route::Tag<Class = kind::Recv>,
     {
-        let flight = slots.recv_dgram(driver.driver().reborrow(), fd, self.state.operation());
+        let flight = slots.recv_dgram(driver.reborrow(), fd, self.state.operation());
         self.state.apply(flight)
     }
 }

@@ -81,13 +81,9 @@ impl<'d> executor::raw::Layout<'d> for WakeProbe<'_, 'd> {
 unsafe impl<'d> executor::raw::App<'d> for WakeProbe<'_, 'd> {
     const ROUTES: settings::Routes = Routes::singleton::<KeyTag<0>>();
     const WAKE_ROUTES: settings::Routes = Self::ROUTES;
-    fn dispatch<'app, 'driver, 'turn, 'root>(
-        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'root, 'd, Self>,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root,
-    {
+    fn dispatch<'app, 'driver, 'turn>(
+        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
+    ) -> ControlFlow<io::Event<'d>> {
         ControlFlow::Continue(())
     }
     fn progress(app: Pin<&Self>, _: executor::raw::Progress<'_, '_, 'd>) -> schedule::Progress<'d> {
@@ -113,12 +109,12 @@ unsafe impl<'d> executor::raw::App<'d> for WakeProbe<'_, 'd> {
     }
     /// # Safety
     /// The root, prepared plan, and park authority belong to this installed owner.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         app: Pin<&'app mut Self>,
         Selected: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         if app.state.polls.get() == 0 || app.state.allowed.get() {
             return;
@@ -133,12 +129,12 @@ unsafe impl<'d> executor::raw::App<'d> for WakeProbe<'_, 'd> {
 
     /// # Safety
     /// The runtime supplies this route-zero application and its exact retained driver.
-    unsafe fn activate<'app, 'driver, 'turn, 'root>(
+    unsafe fn activate<'app, 'driver, 'turn>(
         app: Pin<&'app mut Self>,
-        event: executor::raw::Activate<'driver, 'turn, 'root, 'd>,
+        event: executor::raw::Activate<'driver, 'turn, 'd>,
     ) -> bool
     where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         let (target, driver) = event.into_driver();
         let expected = driver

@@ -83,23 +83,17 @@ where
 
     const COORDS: usize = 0;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         shutdown::Drain::drain(self.as_mut(), turn.reborrow(), driver);
         if let Some(call) = A::park() {
             let this = self.as_mut().project();
             call.call((
                 this.app,
-                &mut Park::new(
-                    turn.reborrow().app(),
-                    driver.driver().reborrow().into_regions(),
-                ),
+                &mut Park::new(turn.reborrow().app(), (**driver).reborrow().into_regions()),
             ));
         }
         drive::Run::run(self.as_mut(), turn.reborrow(), driver, false);
@@ -107,14 +101,11 @@ where
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         shutdown::Drain::begin(self.as_mut());
         shutdown::Drain::drain(self.as_mut(), turn, driver);
         self
@@ -195,7 +186,7 @@ where
         mut self: pin::Pin<&mut Self>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
     ) {
         <Self as ingress::Policy<'p, 'w, 'd, ID>>::resume(
             self.as_mut(),

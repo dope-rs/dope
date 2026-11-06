@@ -61,20 +61,17 @@ impl<'d, ID: Identity, M> executor::raw::Finishes<'d, Self> for Counter<ID, M> {
 impl<'d, ID: Identity, M> event::Drive<'d> for Counter<ID, M> {
     type Access = dispatch::raw::Plain;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         _: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ops::ControlFlow<io::Event<'d>> {
         ops::ControlFlow::Continue(())
     }
 }
@@ -93,27 +90,21 @@ unsafe impl<'d, ID: Identity, M> dispatch::raw::Manifold<'d> for Counter<ID, M> 
     type PrePark = dispatch::raw::Plain;
     type Shutdown = dispatch::raw::Plain;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         self: Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         let this = self.as_ref().get_ref();
         this.calls.tick.set(this.calls.tick.get() + 1);
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         self: Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         let calls = &self.as_ref().get_ref().calls.shutdown;
         calls.set(calls.get() + 1);
         self
@@ -143,15 +134,15 @@ unsafe impl<'d, ID: Identity, M> dispatch::raw::Wakes<'d, Self, ID> for Counter<
         Some(Cell::new(()))
     }
 
-    unsafe fn call<'a, 'driver, 'turn, 'root>(
+    unsafe fn call<'a, 'driver, 'turn>(
         call: executor::raw::Call<
             'a,
             Self,
             Self::Plan,
-            executor::raw::Activate<'driver, 'turn, 'root, 'd>,
+            executor::raw::Activate<'driver, 'turn, 'd>,
         >,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         let (owner, plan, _) = call.into_parts();
         let () = plan.into_inner();

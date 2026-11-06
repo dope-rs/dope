@@ -1,4 +1,4 @@
-use core::{cell, pin, task};
+use core::{cell, pin};
 
 use keyed::lanes;
 use o3::{
@@ -128,13 +128,16 @@ pub(in crate::task::storage::set) struct Running<'b, 'a, 'd, F: abi::Fiber<'d>, 
 
 impl<'b, 'a, 'd, F: abi::Fiber<'d>, M, D, G> Queued<'b, 'a, 'd, F, M, D, G> {
     pub(in crate::task::storage::set) fn wake(mut self) {
-        unsafe { slot::raw::Queued::new(self.0.get()) }.wake();
+        unsafe { slot::Running::new(self.0.get()) }
+            .wakers()
+            .0
+            .wake();
     }
 
     pub(super) fn start(self) -> Running<'b, 'a, 'd, F, M, D, G> {
         let mut vacant = self.0.detach();
         let current = vacant.edit();
-        let running = unsafe { slot::raw::Queued::new(current.slot) }.start();
+        let running = unsafe { slot::Running::new(current.slot) }.start();
         Running { vacant, running }
     }
 }
@@ -144,18 +147,8 @@ impl<'d, F: abi::Fiber<'d>, M, D, G> Running<'_, '_, 'd, F, M, D, G> {
         self.running.wakers()
     }
 
-    pub(super) fn poll(
-        &mut self,
-        poll: impl FnOnce(pin::Pin<&mut F>) -> task::Poll<F::Output>,
-    ) -> task::Poll<F::Output> {
-        poll(self.vacant.edit().owner.token.running(&self.running))
-    }
-
-    pub(super) fn poll_with(
-        &mut self,
-        poll: impl FnOnce(pin::Pin<&mut F>, &M) -> task::Poll<F::Output>,
-    ) -> task::Poll<F::Output> {
-        poll(
+    pub(super) fn parts(&mut self) -> (pin::Pin<&mut F>, &M) {
+        (
             self.vacant.edit().owner.token.running(&self.running),
             self.running.data(),
         )
@@ -254,7 +247,7 @@ impl<'d, D> Core<'d, D> {
         // SAFETY: owner-queue selection retains the current runnable slot;
         // its completion link remains detached until Running::complete.
         let vacant = lanes::Bound::from_source(unsafe { depot::raw::Proof::new(resident) });
-        let running = unsafe { slot::raw::Queued::new(slot) }.start();
+        let running = unsafe { slot::Running::new(slot) }.start();
         Running { vacant, running }
     }
 
@@ -379,11 +372,11 @@ unsafe impl<'b, 'a, 'd, F: abi::Fiber<'d>, M, D, G> depot::raw::KeyOwner<storage
     fn parts(&self) -> (Self::Key, &keyed::Link<Self::Key, storage::Id<'d, D>>) {
         (self.key, &self.slot.get_ref().link)
     }
-    fn entry<'c>(
+    fn link<'c>(
         live: depot::raw::Proof<(&'c Self, links::Index), Initialized<storage::Id<'d, D>>>,
-    ) -> keyed::Entry<'c, Self::Key, storage::Id<'d, D>> {
+    ) -> &'c keyed::Link<Self::Key, storage::Id<'d, D>> {
         let live = unsafe { live.map(|(resident, index)| (&resident.owner.view, index)) };
-        views::View::entry(live)
+        views::View::link(live)
     }
 }
 
@@ -418,11 +411,11 @@ unsafe impl<'b, 'a, 'd, F: abi::Fiber<'d>, M, D, G> depot::raw::KeyOwner<storage
     fn parts(&self) -> (Self::Key, &keyed::Link<Self::Key, storage::Id<'d, D>>) {
         depot::raw::KeyOwner::parts(&self.0)
     }
-    fn entry<'c>(
+    fn link<'c>(
         live: depot::raw::Proof<(&'c Self, links::Index), Initialized<storage::Id<'d, D>>>,
-    ) -> keyed::Entry<'c, Self::Key, storage::Id<'d, D>> {
+    ) -> &'c keyed::Link<Self::Key, storage::Id<'d, D>> {
         let live = unsafe { live.map(|(owner, index)| (&owner.0, index)) };
-        depot::raw::KeyOwner::entry(live)
+        depot::raw::KeyOwner::link(live)
     }
 }
 

@@ -11,6 +11,7 @@ use crate::wire::{
 /// # Safety
 /// `MIN_CAPACITY <= MAX_ITEMS <= 32` must hold for the declared item limits.
 /// Exact `len <= MAX_ITEMS` changes only through `next`, consuming one item or returning `None` at zero.
+/// `is_empty` agrees with `len == 0`.
 pub unsafe trait Batch<'input> {
     type Item: bytes::TryRetain + 'input;
 
@@ -21,6 +22,10 @@ pub unsafe trait Batch<'input> {
     const MIN_CAPACITY: num::NonZero<usize> = Self::MAX_ITEMS;
 
     fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     fn next(&mut self) -> Option<Self::Item>;
 }

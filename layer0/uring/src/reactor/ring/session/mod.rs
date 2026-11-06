@@ -27,7 +27,6 @@ use dope_sys::{
     },
     table::{token, token::host},
 };
-use o3::base::num::bounded;
 pub(super) use pending::Pending;
 use receiver::Receiver;
 
@@ -338,10 +337,7 @@ impl<T: token::Codec, L: memory::raw::Canary> session::Occupied
         let (state, done) = Stopped::attach(state, done).map_err(Stopped::convert)?;
         let probe = done.probe();
         let len: <L::Extent as memory::raw::Extent>::Length = match done.success() {
-            Ok(value) => {
-                let count: bounded::U32<0, { i32::MAX as u32 }> = value.into();
-                count.into()
-            }
+            Ok(value) => value.into(),
             Err(error) => {
                 return Err(Stopped {
                     state,

@@ -1,5 +1,5 @@
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -137,7 +137,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, (), Self::Egress>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         self.events.record(Event::Chunk(
             conn.id().index().into_usize(),

@@ -4,7 +4,7 @@ use dope_core::{
     dope_sys::engine::admit::Cancelled,
     driver,
     driver::{
-        result, retained,
+        result,
         retained::{flight, flight::cancel},
         route,
         route::Identity,
@@ -91,7 +91,7 @@ impl<'d> Phase<'d> {
         addr: &A,
         target: route::Target<'d, ID>,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         stopped: bool,
     ) -> (Self, Socket<'d>) {
         let build = match self {

@@ -6,7 +6,7 @@ use crate::io::reactor::complete;
 pub trait Poll<'a, T: complete::raw::Token>: Sized {
     type Entry;
 
-    fn new(file: fd::BorrowedFd<'a>, token: T) -> Self;
+    fn new(source: crate::engine::register::Source<'a>, token: T) -> Self;
     fn multi(file: fd::BorrowedFd<'a>, token: T) -> Self;
     fn entry(&self) -> &Self::Entry;
 }

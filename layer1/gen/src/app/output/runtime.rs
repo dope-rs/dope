@@ -46,7 +46,6 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
     let app_life = app.brand.fresh("__app");
     let driver = app.brand.fresh("__driver");
     let turn = app.brand.fresh("__turn");
-    let root = app.brand.fresh("__root");
     let owned = app.brand.fresh("__owner");
     let end = app.brand.fresh("__finish");
     let epoch = app.brand.fresh("__epoch");
@@ -190,14 +189,11 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
                 #exec::executor::raw::Install::new(#vapp, #vinstall)
             }
 
-            fn dispatch<#app_life, #driver, #turn, #root>(
+            fn dispatch<#app_life, #driver, #turn>(
                 #vdisp: #exec::executor::raw::Dispatch<
-                    #app_life, #driver, #turn, #root, #life, Self,
+                    #app_life, #driver, #turn, #life, Self,
                 >,
             ) -> ::core::ops::ControlFlow<#core::io::Event<#life>>
-            where
-                #life: #root,
-                Self: #root,
             {
                 #routes
             }
@@ -231,15 +227,15 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
 
             /// # Safety
             /// The authority and prepared plan belong to this exact installed pinned root.
-            unsafe fn park<#app_life, #driver, #turn, #root>(
+            unsafe fn park<#app_life, #driver, #turn>(
                 mut #vapp: ::core::pin::Pin<&#app_life mut Self>,
                 #vplan: &mut Self::ParkPlan,
                 mut #vpark: #exec::executor::raw::Park<
-                    #driver, #turn, #root, #life,
+                    #driver, #turn, #life,
                 >,
             )
             where
-                #life: #driver + #turn + #root,
+                #life: #driver + #turn,
             {
                 #cursors
                 #shares
@@ -247,15 +243,13 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
                 #(#ticks)*
             }
 
-            fn shutdown<#app_life, #turn, #driver, #owned>(
+            fn shutdown<#app_life, #turn, #driver>(
                 #vstop: #exec::executor::raw::Shutdown<
-                    #app_life, #turn, #driver, #owned, #life, Self,
+                    #app_life, #turn, #driver, #life, Self,
                 >,
             ) -> #exec::executor::raw::Shutdown<
-                #app_life, #turn, #driver, #owned, #life, Self,
+                #app_life, #turn, #driver, #life, Self,
             >
-            where
-                #life: #owned,
             {
                 let (mut #vapp, mut #vturn, mut #vdriver) = #vstop.into_parts();
                 #shutdown
@@ -276,14 +270,14 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
 
             /// # Safety
             /// The operation and selected route belong to this exact installed pinned root.
-            unsafe fn activate<#app_life, #driver, #turn, #root>(
+            unsafe fn activate<#app_life, #driver, #turn>(
                 mut #vapp: ::core::pin::Pin<&#app_life mut Self>,
                 mut #vact: #exec::executor::raw::Activate<
-                    #driver, #turn, #root, #life,
+                    #driver, #turn, #life,
                 >,
             ) -> bool
             where
-                #life: #driver + #turn + #root,
+                #life: #driver + #turn,
             {
                 let #vroute = #vact.target().route();
                 #wcall

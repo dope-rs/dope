@@ -151,7 +151,7 @@ where
         error::Error<ADDRESSES>,
         ADDRESSES,
     > {
-        let due = if error.is_terminal() {
+        let due = if error.terminal().is_some() {
             self.schedule.stop();
             None
         } else {

@@ -1,6 +1,6 @@
 use std::{convert, marker, pin};
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::link::pool;
 
 use crate::{
@@ -15,16 +15,19 @@ where
 {
     type Release: Dispatch<'d, ID, A>;
 
-    fn release() -> Option<Self::Release>;
+    fn release() -> Option<Self::Release> {
+        None
+    }
 
-    /// Settles one affine post-send writer turn.
-    fn settle<'listener, 'turn, 'driver, 'region, 'owner, 'w, E>(
-        job: Pending<'listener, '_, '_, '_, 'turn, 'driver, 'region, 'owner, 'w, 'd, ID, A, E>,
+    const NOTIFY: bool = false;
+
+    fn send<'w>(
+        _app: pin::Pin<&mut A>,
+        _scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        _driver: &mut driver::Context<'_, 'd>,
     ) where
-        'd: 'owner + 'w,
-        E: env::Spec<Wire = A::Wire>,
+        'd: 'w,
     {
-        job.finish();
     }
 }
 
@@ -64,7 +67,7 @@ pub trait Drive<'d, ID: Identity>: handler::Application<'d, ID> {
     fn send<'e>(
         self: pin::Pin<&mut Self>,
         scope: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 }
 
@@ -77,112 +80,58 @@ pub(in crate::network::listener) enum Next {
     Done,
 }
 
-/// Affine post-send turn. Every policy must finish the exact writer transition.
-#[must_use = "the post-send turn must be settled by its static policy"]
-pub struct Pending<
-    'listener,
-    'n,
-    'p,
-    's,
-    'turn,
-    'driver,
-    'region,
-    'owner,
-    'w,
-    'd: 'owner + 'w,
-    ID: Identity,
-    A,
-    E,
-> where
-    A: handler::Application<'d, ID>,
-    E: env::Spec<Wire = A::Wire>,
-{
-    root: pin::Pin<&'listener mut listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>>,
+pub(in crate::network::listener) fn settle<'w, 'd: 'w, ID: Identity, A, E>(
+    mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     key: pool::Key<'d, ID>,
     next: Next,
-    turn: schedule::Turn<'turn, 'd>,
-    driver: &'driver mut retained::Context<'region, 'owner, 'd>,
-}
-
-impl<
-    'listener,
-    'n,
-    'p,
-    's,
-    'turn,
-    'driver,
-    'region,
-    'owner,
-    'w,
-    'd: 'owner + 'w,
-    ID: Identity,
-    A,
-    E,
-> Pending<'listener, 'n, 'p, 's, 'turn, 'driver, 'region, 'owner, 'w, 'd, ID, A, E>
-where
-    A: handler::Application<'d, ID>,
+    turn: schedule::Turn<'_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
+) where
+    A: handler::Runtime<'w, 'd, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
-    pub(in crate::network::listener) fn new(
-        root: pin::Pin<&'listener mut listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
-        next: Next,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'region, 'owner, 'd>,
-    ) -> Self {
-        Self {
-            root,
-            key,
-            next,
-            turn,
-            driver,
-        }
-    }
-
-    pub(in crate::network::listener) fn gate(mut self) -> Option<Self>
-    where
-        A: handler::Gated<'d, ID>,
-    {
-        let drained = {
-            let mut this = self.root.as_mut().project();
-            let Some(mut egress) = this.owner.egress_mut(self.key) else {
-                return None;
-            };
-            let scope = egress.context(self.turn.reborrow().app());
-            let wake = scope.wake_target();
-            match scope.drain() {
-                Some(done) => {
-                    if matches!(
-                        handler::Gated::send_drained(this.app.as_mut(), done),
-                        handler::PostDrain::Activate,
-                    ) {
-                        wake.wake();
-                    }
-                    true
-                }
-                None => false,
-            }
+    if A::SEND {
+        let mut this = root.as_mut().project();
+        let Some(mut egress) = this.owner.egress_mut(key) else {
+            return;
         };
-        if drained {
-            self.finish();
-            None
-        } else {
-            Some(self)
-        }
+        A::send(
+            this.app.as_mut(),
+            egress.context(turn.reborrow().app()),
+            driver,
+        );
     }
+    match next {
+        Next::Commit => phase::commit_chunk(root, key, phase::Wake::Send, turn, driver),
+        Next::Done => phase::close_ready(root, key, turn, driver),
+    }
+}
 
-    fn finish(mut self) {
-        match self.next {
-            Next::Commit => phase::commit_chunk(
-                self.root.as_mut(),
-                self.key,
-                phase::Wake::Send,
-                self.turn,
-                self.driver,
-            ),
-            Next::Done => phase::close_ready(self.root, self.key, self.turn, self.driver),
+pub(in crate::network::listener) fn gated<'w, 'd: 'w, ID: Identity, A>(
+    mut app: pin::Pin<&mut A>,
+    scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+    driver: &mut driver::Context<'_, 'd>,
+) where
+    A: handler::Gated<'d, ID>,
+{
+    let scope = if A::is_gated(scope.state()) {
+        let wake = scope.wake_target();
+        match scope.try_drain() {
+            Ok(done) => {
+                if matches!(
+                    A::send_drained(app.as_mut(), done),
+                    handler::PostDrain::Activate
+                ) {
+                    wake.wake();
+                }
+                return;
+            }
+            Err(scope) => scope,
         }
-    }
+    } else {
+        scope
+    };
+    <A::Send as Policy<'d, ID, A>>::send(app, scope, driver);
 }
 
 impl<'d, ID: Identity, A> Policy<'d, ID, A> for Silent
@@ -190,10 +139,6 @@ where
     A: handler::Application<'d, ID>,
 {
     type Release = convert::Infallible;
-
-    fn release() -> Option<Self::Release> {
-        None
-    }
 }
 
 impl<'d, ID: Identity, A> Policy<'d, ID, A> for Ready
@@ -202,24 +147,16 @@ where
 {
     type Release = convert::Infallible;
 
-    fn release() -> Option<Self::Release> {
-        None
-    }
+    const NOTIFY: bool = true;
 
-    fn settle<'listener, 'turn, 'driver, 'region, 'owner, 'w, E>(
-        mut job: Pending<'listener, '_, '_, '_, 'turn, 'driver, 'region, 'owner, 'w, 'd, ID, A, E>,
+    fn send<'w>(
+        app: pin::Pin<&mut A>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        _driver: &mut driver::Context<'_, 'd>,
     ) where
-        'd: 'owner + 'w,
-        E: env::Spec<Wire = A::Wire>,
+        'd: 'w,
     {
-        {
-            let mut this = job.root.as_mut().project();
-            let Some(mut egress) = this.owner.egress_mut(job.key) else {
-                return;
-            };
-            A::send(this.app.as_mut(), egress.context(job.turn.reborrow().app()));
-        }
-        job.finish();
+        A::send(app, scope);
     }
 }
 
@@ -229,51 +166,23 @@ where
 {
     type Release = convert::Infallible;
 
-    fn release() -> Option<Self::Release> {
-        None
-    }
+    const NOTIFY: bool = true;
 
-    fn settle<'listener, 'turn, 'driver, 'region, 'owner, 'w, E>(
-        mut job: Pending<'listener, '_, '_, '_, 'turn, 'driver, 'region, 'owner, 'w, 'd, ID, A, E>,
+    fn send<'w>(
+        app: pin::Pin<&mut A>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
-        'd: 'owner + 'w,
-        E: env::Spec<Wire = A::Wire>,
+        'd: 'w,
     {
-        {
-            let mut this = job.root.as_mut().project();
-            let Some(mut egress) = this.owner.egress_mut(job.key) else {
-                return;
-            };
-            A::send(
-                this.app.as_mut(),
-                egress.context(job.turn.reborrow().app()),
-                job.driver,
-            );
-        }
-        job.finish();
+        A::send(app, scope, driver);
     }
 }
 
-impl<'d, ID: Identity, A> Policy<'d, ID, A> for Reported<Silent>
-where
-    A: Report<'d, ID>,
-{
+impl<'d, ID: Identity, A: Report<'d, ID>, P: Policy<'d, ID, A>> Policy<'d, ID, A> for Reported<P> {
     type Release = Selected;
 
-    fn release() -> Option<Self::Release> {
-        if <A as Report<'d, ID>>::ENABLED {
-            Some(Selected)
-        } else {
-            None
-        }
-    }
-}
-
-impl<'d, ID: Identity, A> Policy<'d, ID, A> for Reported<Run>
-where
-    A: Report<'d, ID> + Drive<'d, ID>,
-{
-    type Release = Selected;
+    const NOTIFY: bool = P::NOTIFY;
 
     fn release() -> Option<Self::Release> {
         if <A as Report<'d, ID>>::ENABLED {
@@ -283,13 +192,14 @@ where
         }
     }
 
-    fn settle<'listener, 'turn, 'driver, 'region, 'owner, 'w, E>(
-        job: Pending<'listener, '_, '_, '_, 'turn, 'driver, 'region, 'owner, 'w, 'd, ID, A, E>,
+    fn send<'w>(
+        app: pin::Pin<&mut A>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
-        'd: 'owner + 'w,
-        E: env::Spec<Wire = A::Wire>,
+        'd: 'w,
     {
-        <Run as Policy<'d, ID, A>>::settle(job);
+        P::send(app, scope, driver);
     }
 }
 

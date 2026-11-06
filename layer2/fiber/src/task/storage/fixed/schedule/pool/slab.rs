@@ -20,16 +20,14 @@ use crate::task::storage::{
 };
 
 /// One pinned, lazily-initialized heap task slot extent in o3's arena slab.
-type Inner<T, Tag, const MAX: u32> =
-    slab::Pinned<T, Tag, MAX, false, 1, storage::Heap, storage::Lazy>;
+type Inner<T, Tag, const MAX: u32> = slab::Pinned<T, Tag, MAX, false, 1, storage::Lazy>;
 
 /// One reserved heap slot reported before its task is installed.
-type Anchor<'a, T, Tag, const MAX: u32> =
-    slab::Anchor<'a, T, Tag, MAX, false, 1, storage::Heap, storage::Lazy>;
+type Anchor<'a, T, Tag, const MAX: u32> = slab::Anchor<'a, T, Tag, MAX, false, 1, storage::Lazy>;
 
 /// One occupied heap slot retaining its exclusive pinned store loan.
 type Anchored<'a, T, Tag, const MAX: u32> =
-    slab::Anchored<'a, T, Tag, MAX, false, 1, storage::Heap, storage::Lazy>;
+    slab::Anchored<'a, T, Tag, MAX, false, 1, storage::Lazy>;
 
 /// Heap task slots that initialize on first admission.
 ///

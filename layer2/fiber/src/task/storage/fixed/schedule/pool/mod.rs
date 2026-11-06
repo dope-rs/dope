@@ -13,7 +13,7 @@ use crate::{
     abi, context,
     context::wake,
     core::driver::{
-        retained,
+        self,
         schedule::{
             app,
             app::step,
@@ -163,7 +163,7 @@ where
         dequeued: S::Dequeued<'queue, Global>,
         work: app::Work<'turn, 'd>,
         permit: step::Delegated<'_, 'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome<T, M::Output, M::Item>
     where
         S: queue::Backend<'d> + 'queue,

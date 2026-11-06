@@ -1,7 +1,7 @@
 use std::{convert, pin::Pin};
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule::clock},
+    driver::{self, route::Identity, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -58,8 +58,8 @@ impl<'d, ID: Identity> Application<'d, ID> for Fence {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Phase<'d>>,
         _: receive::End,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> handler::Eof {
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
         let Phase::Seen(input) = *conn.state() else {
             panic!("EOF before input");
         };
@@ -70,7 +70,6 @@ impl<'d, ID: Identity> Application<'d, ID> for Fence {
             write::Draft::new(REPLY.len(), None, ())
         });
         assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
-        handler::Eof::Hold
     }
 
     fn close_gate(
@@ -101,7 +100,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Fence {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Phase<'d>>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         assert!(
             !chunk.as_ref().is_empty() && matches!(conn.state(), Phase::Fresh | Phase::Seen(_))
@@ -115,7 +114,7 @@ impl<'d, ID: Identity> send::Drive<'d, ID> for Fence {
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Phase<'d>>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let Phase::Held(input) = *conn.state() else {
             panic!("send before EOF");
@@ -183,7 +182,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Duplex {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Stage>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         assert!(!chunk.as_ref().is_empty());
         match *conn.state() {

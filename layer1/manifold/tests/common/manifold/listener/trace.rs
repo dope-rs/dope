@@ -2,7 +2,7 @@ use std::{cell::Cell, convert, net::SocketAddr, pin::Pin, rc::Rc, task};
 
 use dope_core::{
     driver::{
-        retained, route,
+        self, route,
         route::table::conn::Capacity,
         schedule::clock,
         settings,
@@ -134,7 +134,7 @@ impl<'d, ID: route::Identity, F: for<'a, 'b> Fn(Event<'a, 'b, ID>)> handler::Bor
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
         _: R,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         self.as_ref().get_ref().trace.received.hit();
         Outcome::Continue
@@ -236,7 +236,7 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Active {
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, ()>
     where
         'd: 'w,
@@ -253,7 +253,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Active {
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
         _: R,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         Outcome::Continue
     }

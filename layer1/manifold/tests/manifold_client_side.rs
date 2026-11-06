@@ -265,6 +265,7 @@ fn forced_finish_settles_queued_side_requests() {
                                 errors: Rc::new(Trace::new()),
                                 events: Rc::clone(&events),
                                 gate: connected.clone(),
+                                wait_reply: None,
                             },
                             ingress::Plan::none(),
                         );
@@ -380,6 +381,7 @@ fn cancelled_native_slots_bound_retry_promotion() {
                             errors: Rc::clone(&errors),
                             events: Rc::clone(&events),
                             gate: Gate::new(),
+                            wait_reply: None,
                         }, ingress::Plan::none());
                         let addr = server.local_addr().expect("peer address");
                         let snapshot = service::Snapshot::from_one(service::Revision::new(1), service::Endpoint::new(addr, addr));

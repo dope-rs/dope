@@ -16,7 +16,6 @@ enum Tag {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RootError {
-    Foreign,
     Invalid(task::Error),
     Changed { active: RootId, observed: RootId },
 }

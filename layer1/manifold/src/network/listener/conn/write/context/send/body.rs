@@ -1,25 +1,27 @@
-use compose::Either;
 use conn::write;
-use dope_core::driver::{retained, route::Identity};
+use dope_core::driver::{self, route::Identity};
 use dope_net::{
     link::egress::{self, data},
     wire,
 };
-use egress::{
-    data::{compose, exec},
-    reserve::exact,
-};
+use egress::reserve::{error, exact};
 use memory::access;
 use write::body::Admit;
 
 use crate::network::listener::{
-    self,
-    conn::{
+    conn,
+    writer::{
         self,
-        write::context::send::{Send, capacity},
+        flow::Flow::Clear,
+        memory::{self, Claim},
     },
-    writer::{flow::SlotFlow as _, memory},
 };
+
+enum Direct {
+    Absent,
+    Queued,
+    Waiting,
+}
 
 pub(in crate::network::listener::conn::write::context) fn send<
     'a,
@@ -37,15 +39,15 @@ pub(in crate::network::listener::conn::write::context) fn send<
 >(
     load: egress::NonEmpty<S>,
     scope: &'a mut conn::Ctx<'e, '_, 'p, 's, 'w, 'd, ID, W, C, B>,
-    driver: &'token mut retained::Context<'_, '_, 'd>,
+    driver: &'token mut driver::Context<'_, 'd>,
     publish: impl FnOnce(
         exact::Prepared<
             'a,
             'token,
             'e,
             'd,
-            Either<listener::raw::Owned<'p, 's, 'd, ID>, B>,
-            <B::Mode as exec::Mode>::Reserve<{ memory::WRITE_BUF_CAP }>,
+            writer::Payload<'p, 's, 'd, ID, B>,
+            writer::Reserve<'d, B>,
             S,
         >,
     ),
@@ -64,55 +66,87 @@ where
             load,
         };
     };
-    let send = match capacity::Capacity::new(scope, driver.driver_ref().clock().now(), lease)
-        .try_body(driver.region_token(), load)
-    {
-        Ok(send) => send,
-        Err((cause, load)) => {
-            return match cause {
-                capacity::Unavailable::Deferred(cause) => Admit::Deferred { cause, load },
-                capacity::Unavailable::Closed => Admit::Closed(load),
-                capacity::Unavailable::Rejected(cause) => Admit::Rejected { cause, load },
-            };
-        }
+    let now = driver.driver_ref().clock().now();
+    let slot = &mut scope.slot;
+    if slot.send_status().is_closed() {
+        return Admit::Closed(load);
+    }
+    let conn::Output::Open {
+        slots,
+        permit,
+        held,
+        queue,
+    } = &mut scope.output
+    else {
+        return Admit::Closed(load);
     };
-    let Send {
-        mut slot,
-        flights: slots,
-        pending: ready,
-        buffer,
-
-        lease,
-    } = send;
-    match buffer {
-        memory::Body::Queued { offer } => {
-            let wake = slot.io().wake_target();
-            let now = driver.driver_ref().clock().now();
-            let value = match offer.poll_reserve(driver.region_token(), wake) {
-                exact::Outcome::Ready(value) => value,
-                exact::Outcome::Pending(load) => {
-                    slot.ensure_send(now);
-                    return Admit::Deferred {
-                        cause: write::Deferred::Capacity,
-                        load,
-                    };
-                }
-                exact::Outcome::Rejected(rejected) => {
-                    return Admit::Unavailable(rejected);
-                }
-            };
-            publish(value);
-        }
-        memory::Body::Direct {
-            slot: flight,
-            value,
-        } => {
-            slot.state
-                .send
-                .begin(access::Direct::body(flight, inject(value)));
-            slot.ensure_send(driver.driver_ref().clock().now());
-            slot.advance_send(slots, ready, driver);
-        }
+    let slots = *slots;
+    let ready = *permit;
+    let target = slot.io().wake_target();
+    'admit: {
+        let flow = slot.flow(queue.pending());
+        let (direct, _) = held.sources();
+        let direct = if !matches!(&flow, Clear) {
+            if direct.is_some() {
+                Direct::Queued
+            } else {
+                Direct::Absent
+            }
+        } else {
+            match direct {
+                Some(source) => match held.take_direct(source, target) {
+                    Claim::Acquired(flight) => {
+                        queue.cancel_wait(driver.region_token());
+                        slot.state
+                            .send
+                            .begin(access::Direct::body(flight, inject(load)));
+                        slot.ensure_send(now);
+                        slot.advance_send(slots, ready, driver);
+                        break 'admit;
+                    }
+                    Claim::Waiting => Direct::Waiting,
+                },
+                None => Direct::Absent,
+            }
+        };
+        let offer = match queue.offer(load) {
+            Ok(offer) => offer,
+            Err(error) => {
+                let (load, reason) = error.into_parts();
+                let cause = match direct {
+                    Direct::Absent => {
+                        held.cancel(driver.region_token(), queue, target);
+                        return Admit::Rejected {
+                            cause: write::Reject::Geometry(error::Full::Reserve(reason)),
+                            load,
+                        };
+                    }
+                    Direct::Queued => {
+                        held.cancel(driver.region_token(), queue, target);
+                        write::Deferred::OrderedDrain
+                    }
+                    Direct::Waiting => {
+                        queue.cancel_wait(driver.region_token());
+                        write::Deferred::Capacity
+                    }
+                };
+                slot.ensure_send(now);
+                return Admit::Deferred { cause, load };
+            }
+        };
+        held.cancel_wait(target);
+        let value = match offer.poll_reserve(driver.region_token(), target) {
+            exact::Outcome::Ready(value) => value,
+            exact::Outcome::Pending(load) => {
+                slot.ensure_send(now);
+                return Admit::Deferred {
+                    cause: write::Deferred::Capacity,
+                    load,
+                };
+            }
+            exact::Outcome::Rejected(rejected) => return Admit::Unavailable(rejected),
+        };
+        publish(value);
     }
     lease.commit().run(|| ready.wake());
     Admit::Committed

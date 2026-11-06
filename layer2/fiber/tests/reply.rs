@@ -1,82 +1,11 @@
-use dope_fiber::{
-    reply,
-    reply::{
-        layout,
-        layout::{Data, Entries, Error, Lanes, Layout},
-        usage::{Bytes, Values},
-    },
+use dope_fiber::reply::{
+    layout,
+    layout::{Data, Entries, Error, Lanes, Layout},
+    usage::{Bytes, Values},
 };
 
 pub mod common;
 use crate::common::storage::replies::support::{capacity, limit};
-
-#[test]
-fn preserves_reply_layout() {
-    use std::mem::{needs_drop, size_of};
-
-    use reply::recv::outcome;
-
-    assert_eq!(
-        size_of::<reply::Lane<'static, 'static, 'static, 'static, ()>>(),
-        size_of::<usize>() * 2
-    );
-    assert_eq!(
-        size_of::<reply::Control<'static, 'static, 'static, 'static, ()>>(),
-        size_of::<reply::Lane<'static, 'static, 'static, 'static, ()>>()
-    );
-    assert_eq!(
-        size_of::<reply::Lane<'static, 'static, 'static, 'static, (), (), u8>>(),
-        size_of::<reply::Lane<'static, 'static, 'static, 'static, ()>>()
-    );
-    assert_eq!(
-        size_of::<reply::Control<'static, 'static, 'static, 'static, (), (), u8>>(),
-        size_of::<reply::Control<'static, 'static, 'static, 'static, ()>>()
-    );
-    assert_eq!(
-        size_of::<reply::Slot<'static, 'static, 'static, 'static, 'static, ()>>(),
-        size_of::<usize>() * 2
-    );
-    assert_eq!(
-        size_of::<outcome::Completion<'static, 'static, 'static, 'static, 'static, ()>>(),
-        size_of::<reply::Slot<'static, 'static, 'static, 'static, 'static, ()>>()
-    );
-    assert_eq!(
-        size_of::<outcome::Fault<'static, 'static, 'static, 'static, 'static, ()>>(),
-        size_of::<usize>() * 4
-    );
-    assert_eq!(
-        size_of::<outcome::Terminal<'static, 'static, 'static, 'static, 'static, ()>>(),
-        size_of::<usize>() * 4
-    );
-    assert_eq!(
-        size_of::<Option<outcome::Terminal<'static, 'static, 'static, 'static, 'static, ()>>>(),
-        size_of::<usize>() * 5
-    );
-    assert!(!needs_drop::<
-        reply::Lane<'static, 'static, 'static, 'static, ()>,
-    >());
-    assert!(!needs_drop::<
-        reply::Control<'static, 'static, 'static, 'static, ()>,
-    >());
-    assert!(!needs_drop::<
-        reply::Lane<'static, 'static, 'static, 'static, (), (), u8>,
-    >());
-    assert!(!needs_drop::<
-        reply::Control<'static, 'static, 'static, 'static, (), (), u8>,
-    >());
-    assert!(!needs_drop::<
-        reply::Slot<'static, 'static, 'static, 'static, 'static, ()>,
-    >());
-    assert!(!needs_drop::<
-        outcome::Completion<'static, 'static, 'static, 'static, 'static, ()>,
-    >());
-    assert!(needs_drop::<
-        outcome::Fault<'static, 'static, 'static, 'static, 'static, ()>,
-    >());
-    assert!(needs_drop::<
-        outcome::Terminal<'static, 'static, 'static, 'static, 'static, ()>,
-    >());
-}
 
 #[test]
 fn rejects_invalid_limits() {

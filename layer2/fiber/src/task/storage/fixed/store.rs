@@ -12,13 +12,12 @@ use o3::{
 use crate::task::storage::{Id, Owner, caps, fixed};
 
 /// One pinned task slot extent in o3's arena slab.
-type Inner<T, Tag, S> = slab::Pinned<T, Tag, { u32::MAX }, false, 1, S, storage::Eager>;
+type Inner<T, Tag, S> = slab::Pinned<T, Tag, { u32::MAX }, false, 1, S>;
 
 /// One reserved slot reported before its fiber is installed.
-type Anchor<'a, T, Tag, S> = slab::Anchor<'a, T, Tag, { u32::MAX }, false, 1, S, storage::Eager>;
+type Anchor<'a, T, Tag, S> = slab::Anchor<'a, T, Tag, { u32::MAX }, false, 1, S>;
 
-pub(super) type Member<'a, T, Tag, S> =
-    slab::Anchored<'a, T, Tag, { u32::MAX }, false, 1, S, storage::Eager>;
+pub(super) type Member<'a, T, Tag, S> = slab::Anchored<'a, T, Tag, { u32::MAX }, false, 1, S>;
 
 /// Pinned task slots backed by one exact o3 arena extent.
 ///

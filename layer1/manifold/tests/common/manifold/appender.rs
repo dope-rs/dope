@@ -1,4 +1,4 @@
-use std::{cell::Cell, mem::MaybeUninit, ops::ControlFlow, path::Path, pin::Pin};
+use std::{cell::Cell, mem::MaybeUninit, ops::ControlFlow, pin::Pin};
 
 use dope_core::{
     Backend, Errno,
@@ -8,18 +8,19 @@ use dope_core::{
 };
 use dope_manifold::{
     app::dispatch::{self, event},
-    file::appender::{self, Failure, RotateError, WriteError},
+    file::appender::{self, Failure, Prepared, RotateError, WriteError},
 };
 use dope_runtime::executor;
 use dope_test::harness::{scenario::process::Resource, signals::LocalGate};
+use o3::mem::Rejected;
 
 type Writer<'p, 'd, const N: usize, const B: usize> = appender::Appender<'p, 'd, KeyTag<37>, N, B>;
 
 pub enum Request<'a> {
-    Fill(&'a Path),
+    Fill(Prepared),
     Paused,
     Retry,
-    Rotate(&'a Path, Option<u8>),
+    Rotate(Prepared),
     Append(&'a [u8]),
     Drain,
 }
@@ -27,7 +28,8 @@ pub enum Request<'a> {
 #[derive(Default)]
 pub struct Native<'a> {
     pub(crate) request: Cell<Option<Request<'a>>>,
-    pub(crate) rotated: Cell<Option<Result<(), RotateError>>>,
+    pub(crate) rotated: Cell<Option<Result<io::fs::Offset, Rejected<Prepared, RotateError>>>>,
+    pub(crate) confirmed: Cell<u64>,
     pub(crate) done: LocalGate,
 }
 
@@ -72,14 +74,11 @@ unsafe impl<'p, 'd, const N: usize, const B: usize> dispatch::raw::Manifold<'d>
 
     const COORDS: usize = <Writer<'p, 'd, N, B> as dispatch::raw::Manifold<'d>>::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         // SAFETY: projection retains the exact installed writer and its loans.
         unsafe {
             <Writer<'p, 'd, N, B> as dispatch::raw::Manifold<'d>>::pre_park(
@@ -100,87 +99,79 @@ unsafe impl<'p, 'd, const N: usize, const B: usize> dispatch::raw::Manifold<'d>
             );
             this.checked.set(Some(waiting));
         }
-        if let Some(native) = *this.native {
-            if let Some(request) = native.request.take() {
-                let waiting = this.checked.get();
-                let drain = {
-                    // SAFETY: lifecycle projection installed this exact writer;
-                    // the control remains inside its exclusive pre-park loan.
-                    let mut control = unsafe {
-                        <Writer<'p, 'd, N, B> as dispatch::raw::Control<'d>>::root(
-                            self.as_mut().project().writer,
-                        )
-                    };
-                    match request {
-                        Request::Fill(path) => {
-                            assert_eq!(waiting, Some(true));
-                            assert!(matches!(
-                                control.try_rotate(path, None),
-                                Err(RotateError::Busy)
-                            ));
-                            assert!(!path.exists());
-                            for bytes in [b"IJKLMNOP".as_slice(), b"qrst"] {
-                                let mut record =
-                                    control.record(bytes.len()).expect("retained block");
-                                record.try_extend(bytes).expect("retained bytes");
-                                record.commit();
-                            }
-                            false
-                        }
-                        Request::Paused => {
-                            assert!(
-                                matches!(control.record(0), Err(WriteError::Failed(Failure::System(errno))) if errno.code().get() == libc::EFBIG)
-                            );
-                            native.done.handle().hit();
-                            false
-                        }
-                        Request::Retry => {
-                            control.try_retry().expect("explicit retry");
-                            true
-                        }
-                        Request::Rotate(path, tail) => {
-                            native.rotated.set(Some(control.try_rotate(path, tail)));
-                            native.done.handle().hit();
-                            false
-                        }
-                        Request::Append(bytes) => {
-                            let mut record =
-                                control.record(bytes.len()).expect("generation record");
-                            record.try_extend(bytes).expect("generation bytes");
-                            record.commit();
-                            true
-                        }
-                        Request::Drain => true,
-                    }
+        if let Some(native) = *this.native
+            && let Some(request) = native.request.take()
+        {
+            let drain = {
+                // SAFETY: lifecycle projection installed this exact writer;
+                // the control remains inside its exclusive pre-park loan.
+                let mut control = unsafe {
+                    <Writer<'p, 'd, N, B> as dispatch::raw::Control<'d>>::root(
+                        self.as_mut().project().writer,
+                    )
                 };
-                if drain {
-                    let this = self.as_ref().project_ref();
-                    if matches!(
-                        <Writer<'p, 'd, N, B> as dispatch::raw::Probe<'d, _>>::progress(
-                            this.writer,
-                            driver.regions(),
-                            driver.driver_ref().clock(),
-                        ),
-                        schedule::Progress::Quiescent
-                    ) {
-                        native.done.handle().hit();
-                    } else {
-                        native.request.set(Some(Request::Drain));
+                match request {
+                    Request::Fill(candidate) => {
+                        let mut record = control.record(8).expect("first block");
+                        record.try_extend(b"abcdefgh").expect("first bytes");
+                        record.commit();
+                        native.rotated.set(Some(control.try_rotate(candidate)));
+                        for bytes in [b"IJKLMNOP".as_slice(), b"qrst"] {
+                            let mut record = control.record(bytes.len()).expect("retained block");
+                            record.try_extend(bytes).expect("retained bytes");
+                            record.commit();
+                        }
+                        false
                     }
+                    Request::Paused => {
+                        assert!(
+                            matches!(control.record(0), Err(WriteError::Failed(Failure::System(errno))) if errno.code().get() == libc::EFBIG)
+                        );
+                        native.done.handle().hit();
+                        false
+                    }
+                    Request::Retry => {
+                        control.try_retry().expect("explicit retry");
+                        true
+                    }
+                    Request::Rotate(candidate) => {
+                        native.rotated.set(Some(control.try_rotate(candidate)));
+                        native.done.handle().hit();
+                        false
+                    }
+                    Request::Append(bytes) => {
+                        let mut record = control.record(bytes.len()).expect("generation record");
+                        record.try_extend(bytes).expect("generation bytes");
+                        record.commit();
+                        true
+                    }
+                    Request::Drain => true,
+                }
+            };
+            if drain {
+                let this = self.as_ref().project_ref();
+                if matches!(
+                    <Writer<'p, 'd, N, B> as dispatch::raw::Probe<'d, _>>::progress(
+                        this.writer,
+                        driver.regions(),
+                        driver.driver_ref().clock(),
+                    ),
+                    schedule::Progress::Quiescent
+                ) {
+                    native.done.handle().hit();
+                } else {
+                    native.request.set(Some(Request::Drain));
                 }
             }
         }
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         <Writer<'p, 'd, N, B> as dispatch::raw::Manifold<'d>>::shutdown(
             self.as_mut().project().writer,
             turn,
@@ -193,31 +184,33 @@ unsafe impl<'p, 'd, const N: usize, const B: usize> dispatch::raw::Manifold<'d>
 impl<'p, 'd, const N: usize, const B: usize> event::Drive<'d> for Observed<'_, 'p, 'd, N, B> {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         let (owner, (), (event, driver)) = call.into_parts();
-        let this = owner.project();
+        let mut this = owner.project();
         let event = event.into_kind();
         let failed = matches!(&event, Kind::Write(done) if done.outcome().is_err());
         let result = <Writer<'p, 'd, N, B> as event::Drive<'d>>::dispatch(
-            executor::raw::Call::new(this.writer, (), (event.into(), driver)),
+            executor::raw::Call::new(this.writer.as_mut(), (), (event.into(), driver)),
         );
-        if failed && let Some(native) = *this.native {
-            assert!(result.is_continue(), "exact native write completion");
-            native.done.handle().hit();
+        if let Some(native) = *this.native {
+            // SAFETY: dispatch returned this exact installed writer's exclusive loan.
+            let control =
+                unsafe { <Writer<'p, 'd, N, B> as dispatch::raw::Control<'d>>::root(this.writer) };
+            native.confirmed.set(control.confirmed());
+            if failed {
+                assert!(result.is_continue(), "exact native write completion");
+                native.done.handle().hit();
+            }
         }
         result
     }

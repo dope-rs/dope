@@ -6,7 +6,7 @@ use storage::fixed::{local::Removal, tree};
 use crate::{
     context::wake,
     core::driver::{
-        retained,
+        self,
         schedule::{
             app::{self, step},
             ready::task,
@@ -65,7 +65,7 @@ pub trait Ops<'d>: tree::Member<'d> + pool::Proof + Sized {
         dequeued: S::Dequeued<'queue, Global>,
         work: app::Work<'turn, 'd>,
         permit: step::Delegated<'_, 'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> result::Outcome<Self::Target, Self::Output, Self::Item>
     where
         S: queue::Backend<'d> + 'queue;

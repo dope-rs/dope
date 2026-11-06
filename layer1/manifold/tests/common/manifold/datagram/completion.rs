@@ -54,27 +54,21 @@ where
 
     const COORDS: usize = M::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         // SAFETY: projection preserves the exact installed endpoint and its storage.
         unsafe { M::pre_park(self.as_mut().project().endpoint, turn, driver) };
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         M::shutdown(self.as_mut().project().endpoint, turn, driver);
         self
     }
@@ -85,20 +79,17 @@ impl<'d, M: event::Drive<'d, Access = dispatch::raw::Plain>> event::Drive<'d>
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         let (owner, (), (done, mut driver)) = call.into_parts();
         let mut this = owner.project();
         let done = match done.into_kind() {
@@ -136,7 +127,7 @@ impl<'d, M: event::Drive<'d, Access = dispatch::raw::Plain>> event::Drive<'d>
         let target = space.bind(target.parts().slot(), target.parts().epoch());
         *this.shutdown = Some(
             this.flights
-                .shutdown(driver.driver().reborrow(), this.socket, target)
+                .shutdown((*driver).reborrow(), this.socket, target)
                 .expect("shutdown submission"),
         );
         *this.completed = Some(done);

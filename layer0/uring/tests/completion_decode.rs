@@ -5,7 +5,7 @@ use std::{cell::Cell, net::SocketAddr, num};
 use dope_sys::{
     Errno,
     io::reactor::complete::{
-        self, Flags as _, Outcome as _, Packet as _, Value as _,
+        self, Flags as _, Outcome as _, Packet as _,
         message::{Cut, Error, Output as _, Region},
         packet::Invalid,
     },
@@ -283,7 +283,6 @@ fn keeps_exact_results() {
             }
             Ok(Err(code)) => assert_eq!(code.code().get(), -raw),
             Ok(Ok(bytes)) => {
-                let bytes: bounded::U32<0, { i32::MAX as u32 }> = bytes.into();
                 assert_eq!(bytes.get(), raw as u32);
             }
         }
@@ -296,7 +295,7 @@ fn keeps_exact_results() {
             Ok(Ok(())) => assert_eq!(raw, 0),
         }
         if let complete::Decode::Value(value) = value.decode() {
-            assert_eq!(value.is_zero(), raw == 0);
+            assert_eq!(value.get() == 0, raw == 0);
         }
     }
 }
@@ -330,6 +329,8 @@ fn keeps_cancel_classes() {
 fn keeps_shutdown_mask() {
     for bits in [
         libc::POLLIN,
+        libc::POLLHUP,
+        libc::POLLRDHUP,
         libc::POLLIN | libc::POLLHUP,
         libc::POLLIN | libc::POLLRDHUP,
         libc::POLLIN | libc::POLLHUP | libc::POLLRDHUP,
@@ -340,7 +341,6 @@ fn keeps_shutdown_mask() {
     }
     for raw in [
         0,
-        i32::from(libc::POLLHUP),
         i32::from(libc::POLLIN | libc::POLLERR),
         i32::from(libc::POLLOUT),
         i32::MAX,

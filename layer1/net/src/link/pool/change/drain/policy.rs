@@ -1,6 +1,4 @@
-use dope_core::driver::{
-    life::finish, receive::credit, retained, route::Identity, schedule::maint,
-};
+use dope_core::driver::{self, life::finish, receive::credit, route::Identity, schedule::maint};
 use o3::base::{Call as _, cell::region};
 
 use crate::{
@@ -11,10 +9,9 @@ use crate::{
             change::{
                 Finalize,
                 close::{
-                    Approval, Commit, Decision, Deferred, Failed, Handler, Outcome, Owner, Resume,
-                    Start,
+                    Approval, Commit, Decision, Failed, Handler, Outcome, Owner, Resume, Start,
                 },
-                drain::{Branch, Call, Plan, Storage, Strategy, Turn, release},
+                drain::{Branch, Call, Plan, Storage, Strategy, Turn},
                 quiesce,
             },
             recv::{
@@ -34,27 +31,25 @@ pub trait Policy<W: wire::Spec>: Sized {
         pool: &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         key: pool::Key<'d, ID>,
         work: maint::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         handler: Handler<
             '_,
             C,
             X,
-            impl for<'x, 'c, 'f, 's, 'v, 'r, 'o> FnMut(
-                Owner<'x, 'c, 'f, 's, 'v, 'r, 'o, 'w, 'd, ID, W, S, C, X>,
+            impl for<'x, 'c, 'f, 's, 'v, 'r> FnMut(
+                Owner<'x, 'c, 'f, 's, 'v, 'r, 'w, 'd, ID, W, S, C, X>,
             ) -> Decision<'d, ID>,
-            impl for<'x, 'c, 'v, 'r, 'o> FnMut(
-                Commit<'x, 'c, 'v, 'r, 'o, 'd, C, X, S>,
-            ) -> Approval<S, R>,
-            impl for<'x, 'c, 'i, 'v, 'r, 'o> FnMut(
-                Failed<'x, 'c, 'i, 'v, 'r, 'o, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>,
+            impl for<'x, 'c, 'v, 'r> FnMut(Commit<'x, 'c, 'v, 'r, 'd, C, X, S>) -> Approval<S, R>,
+            impl for<'x, 'c, 'i, 'v, 'r> FnMut(
+                Failed<'x, 'c, 'i, 'v, 'r, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>,
             ),
         >,
-        release: impl release::Policy<'d, X, B>,
+        release: impl FnMut(&mut X, B, &mut region::Token<region::Identity<'d, 1>>),
         complete: impl FnOnce(
             &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
             &mut X,
-            &mut retained::Context<'_, '_, 'd>,
-            Outcome<C::Output, C, Deferred<'d, ID>>,
+            &mut driver::Context<'_, 'd>,
+            Outcome<C::Output, C>,
         ) -> F,
     ) -> F
     where
@@ -100,27 +95,25 @@ where
         pool: &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         key: pool::Key<'d, ID>,
         work: maint::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         handler: Handler<
             '_,
             C,
             X,
-            impl for<'x, 'c, 'f, 's, 'v, 'r, 'o> FnMut(
-                Owner<'x, 'c, 'f, 's, 'v, 'r, 'o, 'w, 'd, ID, W, S, C, X>,
+            impl for<'x, 'c, 'f, 's, 'v, 'r> FnMut(
+                Owner<'x, 'c, 'f, 's, 'v, 'r, 'w, 'd, ID, W, S, C, X>,
             ) -> Decision<'d, ID>,
-            impl for<'x, 'c, 'v, 'r, 'o> FnMut(
-                Commit<'x, 'c, 'v, 'r, 'o, 'd, C, X, S>,
-            ) -> Approval<S, R>,
-            impl for<'x, 'c, 'i, 'v, 'r, 'o> FnMut(
-                Failed<'x, 'c, 'i, 'v, 'r, 'o, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>,
+            impl for<'x, 'c, 'v, 'r> FnMut(Commit<'x, 'c, 'v, 'r, 'd, C, X, S>) -> Approval<S, R>,
+            impl for<'x, 'c, 'i, 'v, 'r> FnMut(
+                Failed<'x, 'c, 'i, 'v, 'r, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>,
             ),
         >,
-        mut release: impl release::Policy<'d, X, B>,
+        mut release: impl FnMut(&mut X, B, &mut region::Token<region::Identity<'d, 1>>),
         complete: impl FnOnce(
             &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
             &mut X,
-            &mut retained::Context<'_, '_, 'd>,
-            Outcome<C::Output, C, Deferred<'d, ID>>,
+            &mut driver::Context<'_, 'd>,
+            Outcome<C::Output, C>,
         ) -> F,
     ) -> F
     where
@@ -146,7 +139,7 @@ where
             };
             let resident = match Start::begin(entry) {
                 Start::Ready(resident) => resident,
-                Start::Terminal => break 'close Branch::Pending(Deferred::Terminal),
+                Start::Terminal => break 'close Branch::Pending,
             };
             let target = resident.get().key.target();
             let id = credit::Id::new(target.dispatch());
@@ -154,11 +147,11 @@ where
                 cancel.call((&mut pool.prepared.runtime, id));
             }
             let mut entry = tail::Store::clear(resident);
-            let stop = entry.get_mut().control.engine.cancel(driver.driver());
+            let stop = entry.get_mut().control.engine.cancel(driver);
             match stop {
                 setup::Cancellation::Ready => {}
                 setup::Cancellation::Pending => {
-                    break 'close Branch::Pending(Deferred::Setup);
+                    break 'close Branch::Pending;
                 }
                 setup::Cancellation::Retry => {
                     let next = Resume::new(entry.get());
@@ -166,7 +159,7 @@ where
                 }
                 setup::Cancellation::Rejected(cause) => {
                     driver.rejected(cause);
-                    break 'close Branch::Pending(Deferred::Setup);
+                    break 'close Branch::Pending;
                 }
             }
             let plan = Plan {
@@ -192,17 +185,20 @@ where
             };
             <Self as Strategy<W>>::close(plan)
         };
-        if let Some(handle) = pool.prepared.pending.handle(key) {
+        let waiting = if let Some(handle) = pool.prepared.pending.handle(key) {
             let waiting = pool
                 .prepared
                 .slab
                 .view()
                 .get(key.parts())
                 .is_some_and(|slot| slot.send_status().is_waiting());
-            if !waiting || matches!(&branch, Branch::Pending(Deferred::Owner(_))) {
+            if !waiting || matches!(&branch, Branch::Owner(_)) {
                 handle.wait_send(waiting);
             }
-        }
+            waiting
+        } else {
+            false
+        };
         if pool.prepared.pending.has_waiting()
             && <W::Send as send::Policy<W>>::has_capacity(&pool.prepared.runtime)
         {
@@ -210,15 +206,21 @@ where
         }
         let outcome = match branch {
             Branch::Retired(proof) => Outcome::Retired(claim.finalize(proof)),
-            Branch::Pending(deferred) => Outcome::Pending(claim, deferred),
+            Branch::Pending => Outcome::Pending(claim),
+            Branch::Owner(wait) => {
+                if !waiting {
+                    wait.reschedule();
+                }
+                Outcome::Pending(claim)
+            }
             Branch::Resume(next) => {
                 next.reschedule();
-                Outcome::Pending(claim, Deferred::Scheduled)
+                Outcome::Pending(claim)
             }
             Branch::Released { payload, resume } => {
-                release.release(ctx, payload, driver);
+                release(ctx, payload, driver.state_token());
                 resume.reschedule();
-                Outcome::Pending(claim, Deferred::Scheduled)
+                Outcome::Pending(claim)
             }
             Branch::Stale => Outcome::Stale(claim),
             Branch::Missing => Outcome::Missing(claim),

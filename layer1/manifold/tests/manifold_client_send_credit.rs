@@ -29,7 +29,10 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-use o3::depot::array::{self, Len};
+use o3::depot::{
+    array::{self, Len},
+    queue::pool::fair,
+};
 
 use crate::common::{
     contract::Report,
@@ -240,7 +243,12 @@ fn credit_grants_source() {
                 requests::Lane {
                     audit: audit.clone(),
                     requests: Requests {
-                        pending: Default::default(),
+                        pending: fair::Lanes::try_new(
+                            fair::Plan::new(4, 4).expect("request lanes"),
+                            &runtime.driver().regions().0,
+                        )
+                        .expect("source storage"),
+                        assigned: Default::default(),
                         peers: [None; 4],
                         next: next.clone(),
                         order: order.clone(),
@@ -388,6 +396,5 @@ fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
 
 fn checked(audit: &Report<error::Error, 16>) {
     let faults = audit.faults.values().expect("fault observations");
-    let result = error::Error::check(&faults);
-    assert!(result.is_ok(), "{result:?}");
+    assert!(faults.is_empty(), "{faults:?}");
 }

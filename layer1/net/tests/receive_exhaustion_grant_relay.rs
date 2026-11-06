@@ -118,22 +118,24 @@ fn idle_peer_progress() {
                     }
 
                     drop(first);
-                    scope.with_driver(|mut driver, mut control| {
+                    {
+                        let (_, mut driver, mut control) = scope.split();
                         let mut turn = control.begin();
                         assert!(matches!(
                             driver.commit(turn.reactor()),
                             Ok(poll::Commit::Drained)
                         ));
-                    });
+                    };
                     if matches!(phase, Phase::ProbeActive) {
                         eof::arm(pool, a, scope).expect("idle probe submission");
-                        scope.with_driver(|mut driver, mut control| {
+                        {
+                            let (_, mut driver, mut control) = scope.split();
                             let mut turn = control.begin();
                             assert!(matches!(
                                 driver.commit(turn.reactor()),
                                 Ok(poll::Commit::Drained)
                             ));
-                        });
+                        };
                     }
                     for initial in [true, false] {
                         let mut woke = false;
@@ -157,13 +159,14 @@ fn idle_peer_progress() {
                             assert!(woke, "the returned backing first granted idle A");
                         }
                         eof::flush(pool, scope).expect("submit the granted idle retry");
-                        scope.with_driver(|mut driver, mut control| {
+                        {
+                            let (_, mut driver, mut control) = scope.split();
                             let mut turn = control.begin();
                             assert!(matches!(
                                 driver.commit(turn.reactor()),
                                 Ok(poll::Commit::Drained)
                             ));
-                        });
+                        };
                     }
                     assert!(!pool.inspect().has_rearm());
 

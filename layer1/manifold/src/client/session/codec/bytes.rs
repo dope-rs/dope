@@ -30,7 +30,7 @@ impl Stateless for Bytes {
     fn parse<'id, 'input, 'd, R: buffer::Cursor>(
         &self,
         input: Input<'id, 'input, 'd, R>,
-    ) -> Result<Parse<'id, Self::Head<'input, 'd, R>>, Self::Error>
+    ) -> super::Parsed<'id, 'input, 'd, Self, R>
     where
         'd: 'input,
     {

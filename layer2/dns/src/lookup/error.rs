@@ -1,4 +1,5 @@
 use std::{
+    convert::Infallible,
     mem, net,
     time::{Duration, Instant},
 };
@@ -182,8 +183,10 @@ pub enum Datagram {
     Shutdown,
 }
 
-#[derive(Debug)]
-pub enum Error<const N: usize> {
+pub type Error<const N: usize> = Failure<Completion<N>>;
+
+#[derive(Clone, Copy, Debug)]
+pub enum Failure<C> {
     Query {
         kind: Kind,
         started_unix_ns: Unix<Nanos>,
@@ -193,7 +196,7 @@ pub enum Error<const N: usize> {
         source: civil::Error,
     },
     AnswerClock {
-        completion: Completion<N>,
+        completion: C,
         source: civil::Error,
     },
     QueryClock {
@@ -211,13 +214,39 @@ pub enum Error<const N: usize> {
     },
 }
 
-impl<const N: usize> Error<N> {
-    pub(super) fn is_terminal(&self) -> bool {
-        match self {
-            Self::Query { kind, .. } | Self::QueryClock { kind, .. } => kind.is_terminal(),
-            Self::QueryRevision { .. } | Self::Revision { .. } => true,
-            _ => false,
-        }
+impl<C> Failure<C> {
+    pub fn terminal(&self) -> Option<Failure<Infallible>> {
+        Some(match *self {
+            Self::Query {
+                kind,
+                started_unix_ns,
+                completed_unix_ns,
+            } if kind.is_terminal() => Failure::Query {
+                kind,
+                started_unix_ns,
+                completed_unix_ns,
+            },
+            Self::QueryClock {
+                kind,
+                started_unix_ns,
+                source,
+            } if kind.is_terminal() => Failure::QueryClock {
+                kind,
+                started_unix_ns,
+                source,
+            },
+            Self::QueryRevision {
+                source,
+                started_unix_ns,
+                completed_unix_ns,
+            } => Failure::QueryRevision {
+                source,
+                started_unix_ns,
+                completed_unix_ns,
+            },
+            Self::Revision { source } => Failure::Revision { source },
+            _ => return None,
+        })
     }
 
     pub(super) const fn query(kind: Kind, times: Range) -> Self {

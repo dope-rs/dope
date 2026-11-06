@@ -1,4 +1,4 @@
-use dope_core::driver::retained::flight::storage::{Echo, Flights};
+use dope_core::driver::retained::flight::storage::Flights;
 use dope_sys::io::reactor::complete::flags::Flow;
 use o3::depot::arena::slab::Vacancy;
 
@@ -121,31 +121,6 @@ fn distinguishes_exhaustion() {
 }
 
 #[test]
-fn round_trips_echo() {
-    let mut arena = Flights::<u64>::new();
-    let mut builder = arena.builder();
-    let lease = {
-        let prepared = (builder.try_batch([1])).expect("one flight slot must prepare successfully");
-        let [slots] = prepared.groups();
-        let vacant = (slots.try_vacancy()).expect("flight entry");
-        vacant.reserve(31).commit()
-    };
-    let echo = lease.echo();
-    let raw = echo.expose();
-
-    let back = (Echo::<u64>::from_exposed(raw)).expect("an exposed live echo remains valid");
-    assert!(back == echo);
-    assert!(Echo::<u64>::from_exposed(0).is_none());
-    assert!(Echo::<u64>::from_exposed(1).is_none());
-
-    assert_eq!(
-        builder.drain().bind(back).map(|bound| bound.complete()),
-        Some(31)
-    );
-    assert_eq!(lease.value(), 31);
-}
-
-#[test]
 fn continuations_keep_flights() {
     let mut arena = Flights::<u64>::new();
     let mut builder = arena.builder();
@@ -167,7 +142,7 @@ fn continuations_keep_flights() {
             };
             for (flow, pending) in [(Flow::More, true), (Flow::More, true), (Flow::Last, false)] {
                 let bound = builder.drain().bind(echo).expect("original pending echo");
-                assert_eq!(bound.settle(flow.into()), 73);
+                assert_eq!(bound.settle(flow), 73);
                 if let Some(lease) = &lease {
                     assert_eq!(lease.is_pending(), pending);
                 }

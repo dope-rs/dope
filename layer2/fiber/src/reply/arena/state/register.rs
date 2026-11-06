@@ -187,7 +187,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'reg
             state::Entry {
                 body: state::EntryBody::Attached(state::Attached(reply::State::new(data))),
                 acceptance: accept,
-                owners: entry.register(key),
+                owners: pool::Owner::new(entry, key),
                 signal: state::Signal::new(),
             }
         });

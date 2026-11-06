@@ -18,7 +18,7 @@ pub(in crate::network::listener) unsafe fn activate<'turn, 'w, 'd: 'w, ID: Ident
     mut listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     target: route::Target<'d, ID>,
     turn: schedule::Turn<'turn, 'd>,
-    driver: &mut dispatch::raw::Context<'_, '_, 'd, dispatch::raw::Retained>,
+    driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
 ) where
     A: Runtime<'w, 'd, ID>,
     E: env::Spec<Wire = A::Wire>,

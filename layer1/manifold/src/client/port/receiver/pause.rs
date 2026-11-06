@@ -31,7 +31,7 @@ impl<'entry, 'e, 'd, S: data::raw::Payload<'d>, I: identity::Identity> Pause<'en
         token: &region::Token<region::Identity<'d>>,
         inspect: impl FnOnce(&S) -> K,
     ) -> Option<Head<'source, 'entry, 'e, 'd, S, K, I>> {
-        let kind = self.slot.queue().inspect(token, inspect)?;
+        let kind = inspect(self.slot.queue().front(token)?);
         Some(Head::new(self, kind))
     }
 

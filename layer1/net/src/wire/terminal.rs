@@ -236,7 +236,7 @@ impl<E> State<E> {
     }
 
     /// Stops further wire input while preserving the send direction.
-    pub(crate) const fn is_read_done(&self) -> bool {
+    pub const fn is_read_done(&self) -> bool {
         matches!(&self.0, Phase::Eof | Phase::ReadClosed)
     }
 

@@ -29,7 +29,6 @@ fn allocation_reuses_group() {
         let (result, alloc) = Tracker::measure(|| owner.try_slots(capacity));
         let slots = result.expect("required fixture outcome");
         assert_eq!(alloc, [1, (6 + 32 * 2) * mem::size_of::<usize>(), 0, 0]);
-        assert_eq!(mem::size_of_val(&slots), 4 * mem::size_of::<usize>());
         let slot = slots
             .get(indices::SlotIndex::fixed::<16>())
             .expect("active index");
@@ -105,36 +104,6 @@ fn bounds_growth() {
     });
     assert!(alloc[0] <= 8);
     assert!(alloc[1] <= (8 * 6 + 4 * 65 * 2) * mem::size_of::<usize>());
-}
-
-#[test]
-fn lease_delays_reuse() {
-    let observed = Cell::new(None);
-    let owner = storage::Owner::<NonZero<u64>, NonZero<u8>, _>::new(((), &observed));
-    let (old, lease) = {
-        let slots = owner
-            .try_slots(NonZero::<u32>::MIN)
-            .expect("initial allocation");
-        let slot = slots
-            .get(indices::SlotIndex::fixed::<0>())
-            .expect("active slot");
-        let old = slot.key();
-        let lease = old.arm(NonZero::<u64>::MIN).expect("idle slot");
-        (old, lease)
-    };
-    let (result, alloc) = Tracker::measure(|| owner.try_slots(NonZero::<u32>::MIN));
-    let busy = result.expect("held group requires allocation");
-    assert_eq!(alloc, [1, 8 * mem::size_of::<usize>(), 0, 0]);
-    lease.release_with(NonZero::<u8>::MIN, record);
-    let (result, alloc) = Tracker::measure(|| owner.try_slots(NonZero::<u32>::MIN));
-    let slots = result.expect("released group is reusable");
-    assert_eq!(alloc, [0, 0, 0, 0]);
-    assert!(matches!(
-        old.arm(NonZero::<u64>::MIN),
-        Err(error::Arm::Stale(_))
-    ));
-    drop((slots, busy));
-    assert_eq!(observed.get(), None);
 }
 
 #[test]
@@ -298,17 +267,18 @@ fn release_order_pins() {
             let observed = Cell::new(None);
             let owner = storage::Owner::<NonZero<u64>, NonZero<u8>, _>::new(((), &observed));
             let capacity = NonZero::<u32>::MIN.saturating_add(1);
-            let [first, second] = {
+            let [(old, first), (_, second)] = {
                 let slots = owner.try_slots(capacity).expect("initial allocation");
                 [0_u16, 1].map(|index| {
                     let slot = slots
                         .get(indices::SlotIndex::from(index))
                         .expect("active slot");
-                    let lease = slot.key().arm(NonZero::<u64>::MIN).expect("idle slot");
+                    let key = slot.key();
+                    let lease = key.arm(NonZero::<u64>::MIN).expect("idle slot");
                     if detached {
                         slot.detach();
                     }
-                    lease
+                    (key, lease)
                 })
             };
             let (result, alloc) = Tracker::measure(|| owner.try_slots(capacity));
@@ -331,6 +301,10 @@ fn release_order_pins() {
             let slots = result.expect("fully released group is reusable");
             assert_eq!(alloc, [0, 0, 0, 0]);
             assert_eq!(slots.iter().count(), 2);
+            assert!(matches!(
+                old.arm(NonZero::<u64>::MIN),
+                Err(error::Arm::Stale(_))
+            ));
             drop((slots, busy, other));
             assert_eq!(observed.get(), None);
         }

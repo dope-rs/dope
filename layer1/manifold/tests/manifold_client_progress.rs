@@ -477,8 +477,7 @@ fn leased<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>, lease: Option<
 
 fn checked(audit: &Report<error::Error, 16>) {
     let faults = audit.faults.values().expect("fault observations");
-    let result = error::Error::check(&faults);
-    assert!(result.is_ok(), "{result:?}");
+    assert!(faults.is_empty(), "{faults:?}");
 }
 
 fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error, 16>) {

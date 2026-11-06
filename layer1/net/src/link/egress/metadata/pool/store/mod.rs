@@ -57,20 +57,12 @@ impl<'p, 'd, T> Node<'p, 'd, T> {
         }
     }
 
-    fn reserve(&self, token: &mut region::Token<region::Identity<'d>>) -> Option<Index<'d>> {
-        token.borrow_mut(&self.cell).next.take()
-    }
-
-    fn clear(&self, token: &mut region::Token<region::Identity<'d>>) {
-        token.borrow_mut(&self.cell).next = None;
-    }
-
     fn discard(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
     ) -> (Option<Index<'d>>, credit::Stored<'p>) {
         let cell = token.borrow_mut(&self.cell);
-        let next = cell.next.take();
+        let next = cell.next;
         cell.occupied = false;
         unsafe {
             cell.value.assume_init_drop();
@@ -87,7 +79,7 @@ pub(in crate::link::egress) struct Slab<'p, 'd, T> {
 
 pub(in crate::link::egress) struct Vacancy<'a, 'p, 'd, T> {
     slab: &'a Slab<'p, 'd, T>,
-    front: head::Front<&'a head::Cell<Option<Index<'d>>>, Option<Index<'d>>>,
+    front: head::Front<'a, Option<Index<'d>>>,
 }
 
 pub(in crate::link::egress) struct Reservation<'a, 'token, 'p, 'd, T> {
@@ -127,7 +119,7 @@ unsafe impl<'a, 'p, 'd, T>
         index: Index<'d>,
         token: &'a mut region::Token<region::Identity<'d>>,
     ) -> (Option<Index<'d>>, Self::Output) {
-        let next = self.node(index).reserve(token);
+        let next = self.next(token, index);
         (next, index)
     }
 }
@@ -146,8 +138,7 @@ unsafe impl<'a, 'p, 'd, T> depot::raw::HeadPop<Option<Index<'d>>, Second<'a, 'd>
         index: Index<'d>,
         second: Second<'a, 'd>,
     ) -> (Option<Index<'d>>, Self::Output) {
-        self.node(index).clear(second.token);
-        let next = self.node(second.index).reserve(second.token);
+        let next = self.next(second.token, second.index);
         (next, (second.token, index, second.index))
     }
 }
@@ -276,7 +267,7 @@ impl<'p, 'd, T> Slab<'p, 'd, T> {
         slot: Index<'d>,
     ) -> (Option<Index<'d>>, egress::NonEmpty<T>, credit::Stored<'p>) {
         let cell = token.borrow_mut(&self.node(slot).cell);
-        let next = cell.next.take();
+        let next = cell.next;
         cell.occupied = false;
         let value = unsafe { cell.value.assume_init_read() };
         let entry = unsafe { cell.entry.assume_init_read() };
@@ -350,15 +341,12 @@ impl<'p, 'd, T> Slab<'p, 'd, T> {
 }
 
 impl<'a, 'p, 'd, T> Vacancy<'a, 'p, 'd, T> {
-    pub(in crate::link::egress::metadata) fn reserve<V, P>(
+    pub(in crate::link::egress::metadata) fn reserve(
         self,
         token: &mut region::Token<region::Identity<'d>>,
-        proof: P,
-        value: V,
-    ) -> (Index<'d>, P, V) {
+    ) -> Index<'d> {
         // SAFETY: this vacancy binds the front to this slab and driver token.
-        let index = unsafe { depot::raw::HeadPop::apply(self.slab, self.front, token) };
-        (index, proof, value)
+        unsafe { depot::raw::HeadPop::apply(self.slab, self.front, token) }
     }
 }
 
@@ -376,44 +364,34 @@ impl<'a, 'token, 'p, 'd, T> Reservation<'a, 'token, 'p, 'd, T> {
         })
     }
 
-    pub(in crate::link::egress) fn reserve<P, V>(
+    pub(in crate::link::egress) fn reserve(
         self,
-        proof: P,
-        value: V,
-    ) -> (
-        &'token mut region::Token<region::Identity<'d>>,
-        Index<'d>,
-        P,
-        V,
-    ) {
+    ) -> (&'token mut region::Token<region::Identity<'d>>, Index<'d>) {
         let Self { vacancy, token } = self;
-        let (index, proof, value) = vacancy.reserve(token, proof, value);
-        (token, index, proof, value)
+        let index = vacancy.reserve(token);
+        (token, index)
     }
 }
 
 impl<'a, 'token, 'p, 'd, T> Pair<'a, 'token, 'p, 'd, T> {
-    pub(in crate::link::egress) fn reserve<P, Q, V, W>(
+    pub(in crate::link::egress) fn reserve(
         self,
-        first: (P, V),
-        second: (Q, W),
     ) -> (
         &'token mut region::Token<region::Identity<'d>>,
-        Reserved<'d, P, V>,
-        Reserved<'d, Q, W>,
+        Index<'d>,
+        Index<'d>,
     ) {
         let Self {
             vacancy,
-            second: sec,
+            second,
             token,
         } = self;
-        let (proof, value) = first;
-        let (other, data) = second;
-        let link = Second { token, index: sec };
+        let link = Second {
+            token,
+            index: second,
+        };
         // SAFETY: `vacancy` and `link` bind both detached links to this slab.
-        let (token, idx, sec) =
-            unsafe { depot::raw::HeadPop::apply(vacancy.slab, vacancy.front, link) };
-        (token, (idx, proof, value), (sec, other, data))
+        unsafe { depot::raw::HeadPop::apply(vacancy.slab, vacancy.front, link) }
     }
 }
 
@@ -444,5 +422,3 @@ const _: () = {
                 + tail
     );
 };
-
-type Reserved<'d, P, V> = (Index<'d>, P, V);

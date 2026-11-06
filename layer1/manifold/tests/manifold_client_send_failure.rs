@@ -481,6 +481,5 @@ fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
 
 fn checked(audit: &Report<error::Error, 16>) {
     let faults = audit.faults.values().expect("fault observations");
-    let result = error::Error::check(&faults);
-    assert!(result.is_ok(), "{result:?}");
+    assert!(faults.is_empty(), "{faults:?}");
 }

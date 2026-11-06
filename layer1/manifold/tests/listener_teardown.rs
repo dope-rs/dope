@@ -90,7 +90,7 @@ fn forced_detaches_credit() {
                 hash,
                 &mut session,
                 session::Scope::driver,
-                |listener, session| {
+                |listener, _wait, session| {
                     let peer = Peer::at(listener.local_addr())
                         .try_connect()
                         .expect("connect retained-credit peer");
@@ -111,8 +111,7 @@ fn forced_detaches_credit() {
                         },
                     );
                     let failure = result
-                        .err()
-                        .expect("zero-duration quiescence must time out after forced cleanup");
+                        .expect_err("zero-duration quiescence must time out after forced cleanup");
                     assert!(
                         matches!(
                             &failure,
@@ -256,7 +255,7 @@ fn control_closes_idle() {
                     hash,
                     &mut session,
                     session::Scope::driver,
-                    |listener, session| {
+                    |listener, _wait, session| {
                         let addr = listener.local_addr();
                         session
                             .with_quiesce(
@@ -321,7 +320,7 @@ fn reinstalls_reject_stale_id() {
                     hash,
                     &mut session,
                     session::Scope::driver,
-                    |listener, session| {
+                    |listener, _wait, session| {
                         let addr = listener.local_addr();
                         session
                             .with_quiesce(

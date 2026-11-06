@@ -38,12 +38,12 @@ pub unsafe trait App<'d>: Sized + Layout<'d> {
     /// # Safety
     /// The exact pinned root is installed and this plan completed preparation
     /// and admission for that root. The park authority belongs to the same root.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         app: pin::Pin<&'app mut Self>,
         plan: &mut Self::ParkPlan,
-        park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root;
+        'd: 'driver + 'turn;
 
     /// Accumulates the routes of the owners actually present in this pinned root.
     fn admit(
@@ -70,23 +70,19 @@ pub unsafe trait App<'d>: Sized + Layout<'d> {
     /// # Safety
     /// The activation retains this exact installed pinned root and a target
     /// declared by `WAKE_ROUTES`.
-    unsafe fn activate<'app, 'driver, 'turn, 'root>(
+    unsafe fn activate<'app, 'driver, 'turn>(
         _: pin::Pin<&'app mut Self>,
-        _: executor::raw::Activate<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Activate<'driver, 'turn, 'd>,
     ) -> bool
     where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         false
     }
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
-        call: executor::raw::Dispatch<'app, 'driver, 'turn, 'root, 'd, Self>,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root,
-    {
+    fn dispatch<'app, 'driver, 'turn>(
+        call: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
+    ) -> ops::ControlFlow<io::Event<'d>> {
         ops::ControlFlow::Break(call.into_event())
     }
 
@@ -100,12 +96,9 @@ pub unsafe trait App<'d>: Sized + Layout<'d> {
         view: executor::raw::Progress<'_, '_, 'd>,
     ) -> schedule::Progress<'d>;
 
-    fn shutdown<'app, 'turn, 'driver, 'owner>(
-        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>,
-    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>
-    where
-        'd: 'owner,
-    {
+    fn shutdown<'app, 'turn, 'driver>(
+        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self>,
+    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self> {
         shutdown
     }
 

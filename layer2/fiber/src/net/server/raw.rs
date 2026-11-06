@@ -48,14 +48,11 @@ where
     const COORDS: usize =
         <Inner<'n, 'p, 's, 'scope, 'w, 'd, ID, T, W, F> as dispatch::raw::Manifold<'d>>::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         let port = self.as_ref().get_ref().port;
         let work = turn.reborrow().app();
         port.connections.pre_park(work, driver.region_token());
@@ -76,8 +73,7 @@ where
         }
         // SAFETY: inherited from this installed owner drive call.
         unsafe { dispatch::raw::Manifold::pre_park(self.as_mut().project().inner, turn, driver) };
-        port.retain_error(self.as_ref().get_ref().inner.accept_error());
-        if port.accept_error.get().is_some() {
+        if self.as_ref().get_ref().inner.watch().error().is_some() {
             let _ = port.waiters.wake(work);
         } else if !port.accepts.is_empty::<0>() {
             let _ = port.waiters.wake_one(work);
@@ -85,14 +81,11 @@ where
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         self.port.connections.shutdown();
         dispatch::raw::Manifold::shutdown(self.as_mut().project().inner, turn, driver);
         self
@@ -123,7 +116,8 @@ where
     }
 
     fn run(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
-        let own = call.owner().port.progress();
+        let owner = call.owner();
+        let own = owner.port.progress(owner.inner.watch());
         own.reduce(
             <Inner<'n, 'p, 's, 'scope, 'w, 'd, ID, T, W, F> as dispatch::raw::Probe<'d>>::run(
                 call.map_owner(|owner| owner.project_ref().inner),
@@ -132,7 +126,8 @@ where
     }
 
     fn stop(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
-        let own = call.owner().port.progress();
+        let owner = call.owner();
+        let own = owner.port.progress(owner.inner.watch());
         own.reduce(
             <Inner<'n, 'p, 's, 'scope, 'w, 'd, ID, T, W, F> as dispatch::raw::Probe<'d>>::stop(
                 call.map_owner(|owner| owner.project_ref().inner),
@@ -164,7 +159,7 @@ where
         mut self: pin::Pin<&mut Self>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
     ) {
         let port = self.as_ref().get_ref().port;
         let Some(resume) =

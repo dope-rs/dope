@@ -1,48 +1,34 @@
-use std::convert::Infallible;
-
 use dope_core::driver::{
+    route::KeyTag,
     settings,
     settings::{claim::Needs, errors},
 };
 use dope_manifold::{
-    client::session::{Input, Output, policy::output, turns},
+    client::session::{Output, policy::output, turns},
     timing,
 };
 use o3::base::Call;
 
 use crate::common::contract::Report;
 
-/// Builds the flush observation every fixture shares.
-///
-/// The flush call has the same shape in every scenario fixture; only the
-/// assertion about the flushing owner differs, so the fixture supplies that.
 pub(crate) fn flush<'d, S, O>(
     observe: O,
-) -> Option<
-    impl for<'a, 'c, 't, 'e> Call<(
-        &'a mut S,
-        &'c mut turns::Context<'t, 'e, 'd, S::ConnState, S::Send>,
-        Input,
-    )>,
->
+) -> Option<impl for<'a, 'c, 't, 'e> Call<output::Args<'a, 'c, 't, 'e, 'd, S, KeyTag<0>>>>
 where
     S: Output<'d>,
     O: for<'a, 'c, 't, 'e> Fn(&'a mut S, &'c mut turns::Context<'t, 'e, 'd, S::ConnState, S::Send>),
 {
-    Some(output::Flush::<Infallible, _>::Context(
-        move |(owner, context, _): (
-            &mut S,
-            &mut turns::Context<'_, '_, 'd, S::ConnState, S::Send>,
-            Input,
-        )| observe(owner, context),
-    ))
+    Some(
+        move |(owner, context, _): output::Args<'_, '_, '_, '_, 'd, S, KeyTag<0>>| {
+            observe(owner, context)
+        },
+    )
 }
 
 impl Report<error::Error, 16> {
     pub fn checked(&self, expected: (usize, usize)) {
         let faults = self.faults.values().expect("fault observations");
-        let result = error::Error::check(&faults);
-        assert!(result.is_ok(), "{result:?}");
+        assert!(faults.is_empty(), "{faults:?}");
         assert_eq!(
             (self.sent.get(), self.cancelled.get()),
             (Some(expected.0), Some(expected.1))

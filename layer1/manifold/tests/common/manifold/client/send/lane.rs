@@ -157,21 +157,23 @@ impl<'d> Source<'d> for Lane {
             return;
         };
         let close = match requests.admit(value) {
-            request::Admission::Ready(ready) => {
+            Ok(request::Admission::Ready(ready)) => {
                 ready.push();
                 self.signals.moved.hit();
                 false
             }
-            request::Admission::Exhausted(value) => {
+            Err(value) => {
                 slot.set(Some(value));
                 false
             }
-            request::Admission::Saturated(load) => {
+            Ok(request::Admission::Saturated(load)) => {
                 slot.set(Some(load));
                 self.abort.replace(false)
             }
-            request::Admission::Rejected(rejected) => {
-                self.audit.faults.record(error::Error::Admit(rejected));
+            Ok(request::Admission::Rejected(rejected)) => {
+                self.audit
+                    .faults
+                    .record(error::Error::Admit(rejected.cause()));
                 return;
             }
         };

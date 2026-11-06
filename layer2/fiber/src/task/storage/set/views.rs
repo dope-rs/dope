@@ -36,22 +36,6 @@ pub(crate) struct View<'a, 'd, F: abi::Fiber<'d>, M, D, G = ()> {
     view: Borrowed<'a, 'd, F, M, D, G>,
 }
 
-#[repr(transparent)]
-struct Projected<'s, 'a, 'd, F: abi::Fiber<'d>, M, D, G>(Selected<'s, 'a, 'd, F, M, D, G>);
-
-// SAFETY: the live view retains this exact pinned slot, key generation, and link plane.
-unsafe impl<'s, 'a, 'd, F: abi::Fiber<'d>, M, D, G> depot::raw::KeyBorrow<'s, storage::Id<'d, D>>
-    for Projected<'s, 'a, 'd, F, M, D, G>
-{
-    type Key = Handle<'d, D>;
-
-    fn parts(self) -> (Self::Key, &'s keyed::Link<Self::Key, storage::Id<'d, D>>) {
-        let index = self.0.key().raw();
-        let slot = View::project(self.0);
-        (slot.current(index), &slot.get_ref().link)
-    }
-}
-
 pub(in crate::task::storage) struct Resident<'b, 'a, 'd, F: abi::Fiber<'d>, M, D, G = ()> {
     view: &'b View<'a, 'd, F, M, D, G>,
     order: &'b order::Order<'d, D>,
@@ -194,10 +178,10 @@ impl<'a, 'd, F: abi::Fiber<'d>, M, D, G> View<'a, 'd, F, M, D, G> {
         unsafe { live.source().at(live.key().raw() as usize) }
     }
 
-    pub(in crate::task::storage::set) fn entry<'s>(
+    pub(in crate::task::storage::set) fn link<'s>(
         live: Selected<'s, 'a, 'd, F, M, D, G>,
-    ) -> keyed::Entry<'s, Handle<'d, D>, storage::Id<'d, D>> {
-        keyed::Entry::from_source(Projected(live))
+    ) -> &'s keyed::Link<Handle<'d, D>, storage::Id<'d, D>> {
+        &Self::project(live).get_ref().link
     }
 
     pub(in crate::task::storage::set) fn try_wake(

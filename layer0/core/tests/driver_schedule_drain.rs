@@ -41,13 +41,13 @@ fn drain_carries_admission() {
             scope.run_turn(|_, turn| {
                 let work = turn.turn().app();
                 let mut drain = ready.drain().expect("ready drain");
-                let permit = match work.next(&mut drain) {
+                let permit = match work.next(&mut drain, &mut ()) {
                     app::Next::Item(_, permit) => Some(permit),
                     _ => None,
                 }
                 .expect("admission");
                 permit.run(|| assert_eq!(work.remaining(), schedule::LIMIT - 1));
-                assert!(matches!(work.next(&mut drain), app::Next::Empty));
+                assert!(matches!(work.next(&mut drain, &mut ()), app::Next::Empty));
                 assert_eq!(work.remaining(), schedule::LIMIT - 1);
                 drop(drain);
                 binding.poll().1.wake();
@@ -55,12 +55,15 @@ fn drain_carries_admission() {
                     permit.run(|| ());
                 }
                 let mut drain = ready.drain().expect("next drain");
-                assert!(matches!(work.next(&mut drain), app::Next::Exhausted(_)));
+                assert!(matches!(
+                    work.next(&mut drain, &mut ()),
+                    app::Next::Exhausted(_)
+                ));
                 assert!(drain.peek().is_some());
             });
             scope.run_turn(|_, turn| {
                 let mut drain = ready.drain().expect("retained candidate");
-                let permit = match turn.turn().app().next(&mut drain) {
+                let permit = match turn.turn().app().next(&mut drain, &mut ()) {
                     app::Next::Item(_, permit) => Some(permit),
                     _ => None,
                 }

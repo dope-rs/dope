@@ -73,7 +73,7 @@ fn branch_keeps_owner() {
         let ((), alloc) = Tracker::usage(|| {
             assert!(queue.try_right(&mut token, first).is_ok());
             let denied = queue.try_left(&mut token, left);
-            let denied = denied.err().expect("occupied branch must reject");
+            let denied = denied.expect_err("occupied branch must reject");
             assert!(
                 denied.cause
                     == egress::Admission::Storage {
@@ -93,7 +93,7 @@ fn branch_keeps_owner() {
 
             assert!(queue.try_left(&mut token, left).is_ok());
             let denied = queue.try_right(&mut token, right);
-            let denied = denied.err().expect("occupied branch must reject");
+            let denied = denied.expect_err("occupied branch must reject");
             assert!(
                 denied.cause
                     == egress::Admission::Storage {

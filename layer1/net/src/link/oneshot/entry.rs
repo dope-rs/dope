@@ -3,7 +3,7 @@ use std::convert;
 use dope_core::{
     driver,
     driver::{
-        result, retained,
+        result,
         retained::flight,
         route,
         route::{Identity, indices, table},
@@ -174,7 +174,7 @@ where
     pub(super) fn socket(
         mut self,
         done: Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Progress<A> {
         let target = self.local.physical();
         let step = self
@@ -215,7 +215,7 @@ where
     pub(super) fn connect(
         mut self,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<Progress<A>, connect::Completion<'d>> {
         let now = driver.driver_ref().clock().now();
         let target = self.local.physical();
@@ -246,7 +246,7 @@ where
     pub(super) fn send(
         mut self,
         done: send::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<Progress<A>, send::Completion<'d>> {
         let target = self.local.physical();
         let step = self
@@ -300,7 +300,7 @@ where
     fn settle(
         self,
         progress: phase::SendProgress<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Progress<A> {
         match progress {
             phase::SendProgress::Complete(close) => self.finish(Ok(()), close, driver),
@@ -363,7 +363,7 @@ where
 
     pub(super) fn retry(
         mut self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<Progress<A>, result::SubmitError> {
         let target = self.local.physical();
         let retry = self.current.get_mut().retry(target, self.flights, driver);
@@ -376,7 +376,7 @@ where
             }
             phase::Retry::Cancel(Ok(step)) => match step {
                 phase::Cancellation::Idle(close) => {
-                    return Ok(self.finish(Err(Error::Abandoned), close, driver.driver()));
+                    return Ok(self.finish(Err(Error::Abandoned), close, driver));
                 }
                 phase::Cancellation::Pending => return Ok(Progress::Pending),
                 phase::Cancellation::Retry(error) => error,

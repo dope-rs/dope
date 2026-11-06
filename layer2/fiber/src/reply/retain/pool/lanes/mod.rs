@@ -492,13 +492,6 @@ impl<'arena, 'credits, 'region> Registration<'arena, 'credits, 'region, entries:
     ) {
         (self.lane, self.grant)
     }
-
-    pub(in crate::reply) fn register(
-        self,
-        entry: EntryKey,
-    ) -> pool::Owner<'arena, 'credits, 'region> {
-        pool::Owner::new(self, entry)
-    }
 }
 
 // SAFETY: release consumes the caller's original counted acquisition exactly

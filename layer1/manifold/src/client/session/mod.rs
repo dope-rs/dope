@@ -252,10 +252,7 @@ where
         &mut self,
         input: codec::Input<'id, 'input, 'd, R>,
         _: &mut turns::Context<'_, 'e, 'd, Self::ConnState, Self::Send, ID>,
-    ) -> Result<
-        codec::Parse<'id, <Self::Codec as codec::Codec>::Head<'input, 'd, R>>,
-        <Self::Codec as codec::Codec>::Error,
-    >
+    ) -> codec::Parsed<'id, 'input, 'd, Self::Codec, R>
     where
         'd: 'input,
     {
@@ -329,13 +326,8 @@ pub trait Parser<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
 pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
     /// Prepares output and publishes input progress before send submission.
     /// An earlier send may still be in flight; its retained owners stay borrowed.
-    fn flush() -> Option<
-        impl for<'a, 'c, 't, 'e> Call<(
-            &'a mut Self,
-            &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send, ID>,
-            Input,
-        )>,
-    > {
+    fn flush() -> Option<impl for<'a, 'c, 't, 'e> Call<output::Args<'a, 'c, 't, 'e, 'd, Self, ID>>>
+    {
         None::<Infallible>
     }
 
@@ -362,6 +354,14 @@ pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
 /// This is a static capability: it adds no runtime object or session state.
 pub trait Retirement<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
     type Drain: drain::Mode<'d, ID, Self>;
+
+    fn take_close(&self, _: Id<'d, ID>) -> Option<close::Directive> {
+        None
+    }
+
+    fn withdraw(&mut self, _: Id<'d, ID>, _: &mut Self::ConnState) -> Fence {
+        Fence::Ready
+    }
 
     /// Offers the exact send failure before retiring application responses.
     /// Returning it preserves the diagnostic for the final retired context.

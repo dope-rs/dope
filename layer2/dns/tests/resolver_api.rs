@@ -10,7 +10,7 @@ use dope::{
 use dope_test::scope::Scoped;
 pub mod common;
 
-use std::{mem, net, num::IntErrorKind, time};
+use std::{net, num::IntErrorKind, time};
 
 use dope::{
     core::driver::settings,
@@ -365,7 +365,7 @@ fn literal_uses_clock() {
 #[test]
 fn clock_failure_stops_refresh() {
     use dope::manifold::service::discover::{self, Action, PollAt as _, RefreshAt as _};
-    use dope_dns::lookup::error::{Error, Kind};
+    use dope_dns::lookup::error::{Failure, Kind};
 
     let mut refresh = fixture::configure(config::Servers::empty(), 2).refresh;
     refresh.minimum = time::Duration::MAX;
@@ -389,13 +389,19 @@ fn clock_failure_stops_refresh() {
                         .discovery::<Transport, 1, 4>(target)
                         .expect("literal discovery must have capacity");
                     lookup.refresh_at(now, discover::Reason::Startup);
+                    let Action::Failed {
+                        error,
+                        poll_at: None,
+                    } = lookup.poll_at(session.driver().state_token(), now)
+                    else {
+                        panic!("DNS refresh failure");
+                    };
+                    let terminal = error.terminal().expect("terminal DNS failure");
                     assert!(matches!(
-                        lookup.poll_at(session.driver().state_token(), now),
-                        Action::Failed {
-                            error: Error::Query { kind: Kind::Clock(source), .. },
-                            poll_at: None,
-                        } if source == range
+                        terminal,
+                        Failure::Query { kind: Kind::Clock(source), .. } if source == range
                     ));
+                    assert_eq!(terminal.times(), error.times());
                     lookup.refresh_at(now, discover::Reason::Startup);
                     assert!(matches!(
                         lookup.poll_at(session.driver().state_token(), now),
@@ -446,12 +452,8 @@ fn query_deadline_failure_stops_refresh() {
 #[test]
 fn refresh_is_nominal() {
     use dope::manifold::service::health;
-    use dope_dns::lookup::{Discovery, Reason, refresh};
+    use dope_dns::lookup::{Reason, refresh};
 
-    assert_eq!(
-        mem::size_of::<Discovery<'static, 'static, 'static, refresh::Transport, 1, 4>>(),
-        mem::size_of::<Discovery<'static, 'static, 'static, refresh::Availability, 1, 4>>()
-    );
     assert!(<refresh::Transport as refresh::Policy>::reason(health::Cause::Idle).is_none());
     assert!(matches!(
         <refresh::Availability as refresh::Policy>::reason(health::Cause::Idle),

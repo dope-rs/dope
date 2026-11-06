@@ -1,6 +1,6 @@
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{
         event,
@@ -38,7 +38,7 @@ pub(in crate::network::listener) enum Wake {
 pub(in crate::network::listener) fn flush_dirty<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -59,8 +59,6 @@ pub(in crate::network::listener) fn flush_dirty<'w, 'd: 'w, ID: Identity, A, E>(
             .at(key)
             .is_some_and(pending::Handle::has_capacity);
         let demand = {
-            use flow::SlotFlow as _;
-
             let this = root.as_ref().project_ref();
             let view = this.owner.pool().inspect();
             let Some((slot, pending)) = view.egress(key) else {
@@ -71,7 +69,10 @@ pub(in crate::network::listener) fn flush_dirty<'w, 'd: 'w, ID: Identity, A, E>(
             let ready = capacity
                 || (waiting && sending.retention() == Retention::Held)
                 || (!waiting
-                    && matches!(slot.flow(pending), flow::Flow::Plain | flow::Flow::Deferred));
+                    && matches!(
+                        flow::flow(slot, &slot.state.send, pending),
+                        flow::Flow::Plain | flow::Flow::Deferred
+                    ));
             match slot.demand() {
                 types::Demand::Discard | types::Demand::Close => Demand::Close,
                 types::Demand::Terminal => Demand::Terminal,
@@ -105,7 +106,7 @@ pub(in crate::network::listener) fn commit_end<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     key: pool::Key<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -159,7 +160,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
     key: pool::Key<'d, ID>,
     wake: Wake,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -189,7 +190,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
             Ok(flow::Handoff::Clear)
         } else {
             let pending = egress.pending();
-            let flow = flow::SlotFlow::flow(&*slot, pending);
+            let flow = slot.flow(pending);
             let flow = match (flow, wake) {
                 (
                     flow::Flow::Stalled,
@@ -200,9 +201,9 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
             match flow {
                 flow::Flow::Inflight => Ok(flow::Handoff::Armed),
                 flow::Flow::Plain => {
-                    flow::SlotFlow::advance_send(&mut *slot, slots, handle, driver);
+                    slot.advance_send(slots, handle, driver);
                     let pending = egress.pending();
-                    Ok(flow::SlotFlow::after_send(&mut *slot, pending))
+                    Ok(slot.after_send(pending))
                 }
                 flow::Flow::Stalled | flow::Flow::Held | flow::Flow::Clear => {
                     use transmit::outcome;
@@ -216,7 +217,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
                     match progress {
                         outcome::Progress::Submitted | outcome::Progress::Idle => {
                             let pending = egress.pending();
-                            Ok(flow::SlotFlow::after_send(&mut *slot, pending))
+                            Ok(slot.after_send(pending))
                         }
                         outcome::Progress::Rejected(error) => {
                             slot.sending().discard();
@@ -260,8 +261,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
             Ok(result) => result,
             Err(failure) => {
                 let writer::Egress {
-                    connection: mut slot,
-                    ..
+                    connection: slot, ..
                 } = sender.view();
                 if let Some(egress) = slot.state.send.fail(failure) {
                     writer::release_egress(
@@ -301,7 +301,7 @@ pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     key: pool::Key<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -325,7 +325,10 @@ pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
             return;
         };
         let gate = A::close_gate(this.app, conn::Ref::new(slot));
-        let gated = <A::Input as receive::Policy>::APPLICATION_GATED;
+        let owns = <A::Input as receive::Policy>::APPLICATION_GATED
+            || <A::Input as receive::Policy>::EGRESS_COUPLED;
+        let enabled = owns && A::is_gated(&slot.state.conn);
+        let gated = enabled && <A::Input as receive::Policy>::APPLICATION_GATED;
         let pause = gated && A::is_blocked(this.app, conn::Ref::new(slot));
         let close = slot.close_due(gate);
         if slot.is_closing() || (matches!(close, Readiness::Due) && slot.terminal.is_done()) {
@@ -334,14 +337,17 @@ pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
                 Readiness::Waiting => (Step::Idle, Gate::None),
             }
         } else {
-            let output = flow::SlotFlow::flow(slot, pending);
-            let held = <A::Input as receive::Policy>::EGRESS_COUPLED
+            let output = flow::flow(slot, &slot.state.send, pending);
+            let held = enabled
+                && <A::Input as receive::Policy>::EGRESS_COUPLED
                 && !matches!(output, flow::Flow::Clear)
                 && !A::can_receive(this.app, conn::Ref::new(slot));
-            let owns = gated || <A::Input as receive::Policy>::EGRESS_COUPLED;
             let gate = if pause || held {
                 Gate::Suspend
-            } else if owns && !matches!(close, Readiness::Due) {
+            } else if owns
+                && (enabled || slot.is_app_held() || slot.terminal.is_read_done())
+                && !matches!(close, Readiness::Due)
+            {
                 Gate::Resume
             } else {
                 Gate::None

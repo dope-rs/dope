@@ -48,11 +48,13 @@ fn keeps_next_datagram() {
     {
         let mut reports = Reports::<_>::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
-        let mut domain = domain::Domain::new(driver);
-        let outcome = domain.start().expect("fresh generation").enter_with(
-            (),
-            |mut scope, _, _| {
-                scope.with_driver(|mut context, mut schedule| {
+        let mut teardown = domain::Teardown::default();
+        let outcome = domain::Generation::new(driver)
+            .start(&mut teardown)
+            .enter_with(
+                (),
+                |mut scope, _, _| {
+                    let (_, mut context, mut schedule) = scope.split();
                     let mut turn = schedule.begin();
                     let bind = "127.0.0.1:0"
                         .parse()
@@ -131,7 +133,9 @@ fn keeps_next_datagram() {
                         assert_eq!(usage, (0, 0));
                         *output = decoded;
                         let valid = match input {
-                            b"123456789" => matches!(output, Some(datagram::Decoded::Truncated(_))),
+                            b"123456789" => {
+                                matches!(output, Some(datagram::Decoded::Truncated(_)))
+                            }
                             b"12345678" => matches!(output,
                                 Some(datagram::Decoded::Packet { source, payload })
                                     if *source == local && payload.as_ref() == input
@@ -145,10 +149,9 @@ fn keeps_next_datagram() {
                         ));
                     }
                     Descriptor::from(socket).close(&mut context);
-                });
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-        );
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+            );
         assert!(
             reports.events().expect("valid reclamation").is_empty(),
             "unexpected reclaimed operations: {reports:?}"
@@ -168,66 +171,61 @@ fn retires_routed() {
     let mut reports = Reports::<_>::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
     runtime.with_scope(
         |scope| {
-            scope.with_driver(|mut context, mut schedule| {
-                let mut turn = schedule.begin();
-                let (socket, _) = Install::bind_udp(
-                    context.reborrow(),
-                    ([127, 0, 0, 1], 0).into(),
-                    common::DATAGRAM,
-                )
-                .expect("bind receive socket");
-                let target = context
-                    .driver_ref()
-                    .targets::<Route>()
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                    .operation::<kind::Recv>();
-                let slots = context
-                    .storage
-                    .reborrow()
-                    .try_flights(flight::Need::<Route>::new(flight::Capacity::fixed::<1>()))
-                    .expect("one receive flight")
-                    .slots();
-                let mut flight = slots
-                    .recv_dgram(context.reborrow(), &socket, target)
-                    .expect("submit receive");
-                assert!(driver::Context::commit(&mut context, turn.reactor()).is_ok());
-                let canceled = flight
-                    .try_cancel(&mut context)
-                    .expect("submit exact receive cancellation");
-                assert!(matches!(canceled, Cancelled::Submitted | Cancelled::Queued));
-                assert!(
-                    driver::Context::wait(
-                        &mut context,
-                        turn.reactor(),
-                        Some(Duration::from_secs(1)),
-                    )
+            let (_, mut context, mut schedule) = scope.split();
+            let mut turn = schedule.begin();
+            let (socket, _) = Install::bind_udp(
+                context.reborrow(),
+                ([127, 0, 0, 1], 0).into(),
+                common::DATAGRAM,
+            )
+            .expect("bind receive socket");
+            let target = context
+                .driver_ref()
+                .targets::<Route>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                .operation::<kind::Recv>();
+            let slots = context
+                .storage
+                .reborrow()
+                .try_flights(flight::Need::<Route>::new(flight::Capacity::fixed::<1>()))
+                .expect("one receive flight")
+                .slots();
+            let mut flight = slots
+                .recv_dgram(context.reborrow(), &socket, target)
+                .expect("submit receive");
+            assert!(driver::Context::commit(&mut context, turn.reactor()).is_ok());
+            let canceled = flight
+                .try_cancel(&mut context)
+                .expect("submit exact receive cancellation");
+            assert!(matches!(canceled, Cancelled::Submitted | Cancelled::Queued));
+            assert!(
+                driver::Context::wait(&mut context, turn.reactor(), Some(Duration::from_secs(1)),)
                     .is_ok()
-                );
-                let mut observed = 0;
-                let dispatch =
-                    driver::Context::dispatch(&mut context, turn.reactor(), |event, _source| {
-                        let driver = _source;
-                        let done = match event.into_kind() {
-                            event::Kind::Recv(done) => Ok(done),
-                            event => Err(event),
-                        }
-                        .ok()
-                        .expect("receive cancellation");
-                        assert!(target.matches(done.token()));
-                        assert!(matches!(done.flow(), batch::Flow::Last));
-                        let retired = driver.retire(done.retire());
-                        assert!(matches!(retired, ControlFlow::Continue(())));
-                        observed += 1;
-                        ControlFlow::Continue(())
-                    });
-                assert!(matches!(
-                    dispatch,
-                    poll::Dispatch::Ready { retained: None, .. }
-                ));
-                assert_eq!(observed, 1);
-                drop(flight);
-                Descriptor::from(socket).close(&mut context);
-            });
+            );
+            let mut observed = 0;
+            let dispatch =
+                driver::Context::dispatch(&mut context, turn.reactor(), |event, _source| {
+                    let driver = _source;
+                    let done = match event.into_kind() {
+                        event::Kind::Recv(done) => Ok(done),
+                        event => Err(event),
+                    }
+                    .ok()
+                    .expect("receive cancellation");
+                    assert!(target.matches(done.token()));
+                    assert!(matches!(done.flow(), batch::Flow::Last));
+                    let retired = driver.retire(done.retire());
+                    assert!(matches!(retired, ControlFlow::Continue(())));
+                    observed += 1;
+                    ControlFlow::Continue(())
+                });
+            assert!(matches!(
+                dispatch,
+                poll::Dispatch::Ready { retained: None, .. }
+            ));
+            assert_eq!(observed, 1);
+            drop(flight);
+            Descriptor::from(socket).close(&mut context);
         },
         recovery::Policy::new(|report| reports.push(report), recover),
         finish,

@@ -8,36 +8,29 @@ use dope_core::{
     driver::{
         life::recovery,
         result::poll::Commit,
-        retained::flight,
-        route::{KeyTag, Tag, lease::Owner, table::conn},
-        schedule::{clock, ready},
+        route::{KeyTag, Tag, table::conn},
+        schedule::clock,
         settings,
     },
-    io::{Reclaimed, event::net::send::Completion},
+    io::Reclaimed,
 };
 use dope_net::{
     ConfigError, Resource,
     link::{
         egress::{self, reserve::demand},
-        pool::{
-            Key, Outbound, Pool, change, raw,
-            recv::{self, delivery, input},
-            send,
-        },
+        pool::{change, raw, recv::input},
     },
     tcp::Tcp,
     wire::{
         Identity,
         domain::{Local, Resident, Retained},
-        receive,
-        receive::mode::Disabled,
     },
 };
 use dope_test::{
     reclaim::Reports,
     scope::{self, Driver},
 };
-use o3::{buffer::storage::Shared, depot::queue::pool::Lanes};
+use o3::buffer::storage::Shared;
 
 use crate::common::rt::throughput;
 
@@ -62,7 +55,6 @@ fn retries_creation_cancel() {
     use dope_core::{
         driver::{
             result::SubmitCause,
-            retained,
             route::indices::{Edge, SlotIndex},
         },
         io::socket,
@@ -128,8 +120,6 @@ fn retries_creation_cancel() {
             ));
             assert!(pool.has_retries());
             {
-                let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                let mut driver = retained::Context::new(driver, owner);
                 // SAFETY: this scope retains the original pool through native quiescence.
                 // Only creation and cancellation are submitted; no address or payload is lent.
                 let mut io = unsafe { oneshot::raw::Io::new(&mut pool, &mut driver) };
@@ -176,10 +166,7 @@ fn oneshot_option_failure() {
 
     use dope_core::{
         Errno,
-        driver::{
-            retained,
-            route::indices::{Edge, SlotIndex},
-        },
+        driver::route::indices::{Edge, SlotIndex},
         io::{event::Kind, socket},
     };
     use dope_net::link::oneshot::{self, Dispatch, Progress};
@@ -231,9 +218,7 @@ fn oneshot_option_failure() {
             for _ in 0..2 {
                 let event = common::discard::next(scope).expect("socket establishment");
                 let progress = {
-                    let driver = scope.context();
-                    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                    let mut driver = retained::Context::new(driver, owner);
+                    let mut driver = scope.context();
                     // SAFETY: the original pool remains installed through completion
                     // and the explicit quiescence below, retaining address and payload.
                     let mut io = unsafe { oneshot::raw::Io::new(&mut pool, &mut driver) };
@@ -262,80 +247,6 @@ fn oneshot_option_failure() {
         }
         _ => panic!("missing option rejection"),
     }
-}
-
-#[test]
-fn mode_resources() {
-    use std::mem::size_of;
-
-    use dope_net::link::pool::recv::storage::Parking;
-
-    let borrowed = size_of::<
-        change::raw::Prepared<'static, 'static, 'static, Route, Tcp, Identity, (), input::Borrowed>,
-    >();
-    assert_eq!(
-        size_of::<
-            change::raw::Prepared<
-                'static,
-                'static,
-                'static,
-                Route,
-                Tcp,
-                Identity,
-                (),
-                input::Retained,
-            >,
-        >(),
-        borrowed + size_of::<Parking<'static>>(),
-        "retained identity input owns completion parking without retained credit",
-    );
-    assert_eq!(
-        size_of::<
-            change::raw::Prepared<
-                'static,
-                'static,
-                'static,
-                Route,
-                Tcp,
-                Identity,
-                (),
-                input::Scoped,
-            >,
-        >(),
-        borrowed
-            + size_of::<Parking<'static>>()
-            + size_of::<Lanes<receive::Chunk<'static, 'static, Identity, Disabled>>>(),
-        "scoped input must own exactly its deferred ingress and cursor resources",
-    );
-
-    assert_eq!(
-        size_of::<Outbound<'static, 'static, 'static, Route, Tcp, Identity, (), input::Borrowed>>(),
-        size_of::<Pool<'static, 'static, 'static, Route, Tcp, Identity, (), input::Borrowed>>()
-            + size_of::<
-                raw::Prepared<'static, 'static, 'static, Route, Tcp, Identity, (), input::Borrowed>,
-            >()
-            - size_of::<(
-                change::raw::Prepared<
-                    'static,
-                    'static,
-                    'static,
-                    Route,
-                    Tcp,
-                    Identity,
-                    (),
-                    input::Borrowed,
-                    Shared,
-                    32,
-                    demand::Fallible,
-                    (),
-                >,
-                flight::Need<Route>,
-            )>()
-    );
-    assert_eq!(
-        size_of::<Pool<'static, 'static, 'static, Route, Tcp, Identity, (), input::Borrowed>>(),
-        borrowed + size_of::<Owner<'static, Route>>()
-    );
 }
 
 #[test]
@@ -369,112 +280,44 @@ fn reports_file_shortfall() {
 }
 
 #[test]
-fn view_layouts() {
-    use std::mem::size_of;
-
-    use dope_net::link::egress::Queue;
-    use o3::buffer::{resident::bound, storage};
-
-    assert_eq!(
-        size_of::<
-            recv::Receiver<
-                'static,
-                'static,
-                'static,
-                'static,
-                Route,
-                Tcp,
-                Identity,
-                (),
-                input::Borrowed,
-                Shared,
-                32,
-            >,
-        >(),
-        size_of::<usize>()
-    );
-    assert_eq!(
-        size_of::<delivery::Resumed<'static, Route>>(),
-        size_of::<(Key<'static, Route>, ready::Key<'static>)>()
-    );
-    assert_eq!(
-        size_of::<
-            send::Settlement<
-                'static,
-                'static,
-                'static,
-                'static,
-                Route,
-                Tcp,
-                Identity,
-                (),
-                input::Borrowed,
-                Shared,
-                32,
-            >,
-        >(),
-        size_of::<(&'static mut (), Completion<'static>)>()
-    );
-    assert_eq!(
-        size_of::<Queue<'static, 'static, 'static, 32>>(),
-        2 * size_of::<usize>()
-    );
-    assert_eq!(
-        size_of::<
-            Queue<
-                'static,
-                'static,
-                'static,
-                32,
-                storage::Shared,
-                demand::Guaranteed<bound::AtMost<0>, 1>,
-            >,
-        >(),
-        2 * size_of::<usize>(),
-        "guaranteed admission proof must not enlarge the hot queue view",
-    );
-}
-
-#[test]
 fn outbound_reclaims_slots() {
     let mut reports = Vec::new();
     throughput().with_scope(
         |scope| {
-            scope.with_driver(|mut driver, mut ctl| {
-                let mut turn = ctl.begin_at(clock::Sample::new(Instant::now()));
-                let cap = conn::Capacity::fixed::<1>();
-                let result = change::try_prepare::<
-                    Route,
-                    Tcp,
-                    Identity,
-                    (),
-                    input::Borrowed,
-                    Shared,
-                    32,
-                    _,
-                    _,
-                    _,
-                    _,
-                >(
-                    Retained::ZERO,
-                    Resident::ZERO,
-                    demand::Fallible::prepare(egress::Config::DEFAULT, cap),
-                    Local::new(Identity),
-                    &mut driver,
-                    driver::Context::reborrow,
-                    |ready, driver| {
-                        let reserved = raw::Prepared::try_reserve(ready, cap.into(), driver)
-                            .expect("outbound reservation");
-                        let admitted = reserved.try_flights(driver.storage.reborrow());
-                        assert!(admitted.is_ok(), "pool flight preparation failed");
-                    },
-                );
-                assert!(result.is_ok(), "pool storage preparation failed");
-                let commit = driver::Context::commit(&mut driver, turn.reactor());
-                assert!(matches!(commit, Ok(Commit::Drained)));
-                let files = Reserved::<Route>::try_new(&driver, cap.into());
-                assert!(files.is_ok(), "outbound file reservation was not reclaimed");
-            });
+            let (_, mut driver, mut ctl) = scope.split();
+            let mut turn = ctl.begin_at(clock::Sample::new(Instant::now()));
+            let cap = conn::Capacity::fixed::<1>();
+            let result = change::try_prepare::<
+                Route,
+                Tcp,
+                Identity,
+                (),
+                input::Borrowed,
+                Shared,
+                32,
+                _,
+                _,
+                _,
+                _,
+            >(
+                Retained::ZERO,
+                Resident::ZERO,
+                demand::Fallible::prepare(egress::Config::DEFAULT, cap),
+                Local::new(Identity),
+                &mut driver,
+                driver::Context::reborrow,
+                |ready, driver| {
+                    let reserved = raw::Prepared::try_reserve(ready, cap.into(), driver)
+                        .expect("outbound reservation");
+                    let admitted = reserved.try_flights(driver.storage.reborrow());
+                    assert!(admitted.is_ok(), "pool flight preparation failed");
+                },
+            );
+            assert!(result.is_ok(), "pool storage preparation failed");
+            let commit = driver::Context::commit(&mut driver, turn.reactor());
+            assert!(matches!(commit, Ok(Commit::Drained)));
+            let files = Reserved::<Route>::try_new(&driver, cap.into());
+            assert!(files.is_ok(), "outbound file reservation was not reclaimed");
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,

@@ -1,10 +1,35 @@
-use std::os::fd;
+use std::{mem::MaybeUninit, os::fd};
 
 use crate::{
     Errno,
     io::file::{self, Opened},
     kernel,
 };
+
+pub(super) fn read_at<'a, S: kernel::raw::Source + ?Sized, E: From<Errno>>(
+    file: fd::BorrowedFd<'_>,
+    output: &'a mut [MaybeUninit<u8>],
+    offset: file::Offset,
+) -> Result<&'a mut [u8], E> {
+    use fd::AsRawFd as _;
+
+    const { assert!(libc::off_t::MAX as u64 == i64::MAX as u64) };
+    // SAFETY: the descriptor stays borrowed, output owns its writable extent,
+    // and the admitted nonnegative offset fits the ABI.
+    let raw = unsafe {
+        libc::pread(
+            file.as_raw_fd(),
+            output.as_mut_ptr().cast(),
+            output.len(),
+            offset.get() as libc::off_t,
+        )
+    };
+    // SAFETY: pread returns -1 or initializes at most this exact extent.
+    Ok(unsafe {
+        crate::io::raw::Buffer::try_native(output, raw, || kernel::raw::Code::last::<S>().into())?
+            .assume_init_mut()
+    })
+}
 
 /// # Safety
 /// The live descriptor remains unchanged until stream drop.

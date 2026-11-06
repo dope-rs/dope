@@ -2,7 +2,7 @@
 
 use std::{cell::Cell, pin, rc::Rc, thread, time};
 
-use dope_core::driver::{retained, schedule, schedule::clock, settings};
+use dope_core::driver::{self, schedule, schedule::clock, settings};
 use dope_runtime::{executor, shutdown};
 use o3::base::cell::region;
 
@@ -81,12 +81,12 @@ unsafe impl<'d> executor::raw::App<'d> for Storm {
     /// # Safety
     /// The pinned Storm and prepared unit plan must belong to this installed
     /// root; the supplied park authority bounds that root's coordinator work.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         mut app: pin::Pin<&'app mut Storm>,
         (): &mut Self::ParkPlan,
-        mut park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        mut park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         while park.next_step().is_some() {
             let this = app.as_mut().get_mut();
@@ -95,12 +95,9 @@ unsafe impl<'d> executor::raw::App<'d> for Storm {
         }
     }
 
-    fn shutdown<'app, 'turn, 'driver, 'owner>(
-        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Storm>,
-    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Storm>
-    where
-        'd: 'owner,
-    {
+    fn shutdown<'app, 'turn, 'driver>(
+        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Storm>,
+    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Storm> {
         let (mut app, turn, driver) = shutdown.into_parts();
         let calls = &app.as_mut().get_mut().calls;
         calls.set(calls.get().map(|_| 0));
@@ -152,12 +149,12 @@ unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::App<'d>
     /// # Safety
     /// The pinned probe and prepared unit plan must belong to this installed
     /// root; shutdown progress consumes only its supplied park authority.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         mut app: pin::Pin<&'app mut Self>,
         (): &mut Self::ParkPlan,
-        mut park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        mut park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         let this = app.as_mut().project();
         if let Some((trigger, uptime)) = this.shutdown.take() {
@@ -177,7 +174,7 @@ unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::Drain<'d>
     fn begin(
         self: pin::Pin<&mut Self>,
         _: schedule::Turn<'_, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         self.project().begun.set(true);
     }
@@ -197,7 +194,7 @@ unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::Drain<'d>
     fn force(
         self: pin::Pin<&mut Self>,
         _: schedule::Turn<'_, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         let this = self.project();
         this.forced.set(true);

@@ -10,15 +10,21 @@ impl<'a> Dispatch<'a> {
     }
 
     pub(crate) fn generate(&self, life: &syn::Lifetime) -> proc_macro2::TokenStream {
-        let vdisp = self.application.brand.ident("__dispatch");
+        let [vapp, vdisp, vdriver, vevent, vturn] =
+            ["__app", "__dispatch", "__driver", "__event", "__turn"]
+                .map(|name| self.application.brand.ident(name));
+        if self.application.owners.is_empty() {
+            return quote::quote! { ::core::ops::ControlFlow::Break(#vdisp.into_event()) };
+        }
         let arms = self
             .application
             .owners
             .iter()
             .map(|owner| self.arm(owner, life));
         quote::quote! {
+            let (mut #vapp, #vevent, #vturn, mut #vdriver) = #vdisp.into_parts();
             #(#arms)*
-            ::core::ops::ControlFlow::Break(#vdisp.into_event())
+            ::core::ops::ControlFlow::Break(#vevent)
         }
     }
 
@@ -340,16 +346,9 @@ impl<'a> Dispatch<'a> {
     }
 
     fn arm(&self, owner: &Owner, life: &syn::Lifetime) -> proc_macro2::TokenStream {
-        let [vapp, vcand, vdisp, vdriver, vevent, vplan, vturn] = [
-            "__app",
-            "__candidate",
-            "__dispatch",
-            "__driver",
-            "__event",
-            "__plan",
-            "__turn",
-        ]
-        .map(|name| self.application.brand.ident(name));
+        let [vcand, vdriver, vevent, vplan, vturn] =
+            ["__candidate", "__driver", "__event", "__plan", "__turn"]
+                .map(|name| self.application.brand.ident(name));
         let mf = self.application.paths.manifold();
         let exec = self.application.paths.runtime();
         let inner = owner.inner();
@@ -362,15 +361,15 @@ impl<'a> Dispatch<'a> {
                             #exec::executor::raw::Dispatch::new(
                                 #recv,
                                 #vevent,
-                                #vturn,
-                                #vdriver,
+                                #vturn.reborrow(),
+                                #vdriver.reborrow(),
                             ),
                         )
                     }
                 },
             );
             (
-                quote::quote! { #vdisp.route() },
+                quote::quote! { #vevent.route() },
                 quote::quote! { #vcand },
                 quote::quote! { <#inner as #exec::executor::raw::App<#life>>::ROUTES },
                 body,
@@ -390,8 +389,8 @@ impl<'a> Dispatch<'a> {
                     quote::quote! {
                         let #vevent = #mf::app::dispatch::event::Call::new(
                             #vevent,
-                            #vturn,
-                            #vdriver,
+                            #vturn.reborrow(),
+                            #vdriver.reborrow(),
                         );
                         #dispatch::call(
                             #recv,
@@ -402,24 +401,22 @@ impl<'a> Dispatch<'a> {
                 },
             );
             (
-                quote::quote! { (#vdisp.route(), #dispatch::select()) },
+                quote::quote! { (#vevent.route(), #dispatch::select()) },
                 quote::quote! { (#vcand, ::core::option::Option::Some(#vplan)) },
                 quote::quote! { #dispatch::ROUTES },
                 body,
             )
         };
         quote::quote! {
-            let #vdisp = match #select {
+            let #vevent = match #select {
                 #pattern if #routes.has_route(#vcand) => {
-                    match #vdisp.map(
-                        |mut #vapp, #vevent, #vturn, #vdriver| #body,
-                    ) {
+                    match #body {
                         ::core::ops::ControlFlow::Continue(()) =>
                             return ::core::ops::ControlFlow::Continue(()),
-                        ::core::ops::ControlFlow::Break(#vdisp) => #vdisp,
+                        ::core::ops::ControlFlow::Break(#vevent) => #vevent,
                     }
                 }
-                _ => #vdisp,
+                _ => #vevent,
             };
         }
     }
@@ -458,7 +455,8 @@ impl<'a> Dispatch<'a> {
                 }
             } else {
                 quote::quote! {
-                    #vpark.map(|#vturn, #vdriver| {
+                    {
+                        let (#vturn, #vdriver) = #vpark.into_parts();
                         let mut #vroot =
                             #mf::app::dispatch::raw::Context::<
                                 #mf::app::dispatch::raw::Retained,
@@ -474,7 +472,7 @@ impl<'a> Dispatch<'a> {
                                 &mut #vctx,
                             )
                         };
-                    });
+                    }
                 }
             }
         })

@@ -48,7 +48,8 @@ struct Retention<'a, 'arena, 'credits, 'region> {
 }
 
 impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
-    pub(in crate::reply::retain::pool) fn new(
+    #[inline]
+    pub(in crate::reply) fn new(
         admitted: pool::Registration<'arena, 'credits, 'region, entries::Units<1, 0>>,
         key: EntryKey,
     ) -> Self {

@@ -9,7 +9,7 @@ use dope_core::{
     driver::{
         life::{self, recovery},
         result::{self, poll},
-        retained::{self, flight},
+        retained::flight,
         route::{Epoch, KeyTag, indices::SlotIndex, kind, lease, table::conn},
         settings::Config,
     },
@@ -134,27 +134,22 @@ pub fn next<'d>(scope: &mut life::Scope<'_, 'd>) -> Result<Event<'d>, Error> {
         .checked_add(duration)
         .ok_or(Error::Deadline { duration })?;
     loop {
-        let event = scope.with_driver(|mut driver, mut control| {
-            let mut turn = control.begin();
-            match driver.dispatch(turn.reactor(), |event, _| ControlFlow::Break(event)) {
-                poll::Dispatch::Ready {
-                    retained: Some(event),
-                    ..
-                } => return Ok(Some(event)),
-                poll::Dispatch::Ready { retained: None, .. } => {}
-                poll::Dispatch::Fault(cause) => return Err(Error::Dispatch(cause)),
-            }
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or(Error::Timeout)?;
-            driver
-                .wait(turn.reactor(), Some(left))
-                .map_err(Error::Wait)?;
-            Ok(None)
-        })?;
-        if let Some(event) = event {
-            return Ok(event);
+        let (_, mut driver, mut control) = scope.split();
+        let mut turn = control.begin();
+        match driver.dispatch(turn.reactor(), |event, _| ControlFlow::Break(event)) {
+            poll::Dispatch::Ready {
+                retained: Some(event),
+                ..
+            } => return Ok(event),
+            poll::Dispatch::Ready { retained: None, .. } => {}
+            poll::Dispatch::Fault(cause) => return Err(Error::Dispatch(cause)),
         }
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(Error::Timeout)?;
+        driver
+            .wait(turn.reactor(), Some(left))
+            .map_err(Error::Wait)?;
     }
 }
 
@@ -303,8 +298,6 @@ impl Observed {
                             };
                             {
                                 let mut driver = scope.context();
-                                let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                                let mut driver = retained::Context::new(driver.reborrow(), owner);
                                 match pool.sender(key).ok_or(Error::Sender)?.submit(&mut driver) {
                                     transmit::Attempt::Rejected(cause, _) => {
                                         return Err(Error::Rejected(cause));
@@ -318,7 +311,6 @@ impl Observed {
                                 if !slot.send_status().is_inflight() {
                                     return Err(Error::Submitted);
                                 }
-                                slot.sending().discard();
                             }
                             let done = match next(scope)?.into_kind() {
                                 event::Kind::Send(done) => done,
@@ -327,9 +319,11 @@ impl Observed {
                             let sent = done.outcome();
                             let resubmit = {
                                 let mut driver = scope.context();
-                                let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                                let mut driver = retained::Context::new(driver.reborrow(), owner);
-                                settled(pool.settle(done).settle_owned(&mut driver, |_, _| {}));
+                                settled(pool.settle(done).settle_owned(
+                                    &mut driver,
+                                    |slot| slot.discard(),
+                                    |_, _| {},
+                                ));
                                 pool.sender(key).ok_or(Error::Sender)?.submit(&mut driver)
                             };
                             let status = pool.get_mut(key).ok_or(Error::Connection)?.send_status();

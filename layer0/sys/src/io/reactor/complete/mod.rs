@@ -135,7 +135,7 @@ pub trait Observe<T: Copy + Eq = (), S: Copy + Eq = (), F: Copy + Eq = ()> {
 
 /// Separates successful values, native errors, and invalid kernel results.
 pub trait Outcome: Copy + Eq {
-    type Value: Value;
+    type Value: Copy + Eq + Into<bounded::U32<0, { i32::MAX as u32 }>>;
     type Invalid: Copy + Eq;
     type Returned: crate::kernel::Returned<Value = Self::Value, Invalid = Self::Invalid>;
 
@@ -218,17 +218,6 @@ pub trait Cancellation: Sized {
     type Event: Event;
 
     fn commit(self, vacant: impl Vacancy<Event = Self::Event>) -> Submitted;
-}
-
-/// A successful kernel result preserving its nonnegative signed range.
-pub trait Value: Copy + Eq + Into<bounded::U32<0, { i32::MAX as u32 }>> {
-    fn is_zero(self) -> bool;
-}
-
-impl Value for bounded::U32<0, { i32::MAX as u32 }> {
-    fn is_zero(self) -> bool {
-        self.get() == 0
-    }
 }
 
 /// Retains both decoded metadata and the exact rejected native flags.

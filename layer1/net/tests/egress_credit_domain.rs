@@ -96,70 +96,69 @@ fn guaranteed_queue_proof() {
     ] {
         throughput().with_scope(
             |scope| {
-                scope.with_driver(|mut driver, _| {
-                    let cap = conn::Capacity::fixed::<1>();
-                    let setup = match demand::Guaranteed::<bound::AtMost<0>, 1>::provision(
-                        egress::Config::shared(credit),
-                        cap,
-                    ) {
-                        demand::Provision::Queued { setup, .. } => {
-                            assert!(queued);
-                            setup
-                        }
-                        demand::Provision::Direct(setup) => {
-                            assert!(!queued);
-                            setup
-                        }
-                    };
-                    let result = change::try_prepare::<
-                        KeyTag<23>,
-                        Tcp,
-                        Identity,
-                        (),
-                        input::Borrowed,
-                        Either<&[u8], pool::Cursor>,
-                        32,
-                        _,
-                        _,
-                        _,
-                        _,
-                    >(
-                        Retained::ZERO,
-                        Resident::ZERO,
-                        setup,
-                        Local::new(Identity),
-                        &mut driver,
-                        driver::Context::reborrow,
-                        |(prepared, need), driver| {
-                            let flights = driver
-                                .storage
-                                .reborrow()
-                                .try_flights(need)
-                                .expect("flight storage")
-                                .slots();
-                            let route = driver
-                                .storage
-                                .reborrow()
-                                .try_reserve::<KeyTag<23>>()
-                                .expect("route owner");
-                            // SAFETY: no send, receive or tuning operation borrows this pool.
-                            let mut pool = unsafe { prepared.commit(flights).bind(route) };
-                            let key = open(&mut pool, cap, driver).expect("connection");
-                            let queue = pool.egress_mut(key).expect("queue").queue;
-                            let plan = queue.prove();
-                            assert_eq!(plan.is_some(), queued);
-                            if let Some(plan) = plan {
-                                for _ in 0..2 {
-                                    plan.try_reserve(driver.region_token())
-                                        .expect("admitted queue capacity")
-                                        .cancel();
-                                }
+                let (_, mut driver, _) = scope.split();
+                let cap = conn::Capacity::fixed::<1>();
+                let setup = match demand::Guaranteed::<bound::AtMost<0>, 1>::provision(
+                    egress::Config::shared(credit),
+                    cap,
+                ) {
+                    demand::Provision::Queued { setup, .. } => {
+                        assert!(queued);
+                        setup
+                    }
+                    demand::Provision::Direct(setup) => {
+                        assert!(!queued);
+                        setup
+                    }
+                };
+                let result = change::try_prepare::<
+                    KeyTag<23>,
+                    Tcp,
+                    Identity,
+                    (),
+                    input::Borrowed,
+                    Either<&[u8], pool::Cursor>,
+                    32,
+                    _,
+                    _,
+                    _,
+                    _,
+                >(
+                    Retained::ZERO,
+                    Resident::ZERO,
+                    setup,
+                    Local::new(Identity),
+                    &mut driver,
+                    driver::Context::reborrow,
+                    |(prepared, need), driver| {
+                        let flights = driver
+                            .storage
+                            .reborrow()
+                            .try_flights(need)
+                            .expect("flight storage")
+                            .slots();
+                        let route = driver
+                            .storage
+                            .reborrow()
+                            .try_reserve::<KeyTag<23>>()
+                            .expect("route owner");
+                        // SAFETY: no send, receive or tuning operation borrows this pool.
+                        let mut pool = unsafe { prepared.commit(flights).bind(route) };
+                        let key = open(&mut pool, cap, driver).expect("connection");
+                        let queue = pool.egress_mut(key).expect("queue").queue;
+                        let plan = queue.prove();
+                        assert_eq!(plan.is_some(), queued);
+                        if let Some(plan) = plan {
+                            for _ in 0..2 {
+                                plan.try_reserve(driver.region_token())
+                                    .expect("admitted queue capacity")
+                                    .cancel();
                             }
-                        },
-                    );
-                    assert!(result.is_ok(), "pool storage preparation failed");
-                    Ok::<_, Error>(())
-                })
+                        }
+                    },
+                );
+                assert!(result.is_ok(), "pool storage preparation failed");
+                Ok::<_, Error>(())
             },
             recovery::Policy::new(
                 reclaimed,

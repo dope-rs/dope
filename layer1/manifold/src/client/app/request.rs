@@ -93,11 +93,6 @@ pub struct Work<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> {
     permit: app::Permit<'turn, 'd>,
 }
 
-pub(in crate::client) enum Front<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> {
-    Ready(Work<'permit, 'turn, 'e, 'd, B>),
-    Exhausted,
-}
-
 /// An owned payload whose final-link slot and geometry are already proven.
 #[must_use]
 pub struct Ready<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>, S = B> {
@@ -108,7 +103,6 @@ pub struct Ready<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>, S = B> {
 #[must_use = "owned admission determines the payload's exact destination"]
 pub enum Admission<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>, S = B> {
     Ready(Ready<'permit, 'turn, 'e, 'd, B, S>),
-    Exhausted(egress::NonEmpty<S>),
     Saturated(egress::NonEmpty<S>),
     Rejected(exact::Unavailable<S>),
 }
@@ -169,7 +163,10 @@ impl<'turn, 'e, 'd, C, B: data::raw::Payload<'d>, ID: Identity> Turn<'turn, 'e, 
         )
     }
 
-    pub fn admit(&mut self, value: egress::NonEmpty<B>) -> Admission<'_, 'turn, 'e, 'd, B> {
+    pub fn admit(
+        &mut self,
+        value: egress::NonEmpty<B>,
+    ) -> Result<Admission<'_, 'turn, 'e, 'd, B>, egress::NonEmpty<B>> {
         self.drain.admit(value)
     }
 
@@ -207,7 +204,10 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Requests<'_, 'turn,
         self.drain.region
     }
 
-    pub fn admit<S>(&mut self, value: egress::NonEmpty<S>) -> Admission<'_, 'turn, 'e, 'd, B, S> {
+    pub fn admit<S>(
+        &mut self,
+        value: egress::NonEmpty<S>,
+    ) -> Result<Admission<'_, 'turn, 'e, 'd, B, S>, egress::NonEmpty<S>> {
         self.drain.admit(value)
     }
 
@@ -219,60 +219,50 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Requests<'_, 'turn,
         self.drain.finish_write();
     }
 
-    pub(in crate::client) fn admit_front(&mut self) -> Front<'_, 'turn, 'e, 'd, B> {
+    /// Detaches a source only after this turn admits its retained front.
+    pub fn claim<'a, R: app::Drain<region::Token<region::Identity<'d>>>>(
+        &'a mut self,
+        ready: &'a mut R,
+    ) -> Option<(R::Item<'a>, Work<'a, 'turn, 'e, 'd, B>)> {
+        let drain = &mut *self.drain;
+        match drain.work.next(ready, drain.region) {
+            app::Next::Item(value, permit) => Some((value, Work { drain, permit })),
+            app::Next::Exhausted(_) => {
+                drain.state.insert(Flag::Exhausted);
+                None
+            }
+            app::Next::Empty => None,
+        }
+    }
+
+    pub(in crate::client) fn admit_front(&mut self) -> Option<Work<'_, 'turn, 'e, 'd, B>> {
         self.drain.admit_front()
     }
 }
 
 impl<'turn, 'e, 'd, B: data::raw::Payload<'d>> Drain<'turn, 'e, 'd, B> {
     /// Charges exactly one application-work unit before protocol validation.
-    fn admit_front(&mut self) -> Front<'_, 'turn, 'e, 'd, B> {
+    fn admit_front(&mut self) -> Option<Work<'_, 'turn, 'e, 'd, B>> {
         match self.work.permit() {
-            Some(permit) => Front::Ready(Work {
+            Some(permit) => Some(Work {
                 drain: self,
                 permit,
             }),
             None => {
                 self.state.insert(Flag::Exhausted);
-                Front::Exhausted
+                None
             }
         }
     }
 
-    fn admit<S>(&mut self, value: egress::NonEmpty<S>) -> Admission<'_, 'turn, 'e, 'd, B, S> {
-        let permit = match self.work.permit() {
-            Some(permit) => permit,
-            None => {
-                self.state.insert(Flag::Exhausted);
-                return Admission::Exhausted(value);
-            }
-        };
-        permit.run(|| {
-            let plan = match self.queue.offer(value) {
-                Ok(plan) => plan,
-                Err(rejected) => {
-                    self.state.remove(Flag::Waiting);
-                    return Admission::Rejected(rejected);
-                }
-            };
-            match plan.poll_reserve(self.region, self.wake) {
-                exact::Outcome::Ready(value) => {
-                    self.state.remove(Flag::Waiting);
-                    Admission::Ready(Ready {
-                        state: &mut self.state,
-                        value,
-                    })
-                }
-                exact::Outcome::Pending(value) => {
-                    self.state.insert(Flag::Waiting);
-                    Admission::Saturated(value)
-                }
-                exact::Outcome::Rejected(rejected) => {
-                    self.state.remove(Flag::Waiting);
-                    Admission::Rejected(rejected)
-                }
-            }
-        })
+    fn admit<S>(
+        &mut self,
+        value: egress::NonEmpty<S>,
+    ) -> Result<Admission<'_, 'turn, 'e, 'd, B, S>, egress::NonEmpty<S>> {
+        match self.admit_front() {
+            Some(work) => Ok(work.admit(value)),
+            None => Err(value),
+        }
     }
 
     fn finish(self) -> Outcome {
@@ -291,7 +281,7 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>> Drain<'turn, 'e, 'd, B> {
 
     fn close(&mut self, close: close::Directive) {
         self.close = Some(match self.close {
-            Some(current) => current.merge(close.policy()),
+            Some(current) => current.merge(close),
             None => close,
         });
     }
@@ -352,11 +342,39 @@ impl<'d, L: data::raw::Payload<'d>, R: data::raw::Payload<'d>, U: lease::Commit<
 }
 
 impl<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> Work<'permit, 'turn, 'e, 'd, B> {
-    pub(in crate::client) fn with_region<R>(
-        &mut self,
-        run: impl FnOnce(&mut region::Token<region::Identity<'d>>) -> R,
-    ) -> R {
-        run(self.drain.region)
+    pub fn admit<S>(self, value: egress::NonEmpty<S>) -> Admission<'permit, 'turn, 'e, 'd, B, S> {
+        let Self {
+            drain,
+            permit: _permit,
+        } = self;
+        let plan = match drain.queue.offer(value) {
+            Ok(plan) => plan,
+            Err(rejected) => {
+                drain.state.remove(Flag::Waiting);
+                return Admission::Rejected(rejected);
+            }
+        };
+        match plan.poll_reserve(drain.region, drain.wake) {
+            exact::Outcome::Ready(value) => {
+                drain.state.remove(Flag::Waiting);
+                Admission::Ready(Ready {
+                    state: &mut drain.state,
+                    value,
+                })
+            }
+            exact::Outcome::Pending(value) => {
+                drain.state.insert(Flag::Waiting);
+                Admission::Saturated(value)
+            }
+            exact::Outcome::Rejected(rejected) => {
+                drain.state.remove(Flag::Waiting);
+                Admission::Rejected(rejected)
+            }
+        }
+    }
+
+    pub(in crate::client) fn region(&mut self) -> &mut region::Token<region::Identity<'d>> {
+        self.drain.region
     }
 
     pub(in crate::client) fn move_with(
@@ -367,8 +385,11 @@ impl<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> Work<'permit, 'turn, 'e,
             ready::Target<'d>,
         ) -> Option<task::Poll<Result<(), exact::Failure>>>,
     ) -> Option<Result<(), Capacity>> {
-        let Self { drain, permit } = self;
-        let moved = permit.run(|| transfer(drain.region, &drain.queue, drain.wake))?;
+        let Self {
+            drain,
+            permit: _permit,
+        } = self;
+        let moved = transfer(drain.region, &drain.queue, drain.wake)?;
         Some(match moved {
             task::Poll::Ready(Ok(())) => {
                 drain.state.remove(Flag::Waiting);
@@ -395,7 +416,7 @@ const _: () = {
             == mem::size_of::<usize>()
     );
     assert!(
-        mem::size_of::<Front<'static, 'static, 'static, 'static, &'static [u8]>>()
+        mem::size_of::<Option<Work<'static, 'static, 'static, 'static, &'static [u8]>>>()
             == mem::size_of::<Work<'static, 'static, 'static, 'static, &'static [u8]>>()
     );
     assert!(

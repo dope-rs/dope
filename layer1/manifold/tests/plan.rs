@@ -2,6 +2,21 @@ use dope_manifold::client::port::{Plan, error};
 use dope_net::link::egress::{Config, Credit, Entries, Resident};
 
 #[test]
+fn combines_alternative_receive_budgets() {
+    use dope_core::driver::route::table::conn::Capacity;
+    use dope_manifold::app::receive::limits::Budget;
+    use o3::buffer::hold::limits::Bound;
+
+    let budget = Budget::new(Bound::new(32), 0).max(Budget::new(Bound::new(0), 128));
+    for (count, expected) in [(Capacity::fixed::<1>(), 128), (Capacity::fixed::<8>(), 256)] {
+        assert_eq!(
+            budget.capacity(count).expect("resident budget").into_raw(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn reports_zero_axes() {
     assert!(matches!(
         Plan::<()>::new(0, Config::DEFAULT),

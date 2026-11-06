@@ -1,7 +1,7 @@
 use std::{convert, pin::Pin};
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule::clock},
+    driver::{self, route::Identity, schedule::clock},
     io::recv,
     random::Seed,
 };
@@ -383,7 +383,7 @@ where
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Preamble<F>, u8>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Preamble<F>, u8>
     where
         'd: 'w,
@@ -404,10 +404,9 @@ where
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Preamble<F>, u8>,
         end: End,
-        _: &mut retained::Context<'_, '_, 'd>,
-    ) -> handler::Eof {
+        _: &mut driver::Context<'_, 'd>,
+    ) {
         (self.observe)(Event::Eof(end));
-        handler::Eof::Close
     }
 
     fn close<'e, 'a, 'p, 's, 'w>(
@@ -429,7 +428,7 @@ where
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Preamble<F>, u8>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         let sent = conn.state_mut();
         if usize::from(*sent) == self.frames.len() {
@@ -446,7 +445,7 @@ where
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Preamble<F>, u8>,
         chunk: R,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         (self.observe)(Event::Chunk(chunk.as_ref()));
         Outcome::Continue

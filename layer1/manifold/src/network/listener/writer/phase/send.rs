@@ -1,7 +1,7 @@
 use std::pin;
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule},
+    driver::{self, route::Identity, schedule},
     io::event::net::send::Completion,
 };
 use handler::{Runtime, send};
@@ -19,7 +19,7 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
     mut listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     done: Completion<'d>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Application<'d, ID> + Runtime<'w, 'd, ID>,
     E: env::Spec<Wire = A::Wire>,
@@ -77,13 +77,7 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
     }
     let failure = match result {
         SendOutcome::Queued { .. } | SendOutcome::WriteShutdown { .. } => {
-            return A::send(send::Pending::new(
-                listener.as_mut(),
-                key,
-                send::Next::Commit,
-                turn,
-                driver,
-            ));
+            return send::settle(listener.as_mut(), key, send::Next::Commit, turn, driver);
         }
         SendOutcome::Terminal { .. } => {
             return phase::commit_end(listener.as_mut(), key, turn, driver);
@@ -101,13 +95,7 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
             if let Some(egress) = source {
                 writer::release_egress(this.app.as_mut(), key, egress, handler::Disposition::Sent);
             }
-            return A::send(send::Pending::new(
-                listener.as_mut(),
-                key,
-                send::Next::Done,
-                turn,
-                driver,
-            ));
+            return send::settle(listener.as_mut(), key, send::Next::Done, turn, driver);
         }
         SendOutcome::Invalid { error, .. } => Some(conn::Transmit::Invalid(error)),
         SendOutcome::Close(_)

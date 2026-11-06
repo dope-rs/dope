@@ -8,15 +8,12 @@ use response::Outcome as _;
 
 use crate::{
     app::receive::Failure,
-    client::{
-        conn,
-        session::{
-            self,
-            app::parser::outcomes::Run,
-            codec::{self, mode},
-            response::{self, flow, work},
-            turns,
-        },
+    client::session::{
+        self,
+        app::parser::outcomes::Run,
+        codec::{self, mode},
+        response::{self, flow, work},
+        turns,
     },
 };
 
@@ -54,7 +51,7 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
     }
 
     pub(super) fn is_closing(&self) -> bool {
-        !matches!(self.context.close_status(), conn::CloseStatus::Open)
+        !self.context.close_status().is_receiving()
     }
 
     pub(super) fn discard(&mut self) {

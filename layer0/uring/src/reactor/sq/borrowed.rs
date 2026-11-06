@@ -99,6 +99,7 @@ impl<'a> request::Borrow<'a> for Borrowed<'a> {
 impl<'a> request::Request<'a> for Borrowed<'a> {
     type Buffer = bytes::Prefix<'a, { i32::MAX as usize }>;
     type Options = types::OpenHow;
+    type Metadata = crate::raw::Metadata;
 
     fn options(flags: Open, mode: Mode) -> Self::Options {
         types::OpenHow::new(
@@ -118,13 +119,24 @@ impl<'a> request::Request<'a> for Borrowed<'a> {
         Self::new(entry)
     }
 
+    fn metadata(file: fd::BorrowedFd<'a>, output: &'a mut Self::Metadata) -> Self {
+        let raw = fd::AsRawFd::as_raw_fd(&file);
+        let mut entry = sq::Entry::new(files::METADATA, sq::Descriptor::File(raw));
+        let mut fields = entry.fields();
+        fields.address(c"".as_ptr() as u64);
+        fields.length(Self::Metadata::MASK);
+        fields.offset(output.0.as_mut_ptr() as u64);
+        fields.options(libc::AT_EMPTY_PATH as u32);
+        Self::new(entry.flags(sq::Flags::ASYNC))
+    }
+
     fn write(file: fd::BorrowedFd<'a>, input: Self::Buffer, offset: Offset) -> Self {
         Self::file_write(file, input, offset.get())
     }
 
     fn read(
         file: fd::BorrowedFd<'a>,
-        output: bytes::bounded::Value<&'a mut [u8]>,
+        output: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
         offset: Offset,
     ) -> Self {
         let output = output.into_inner();

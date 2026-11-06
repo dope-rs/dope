@@ -413,33 +413,30 @@ fn retirement_wait_errors() {
     for code in [Errno::INTERRUPTED, denied] {
         for flight in [true, false] {
             thread::spawn(move || {
-                assert!(
-                    backend::with(|owner| {
-                        seccomp::deny_wait(code).expect("thread-local wait filter");
-                        let resolver = backend::Retirement {
-                            owner,
-                            visits: 0,
-                            flight,
-                            reactor: None,
-                        };
-                        match <Uring as life::Finish<'_, _>>::try_finish(resolver) {
-                            Ok(done) => {
-                                assert_eq!(code, Errno::INTERRUPTED);
-                                let resolver = done.into_inner();
-                                assert_eq!(resolver.visits, 2);
-                                assert!(resolver.reactor.is_none());
-                            }
-                            Err(stopped) => {
-                                assert_eq!(code, denied);
-                                assert_eq!(stopped.state.visits, 1);
-                                assert!(stopped.state.reactor.is_none());
-                                assert!(matches!(stopped.cause,
-                                life::Error::File(Poll::Wait(actual)) if actual.is_code(code)));
-                            }
+                backend::with(|owner| {
+                    seccomp::deny_wait(code).expect("thread-local wait filter");
+                    let resolver = backend::Retirement {
+                        owner,
+                        visits: 0,
+                        flight,
+                        reactor: None,
+                    };
+                    match <Uring as life::Finish<'_, _>>::try_finish(resolver) {
+                        Ok(done) => {
+                            assert_eq!(code, Errno::INTERRUPTED);
+                            let resolver = done.into_inner();
+                            assert_eq!(resolver.visits, 2);
+                            assert!(resolver.reactor.is_none());
                         }
-                    })
-                    .is_ok()
-                );
+                        Err(stopped) => {
+                            assert_eq!(code, denied);
+                            assert_eq!(stopped.state.visits, 1);
+                            assert!(stopped.state.reactor.is_none());
+                            assert!(matches!(stopped.cause,
+                                life::Error::File(Poll::Wait(actual)) if actual.is_code(code)));
+                        }
+                    }
+                });
             })
             .join()
             .expect("retirement keeps its filtered native owner");

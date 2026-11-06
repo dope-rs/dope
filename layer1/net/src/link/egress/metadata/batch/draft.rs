@@ -91,7 +91,7 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token,
             }
         };
         let (stored, value) = split.take();
-        let (index, stored, value) = vacancy.reserve(token, stored, value);
+        let index = vacancy.reserve(token);
         queue.pool.store.write(token, index, value, stored);
         queue.pool.store.append(token, &mut self.links, index);
         Ok(())

@@ -13,8 +13,8 @@ pub struct Wait<'d, ID: Identity> {
 }
 
 impl<'d, ID: Identity> Wait<'d, ID> {
-    pub(in crate::link::slot::transmit) fn new<'w, W: wire::Spec, S>(
-        slot: &types::Connection<'w, 'd, ID, W, S>,
+    pub(in crate::link::slot::transmit) fn new<'w, W: wire::Spec>(
+        slot: &types::Control<'w, 'd, ID, W>,
     ) -> Self
     where
         ID: 'w,

@@ -1,6 +1,6 @@
 use std::pin;
 
-use dope_core::driver::{result, retained, route::Identity, schedule::app};
+use dope_core::driver::{self, result, route::Identity, schedule::app};
 use o3::buffer;
 
 use crate::network::datagram::{self, send};
@@ -27,8 +27,7 @@ impl Priority {
 pub(in crate::network::datagram) fn run<
     'a,
     'c,
-    'owner,
-    'd: 'owner,
+    'd,
     ID: Identity,
     B: buffer::Residency + buffer::raw::Source,
     M: send::Mode,
@@ -37,12 +36,12 @@ pub(in crate::network::datagram) fn run<
     mut socket: pin::Pin<&'a mut datagram::Socket<'d, ID, B, M>>,
     mut handler: pin::Pin<&mut H>,
     work: app::Work<'a, 'd>,
-    driver: &'a mut retained::Context<'c, 'owner, 'd>,
+    driver: &'a mut driver::Context<'c, 'd>,
     mut pre_park: impl FnMut(
         pin::Pin<&mut H>,
         pin::Pin<&mut datagram::Socket<'d, ID, B, M>>,
         app::Work<'_, 'd>,
-        &mut retained::Context<'c, 'owner, 'd>,
+        &mut driver::Context<'c, 'd>,
     ),
     mut transfer: impl FnMut(pin::Pin<&mut H>, send::Transfer<'d, ID>),
 ) -> Result<(), result::SubmitError> {

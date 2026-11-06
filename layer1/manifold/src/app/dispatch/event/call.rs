@@ -1,23 +1,23 @@
 use std::mem;
 
 use dope_core::{
-    driver::{retained, schedule},
+    driver::{self, schedule},
     io,
 };
 
 /// Completion authority for one exact retained root and scheduler turn.
-pub struct Call<'driver, 'turn, 'root, 'd: 'root> {
+pub struct Call<'driver, 'turn, 'd> {
     event: io::Event<'d>,
     turn: schedule::Turn<'turn, 'd>,
-    driver: retained::Context<'driver, 'root, 'd>,
+    driver: driver::Context<'driver, 'd>,
 }
 
-impl<'driver, 'turn, 'root, 'd: 'root> Call<'driver, 'turn, 'root, 'd> {
+impl<'driver, 'turn, 'd> Call<'driver, 'turn, 'd> {
     /// Binds one completion to the installed root context that must consume it.
     pub const fn new(
         event: io::Event<'d>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: retained::Context<'driver, 'root, 'd>,
+        driver: driver::Context<'driver, 'd>,
     ) -> Self {
         Self {
             event,
@@ -32,7 +32,7 @@ impl<'driver, 'turn, 'root, 'd: 'root> Call<'driver, 'turn, 'root, 'd> {
 
     pub(in crate::app::dispatch) fn into_drive(
         self,
-    ) -> (io::Event<'d>, retained::Context<'driver, 'root, 'd>) {
+    ) -> (io::Event<'d>, driver::Context<'driver, 'd>) {
         (self.event, self.driver)
     }
 
@@ -41,19 +41,19 @@ impl<'driver, 'turn, 'root, 'd: 'root> Call<'driver, 'turn, 'root, 'd> {
     ) -> (
         io::Event<'d>,
         schedule::Turn<'turn, 'd>,
-        retained::Context<'driver, 'root, 'd>,
+        driver::Context<'driver, 'd>,
     ) {
         (self.event, self.turn, self.driver)
     }
 }
 
 const fn assert_layout() {
-    type Exact<'a> = Call<'a, 'a, 'a, 'a>;
+    type Exact<'a> = Call<'a, 'a, 'a>;
     assert!(
         mem::size_of::<Exact<'static>>()
             == mem::size_of::<io::Event<'static>>()
                 + mem::size_of::<schedule::Turn<'static, 'static>>()
-                + mem::size_of::<retained::Context<'static, 'static, 'static>>()
+                + mem::size_of::<driver::Context<'static, 'static>>()
     );
     assert!(mem::align_of::<Exact<'static>>() == mem::align_of::<usize>());
 }

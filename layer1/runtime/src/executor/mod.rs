@@ -85,9 +85,14 @@ struct Entry<O>(O);
 impl<S, Q, O> life::Operation<S, Q> for Entry<O>
 where
     S: storage::Plan,
+    Q: Startup,
     O: Op<S, Q>,
 {
     type Output = O::Output;
+
+    fn rejected(&self, source: &Q) {
+        source.failed();
+    }
 
     fn run<'life, 'p, 'd>(
         self,
@@ -109,11 +114,19 @@ where
     }
 }
 
-/// Compile-time behavior selected by an executor's shutdown source after its
-/// pinned application is installed.
+/// Lifecycle behavior selected by an executor's shutdown source.
 pub trait Startup: Sized {
+    const INTEREST: dope_core::dope_sys::engine::register::Interest =
+        dope_core::dope_sys::engine::register::Interest::Readable;
+
     /// Publishes installation readiness or preserves its exact notification failure.
     fn installed(&self) -> Result<(), InstallError>;
+
+    /// Observes the registered shutdown source becoming ready.
+    fn observed(&self, _request: crate::shutdown::Requested<Self>) {}
+
+    /// Records installation failure before native cleanup.
+    fn failed(&self) {}
 }
 
 impl Startup for () {
@@ -213,7 +226,10 @@ impl Build for () {
 
 impl<S> Executor<S, ()> {
     /// Installs and owns a process-local shutdown source for this driver domain.
-    pub fn shutdown<Q: fd::AsFd>(self, source: Q) -> Result<Executor<S, Q>, domain::Register> {
+    pub fn shutdown<Q: fd::AsFd + Startup>(
+        self,
+        source: Q,
+    ) -> Result<Executor<S, Q>, domain::Register> {
         let Self {
             storage: store,
             generation: epoch,
@@ -221,7 +237,7 @@ impl<S> Executor<S, ()> {
         } = self;
         Ok(Executor {
             storage: store,
-            generation: epoch.fd(source)?,
+            generation: epoch.poll(source, Q::INTEREST)?,
             teardown,
         })
     }

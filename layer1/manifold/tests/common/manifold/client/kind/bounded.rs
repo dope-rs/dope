@@ -259,8 +259,8 @@ impl<'d, ID: route::Identity, F: Fn() -> egress::NonEmpty<Shared>> app::Requests
         while self.left.get() != 0 {
             let value = (self.create)();
             let ready = match turn.admit(value) {
-                request::Admission::Ready(ready) => ready,
-                request::Admission::Exhausted(value) | request::Admission::Saturated(value) => {
+                Ok(request::Admission::Ready(ready)) => ready,
+                Err(value) | Ok(request::Admission::Saturated(value)) => {
                     if value.as_inner().as_ref() != b"x" {
                         self.audit
                             .faults
@@ -268,8 +268,10 @@ impl<'d, ID: route::Identity, F: Fn() -> egress::NonEmpty<Shared>> app::Requests
                     }
                     break;
                 }
-                request::Admission::Rejected(rejected) => {
-                    self.audit.faults.record(error::Error::Admit(rejected));
+                Ok(request::Admission::Rejected(rejected)) => {
+                    self.audit
+                        .faults
+                        .record(error::Error::Admit(rejected.cause()));
                     return;
                 }
             };

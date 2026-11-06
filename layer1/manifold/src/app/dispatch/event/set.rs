@@ -16,14 +16,13 @@ pub trait Set<'d, M, R: route::App> {
 
     fn select() -> Option<Self::Plan>;
 
-    fn call<'app, 'driver, 'turn, 'root>(
+    fn call<'app, 'driver, 'turn>(
         owner: pin::Pin<&'app mut M>,
         plan: Self::Plan,
-        call: event::Call<'driver, 'turn, 'root, 'd>,
+        call: event::Call<'driver, 'turn, 'd>,
     ) -> ops::ControlFlow<io::Event<'d>>
     where
-        'd: 'driver + 'turn + 'root,
-        M: 'root;
+        'd: 'driver + 'turn;
 }
 
 impl<'d, M, R: route::App> Set<'d, M, R> for dispatch::raw::Omit {
@@ -35,14 +34,13 @@ impl<'d, M, R: route::App> Set<'d, M, R> for dispatch::raw::Omit {
         None
     }
 
-    fn call<'app, 'driver, 'turn, 'root>(
+    fn call<'app, 'driver, 'turn>(
         _: pin::Pin<&'app mut M>,
         plan: Self::Plan,
-        _: event::Call<'driver, 'turn, 'root, 'd>,
+        _: event::Call<'driver, 'turn, 'd>,
     ) -> ops::ControlFlow<io::Event<'d>>
     where
-        'd: 'driver + 'turn + 'root,
-        M: 'root,
+        'd: 'driver + 'turn,
     {
         match plan {}
     }
@@ -63,14 +61,13 @@ where
         <<M::Inner as dispatch::raw::Manifold<'d>>::Dispatch as Set<'d, M::Inner, R>>::select()
     }
 
-    fn call<'app, 'driver, 'turn, 'root>(
+    fn call<'app, 'driver, 'turn>(
         owner: pin::Pin<&'app mut M>,
         plan: Self::Plan,
-        call: event::Call<'driver, 'turn, 'root, 'd>,
+        call: event::Call<'driver, 'turn, 'd>,
     ) -> ops::ControlFlow<io::Event<'d>>
     where
-        'd: 'driver + 'turn + 'root,
-        M: 'root,
+        'd: 'driver + 'turn,
     {
         <<M::Inner as dispatch::raw::Manifold<'d>>::Dispatch as Set<'d, M::Inner, R>>::call(
             dispatch::raw::Projection::inner_mut(owner),
@@ -93,14 +90,13 @@ where
         Some(())
     }
 
-    fn call<'app, 'driver, 'turn, 'root>(
+    fn call<'app, 'driver, 'turn>(
         owner: pin::Pin<&'app mut M>,
         plan: Self::Plan,
-        call: event::Call<'driver, 'turn, 'root, 'd>,
+        call: event::Call<'driver, 'turn, 'd>,
     ) -> ops::ControlFlow<io::Event<'d>>
     where
-        'd: 'driver + 'turn + 'root,
-        M: 'root,
+        'd: 'driver + 'turn,
     {
         event::Complete::dispatch(executor::raw::Call::new(owner, plan, call.into_event()))
     }
@@ -119,14 +115,13 @@ where
         Some(())
     }
 
-    fn call<'app, 'driver, 'turn, 'root>(
+    fn call<'app, 'driver, 'turn>(
         owner: pin::Pin<&'app mut M>,
         plan: Self::Plan,
-        call: event::Call<'driver, 'turn, 'root, 'd>,
+        call: event::Call<'driver, 'turn, 'd>,
     ) -> ops::ControlFlow<io::Event<'d>>
     where
-        'd: 'driver + 'turn + 'root,
-        M: 'root,
+        'd: 'driver + 'turn,
     {
         let (event, driver) = call.into_drive();
         let mut driver = dispatch::raw::Context::<dispatch::raw::Retained>::new(driver);
@@ -151,14 +146,13 @@ where
         Some(())
     }
 
-    fn call<'app, 'driver, 'turn, 'root>(
+    fn call<'app, 'driver, 'turn>(
         owner: pin::Pin<&'app mut M>,
         plan: Self::Plan,
-        call: event::Call<'driver, 'turn, 'root, 'd>,
+        call: event::Call<'driver, 'turn, 'd>,
     ) -> ops::ControlFlow<io::Event<'d>>
     where
-        'd: 'driver + 'turn + 'root,
-        M: 'root,
+        'd: 'driver + 'turn,
     {
         let (event, turn, driver) = call.into_turn();
         let mut driver = dispatch::raw::Context::<dispatch::raw::Retained>::new(driver);

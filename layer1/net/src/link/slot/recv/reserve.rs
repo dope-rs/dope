@@ -46,7 +46,7 @@ where
         credit: credit::Control<'d>,
         mut arm: bool,
     ) -> Self {
-        let key = &conn.key;
+        let key = &conn.control.key;
         let end = match conn.control.engine.both(&mut conn.control.terminal) {
             terminal::Admission::Open(end) => end,
             terminal::Admission::Closed => {
@@ -59,9 +59,9 @@ where
         let send = if conn.control.engine.operations.sending.is_inflight() {
             None
         } else {
-            Some(&mut conn.send)
+            Some(&mut conn.control.send)
         };
-        let txn = match R::try_reserve(&mut conn.wire, send, rt) {
+        let txn = match R::try_reserve(&mut conn.control.wire, send, rt) {
             reserve::Outcome::Ready(txn) => txn,
             reserve::Outcome::Blocked(block) => {
                 let bind = credit.bind(key.target().dispatch());

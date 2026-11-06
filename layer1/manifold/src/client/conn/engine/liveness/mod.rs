@@ -5,7 +5,6 @@ use dope_core::{
     driver::{
         self,
         life::finish::Finish,
-        retained,
         route::{Identity, table},
         schedule::{
             clock::{self, timer},
@@ -64,7 +63,7 @@ where
         app: &A,
         conn: conn::Ref<'_, 'd, ID, A::Wire, A::Conn, O>,
         base: Positive,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Observation<'d>;
 }
 
@@ -76,7 +75,7 @@ where
         _: &A,
         _: conn::Ref<'_, 'd, ID, A::Wire, A::Conn, O>,
         _: Positive,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Observation<'d> {
         Observation::Quiescent
     }
@@ -90,10 +89,10 @@ where
         app: &A,
         conn: conn::Ref<'_, 'd, ID, A::Wire, A::Conn, O>,
         base: Positive,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Observation<'d> {
         let seen = conn.last_recv();
-        match app::Resumable::inbound(app, conn, base, driver.driver()) {
+        match app::Resumable::inbound(app, conn, base, driver) {
             app::Inbound::Quiescent => Observation::Quiescent,
             app::Inbound::Awaiting(window) => Observation::Awaiting { window, seen },
         }

@@ -33,15 +33,10 @@ unsafe impl<'d, M, R: route::App> dispatch::raw::Wakes<'d, M, R> for Omit {
         None
     }
 
-    unsafe fn call<'a, 'driver, 'turn, 'root>(
-        call: executor::raw::Call<
-            'a,
-            M,
-            Self::Plan,
-            executor::raw::Activate<'driver, 'turn, 'root, 'd>,
-        >,
+    unsafe fn call<'a, 'driver, 'turn>(
+        call: executor::raw::Call<'a, M, Self::Plan, executor::raw::Activate<'driver, 'turn, 'd>>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         call.into_never()
     }

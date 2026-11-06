@@ -135,7 +135,8 @@ fn reserve_is_atomic() {
 
     Runtime { config }.with_scope(
         |scope| {
-            scope.with_driver(|_, mut turn| {
+            {
+                let (_, _, mut turn) = scope.split();
                 {
                     let active = turn.begin();
                     assert!(matches!(
@@ -222,7 +223,7 @@ fn reserve_is_atomic() {
                         assert_eq!(active.turn().app().drain_count(), schedule::LIMIT);
                     }
                 }
-            });
+            };
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -242,37 +243,36 @@ fn maint_share_is_nested() {
 
     Runtime { config }.with_scope(
         |scope| {
-            scope.with_driver(|_, mut turn| {
-                let active = turn.begin();
-                let work = active.turn().maint();
+            let (_, _, mut turn) = scope.split();
+            let active = turn.begin();
+            let work = active.turn().maint();
 
-                work.share::<3, _>(|| {
-                    assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3));
-                    assert!(work.permit().is_some());
+            work.share::<3, _>(|| {
+                assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3));
+                assert!(work.permit().is_some());
 
-                    work.share::<2, _>(|| {
-                        assert_eq!(
-                            work.remaining(),
-                            (schedule::LIMIT.div_ceil(3) - 1).div_ceil(2)
-                        );
-                        assert!(work.permit().is_some());
-                    });
-                    assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3) - 2);
-                });
-                assert_eq!(work.remaining(), schedule::LIMIT - 2);
-
-                work.share::<{ usize::MAX }, _>(|| {
-                    assert_eq!(work.remaining(), 1);
+                work.share::<2, _>(|| {
+                    assert_eq!(
+                        work.remaining(),
+                        (schedule::LIMIT.div_ceil(3) - 1).div_ceil(2)
+                    );
                     assert!(work.permit().is_some());
                 });
-                assert_eq!(work.remaining(), schedule::LIMIT - 3);
-
-                work.share::<1, _>(|| {
-                    assert_eq!(work.remaining(), schedule::LIMIT - 3);
-                    assert!(work.permit().is_some());
-                });
-                assert_eq!(work.remaining(), schedule::LIMIT - 4);
+                assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3) - 2);
             });
+            assert_eq!(work.remaining(), schedule::LIMIT - 2);
+
+            work.share::<{ usize::MAX }, _>(|| {
+                assert_eq!(work.remaining(), 1);
+                assert!(work.permit().is_some());
+            });
+            assert_eq!(work.remaining(), schedule::LIMIT - 3);
+
+            work.share::<1, _>(|| {
+                assert_eq!(work.remaining(), schedule::LIMIT - 3);
+                assert!(work.permit().is_some());
+            });
+            assert_eq!(work.remaining(), schedule::LIMIT - 4);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -292,28 +292,27 @@ fn app_share_returns_unused() {
 
     Runtime { config }.with_scope(
         |scope| {
-            scope.with_driver(|_, mut turn| {
-                let active = turn.begin();
-                let work = active.turn().app();
+            let (_, _, mut turn) = scope.split();
+            let active = turn.begin();
+            let work = active.turn().app();
 
-                work.share::<3, _>(|share| {
-                    assert_eq!(share.work().remaining(), schedule::LIMIT.div_ceil(3));
-                    assert!(share.work().permit().is_some());
-                });
-                assert_eq!(work.remaining(), schedule::LIMIT - 1);
-
-                work.share::<2, _>(|share| {
-                    assert_eq!(share.work().remaining(), (schedule::LIMIT - 1).div_ceil(2));
-                    assert!(share.work().permit().is_some());
-                });
-                assert_eq!(work.remaining(), schedule::LIMIT - 2);
-
-                work.share::<1, _>(|share| {
-                    assert_eq!(share.work().remaining(), schedule::LIMIT - 2);
-                });
-                assert_eq!(work.remaining(), schedule::LIMIT - 2);
-                assert!(!active.is_exhausted());
+            work.share::<3, _>(|share| {
+                assert_eq!(share.work().remaining(), schedule::LIMIT.div_ceil(3));
+                assert!(share.work().permit().is_some());
             });
+            assert_eq!(work.remaining(), schedule::LIMIT - 1);
+
+            work.share::<2, _>(|share| {
+                assert_eq!(share.work().remaining(), (schedule::LIMIT - 1).div_ceil(2));
+                assert!(share.work().permit().is_some());
+            });
+            assert_eq!(work.remaining(), schedule::LIMIT - 2);
+
+            work.share::<1, _>(|share| {
+                assert_eq!(share.work().remaining(), schedule::LIMIT - 2);
+            });
+            assert_eq!(work.remaining(), schedule::LIMIT - 2);
+            assert!(!active.is_exhausted());
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,

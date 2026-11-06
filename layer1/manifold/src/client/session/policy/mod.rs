@@ -50,11 +50,7 @@ pub trait Output<'life, 'd: 'life, P: ?Sized + 'life, ID: Identity, const MAX: u
     protocol::Spec<'life, 'd, P, ID, MAX> + Sized
 {
     fn flush() -> Option<
-        impl for<'a, 'c, 't, 'e> Call<(
-            &'a mut State<'life, 'd, P, Self, ID, MAX>,
-            &'c mut session::Context<'t, 'e, 'life, 'd, P, Self, ID, MAX>,
-            session::Input,
-        )>,
+        impl for<'a, 'c, 't, 'e> Call<output::BoundArgs<'a, 'c, 't, 'e, 'life, 'd, P, Self, ID, MAX>>,
     > {
         None::<Infallible>
     }
@@ -92,6 +88,21 @@ pub trait Lifecycle<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>
     protocol::Spec<'life, 'd, P, ID, MAX>
 {
     type Drain;
+
+    fn take_close(
+        _: &State<'life, 'd, P, Self, ID, MAX>,
+        _: conn::Id<'d, ID>,
+    ) -> Option<close::Directive> {
+        None
+    }
+
+    fn withdraw(
+        _: &mut State<'life, 'd, P, Self, ID, MAX>,
+        _: conn::Id<'d, ID>,
+        _: &mut Self::ConnState,
+    ) -> app::Fence {
+        app::Fence::Ready
+    }
 
     /// Offers the exact send failure before retiring application responses.
     /// Returning it preserves the diagnostic for the final retired context.

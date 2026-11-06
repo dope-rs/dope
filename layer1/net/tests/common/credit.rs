@@ -5,7 +5,6 @@ use dope_core::{
         self,
         life::recovery,
         result::poll::Close,
-        retained,
         route::{KeyTag, lease, table::conn},
         schedule,
     },
@@ -78,53 +77,52 @@ pub fn with_pool<const LANES: usize>(
 ) {
     rt::throughput().with_scope(
         |scope| {
-            scope.with_driver(|mut driver, mut control| {
-                let turn = control.begin();
-                let capacity = conn::Capacity::fixed::<LANES>();
-                change::try_prepare::<
-                    Route,
-                    Tcp,
-                    Identity,
-                    (),
-                    input::Borrowed,
-                    Payload<'_>,
-                    32,
-                    _,
-                    _,
-                    _,
-                    _,
-                >(
-                    Retained::ZERO,
-                    Resident::ZERO,
-                    demand::Fallible::prepare(config, capacity),
-                    Local::new(Identity),
-                    &mut driver,
-                    driver::Context::reborrow,
-                    |(prepared, need), driver| {
-                        let flights = driver
-                            .storage
-                            .reborrow()
-                            .try_flights(need)
-                            .map_err(Error::Allocation)?
-                            .slots();
-                        let route = driver
-                            .storage
-                            .reborrow()
-                            .try_reserve::<Route>()
-                            .map_err(Error::Route)?;
-                        // SAFETY: this fixture never submits send, receive, or tuning
-                        // operations. Pool storage therefore has no kernel borrowers.
-                        let mut pool = unsafe { prepared.commit(flights).bind(route) };
-                        let mut keys = [open(&mut pool, capacity, driver)?; LANES];
-                        for key in &mut keys[1..] {
-                            *key = open(&mut pool, capacity, driver)?;
-                        }
-                        test(&mut pool, keys, driver, turn.turn());
-                        Ok::<_, Error>(())
-                    },
-                )
-                .map_err(Error::Resource)?
-            })
+            let (_, mut driver, mut control) = scope.split();
+            let turn = control.begin();
+            let capacity = conn::Capacity::fixed::<LANES>();
+            change::try_prepare::<
+                Route,
+                Tcp,
+                Identity,
+                (),
+                input::Borrowed,
+                Payload<'_>,
+                32,
+                _,
+                _,
+                _,
+                _,
+            >(
+                Retained::ZERO,
+                Resident::ZERO,
+                demand::Fallible::prepare(config, capacity),
+                Local::new(Identity),
+                &mut driver,
+                driver::Context::reborrow,
+                |(prepared, need), driver| {
+                    let flights = driver
+                        .storage
+                        .reborrow()
+                        .try_flights(need)
+                        .map_err(Error::Allocation)?
+                        .slots();
+                    let route = driver
+                        .storage
+                        .reborrow()
+                        .try_reserve::<Route>()
+                        .map_err(Error::Route)?;
+                    // SAFETY: this fixture never submits send, receive, or tuning
+                    // operations. Pool storage therefore has no kernel borrowers.
+                    let mut pool = unsafe { prepared.commit(flights).bind(route) };
+                    let mut keys = [open(&mut pool, capacity, driver)?; LANES];
+                    for key in &mut keys[1..] {
+                        *key = open(&mut pool, capacity, driver)?;
+                    }
+                    test(&mut pool, keys, driver, turn.turn());
+                    Ok::<_, Error>(())
+                },
+            )
+            .map_err(Error::Resource)?
         },
         recovery::Policy::new(
             reclaimed,
@@ -181,19 +179,16 @@ pub fn release_one<'p, 'd>(
     driver: &mut driver::Context<'_, 'd>,
     turn: schedule::Turn<'_, 'd>,
 ) -> Result<bool, close::Failure> {
-    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-    let mut driver = retained::Context::new(driver.reborrow(), owner);
     let mut released = Ok(false);
     <Disabled as Policy<Identity>>::close(
         pool,
         key,
         turn.maint(),
-        &mut driver,
+        driver,
         close::Handler {
             claim: (),
             context: &mut released,
             owner: |_: close::Owner<
-                '_,
                 '_,
                 '_,
                 '_,
@@ -208,19 +203,10 @@ pub fn release_one<'p, 'd>(
                 (),
                 Result<bool, close::Failure>,
             >| close::Decision::Ready,
-            commit: |_: close::Commit<
-                '_,
-                '_,
-                '_,
-                '_,
-                '_,
-                'd,
-                (),
-                Result<bool, close::Failure>,
-                (),
-            >| close::Approval::Ready(()),
+            commit: |_: close::Commit<'_, '_, '_, '_, 'd, (), Result<bool, close::Failure>, ()>| {
+                close::Approval::Ready(())
+            },
             failed: |(released, _, failed, _): close::Failed<
-                '_,
                 '_,
                 '_,
                 '_,
@@ -239,13 +225,11 @@ pub fn release_one<'p, 'd>(
                 Result<bool, close::Failure>,
             >| *released = Err(failed.failure()),
         },
-        |released: &mut Result<bool, close::Failure>, _: Payload<'d>| {
+        |released: &mut Result<bool, close::Failure>, _: Payload<'d>, _| {
             if let Ok(released) = released {
                 *released = true;
             }
         },
-        |_, released, _, outcome| {
-            Ok((*released)? && matches!(outcome, close::Outcome::Pending((), _)))
-        },
+        |_, released, _, outcome| Ok((*released)? && matches!(outcome, close::Outcome::Pending(()))),
     )
 }

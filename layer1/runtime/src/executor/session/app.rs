@@ -14,12 +14,13 @@ use crate::{
 /// Live application view scoped to one installed session.
 #[repr(transparent)]
 pub struct App<'app, 'life: 'app, 'd: 'life, D: executor::raw::Layout<'d>, Q = ()> {
-    pub(super) access: session::access::Access<'app, 'life, 'd, D, Q>,
+    pub(crate) access: session::access::Access<'app, 'life, 'd, D, Q>,
 }
 
 impl<'app, 'life: 'app, 'd: 'life, D, Q> App<'app, 'life, 'd, D, Q>
 where
     D: executor::raw::App<'d>,
+    Q: executor::Startup,
 {
     pub fn drive<R>(&mut self, root: R) -> Result<R::Output, drive::Error>
     where

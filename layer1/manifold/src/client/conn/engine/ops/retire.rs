@@ -1,14 +1,11 @@
 //! Retirement transition for connector-owned connections.
 use std::pin;
 
-use dope_core::driver::{result, retained, route::Identity, schedule};
+use dope_core::driver::{self, result, route::Identity, schedule};
 use dope_net::link::{event, pool, slot::transmit};
 use o3::base::cell::region;
 use pool::{
-    change::{
-        close,
-        drain::{Policy, release},
-    },
+    change::{close, drain::Policy},
     recv::input,
 };
 
@@ -104,14 +101,14 @@ where
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     fn drain_close<V>(
         self: pin::Pin<&mut Self>,
         drain: drain::Drain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         output: impl FnOnce(Directive) -> V,
     ) -> Outcome<'d, ID, V>;
 }
@@ -130,7 +127,7 @@ where
         mut self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let target = self.as_ref().backoff();
         let drain = {
@@ -159,7 +156,7 @@ where
         self: pin::Pin<&mut Self>,
         drain: drain::Drain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         output: impl FnOnce(Directive) -> V,
     ) -> Outcome<'d, ID, V> {
         let target = self.as_ref().backoff();
@@ -179,7 +176,6 @@ where
                 claim: drain,
                 context: &mut ctx,
                 owner: |scope: close::Owner<
-                    '_,
                     '_,
                     '_,
                     '_,
@@ -261,7 +257,6 @@ where
                     '_,
                     '_,
                     '_,
-                    '_,
                     'd,
                     drain::Drain<'d, ID>,
                     Participants<'_, '_, A, S>,
@@ -271,7 +266,6 @@ where
                     state.retire(drain, |barrier| app.quiesce(barrier, driver))
                 },
                 failed: |scope: close::Failed<
-                    '_,
                     '_,
                     '_,
                     '_,
@@ -316,13 +310,11 @@ where
                         .apply(Directive::reconnect(Reason::Transport));
                 },
             },
-            release::Borrowed::new(
-                |ctx: &mut Participants<'_, '_, A, S>,
-                 payload: A::Send,
-                 token: &mut region::Token<region::Identity<'d, 1>>| {
-                    ctx.0.cancel(payload, token)
-                },
-            ),
+            |ctx: &mut Participants<'_, '_, A, S>,
+             payload: A::Send,
+             token: &mut region::Token<region::Identity<'d, 1>>| {
+                ctx.0.cancel(payload, token)
+            },
             |pool, ctx, driver, outcome| match outcome {
                 close::Outcome::Retired(retired) => {
                     let output = retired.resolve(
@@ -331,33 +323,10 @@ where
                     );
                     Outcome::Retired(output)
                 }
-                close::Outcome::Pending(drain, deferred) => {
-                    match deferred {
-                        close::Deferred::Terminal
-                        | close::Deferred::Setup
-                        | close::Deferred::Send
-                        | close::Deferred::Recv
-                        | close::Deferred::Ingress
-                        | close::Deferred::Egress
-                        | close::Deferred::Scheduled => {}
-                        close::Deferred::Owner(wait) => {
-                            if !pool
-                                .inspect()
-                                .get(key)
-                                .is_some_and(|slot| slot.send_status().is_waiting())
-                            {
-                                wait.reschedule();
-                            }
-                        }
-                        close::Deferred::Retire(next) => next.reschedule(),
-                    }
-                    match drain.release(pool) {
-                        drain::Recovery::Restored | drain::Recovery::Rescheduled => {
-                            Outcome::Pending
-                        }
-                        drain::Recovery::Obsolete(proof) => Outcome::Obsolete(proof),
-                    }
-                }
+                close::Outcome::Pending(drain) => match drain.release(pool) {
+                    drain::Recovery::Restored | drain::Recovery::Rescheduled => Outcome::Pending,
+                    drain::Recovery::Obsolete(proof) => Outcome::Obsolete(proof),
+                },
                 close::Outcome::Stale(drain) => Outcome::Obsolete(drain.obsolete()),
                 close::Outcome::Missing(drain) => Outcome::Missing(drain.absent()),
             },

@@ -1,6 +1,11 @@
 use std::{mem, os::fd};
 
-use crate::process::{gate, lifecycle, runtime::bus};
+use dope_core::driver::{life::creation, settings};
+
+use crate::{
+    executor::{self, create},
+    process::{gate, lifecycle, runtime::bus},
+};
 
 /// Shutdown source borrowed from the exact process run that owns this worker.
 ///
@@ -28,6 +33,30 @@ impl<'run> Shutdown<'run> {
             source: self.source,
         }
     }
+
+    pub(super) fn attach<'a>(
+        self,
+        executor: Result<executor::Executor, create::Error<'a>>,
+    ) -> Result<executor::Executor<(), Self>, create::Error<'a>> {
+        let terminal = self.terminal();
+        executor
+            .and_then(|executor| executor.shutdown(self).map_err(create::Error::from))
+            .inspect_err(|_| {
+                let _ = terminal.fail();
+            })
+    }
+}
+
+impl executor::Build for Shutdown<'_> {
+    type Shutdown = Self;
+
+    fn try_build(
+        self,
+        attempt: &mut creation::Attempt,
+        config: settings::Config,
+    ) -> Result<executor::Executor<(), Self::Shutdown>, create::Error<'_>> {
+        self.attach(executor::Executor::new(attempt, config))
+    }
 }
 
 impl fd::AsFd for Shutdown<'_> {
@@ -39,6 +68,10 @@ impl fd::AsFd for Shutdown<'_> {
 impl crate::executor::Startup for Shutdown<'_> {
     fn installed(&self) -> Result<(), crate::executor::InstallError> {
         self.source.installed().map_err(Into::into)
+    }
+
+    fn failed(&self) {
+        let _ = self.terminal().fail();
     }
 }
 

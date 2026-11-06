@@ -1,6 +1,10 @@
 use std::{cell::Cell, convert::Infallible, net::SocketAddr, rc::Rc};
 
-use dope_core::{driver, driver::route::KeyTag, io::socket};
+use dope_core::{
+    driver,
+    driver::{route::KeyTag, schedule::app},
+    io::socket,
+};
 use dope_manifold::client::{
     app::{admit::Automatic, connect::Full, failure::Observed, request},
     attempt,
@@ -23,6 +27,7 @@ use o3::{
     base::{Call, cell::region},
     buffer,
     buffer::storage::Shared,
+    depot::queue::pool::fair,
 };
 
 use crate::common::{
@@ -35,28 +40,54 @@ use crate::common::{
 
 type Request = egress::NonEmpty<Shared>;
 
-pub struct Requests {
-    pub(crate) pending: [(Cell<Option<usize>>, Cell<Option<Request>>); 4],
+struct Pending<'a, 'd>(fair::Binding<'a, 'd, Request, usize>);
+
+impl<'a, 'd> app::Drain<region::Token<region::Identity<'d>>> for Pending<'a, 'd> {
+    type Candidate<'b>
+        = ()
+    where
+        Self: 'b;
+    type Item<'b>
+        = (Request, fair::Permit<'a, 'd, Request, usize>)
+    where
+        Self: 'b;
+
+    fn next_when<P>(
+        &mut self,
+        token: &mut region::Token<region::Identity<'d>>,
+        take: impl FnOnce() -> Option<P>,
+    ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
+        let front = self.0.front_entry(token)?;
+        Some(match take() {
+            Some(permit) => Ok((front(), permit)),
+            None => Err(()),
+        })
+    }
+}
+
+pub struct Requests<'d> {
+    pub(crate) pending: fair::Lanes<'d, Request, usize>,
+    pub(crate) assigned: [Cell<bool>; 4],
     pub(crate) peers: [Option<SocketAddr>; 4],
     pub(crate) next: Rc<Cell<usize>>,
     pub(crate) order: Rc<Trace<usize, 4>>,
     pub(crate) admitted: Rc<Trace<SocketAddr, 4>>,
 }
 
-pub struct Lane {
+pub struct Lane<'d> {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
 
-    pub(crate) requests: Requests,
+    pub(crate) requests: Requests<'d>,
     pub(crate) conn: Gate,
     pub(crate) moved: Gate,
     pub(crate) sent: Gate,
 }
 
-impl Lane {
+impl Lane<'_> {
     const REQUESTS: [usize; 4] = [5, 5, 8, 5];
 }
 
-impl<'d> Session<'d> for Lane {
+impl<'d> Session<'d> for Lane<'d> {
     type Codec = codec::Pending<5>;
     type Connect = Full;
     type ConnState = ();
@@ -68,7 +99,7 @@ impl<'d> Session<'d> for Lane {
     }
 }
 
-impl<'d> policy::Compatible<'d, 'd, Wire, KeyTag<0>> for Lane {
+impl<'d> policy::Compatible<'d, 'd, Wire, KeyTag<0>> for Lane<'d> {
     type Open = Self;
     type Terminal = Self;
 
@@ -81,12 +112,12 @@ impl<'d> policy::Compatible<'d, 'd, Wire, KeyTag<0>> for Lane {
     }
 }
 
-impl<'d> Parser<'d> for Lane {
+impl<'d> Parser<'d> for Lane<'d> {
     type Mode = mode::Plain;
     type Response = response::Immediate;
 }
 
-impl<'d> Plain<'d> for Lane {
+impl<'d> Plain<'d> for Lane<'d> {
     type Delivery = response::Direct;
 
     fn reject(
@@ -112,7 +143,7 @@ impl<'d> Plain<'d> for Lane {
     }
 }
 
-impl<'d> Output<'d> for Lane {
+impl<'d> Output<'d> for Lane<'d> {
     fn sent() -> impl for<'a, 't> Call<(
         &'a mut Self,
         conn::Id<'d, KeyTag<0>>,
@@ -143,7 +174,7 @@ impl<'d> Output<'d> for Lane {
     }
 }
 
-impl<'d> Source<'d> for Lane {
+impl<'d> Source<'d> for Lane<'d> {
     fn drain<'w, 'e, 'turn, W: wire::Spec + 'd>(
         &self,
         turn: &mut request::Turn<
@@ -158,10 +189,9 @@ impl<'d> Source<'d> for Lane {
     {
         let (mut requests, _) = turn.requests();
         let index = requests.connection().index().into_usize();
-        let (assigned, pending) = &self.requests.pending[index];
-        let length = if let Some(length) = assigned.get() {
-            length
-        } else {
+        let assigned = &self.requests.assigned[index];
+        let lane = self.requests.pending.bind(index).expect("request lane");
+        if !assigned.get() {
             let position = self.requests.next.get();
             let length = Self::REQUESTS[position];
             let marker = if length == 5 { b'5' } else { b'8' };
@@ -171,36 +201,43 @@ impl<'d> Source<'d> for Lane {
                 .try_nonempty()
                 .expect("assigned request is nonempty");
             self.requests.next.set(position + 1);
-            pending.set(Some(value));
-            assigned.set(Some(length));
-            length
-        };
-        let Some(value) = pending.take() else {
+            let permit = lane.reserve().expect("source capacity");
+            *permit.state_mut(requests.region()) = length;
+            permit.push_back(requests.region(), value);
+            assigned.set(true);
+        }
+        let mut source = Pending(lane);
+        let Some(((value, permit), work)) = requests.claim(&mut source) else {
             return;
         };
-        match requests.admit(value) {
+        let length = value.as_inner().len();
+        let (value, result) = match work.admit(value) {
             request::Admission::Ready(ready) => {
-                ready.push();
+                ready.push_with(|token| {
+                    let charge = permit.state_mut(token);
+                    assert_eq!(*charge, length);
+                    *charge = 0;
+                    drop(permit);
+                });
                 self.requests.order.record(length);
                 self.requests
                     .admitted
                     .record(self.requests.peers[index].expect("connected endpoint"));
                 self.moved.hit();
+                return;
             }
-            request::Admission::Saturated(load) => {
-                pending.set(Some(load));
-            }
-            request::Admission::Exhausted(value) => {
-                pending.set(Some(value));
-            }
+            request::Admission::Saturated(value) => (value, Ok(())),
             request::Admission::Rejected(rejected) => {
-                self.audit.faults.record(error::Error::Admit(rejected));
+                let (value, cause) = rejected.into_parts();
+                (value, Err(cause))
             }
-        }
+        };
+        permit.push_front(requests.region(), value);
+        result.expect("source admission");
     }
 }
 
-impl<'d> session::Connected<'d> for Lane {
+impl<'d> session::Connected<'d> for Lane<'d> {
     type Activation = Automatic;
 
     fn connect(
@@ -215,7 +252,7 @@ impl<'d> session::Connected<'d> for Lane {
     }
 }
 
-impl<'d> session::Failed<'d> for Lane {
+impl<'d> session::Failed<'d> for Lane<'d> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -226,7 +263,7 @@ impl<'d> session::Failed<'d> for Lane {
     }
 }
 
-impl<'d> session::Exhausted<'d> for Lane {
+impl<'d> session::Exhausted<'d> for Lane<'d> {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -237,7 +274,7 @@ impl<'d> session::Exhausted<'d> for Lane {
     }
 }
 
-impl<'d> Retirement<'d> for Lane {
+impl<'d> Retirement<'d> for Lane<'d> {
     type Drain = Ready;
 
     fn io_fail(
@@ -259,7 +296,7 @@ impl<'d> Retirement<'d> for Lane {
         ),
     ) {
         let actual = conn.index().into_usize();
-        if self.requests.pending[actual].0.get().is_none() {
+        if !self.requests.assigned[actual].get() {
             self.audit.faults.record(Send(Error::Unassigned(actual)));
         }
     }
@@ -274,19 +311,22 @@ impl<'d> Retirement<'d> for Lane {
 
     fn disconnect(&mut self, context: turns::Retired<'_, 'd, (), KeyTag<0>, Self>) {
         let index = context.connection().index().into_usize();
-        let (assigned, pending) = &mut self.requests.pending[index];
-        if assigned.get().is_none() {
+        let (_, _, token) = context.into_parts();
+        if !self.requests.assigned[index].get() {
             self.audit.faults.record(Send(Error::Unassigned(index)));
         }
-        if let Some(value) = pending.get_mut().as_ref() {
+        let lane = self.requests.pending.bind(index).expect("request lane");
+        let view = lane.view(token);
+        if let Some(value) = view.front() {
             self.audit.faults.record(Send(Error::Pending {
                 index,
                 bytes: value.as_inner().len(),
             }));
         }
+        assert_eq!(*view.state().value(), 0, "source charge refunded");
     }
 }
 
-impl<'d> Scheduling<'d> for Lane {}
+impl<'d> Scheduling<'d> for Lane<'d> {}
 
-impl<'d> Target<'d, KeyTag<0>, 4> for Lane {}
+impl<'d> Target<'d, KeyTag<0>, 4> for Lane<'d> {}

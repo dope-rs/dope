@@ -1,6 +1,6 @@
 use std::{convert, pin};
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::pool,
     wire::receive::{Chunk, batch::Items},
@@ -43,16 +43,15 @@ where
     engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
     <A::Continuation as app::resume::Mode>::Outcome: effect::Effect<'w, 'd, ID, A, S, E, X>,
 {
-    fn borrowed<'input, 'turn, 'driver, 'context, 'owner>(
+    fn borrowed<'input, 'turn, 'driver, 'context>(
         mut self,
         key: pool::Key<'d, ID>,
         batch: Items<'input, A::Wire>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
         'd: 'input,
-        'd: 'owner,
         A: app::Borrowed<'d, ID>,
     {
         if let Some(slot) = self.as_mut().project().links.pool_mut().get_mut(key) {
@@ -90,15 +89,14 @@ where
         })
     }
 
-    fn retained<'turn, 'driver, 'context, 'owner>(
+    fn retained<'turn, 'driver, 'context>(
         mut self,
         key: pool::Key<'d, ID>,
         chunk: Chunk<'w, 'd, A::Wire>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
-        'd: 'owner,
         A: app::Owned<'w, 'd, ID>,
     {
         let outcome = {

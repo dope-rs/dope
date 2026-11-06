@@ -1,5 +1,3 @@
-use std::os::fd;
-
 use dope_sys::{
     engine::{self, register, ring},
     io::reactor::submit::{Control, Poll as _, Queue as _},
@@ -10,7 +8,7 @@ use dope_sys::{
 use crate::{Engine, Uring};
 
 impl<C: ring::Context> engine::raw::Register for Engine<C> {
-    unsafe fn register(&mut self, source: fd::BorrowedFd<'_>) -> Result<(), register::Error> {
+    unsafe fn register(&mut self, source: register::Source<'_>) -> Result<(), register::Error> {
         let entry = <Uring as Control>::Poll::new(source, C::Token::shutdown());
         let vacancy = self
             .ring

@@ -15,9 +15,8 @@ pub(in crate::reply) fn try_map<C, T, E>(
     // prior removal refunded that same item's amount. This shared Batch borrow
     // retains both owners and the immutable detached partition through mapping
     // and cleanup; neither its count nor its iterator can come from elsewhere.
-    let values = unsafe {
-        alloc::raw::AssumeInit::try_map(block, batch.iter(), move |slot, item| make(item, slot))
-    };
+    let values =
+        unsafe { alloc::raw::try_map(block, batch.iter(), move |slot, item| make(item, slot)) };
     Ok(values.map(array::Block::into_vec))
 }
 

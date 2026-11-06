@@ -16,12 +16,16 @@ impl Locked {
     pub fn try_new(file: File) -> Result<(Self, fs::Offset), LockError> {
         file.try_lock().map_err(LockError::Lock)?;
         let metadata = file.metadata().map_err(LockError::Metadata)?;
-        let kind = metadata.kind();
+        let file = Self::from_locked(file, metadata.kind())?;
+        let length = metadata.len().map_err(LockError::Length)?;
+        Ok((file, fs::Offset::from(length)))
+    }
+
+    pub(super) fn from_locked(file: File, kind: fs::Kind) -> Result<Self, LockError> {
         if !kind.is_regular() {
             return Err(LockError::NotRegular(kind));
         }
-        let length = metadata.len().map_err(LockError::Length)?;
-        Ok((Self(file), fs::Offset::from(length)))
+        Ok(Self(file))
     }
 
     pub(super) fn try_read_at<'a>(

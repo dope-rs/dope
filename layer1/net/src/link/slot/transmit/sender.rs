@@ -1,7 +1,8 @@
 use std::mem;
 
 use dope_core::driver::{
-    retained::{self, flight},
+    self,
+    retained::flight,
     route::{self, Identity, KeyTag, kind},
 };
 use send::{Store as _, reclaim};
@@ -56,25 +57,24 @@ where
         }
     }
 
-    pub fn submit(&mut self, driver: &mut retained::Context<'_, '_, 'd>) -> Attempt {
+    pub fn submit(&mut self, driver: &mut driver::Context<'_, 'd>) -> Attempt {
         let outcome = self.run(driver);
         self.pending
             .wait_send(self.connection.send_status().is_waiting());
         outcome
     }
 
-    fn run(&mut self, driver: &mut retained::Context<'_, '_, 'd>) -> Attempt {
+    fn run(&mut self, driver: &mut driver::Context<'_, 'd>) -> Attempt {
         let target = self.connection.key().target();
-        let slot = &mut *self.connection;
+        let slot = &mut self.connection.control;
         let queue = &mut self.queue;
         let slots = self.flights;
         if queue.is_active() {
             return Attempt::Waiting;
         }
-        let end = slot.control.engine.send(&mut slot.control.terminal);
-        let fd = slot.control.engine.establish.fd();
+        let end = slot.engine.send(&mut slot.terminal);
+        let fd = slot.engine.establish.fd();
         let Some(submit) = slot
-            .control
             .engine
             .operations
             .submission(sending::Source::Queued)
@@ -117,16 +117,15 @@ where
             let submit = submit.submit(fd, slots, driver, target, ready);
             (submit, captured)
         };
-        slot.control.engine.captured(captured);
+        slot.engine.captured(captured);
         let (credit, submit) = submit.into_parts();
         let advance =
             <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::advance(
                 credit,
             );
         let released = match submit {
-            send::State::Submitted => slot.control.engine.operations.queue_submit(credit),
+            send::State::Submitted => slot.engine.operations.queue_submit(credit),
             send::State::Rejected(_) | send::State::Idle => slot
-                .control
                 .engine
                 .operations
                 .queue_unsent(credit)
@@ -158,27 +157,23 @@ where
     }
 
     fn shutdown(
-        slot: &mut types::Connection<'w, 'd, ID, W, S>,
+        slot: &mut types::Control<'w, 'd, ID, W>,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         target: route::Target<'d, ID>,
     ) -> Attempt {
-        if !slot.control.engine.operations.lifecycle.close.is_shutting() {
+        if !slot.engine.operations.lifecycle.close.is_shutting() {
             return Attempt::Quiescent(reclaim::Advance::Idle);
         }
-        match slot.control.engine.operations.lifecycle.close.request() {
+        match slot.engine.operations.lifecycle.close.request() {
             state::Request::Ready | state::Request::Duplicate => {}
             state::Request::Discarded => return Attempt::Quiescent(reclaim::Advance::Idle),
         }
-        let Some(fd) = slot.control.engine.establish.fd() else {
+        let Some(fd) = slot.engine.establish.fd() else {
             return Attempt::Waiting;
         };
-        let end = slot.control.engine.send(&mut slot.control.terminal);
-        let submit = slot
-            .control
-            .engine
-            .operations
-            .submission(sending::Source::Queued);
+        let end = slot.engine.send(&mut slot.terminal);
+        let submit = slot.engine.operations.submission(sending::Source::Queued);
         let (captured, handoff) = graceful::submit_pending(
             send::Context::new(&mut slot.wire, send::Storage::new(&mut slot.send)),
             submit,
@@ -189,27 +184,22 @@ where
             end,
         );
         if matches!(captured, terminal::Captured::Terminal) {
-            let handle = slot.control.engine.establish.ready_handle();
-            slot.control.engine.operations.capture(handle);
+            let handle = slot.engine.establish.ready_handle();
+            slot.engine.operations.capture(handle);
         }
         if let outcome::Progress::Rejected(error) = handoff.progress() {
             slot.discard();
             return Attempt::Rejected(event::SendFailure::Queued(error), reclaim::Advance::Idle);
         }
-        if slot.control.engine.operations.sending.is_inflight()
-            || slot.control.engine.operations.lifecycle.is_waiting()
+        if slot.engine.operations.sending.is_inflight()
+            || slot.engine.operations.lifecycle.is_waiting()
         {
             return Attempt::Waiting;
         }
         if !slot.send.as_slice().is_empty() {
             return Attempt::Runnable(reclaim::Advance::Idle);
         }
-        match slot
-            .control
-            .engine
-            .operations
-            .shutdown(driver, slots, fd, target)
-        {
+        match slot.engine.operations.shutdown(driver, slots, fd, target) {
             duplex::Shutdown::Armed | duplex::Shutdown::Busy | duplex::Shutdown::Submitted => {
                 Attempt::Waiting
             }

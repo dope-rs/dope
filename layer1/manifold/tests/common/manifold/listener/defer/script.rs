@@ -1,7 +1,7 @@
 use std::{convert, pin::Pin, task};
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule::clock},
+    driver::{self, route::Identity, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -85,7 +85,7 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
     pub(crate) fn attempt<'e, 'a, 'p, 's, 'w, 'd: 'w, ID: Identity>(
         &self,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State> {
         match conn.state() {
             State::Fresh => {}
@@ -148,7 +148,7 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>
     where
         'd: 'w,
@@ -190,7 +190,7 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> handler::Borrowed<'d, I
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
         chunk: R,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         (self.observe)(Event::Chunk(chunk.as_ref().len()));
         Outcome::Continue

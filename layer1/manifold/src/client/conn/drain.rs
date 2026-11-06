@@ -85,7 +85,7 @@ impl<'d, ID: Identity> OwnedDrain<'d, ID> {
     }
 }
 
-#[must_use = "claim restoration must preserve an exact frozen decision"]
+#[must_use = "claim restoration must preserve its owner"]
 pub(super) enum Restore {
     Current(Resume),
     Stale,
@@ -107,7 +107,7 @@ pub(in crate::client) struct Obsolete<'d, ID: Identity>(Drain<'d, ID>);
 
 impl<ID: Identity> Obsolete<'_, ID> {
     pub(in crate::client) fn resolve(self) {
-        let Self(Drain { conn: _, rule: _ }) = self;
+        let Self(Drain { conn: _ }) = self;
     }
 }
 
@@ -116,7 +116,7 @@ pub(in crate::client) struct Absent<'d, ID: Identity>(Drain<'d, ID>);
 
 impl<ID: Identity> Absent<'_, ID> {
     pub(in crate::client) fn resolve(self) {
-        let Self(Drain { conn: _, rule: _ }) = self;
+        let Self(Drain { conn: _ }) = self;
     }
 }
 
@@ -128,7 +128,6 @@ pub(in crate::client) enum Access {
 #[must_use = "drain readiness owns one finalized connection generation"]
 pub(in crate::client) struct Drain<'d, ID: Identity> {
     conn: conn::Id<'d, ID>,
-    rule: Directive,
 }
 
 impl<'d, ID: Identity> Drain<'d, ID> {
@@ -136,15 +135,8 @@ impl<'d, ID: Identity> Drain<'d, ID> {
         self.conn
     }
 
-    pub(super) const fn rule(&self) -> Directive {
-        self.rule
-    }
-
-    pub(super) const fn new(conn: conn::Id<'d, ID>, claim: closing::Claim) -> Self {
-        Self {
-            conn,
-            rule: claim.into_rule(),
-        }
+    pub(super) const fn new(conn: conn::Id<'d, ID>, _: closing::Claim) -> Self {
+        Self { conn }
     }
 
     pub(in crate::client) fn release<'w, T, W, C, O, M, B, const IOV: usize, D>(
@@ -161,7 +153,7 @@ impl<'d, ID: Identity> Drain<'d, ID> {
         let Some(slot) = pool.get_mut(self.key()) else {
             return Recovery::Obsolete(Obsolete(self));
         };
-        match slot.state.closing.restore(self.rule) {
+        match slot.state.closing.restore() {
             Restore::Current(Resume::Restored) => Recovery::Restored,
             Restore::Current(Resume::Pending) => {
                 slot.io().wake_target().wake();
@@ -194,7 +186,7 @@ impl<'d, ID: Identity> Drain<'d, ID> {
         if self.key() != slot.key() {
             return Access::Stale;
         }
-        match slot.state.closing.authorize(self.rule) {
+        match slot.state.closing.authorize() {
             Some(io) => Access::Current(io),
             None => Access::Stale,
         }
@@ -205,7 +197,7 @@ impl<'d, ID: Identity, C> change::Finalize<Commit<'d, ID, C>> for Drain<'d, ID> 
     type Output = Retired<'d, ID, C>;
 
     fn finalize(self, proof: Commit<'d, ID, C>) -> Self::Output {
-        let Self { conn: _, rule: _ } = self;
+        let Self { conn: _ } = self;
         let Commit { app, rule } = proof;
         Retired { app, rule }
     }

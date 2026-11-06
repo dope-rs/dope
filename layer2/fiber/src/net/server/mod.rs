@@ -1,4 +1,4 @@
-use std::{cell, ops};
+use std::ops;
 
 use dope::{
     core::driver::route::{Identity, KeyTag},
@@ -60,19 +60,12 @@ pub struct ListenerPort<'w, 'd: 'w, W: wire::Spec + 'w, ID: Identity = KeyTag<0>
     connections: Table<'d, Chunk<'w, 'd, W>, terminal::Error<'w, W>, conn::Id<'d, ID>>,
     accepts: shared::Fifo<conn::Id<'d, ID>>,
     waiters: wait::Queue<'d>,
-    accept_error: cell::Cell<Option<listener::AcceptError>>,
 }
 
 impl<'w, 'd: 'w, W: wire::Spec + 'w, ID: Identity> ListenerPort<'w, 'd, W, ID> {
-    fn retain_error(&self, error: Option<listener::AcceptError>) {
-        if let Some(error) = error {
-            self.accept_error.set(Some(error));
-        }
-    }
-
-    fn progress(&self) -> schedule::Progress<'d> {
+    fn progress(&self, watch: &listener::Watch<'d>) -> schedule::Progress<'d> {
         if self.waiters.len() != wait::Length::ZERO
-            && (self.accept_error.get().is_some() || !self.accepts.is_empty::<0>())
+            && (watch.error().is_some() || !self.accepts.is_empty::<0>())
         {
             return schedule::Progress::Runnable;
         }
@@ -92,10 +85,6 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w, ID: Identity> ListenerPort<'w, 'd, W, ID> {
         }
         slot.push::<0>(id);
         receive::Outcome::Continue
-    }
-
-    pub fn handle(&self) -> Handle<'_, 'w, 'd, W, ID> {
-        Handle { port: self }
     }
 }
 
@@ -167,9 +156,8 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    /// Retains accept/tuning completions until their waiter wake can consume one credit.
-    /// Resolution before that callback consumes no application credit.
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    /// Retains successful completions until their waiter wake has application credit.
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -177,26 +165,29 @@ where
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ops::ControlFlow<io::Event<'d>> {
         let (mut owner, (), (done, turn, driver)) = call.into_parts();
         let kind = done.into_kind();
-        if matches!(&kind, Kind::Accept(_) | Kind::Tuning(_)) && turn.app().remaining() == 0 {
+        if matches!(&kind, Kind::Accept(_) | Kind::Tuning(_))
+            && turn.app().remaining() == 0
+            && match &kind {
+                Kind::Accept(done) => {
+                    matches!(done.outcome(), io::event::net::accept::Outcome::Accepted(_))
+                }
+                Kind::Tuning(done) => done.outcome().is_ok(),
+                _ => false,
+            }
+        {
             return ops::ControlFlow::Break(kind.into());
         }
-        let result = event::Turn::dispatch(executor::raw::Call::new(
+        event::Turn::dispatch(executor::raw::Call::new(
             owner.as_mut().project().inner,
             (),
             (kind.into(), turn, driver),
-        ));
-        let this = owner.as_ref().get_ref();
-        this.port.retain_error(this.inner.accept_error());
-        result
+        ))
     }
 }
 
@@ -239,16 +230,25 @@ where
                 hash,
                 owner,
                 context,
-                |inner, owner| {
-                    port.accept_error.set(None);
-                    build(Listener { inner, port }, owner)
-                },
+                |inner, _wait, owner| build(Listener { inner, port }, owner),
             )
+    }
+
+    pub fn handle<'a>(&self) -> Handle<'a, 'w, 'd, W, ID>
+    where
+        'p: 'a,
+        'scope: 'a,
+    {
+        Handle {
+            port: self.port,
+            watch: self.inner.watch(),
+        }
     }
 }
 
 pub struct Handle<'scope, 'w, 'd: 'w, W: wire::Spec, ID: Identity = KeyTag<0>> {
     port: &'scope ListenerPort<'w, 'd, W, ID>,
+    watch: &'scope listener::Watch<'d>,
 }
 
 impl<W: wire::Spec, ID: Identity> Copy for Handle<'_, '_, '_, W, ID> {}

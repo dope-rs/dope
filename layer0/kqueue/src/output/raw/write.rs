@@ -179,18 +179,18 @@ where
         }
     }
 
+    #[inline(always)]
     unsafe fn send(
         &mut self,
         key: C::Key,
         slot: <C::Slots as change::raw::Slots>::Physical,
-        make: impl FnOnce() -> Data<C>,
+        write: Data<C>,
         vacant: impl Vacancy<Event = E>,
     ) {
         let (socket, file) = match Self::file(self.files, self.poll, slot, C::SEND) {
             ControlFlow::Continue(file) => file,
             ControlFlow::Break(()) => return,
         };
-        let write = make();
         match unsafe { <Data<C> as retry::raw::Send<C>>::attempt(&write, socket) } {
             retry::Attempt::Ready(result) => vacant.push(E::sent(key, result)),
             retry::Attempt::Blocked(errno) => {

@@ -220,6 +220,57 @@ fn open_keeps_paths() {
 }
 
 #[test]
+fn metadata_keeps_descriptor() {
+    use std::{os::fd::AsRawFd as _, ptr};
+
+    use request::Request as _;
+
+    type Metadata = <Uring as file::File>::Metadata;
+    let file = fs::File::open(env!("CARGO_MANIFEST_DIR")).expect("package directory");
+    let mut output = Metadata::UNINIT;
+    let address = ptr::from_mut(&mut output).cast::<libc::statx>();
+    let entry = Borrowed::metadata(file.as_fd(), &mut output);
+    let data = encoded(&entry);
+    assert_eq!(data[0], 21, "IORING_OP_STATX");
+    assert_eq!(data[1], 1 << 4, "IOSQE_ASYNC");
+    assert_eq!(&data[4..8], &file.as_raw_fd().to_ne_bytes());
+    assert_eq!(&data[8..16], &(address as u64).to_ne_bytes());
+    let path = u64::from_ne_bytes(data[16..24].try_into().expect("path address"));
+    // SAFETY: the request retains its static, terminated empty path.
+    assert!(unsafe { std::ffi::CStr::from_ptr(path as *const _) }.is_empty());
+    assert_eq!(&data[24..28], &0x201_u32.to_ne_bytes());
+    assert_eq!(&data[28..32], &0x1000_u32.to_ne_bytes());
+    assert_eq!(&data[32..], &[0; 32]);
+    let address = ptr::from_mut(&mut output).cast::<libc::statx>();
+    // SAFETY: the live descriptor and native output remain exclusively borrowed.
+    assert_eq!(
+        unsafe { libc::statx(file.as_raw_fd(), c"".as_ptr(), 0x1000, 0x201, address) },
+        0
+    );
+    // SAFETY: statx succeeded and no longer accesses the output.
+    assert!(
+        unsafe { output.try_result() }
+            .expect("native metadata")
+            .0
+            .is_dir()
+    );
+    let size = i64::MAX as u64 + 1;
+    // SAFETY: the successful native result is initialized and exclusively owned.
+    unsafe { (*ptr::from_mut(&mut output).cast::<libc::statx>()).stx_size = size };
+    // SAFETY: the initialized result has no remaining native writer.
+    assert_eq!(
+        unsafe { output.try_result() },
+        Err(file::MetadataError::Overflow(size))
+    );
+    // SAFETY: the initialized result remains exclusively owned.
+    unsafe { (*ptr::from_mut(&mut output).cast::<libc::statx>()).stx_mask &= !libc::STATX_TYPE };
+    // SAFETY: the initialized result has no remaining native writer.
+    assert!(
+        matches!(unsafe { output.try_result() }, Err(file::MetadataError::Missing(mask)) if mask.get() == libc::STATX_TYPE)
+    );
+}
+
+#[test]
 fn names_keep_async() {
     use std::{fs::File, os::fd};
 
@@ -257,7 +308,7 @@ fn offset_keeps_position() {
 
     let file = File::open(env!("CARGO_MANIFEST_DIR")).expect("package directory");
     let input = bytes::Prefix::try_new(b"data".as_slice()).expect("bounded input");
-    let mut output = [0_u8; 4];
+    let mut output = [std::mem::MaybeUninit::uninit(); 4];
     for offset in [0, i64::MAX as u64] {
         let entry = Borrowed::write(
             fd::AsFd::as_fd(&file),
@@ -273,9 +324,7 @@ fn offset_keeps_position() {
         let address = output.as_mut_ptr() as u64;
         let entry = Borrowed::read(
             fd::AsFd::as_fd(&file),
-            bytes::bounded::Value::try_new(output.as_mut_slice())
-                .map_err(|e| e.into_parts().1)
-                .expect("bounded output"),
+            bytes::bounded::Value::try_from(output.as_mut_slice()).expect("bounded output"),
             Offset::new(offset).expect("absolute position"),
         );
         let data = encoded(&entry);

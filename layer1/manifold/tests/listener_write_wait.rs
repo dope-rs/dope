@@ -363,13 +363,13 @@ fn deadline_resumes_waiter() {
                 observe: direct,
             },
             hash, &mut session, session::Scope::driver,
-            |server, session| {
+            |server, _wait, session| {
                 let addr = server.local_addr();
                 let start = session.driver().driver_ref().clock().now().into();
                 let result = session.with_at_for(&mut finish, Host::new(server), start, Duration::from_secs(2), |mut app| {
-                    let mut first = peer::Peer::at(addr).try_connect().expect("first peer connect");
+                    let first = peer::Peer::at(addr).try_connect().expect("first peer connect");
                     assert!(app.drive(start, Until { gate: &done, hits: 1 }).is_ok());
-                    let mut second = peer::Peer::at(addr).try_connect().expect("second peer connect");
+                    let second = peer::Peer::at(addr).try_connect().expect("second peer connect");
                     let wait = start.try_add(time::Duration::from_millis(50));
                     let wait = wait.expect("wait coordinate");
                     assert!(app.drive(wait, Until { gate: &deferred, hits: 1 }).is_ok());
@@ -384,8 +384,8 @@ fn deadline_resumes_waiter() {
                     let finish = finish.expect("finish coordinate");
                     assert!(app.drive(finish, Until { gate: &closed, hits: 2 }).is_ok());
                     assert_eq!(closed.hits(), 2);
-                    assert!(matches!(peer::Peer::try_read_all(&mut first), Ok(bytes) if bytes.is_empty()));
-                    assert!(matches!(peer::Peer::try_read_all(&mut second), Ok(bytes) if bytes.is_empty()));
+                    assert!(matches!(peer::Peer::try_read_all(&first), Ok(bytes) if bytes.is_empty()));
+                    assert!(matches!(peer::Peer::try_read_all(&second), Ok(bytes) if bytes.is_empty()));
                 });
                 assert!(result.is_ok(), "manual listener teardown");
             });

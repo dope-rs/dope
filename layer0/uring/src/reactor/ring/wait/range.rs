@@ -25,8 +25,7 @@ impl accept::Range for Range {
         sq::Fixed::from_le([bytes[0], bytes[1], bytes[2]])
     }
 
-    fn accepted(&self, observed: Self::Value) -> Result<Self::Target, accept::Outside> {
-        let value: bounded::U32<0, { i32::MAX as u32 }> = observed.into();
+    fn accepted(&self, value: Self::Value) -> Result<Self::Target, accept::Outside> {
         if value.get() >= 1 << 24 {
             return Err(accept::Outside::Abi(value));
         }

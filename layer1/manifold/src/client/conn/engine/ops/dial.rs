@@ -1,7 +1,7 @@
 use std::{pin, task};
 
 use dope_core::driver::{
-    self, retained,
+    self,
     route::Identity,
     schedule,
     schedule::{clock, ready::wake},
@@ -34,7 +34,7 @@ where
     pub(in crate::client::conn::engine) fn poll_dials(
         self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Source
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: opens::Phase<'d, ID, A, S, E>,

@@ -20,12 +20,12 @@ pub struct Access<
     Q = (),
     Plan = <D as executor::raw::Layout<'d>>::ParkPlan,
 > {
-    pub(super) core: &'app mut session::Core<'life, 'd, Q>,
+    pub(crate) core: &'app mut session::Core<'life, 'd, Q>,
     view: executor::raw::View<'app, 'd, D, executor::raw::Live, Plan>,
 }
 
 impl<'app, 'life: 'app, 'd: 'life, D, Q, Plan> Access<'app, 'life, 'd, D, Q, Plan> {
-    pub(super) fn reborrow(&mut self) -> Access<'_, 'life, 'd, D, Q, Plan> {
+    pub(crate) fn reborrow(&mut self) -> Access<'_, 'life, 'd, D, Q, Plan> {
         Access {
             core: &mut *self.core,
             view: self.view,
@@ -79,6 +79,7 @@ impl<'app, 'life: 'app, 'd: 'life, D, Q, Plan> Access<'app, 'life, 'd, D, Q, Pla
 impl<'app, 'life: 'app, 'd: 'life, D, Q, Plan> Access<'app, 'life, 'd, D, Q, Plan>
 where
     D: executor::raw::App<'d, ParkPlan = Plan>,
+    Q: executor::Startup,
 {
     pub(super) const fn new(
         core: &'app mut session::Core<'life, 'd, Q>,
@@ -97,7 +98,24 @@ where
         R: root::Root<'d>,
         C: clock::Time,
     {
-        self.with(|state| block::Block::new(state.driver_ref(), state, source)?.run(root, tick))
+        let shutdown = turn::shutdown(self.core.lifecycle);
+        self.drive_with(source, root, tick, shutdown)
+    }
+
+    pub(crate) fn drive_with<R, C>(
+        self,
+        source: C,
+        root: R,
+        tick: impl Fn(C) -> Result<Sample, drive::Error>,
+        shutdown: impl FnMut() -> turn::Status,
+    ) -> Result<R::Output, drive::Error>
+    where
+        R: root::Root<'d>,
+        C: clock::Time,
+    {
+        self.with(|state| {
+            block::Block::new(state.driver_ref(), state, source)?.run(root, tick, shutdown)
+        })
     }
 
     pub(super) fn drive_fixed<R, C>(
@@ -110,27 +128,34 @@ where
         R: root::Root<'d>,
         C: clock::Time,
     {
+        let shutdown = turn::shutdown(self.core.lifecycle);
         self.with(|state| {
-            block::Block::new(state.driver_ref(), state, source)?.run_fixed(root, tick)
+            block::Block::new(state.driver_ref(), state, source)?.run_fixed(root, tick, shutdown)
         })
     }
 
     pub(super) fn run(self) -> Result<(), drive::Error> {
-        self.with(|state| serve::run(state, clock::wall(), drive::tick))
+        let shutdown = turn::shutdown(self.core.lifecycle);
+        self.with(|state| serve::run(state, clock::wall(), drive::tick, shutdown))
     }
 
     pub(super) fn run_for(self, timeout: time::Duration) -> Result<(), drive::Error> {
         let source = clock::Bound::until(clock::wall(), timeout)?;
-        self.with(|state| serve::run(state, source, drive::timeout))
+        let shutdown = turn::shutdown(self.core.lifecycle);
+        self.with(|state| serve::run(state, source, drive::timeout, shutdown))
     }
 
     pub(super) fn drive_until<R>(self, root: R) -> Result<ControlFlow<R::Output>, drive::Error>
     where
         R: root::Root<'d>,
     {
+        let shutdown = turn::shutdown(self.core.lifecycle);
         self.with(|state| {
-            block::Block::new(state.driver_ref(), state, clock::wall())?
-                .run_until(root, drive::tick)
+            block::Block::new(state.driver_ref(), state, clock::wall())?.run_until(
+                root,
+                drive::tick,
+                shutdown,
+            )
         })
     }
 
@@ -162,7 +187,8 @@ where
         D: executor::raw::Drain<'d>,
     {
         let source = clock::Bound::until(clock::wall(), timeout.get())?;
-        self.with(|state| drain::run(state, source))
+        let shutdown = turn::shutdown(self.core.lifecycle);
+        self.with(|state| drain::run(state, source, shutdown))
     }
 
     fn with<T>(
@@ -172,8 +198,7 @@ where
         let view = self.view;
         let core = &mut *self.core;
         let pending = &mut core.pending;
-        core.scope.with_turn(|token, mut driver, turn| {
-            run(scope::Scope::new(&mut driver, view, token, turn, pending))
-        })
+        let (token, mut driver, turn) = core.scope.split();
+        run(scope::Scope::new(&mut driver, view, token, turn, pending))
     }
 }

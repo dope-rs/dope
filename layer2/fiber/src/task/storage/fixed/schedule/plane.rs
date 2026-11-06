@@ -175,7 +175,7 @@ where
             Some(ready) => ready,
             None => return Selection::Idle,
         };
-        match work.next(&mut ready) {
+        match work.next(&mut ready, &mut ()) {
             app::Next::Item(dequeued, permit) => {
                 ready.pause();
                 if let Some(index) = queue.queue().slot().pop()

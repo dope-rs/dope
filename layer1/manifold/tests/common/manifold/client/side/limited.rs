@@ -35,14 +35,11 @@ unsafe impl<'d, M: raw::Manifold<'d>> raw::Manifold<'d> for Limited<M> {
 
     const COORDS: usize = M::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         turn.reborrow().maint().share::<{ schedule::LIMIT }, _>(|| {
             // SAFETY: projection retains the exact installed owner and all loans.
             unsafe { M::pre_park(self.as_mut().project().inner, turn, driver) };
@@ -50,14 +47,11 @@ unsafe impl<'d, M: raw::Manifold<'d>> raw::Manifold<'d> for Limited<M> {
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         turn.reborrow().maint().share::<{ schedule::LIMIT }, _>(|| {
             M::shutdown(self.as_mut().project().inner, turn, driver);
         });

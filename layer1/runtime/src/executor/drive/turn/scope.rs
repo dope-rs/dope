@@ -70,8 +70,9 @@ where
     pub(crate) fn next_app(
         &mut self,
         tick: clock::Sample,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<Ready<'_, 'd, modes::App<'_, 'app, 'd, D, S>>, drive::Error> {
-        Ready::new(self.begin(tick))
+        Ready::new(self.begin(tick), shutdown)
     }
 
     fn begin(&mut self, tick: clock::Sample) -> Core<'_, 'd, modes::App<'_, 'app, 'd, D, S>> {
@@ -95,8 +96,9 @@ where
         &'turn mut self,
         root: &ready::Slot<'d, routes::Wake>,
         tick: clock::Sample,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<RootReady<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>, drive::Error> {
-        RootReady::new_app(self.begin(tick), root)
+        RootReady::new_app(self.begin(tick), root, shutdown)
     }
 }
 
@@ -136,8 +138,9 @@ impl<'run, 'driver, 'd> Boot<'run, 'driver, 'd> {
         &'turn mut self,
         root: &ready::Slot<'d, routes::Wake>,
         tick: clock::Sample,
+        shutdown: impl FnMut() -> turn::Status,
     ) -> Result<RootReady<'turn, 'd, modes::Boot>, drive::Error> {
-        RootReady::new_boot(self.begin(tick), root)
+        RootReady::new_boot(self.begin(tick), root, shutdown)
     }
 }
 

@@ -136,14 +136,11 @@ where
         self.project().engine.project().app.session_mut()
     }
 
-    pub fn with_conn<T>(
+    pub fn conn_mut(
         self: pin::Pin<&mut Self>,
         conn: conn::Id<'d, ID>,
-        apply: impl FnOnce(&mut N::ConnState) -> T,
-    ) -> Option<T> {
-        self.project()
-            .engine
-            .with_conn(conn, |state| apply(state.state_mut()))
+    ) -> Option<&mut N::ConnState> {
+        Some(self.project().engine.conn_mut(conn)?.state_mut())
     }
 
     pub fn wake(self: pin::Pin<&mut Self>, conn: conn::Id<'d, ID>) -> Wake {

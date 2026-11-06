@@ -86,7 +86,9 @@ impl<Q: ?Sized, S: storage::Build, O: Operation<S, Q>>
         let prepared = self.plan.try_store();
         let mut backing = match prepared {
             Ok(backing) => backing,
-            Err(error) => return Closed::reject(state, error, self.operation),
+            Err(error) => {
+                return Closed::reject::<S, _, _, _>(state, source, error, self.operation);
+            }
         };
         let built = self
             .plan
@@ -98,7 +100,7 @@ impl<Q: ?Sized, S: storage::Build, O: Operation<S, Q>>
                     Closed::run::<S, _, _>(state, store.as_ref(), source, self.operation);
                 (Ok(output), end)
             }
-            Err(cause) => Closed::reject(state, cause, self.operation),
+            Err(cause) => Closed::reject::<S, _, _, _>(state, source, cause, self.operation),
         }
     }
 }
@@ -138,7 +140,7 @@ impl<Q: ?Sized, S: storage::Create, O: Operation<S, Q>>
                     Closed::run::<S, _, _>(state, store.as_ref(), source, self.operation);
                 (Ok(output), end)
             }
-            Err(cause) => Closed::reject(state, cause, self.operation),
+            Err(cause) => Closed::reject::<S, _, _, _>(state, source, cause, self.operation),
         }
     }
 }

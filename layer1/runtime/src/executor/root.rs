@@ -1,7 +1,7 @@
 use std::{pin, task};
 
 use dope_core::driver::{
-    retained,
+    self,
     schedule::{app, ready},
 };
 
@@ -10,7 +10,7 @@ pub struct Context<'poll, 'd: 'poll, R> {
     root: pin::Pin<&'poll mut R>,
     wake: ready::Target<'d>,
     work: app::Work<'poll, 'd>,
-    driver: retained::Context<'poll, 'poll, 'd>,
+    driver: driver::Context<'poll, 'd>,
 }
 
 /// Remaining application-lane credits for one root poll.
@@ -25,7 +25,7 @@ impl<'poll, 'd: 'poll, R> Context<'poll, 'd, R> {
         root: pin::Pin<&'poll mut R>,
         wake: ready::Target<'d>,
         work: app::Work<'poll, 'd>,
-        driver: retained::Context<'poll, 'poll, 'd>,
+        driver: driver::Context<'poll, 'd>,
     ) -> Self {
         Self {
             root,
@@ -41,7 +41,7 @@ impl<'poll, 'd: 'poll, R> Context<'poll, 'd, R> {
         pin::Pin<&'poll mut R>,
         ready::Target<'d>,
         app::Work<'poll, 'd>,
-        retained::Context<'poll, 'poll, 'd>,
+        driver::Context<'poll, 'd>,
     ) {
         (self.root, self.wake, self.work, self.driver)
     }
@@ -51,7 +51,7 @@ impl<'poll, 'd: 'poll, R> Context<'poll, 'd, R> {
     ) -> (
         pin::Pin<&'poll mut R>,
         Budget<'poll, 'd>,
-        retained::Context<'poll, 'poll, 'd>,
+        driver::Context<'poll, 'd>,
     ) {
         (self.root, Budget::new(self.wake, self.work), self.driver)
     }

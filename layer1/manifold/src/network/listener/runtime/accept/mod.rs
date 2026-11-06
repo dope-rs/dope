@@ -8,7 +8,6 @@ use dope_core::{
         life::finish,
         result,
         retained::{
-            self,
             accept::{Retire, Retired},
             arm, flight,
         },
@@ -72,6 +71,7 @@ const RETRY_DELAY: Positive = Positive::from_millis::<10>();
 const _: () = assert!(MAX_ONESHOT_LANES <= u16::MAX as usize);
 #[pin_project::pin_project(!Unpin)]
 pub(in crate::network::listener) struct Accept<
+    'n,
     'd,
     ID: Identity,
     F = flight::Slots<'d, <ID as route::Materialize<kind::Accept>>::With>,
@@ -83,7 +83,7 @@ pub(in crate::network::listener) struct Accept<
     capacity: Capacity,
     options: option::Set,
     quota: Quota<'d, ID>,
-    failure: Option<AcceptError>,
+    pub(in crate::network::listener) watch: &'n crate::network::listener::Watch<'d>,
     retry: Option<clock::Deadline<'d>>,
 }
 
@@ -104,12 +104,13 @@ impl<'d, ID: Identity> Prepared<'d, ID> {
         })
     }
 
-    pub(in crate::network::listener) fn bind(
+    pub(in crate::network::listener) fn bind<'n>(
         self,
         fd: handles::Descriptor<'d>,
         opts: option::Set,
+        watch: &'n crate::network::listener::Watch<'d>,
     ) -> Result<
-        Accept<'d, ID, flight::Need<<ID as route::Materialize<kind::Accept>>::With>>,
+        Accept<'n, 'd, ID, flight::Need<<ID as route::Materialize<kind::Accept>>::With>>,
         alloc::Error,
     > {
         let Prepared { capacity, quota } = self;
@@ -135,19 +136,19 @@ impl<'d, ID: Identity> Prepared<'d, ID> {
             capacity,
             options: opts,
             quota,
-            failure: None,
+            watch,
             retry: None,
         })
     }
 }
 
-impl<'d, ID: Identity>
-    Accept<'d, ID, flight::Need<<ID as route::Materialize<kind::Accept>>::With>>
+impl<'n, 'd, ID: Identity>
+    Accept<'n, 'd, ID, flight::Need<<ID as route::Materialize<kind::Accept>>::With>>
 {
     pub(in crate::network::listener) fn into_parts(
         self,
     ) -> (
-        Accept<'d, ID, ()>,
+        Accept<'n, 'd, ID, ()>,
         flight::Need<<ID as route::Materialize<kind::Accept>>::With>,
     ) {
         let Self {
@@ -157,7 +158,7 @@ impl<'d, ID: Identity>
             capacity,
             options,
             quota,
-            failure,
+            watch,
             retry,
         } = self;
         (
@@ -168,7 +169,7 @@ impl<'d, ID: Identity>
                 capacity,
                 options,
                 quota,
-                failure,
+                watch,
                 retry,
             },
             flights,
@@ -176,11 +177,11 @@ impl<'d, ID: Identity>
     }
 }
 
-impl<'d, ID: Identity> Accept<'d, ID, ()> {
+impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID, ()> {
     pub(in crate::network::listener) fn commit(
         self,
         flights: flight::Slots<'d, <ID as route::Materialize<kind::Accept>>::With>,
-    ) -> Accept<'d, ID> {
+    ) -> Accept<'n, 'd, ID> {
         let Self {
             fd,
             flights: (),
@@ -188,7 +189,7 @@ impl<'d, ID: Identity> Accept<'d, ID, ()> {
             capacity,
             options,
             quota,
-            failure,
+            watch,
             retry,
         } = self;
         Accept {
@@ -198,19 +199,15 @@ impl<'d, ID: Identity> Accept<'d, ID, ()> {
             capacity,
             options,
             quota,
-            failure,
+            watch,
             retry,
         }
     }
 }
 
-impl<'d, ID: Identity> Accept<'d, ID> {
-    pub(in crate::network::listener) const fn failure(&self) -> Option<AcceptError> {
-        self.failure
-    }
-
+impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
     pub(in crate::network::listener) fn failed(self: pin::Pin<&mut Self>, error: AcceptError) {
-        self.project().failure.get_or_insert(error);
+        self.project().watch.record(error);
     }
 
     pub(in crate::network::listener) const fn options(&self) -> option::Set {
@@ -308,10 +305,10 @@ impl<'d, ID: Identity> Accept<'d, ID> {
     }
 }
 
-impl<'d, ID: Identity> Accept<'d, ID> {
+impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
     pub(in crate::network::listener) fn arm(
         mut self: pin::Pin<&mut Self>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         slots: capacity::Count,
         work: maint::Work<'_, 'd>,
     ) -> Result<(), result::SubmitError> {
@@ -321,7 +318,7 @@ impl<'d, ID: Identity> Accept<'d, ID> {
                 schedule::Progress::Runnable
             ) {
                 work.apply(|| {
-                    self.as_mut().stop_accept(driver.driver());
+                    self.as_mut().stop_accept(driver);
                     Acquire::Item
                 });
             }
@@ -348,7 +345,7 @@ impl<'d, ID: Identity> Accept<'d, ID> {
                 if *interest == mode::Interest::Full {
                     if arm.is_live() {
                         work.apply(|| {
-                            arm.stop(driver.driver());
+                            arm.stop(driver);
                             Acquire::Item
                         });
                     }
@@ -360,7 +357,7 @@ impl<'d, ID: Identity> Accept<'d, ID> {
                 }
                 let sent = work.run(|| {
                     let arming = arm.begin()?;
-                    Some(arming.accept(driver.driver(), this.flights, fd))
+                    Some(arming.accept(driver, this.flights, fd))
                 });
                 if let quota::Admission::Item(arm::Submission::Failed(error)) = sent {
                     return Err(error);
@@ -418,9 +415,10 @@ impl<'d, ID: Identity> Accept<'d, ID> {
         let this = self.project();
         match this.mode {
             mode::Mode::Multishot { arm, .. } => {
-                let action = arm.complete(token, flow);
-                if action == arm::Disposition::Discard {
-                    return close_if_accepted(outcome, driver);
+                match arm.complete(token, flow) {
+                    arm::Disposition::Discard => return close_if_accepted(outcome, driver),
+                    arm::Disposition::Retiring => return retiring(token, flow, outcome, driver),
+                    arm::Disposition::Deliver | arm::Disposition::Probe => {}
                 }
                 let slot = match outcome {
                     accept::Outcome::Accepted(slot) => slot,
@@ -473,10 +471,29 @@ impl<'d, ID: Identity> Accept<'d, ID> {
                             defer,
                         }
                     }
-                    (Retired::Cancelled, outcome) => close_if_accepted(outcome, driver),
+                    (Retired::Cancelled, outcome) => retiring(token, flow, outcome, driver),
                 }
             }
         }
+    }
+}
+
+fn retiring<'d>(
+    target: route::Erased<'d, kind::Accept>,
+    flow: batch::Flow,
+    outcome: accept::Outcome<'d>,
+    driver: &mut driver::Context<'_, 'd>,
+) -> Incoming<'d> {
+    match outcome {
+        accept::Outcome::Failed(cause) if !matches!(cause, accept::Failure::Syscall(error) if error.is_canceled()) => {
+            Incoming::Failed {
+                target,
+                defer: cause.can_defer(driver),
+                cause,
+                flow,
+            }
+        }
+        outcome => close_if_accepted(outcome, driver),
     }
 }
 

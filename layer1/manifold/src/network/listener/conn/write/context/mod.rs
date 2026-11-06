@@ -6,7 +6,7 @@ use std::{
 use compose::Either;
 use conn::write;
 use dope_core::driver::{
-    retained,
+    self,
     route::{Identity, KeyTag},
 };
 use dope_net::{link::egress, wire};
@@ -23,7 +23,7 @@ use write::{
     error::Error,
 };
 
-use crate::network::listener::conn;
+use crate::network::listener::{conn, writer};
 
 mod modes;
 mod send;
@@ -51,72 +51,102 @@ where
     }
 
     /// Acquires the turn once, then carries its lease through native reservation and commit.
-    fn try_send<R, E, S>(
+    fn try_send<R, E, P, const CANCEL: bool>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
-        reserve: impl FnOnce(
-            capacity::Capacity<'e, 'turn, 'a, 'p, 's, 'w, 'd, ID, W, C, B>,
-            &mut region::Token<region::Identity<'d>>,
-        ) -> Result<S, capacity::Unavailable>,
+        driver: &mut driver::Context<'_, 'd>,
+        prepare: impl FnOnce(
+            &egress::Queue<
+                'a,
+                'e,
+                'd,
+                { crate::network::listener::IOV_CAP },
+                writer::Payload<'p, 's, 'd, ID, B>,
+                writer::Reserve<'d, B>,
+            >,
+        ) -> Option<P>,
         commit: impl FnOnce(
-            S,
-            &mut retained::Context<'_, '_, 'd>,
+            send::Header<'turn, 'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B, P>,
+            &mut driver::Context<'_, 'd>,
         ) -> Result<write::Outcome<R>, Error<B, R, E>>,
     ) -> Result<write::Outcome<R>, Error<B, R, E>> {
         let Some(lease) = self.connection.work.lease() else {
             self.connection.slot.io().wake_target().wake();
             return Ok(write::Outcome::Deferred(write::Deferred::Turn));
         };
-        let capacity =
-            capacity::Capacity::new(self.connection, driver.driver_ref().clock().now(), lease);
-        let send = match reserve(capacity, driver.region_token()) {
-            Ok(send) => send,
+        let slot = &mut self.connection.slot;
+        let conn::Output::Open {
+            slots,
+            permit,
+            held,
+            queue,
+        } = &mut self.connection.output
+        else {
+            return Ok(write::Outcome::Closed);
+        };
+        let buffer = match capacity::header::<_, _, _, _, _, CANCEL>(
+            held,
+            queue,
+            slot,
+            driver.region_token(),
+            prepare,
+        ) {
+            Ok(buffer) => buffer,
+            Err(capacity::Unavailable::Closed) => return Ok(write::Outcome::Closed),
             Err(capacity::Unavailable::Deferred(cause)) => {
+                slot.ensure_send(driver.driver_ref().clock().now());
                 return Ok(write::Outcome::Deferred(cause));
             }
-            Err(capacity::Unavailable::Closed) => return Ok(write::Outcome::Closed),
             Err(capacity::Unavailable::Rejected(cause)) => {
                 return Err(Error::Capacity(cause));
             }
         };
-        commit(send, driver)
+        commit(
+            send::Header {
+                slot,
+                flights: slots,
+                pending: *permit,
+                buffer,
+                lease,
+            },
+            driver,
+        )
     }
 
     pub fn try_bounded<R, F>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         commit: F,
     ) -> Result<write::Outcome<R>, Error<B, R, Infallible>>
     where
         F: FnOnce(&mut C, &mut [u8]) -> write::Draft<B, R>,
         B: 'd,
     {
-        self.try_send(driver, capacity::Capacity::try_bounded, |send, driver| {
-            send.execute(driver, commit)
-        })
+        self.try_send::<_, _, _, true>(
+            driver,
+            |_| Some(()),
+            |send, driver| send.execute(driver, commit),
+        )
     }
 
     /// Reserves the exact prefix owner and queue capacity before calling the application.
     /// The uninhabited body type prevents the callback from adding unreserved egress.
     pub fn try_prefix<R, F>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         commit: F,
     ) -> Result<write::Outcome<R>, Error<B, R, Infallible>>
     where
         F: FnOnce(&mut C, &mut [u8]) -> write::Draft<Infallible, R>,
         B: 'd,
     {
-        self.try_send(driver, capacity::Capacity::try_bounded, |send, driver| {
-            send.try_prefix(driver, commit)
-        })
+        self.try_send::<_, _, _, true>(
+            driver,
+            |_| Some(()),
+            |send, driver| send.try_prefix(driver, commit),
+        )
     }
 
-    pub fn admit(
-        self,
-        load: egress::NonEmpty<B>,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> Admit<B>
+    pub fn admit(self, load: egress::NonEmpty<B>, driver: &mut driver::Context<'_, 'd>) -> Admit<B>
     where
         B: 'd,
     {
@@ -149,7 +179,7 @@ where
     pub fn admit_left(
         self,
         load: egress::NonEmpty<L>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Admit<L>
     where
         L: 'd,
@@ -167,7 +197,7 @@ where
     pub fn admit_right(
         self,
         load: egress::NonEmpty<R>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Admit<R>
     where
         L: 'd,
@@ -193,20 +223,20 @@ where
     /// Reserves the final prefix and body bound before building a checked draft.
     pub fn try_draft<R, F, E>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         commit: F,
     ) -> Result<write::Outcome<R>, Error<Bound<B, G>, R, E>>
     where
         F: FnOnce(&mut C, &mut [u8]) -> Result<write::Draft<Bound<B, G>, R>, E>,
     {
-        self.try_send(driver, capacity::Capacity::take, |send, driver| {
+        self.try_send::<_, _, _, false>(driver, egress::Queue::prove, |send, driver| {
             send.try_draft(driver, commit)
         })
     }
 
     pub fn try_commit<R, F, E>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         commit: F,
     ) -> Result<write::Outcome<R>, Error<Bound<B, G>, R, E>>
     where
@@ -218,7 +248,7 @@ where
             E,
         >,
     {
-        self.try_send(driver, capacity::Capacity::take, |send, driver| {
+        self.try_send::<_, _, _, false>(driver, egress::Queue::prove, |send, driver| {
             send.try_header(driver, |state, bytes, owner| {
                 commit(state, write::Prefix::new(bytes, owner)).map_err(Error::Build)
             })
@@ -238,7 +268,7 @@ where
     pub fn admit_right(
         self,
         load: egress::NonEmpty<Bound<R, G>>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Admit<Bound<R, G>> {
         body::send(
             load,

@@ -1,6 +1,6 @@
 use std::{ops::ControlFlow, pin};
 
-use dope_core::driver::{retained, route, route::Identity, schedule};
+use dope_core::driver::{self, route, route::Identity, schedule};
 use dope_net::{
     link::{
         egress::data::{self, compose, exec},
@@ -48,7 +48,7 @@ where
         self: pin::Pin<&mut Self>,
         target: impl FnOnce() -> Option<route::Target<'d, ID>>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ControlFlow<schedule::ready::Target<'d>> {
         control::admit_deadline(self, target, turn, driver)
     }
@@ -56,12 +56,9 @@ where
     fn receive<'input>(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        input: <crate::Ingress<Self::Wire, Self::Input> as ingress::Strategy<
-            Self::Wire,
-            Self::Input,
-        >>::Value<'input, 'w, 'd>,
+        input: crate::Incoming<'input, 'w, 'd, Self::Wire, Self::Input>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input> {
         <A::Input as Policy<'w, 'd, ID, A>>::receive(self, key, input, turn, driver)
     }
@@ -71,7 +68,7 @@ where
         key: pool::Key<'d, ID>,
         finish: ingress::Finish,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let wake = match finish {
             ingress::Finish::Empty(ingress::Empty::Discarded { finished }) => {
@@ -107,7 +104,7 @@ where
         mut self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Terminal {
         {
             let mut this = self.as_mut().project();
@@ -140,7 +137,7 @@ where
         key: pool::Key<'d, ID>,
         end: receive::End,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         {
             let mut this = self.as_mut().project();
@@ -160,7 +157,7 @@ where
         key: pool::Key<'d, ID>,
         cause: ingress::CloseCause,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         if let Some(slot) = self.as_mut().project().owner.pool_mut().get_mut(key) {
             match cause {

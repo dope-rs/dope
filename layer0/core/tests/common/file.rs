@@ -60,18 +60,7 @@ impl Inspect for Identity {
 
 use dope_core::Errno;
 
-pub trait Retain<'a, 'd> {
-    fn retained(self) -> retained::Context<'a, 'd, 'd>;
-}
-
-impl<'a, 'd> Retain<'a, 'd> for driver::Context<'a, 'd> {
-    fn retained(self) -> retained::Context<'a, 'd, 'd> {
-        let owner = retained::raw::Owner::from_driver(self.driver_ref());
-        retained::Context::new(self, owner)
-    }
-}
-
-pub trait Submit<'owner, 'd: 'owner> {
+pub trait Submit<'d> {
     /// # Safety
     /// The exact owner must retain every submitted resource through quiescence.
     unsafe fn submit<'borrow, Tag: route::Tag, C: kind::Flight>(
@@ -79,16 +68,16 @@ pub trait Submit<'owner, 'd: 'owner> {
         op: fs::Submission<'borrow, 'd, Tag, C>,
     ) -> Result<(), Error>
     where
-        'owner: 'borrow;
+        'd: 'borrow;
 }
 
-impl<'owner, 'd: 'owner> Submit<'owner, 'd> for retained::Context<'_, 'owner, 'd> {
+impl<'d> Submit<'d> for driver::Context<'_, 'd> {
     unsafe fn submit<'borrow, Tag: route::Tag, C: kind::Flight>(
         &'borrow mut self,
         op: fs::Submission<'borrow, 'd, Tag, C>,
     ) -> Result<(), Error>
     where
-        'owner: 'borrow,
+        'd: 'borrow,
     {
         let flights = self
             .storage

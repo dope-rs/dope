@@ -41,15 +41,15 @@ fn keeps_unrelated_event() {
     let driver = driver
         .map_err(|error| error.kind())
         .expect("driver creation");
-    let domain = domain::Domain::new(driver).fd(source);
-    assert!(domain.is_ok(), "shutdown registration");
-    let mut domain = domain.expect("registered shutdown source");
+    let mut teardown = domain::Teardown::default();
+    let generation = domain::Generation::new(driver)
+        .fd(source)
+        .expect("registered shutdown source");
     let mut reports = Reports::<_>::new(config, [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
     assert!(
-        domain
-            .start()
-            .expect("fresh generation")
+        generation
+            .start(&mut teardown)
             .enter_with(
                 (),
                 |mut scope, _storage, _source| {

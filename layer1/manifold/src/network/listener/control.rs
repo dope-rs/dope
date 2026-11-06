@@ -1,5 +1,8 @@
 use dope_core::driver::route::Identity;
-use dope_net::link::{egress, pool::send};
+use dope_net::{
+    link::{egress, pool::send},
+    wire::{self, domain},
+};
 use o3::{base::cell::region, depot::capacity};
 
 use crate::{
@@ -27,8 +30,22 @@ where
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
-    pub fn accept_error(&self) -> Option<listener::AcceptError> {
-        self.inner.as_ref().get_ref().accept_error()
+    pub fn watch(&self) -> &'p listener::Watch<'d> {
+        self.inner.as_ref().get_ref().watch()
+    }
+
+    pub fn reconfigure(
+        &mut self,
+        config: <<A::Wire as wire::Spec>::Runtime<'w, 'd, ID> as domain::Reconfigure>::Config,
+    ) where
+        <A::Wire as wire::Spec>::Runtime<'w, 'd, ID>: domain::Reconfigure,
+    {
+        self.inner
+            .as_mut()
+            .project()
+            .owner
+            .pool_mut()
+            .reconfigure(config);
     }
 
     pub fn handler_mut(&mut self) -> <A as listener::raw::Control<'d, ID>>::View<'_>
@@ -57,14 +74,10 @@ where
             .len()
     }
 
-    pub fn with_conn<R>(
-        &mut self,
-        id: conn::Id<'d, ID>,
-        apply: impl FnOnce(&mut A::Conn) -> R,
-    ) -> Option<R> {
+    pub fn conn_mut(&mut self, id: conn::Id<'d, ID>) -> Option<&mut A::Conn> {
         let this = self.inner.as_mut().project();
         let slot = this.owner.pool_mut().get_mut(id.key())?;
-        Some(apply(&mut slot.state.conn))
+        Some(&mut slot.state.conn)
     }
 
     pub fn wake(&mut self, id: conn::Id<'d, ID>) {

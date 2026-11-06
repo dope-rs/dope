@@ -118,6 +118,10 @@ impl<'d> Completion<'d> {
         self.0.target()
     }
 
+    pub const fn outcome(&self) -> &Outcome<'d> {
+        self.0.value().value()
+    }
+
     pub fn into_parts(self) -> (route::Erased<'d, kind::Accept>, Flow, Outcome<'d>) {
         let (target, batch) = self.0.into_parts();
         let (flow, outcome) = batch.into_parts();

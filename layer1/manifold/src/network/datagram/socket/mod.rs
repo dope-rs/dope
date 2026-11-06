@@ -129,7 +129,13 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source>
         data: B,
         source: source::Source,
     ) -> Result<(), Rejected<B>> {
-        self.project().sender.sourced(data, source)
+        self.project().sender.try_queue(
+            data,
+            source.peer(),
+            source.control(),
+            kernel::Payload::Buffer,
+        )?;
+        Ok(())
     }
 }
 

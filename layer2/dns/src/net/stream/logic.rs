@@ -223,7 +223,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
             session::Input,
         )>,
     > {
-        Some(output::Flush::<Infallible, _>::Context(
+        Some(
             |(owner, ctx, _): (
                 &mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
                 &mut Context<'_, '_, 'd, ID>,
@@ -237,7 +237,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
                     ctx.request(close::Directive::reconnect(reason));
                 }
             },
-        ))
+        )
     }
 
     fn cancel() -> impl for<'a, 'x> Call<(
@@ -282,16 +282,16 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
                     Err(rejected) => return Admission::Rejected(rejected),
                 };
                 match reqs.admit(frame) {
-                    request::Admission::Ready(ready) => {
+                    Ok(request::Admission::Ready(ready)) => {
                         ready.push();
                         Admission::Committed(commit)
                     }
-                    request::Admission::Exhausted(frame) => Admission::Exhausted(frame),
-                    request::Admission::Saturated(load) => {
+                    Err(frame) => Admission::Exhausted(frame),
+                    Ok(request::Admission::Saturated(load)) => {
                         bind.blocked = true;
                         Admission::Saturated(load)
                     }
-                    request::Admission::Rejected(rejected) => Admission::Unavailable(rejected),
+                    Ok(request::Admission::Rejected(rejected)) => Admission::Unavailable(rejected),
                 }
             });
             match sent {

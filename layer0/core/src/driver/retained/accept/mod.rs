@@ -13,7 +13,11 @@ use crate::{
         route::kind,
         schedule,
     },
-    io::{event::net::accept::Failure, fd::domain::retire, socket},
+    io::{
+        event::{batch::Flow, net::accept::Failure},
+        fd::domain::retire,
+        socket,
+    },
 };
 
 pub mod raw;
@@ -185,10 +189,12 @@ where
     /// Empty owners and pending flights cannot grant terminal access.
     pub fn retire(mut self, token: route::Erased<'d, kind::Accept>) -> Retire<'a, 'd, Tag> {
         let lane = self.lane.as_mut().project();
-        let retired = match lane.state.retire(token) {
-            arm::End::Stale => return Retire::Stale,
-            arm::End::Terminal => Retired::Terminal(Terminal { lane: self.lane }),
-            arm::End::Cancelled => Retired::Cancelled,
+        let retired = match lane.state.complete(token, Flow::Last) {
+            arm::Disposition::Discard => return Retire::Stale,
+            arm::Disposition::Deliver | arm::Disposition::Probe => {
+                Retired::Terminal(Terminal { lane: self.lane })
+            }
+            arm::Disposition::Retiring => Retired::Cancelled,
         };
         // A successful retirement consumes one live lane counted by this owner.
         *self.active -= 1;

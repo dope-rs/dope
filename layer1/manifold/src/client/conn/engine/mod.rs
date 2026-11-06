@@ -2,7 +2,7 @@ use std::{ops::ControlFlow, pin};
 
 use dope_core::{
     driver::{
-        retained,
+        self,
         route::{Identity, indices, table},
         schedule::{self, maint, ready},
     },
@@ -159,7 +159,7 @@ where
     fn flush_recv(
         self: pin::Pin<&mut Self>,
         work: maint::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let this = self.project();
         let Err(failure) = this.links.pool_mut().recv().flush(work, driver) else {
@@ -182,6 +182,27 @@ where
         self.project_ref().app
     }
 
+    pub(crate) fn session_admission<'a>(
+        self: pin::Pin<&'a mut Self>,
+        current: impl Fn(&S, attempt::Id<'d, ID>) -> bool + 'a,
+    ) -> (&'a mut A, impl Fn(Id<'d, ID>) -> bool + 'a) {
+        let this = self.project();
+        let slots = this.links.pool().inspect();
+        let control = &*this.controller;
+        let open = this.shutdown.is_open();
+        (this.app, move |id: Id<'d, ID>| {
+            if !open {
+                return false;
+            }
+            let Some(slot) = slots.get(id.key()) else {
+                return false;
+            };
+            slot.state.is_attached()
+                && slot.state.closing.status() == conn::CloseStatus::Open
+                && current(control, slot.state.owner.attempt())
+        })
+    }
+
     pub(crate) fn control(self: pin::Pin<&Self>) -> &S {
         self.project_ref().controller
     }
@@ -202,66 +223,47 @@ where
         self.project_ref().drive.activate();
     }
 
-    pub(crate) fn attempt_at(
-        self: pin::Pin<&Self>,
-        lane: indices::SlotIndex,
-    ) -> Option<attempt::Id<'d, ID>> {
-        let this = self.project_ref();
-        let view = this.links.pool().inspect();
-        let key = view.key_at(lane)?;
-        Some(view.get(key)?.state.owner.attempt())
-    }
-
     pub(crate) fn retire<'turn>(
-        mut self: pin::Pin<&mut Self>,
+        self: pin::Pin<&mut Self>,
         lane: indices::SlotIndex,
         permit: maint::Permit<'turn, 'd>,
         retired: impl FnOnce(&mut S, attempt::Id<'d, ID>) -> bool,
-    ) {
+    ) where
+        A: app::Receive<'d, ID>,
+    {
         permit.run(|| {
-            let Some(owner) = self.as_ref().attempt_at(lane) else {
+            let this = self.project();
+            let Some(key) = this.links.pool().inspect().key_at(lane) else {
                 return;
             };
-            if !retired(self.as_mut().control_mut(), owner) {
-                if self.as_ref().control().is_pending() {
-                    self.as_ref().wake_control();
+            let Some((slot, handle)) = pending::Mut::of(this.links.pool_mut()).get(key) else {
+                return;
+            };
+            if !retired(this.controller, slot.state.owner.attempt()) {
+                if this.controller.is_pending() {
+                    this.drive.activate();
                 }
                 return;
             }
-            self.as_mut().close_at(lane, owner, Reason::EndpointRetired);
+            if slot.state.closing.withdraw() {
+                let fence = match slot.state.conn_mut() {
+                    Some(conn) => this.app.withdraw(Id::from_key(key), conn),
+                    None => app::Fence::Ready,
+                };
+                if matches!(fence, app::Fence::Ready) {
+                    slot.state
+                        .closing
+                        .apply(Directive::reconnect(Reason::EndpointRetired));
+                }
+            }
+            handle.wake();
         });
     }
 
-    pub(crate) fn close_at(
-        self: pin::Pin<&mut Self>,
-        lane: indices::SlotIndex,
-        owner: attempt::Id<'d, ID>,
-        reason: Reason,
-    ) {
-        let this = self.project();
-        let Some(key) = this.links.pool().inspect().key_at(lane) else {
-            return;
-        };
-        let Some((slot, handle)) = pending::Mut::of(this.links.pool_mut()).get(key) else {
-            return;
-        };
-        if slot.state.owner.attempt() != owner {
-            return;
-        }
-        slot.state.closing.apply(Directive::reconnect(reason));
-        handle.wake();
-    }
-
-    /// Applies one bounded mutation to the exact generation-owned application
-    /// state without exposing pool keys or pin projections to service facades.
-    pub(crate) fn with_conn<T>(
-        self: pin::Pin<&mut Self>,
-        conn: Id<'d, ID>,
-        apply: impl FnOnce(&mut A::Conn) -> T,
-    ) -> Option<T> {
+    pub(crate) fn conn_mut(self: pin::Pin<&mut Self>, conn: Id<'d, ID>) -> Option<&mut A::Conn> {
         let this = self.project();
         let slot = this.links.pool_mut().get_mut(conn.key())?;
-        slot.state.conn_mut().map(apply)
+        slot.state.conn_mut()
     }
 
     pub(crate) fn wake_conn(self: pin::Pin<&mut Self>, conn: Id<'d, ID>) -> app::Wake {
@@ -307,7 +309,7 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -315,13 +317,10 @@ where
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         use io::event::Kind;
 
         let (mut this, (), (event, turn, mut driver)) = call.into_parts();

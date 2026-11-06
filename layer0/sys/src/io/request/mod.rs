@@ -6,7 +6,7 @@ mod execute;
 mod lower;
 mod source;
 
-use std::os::fd;
+use std::{mem::MaybeUninit, os::fd};
 
 use o3::buffer::bytes::bounded;
 
@@ -24,12 +24,14 @@ use crate::io::file;
 pub trait Request<'a>: Sized {
     type Buffer;
     type Options;
+    type Metadata;
 
     fn options(flags: file::Open, mode: file::Mode) -> Self::Options;
     fn open(dir: fd::BorrowedFd<'a>, path: &'a std::ffi::CStr, options: &'a Self::Options) -> Self;
+    fn metadata(file: fd::BorrowedFd<'a>, output: &'a mut Self::Metadata) -> Self;
     fn read(
         file: fd::BorrowedFd<'a>,
-        output: bounded::Value<&'a mut [u8]>,
+        output: bounded::Value<&'a mut [MaybeUninit<u8>]>,
         offset: file::Offset,
     ) -> Self;
     fn write(file: fd::BorrowedFd<'a>, input: Self::Buffer, offset: file::Offset) -> Self;

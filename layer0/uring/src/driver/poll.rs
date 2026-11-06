@@ -1,5 +1,6 @@
 use std::{mem, os::fd};
 
+use dope_sys::engine::register;
 use dope_sys::io::reactor::{complete, submit};
 
 use crate::reactor::{op::controls, sq};
@@ -13,13 +14,20 @@ pub struct Poll<'a, T> {
 impl<'a, T: complete::raw::Token> submit::Poll<'a, T> for Poll<'a, T> {
     type Entry = sq::Submit<'a, T>;
 
-    fn new(file: fd::BorrowedFd<'a>, token: T) -> Self {
-        let entry = controls::poll(file, false).user_data(token);
+    fn new(source: register::Source<'a>, token: T) -> Self {
+        let entry = controls::poll(source, false).user_data(token);
         Self { entry }
     }
 
     fn multi(file: fd::BorrowedFd<'a>, token: T) -> Self {
-        let entry = controls::poll(file, true).user_data(token);
+        let entry = controls::poll(
+            register::Source {
+                fd: file,
+                interest: register::Interest::Readable,
+            },
+            true,
+        )
+        .user_data(token);
         Self { entry }
     }
 

@@ -256,7 +256,7 @@ where
                     }
                 });
             },
-            service::Pool::is_retired,
+            |control, key| control.is_current(key) == Some(false),
         );
     }
 }

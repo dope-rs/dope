@@ -47,6 +47,7 @@ impl<'a, 'd> app::Drain for Drain<'a, 'd> {
 
     fn next_when<P>(
         &mut self,
+        (): &mut (),
         take: impl FnOnce() -> Option<P>,
     ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
         if let Some(front) = self.state().store.front(self.side) {

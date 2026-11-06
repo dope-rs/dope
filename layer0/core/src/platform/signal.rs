@@ -89,7 +89,7 @@ impl Source<'_> {
             Ok(receiver) => retained.insert(receiver),
             Err(error) => {
                 CLAIMED.with(|claimed| claimed.set(false));
-                return Err(Error::Acquire(Acquire::from_native(error.into())));
+                return Err(Error::Acquire(Acquire::from_native(error)));
             }
         };
         let source = Source {

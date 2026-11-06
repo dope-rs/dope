@@ -26,23 +26,19 @@ unsafe impl<'d> executor::raw::App<'d> for Empty {
 
     /// # Safety
     /// The selected plan is uninhabited, so this operation cannot be invoked.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
         plan: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         match *plan {}
     }
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
-        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'root, 'd, Self>,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-        Self: 'root,
-    {
+    fn dispatch<'app, 'driver, 'turn>(
+        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
+    ) -> ControlFlow<io::Event<'d>> {
         ControlFlow::Continue(())
     }
     fn progress(_: Pin<&Self>, _: executor::raw::Progress<'_, '_, 'd>) -> schedule::Progress<'d> {

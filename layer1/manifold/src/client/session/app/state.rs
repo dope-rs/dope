@@ -105,6 +105,10 @@ where
 {
     type Continuation = resume::Retained;
 
+    fn withdraw(&mut self, id: conn::Id<'d, ID>, conn: &mut Self::Conn) -> app::Fence {
+        self.session.withdraw(id, &mut conn.conn_state)
+    }
+
     fn quiesce<'a>(
         &self,
         barrier: app::Barrier<'a, 'd, ID>,
@@ -235,6 +239,10 @@ where
         + Compatible<'w, 'd, W, ID>,
     W: input::Execution + 'd,
 {
+    fn take_close(&self, conn: conn::Id<'d, ID>) -> Option<close::Directive> {
+        self.session.take_close(conn)
+    }
+
     fn wire_fail<'e, O>(
         &mut self,
         conn: conn::Io<'_, 'd, ID, Self::Wire, Self::Conn, O>,

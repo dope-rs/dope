@@ -246,125 +246,121 @@ fn transfer_rearms_parent() {
     use dope_fiber::task::storage::fixed::{quota::Physical, schedule::queue::Owned};
 
     use crate::common::{
-        schedule::tasks::{
-            fixtures::{Rounds as _, WakeProbe},
-            retained::Retain as _,
-        },
+        schedule::tasks::fixtures::{Rounds as _, WakeProbe},
         storage::policies::owner::{Stamp, Tasks},
     };
 
     let mut reports = Vec::new();
     Setup::for_profile::<profile::Tasks>().with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
-                let view = context.driver_ref();
-                let targets = view.targets::<KeyTag<0>>();
-                let routes = [0, 1].map(|index| {
-                    targets
-                        .bind(SlotIndex::from(index), Epoch::INITIAL)
-                        .dispatch()
-                });
-                let roots = routes.map(|route| view.ready().make_slot(route).expect("parent slot"));
-                let owners =
-                    [0, 1].map(|lane| owner::Owner::from(Stamp::try_new(lane, 0).expect("owner")));
-                let pool = Pool::<'_, WakeProbe<'_>, 4, (), usize>::try_new().expect("task pool");
-                let plane = Plane::<'_, _, Physical, Owned<'_, Tasks>>::try_owned(
-                    Leaf::new(pool),
-                    owner::Capacity::new(NonZero::new(2).expect("owners")),
-                )
-                .expect("owner queue");
-                let mut plane = pin::pin!(plane);
-                let mut driver = context.retained();
-                let polls = [0, 1, 2, 3].map(|_| Rc::new(Cell::new(0)));
-                let wakes = [0, 1, 2, 3].map(|_| Rc::new(Cell::new(None)));
-                Scope::with(plane.as_mut(), |mut plane| {
-                    for owner in owners {
-                        assert!(
-                            plane.as_ref().owners().register(owner).is_ok(),
-                            "registration"
-                        );
-                    }
-                    let ids = [0, 1, 2, 3].map(|index| {
-                        let owner = usize::from(index != 2);
-                        plane
-                            .as_mut()
-                            .route::<Here>()
-                            .try_admit(owners[owner], RootWaker::from(roots[owner].target()))
-                            .ok()
-                            .expect("task admission")((
-                            WakeProbe {
-                                polls: polls[index].clone(),
-                                wake: wakes[index].clone(),
-                            },
-                            index,
-                        ))
-                    });
-                    {
-                        let turn = control.begin();
-                        for owner in [1, 1, 0] {
-                            let item = match plane
-                                .as_mut()
-                                .select(owner::Scope::Exact(owners[owner]), turn.turn().app())
-                            {
-                                Selection::Ready(item) => Some(item),
-                                Selection::Idle | Selection::Yielded => None,
-                            }
-                            .expect("initial task");
-                            item.only().step(&mut driver).1.settle(Flow::Yield);
-                        }
-                        turn.ready_round(|_| {});
-                    }
-                    roots[0].target().wake();
-                    for wake in &wakes[..3] {
-                        wake.take().expect("task wake").wake();
-                    }
-                    let alloc = Tracker::during(|| {
-                        let mut first = true;
-                        for _ in 0..4 {
-                            let turn = control.begin();
-                            turn.ready_round(|event| {
-                                let index = routes
-                                    .iter()
-                                    .position(|route| route.matches(event))
-                                    .expect("parent event");
-                                if first {
-                                    assert_eq!(
-                                        index, 0,
-                                        "foreign parent dispatch must be consumed first"
-                                    );
-                                    first = false;
-                                }
-                                let owner = owner::Scope::Exact(owners[index]);
-                                turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
-                                    if let Selection::Ready(item) =
-                                        plane.as_mut().select(owner, share.work())
-                                    {
-                                        item.only().step(&mut driver).1.settle(Flow::Yield);
-                                    }
-                                });
-                                plane.as_mut().wake(owner);
-                            });
-                        }
-                    });
-                    assert_eq!(alloc, (0, 0));
-                    assert_eq!(
-                        polls[2].get(),
-                        2,
-                        "foreign parent must dispatch after its ingress moved"
+            let (_, context, mut control) = scope.split();
+            let view = context.driver_ref();
+            let targets = view.targets::<KeyTag<0>>();
+            let routes = [0, 1].map(|index| {
+                targets
+                    .bind(SlotIndex::from(index), Epoch::INITIAL)
+                    .dispatch()
+            });
+            let roots = routes.map(|route| view.ready().make_slot(route).expect("parent slot"));
+            let owners =
+                [0, 1].map(|lane| owner::Owner::from(Stamp::try_new(lane, 0).expect("owner")));
+            let pool = Pool::<'_, WakeProbe<'_>, 4, (), usize>::try_new().expect("task pool");
+            let plane = Plane::<'_, _, Physical, Owned<'_, Tasks>>::try_owned(
+                Leaf::new(pool),
+                owner::Capacity::new(NonZero::new(2).expect("owners")),
+            )
+            .expect("owner queue");
+            let mut plane = pin::pin!(plane);
+            let mut driver = context;
+            let polls = [0, 1, 2, 3].map(|_| Rc::new(Cell::new(0)));
+            let wakes = [0, 1, 2, 3].map(|_| Rc::new(Cell::new(None)));
+            Scope::with(plane.as_mut(), |mut plane| {
+                for owner in owners {
+                    assert!(
+                        plane.as_ref().owners().register(owner).is_ok(),
+                        "registration"
                     );
-                    for id in ids {
-                        assert!(matches!(
-                            plane.as_mut().route::<Here>().remove(id),
-                            Removal::Removed
-                        ));
+                }
+                let ids = [0, 1, 2, 3].map(|index| {
+                    let owner = usize::from(index != 2);
+                    plane
+                        .as_mut()
+                        .route::<Here>()
+                        .try_admit(owners[owner], RootWaker::from(roots[owner].target()))
+                        .ok()
+                        .expect("task admission")((
+                        WakeProbe {
+                            polls: polls[index].clone(),
+                            wake: wakes[index].clone(),
+                        },
+                        index,
+                    ))
+                });
+                {
+                    let turn = control.begin();
+                    for owner in [1, 1, 0] {
+                        let item = match plane
+                            .as_mut()
+                            .select(owner::Scope::Exact(owners[owner]), turn.turn().app())
+                        {
+                            Selection::Ready(item) => Some(item),
+                            Selection::Idle | Selection::Yielded => None,
+                        }
+                        .expect("initial task");
+                        item.only().step(&mut driver).1.settle(Flow::Yield);
                     }
-                    for owner in owners {
-                        assert!(
-                            plane.as_ref().owners().try_retire(owner).is_ok(),
-                            "retirement"
-                        );
+                    turn.ready_round(|_| {});
+                }
+                roots[0].target().wake();
+                for wake in &wakes[..3] {
+                    wake.take().expect("task wake").wake();
+                }
+                let alloc = Tracker::during(|| {
+                    let mut first = true;
+                    for _ in 0..4 {
+                        let turn = control.begin();
+                        turn.ready_round(|event| {
+                            let index = routes
+                                .iter()
+                                .position(|route| route.matches(event))
+                                .expect("parent event");
+                            if first {
+                                assert_eq!(
+                                    index, 0,
+                                    "foreign parent dispatch must be consumed first"
+                                );
+                                first = false;
+                            }
+                            let owner = owner::Scope::Exact(owners[index]);
+                            turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
+                                if let Selection::Ready(item) =
+                                    plane.as_mut().select(owner, share.work())
+                                {
+                                    item.only().step(&mut driver).1.settle(Flow::Yield);
+                                }
+                            });
+                            plane.as_mut().wake(owner);
+                        });
                     }
                 });
+                assert_eq!(alloc, (0, 0));
+                assert_eq!(
+                    polls[2].get(),
+                    2,
+                    "foreign parent must dispatch after its ingress moved"
+                );
+                for id in ids {
+                    assert!(matches!(
+                        plane.as_mut().route::<Here>().remove(id),
+                        Removal::Removed
+                    ));
+                }
+                for owner in owners {
+                    assert!(
+                        plane.as_ref().owners().try_retire(owner).is_ok(),
+                        "retirement"
+                    );
+                }
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),

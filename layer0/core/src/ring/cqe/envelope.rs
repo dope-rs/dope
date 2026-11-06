@@ -146,7 +146,7 @@ impl<'d> Envelope<'d> {
             .parts()
             .outcome
             .bytes()?
-            .map(|value| transfer::Len::from_bound(value.into())))
+            .map(transfer::Len::from_bound))
     }
 
     pub(super) fn unit(&self) -> Result<Result<(), Errno>, Returned> {

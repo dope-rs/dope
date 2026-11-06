@@ -13,7 +13,7 @@ use crate::{
     abi,
     context::wake,
     core::driver::{
-        retained,
+        self,
         schedule::{app, ready::task::owner},
     },
     task::storage::{
@@ -38,7 +38,7 @@ where
     tasks: set::Set<'d, F, M, group::Scope<'s, D>, order::Membership<'d, group::Scope<'s, D>>>,
     orders: flat::Table<(P::Key, order::Order<'d, group::Scope<'s, D>>)>,
     policy: P,
-    ready: group::raw::Ready<'s, 'd>,
+    ready: pin::Pin<&'s owned::Queue<'d, owners::Source>>,
 }
 
 impl<'s, 'd, F, M, P, D> Tasks<'s, 'd, F, M, P, D>
@@ -66,7 +66,7 @@ where
         let mut entries = self.tasks.pool.entries();
         let entry = entries.vacant().ok_or(insert::Error::Full)?;
         Ok(entry
-            .try_owned(fiber, data, parent, self.ready.get(), owner)?
+            .try_owned(fiber, data, parent, self.ready, owner)?
             .into_group())
     }
 
@@ -85,10 +85,10 @@ where
     pub fn poll_ready(
         &mut self,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> set::Length {
         owners::drive(
-            self.ready.get(),
+            self.ready,
             self.tasks.pool.entries(),
             owner::Scope::Any,
             work,
@@ -101,12 +101,12 @@ where
         &mut self,
         key: P::Key,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         observe: impl FnMut(&M, pin::Pin<&mut F>),
     ) -> set::Length {
         let owner = owners::owner(key);
         owners::drive(
-            self.ready.get(),
+            self.ready,
             self.tasks.pool.entries(),
             owner::Scope::Exact(owner),
             work,
@@ -116,7 +116,7 @@ where
     }
 
     pub fn wake_next(&mut self) {
-        owners::wake(self.ready.get(), &self.tasks.pool.view());
+        owners::wake(self.ready, &self.tasks.pool.view());
     }
 
     pub fn work(&self) -> set::Work {
@@ -131,7 +131,7 @@ where
 
     fn work_in(&self, scope: owner::Scope<owners::Source>) -> set::Work {
         use crate::task::storage::fixed::schedule::queue::Wake;
-        match self.ready.get().readiness(scope) {
+        match self.ready.readiness(scope) {
             Wake::Idle => set::Work::Idle,
             Wake::Ready | Wake::Pending => set::Work::Pending,
         }
@@ -154,9 +154,7 @@ where
             tasks,
             orders,
             policy,
-            // SAFETY: this fresh invariant scope cannot escape run. Every
-            // queue access precedes the end of the stack-pinned queue's scope.
-            ready: unsafe { group::raw::Ready::new(ready.as_ref()) },
+            ready: ready.as_ref(),
         });
         Ok(result)
     }
@@ -239,9 +237,9 @@ where
         let (view, mut token) = tasks.pool.entries().into_parts();
         let Some(listed) = slot::Listed::get(view, &mut token, id.key) else {
             let (view, mut token) = tasks.pool.entries().into_parts();
-            let state = owners::remove(self.ready.get(), &view, &mut token, id.key);
+            let state = owners::remove(self.ready, &view, &mut token, id.key);
             if state == Some(State::Queued) {
-                owners::wake(self.ready.get(), &view);
+                owners::wake(self.ready, &view);
             }
             return;
         };

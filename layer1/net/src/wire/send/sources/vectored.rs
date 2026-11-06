@@ -1,7 +1,7 @@
 use dope_core::io::{socket::msg, transfer};
-use o3::buffer::{segments::scatter::Source as _, storage::Zero};
+use o3::buffer::segments::scatter::Source as _;
 
-use crate::wire::send::{self, Payload};
+use crate::wire::send::{self, Either, Payload, sources::plain::Slice};
 
 /// Retains the original message's lifetime, descriptor bound and exact byte sum.
 pub struct Vectored<'a, const N: usize = { msg::MAX_IOVECS }> {
@@ -38,10 +38,13 @@ pub(in crate::wire::send) struct Vectors<'a> {
 
 impl<'scope, 'bytes: 'scope, const N: usize> Payload<'scope> for Vectored<'bytes, N> {
     fn select(&self) -> Option<impl send::raw::Ready<'scope>> {
-        let message: msg::Message<'scope> = self.message.message();
-        match transfer::NonZero::try_from(self.message.bytes()) {
-            Ok(bytes) => Some(Vectors { message, bytes }),
-            Err(Zero) => None,
-        }
+        let bytes = transfer::NonZero::try_from(self.message.bytes()).ok()?;
+        Some(match self.message.contiguous() {
+            Some(view) => Either::Left(Slice { view, bytes }),
+            None => Either::Right(Vectors {
+                message: self.message.message(),
+                bytes,
+            }),
+        })
     }
 }

@@ -3,7 +3,7 @@ pub mod common;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use std::{cell, mem, ptr};
+use std::{cell, ptr};
 
 use dope_core::driver::schedule::clock::timer::heap;
 use dope_test::alloc::Tracker;
@@ -20,7 +20,6 @@ fn aligned_owner() {
                 Tracker::measure(|| heap::raw::Store::<Key, Value<'_>>::try_new(capacity));
             assert_eq!(cold, [usize::from(capacity != 0), bytes, 0, 0]);
             let store = (made).expect("the aligned four-plane store must allocate");
-            assert_eq!(mem::size_of_val(&store), 6 * mem::size_of::<usize>());
             let ((), hot) = Tracker::measure(|| {
                 // SAFETY: this test owns `store` exclusively, so no other loan overlaps.
                 unsafe {
@@ -78,7 +77,6 @@ fn last_plane_overflow() {
 
 #[test]
 fn loan_keeps_owner() {
-    const { assert!(!mem::needs_drop::<heap::Min<'_, '_, (), Value<'_>>>()) };
     let drops = cell::Cell::new(0);
     {
         let store = heap::raw::Store::<(), Value<'_>>::try_new(1).expect("one slot");

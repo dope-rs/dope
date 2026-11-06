@@ -9,9 +9,9 @@ use dope_core::{
         retained::flight,
         route::{self, Identity, indices, lease, table},
         schedule::{self, ready::wake},
-        settings::{self, claim, demands, errors},
+        settings::{self, claim, errors},
     },
-    io::{fs, transfer, transfer::Length as _},
+    io::{fs, transfer},
 };
 use dope_runtime::executor;
 use o3::{
@@ -21,17 +21,20 @@ use o3::{
     mem::{Rejected, quota},
 };
 
-use crate::app::dispatch;
+use crate::{
+    app::dispatch,
+    file::appender::{self, Preparation, Prepare},
+};
 
 mod raw;
 
 const FREE: usize = 0;
 const WORK: usize = 1;
 
-/// Initialized, exclusive storage carrying its original resident-byte charge.
-pub type Buffer<'d> = bounded::Value<storage::Owned<resident::Lease<'d>>>;
+/// Exclusive storage carrying its original resident-byte charge.
+pub type Buffer<'d> = storage::Owned<resident::Budget<'d>>;
 
-/// A nonempty read whose buffer extent was admitted exactly once.
+/// A read whose nonempty buffer capacity was admitted exactly once.
 pub struct Read<'d> {
     file: fs::File,
     output: Buffer<'d>,
@@ -39,10 +42,43 @@ pub struct Read<'d> {
     length: transfer::NonZero,
 }
 
+pub struct Metadata {
+    file: fs::File,
+    state: MetadataState,
+}
+
+enum MetadataState {
+    Idle,
+    Scratch(Box<raw::Scratch>),
+    Done(Result<(fs::Kind, fs::Len), MetadataError>),
+}
+
+impl Metadata {
+    pub fn new(file: fs::File) -> Self {
+        Self {
+            file,
+            state: MetadataState::Idle,
+        }
+    }
+
+    pub fn into_file(self) -> fs::File {
+        self.file
+    }
+
+    fn release(self, free: &mut Option<Box<raw::Scratch>>) -> fs::File {
+        if let MetadataState::Scratch(scratch) = self.state {
+            raw::Scratch::release(free, scratch);
+        }
+        self.file
+    }
+}
+
 /// One request owns every descriptor, path, option, and output it submits.
 pub enum Request<'d> {
     Open(fs::OpenRequest),
     Read(Read<'d>),
+    Metadata(Metadata),
+    Prepare(Prepare),
 }
 
 /// A terminal native operation returns its original request owners unchanged.
@@ -55,23 +91,37 @@ pub enum Completion<'d> {
         request: Read<'d>,
         result: Result<transfer::Len, Error>,
     },
+    Metadata {
+        file: fs::File,
+        result: Result<(fs::Kind, fs::Len), MetadataError>,
+    },
+    Prepare(Result<appender::Prepared, appender::OpenError>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     System(dope_core::Errno),
     Submission(SubmitError),
-    Amount {
-        observed: transfer::Len,
-        requested: transfer::NonZero,
-    },
+    Allocation(alloc::Exhausted),
     Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataError {
+    Operation(Error),
+    Value(fs::metadata::Error),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admission {
     Full,
     Closed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SizeError {
+    Empty,
+    Overflow(bounded::Overflow),
 }
 
 #[derive(Debug)]
@@ -104,11 +154,7 @@ impl<ID: Identity> Layout<ID> {
 
 impl<ID: Identity> settings::Resource for Layout<ID> {
     fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, errors::Claim> {
-        needs.include(
-            claim::Claim::new(settings::Routes::singleton::<ID>()).files(demands::Files::only_out(
-                demands::Outbound::new(self.capacity.count()),
-            )),
-        )
+        needs.include(claim::Claim::new(settings::Routes::singleton::<ID>()))
     }
 }
 
@@ -117,9 +163,13 @@ impl<'d> Read<'d> {
         file: fs::File,
         output: Buffer<'d>,
         offset: fs::Offset,
-    ) -> Result<Self, Rejected<(fs::File, Buffer<'d>, fs::Offset), storage::Zero>> {
-        let Some(length) = output.len().nonzero() else {
-            return Err(Rejected::new((file, output, offset), storage::Zero));
+    ) -> Result<Self, Rejected<(fs::File, Buffer<'d>, fs::Offset), SizeError>> {
+        let length = transfer::Len::try_new(output.capacity())
+            .map_err(SizeError::Overflow)
+            .and_then(|length| length.nonzero().ok_or(SizeError::Empty));
+        let length = match length {
+            Ok(length) => length,
+            Err(cause) => return Err(Rejected::new((file, output, offset), cause)),
         };
         Ok(Self {
             file,
@@ -129,7 +179,7 @@ impl<'d> Read<'d> {
         })
     }
 
-    /// Reuses the same initialized allocation without filling or copying it.
+    /// Reuses the admitted allocation without filling or copying it.
     pub fn at(mut self, offset: fs::Offset) -> Self {
         self.offset = offset;
         self
@@ -139,7 +189,11 @@ impl<'d> Read<'d> {
         self.length
     }
 
-    /// Only the successful completion's prefix contains newly read bytes.
+    pub const fn offset(&self) -> fs::Offset {
+        self.offset
+    }
+
+    /// A completed request exposes only its successfully read prefix.
     pub fn into_parts(self) -> (fs::File, Buffer<'d>, fs::Offset) {
         (self.file, self.output, self.offset)
     }
@@ -165,6 +219,7 @@ pub struct Reader<'p, 'd, ID: Identity> {
     _route: lease::Owner<'d, ID>,
     flights: flight::Slots<'d, ID>,
     closing: Option<indices::SlotIndex>,
+    free: Option<Box<raw::Scratch>>,
 }
 
 // No field is structurally pinned: the borrowed port retains its fixed heap
@@ -186,11 +241,15 @@ pub enum Poll<'p, 'd> {
 enum Outcome {
     Open(Result<fs::File, Error>),
     Read(Result<transfer::Len, Error>),
+    Metadata,
+    Prepare,
 }
 
 enum Active<'d> {
     Open(flight::Flight<'d, route::kind::Open>),
     Read(flight::Flight<'d, route::kind::Read>),
+    Metadata(flight::Flight<'d, route::kind::Sync>),
+    Tail(flight::Flight<'d, route::kind::Read>),
 }
 
 enum Phase<'d> {
@@ -225,7 +284,7 @@ impl<'d> Port<'d> {
     /// waiter is registered. The caller retains its existing task admission policy.
     pub fn try_request(
         &self,
-        request: Request<'d>,
+        mut request: Request<'d>,
     ) -> Result<Ticket<'_, 'd>, Rejected<Request<'d>, Admission>> {
         if !self.accepting.get() {
             return Err(Rejected::new(request, Admission::Closed));
@@ -233,6 +292,9 @@ impl<'d> Port<'d> {
         let Some((slot, ())) = self.slots.next::<FREE>() else {
             return Err(Rejected::new(request, Admission::Full));
         };
+        if let Request::Read(read) = &mut request {
+            read.output.truncate(0);
+        }
         let entry = slot.state();
         entry.insert(request);
         entry.detached.set(false);
@@ -257,14 +319,6 @@ impl<'d> Port<'d> {
             }
         }
     }
-
-    fn fail(&self, slot: &Slot<'_, 'd>, cause: Error) {
-        let outcome = slot.state().with_request(|request| match request {
-            Request::Open(_) => Outcome::Open(Err(cause)),
-            Request::Read(_) => Outcome::Read(Err(cause)),
-        });
-        self.settle(slot, outcome);
-    }
 }
 
 impl<'p, 'd> Ticket<'p, 'd> {
@@ -283,6 +337,16 @@ impl<'p, 'd> Ticket<'p, 'd> {
                     }
                     (Request::Read(request), Outcome::Read(result)) => {
                         Completion::Read { request, result }
+                    }
+                    (
+                        Request::Metadata(Metadata {
+                            file,
+                            state: MetadataState::Done(result),
+                        }),
+                        Outcome::Metadata,
+                    ) => Completion::Metadata { file, result },
+                    (Request::Prepare(Prepare(Preparation::Done(result))), Outcome::Prepare) => {
+                        Completion::Prepare(result)
                     }
                     _ => unreachable!("operation"),
                 })
@@ -342,7 +406,48 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
             _route: route.commit(),
             flights,
             closing: None,
+            free: None,
         })
+    }
+
+    fn fail(&mut self, slot: &Slot<'_, 'd>, cause: Error) {
+        let entry = slot.state();
+        let (request, outcome) = match entry.take() {
+            Request::Open(request) => (Request::Open(request), Outcome::Open(Err(cause))),
+            Request::Read(request) => (Request::Read(request), Outcome::Read(Err(cause))),
+            Request::Metadata(request) => (
+                Request::Metadata(Metadata {
+                    file: request.release(&mut self.free),
+                    state: MetadataState::Done(Err(MetadataError::Operation(cause))),
+                }),
+                Outcome::Metadata,
+            ),
+            Request::Prepare(Prepare(preparation)) => {
+                if let Preparation::Metadata { request, .. } = preparation {
+                    drop(request.release(&mut self.free));
+                }
+                (
+                    Request::Prepare(Prepare(Preparation::Done(Err(
+                        appender::OpenError::Request(cause),
+                    )))),
+                    Outcome::Prepare,
+                )
+            }
+        };
+        entry.insert(request);
+        self.port.settle(slot, outcome);
+    }
+
+    fn prepare(&self, slot: &Slot<'_, 'd>, preparation: Preparation) {
+        let done = matches!(preparation, Preparation::Done(_));
+        let entry = slot.state();
+        entry.insert(Request::Prepare(Prepare(preparation)));
+        if done {
+            self.port.settle(slot, Outcome::Prepare);
+        } else {
+            entry.phase.set(Some(Phase::Queued));
+            slot.push::<WORK>(());
+        }
     }
 
     fn close(&mut self) {
@@ -351,19 +456,20 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
         }
     }
 
-    fn advance<'root>(
+    fn advance(
         &mut self,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, dispatch::raw::Retained>,
+        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
     ) {
+        let port = self.port;
         loop {
             let next = turn.app().run(|| {
-                if let Some((slot, ())) = self.port.slots.next::<WORK>() {
+                if let Some((slot, ())) = port.slots.next::<WORK>() {
                     return Some(slot);
                 }
                 let index = self.closing?;
-                self.closing = self.port.capacity.next(index);
-                self.port.slots.get(index.index().into_usize())
+                self.closing = port.capacity.next(index);
+                port.slots.get(index.index().into_usize())
             });
             let slot = match next {
                 quota::Admission::Item(slot) => slot,
@@ -375,34 +481,30 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
         }
     }
 
-    fn process<'root>(
-        &self,
+    fn process(
+        &mut self,
         slot: &Slot<'_, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, dispatch::raw::Retained>,
+        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
     ) -> bool {
         let entry = slot.state();
         let stop = entry.detached.get() || !self.port.accepting.get();
         match entry.phase.take() {
             Some(Phase::Queued) => {
                 if stop {
-                    self.port.fail(slot, Error::Shutdown);
+                    self.fail(slot, Error::Shutdown);
                     return true;
                 }
-                match raw::submit(entry, &self.flights, driver) {
+                match raw::submit(entry, &self.flights, &mut self.free, driver) {
                     Ok(flight) => entry.phase.set(Some(Phase::Active {
                         flight,
                         stopping: false,
                     })),
-                    Err(cause) => match cause.cause() {
-                        SubmitCause::Full => {
-                            entry.phase.set(Some(Phase::Queued));
-                            slot.push::<WORK>(());
-                            return false;
-                        }
-                        SubmitCause::IdentityExhausted => {
-                            self.port.fail(slot, Error::Submission(cause))
-                        }
-                    },
+                    Err(Error::Submission(cause)) if matches!(cause.cause(), SubmitCause::Full) => {
+                        entry.phase.set(Some(Phase::Queued));
+                        slot.push::<WORK>(());
+                        return false;
+                    }
+                    Err(cause) => self.fail(slot, cause),
                 }
             }
             Some(Phase::Active {
@@ -412,7 +514,7 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
                 let mut retry = false;
                 let mut rejected = None;
                 if stop && !stopping {
-                    match flight.stop(driver.driver()) {
+                    match flight.stop(driver) {
                         Ok(flight::cancel::Outcome::Deferred) => retry = true,
                         Ok(
                             flight::cancel::Outcome::Submitted
@@ -427,7 +529,7 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
                 }
                 entry.phase.set(Some(Phase::Active { flight, stopping }));
                 if let Some(cause) = rejected {
-                    driver.driver().rejected(cause);
+                    driver.rejected(cause);
                 }
                 if retry {
                     slot.push::<WORK>(());
@@ -443,6 +545,9 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
 impl<ID: Identity> Drop for Reader<'_, '_, ID> {
     fn drop(&mut self) {
         self.port.accepting.set(false);
+        while let Some(mut scratch) = self.free.take() {
+            self.free = scratch.next.take();
+        }
     }
 }
 
@@ -453,7 +558,8 @@ impl<'d> Active<'d> {
     ) -> Result<flight::cancel::Outcome, flight::cancel::Failure> {
         match self {
             Self::Open(flight) => flight.try_stop(driver),
-            Self::Read(flight) => flight.try_stop(driver),
+            Self::Read(flight) | Self::Tail(flight) => flight.try_stop(driver),
+            Self::Metadata(flight) => flight.try_stop(driver),
         }
     }
 }
@@ -474,11 +580,10 @@ impl<'d, ID: Identity> executor::raw::Finishes<'d, Self> for Reader<'_, 'd, ID> 
         this.closing = None;
         // Finish carries completed native quiescence, including forced shutdown.
         // This final O(capacity) cleanup is outside the per-turn work allowance.
-        for slot in this.port.slots.iter() {
+        let port = this.port;
+        for slot in port.slots.iter() {
             match slot.state().phase.take() {
-                Some(Phase::Queued | Phase::Active { .. }) => {
-                    this.port.fail(&slot, Error::Shutdown)
-                }
+                Some(Phase::Queued | Phase::Active { .. }) => this.fail(&slot, Error::Shutdown),
                 phase => slot.state().phase.set(phase),
             }
         }

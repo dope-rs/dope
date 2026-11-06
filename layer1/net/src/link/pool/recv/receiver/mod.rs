@@ -11,11 +11,7 @@ use crate::{
 pub(in crate::link::pool::recv) mod observed;
 pub(in crate::link::pool::recv) mod resume;
 
-use dope_core::driver::{
-    retained::{self, flight::cancel::Outcome},
-    route,
-    schedule::maint,
-};
+use dope_core::driver::{self, retained::flight::cancel::Outcome, route, schedule::maint};
 use input::Dispatch;
 use storage::{queue::Ops as _, tail};
 
@@ -70,7 +66,7 @@ where
     pub fn arm(
         &mut self,
         key: pool::Key<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), Failure<'d, ID>> {
         let ops = &self.pool.prepared.flights;
         let Some((slot, mut recv)) = self.pool.prepared.slab.get(key.parts()) else {
@@ -79,10 +75,11 @@ where
         recv.rearm.submitted(slot.submit_recv(ops, driver))
     }
 
+    #[inline]
     pub fn flush(
         &mut self,
         work: maint::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), Failure<'d, ID>> {
         if self.pool.prepared.runtime.is_ready()
             && matches!(
@@ -99,7 +96,19 @@ where
             return Ok(());
         }
         let count = self.pool.prepared.slab.pending();
-        let mut passes = count;
+        if count == 0 {
+            return Ok(());
+        }
+        self.flush_pending(count, work, driver)
+    }
+
+    #[inline(never)]
+    fn flush_pending(
+        &mut self,
+        mut passes: usize,
+        work: maint::Work<'_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) -> Result<(), Failure<'d, ID>> {
         while passes != 0 {
             passes -= 1;
             let pass = work.run(|| {
@@ -118,7 +127,7 @@ where
                             return Some(Ok(()));
                         }
                     };
-                    match flight.try_stop(driver.driver()) {
+                    match flight.try_stop(driver) {
                         Ok(Outcome::Submitted | Outcome::Queued | Outcome::Completed) => {
                             slot.engine.operations.recv.cancel_sent();
                         }
@@ -180,21 +189,16 @@ where
     where
         M::Kind: input::Replay<W>,
     {
-        use o3::depot::queue::pool::Vacancy;
-
         let Some((slot, mut recv)) =
             Slot::receive::<M::Ingress>(&mut self.pool.prepared.slab, key.parts())
         else {
             return Deferral::Unavailable(chunk);
         };
-        let (mut entry, chunks) = slot.queue::<W, M::Kind>().split();
-        if !chunks.is_empty() {
+        let (mut entry, tail) = slot.queue::<W, M::Kind>().split();
+        let Some(vacant) = tail.vacant() else {
             return Deferral::Occupied(chunk);
-        }
-        match chunks.reserve() {
-            (Vacancy::Ready(vacant), ()) => vacant.append(chunk),
-            (Vacancy::Exhausted, ()) => return Deferral::Full(chunk),
-        }
+        };
+        vacant.insert(chunk);
         let slot = entry.get_mut();
         slot.engine.operations.recv.pause();
         if slot.terminal.is_read_done() && slot.engine.operations.recv.has_cancel() {
@@ -210,7 +214,7 @@ where
     pub fn take_tail<'b>(
         &'b mut self,
         item: &delivery::Resumed<'d, ID>,
-    ) -> ControlFlow<(), Option<(pool::Key<'d, ID>, tail::Taken<'b, 'w, 'd, W>)>>
+    ) -> ControlFlow<(), Option<tail::Taken<'b, 'w, 'd, W>>>
     where
         M::Kind: input::Replay<W>,
         'd: 'b,
@@ -220,14 +224,14 @@ where
         let Some(slot) = Slot::new(&mut self.pool.prepared.slab, key.parts()) else {
             return ControlFlow::Continue(None);
         };
-        let (entry, chunks) = slot.queue::<W, M::Kind>().split();
-        let Some(front) = chunks.front_entry() else {
+        let (entry, tail) = slot.queue::<W, M::Kind>().split();
+        let Some(occupied) = tail.occupied() else {
             return ControlFlow::Continue(None);
         };
         if entry.get().is_app_held() {
             return ControlFlow::Break(());
         }
-        ControlFlow::Continue(Some((key, tail::Taken::new(front.remove()))))
+        ControlFlow::Continue(Some(tail::Taken::new(occupied)))
     }
 
     pub fn finish_tail(&mut self, item: &delivery::Resumed<'d, ID>)

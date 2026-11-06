@@ -1,7 +1,7 @@
 use std::{mem, pin};
 
 use dope_core::driver::{
-    retained,
+    self,
     schedule::{self, clock},
 };
 use o3::mem::quota;
@@ -10,35 +10,32 @@ use crate::{control, executor};
 
 /// Pre-park authority for one exact retained root and scheduler turn.
 #[must_use]
-pub struct Park<'driver, 'turn, 'root, 'd: 'root> {
-    drive: executor::raw::Drive<'driver, 'turn, 'root, 'd>,
+pub struct Park<'driver, 'turn, 'd> {
+    drive: executor::raw::Drive<'driver, 'turn, 'd>,
 }
 
-impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
+impl<'driver, 'turn, 'd> Park<'driver, 'turn, 'd> {
     pub(crate) const fn new(
         turn: schedule::Turn<'turn, 'd>,
-        driver: retained::Context<'driver, 'root, 'd>,
+        driver: driver::Context<'driver, 'd>,
     ) -> Self {
         Self {
             drive: executor::raw::Drive { turn, driver },
         }
     }
 
-    pub fn reborrow(&mut self) -> Park<'_, '_, 'root, 'd> {
+    pub fn reborrow(&mut self) -> Park<'_, '_, 'd> {
         Park {
             drive: self.drive.reborrow(),
         }
     }
 
-    pub fn map<R>(
-        self,
-        map: impl FnOnce(schedule::Turn<'turn, 'd>, retained::Context<'driver, 'root, 'd>) -> R,
-    ) -> R {
+    pub fn into_parts(self) -> (schedule::Turn<'turn, 'd>, driver::Context<'driver, 'd>) {
         let executor::raw::Drive { turn, driver } = self.drive;
-        map(turn, driver)
+        (turn, driver)
     }
 
-    pub fn into_driver(self) -> retained::Context<'driver, 'root, 'd> {
+    pub fn into_driver(self) -> driver::Context<'driver, 'd> {
         self.drive.driver
     }
 
@@ -82,7 +79,7 @@ impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
         &mut self,
         ranks: [usize; 3],
         weights: [usize; 2],
-        run: impl FnOnce(Park<'_, '_, 'root, 'd>) -> R,
+        run: impl FnOnce(Park<'_, '_, 'd>) -> R,
     ) -> R {
         self.drive.turn.share::<N, _>(ranks, weights, |turn| {
             let drive = executor::raw::Drive {
@@ -97,7 +94,7 @@ impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
         &mut self,
         rank: usize,
         weights: [usize; 2],
-        run: impl FnOnce(Park<'_, '_, 'root, 'd>) -> R,
+        run: impl FnOnce(Park<'_, '_, 'd>) -> R,
     ) -> R {
         self.drive
             .turn
@@ -116,13 +113,13 @@ impl<'driver, 'turn, 'root, 'd: 'root> Park<'driver, 'turn, 'root, 'd> {
             quota::Take::Taken => {}
             quota::Take::Exhausted => return None,
         }
-        let driver = self.drive.driver.reborrow().into_driver();
+        let driver = self.drive.driver.reborrow();
         Some(control::Step::new(driver))
     }
 }
 
 const fn assert_layout() {
-    type Turn<'a> = Park<'a, 'a, 'a, 'a>;
+    type Turn<'a> = Park<'a, 'a, 'a>;
 
     assert!(mem::size_of::<Turn<'static>>() == 2 * mem::size_of::<usize>());
     assert!(mem::align_of::<Turn<'static>>() == mem::align_of::<usize>());

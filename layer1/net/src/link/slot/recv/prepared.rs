@@ -61,7 +61,7 @@ where
             end,
             transaction:
                 <<W::Receive as receive::Policy<W>>::Reserve as reserve::Immediate<W>>::reserve(
-                    &mut conn.wire,
+                    &mut conn.control.wire,
                     rt,
                 ),
             credit,
@@ -119,7 +119,7 @@ where
         let (produced, captured) = read.into_parts();
         let (chunk, unused) = produced.into_parts();
         Self::capture(self.engine, &mut self.needs_rearm, captured);
-        if receive::raw::Batch::len(&chunk) == 0 {
+        if receive::raw::Batch::is_empty(&chunk) {
             return (
                 slot::Decision::Control(slot::Control::NoChunk {
                     needs_rearm: self.needs_rearm,

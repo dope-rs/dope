@@ -245,7 +245,7 @@ where
             flight,
             permit,
         } = self;
-        let entry = bound::Bound::scoped(raw, flight);
+        let entry = bound::Bound::new(raw, flight);
         let flight = permit.submit(entry);
         slot.begin(flight)
     }

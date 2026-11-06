@@ -52,6 +52,9 @@ pub type Finished<O, T> = (O, Result<Finish<T>, T>);
 pub type End<'input, 'd, C, S> =
     Result<Finish<<C as Codec>::Head<'input, 'd, S>>, <C as Codec>::Error>;
 
+pub(crate) type Parsed<'id, 'input, 'd, C, R> =
+    Result<Parse<'id, <C as Codec>::Head<'input, 'd, R>>, <C as Codec>::Error>;
+
 /// Admission while input and semantic parser state remain replayable.
 /// `Ready` accepts ownership; exact later failures cannot request input replay.
 /// Owned post-commit work uses the existing prepared delivery.
@@ -128,7 +131,7 @@ pub trait Stateless: Codec {
     fn parse<'id, 'input, 'd, R: buffer::Cursor + hold::raw::Retain<'d>>(
         &self,
         input: Input<'id, 'input, 'd, R>,
-    ) -> Result<Parse<'id, Self::Head<'input, 'd, R>>, Self::Error>
+    ) -> Parsed<'id, 'input, 'd, Self, R>
     where
         'd: 'input;
 }

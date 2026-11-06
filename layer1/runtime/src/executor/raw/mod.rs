@@ -3,8 +3,9 @@
 use std::{convert, mem, num::NonZero, pin};
 
 use dope_core::driver::{
+    self,
     life::{self, finish},
-    retained, schedule,
+    schedule,
 };
 use o3::base::{
     cell::region,
@@ -42,7 +43,7 @@ pub unsafe trait Drain<'d>: executor::raw::App<'d> {
     fn begin(
         self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     /// Reports drain work after the application's pre-park traversal.
@@ -58,7 +59,7 @@ pub unsafe trait Drain<'d>: executor::raw::App<'d> {
     fn force(
         self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 }
 
@@ -181,10 +182,10 @@ pub struct Install<'app, 'owner, 'd, R> {
 
 /// Shutdown traversal carrying its exact pinned root and driver turn.
 #[must_use]
-pub struct Shutdown<'app, 'turn, 'driver, 'owner, 'd: 'owner, R> {
+pub struct Shutdown<'app, 'turn, 'driver, 'd, R> {
     app: pin::Pin<&'app mut R>,
     turn: schedule::Turn<'turn, 'd>,
-    driver: retained::Context<'driver, 'owner, 'd>,
+    driver: driver::Context<'driver, 'd>,
 }
 
 /// Final traversal carrying installation and post-quiescence proofs together.
@@ -209,11 +210,11 @@ impl<'app, 'owner, 'd, R> Install<'app, 'owner, 'd, R> {
     }
 }
 
-impl<'app, 'turn, 'driver, 'owner, 'd: 'owner, R> Shutdown<'app, 'turn, 'driver, 'owner, 'd, R> {
+impl<'app, 'turn, 'driver, 'd, R> Shutdown<'app, 'turn, 'driver, 'd, R> {
     pub fn new(
         app: pin::Pin<&'app mut R>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: retained::Context<'driver, 'owner, 'd>,
+        driver: driver::Context<'driver, 'd>,
     ) -> Self {
         Self { app, turn, driver }
     }
@@ -223,17 +224,12 @@ impl<'app, 'turn, 'driver, 'owner, 'd: 'owner, R> Shutdown<'app, 'turn, 'driver,
     ) -> (
         pin::Pin<&'app mut R>,
         schedule::Turn<'turn, 'd>,
-        retained::Context<'driver, 'owner, 'd>,
+        driver::Context<'driver, 'd>,
     ) {
         (self.app, self.turn, self.driver)
     }
 
-    pub fn into_drive(
-        self,
-    ) -> (
-        schedule::Turn<'turn, 'd>,
-        retained::Context<'driver, 'owner, 'd>,
-    ) {
+    pub fn into_drive(self) -> (schedule::Turn<'turn, 'd>, driver::Context<'driver, 'd>) {
         (self.turn, self.driver)
     }
 }
@@ -271,13 +267,13 @@ impl<'app, 'finish, 'owner, 'epoch, 'd, R> Finish<'app, 'finish, 'owner, 'epoch,
     }
 }
 
-struct Drive<'driver, 'turn, 'root, 'd: 'root> {
+struct Drive<'driver, 'turn, 'd> {
     turn: schedule::Turn<'turn, 'd>,
-    driver: retained::Context<'driver, 'root, 'd>,
+    driver: driver::Context<'driver, 'd>,
 }
 
-impl<'driver, 'turn, 'root, 'd: 'root> Drive<'driver, 'turn, 'root, 'd> {
-    fn reborrow(&mut self) -> Drive<'_, '_, 'root, 'd> {
+impl<'driver, 'turn, 'd> Drive<'driver, 'turn, 'd> {
+    fn reborrow(&mut self) -> Drive<'_, '_, 'd> {
         Drive {
             turn: self.turn.reborrow(),
             driver: self.driver.reborrow(),
@@ -286,15 +282,11 @@ impl<'driver, 'turn, 'root, 'd: 'root> Drive<'driver, 'turn, 'root, 'd> {
 }
 
 const fn assert_layout() {
-    assert!(
-        mem::size_of::<Drive<'static, 'static, 'static, 'static>>() == 2 * mem::size_of::<usize>()
-    );
-    assert!(
-        mem::align_of::<Drive<'static, 'static, 'static, 'static>>() == mem::align_of::<usize>()
-    );
+    assert!(mem::size_of::<Drive<'static, 'static, 'static>>() == 2 * mem::size_of::<usize>());
+    assert!(mem::align_of::<Drive<'static, 'static, 'static>>() == mem::align_of::<usize>());
     assert!(mem::size_of::<Install<'static, 'static, 'static, ()>>() == mem::size_of::<usize>());
     assert!(
-        mem::size_of::<Shutdown<'static, 'static, 'static, 'static, 'static, ()>>()
+        mem::size_of::<Shutdown<'static, 'static, 'static, 'static, ()>>()
             == 3 * mem::size_of::<usize>()
     );
     assert!(

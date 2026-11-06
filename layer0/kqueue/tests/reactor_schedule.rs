@@ -77,7 +77,13 @@ fn blocked_receives_preserve_native_lane_progress() {
 
             let (control, mut signal) = socket::try_pair().expect("control source");
             // SAFETY: control remains owned until after backend destruction below.
-            unsafe { backend.register(control.as_fd()) }.expect("register control");
+            unsafe {
+                backend.register(dope_sys::engine::register::Source {
+                    fd: control.as_fd(),
+                    interest: dope_sys::engine::register::Interest::Readable,
+                })
+            }
+            .expect("register control");
             for _ in 0..lane {
                 backend.cursor();
             }

@@ -17,6 +17,6 @@ pub unsafe trait Activate<'d, R: route::App> {
         self: pin::Pin<&mut Self>,
         target: route::Target<'d, R>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
     );
 }

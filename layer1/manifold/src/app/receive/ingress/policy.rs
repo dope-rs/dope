@@ -1,7 +1,7 @@
 use std::{ops, pin};
 
 use dope_core::{
-    driver::{retained, route, route::Identity, schedule},
+    driver::{self, route, route::Identity, schedule},
     io::event::net::recv,
 };
 use dope_net::{
@@ -37,7 +37,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         self: pin::Pin<&mut Self>,
         _: impl FnOnce() -> Option<route::Target<'d, ID>>,
         _: schedule::Turn<'_, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> ops::ControlFlow<schedule::ready::Target<'d>> {
         ops::ControlFlow::Continue(())
     }
@@ -45,12 +45,9 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
     fn receive<'input>(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
-        input: <crate::Ingress<Self::Wire, Self::Input> as Strategy<
-            Self::Wire,
-            Self::Input,
-        >>::Value<'input, 'w, 'd>,
+        input: crate::Incoming<'input, 'w, 'd, Self::Wire, Self::Input>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input>;
 
     fn finish(
@@ -58,7 +55,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         key: pool::Key<'d, ID>,
         finish: ingress::Finish,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     /// Schedules the bounded protocol-control finalizer. Marking is
@@ -69,7 +66,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Terminal;
 
     fn eof(
@@ -77,7 +74,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         key: pool::Key<'d, ID>,
         end: End,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     fn close(
@@ -85,13 +82,13 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         key: pool::Key<'d, ID>,
         cause: ingress::CloseCause,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     fn flush(
         mut self: pin::Pin<&mut Self>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let received = Self::storage(self.as_mut())
             .recv()
@@ -111,7 +108,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         mut self: pin::Pin<&mut Self>,
         item: recv::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ops::ControlFlow<recv::Completion<'d>>
     where
         <Self::Input as input::Mode<Self::Wire>>::Reserve:
@@ -155,7 +152,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         self: pin::Pin<&mut Self>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         <Self::Input as input::Mode<Self::Wire>>::Reserve:
             Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>,

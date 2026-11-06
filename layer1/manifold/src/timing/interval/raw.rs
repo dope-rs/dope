@@ -36,14 +36,11 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Interval<'d, ID> {
     type PrePark = dispatch::raw::Plain;
     type Shutdown = dispatch::raw::Plain;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         let this = self.as_mut().project();
         if this.route.as_ref().is_armed() {
             return self;
@@ -66,14 +63,11 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Interval<'d, ID> {
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         let this = self.as_mut().project();
         this.route.as_ref().cancel();
         *this.tick = Tick::Empty;
@@ -110,7 +104,7 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Activate<'d, ID> for Interval<'d, I
         self: pin::Pin<&mut Self>,
         _: route::Target<'d, ID>,
         _: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
     ) {
         let this = self.project();
         let Cadence::Next(previous) = *this.cadence else {

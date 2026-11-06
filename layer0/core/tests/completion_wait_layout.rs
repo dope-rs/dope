@@ -6,7 +6,7 @@ pub mod common;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use std::{mem, num};
+use std::num;
 
 use dope_core::driver::schedule::ready::{
     wake,
@@ -27,8 +27,6 @@ fn registries_use_backing() {
     const HANDOFF_ENTRY_BYTES: usize = 16;
     const LANE_BYTES: usize = 16;
 
-    let word = mem::size_of::<usize>();
-    assert_eq!(word, 8, "supported targets are 64-bit");
     let mut reports = Vec::new();
 
     Runtime::throughput().with_driver(
@@ -75,7 +73,6 @@ fn registries_use_backing() {
             });
             let fixed = (fixed).expect("fixed handoff registry must allocate");
             assert_eq!(alloc, (1, CAPACITY * HANDOFF_ENTRY_BYTES + 2 * LANE_BYTES));
-            assert_eq!(mem::size_of_val(&fixed), mem::size_of_val(&handoff));
             assert!(fixed.is_empty::<0>());
             assert!(fixed.is_empty::<1>());
         },

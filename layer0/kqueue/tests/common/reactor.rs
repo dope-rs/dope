@@ -83,7 +83,9 @@ impl store::Exec for Host {
 impl ready::raw::Decode for Host {
     unsafe fn decode(raw: usize) -> delivery::Decoded<NonZero<usize>> {
         if raw == usize::MAX {
-            delivery::Decoded::Shutdown
+            delivery::Decoded::Shutdown(dope_sys::engine::register::Interest::Readable)
+        } else if raw == usize::MAX - 1 {
+            delivery::Decoded::Shutdown(dope_sys::engine::register::Interest::Closed)
         } else {
             match NonZero::new(raw) {
                 Some(key) => delivery::Decoded::Public(key),
@@ -102,8 +104,11 @@ impl ready::Driver for Host {
     type State = <Kqueue as ready::Source>::State<Self>;
     type Queue = <Kqueue as complete::Source>::Queue<Event, NonZero<u32>>;
 
-    fn shutdown() -> NonZero<usize> {
-        NonZero::<usize>::MAX
+    fn shutdown(interest: dope_sys::engine::register::Interest) -> NonZero<usize> {
+        match interest {
+            dope_sys::engine::register::Interest::Readable => NonZero::<usize>::MAX,
+            dope_sys::engine::register::Interest::Closed => NonZero::new(usize::MAX - 1).unwrap(),
+        }
     }
 }
 
@@ -133,8 +138,8 @@ impl delivery::Context<Engine> for Host {
     type Failure = Infallible;
     type Dispatch = Dispatched;
 
-    fn with<R>(host: &mut Engine, run: impl FnOnce(&mut Engine) -> R) -> R {
-        run(host)
+    fn backend(host: &mut Engine) -> &mut Engine {
+        host
     }
 
     fn resolve(host: &mut Engine) -> Option<Result<Option<Packet>, Infallible>> {

@@ -40,7 +40,7 @@ impl<T: Copy, S: Copy, C> Owner<T, S, C> {
         capacity: num::NonZero<u32>,
     ) -> Result<storage::Slots<'_, T, S, C>, alloc::Error> {
         let count = capacity.get() as usize;
-        let mut selected: Option<(chain::Link<'_, _, _>, &[Entry<T, S, C>])> = None;
+        let mut selected: Option<(chain::Link<'_, _, _>, _)> = None;
         for raw in self.groups.iter() {
             if !raw.header().available.get() {
                 continue;
@@ -60,7 +60,13 @@ impl<T: Copy, S: Copy, C> Owner<T, S, C> {
         }
         let (raw, entries) = match selected {
             Some((raw, entries)) => {
-                raw.header().available.set(false);
+                let group = raw.header();
+                group.available.set(false);
+                group.context.set(ptr::NonNull::from(&self.context));
+                for entry in entries {
+                    entry.state.set(storage::State::Idle);
+                }
+                group.attachment.set(storage::Attachment::Active);
                 (raw, entries)
             }
             None => {
@@ -77,15 +83,8 @@ impl<T: Copy, S: Copy, C> Owner<T, S, C> {
                 (raw, unsafe { raw.as_slice().get_unchecked(..count) })
             }
         };
-        // Selection invokes no callbacks and exposes no vacancy before this activation.
-        let group = raw.header();
-        group.context.set(ptr::NonNull::from(&self.context));
-        for entry in entries {
-            entry.state.set(storage::State::Idle);
-        }
-        group.attachment.set(storage::Attachment::Active);
         Ok(storage::Slots {
-            group,
+            group: raw.header(),
             entries,
             capacity,
         })

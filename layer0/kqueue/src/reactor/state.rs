@@ -118,6 +118,7 @@ pub(super) unsafe fn dispatch<C>(
 {
     let filter = event.filter();
     let error = event.error();
+    let eof = event.eof();
     let data = unsafe { <C::Context as ready::raw::Decode>::decode(event.data()) };
     if filter == libc::EVFILT_WRITE {
         if let Decoded::Public(target) = data {
@@ -131,7 +132,14 @@ pub(super) unsafe fn dispatch<C>(
                 unsafe { read::raw::Poll::dispatch(poll, filter, error, vacant) };
             }
         }
-        Decoded::Shutdown => vacant.push(<C::Context as ready::raw::Decode>::SHUTDOWN),
+        Decoded::Shutdown(interest) => {
+            if matches!(interest, dope_sys::engine::register::Interest::Readable)
+                || eof
+                || error.is_some()
+            {
+                vacant.push(<C::Context as ready::raw::Decode>::SHUTDOWN);
+            }
+        }
         Decoded::Empty => {}
     }
 }

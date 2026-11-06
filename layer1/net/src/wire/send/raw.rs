@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use dope_core::{
     driver::{
-        result, retained,
+        self, result, retained,
         retained::flight,
         route::{self, kind},
     },
@@ -32,43 +32,35 @@ pub trait Ready<'a> {
     /// # Safety
     /// Retain descriptor authority and the immutable payload/message graph at
     /// fixed addresses through completion or quiescence.
-    unsafe fn submit<'owner, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
+    unsafe fn submit<'d: 'a, Tag: route::Tag + route::Select<kind::Send>>(
         self,
         fd: &handles::Descriptor<'d>,
         target: route::Target<'d, Tag>,
         slots: &flight::Slots<'d, Tag>,
-        driver: retained::Context<'_, 'owner, 'd>,
-    ) -> Result<Submitted<'d>, result::SubmitError>
-    where
-        'owner: 'a;
+        driver: driver::Context<'_, 'd>,
+    ) -> Result<Submitted<'d>, result::SubmitError>;
 }
 
 impl<'a> Ready<'a> for Infallible {
-    unsafe fn submit<'owner, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
+    unsafe fn submit<'d: 'a, Tag: route::Tag + route::Select<kind::Send>>(
         self,
         _: &handles::Descriptor<'d>,
         _: route::Target<'d, Tag>,
         _: &flight::Slots<'d, Tag>,
-        _: retained::Context<'_, 'owner, 'd>,
-    ) -> Result<Submitted<'d>, result::SubmitError>
-    where
-        'owner: 'a,
-    {
+        _: driver::Context<'_, 'd>,
+    ) -> Result<Submitted<'d>, result::SubmitError> {
         match self {}
     }
 }
 
 impl<'a> Ready<'a> for Slice<'a> {
-    unsafe fn submit<'owner, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
+    unsafe fn submit<'d: 'a, Tag: route::Tag + route::Select<kind::Send>>(
         self,
         fd: &handles::Descriptor<'d>,
         target: route::Target<'d, Tag>,
         slots: &flight::Slots<'d, Tag>,
-        driver: retained::Context<'_, 'owner, 'd>,
-    ) -> Result<Submitted<'d>, result::SubmitError>
-    where
-        'owner: 'a,
-    {
+        driver: driver::Context<'_, 'd>,
+    ) -> Result<Submitted<'d>, result::SubmitError> {
         let op = retained::raw::Submission::send(fd, self.view, target);
         // SAFETY: the caller retains the exact bytes and descriptor authority
         // through the terminal completion represented by the returned flight.
@@ -81,16 +73,13 @@ impl<'a> Ready<'a> for Slice<'a> {
 }
 
 impl<'a> Ready<'a> for Vectors<'a> {
-    unsafe fn submit<'owner, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
+    unsafe fn submit<'d: 'a, Tag: route::Tag + route::Select<kind::Send>>(
         self,
         fd: &handles::Descriptor<'d>,
         target: route::Target<'d, Tag>,
         slots: &flight::Slots<'d, Tag>,
-        driver: retained::Context<'_, 'owner, 'd>,
-    ) -> Result<Submitted<'d>, result::SubmitError>
-    where
-        'owner: 'a,
-    {
+        driver: driver::Context<'_, 'd>,
+    ) -> Result<Submitted<'d>, result::SubmitError> {
         let op = retained::raw::Submission::send_msg(fd, self.message, target);
         // SAFETY: the caller retains the exact message graph, payload and
         // descriptor authority through terminal completion or quiescence.
@@ -103,16 +92,13 @@ impl<'a> Ready<'a> for Vectors<'a> {
 }
 
 impl<'a, L: Ready<'a>, R: Ready<'a>> Ready<'a> for Either<L, R> {
-    unsafe fn submit<'owner, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
+    unsafe fn submit<'d: 'a, Tag: route::Tag + route::Select<kind::Send>>(
         self,
         fd: &handles::Descriptor<'d>,
         target: route::Target<'d, Tag>,
         slots: &flight::Slots<'d, Tag>,
-        driver: retained::Context<'_, 'owner, 'd>,
-    ) -> Result<Submitted<'d>, result::SubmitError>
-    where
-        'owner: 'a,
-    {
+        driver: driver::Context<'_, 'd>,
+    ) -> Result<Submitted<'d>, result::SubmitError> {
         // SAFETY: the active branch retains the exact graph covered by the
         // caller's submission contract; selecting it changes no addresses.
         match self {
@@ -122,12 +108,12 @@ impl<'a, L: Ready<'a>, R: Ready<'a>> Ready<'a> for Either<L, R> {
     }
 }
 
-pub(crate) fn submit<'a, 'owner: 'a, 'd: 'owner, Tag: route::Tag + route::Select<kind::Send>>(
+pub(crate) fn submit<'a, 'd: 'a, Tag: route::Tag + route::Select<kind::Send>>(
     ready: impl Ready<'a>,
     fd: &handles::Descriptor<'d>,
     target: route::Target<'d, Tag>,
     slots: &flight::Slots<'d, Tag>,
-    driver: retained::Context<'_, 'owner, 'd>,
+    driver: driver::Context<'_, 'd>,
 ) -> Result<Submitted<'d>, result::SubmitError> {
     // SAFETY: the installed pool retains wire and queue storage; direct callers
     // additionally establish the original source graph's retention contract.

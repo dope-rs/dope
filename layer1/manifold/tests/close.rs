@@ -1,10 +1,4 @@
-use std::mem;
-
-use dope_core::driver::route::KeyTag;
-use dope_manifold::client::{
-    close::{Directive, LocalOrigin, Policy, Reason},
-    conn::CloseRequest,
-};
+use dope_manifold::client::close::{Directive, LocalOrigin, Policy, Reason};
 use o3::{
     alloc,
     buffer::resident::{staging::reserve, write},
@@ -16,14 +10,6 @@ const POLICIES: [Policy; 4] = [
     Policy::ImmediateReconnect,
     Policy::ImmediatePermanent,
 ];
-
-#[test]
-fn close_request_layout() {
-    assert_eq!(
-        mem::size_of::<CloseRequest<'static, 'static, KeyTag<0>>>(),
-        2 * mem::size_of::<&mut ()>(),
-    );
-}
 
 #[test]
 fn directives_preserve_reason_and_policy() {

@@ -252,7 +252,9 @@ impl<'d> Return for Access<'d> {
     type Item = heap::Lease<'d, Tag>;
 
     fn return_item(self, slot: Self::Item) {
-        self.0.command(|mut cmd| drop(cmd.release(slot)));
+        self.0.command(|mut cmd| {
+            cmd.release(slot);
+        });
     }
 }
 

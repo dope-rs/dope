@@ -1,6 +1,6 @@
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::link::{
     pool::{self, pending},
     slot::types::{CloseGate, Readiness},
@@ -36,7 +36,7 @@ where
         key: pool::Key<'d, ID>,
         reason: close::Reason,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     fn cut_close(
@@ -44,14 +44,14 @@ where
         key: pool::Key<'d, ID>,
         rule: Directive,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     fn maybe_close(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 }
 
@@ -70,7 +70,7 @@ where
         key: pool::Key<'d, ID>,
         rule: Directive,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         {
             let this = self.as_mut().project();
@@ -91,13 +91,24 @@ where
         key: pool::Key<'d, ID>,
         reason: close::Reason,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let rule = {
             let this = self.as_mut().project();
             let Some((slot, handle)) = pending::Mut::of(this.links.pool_mut()).get(key) else {
                 return;
             };
+            let _ = State::poll_close(slot, this.app);
+            if reason == close::Reason::EndpointRetired
+                && slot.state.closing.is_withdrawing()
+                && let Some(conn) = slot.state.conn_mut()
+                && matches!(
+                    this.app.withdraw(conn::Id::from_key(key), conn),
+                    app::Fence::Pending
+                )
+            {
+                return;
+            }
             let pending = slot.terminal.is_pending();
             let wake = if pending {
                 slot.terminal.has_send()
@@ -181,23 +192,26 @@ where
         mut self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let reason = {
             let this = self.as_mut().project();
             let Some(slot) = this.links.pool_mut().get_mut(key) else {
                 return;
             };
-            let fence = match state::ActiveRef::new(slot) {
-                Some(active) => app::Receive::fence(this.app, conn::Ref::new(active), driver),
-                None => app::Fence::Ready,
-            };
-            let ready = match fence {
-                app::Fence::Ready => slot.close_due(CloseGate::Immediate),
-                app::Fence::Pending => slot.close_due(CloseGate::Deferred),
-            };
-            if matches!(ready, Readiness::Waiting) {
-                return;
+            if !slot.state.closing.is_withdrawing() {
+                if matches!(slot.close_due(CloseGate::Immediate), Readiness::Waiting) {
+                    return;
+                }
+                if slot.is_draining()
+                    && let Some(active) = state::ActiveRef::new(slot)
+                    && matches!(
+                        app::Receive::fence(this.app, conn::Ref::new(active), driver),
+                        app::Fence::Pending
+                    )
+                {
+                    return;
+                }
             }
             slot.state.closing.reason()
         };

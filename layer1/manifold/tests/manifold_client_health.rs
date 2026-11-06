@@ -151,24 +151,24 @@ fn due_backoff_survives_exhausted_maintenance() {
                                     )
                                     .expect("one retired epoch")
                                     .into_output();
-                                    let initial = chosen.values().map(|values| values.len());
-                                    let progress = app
-                                        .drive_for(due, GUARD, Root(&polls))
-                                        .map(|fixed| fixed.into_output());
-                                    let prepared = chosen.values().map(|values| values.len());
-                                    (retained, progress, initial, prepared)
+                                    let initial = chosen.values().expect("initial attempts").len();
+                                    app.drive_for(due, GUARD, Root(&polls))
+                                        .expect("fixed point after due backoff")
+                                        .into_output();
+                                    assert_eq!(initial, 2);
+                                    assert_eq!(
+                                        chosen.values().expect("prepared attempts").len(),
+                                        3
+                                    );
+                                    retained
                                 },
                             )
                         },
                     )
             });
-            let (_retained, progress, initial, prepared) =
-                result.expect("install client").expect("client teardown");
+            let _retained = result.expect("install client").expect("client teardown");
             assert_eq!(injected.get(), Injection::Done);
             assert_eq!(polls.get(), 1, "completed root never rescues progress");
-            progress.expect("fixed point after due backoff");
-            assert_eq!(initial.expect("initial attempts"), 2);
-            assert_eq!(prepared.expect("prepared attempts"), 3);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         |entered| assert!(entered.is_ok()),
@@ -198,7 +198,7 @@ fn stale_epoch_is_ignored() {
         .expect("prepare actual client layout");
     let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    let latency = planned.with_run(
+    let peers = planned.with_run(
         &mut finish,
         |case| {
             assert_eq!(
@@ -239,7 +239,8 @@ fn stale_epoch_is_ignored() {
                 .accept_for(GUARD)
                 .expect("accept next peer")
                 .expect("next peer");
-            (latency, probe, next)
+            assert!(latency < BACKOFF / 2);
+            (probe, next)
         },
         recovery::Policy::new(|event| reclaim1.push(event), recover),
         |result| result.expect("native lifecycle"),
@@ -249,10 +250,9 @@ fn stale_epoch_is_ignored() {
         "unexpected reclaimed operations: {reclaim1:?}"
     );
 
-    let (latency, _probe, _next) = latency.expect("health epoch scenario");
+    let (_probe, _next) = peers.expect("health epoch scenario");
     audit.checked((0, 0));
     assert_eq!(conn.hits(), closed.hits());
-    assert!(latency < BACKOFF / 2);
 }
 
 #[test]

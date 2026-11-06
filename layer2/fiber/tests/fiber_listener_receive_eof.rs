@@ -77,7 +77,7 @@ fn writes_after_eof() {
                         peer.set_nodelay(true).expect("peer no delay");
                         peer.write_all(b"tail").expect("peer tail");
                         peer.shutdown(Shutdown::Write).expect("peer EOF");
-                        let handle = storage.handle();
+                        let handle = listener.handle();
                         sess.with_quiesce(
                                         &mut finish,
                                         Host::new(listener),

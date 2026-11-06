@@ -27,56 +27,52 @@ impl<'a, 'd> Admission<'a, 'd> {
         Self { native, driver }
     }
 
-    pub(crate) fn submit<'owner, C: kind::Class>(
+    pub(crate) fn submit<C: kind::Class>(
         self,
-        bound: bound::Bound<'owner, 'd, request::Lowered, C>,
-    ) -> flight::Flight<'d, C>
-    where
-        'd: 'owner,
-    {
+        bound: bound::Bound<'d, request::Lowered, C>,
+    ) -> flight::Flight<'d, C> {
         let (raw, reserve) = bound.into_parts();
-        admit::Guard::<Host<Backend>>::submit(
-            self.native,
-            raw.into_inner().into_inner(),
-            reserve.key(),
-        );
+        admit::Guard::<Host<Backend>>::submit(self.native, raw.into_inner(), reserve.key());
         reserve.commit()
     }
 
-    pub(crate) fn retain<'borrow, 'owner, C: kind::Class>(
+    /// # Safety
+    /// Encoded handles and the reservation belong to this driver. Keep encoded
+    /// addresses valid with their borrowed access through completion or quiescence.
+    pub(crate) unsafe fn retain<'borrow, C: kind::Class>(
         self,
-        bound: bound::Bound<'owner, 'd, request::Borrowed<'borrow>, C>,
+        bound: bound::Bound<'d, request::Borrowed<'borrow>, C>,
     ) -> flight::Flight<'d, C>
     where
-        'owner: 'borrow,
-        'd: 'owner,
+        'd: 'borrow,
     {
         let (raw, reserve) = bound.into_parts();
-        // SAFETY: Captured retains every encoded pointee through terminal completion
-        // or quiescence. Native submission precedes the host flight's commitment.
+        // SAFETY: the caller retains these exact native inputs. Submission
+        // precedes commitment of the reserved flight.
         unsafe {
             admit::raw::Retain::<Host<Backend>>::retain(
                 self.native,
-                raw.into_inner().into_inner(),
+                raw.into_inner(),
                 reserve.key(),
             )
         };
         reserve.commit()
     }
 
-    pub(crate) fn file<'borrow, 'owner: 'borrow, C: kind::Class>(
+    /// # Safety
+    /// The reservation belongs to this driver. Retain every descriptor, path
+    /// and buffer borrow through terminal completion or quiescence.
+    pub(crate) unsafe fn file<'borrow, C: kind::Class>(
         self,
-        bound: bound::Bound<'owner, 'd, <Backend as File>::Request<'borrow>, C>,
+        bound: bound::Bound<'d, <Backend as File>::Request<'borrow>, C>,
     ) -> flight::Flight<'d, C>
     where
-        'd: 'owner,
+        'd: 'borrow,
     {
         let (raw, reserve) = bound.into_parts();
-        // SAFETY: Captured retains the exact file, path and buffer borrows through
-        // terminal completion or quiescence, before this flight is committed.
-        unsafe {
-            admit::raw::Retain::<Host<Backend>>::file(self.native, raw.into_inner(), reserve.key())
-        };
+        // SAFETY: the caller retains these exact file borrows. Submission
+        // precedes commitment of the reserved flight.
+        unsafe { admit::raw::Retain::<Host<Backend>>::file(self.native, raw, reserve.key()) };
         reserve.commit()
     }
 }

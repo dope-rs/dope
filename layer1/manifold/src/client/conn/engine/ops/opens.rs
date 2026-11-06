@@ -1,7 +1,7 @@
 use std::pin;
 
 use attempt::Report as _;
-use dope_core::driver::{retained, route::Identity, schedule::clock};
+use dope_core::driver::{self, route::Identity, schedule::clock};
 use dope_net::{
     link::pool::{change::opening, pending},
     wire::open,
@@ -45,7 +45,7 @@ fn report<'w, 'd: 'w, ID: Identity, A>(
     app: &mut A,
     key: attempt::Completion<'_, 'd, ID>,
     cause: opening::Failure<open::Error<'w, A::Wire>>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> Step<'d>
 where
     A: app::Lifecycle<'w, 'd, ID> + app::Opened<'w, 'd, ID> + app::Exhausted<'d, ID>,
@@ -62,7 +62,7 @@ trait Deferred<'d, ID: Identity, A: app::Application<'d, ID>> {
         app: &mut A,
         key: attempt::Id<'d, ID>,
         cause: opening::Deferred,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Step<'d>;
 }
 
@@ -73,7 +73,7 @@ impl<'d, ID: Identity, A: app::Application<'d, ID, Deferred = Self>> Deferred<'d
         _: &mut A,
         _: attempt::Id<'d, ID>,
         cause: opening::Deferred,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Step<'d> {
         cause.into()
     }
@@ -87,7 +87,7 @@ where
         app: &mut A,
         key: attempt::Id<'d, ID>,
         cause: opening::Deferred,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Step<'d> {
         app.deferred(key, cause, driver);
         cause.into()
@@ -104,7 +104,7 @@ where
     fn poll(
         self: pin::Pin<&mut Self>,
         now: clock::Moment<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Step<'d>;
 }
 
@@ -121,7 +121,7 @@ where
     fn poll(
         mut self: pin::Pin<&mut Self>,
         now: clock::Moment<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Step<'d> {
         let (key, plan) = match self.as_mut().project().controller.poll() {
             attempt::Action::Connect { key, plan } => (key, plan),
@@ -233,7 +233,7 @@ where
     fn poll(
         mut self: pin::Pin<&mut Self>,
         now: clock::Moment<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Step<'d> {
         let target = self.as_ref().backoff();
         let outcome = {

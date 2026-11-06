@@ -47,7 +47,7 @@ impl<'scope, 'w, 'd: 'w, W: wire::Spec + 'w, ID: Identity> abi::Fiber<'d>
         let this = this.project();
         let waiter = this.waiter;
         let Some((_, accepted)) = this.host.port.accepts.next::<0>() else {
-            if let Some(error) = this.host.port.accept_error.get() {
+            if let Some(error) = this.host.watch.error() {
                 waiter.as_ref().unregister();
                 return Poll::Ready(Err(Error::Listener(error)));
             }

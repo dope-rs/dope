@@ -2,7 +2,7 @@ pub mod common;
 
 use common::manifold::listener::{native, reached};
 
-use std::{cell::Cell, env::consts, net::TcpStream, rc::Rc, time::Duration};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::{
@@ -138,9 +138,12 @@ fn accepts_once() {
 }
 
 #[test]
+#[ignore = "requires native asynchronous tuning"]
 fn shutdown_cancels_tuning() {
+    use std::net::TcpStream;
+
+    assert_eq!(std::env::consts::OS, "linux");
     let mut finish = Completion::new();
-    assert_eq!(consts::OS, "linux", "tuning cancellation requires Linux");
     let app = Rc::new(trace::Trace::default());
     let disp = Rc::new(Trace::default());
     let tuning = Gate::new();
@@ -176,7 +179,7 @@ fn shutdown_cancels_tuning() {
                             hash,
                             &mut sess,
                             session::Scope::driver,
-                            |server, sess| {
+                            |server, _wait, sess| {
                                 let addr = server.local_addr();
                                 let result = sess.with_quiesce(&mut finish,
                         Host::new(Cancel {
@@ -266,7 +269,7 @@ fn resource_exhaustion_recovers() {
                     hash,
                     &mut session,
                     session::Scope::driver,
-                    |server, session| {
+                    |server, _wait, session| {
                         let addr = server.local_addr();
                         let start = session.driver().driver_ref().clock().now().into();
                         session

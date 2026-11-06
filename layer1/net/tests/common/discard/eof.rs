@@ -3,7 +3,6 @@ use std::{cell::Cell, convert::Infallible, rc::Rc};
 use dope_core::{
     driver::{
         life::{self, recovery},
-        retained,
         route::{Erased, KeyTag, Tag as _, kind, table::conn},
         schedule::ready,
         settings,
@@ -241,8 +240,6 @@ pub fn arm<'p, 'd, M: input::Mode<Eof>>(
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<(), Error> {
     let mut driver = scope.context();
-    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-    let mut driver = retained::Context::new(driver.reborrow(), owner);
     pool.recv()
         .arm(key, &mut driver)
         .map_err(|failure| Error::ReceiveSubmit(failure.cause))
@@ -252,14 +249,11 @@ pub fn flush<'p, 'd, M: input::Mode<Eof>>(
     pool: &mut Pool<'p, 'd, M>,
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<(), Error> {
-    scope.with_driver(|mut driver, mut control| {
-        let turn = control.begin();
-        let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-        let mut driver = retained::Context::new(driver.reborrow(), owner);
-        pool.recv()
-            .flush(turn.turn().maint(), &mut driver)
-            .map_err(|failure| Error::ReceiveSubmit(failure.cause))
-    })
+    let (_, mut driver, mut control) = scope.split();
+    let turn = control.begin();
+    pool.recv()
+        .flush(turn.turn().maint(), &mut driver)
+        .map_err(|failure| Error::ReceiveSubmit(failure.cause))
 }
 
 pub fn receive<'d>(scope: &mut life::Scope<'_, 'd>) -> Result<(Flow, recv::Kind<'d>), Error> {
@@ -308,15 +302,14 @@ pub fn take_ready<'d>(
     scope: &mut life::Scope<'_, 'd>,
     mut observe: impl FnMut(Erased<'d, kind::Any>),
 ) -> ready::Readiness {
-    scope.with_driver(|_, mut control| {
-        let turn = control.begin();
-        let mut found = ready::Readiness::Idle;
-        turn.ready().drain(|token| {
-            observe(token);
-            found = ready::Readiness::Ready;
-        });
-        found
-    })
+    let (_, _, mut control) = scope.split();
+    let turn = control.begin();
+    let mut found = ready::Readiness::Idle;
+    turn.ready().drain(|token| {
+        observe(token);
+        found = ready::Readiness::Ready;
+    });
+    found
 }
 
 pub fn end<'p, 'd, M: input::Mode<Eof>>(
@@ -325,8 +318,6 @@ pub fn end<'p, 'd, M: input::Mode<Eof>>(
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<Finalize<()>, Error> {
     let mut driver = scope.context();
-    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-    let mut driver = retained::Context::new(driver.reborrow(), owner);
     let view = pool.egress_mut(key).ok_or(Error::Connection)?;
     Ok(view.connection.sending().finish(view.flights, &mut driver))
 }

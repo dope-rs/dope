@@ -18,7 +18,10 @@ use dope::{
             transfer,
         },
     },
-    manifold::{app::Host, file::read},
+    manifold::{
+        app::Host,
+        file::{appender, read},
+    },
     runtime::executor::session,
 };
 use dope_fiber::{abi::Task, file::Operation};
@@ -51,7 +54,7 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                     .storage
                     .budget(Resident::bytes(8))
                     .expect("resident budget");
-                let output = buffer(&budget, b'!');
+                let output = buffer(&budget);
                 let address = output.as_ref().as_ptr();
                 let done = session.with_quiesce(
                     &mut finish,
@@ -66,56 +69,64 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                             .expect("open fiber")
                             .ok()
                             .expect("open admission");
-                        let read::Completion::Open { result, .. } = opened else {
+                        let read::Completion::Open { request, result } = opened else {
                             panic!("open completion")
                         };
+                        drop(request);
                         let file = result.expect("open succeeds");
                         let descriptor = file.as_fd().as_raw_fd();
-                        let request = read::Read::try_new(file, output, file::Offset::fixed::<0>())
-                            .ok()
-                            .expect("nonempty output");
-                        let completed = fibers::TEST
-                            .try_run(
-                                &mut app,
-                                Operation::new(&port, read::Request::Read(request)),
-                            )
-                            .expect("read fiber")
-                            .ok()
-                            .expect("read admission");
-                        let read::Completion::Read { request, result } = completed else {
-                            panic!("read completion")
-                        };
-                        assert_eq!(result, Ok(transfer::Len::fixed::<3>()));
                         let completed = fibers::TEST
                             .try_run(
                                 &mut app,
                                 Operation::new(
                                     &port,
-                                    read::Request::Read(
-                                        request.at(file::Offset::from(transfer::Len::fixed::<3>())),
-                                    ),
+                                    read::Request::Metadata(read::Metadata::new(file)),
                                 ),
                             )
-                            .expect("EOF fiber")
+                            .expect("metadata fiber")
                             .ok()
-                            .expect("EOF admission");
-                        let read::Completion::Read { request, result } = completed else {
-                            panic!("EOF completion")
+                            .expect("metadata admission");
+                        let read::Completion::Metadata { file, result } = completed else {
+                            panic!("metadata completion")
                         };
-                        assert_eq!(result, Ok(transfer::Len::ZERO));
-                        let (file, output, _) = request.into_parts();
+                        let (kind, length) = result.expect("metadata succeeds");
                         assert_eq!(file.as_fd().as_raw_fd(), descriptor);
-                        assert_eq!(output.as_ref().as_ptr(), address);
-                        assert_eq!(output.as_ref(), b"abc!!!!!");
-                        assert_eq!(budget.resident(), 8);
-                        drop((file, output));
-                        assert_eq!(budget.resident(), 0);
+                        assert!(kind.is_regular());
+                        assert_eq!(length, file::Len::fixed::<3>());
+                        let mut request =
+                            read::Read::try_new(file, output, file::Offset::fixed::<0>())
+                                .ok()
+                                .expect("nonempty output");
+                        for (offset, expected) in [
+                            (file::Offset::fixed::<2>(), b"c".as_slice()),
+                            (file::Offset::fixed::<3>(), b"".as_slice()),
+                            (file::Offset::fixed::<0>(), b"abc".as_slice()),
+                        ] {
+                            let completed = fibers::TEST
+                                .try_run(
+                                    &mut app,
+                                    Operation::new(&port, read::Request::Read(request.at(offset))),
+                                )
+                                .expect("read fiber")
+                                .ok()
+                                .expect("read admission");
+                            let read::Completion::Read {
+                                request: returned,
+                                result,
+                            } = completed
+                            else {
+                                panic!("read completion")
+                            };
+                            assert_eq!(result.map(transfer::Len::into_raw), Ok(expected.len()));
+                            assert_eq!(returned.output().as_ref(), expected);
+                            request = returned;
+                        }
 
-                        let request = open(&directory, "absent");
+                        let missing = open(&directory, "absent");
                         let completed = fibers::TEST
                             .try_run(
                                 &mut app,
-                                Operation::new(&port, read::Request::Open(request)),
+                                Operation::new(&port, read::Request::Open(missing)),
                             )
                             .expect("error fiber")
                             .ok()
@@ -124,9 +135,41 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                             panic!("open error completion")
                         };
                         assert!(matches!(result, Err(read::Error::System(Errno::NOT_FOUND))));
+                        let occupied = port
+                            .try_request(read::Request::Open(open(&directory, "data")))
+                            .ok()
+                            .expect("occupy the only slot");
+                        let rejected = port
+                            .try_request(read::Request::Read(request))
+                            .err()
+                            .expect("full read admission");
+                        let (read::Request::Read(request), cause) = rejected.into_parts() else {
+                            panic!("returned read")
+                        };
+                        assert_eq!(cause, read::Admission::Full);
+                        assert_eq!(request.output().as_ref(), b"abc");
+                        drop(occupied);
+                        (request, descriptor)
                     },
                 );
-                assert!(done.is_ok(), "application finalizes");
+                let Ok((request, descriptor)) = done else {
+                    panic!("application finalizes")
+                };
+                let rejected = port
+                    .try_request(read::Request::Read(request))
+                    .err()
+                    .expect("closed read admission");
+                let (read::Request::Read(request), cause) = rejected.into_parts() else {
+                    panic!("returned read")
+                };
+                assert_eq!(cause, read::Admission::Closed);
+                let (file, output, _) = request.into_parts();
+                assert_eq!(output.as_ref(), b"abc");
+                assert_eq!(file.as_fd().as_raw_fd(), descriptor);
+                assert_eq!(output.as_ref().as_ptr(), address);
+                assert_eq!(budget.resident(), 8);
+                drop((file, output));
+                assert_eq!(budget.resident(), 0);
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             runtime::check_scope,
@@ -153,7 +196,7 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
                     .storage
                     .budget(Resident::bytes(8))
                     .expect("resident budget");
-                let output = buffer(&budget, 0);
+                let output = buffer(&budget);
                 let request = read::Read::try_new(
                     fs::File::open(&path).expect("file").into(),
                     output,
@@ -183,12 +226,6 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
                             .expect("first request");
                         let directory = file::Dir::open(dir.path()).expect("directory");
                         let next = open(&directory, "data");
-                        let denied = port
-                            .try_request(read::Request::Open(next))
-                            .err()
-                            .expect("one occupied request slot");
-                        assert_eq!(*denied.error(), read::Admission::Full);
-                        let (next, _) = denied.into_parts();
                         drop(ticket);
                         assert_eq!(
                             budget.resident(),
@@ -204,7 +241,7 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
                         );
                         assert_eq!(budget.resident(), 0);
                         let completion = fibers::TEST
-                            .try_run(&mut app, Operation::new(&port, next))
+                            .try_run(&mut app, Operation::new(&port, read::Request::Open(next)))
                             .expect("reused slot fiber")
                             .ok()
                             .expect("reused slot admission");
@@ -213,7 +250,7 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
                         };
                         let request = read::Read::try_new(
                             result.expect("reused slot opens"),
-                            buffer(&budget, 0),
+                            buffer(&budget),
                             file::Offset::fixed::<0>(),
                         )
                         .ok()
@@ -271,7 +308,7 @@ fn dropped_submitted_fiber_retains_output_through_forced_finish() {
                     .storage
                     .budget(Resident::bytes(8))
                     .expect("resident budget");
-                let output = buffer(&budget, 0);
+                let output = buffer(&budget);
                 let request = read::Read::try_new(
                     fs::File::open(&path).expect("file").into(),
                     output,
@@ -371,32 +408,38 @@ fn cancelled_open_reclaims_an_already_opened_descriptor() {
                     Host::new(observed),
                     scenario::TIMEOUT,
                     |mut app| {
-                        let request = open(&directory, "data");
-                        ticket.set(Some(
-                            port.try_request(read::Request::Open(request))
-                                .ok()
-                                .expect("open admission"),
-                        ));
-                        // The fixture drops this exact ticket only when the original
-                        // successful Open CQ owns its new FD, immediately before Reader.
-                        fibers::TEST
-                            .try_run(
-                                &mut app,
-                                dope_fiber::abi::poll_fn(|context| {
-                                    if cancelled.get() {
-                                        std::task::Poll::Ready(())
-                                    } else {
-                                        context.wake();
-                                        std::task::Poll::Pending
-                                    }
-                                }),
-                            )
-                            .expect("successful detached Open dispatch");
-                        assert!(submitted.get(), "the original Open flight was submitted");
-                        assert!(
-                            cancelled.get(),
-                            "the successful Open cancelled its exact ticket"
-                        );
+                        for request in [
+                            read::Request::Open(open(&directory, "data")),
+                            read::Request::Prepare(appender::Prepare::new(
+                                open(&directory, "data").into_path(),
+                                Some(b'c'),
+                            )),
+                        ] {
+                            submitted.set(false);
+                            cancelled.set(false);
+                            ticket.set(Some(
+                                port.try_request(request).ok().expect("open admission"),
+                            ));
+                            // Cancel immediately before Reader consumes the successful Open CQ.
+                            fibers::TEST
+                                .try_run(
+                                    &mut app,
+                                    dope_fiber::abi::poll_fn(|context| {
+                                        if cancelled.get() {
+                                            std::task::Poll::Ready(())
+                                        } else {
+                                            context.wake();
+                                            std::task::Poll::Pending
+                                        }
+                                    }),
+                                )
+                                .expect("successful detached Open dispatch");
+                            assert!(submitted.get(), "the original Open flight was submitted");
+                            assert!(
+                                cancelled.get(),
+                                "the successful Open cancelled its exact ticket"
+                            );
+                        }
 
                         let request = open(&directory, "data");
                         let completion = fibers::TEST

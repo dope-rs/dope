@@ -2,7 +2,7 @@ use std::mem;
 
 use dope_sys::Errno;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Wait {
     Read(Errno),
 }

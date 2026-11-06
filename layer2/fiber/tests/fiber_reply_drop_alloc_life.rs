@@ -36,7 +36,7 @@ fn deferral_holds_credit() {
 
     use crate::common::storage::replies::support::limit;
 
-    let extract_failure = Cell::new(false);
+    let extract_failure = Cell::new((false, 0));
     let failures = Drops::new();
     let values = Drops::new();
     Setup::throughput().with_turn(
@@ -68,6 +68,7 @@ fn deferral_holds_credit() {
                             "deferring extraction must preserve the pending failure"
                         );
                         assert_eq!(failures.count(), 0);
+                        assert_eq!(extract_failure.get(), (false, 1));
                         let (value, cause) = match lane
                             .select(cx.as_mut().region_token())
                             .try_push(Counted::mixed(&values))
@@ -83,12 +84,13 @@ fn deferral_holds_credit() {
                             (resource, required.get(), avail.get()),
                             (usage::Resource::Bytes, 1, 0)
                         );
-                        extract_failure.set(true);
+                        extract_failure.set((true, 1));
                         let failure = match Pin::new(&mut stream).poll_next(cx.as_mut()) {
                             Poll::Ready(value) => value,
                             Poll::Pending => None,
                         }
                         .expect("deferred failure must remain available");
+                        assert_eq!(extract_failure.get(), (true, 2));
                         assert_eq!(failure.failure, Some(7));
                         assert_eq!(failures.count(), 0);
                         assert!(

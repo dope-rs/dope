@@ -18,7 +18,7 @@ pub(in crate::network::listener) struct Egress<
 > {
     pub(in crate::network::listener) flights: &'a crate::Flights<'d, ID>,
     pub(in crate::network::listener) connection:
-        Slot<'a, 'w, 'd, ID, A::Wire, writer::Record<'p, 's, 'd, ID, A>>,
+        Slot<'a, 'p, 's, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
     pub(in crate::network::listener) pending: pending::Handle<'a, 'd, ID>,
     pub(in crate::network::listener) queue: egress::Queue<
         'a,

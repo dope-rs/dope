@@ -1,4 +1,4 @@
-use std::{marker, mem, ops::ControlFlow, os::fd, task};
+use std::{marker, mem, ops::ControlFlow, task};
 
 use dope_sys::{engine, engine::life, probe::Stopped, table::Retire};
 
@@ -179,7 +179,7 @@ impl life::Terminal for Terminal<'_, '_> {
         self.descriptors.has_pending()
     }
 
-    fn source(&self) -> Option<fd::BorrowedFd<'_>> {
+    fn source(&self) -> Option<dope_sys::engine::register::Source<'_>> {
         self.lifecycle.source
     }
 }

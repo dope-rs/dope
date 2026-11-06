@@ -1,7 +1,7 @@
 use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -39,7 +39,7 @@ impl Wake {
     pub(crate) fn drain<'d, ID: route::Identity>(
         &self,
         conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, u8>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         while *conn.state() < 3 {
             let commits = self.commits.clone();
@@ -102,7 +102,7 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Wake {
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, u8>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, u8>
     where
         'd: 'w,
@@ -130,7 +130,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Wake {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, u8>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let event = Event::Chunk(chunk.as_ref().len());
         self.events.push(event);
@@ -200,7 +200,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Zero {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let before = conn.work().remaining();
         let mut capacity = None;

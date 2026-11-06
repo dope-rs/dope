@@ -2,7 +2,7 @@ mod cell;
 
 pub(in crate::link::oneshot) use cell::Cell;
 use dope_core::{
-    driver::{result, retained, route::Identity},
+    driver::{self, result, route::Identity},
     io::{
         event::net::{connect, send, socket::Completion},
         socket,
@@ -19,16 +19,15 @@ use crate::link::{
 };
 
 /// Retained operations on one exact installed pool and its driver turn.
-pub struct Io<'a, 'turn, 'owner, 'd: 'owner, ID: Identity, A: 'd, P: socket::Prepared, B: 'd>
+pub struct Io<'a, 'turn, 'd, ID: Identity, A: 'd, P: socket::Prepared, B: 'd>
 where
     B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
 {
     pool: &'a mut Pool<'d, ID, A, P, B>,
-    driver: &'a mut retained::Context<'turn, 'owner, 'd>,
+    driver: &'a mut driver::Context<'turn, 'd>,
 }
 
-impl<'a, 'turn, 'owner, 'd: 'owner, ID: Identity, A: 'd, P: socket::Prepared, B: 'd>
-    Io<'a, 'turn, 'owner, 'd, ID, A, P, B>
+impl<'a, 'turn, 'd, ID: Identity, A: 'd, P: socket::Prepared, B: 'd> Io<'a, 'turn, 'd, ID, A, P, B>
 where
     B: data::raw::Payload<'d> + data::raw::StableOwner<'d>,
 {
@@ -37,7 +36,7 @@ where
     /// addresses and payloads until completion or quiescence, beyond this access.
     pub unsafe fn new(
         pool: &'a mut Pool<'d, ID, A, P, B>,
-        driver: &'a mut retained::Context<'turn, 'owner, 'd>,
+        driver: &'a mut driver::Context<'turn, 'd>,
     ) -> Self {
         Self { pool, driver }
     }

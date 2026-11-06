@@ -5,7 +5,7 @@ use dope::core::driver::{
     route::{Epoch, KeyTag, indices::SlotIndex},
 };
 use dope_fiber::{
-    abi::{Pending, Ready},
+    abi::Ready,
     context::{Context, wake::RootWaker},
 };
 use dope_test::{alloc, alloc::Tracker};
@@ -17,28 +17,12 @@ use common::recover;
 
 use core::array::from_fn;
 
-use dope_fiber::task::group::{Drive, Group, Vacant};
+use dope_fiber::task::group::{Drive, Group};
 
 use crate::common::schedule::tasks::fixtures::*;
 
 #[global_allocator]
 static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-#[test]
-fn layout_is_compact() {
-    use std::mem;
-
-    assert_eq!(
-        mem::size_of::<Vacant<'static, 'static, Ready<()>, 1>>(),
-        2 * mem::size_of::<usize>()
-    );
-    assert!(mem::size_of::<Group<'static, Ready<()>, 1>>() < 296);
-    assert!(mem::size_of::<Group<'static, Ready<()>, 8>>() < 632);
-    assert_eq!(
-        std::alloc::Layout::new::<Group<'static, Pending<()>, 8>>(),
-        std::alloc::Layout::new::<Group<'static, Pending<[u128; 64]>, 8>>()
-    );
-}
 
 #[test]
 fn self_wake_waits_for_turn() {

@@ -5,7 +5,7 @@ use app::{
     connect::{Full, Peer},
 };
 use dope_core::{
-    driver::{retained, route::Identity, schedule, schedule::clock},
+    driver::{self, route::Identity, schedule, schedule::clock},
     io::{event::net::connect, socket},
 };
 use dope_net::link::{event, pool};
@@ -49,7 +49,7 @@ where
     fn try_finish(
         self: pin::Pin<&mut Self>,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<event::Connect<'d, ID, attempt::Id<'d, ID>, Self::Addr>, connect::Completion<'d>>;
 
     fn connected(
@@ -59,7 +59,7 @@ where
         peer: Self::Addr,
         now: clock::Moment<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Disposition<S::Error>;
 }
 
@@ -69,7 +69,7 @@ fn attach_peer<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>(
     peer: A::Addr,
     now: clock::Moment<'d>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> Disposition<S::Error>
 where
     A: app::Lifecycle<'w, 'd, ID, Connect = Peer> + app::Peer<'d, ID>,
@@ -135,7 +135,7 @@ where
     fn try_finish(
         self: pin::Pin<&mut Self>,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<event::Connect<'d, ID, attempt::Id<'d, ID>, Self::Addr>, connect::Completion<'d>>
     {
         let target = self.as_ref().backoff();
@@ -158,7 +158,7 @@ where
         peer: Self::Addr,
         now: clock::Moment<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Disposition<S::Error> {
         let ctrl = &mut self.as_mut().project().controller;
         match ctrl.connected(owner, driver.state_token()) {
@@ -271,7 +271,7 @@ where
     fn try_finish(
         self: pin::Pin<&mut Self>,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<event::Connect<'d, ID, attempt::Id<'d, ID>, Self::Addr>, connect::Completion<'d>>
     {
         let target = self.as_ref().backoff();
@@ -294,7 +294,7 @@ where
         _: Self::Addr,
         now: clock::Moment<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Disposition<S::Error> {
         let ctrl = &mut self.as_mut().project().controller;
         let peer = match ctrl.attach(owner, driver.state_token(), Clone::clone) {

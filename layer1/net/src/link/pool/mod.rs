@@ -32,9 +32,8 @@ use crate::{
         slot::{transmit, types},
     },
     wire::{
-        self,
+        self, domain,
         open::{self, Runtime as _},
-        terminal,
     },
 };
 
@@ -217,6 +216,13 @@ where
 
     pub fn recv(&mut self) -> recv::Receiver<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
         recv::Receiver::new(self)
+    }
+
+    pub fn reconfigure(&mut self, config: <W::Runtime<'w, 'd, ID> as domain::Reconfigure>::Config)
+    where
+        W::Runtime<'w, 'd, ID>: domain::Reconfigure,
+    {
+        domain::Reconfigure::reconfigure(&mut self.prepared.runtime, config);
     }
 
     /// Spends one maintenance permit per selection, including stale activations.
@@ -422,11 +428,8 @@ where
                     };
                     (
                         types::Connection {
-                            control: types::Control::new(engine, terminal::State::open()),
-                            wire,
-                            send,
+                            control: types::Control::new(engine, wire, send, key),
                             state,
-                            key,
                         },
                         done,
                     )

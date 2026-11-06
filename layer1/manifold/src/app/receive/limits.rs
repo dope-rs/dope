@@ -45,6 +45,13 @@ impl Budget {
         Self { each, min }
     }
 
+    pub fn max(self, other: Self) -> Self {
+        Self {
+            each: self.each.max(other.each.bytes()),
+            min: self.min.max(other.min),
+        }
+    }
+
     pub fn capacity(self, conns: conn::Capacity) -> Result<domain::Resident, crate::ConfigError> {
         let count = conns.entries().get();
         let cap = self

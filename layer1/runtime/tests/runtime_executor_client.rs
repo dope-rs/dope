@@ -167,75 +167,87 @@ fn reject_keeps_clock() {
     let mut create = Attempt::new();
     let mut reports = Vec::new();
 
-    let executor = Configured::throughput().try_executor(&mut create);
-    executor
-        .as_ref()
-        .map_err(|error| error.kind())
-        .expect("executor creation");
-    executor.ok().expect("validated executor").run(|executor| {
+    let (main, worker) =
+        dope_runtime::process::lifecycle::Main::try_pair().expect("installation lifecycle");
+    let outcome = worker.run(|source| {
+        let executor = Configured::throughput().try_source(&mut create, source);
         executor
-            .enter_with(
-                |mut session| {
-                    let future = session
-                        .driver()
-                        .driver_ref()
-                        .clock()
-                        .now()
-                        .try_add(Duration::from_secs(3600))
-                        .expect("manual future");
-                    let events = RefCell::new(Vec::new());
-                    let mut called = false;
-                    assert!(matches!(
-                        session.with_at_for(
-                            &mut finish,
-                            Rejected::<true>(&events),
-                            future,
-                            TIMEOUT,
-                            |_| called = true,
-                        ),
-                        Err(session::Error::Install {
-                            cause: InstallError::Coordinators { count, limit },
-                            disarm: None,
-                        })
-                            if count.get() == schedule::LIMIT + 1 && limit == schedule::LIMIT
-                    ));
-                    let lifecycle = [
-                        Lifecycle::Installed,
-                        Lifecycle::Stopped,
-                        Lifecycle::Finished,
-                        Lifecycle::Dropped,
-                    ];
-                    assert_eq!(events.borrow().as_slice(), lifecycle);
-                    events.borrow_mut().clear();
-                    assert!(matches!(
-                        session.with_at_for(
-                            &mut finish,
-                            Rejected::<false>(&events),
-                            future,
-                            TIMEOUT,
-                            |_| called = true,
-                        ),
-                        Err(session::Error::Install {
-                            cause: InstallError::Claim(
-                                dope_core::driver::settings::errors::Claim::DuplicateRoute(id)
-                            ),
-                            disarm: None,
-                        }) if id == dope_core::driver::route::Id::fixed::<3>()
-                    ));
-                    assert_eq!(events.borrow().as_slice(), lifecycle);
-                    assert!(matches!(
-                        session.with_app(&mut finish, App { value: 0 }, |_| called = true),
-                        Err(session::Error::Drive(drive::Error::ClockMovedBackwards(error)))
-                            if error.current() == future.into_raw()
-                    ));
-                    assert!(!called);
-                },
-                recovery::Policy::new(|event| reports.push(event), common::recover),
-            )
             .as_ref()
-            .map_err(|error| error.cause())
-            .expect("executor completion");
+            .map_err(|error| error.kind())
+            .expect("executor creation");
+        executor.ok().expect("validated executor").run(|executor| {
+            executor
+                .enter_with(
+                    |mut session| {
+                        let future = session
+                            .driver()
+                            .driver_ref()
+                            .clock()
+                            .now()
+                            .try_add(Duration::from_secs(3600))
+                            .expect("manual future");
+                        let events = RefCell::new(Vec::new());
+                        let mut called = false;
+                        assert!(matches!(
+                            session.with_at_for(
+                                &mut finish,
+                                Rejected::<true>(&events, Some(&main)),
+                                future,
+                                TIMEOUT,
+                                |_| called = true,
+                            ),
+                            Err(session::Error::Install {
+                                cause: InstallError::Coordinators { count, limit },
+                                disarm: None,
+                            })
+                                if count.get() == schedule::LIMIT + 1 && limit == schedule::LIMIT
+                        ));
+                        let lifecycle = [
+                            Lifecycle::Installed,
+                            Lifecycle::Stopped,
+                            Lifecycle::Finished,
+                            Lifecycle::Dropped,
+                        ];
+                        assert_eq!(events.borrow().as_slice(), lifecycle);
+                        events.borrow_mut().clear();
+                        assert!(matches!(
+                            session.with_at_for(
+                                &mut finish,
+                                Rejected::<false>(&events, None),
+                                future,
+                                TIMEOUT,
+                                |_| called = true,
+                            ),
+                            Err(session::Error::Install {
+                                cause: InstallError::Claim(
+                                    dope_core::driver::settings::errors::Claim::DuplicateRoute(id)
+                                ),
+                                disarm: None,
+                            }) if id == dope_core::driver::route::Id::fixed::<3>()
+                        ));
+                        assert_eq!(events.borrow().as_slice(), lifecycle);
+                        assert!(matches!(
+                            session.with_app(&mut finish, App { value: 0 }, |_| called = true),
+                            Err(session::Error::Drive(drive::Error::ClockMovedBackwards(error)))
+                                if error.current() == future.into_raw()
+                        ));
+                        assert!(!called);
+                    },
+                    recovery::Policy::new(|event| reports.push(event), common::recover),
+                )
+                .as_ref()
+                .map_err(|error| error.cause())
+                .expect("executor completion");
+        });
+        Ok::<_, std::convert::Infallible>(())
     });
+    assert!(matches!(
+        outcome,
+        dope_runtime::process::lifecycle::Outcome::Failed {
+            output: Ok(()),
+            report: dope_runtime::process::failure::bus::Report::Clean,
+        }
+    ));
     assert!(
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"

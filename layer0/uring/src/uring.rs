@@ -286,6 +286,7 @@ impl provided::Source for Uring {
 
 impl file::File for Uring {
     type Options = types::OpenHow;
+    type Metadata = crate::raw::Metadata;
     type Request<'a> = Borrowed<'a>;
 }
 

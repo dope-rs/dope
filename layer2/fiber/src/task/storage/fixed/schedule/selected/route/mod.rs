@@ -6,7 +6,7 @@ use routes::{Dispatch, Root};
 use schedule::selected::{self, Claim, Item};
 
 use crate::{
-    core::driver::{retained, schedule::app::step},
+    core::driver::{self, schedule::app::step},
     task::storage::{
         caps,
         fixed::{
@@ -94,7 +94,7 @@ where
 
     pub fn step(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> (selected::Completed<'d, R::Member>, step::Receipt<'turn, 'd>) {
         self.claim.step(driver)
     }
@@ -106,10 +106,7 @@ where
     R::Member: schedule::Ops<'d>,
     Q: quota::State,
 {
-    pub fn drive(
-        self,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> selected::Completed<'d, R::Member> {
+    pub fn drive(self, driver: &mut driver::Context<'_, 'd>) -> selected::Completed<'d, R::Member> {
         self.claim.drive(driver)
     }
 }

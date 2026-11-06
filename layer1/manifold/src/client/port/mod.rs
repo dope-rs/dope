@@ -158,13 +158,8 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
             return Ok(());
         };
         let (slot, proof) = (receiver.slot, receiver.txn);
-        let close = receiver.take_close();
-        let result = if close.is_none() {
-            receiver.try_drain(requests, begin)
-        } else {
-            Ok(())
-        };
-        Self::finish_drain(slot, proof, close, requests);
+        let result = receiver.try_drain(requests, begin);
+        Self::finish_drain(slot, proof, requests);
         result
     }
 
@@ -175,13 +170,8 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
     ) -> Option<Sender<'a, 'e, 'd, B, ID>> {
         let receiver = self.entry(requests.connection())?;
         let (slot, proof) = (receiver.slot, receiver.txn);
-        let close = receiver.take_close();
-        let progress = if close.is_none() {
-            receiver.drain(requests)
-        } else {
-            receiver::Progress::Idle
-        };
-        Self::finish_drain(slot, proof, close, requests);
+        let progress = receiver.drain(requests);
+        Self::finish_drain(slot, proof, requests);
         match progress {
             receiver::Progress::Idle => None,
             receiver::Progress::Moved => Some(Sender::new(slot, proof)),

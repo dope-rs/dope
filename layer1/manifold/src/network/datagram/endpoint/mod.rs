@@ -80,20 +80,17 @@ where
 {
     type Access = dispatch::raw::Plain;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ops::ControlFlow<io::Event<'d>> {
         let (mut endpoint, (), (event, mut driver)) = call.into_parts();
         let clock = driver.driver_ref().clock();
         let this = endpoint.as_mut().project();

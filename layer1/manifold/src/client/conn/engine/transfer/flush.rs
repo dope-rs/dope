@@ -1,7 +1,7 @@
 use std::pin;
 
 use app::resume;
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::link::{
     egress,
     pool::{self, pending},
@@ -41,23 +41,21 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn admit<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn admit<'machine, 'turn, 'driver, 'context>(
         engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> Option<(types::Demand, Option<Reason>)>
     where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>;
 
     /// Flushes available work while peer EOF retains the application's drain fence.
-    fn flush<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn flush<'machine, 'turn, 'driver, 'context>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
     {
         enum Demand {
@@ -194,14 +192,13 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn admit<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn admit<'machine, 'turn, 'driver, 'context>(
         engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         _: schedule::Turn<'turn, 'd>,
-        _: &'driver mut retained::Context<'context, 'owner, 'd>,
+        _: &'driver mut driver::Context<'context, 'd>,
     ) -> Option<(types::Demand, Option<Reason>)>
     where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
     {
         engine
@@ -226,14 +223,13 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn admit<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn admit<'machine, 'turn, 'driver, 'context>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> Option<(types::Demand, Option<Reason>)>
     where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
     {
         let state = engine

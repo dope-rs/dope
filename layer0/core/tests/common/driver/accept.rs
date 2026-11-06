@@ -20,7 +20,8 @@ pub fn connect<'d>(
     while !matches!(Readiness::from(scope.driver_ref()), Readiness::Ready) {
         let left = deadline.saturating_duration_since(Instant::now());
         assert!(!left.is_zero(), "descriptor retirement deadline");
-        scope.with_driver(|mut driver, mut schedule| {
+        {
+            let (_, mut driver, mut schedule) = scope.split();
             let mut turn = schedule.begin();
             Wait {
                 driver: &mut driver,
@@ -31,14 +32,15 @@ pub fn connect<'d>(
             .as_ref()
             .map_err(super::Failure::cause)
             .expect("descriptor retirement");
-        });
+        };
     }
     let peer = Peer::at(address).try_connect().expect("peer");
     let mut completed = None;
     while completed.is_none() {
         let left = deadline.saturating_duration_since(Instant::now());
         assert!(!left.is_zero(), "accept deadline");
-        scope.with_driver(|mut driver, mut schedule| {
+        {
+            let (_, mut driver, mut schedule) = scope.split();
             let mut turn = schedule.begin();
             driver.wait(turn.reactor(), Some(left)).expect("accept");
             let dispatched = driver.dispatch(turn.reactor(), |event, _| {
@@ -54,7 +56,7 @@ pub fn connect<'d>(
                 dispatched,
                 poll::Dispatch::Ready { retained: None, .. }
             ));
-        });
+        };
     }
     (peer, completed.expect("native accept completion"))
 }

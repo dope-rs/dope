@@ -36,22 +36,20 @@ where
         'd: 'w,
         W: 'w + 'd;
 
-    type Admission<'a, 'c, 'owner, 'd>
-        = Grant<'a, 'c, 'owner, 'd, W>
+    type Admission<'a, 'c, 'd>
+        = Grant<'a, 'c, 'd, W>
     where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner,
+        'd: 'a + 'c,
         W: 'd;
 
-    fn drive_data<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
+    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
         mut policy: pin::Pin<&mut P>,
         data: A,
-        work: Self::Admission<'a, 'c, 'owner, 'd>,
+        work: Self::Admission<'a, 'c, 'd>,
     ) where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner + 'w + 'p,
+        'd: 'a + 'c + 'w + 'p,
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,

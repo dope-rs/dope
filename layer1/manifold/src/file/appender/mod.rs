@@ -1,4 +1,4 @@
-use std::{marker, ops, os::fd, path, pin};
+use std::{marker, mem::MaybeUninit, ops, os::fd, path, pin};
 
 use dope_core::{
     driver::{
@@ -19,6 +19,7 @@ pub use layout::Layout;
 use o3::{
     buffer::write::{Staged, consume},
     depot::queue::ring::inline,
+    mem::Rejected,
 };
 pub use record::Record;
 use state::State;
@@ -29,7 +30,6 @@ use crate::{
     file,
 };
 
-mod block;
 mod queue;
 pub(in crate::file) use queue::{InFlight, Pending, Queue};
 mod layout;
@@ -56,25 +56,63 @@ pub struct Capacity {
 pub enum OpenError {
     Open(open::Error),
     Lock(file::LockError),
+    Metadata(fs::metadata::Error),
     Read(dope_core::Errno),
     Tail { expected: u8, observed: Option<u8> },
+    Request(file::read::Error),
 }
 #[derive(Debug)]
 pub enum RotateError {
     Failed(Failure),
     Closed,
     Busy,
-    Open(OpenError),
 }
+
+pub struct Prepare(pub(in crate::file) Preparation);
+
+pub(in crate::file) enum Preparation {
+    Opening {
+        request: fs::OpenRequest,
+        tail: Option<u8>,
+    },
+    Metadata {
+        request: file::read::Metadata,
+        tail: Option<u8>,
+    },
+    Tail {
+        prepared: Prepared,
+        position: fs::Offset,
+        output: MaybeUninit<u8>,
+        expected: u8,
+    },
+    Done(Result<Prepared, OpenError>),
+}
+
+pub struct Prepared {
+    pub(in crate::file) file: file::Locked,
+    pub(in crate::file) end: fs::Offset,
+}
+
+impl Prepared {
+    pub const fn end(&self) -> fs::Offset {
+        self.end
+    }
+}
+
+impl Prepare {
+    pub fn new(path: fs::path::Confined, tail: Option<u8>) -> Self {
+        Self(Preparation::Opening {
+            request: fs::OpenRequest::new(path, options(tail)),
+            tail,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Failure {
     System(dope_core::Errno),
     Submission(SubmitError),
     WriteZero,
-    Amount {
-        observed: transfer::Len,
-        remaining: transfer::Len,
-    },
     Cancelled,
 }
 #[repr(transparent)]
@@ -116,8 +154,18 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         required_tail: Option<u8>,
         storage: &'p mut Storage<N, B>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<Self, creation::Error> {
-        let file = open_file(path.as_ref(), required_tail).map_err(creation::Error::Appender)?;
+    ) -> Result<(Self, fs::Offset), creation::Error> {
+        let prepared =
+            open_file(path.as_ref(), required_tail).map_err(creation::Error::Appender)?;
+        Self::try_from_prepared(prepared, storage, driver)
+    }
+
+    pub fn try_from_prepared(
+        prepared: Prepared,
+        storage: &'p mut Storage<N, B>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) -> Result<(Self, fs::Offset), creation::Error> {
+        let Prepared { file, end } = prepared;
         let mut held = lease::Owner::try_reserve(driver).map_err(creation::Error::Route)?;
         let flights = held
             .driver()
@@ -132,17 +180,21 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
             .slots();
         let route = held.commit();
         storage.failure.set(None);
-        Ok(Self {
-            file,
-            _route: route,
-            flights,
-            queue: Queue {
-                storage,
-                current: None,
-                in_flight: None,
-                closed: false,
+        storage.confirmed.set(0);
+        Ok((
+            Self {
+                file,
+                _route: route,
+                flights,
+                queue: Queue {
+                    storage,
+                    current: None,
+                    in_flight: None,
+                    closed: false,
+                },
             },
-        })
+            end,
+        ))
     }
     pub fn record<'a>(
         self: pin::Pin<&'a mut Self>,
@@ -173,11 +225,11 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
                     .try_acquire()
                     .map_err(WriteError::Full)?,
             };
-            if limit > B - block.get().bytes.len() {
+            if limit > B - block.get().len() {
                 block.push_back(());
                 continue;
             }
-            let block = &mut self.queue.current.insert(block).get_mut().bytes;
+            let block = self.queue.current.insert(block).get_mut();
             let bytes = Staged::try_new(block, limit as u32).map_err(WriteError::Capacity)?;
             return Ok(Record {
                 bytes,
@@ -189,13 +241,13 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         let Some(block) = self.queue.current.take() else {
             return;
         };
-        if block.get().bytes.is_empty() {
+        if block.get().is_empty() {
             block.release();
         } else {
             block.push_back(());
         }
     }
-    pub(super) fn prepare(&mut self) -> Option<Pending<'p, N, B>> {
+    pub(super) fn prepare(&mut self) -> Option<Pending<'p, N>> {
         if let Some(active) = self.queue.in_flight.take() {
             return match active {
                 InFlight::Rejected { pending } if self.queue.storage.failure().is_none() => {
@@ -217,7 +269,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
     pub(super) fn settle(
         &mut self,
         target: route::Erased<'d, kind::Write>,
-    ) -> Option<Pending<'p, N, B>> {
+    ) -> Option<Pending<'p, N>> {
         match self.queue.in_flight.take()? {
             InFlight::Submitted { pending, flight } if flight.matches(target) => {
                 drop(flight);
@@ -229,7 +281,7 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
             }
         }
     }
-    pub(super) fn fail_pending(&mut self, pending: Pending<'p, N, B>, error: Failure) {
+    pub(super) fn fail_pending(&mut self, pending: Pending<'p, N>, error: Failure) {
         pending.release();
         self.fail(error);
     }
@@ -265,16 +317,14 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> Appender<'p, 'd, ID, 
         }
         self.fail(Failure::Cancelled);
     }
-    fn submit<'borrow, 'scope>(
+    fn submit<'borrow>(
         &'borrow mut self,
-        pending: Pending<'p, N, B>,
-        driver: &mut dispatch::raw::Context<'_, 'scope, 'd, dispatch::raw::Retained>,
+        pending: Pending<'p, N>,
+        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
     ) where
-        'd: 'scope,
-        'scope: 'borrow,
+        'd: 'borrow,
     {
         let target = driver
-            .driver()
             .driver_ref()
             .targets::<<ID as route::Materialize<kind::Write>>::With>()
             .bind(indices::SlotIndex::ZERO, route::Epoch::INITIAL);
@@ -304,6 +354,10 @@ impl<'step, 'p, 'd, ID: Identity, const N: usize, const B: usize> Control<'step,
 where
     'd: 'step,
 {
+    pub fn confirmed(&self) -> u64 {
+        self.inner.as_ref().get_ref().queue.storage.confirmed()
+    }
+
     pub fn record<'a>(&'a mut self, limit: usize) -> Result<Record<'a, 'd>, WriteError> {
         self.inner.as_mut().get_mut().begin(limit)
     }
@@ -322,22 +376,22 @@ where
     /// Seals the current block and replaces the file after successful drain.
     pub fn try_rotate(
         &mut self,
-        path: impl AsRef<path::Path>,
-        required_tail: Option<u8>,
-    ) -> Result<(), RotateError> {
+        prepared: Prepared,
+    ) -> Result<fs::Offset, Rejected<Prepared, RotateError>> {
         let this = self.inner.as_mut().get_mut();
         if let Some(failure) = this.queue.storage.failure() {
-            return Err(RotateError::Failed(failure));
+            return Err(Rejected::new(prepared, RotateError::Failed(failure)));
         }
         if this.queue.closed {
-            return Err(RotateError::Closed);
+            return Err(Rejected::new(prepared, RotateError::Closed));
         }
         this.seal();
         if this.queue.in_flight.is_some() || !this.queue.storage.pool.is_empty() {
-            return Err(RotateError::Busy);
+            return Err(Rejected::new(prepared, RotateError::Busy));
         }
-        this.file = open_file(path.as_ref(), required_tail).map_err(RotateError::Open)?;
-        Ok(())
+        let Prepared { file, end } = prepared;
+        this.file = file;
+        Ok(end)
     }
 }
 
@@ -346,20 +400,17 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> event::Drive<'d>
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'root>(
+    fn dispatch<'app, 'driver>(
         call: executor::raw::Call<
             'app,
             Self,
             (),
             (
                 io::Event<'d>,
-                dispatch::raw::Context<'driver, 'root, 'd, Self::Access>,
+                dispatch::raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ops::ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ops::ControlFlow<io::Event<'d>> {
         let (mut app, (), (event, mut driver)) = call.into_parts();
         let done = match event.into_kind() {
             Kind::Write(done) => done,
@@ -374,16 +425,9 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> event::Drive<'d>
                 this.fail_pending(pending, Failure::WriteZero);
             }
             Ok(amount) => {
-                if let Err(left) = pending.advance(amount) {
-                    this.fail_pending(
-                        pending,
-                        Failure::Amount {
-                            observed: amount,
-                            remaining: left,
-                        },
-                    );
-                    return ops::ControlFlow::Continue(());
-                }
+                pending.advance(amount);
+                let confirmed = &this.queue.storage.confirmed;
+                confirmed.set(confirmed.get() + amount.into_raw() as u64);
                 if pending.is_complete() {
                     pending.release();
                 } else {
@@ -399,29 +443,33 @@ impl<'p, 'd, ID: Identity, const N: usize, const B: usize> event::Drive<'d>
     }
 }
 
-fn open_file(path: &path::Path, required_tail: Option<u8>) -> Result<file::Locked, OpenError> {
+fn options(required_tail: Option<u8>) -> open::Options {
+    let access = match required_tail {
+        Some(_) => open::Access::ReadWrite,
+        None => open::Access::Write,
+    };
+    open::Options::new(access)
+        .creation(open::Creation::Create)
+        .append()
+        .nofollow()
+        .nonblock()
+}
+
+fn open_file(path: &path::Path, required_tail: Option<u8>) -> Result<Prepared, OpenError> {
     use fs::path::CStrExt as _;
 
     let path = Box::try_copy(path)
         .map_err(open::Error::from)
         .map_err(OpenError::Open)?;
-    let access = match required_tail {
-        Some(_) => open::Access::ReadWrite,
-        None => open::Access::Write,
-    };
-    let file = open::Options::new(access)
-        .creation(open::Creation::Create)
-        .append()
-        .nofollow()
-        .nonblock()
+    let file = options(required_tail)
         .open(&path)
         .map_err(open::Error::System)
         .map_err(OpenError::Open)?;
     drop(path);
-    let (file, offset) = file::Locked::try_new(file).map_err(OpenError::Lock)?;
+    let (file, end) = file::Locked::try_new(file).map_err(OpenError::Lock)?;
     // Subtracting one admits precisely the nonempty file lengths.
     if let Some(expected) = required_tail
-        && let Ok(position) = offset.checked_sub(transfer::Len::fixed::<1>())
+        && let Ok(position) = end.checked_sub(transfer::Len::fixed::<1>())
     {
         let mut tail = [0];
         let observed = file
@@ -429,11 +477,16 @@ fn open_file(path: &path::Path, required_tail: Option<u8>) -> Result<file::Locke
             .map_err(OpenError::Read)?
             .first()
             .copied();
-        if observed != Some(expected) {
-            return Err(OpenError::Tail { expected, observed });
-        }
+        check_tail(expected, observed)?;
     }
-    Ok(file)
+    Ok(Prepared { file, end })
+}
+
+pub(in crate::file) fn check_tail(expected: u8, observed: Option<u8>) -> Result<(), OpenError> {
+    if observed != Some(expected) {
+        return Err(OpenError::Tail { expected, observed });
+    }
+    Ok(())
 }
 
 mod raw;

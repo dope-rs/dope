@@ -2,9 +2,10 @@ use std::{ops, task::Poll};
 
 use dope_core::{
     driver::{
+        self,
         receive::{Absent, Attempt, Registration, Stale},
         result,
-        retained::{self, flight},
+        retained::flight,
         route::Identity,
     },
     io::event::net::recv::ControlKind,
@@ -64,13 +65,16 @@ pub enum Readiness {
 
 const _: () = assert!(std::mem::size_of::<Readiness>() == 1);
 
-pub struct Control<'w, 'd, ID: Identity, W: wire::Spec + 'w>
+pub struct Control<'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w>
 where
     'd: 'w,
 {
     pub(in crate::link) engine: slot::Engine<'d, ID, W>,
     /// Wire terminal state retained until both directions settle.
     pub terminal: terminal::State<terminal::Error<'w, W>>,
+    pub(in crate::link) wire: W::Connection<'w, ID>,
+    pub(in crate::link) send: W::SendStorage<'w>,
+    pub(in crate::link) key: pool::Key<'d, ID>,
 }
 
 pub struct Connection<'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S>
@@ -78,21 +82,26 @@ where
     'd: 'w,
 {
     pub(in crate::link) control: Control<'w, 'd, ID, W>,
-    pub(in crate::link) wire: W::Connection<'w, ID>,
-    pub(in crate::link) send: W::SendStorage<'w>,
     pub state: S,
-    pub(in crate::link) key: pool::Key<'d, ID>,
 }
 
-impl<'w, 'd, ID: Identity, W: wire::Spec + 'w> Control<'w, 'd, ID, W>
+impl<'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Control<'w, 'd, ID, W>
 where
     'd: 'w,
 {
     pub(in crate::link) fn new(
         engine: slot::Engine<'d, ID, W>,
-        terminal: terminal::State<terminal::Error<'w, W>>,
+        wire: W::Connection<'w, ID>,
+        send: W::SendStorage<'w>,
+        key: pool::Key<'d, ID>,
     ) -> Self {
-        Self { engine, terminal }
+        Self {
+            engine,
+            terminal: terminal::State::open(),
+            wire,
+            send,
+            key,
+        }
     }
 
     pub fn is_closing(&self) -> bool {
@@ -174,7 +183,7 @@ where
     }
 }
 
-impl<'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Connection<'w, 'd, ID, W, S>
+impl<'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Control<'w, 'd, ID, W>
 where
     'd: 'w,
 {
@@ -182,26 +191,14 @@ where
         self.key
     }
 
-    pub fn send_status(&self) -> direct::Status<'_, 'w, 'd, ID, W, S> {
+    pub fn send_status(&self) -> direct::Status<'_, 'w, 'd, ID, W> {
         direct::Status::new(self)
     }
 
-    pub fn sending(&mut self) -> transmit::Sending<'_, 'w, 'd, ID, W, S> {
+    pub fn sending(&mut self) -> transmit::Sending<'_, 'w, 'd, ID, W> {
         transmit::Sending::new(self)
     }
 
-    /// Borrows application state and the disjoint direct-send capability.
-    pub fn split_send(&mut self) -> (&mut S, direct::raw::Sending<'_, 'w, 'd, ID, W>) {
-        let target = self.key.target();
-        let send = direct::raw::Sending::new(
-            &mut self.control.engine,
-            &mut self.wire,
-            &mut self.send,
-            &mut self.control.terminal,
-            target,
-        );
-        (&mut self.state, send)
-    }
     /// Starts discarding receive bytes when the wire policy supports it.
     pub fn try_discard(&mut self, prefix: discard::Prefix) -> discard::Start {
         if self.engine.operations.lifecycle.is_closing() {
@@ -211,6 +208,12 @@ where
             &mut self.engine.discard,
             prefix,
         )
+    }
+}
+
+impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w, S> Connection<'w, 'd, ID, W, S> {
+    pub fn split(&mut self) -> (&mut S, &mut Control<'w, 'd, ID, W>) {
+        (&mut self.state, &mut self.control)
     }
 }
 
@@ -250,7 +253,7 @@ where
     pub(in crate::link) fn submit_recv(
         &mut self,
         slots: &flight::Slots<'d, ID>,
-        ctx: &mut retained::Context<'_, '_, 'd>,
+        ctx: &mut driver::Context<'_, 'd>,
     ) -> Result<duplex::Rearm, result::SubmitError> {
         let conn = self;
         if conn.control.engine.operations.recv.is_armed() {
@@ -293,7 +296,7 @@ where
         let Some(fd) = conn.control.engine.fd() else {
             return Ok(duplex::Rearm::Needed);
         };
-        let op = match slots.recv(ctx.driver().reborrow(), fd, target) {
+        let op = match slots.recv(ctx.reborrow(), fd, target) {
             Ok(op) => op,
             Err(error) => match error.cause() {
                 result::SubmitCause::Full => return Ok(duplex::Rearm::Needed),

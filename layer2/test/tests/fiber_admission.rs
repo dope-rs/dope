@@ -2,7 +2,6 @@ use std::{convert::Infallible, pin::pin, task::Poll, time::Duration};
 
 use dope_core::driver::{
     life::{creation::Attempt, recovery},
-    retained,
     route::{Epoch, KeyTag, indices::SlotIndex},
     schedule,
     settings::{self, demands, demands::slots::Slots},
@@ -28,7 +27,8 @@ fn one_credit_progress() {
     let mut reports = Vec::new();
     Driver::new(settings::Config::default()).with_scope(
         |scope| {
-            scope.with_driver(|context, mut control| {
+            {
+                let (_, context, mut control) = scope.split();
                 let core = context.driver_ref();
                 let root = core
                     .ready()
@@ -38,8 +38,7 @@ fn one_credit_progress() {
                             .dispatch(),
                     )
                     .expect("ready slot");
-                let owner = retained::raw::Owner::from_driver(core);
-                let mut driver = retained::Context::new(context, owner);
+                let mut driver = context;
                 {
                     let turn = control.begin();
                     let mut fiber = pin!(Task::new(Yield::new()));
@@ -97,7 +96,7 @@ fn one_credit_progress() {
                     });
                     assert_eq!(output, expected);
                 }
-            });
+            };
         },
         recovery::Policy::new(
             |event| reports.push(event),

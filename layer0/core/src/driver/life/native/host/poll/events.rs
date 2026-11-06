@@ -335,14 +335,16 @@ where
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Udata {
     Public(flight::raw::Echo),
-    Shutdown,
+    Shutdown(dope_sys::engine::register::Interest),
 }
 
 impl From<Udata> for usize {
     fn from(data: Udata) -> Self {
+        const { assert!(flight::raw::Echo::BITS < usize::BITS) };
         match data {
             Udata::Public(key) => u64::from(key) as usize,
-            Udata::Shutdown => usize::MAX,
+            Udata::Shutdown(dope_sys::engine::register::Interest::Readable) => usize::MAX,
+            Udata::Shutdown(dope_sys::engine::register::Interest::Closed) => usize::MAX - 1,
         }
     }
 }

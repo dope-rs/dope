@@ -6,7 +6,7 @@ use dope_core::driver::{
     life::recovery,
     route::{FrameworkTag, KeyTag, Tag, kind},
 };
-use dope_manifold::app::env::Bundle;
+use dope_manifold::{app::env::Bundle, network::listener::conn::deadline::Kind};
 use dope_net::tcp::Tcp;
 use dope_runtime::executor::session::{self, Completion};
 use dope_test::{
@@ -81,11 +81,12 @@ fn wait_keeps_deadlines() {
                         payload: (!draining).then(|| b"R".to_vec()),
                         close: closed.clone(),
                         chunk: Some(received.clone()),
+                        timeout: Some(if draining { Kind::Drain } else { Kind::Send }),
                     },
                     hash,
                     &mut session,
                     session::Scope::driver,
-                    |server, session| {
+                    |server, _wait, session| {
                         let addr = server.local_addr();
                         let start = session.driver().driver_ref().clock().now().into();
                         let bounded = session
@@ -176,6 +177,7 @@ fn shutdown_keeps_deadline() {
                 payload: None,
                 close: closed.clone(),
                 chunk: Some(received.clone()),
+                timeout: Some(Kind::Send),
             },
             Wire::waiting(entered.clone(), release.clone()),
         ))

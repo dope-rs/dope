@@ -109,11 +109,11 @@ unsafe impl<'d, F: abi::Fiber<'d>, M, D, G> depot::raw::KeyOwner<storage::Id<'d,
         self.fifo
     }
 
-    fn entry<'s>(
+    fn link<'s>(
         live: depot::raw::Proof<(&'s Self, links::Index), Initialized<storage::Id<'d, D>>>,
-    ) -> keyed::Entry<'s, Self::Key, storage::Id<'d, D>> {
+    ) -> &'s keyed::Link<Self::Key, storage::Id<'d, D>> {
         let live = unsafe { live.map(|(attach, index)| (&attach.done.view, index)) };
-        views::View::entry(live)
+        views::View::link(live)
     }
 }
 
@@ -239,11 +239,11 @@ unsafe impl<'d, F: abi::Fiber<'d>, M, D, G, K> depot::raw::KeyOwner<storage::Id<
         &self.entry.get().1.fifo
     }
 
-    fn entry<'s>(
+    fn link<'s>(
         live: depot::raw::Proof<(&'s Self, links::Index), Initialized<storage::Id<'d, D>>>,
-    ) -> keyed::Entry<'s, Self::Key, storage::Id<'d, D>> {
+    ) -> &'s keyed::Link<Self::Key, storage::Id<'d, D>> {
         let live = unsafe { live.map(|(owner, index)| (&owner.view, index)) };
-        views::View::entry(live)
+        views::View::link(live)
     }
 }
 

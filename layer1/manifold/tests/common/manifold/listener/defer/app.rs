@@ -1,7 +1,7 @@
 use std::{convert, pin::Pin};
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule::clock},
+    driver::{self, route::Identity, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -41,7 +41,7 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
     pub(crate) fn fill<'d, ID: Identity>(
         &self,
         conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         loop {
             let (next, byte, close) = match conn.state() {
@@ -105,7 +105,7 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
     fn activate<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Wire, State>
     where
         'd: 'w,
@@ -130,7 +130,7 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> send::Drive<'d, ID> for
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         self.as_ref().get_ref().fill(&mut conn, driver);
     }
@@ -141,7 +141,7 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> handler::Borrowed<'d, I
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         (self.observe)(Event::Chunk(chunk.as_ref().len()));
         self.as_ref().get_ref().fill(&mut conn, driver);

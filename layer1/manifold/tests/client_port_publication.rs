@@ -11,7 +11,9 @@ use dope_manifold::{
     app::{Host, env::Bundle},
     client::{
         attempt,
+        close::{Directive, Reason},
         conn::engine,
+        deadline,
         port::{Port, write::Reserve},
     },
     timing::Throughput,
@@ -20,7 +22,7 @@ use dope_net::{
     Transport as _,
     link::egress::{self, metadata::arena::Store},
     tcp::{self, Tcp},
-    wire::{Identity, domain::Local},
+    wire::domain::Local,
 };
 use dope_runtime::executor::{
     Executor,
@@ -37,7 +39,7 @@ use crate::common::{
     contract::Report,
     manifold::client::{
         connect::ports::{App, NESTED, PAYLOAD, cursor},
-        error,
+        send::wire::Wire,
     },
     scenario::case::attempt::Attempts,
 };
@@ -88,7 +90,7 @@ fn publication_keeps_owner() {
                         ports,
                         done.clone(),
                         Rc::clone(&audit),
-                        |ports, conn, work, token| {
+                        |ports, conn, work, _, token| {
                             let buffers = pool::Pool::try_new(2, 8).expect("payload pool");
                             for (case, port) in ports.iter().enumerate() {
                                 assert!(matches!(
@@ -117,7 +119,9 @@ fn publication_keeps_owner() {
                                 'publication: {
                                     let reserve = port.try_reserve(token, conn, payload);
                                     assert!(matches!(reserve, Reserve::Item(_)));
-                                    let Reserve::Item(hold) = reserve else { return };
+                                    let Reserve::Item(hold) = reserve else {
+                                        return None;
+                                    };
                                     if case == 5 {
                                         assert!(port.finish_write(conn).is_ok());
                                         let called = Cell::new(false);
@@ -191,6 +195,7 @@ fn publication_keeps_owner() {
                                 ));
                                 assert_eq!(cancels, usize::from(case == 0));
                             }
+                            None
                         },
                     );
                     let result = engine::Startup::new(
@@ -198,9 +203,9 @@ fn publication_keeps_owner() {
                         source,
                         Capacity::fixed::<1>(),
                         egress::Config::default(),
-                        Local::new(Identity),
+                        Local::new(()),
                     )
-                    .try_with::<Bundle<Tcp, Identity, Throughput>, _, _>(
+                    .try_with::<Bundle<Tcp, Wire, Throughput>, _, _>(
                         &mut session,
                         Scope::driver,
                         |engine, session| {
@@ -211,8 +216,7 @@ fn publication_keeps_owner() {
                                 |mut running| {
                                     let wait = fibers::TEST.try_wait(&mut running, &done, 1);
                                     let faults = audit.faults.values().expect("port observations");
-                                    let result = error::Error::check(&faults);
-                                    assert!(result.is_ok(), "{result:?}");
+                                    assert!(faults.is_empty(), "{faults:?}");
                                     assert_eq!(
                                         wait.expect("publication progress"),
                                         fibers::Wait::Reached
@@ -238,8 +242,7 @@ fn publication_keeps_owner() {
         "unexpected reclaim: {reports:?}"
     );
     let faults = audit.faults.values().expect("port observations");
-    let result = error::Error::check(&faults);
-    assert!(result.is_ok(), "{result:?}");
+    assert!(faults.is_empty(), "{faults:?}");
     assert_eq!(
         (audit.sent.get(), audit.cancelled.get()),
         (Some(0), Some(0))
@@ -250,4 +253,148 @@ fn publication_keeps_owner() {
         .expect("connected peer");
     stream.read_wait(Some(GUARD)).expect("peer read deadline");
     assert_eq!(stream.read(&mut [0]).expect("peer teardown"), 0);
+}
+
+#[test]
+fn deadline_cuts_retiring_queue() {
+    for (queued_close, retired, incoming) in [
+        (false, false, false),
+        (true, false, false),
+        (false, false, true),
+        (false, true, false),
+    ] {
+        let peer = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("peer");
+        let config = settings::Config::for_profile::<Throughput>();
+        let mut create = Attempt::new();
+        let mut finish = Completion::new();
+        let audit = Rc::new(Report::default());
+        let executor = Executor::new(&mut create, config).ok().expect("executor");
+        executor
+            .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(1)))
+            .run(|executor| {
+                let result = executor.try_create(
+                    |mut session| {
+                        let source = session.storage();
+                        let attempt = source.try_reserve().expect("attempt").start(
+                            attempt::StreamTarget::new(
+                                peer.local_addr().expect("address"),
+                                Tcp::options(tcp::StreamConfig::default()),
+                            ),
+                        );
+                        let mut store = Store::try_new(
+                            egress::Config::shared(egress::Credit::fixed::<1, 32>()),
+                            NonZero::<usize>::MIN,
+                        )
+                        .expect("port storage");
+                        let port =
+                            Port::try_new(&mut store, &session.driver().regions().0).expect("port");
+                        let app = App::new(
+                            vec![port],
+                            Gate::new(),
+                            Rc::clone(&audit),
+                            |ports, conn, work, queue, token| {
+                                let buffers = pool::Pool::try_new(1, 8).expect("payload pool");
+                                let payload = cursor(&buffers, PAYLOAD)
+                                    .expect("payload size")
+                                    .expect("payload");
+                                assert!(matches!(
+                                    queue.try_enqueue(token, payload),
+                                    egress::Enqueue::Committed
+                                ));
+                                let retire = Directive::reconnect(Reason::EndpointRetired);
+                                if queued_close {
+                                    assert!(ports[0].finish_write(conn).is_ok());
+                                    ports[0].close(conn, retire);
+                                }
+                                if retired {
+                                    assert!(matches!(
+                                        ports[0].retire(conn, work, token, drop),
+                                        egress::Cleared::Done
+                                    ));
+                                }
+                                if !incoming {
+                                    ports[0].close(
+                                        conn,
+                                        Directive::cut_retry(Reason::Timeout(
+                                            deadline::Kind::Inbound,
+                                        )),
+                                    );
+                                }
+                                if queued_close {
+                                    assert!(ports[0].finish_write(conn).is_ok());
+                                    None
+                                } else {
+                                    Some(retire)
+                                }
+                            },
+                        );
+                        let done = app.done.clone();
+                        let closed = app.closed.clone();
+                        let reason = Rc::clone(&app.reason);
+                        let result = engine::Startup::new(
+                            app,
+                            source,
+                            Capacity::fixed::<1>(),
+                            egress::Config::default(),
+                            Local::new(()),
+                        )
+                        .try_with::<Bundle<Tcp, Wire, Throughput>, _, _>(
+                            &mut session,
+                            Scope::driver,
+                            |engine, session| {
+                                session.with_quiesce(
+                                    &mut finish,
+                                    Host::new(engine),
+                                    Duration::from_secs(2),
+                                    |mut running| {
+                                        let stream = if incoming {
+                                            assert_eq!(
+                                                fibers::TEST
+                                                    .try_wait(&mut running, &done, 1)
+                                                    .expect("queued output"),
+                                                fibers::Wait::Reached,
+                                            );
+                                            let stream = peer
+                                                .accept_for(GUARD)
+                                                .expect("accept")
+                                                .expect("connected");
+                                            stream.write(&[1]).expect("receive activation");
+                                            Some(stream)
+                                        } else {
+                                            None
+                                        };
+                                        assert_eq!(
+                                            fibers::TEST
+                                                .try_wait(&mut running, &closed, 1)
+                                                .expect("immediate retirement"),
+                                            fibers::Wait::Reached,
+                                        );
+                                        assert_eq!(reason.get(), Some(Reason::EndpointRetired));
+                                        let stream = stream.unwrap_or_else(|| {
+                                            peer.accept_for(GUARD)
+                                                .expect("accept")
+                                                .expect("connected")
+                                        });
+                                        stream.read_wait(Some(GUARD)).expect("peer deadline");
+                                        assert_eq!(stream.read(&mut [0]).expect("peer closed"), 0);
+                                    },
+                                )
+                            },
+                        );
+                        assert!(matches!(result, Ok(Ok(()))), "engine lifecycle");
+                        attempt.cancel();
+                    },
+                    recovery::Policy::new(
+                        |_| panic!("unexpected native reclaim"),
+                        crate::common::recover,
+                    ),
+                );
+                assert!(result.is_ok(), "executor teardown");
+            });
+        assert!(audit.faults.values().expect("faults").is_empty());
+        assert_eq!(
+            (audit.sent.get(), audit.cancelled.get()),
+            (Some(0), Some(1))
+        );
+    }
 }

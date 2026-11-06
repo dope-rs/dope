@@ -39,7 +39,7 @@ fn finishes_interrupted_app() {
                         app.block_on(Pending::<()>::default())
                     })
                     .expect("shutdown application teardown failed");
-                let error = result.err().expect("pending app must be interrupted");
+                let error = result.expect_err("pending app must be interrupted");
                 assert!((error.kind()) == (Kind::Shutdown));
             },
             recovery::Policy::new(|event| reports.push(event), recover),

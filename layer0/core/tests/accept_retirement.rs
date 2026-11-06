@@ -1,10 +1,10 @@
 use crate::common::rt::{finish, recover};
-use std::{env::consts::OS, mem};
+use std::env::consts::OS;
 
 use dope_core::{
     driver::{
         life::recovery,
-        retained::{self, accept, arm, flight},
+        retained::{accept, arm, flight},
         route::{Epoch, KeyTag, indices::SlotIndex, kind},
         settings,
     },
@@ -21,10 +21,6 @@ use dope_sys::{io::socket::accept as native, table::registry};
 use crate::common::rt::Runtime;
 
 pub mod common;
-
-const _: () = assert!(!mem::needs_drop::<
-    arm::Arming<'static, 'static, KeyTag<0, kind::Accept>>,
->());
 
 #[test]
 fn failure_provenance() {
@@ -109,7 +105,8 @@ fn pending_accept_identity() {
                         accept::Readiness::from(driver.driver_ref()).progress(&driver.regions().0),
                         Progress::Runnable
                     ));
-                    scope.with_driver(|mut driver, mut schedule| {
+                    {
+                        let (_, mut driver, mut schedule) = scope.split();
                         let mut turn = schedule.begin();
                         assert!(matches!(
                             driver.commit(turn.reactor()),
@@ -130,8 +127,6 @@ fn pending_accept_identity() {
                             arm::Submission::Deferred
                         ));
                         assert!(!state.is_live());
-                        let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                        let mut driver = retained::Context::new(driver, owner);
                         let arming = lanes
                             .get_mut(0)
                             .expect("accept lane")
@@ -143,15 +138,13 @@ fn pending_accept_identity() {
                             arm::Submission::Deferred
                         ));
                         assert_eq!(lanes.active(), 0);
-                    });
+                    };
                     scope.quiesce();
                     assert!(!failure.can_defer(&mut scope.context()));
                 }
 
                 for _ in 0..2 {
-                    let driver = scope.context();
-                    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                    let mut driver = retained::Context::new(driver, owner);
+                    let mut driver = scope.context();
                     let arming = lanes
                         .get_mut(0)
                         .expect("accept lane")
@@ -197,9 +190,7 @@ fn pending_accept_identity() {
                 let failure =
                     Failure::Syscall(dope_core::Errno::try_from(libc::ENFILE).expect("errno"));
                 {
-                    let driver = scope.context();
-                    let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                    let mut driver = retained::Context::new(driver, owner);
+                    let mut driver = scope.context();
                     let arming = lanes.get_mut(0).expect("lane").begin().expect("idle");
                     // SAFETY: the lane and listener remain pinned until the terminal below.
                     assert!(matches!(
@@ -232,9 +223,7 @@ fn pending_accept_identity() {
                 done.discard();
                 for _ in 0..2 {
                     {
-                        let driver = scope.context();
-                        let owner = retained::raw::Owner::from_driver(driver.driver_ref());
-                        let mut driver = retained::Context::new(driver, owner);
+                        let mut driver = scope.context();
                         let arming = lanes.get_mut(0).expect("lane").begin().expect("idle");
                         // SAFETY: the lane and listener remain pinned until quiescence below.
                         assert!(matches!(
@@ -300,6 +289,29 @@ fn pending_accept_identity() {
                     scope.quiesce();
                 }
                 drop(peer);
+
+                {
+                    let mut driver = scope.context();
+                    let arming = lanes.get_mut(0).expect("lane").begin().expect("idle");
+                    // SAFETY: the lane and listener remain pinned through retirement below.
+                    assert!(matches!(
+                        unsafe { arming.submit(&mut driver, &flights, &listener) },
+                        arm::Submission::Armed
+                    ));
+                }
+                let (peer, completed) = common::driver::accept::connect(scope, address);
+                let (token, flow, outcome) = completed.into_parts();
+                assert_eq!(flow, Flow::Last);
+                lanes.stop(&mut scope.context());
+                assert_eq!(lanes.active(), 1);
+                assert!(matches!(
+                    lanes.get_mut(0).expect("lane").retire(token),
+                    accept::Retire::Done(accept::Retired::Cancelled)
+                ));
+                assert_eq!(lanes.active(), 0);
+                drop(outcome);
+                drop(peer);
+                scope.quiesce();
 
                 let mut state = arm::State::new(target);
                 assert!(matches!(

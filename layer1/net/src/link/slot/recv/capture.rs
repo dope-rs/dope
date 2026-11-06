@@ -50,7 +50,7 @@ where
             terminal::Admission::Open(end) => end,
             terminal::Admission::Closed => return,
         };
-        let done = <W::Receive as eof::Eof<W>>::eof::<ID>(&mut conn.wire, end);
+        let done = <W::Receive as eof::Eof<W>>::eof::<ID>(&mut conn.control.wire, end);
         let ((), captured) = done.into_parts();
         conn.control.engine.captured(captured);
     }

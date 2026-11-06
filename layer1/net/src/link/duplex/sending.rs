@@ -1,7 +1,7 @@
 use std::marker;
 
 use dope_core::{
-    driver::{result, retained, retained::flight, route, route::kind},
+    driver::{self, result, retained::flight, route, route::kind},
     io::{fd::handles, transfer},
 };
 
@@ -170,20 +170,18 @@ impl<'a, 'd, P: reclaim::Policy> Submission<'a, 'd, P> {
 
     pub(in crate::link) fn submit<
         'input,
-        'owner,
         Tag: route::Tag + route::Select<kind::Send>,
         B: send::Payload<'input>,
     >(
         self,
         fd: &handles::Descriptor<'d>,
         slots: &flight::Slots<'d, Tag>,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         target: route::Target<'d, Tag>,
         ready: send::Prepared<'input, P, B>,
     ) -> send::Attempt<P>
     where
-        'd: 'owner,
-        'owner: 'input,
+        'd: 'input,
     {
         match self.try_ready() {
             Some(submit) => submit.submit(fd, slots, driver, target, ready),
@@ -195,20 +193,18 @@ impl<'a, 'd, P: reclaim::Policy> Submission<'a, 'd, P> {
 impl<'a, 'd, P: reclaim::Policy> Ready<'a, 'd, P> {
     pub(in crate::link) fn submit<
         'input,
-        'owner,
         Tag: route::Tag + route::Select<kind::Send>,
         B: send::Payload<'input>,
     >(
         self,
         fd: &handles::Descriptor<'d>,
         slots: &flight::Slots<'d, Tag>,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         target: route::Target<'d, Tag>,
         ready: send::Prepared<'input, P, B>,
     ) -> send::Attempt<P>
     where
-        'd: 'owner,
-        'owner: 'input,
+        'd: 'input,
     {
         let Self(submit) = self;
         let waiting = ready.is_waiting();
@@ -305,7 +301,7 @@ impl<'d, P: reclaim::Policy> Sending<'d, P> {
 
     pub(in crate::link) fn shutdown<Tag: route::Tag + route::Select<kind::Send>>(
         &mut self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         slots: &flight::Slots<'d, Tag>,
         fd: &handles::Descriptor<'d>,
         target: route::Target<'d, Tag>,
@@ -313,7 +309,7 @@ impl<'d, P: reclaim::Policy> Sending<'d, P> {
         if self.is_inflight() {
             return Shutdown::Busy;
         }
-        let flight = match slots.shutdown(driver.driver().reborrow(), fd, target) {
+        let flight = match slots.shutdown(driver.reborrow(), fd, target) {
             Ok(flight) => flight,
             Err(error) => return Shutdown::Rejected(error),
         };

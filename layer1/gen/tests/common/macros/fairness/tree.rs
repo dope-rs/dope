@@ -104,12 +104,12 @@ unsafe impl<'d> executor::raw::App<'d> for Unselected {
     /// # Safety
     /// The owner and plan must be installed and admitted together. Selection
     /// never produces this uninhabited plan, so no invocation can be admitted.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
         plan: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         match *plan {}
     }

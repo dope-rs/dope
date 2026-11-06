@@ -29,7 +29,7 @@ use crate::{
     app::dispatch::identity,
     network::listener::{
         self,
-        writer::{deadline::Slot, flow, flow::SlotFlow as _, memory},
+        writer::{deadline::Slot, flow, memory},
     },
 };
 
@@ -46,6 +46,8 @@ pub enum Failure {
     Application(crate::app::receive::Failure),
     Park(event::ParkError),
     Write(body::Failure),
+    Timeout(deadline::Kind),
+    Deadline(deadline::Error),
 }
 
 #[derive(Clone, Copy)]
@@ -93,7 +95,7 @@ impl<ID: Identity> identity::Identity for Id<'_, ID> {
     }
 }
 
-mod state;
+pub(in crate::network::listener) mod state;
 
 pub(in crate::network::listener) use state::State;
 
@@ -108,39 +110,57 @@ pub struct Ref<
     C,
     B = resident::Shared<'d>,
 > {
-    slot: &'a types::Connection<'w, 'd, ID, W, State<'p, 's, 'd, ID, C, B>>,
+    control: &'a types::Control<'w, 'd, ID, W>,
+    state: &'a C,
+    retained: marker::PhantomData<&'a state::Control<'p, 's, 'd, ID, B>>,
 }
 
 impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
     Ref<'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
-    pub(super) const fn new(
+    pub(super) fn new(
         slot: &'a types::Connection<'w, 'd, ID, W, State<'p, 's, 'd, ID, C, B>>,
     ) -> Self {
-        Self { slot }
+        Self {
+            control: slot,
+            state: &slot.state.conn,
+            retained: marker::PhantomData,
+        }
     }
 
     pub fn id(&self) -> Id<'d, ID> {
-        Id(self.slot.key())
+        Id(self.control.key())
     }
 
     pub fn state(&self) -> &C {
-        &self.slot.state.conn
+        self.state
     }
 
     /// Returns whether the wire has finished terminal convergence.
     /// Application work may still require closure to remain deferred.
     pub fn is_terminal(&self) -> bool {
-        self.slot.terminal.is_done()
+        self.control.terminal.is_done()
+    }
+
+    pub fn map_state<T>(
+        self,
+        select: impl FnOnce(&'a C) -> &'a T,
+    ) -> Ref<'a, 'p, 's, 'w, 'd, ID, W, T, B> {
+        Ref {
+            control: self.control,
+            state: select(self.state),
+            retained: self.retained,
+        }
     }
 }
 
 /// Final owned state after the connection slot and every egress owner retire.
 pub struct Retired<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B = resident::Shared<'d>> {
     id: Id<'d, ID>,
-    state: State<'p, 's, 'd, ID, C, B>,
+    state: C,
+    failure: Option<Failure>,
     transmit: Option<Transmit>,
-    wire: marker::PhantomData<W>,
+    wire: marker::PhantomData<(W, state::Control<'p, 's, 'd, ID, B>)>,
 }
 
 /// Affine commit authority after every egress owner has drained.
@@ -156,7 +176,8 @@ pub struct Drained<
     C,
     B: data::raw::Payload<'d> + 'd = resident::Shared<'d>,
 > {
-    slot: Slot<'a, 'w, 'd, ID, W, State<'p, 's, 'd, ID, C, B>>,
+    control: &'a mut types::Control<'w, 'd, ID, W>,
+    state: &'a mut C,
     output: marker::PhantomData<Output<'a, 'p, 's, 'e, 'd, ID, B>>,
 }
 
@@ -173,26 +194,47 @@ impl<
     B: data::raw::Payload<'d> + 'd,
 > Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
+    pub fn map_state<T>(
+        self,
+        select: impl for<'view> FnOnce(&'view mut C) -> &'view mut T,
+    ) -> Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, T, B> {
+        Drained {
+            control: self.control,
+            state: select(self.state),
+            output: self.output,
+        }
+    }
+
     pub fn id(&self) -> Id<'d, ID> {
-        Id(self.slot.key())
+        Id(self.control.key())
     }
 
     pub fn state(&self) -> &C {
-        &self.slot.state.conn
+        self.state
     }
 
     pub fn state_mut(&mut self) -> &mut C {
-        &mut self.slot.state.conn
+        self.state
     }
 
     /// Records a close intent without acquiring output or scheduling
     /// authority. The listener observes it after the drain callback returns.
     pub fn close_after(&mut self) {
-        self.slot.close_after();
+        self.control.close_after();
     }
 }
 
 impl<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B> Retired<'p, 's, 'd, ID, W, C, B> {
+    pub fn map_state<T>(self, select: impl FnOnce(C) -> T) -> Retired<'p, 's, 'd, ID, W, T, B> {
+        Retired {
+            id: self.id,
+            state: select(self.state),
+            failure: self.failure,
+            transmit: self.transmit,
+            wire: self.wire,
+        }
+    }
+
     pub(in crate::network::listener) fn take(
         key: pool::Key<'d, ID>,
         mut state: State<'p, 's, 'd, ID, C, B>,
@@ -202,7 +244,8 @@ impl<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B> Retired<'p, 's, 'd, ID, W, C
         let conn = match kind {
             close::Kind::Connected => Some(Self {
                 id: Id::from_key(key),
-                state,
+                state: state.conn,
+                failure: state.control.failure,
                 transmit,
                 wire: marker::PhantomData,
             }),
@@ -216,16 +259,16 @@ impl<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B> Retired<'p, 's, 'd, ID, W, C
     }
 
     pub fn state(&self) -> &C {
-        &self.state.conn
+        &self.state
     }
 
     pub fn state_mut(&mut self) -> &mut C {
-        &mut self.state.conn
+        &mut self.state
     }
 
     /// Exact listener lifecycle failure retained until the final owner audit.
     pub const fn failure(&self) -> Option<&Failure> {
-        self.state.failure.as_ref()
+        self.failure.as_ref()
     }
 
     pub const fn transmit(&self) -> Option<&Transmit> {
@@ -254,7 +297,7 @@ pub struct Ctx<
 > where
     B: data::raw::Payload<'d>,
 {
-    pub(super) slot: Slot<'a, 'w, 'd, ID, W, State<'p, 's, 'd, ID, C, B>>,
+    pub(super) slot: Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>,
     pub(super) output: Output<'a, 'p, 's, 'e, 'd, ID, B>,
     pub(super) work: app::Work<'a, 'd>,
 }
@@ -277,9 +320,26 @@ pub(super) enum Output<'a, 'p, 's, 'e, 'd, ID: Identity, B: data::raw::Payload<'
 }
 
 impl<'p, 's, 'e, 'd, ID: Identity, B: data::raw::Payload<'d>> Output<'_, 'p, 's, 'e, 'd, ID, B> {
+    fn reborrow(&self) -> Output<'_, 'p, 's, 'e, 'd, ID, B> {
+        match self {
+            Self::Open {
+                slots,
+                permit,
+                held,
+                queue,
+            } => Output::Open {
+                slots,
+                permit: *permit,
+                held: held.reborrow(),
+                queue: queue.reborrow(),
+            },
+            Self::Sealed => Output::Sealed,
+        }
+    }
+
     fn pending<'w, W: wire::Spec + 'w + 'd, C>(
         &self,
-        slot: &types::Connection<'w, 'd, ID, W, State<'p, 's, 'd, ID, C, B>>,
+        slot: &Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B>,
     ) -> egress::Pending
     where
         'd: 'w,
@@ -309,12 +369,24 @@ impl<
     B: data::raw::Payload<'d>,
 > Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
+    /// Reborrows child state.
+    pub fn map_state<'view, T>(
+        &'view mut self,
+        select: impl for<'child> FnOnce(&'child mut C) -> &'child mut T,
+    ) -> Ctx<'e, 'view, 'p, 's, 'w, 'd, ID, W, T, B> {
+        Ctx {
+            slot: self.slot.project(select),
+            output: self.output.reborrow(),
+            work: self.work,
+        }
+    }
+
     pub(super) fn sealed(
-        slot: &'a mut types::Connection<'w, 'd, ID, W, State<'p, 's, 'd, ID, C, B>>,
+        slot: Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>,
         work: app::Work<'a, 'd>,
     ) -> Self {
         Self {
-            slot: Slot::closed(slot),
+            slot,
             output: Output::Sealed,
             work,
         }
@@ -325,11 +397,11 @@ impl<
     }
 
     pub fn state(&self) -> &C {
-        &self.slot.state.conn
+        self.slot.conn
     }
 
     pub fn state_mut(&mut self) -> &mut C {
-        &mut self.slot.state.conn
+        self.slot.conn
     }
 
     /// Exact listener lifecycle failure retained by this connection.
@@ -373,12 +445,13 @@ impl<
     }
 
     /// Consumes a listener send callback at its exact egress-drain boundary.
-    pub(super) fn drain(self) -> Option<Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>> {
+    pub(super) fn try_drain(self) -> Result<Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>, Self> {
         if matches!(self.output.pending(&self.slot), egress::Pending::Present) {
-            return None;
+            return Err(self);
         }
-        Some(Drained {
-            slot: self.slot,
+        Ok(Drained {
+            control: self.slot.source,
+            state: self.slot.conn,
             output: marker::PhantomData,
         })
     }
@@ -409,6 +482,6 @@ const _: () = assert!(mem::align_of::<Id<'static, KeyTag<0>>>() == mem::align_of
 const _: () = assert!(
     mem::size_of::<Retired<'static, 'static, 'static, KeyTag<0>, wire::Identity, ()>>()
         == mem::size_of::<Id<'static, KeyTag<0>>>()
-            + mem::size_of::<State<'static, 'static, 'static, KeyTag<0>, ()>>()
+            + mem::size_of::<Option<Failure>>()
             + mem::size_of::<Option<Transmit>>()
 );

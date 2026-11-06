@@ -1,6 +1,6 @@
 use std::{ops::ControlFlow, pin};
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{
         event,
@@ -35,22 +35,20 @@ where
         'd: 'w,
         W: 'w + 'd;
 
-    type Admission<'a, 'c, 'owner, 'd>
-        = ingress::Single<'a, 'c, 'owner, 'd>
+    type Admission<'a, 'c, 'd>
+        = ingress::Single<'a, 'c, 'd>
     where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner,
+        'd: 'a + 'c,
         W: 'd;
 
-    fn drive_data<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
+    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
         policy: pin::Pin<&mut P>,
         data: A,
-        work: Self::Admission<'a, 'c, 'owner, 'd>,
+        work: Self::Admission<'a, 'c, 'd>,
     ) where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner + 'w + 'p,
+        'd: 'a + 'c + 'w + 'p,
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
@@ -77,7 +75,7 @@ where
         item: &delivery::Resumed<'d, ID>,
         first: bool,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ControlFlow<(), bool>
     where
         'd: 'w + 'p,
@@ -87,7 +85,7 @@ where
     {
         let (key, chunk, work) = {
             let mut recv = P::storage(policy.as_mut()).recv();
-            let Some((key, taken)) = recv.take_tail(item)? else {
+            let Some(taken) = recv.take_tail(item)? else {
                 return ControlFlow::Continue(false);
             };
             let replay = if first {
@@ -104,7 +102,7 @@ where
                 schedule::Capacity::Available(work) => work,
                 schedule::Capacity::Exhausted => return ControlFlow::Break(()),
             };
-            (key, taken.commit(), work)
+            (item.key(), taken.commit(), work)
         };
         let (driver, step) = work.into();
         ingress::prepare_terminal(policy.as_mut(), key);

@@ -24,7 +24,7 @@ pub mod raw;
 mod sync;
 
 pub use kind::Kind;
-pub use metadata::Metadata;
+pub use metadata::{Error as MetadataError, Metadata};
 pub use mode::Mode;
 pub use open::Open;
 
@@ -117,7 +117,13 @@ impl<S: raw::Directory> Entries<'_, S> {
 /// Selects native file requests while preserving every caller-owned borrow.
 pub trait File: errno::Source + raw::Directory {
     type Options;
-    type Request<'a>: Request<'a, Options = Self::Options, Buffer = bytes::Prefix<'a, { bounded::MAX }>>
+    type Metadata;
+    type Request<'a>: Request<
+            'a,
+            Options = Self::Options,
+            Metadata = Self::Metadata,
+            Buffer = bytes::Prefix<'a, { bounded::MAX }>,
+        >
     where
         Self: 'a;
     fn open<E: From<Errno>>(path: &std::ffi::CStr, flags: Open, mode: Mode) -> Result<OwnedFd, E> {
@@ -284,24 +290,18 @@ pub trait File: errno::Source + raw::Directory {
         output: &'a mut [u8],
         offset: Offset,
     ) -> Result<&'a mut [u8], E> {
-        const { assert!(libc::off_t::MAX as u64 == i64::MAX as u64) };
-        // SAFETY: the descriptor stays borrowed, output exclusively owns its
-        // writable extent, and the admitted nonnegative offset fits the ABI.
-        let raw = unsafe {
-            libc::pread(
-                file.as_raw_fd(),
-                output.as_mut_ptr().cast(),
-                output.len(),
-                offset.get() as libc::off_t,
-            )
-        };
-        // SAFETY: pread returns -1 or initializes at most this exact output
-        // extent; failure reads the unchanged errno on this thread.
-        unsafe {
-            crate::io::raw::Buffer::try_native(output, raw, || {
-                kernel::raw::Code::last::<Self>().into()
-            })
-        }
+        // SAFETY: MaybeUninit preserves u8's layout; the exclusive loan is unchanged.
+        let output =
+            unsafe { std::slice::from_raw_parts_mut(output.as_mut_ptr().cast(), output.len()) };
+        raw::read_at::<Self, E>(file, output, offset)
+    }
+
+    fn read_uninit_at<'a, E: From<Errno>>(
+        file: BorrowedFd<'_>,
+        output: &'a mut [mem::MaybeUninit<u8>],
+        offset: Offset,
+    ) -> Result<&'a mut [u8], E> {
+        raw::read_at::<Self, E>(file, output, offset)
     }
 
     fn write_at<E: From<Errno>>(

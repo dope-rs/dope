@@ -60,7 +60,7 @@ fn copy<'d, R: buffer::Cursor + hold::raw::Retain<'d>>(source: &R, budget: &resi
         .try_charge(budget.available() - 2)
         .expect("reserve remaining credit");
     let result = plan.try_retain();
-    let (plan, error) = result.err().expect("two bytes cannot admit three");
+    let (plan, error) = result.expect_err("two bytes cannot admit three");
     assert!(
         matches!(error, hold::Error::Copy(copy::Error::Budget(error))
         if error.into_parts() == (num::NonZero::<usize>::MIN.saturating_add(2), 2))
@@ -69,7 +69,7 @@ fn copy<'d, R: buffer::Cursor + hold::raw::Retain<'d>>(source: &R, budget: &resi
     drop(charge);
 
     let result = Tracker::fail_after(0, || plan.try_retain());
-    let (plan, error) = result.err().expect("copy allocation fails");
+    let (plan, error) = result.expect_err("copy allocation fails");
     assert!(matches!(
         error,
         hold::Error::Copy(copy::Error::Allocation(alloc::Exhausted))
@@ -140,7 +140,7 @@ fn receive_binds_lease() {
     runtime.with_turn(
         |turn, mut driver| {
             let socket = Install::bind_udp(
-                driver.driver().reborrow(),
+                driver.reborrow(),
                 ([127, 0, 0, 1], 0).into(),
                 common::DATAGRAM,
             );
@@ -156,25 +156,17 @@ fn receive_binds_lease() {
             let peer = (UdpSocket::bind("127.0.0.1:0")).expect("datagram peer");
             assert!(peer.send_to(b"typed", address).is_ok(), "send");
             assert!(
-                driver::Context::wait(
-                    driver.driver(),
-                    turn.reactor(),
-                    Some(Duration::from_secs(1)),
-                )
-                .is_ok(),
+                driver::Context::wait(&mut driver, turn.reactor(), Some(Duration::from_secs(1)),)
+                    .is_ok(),
                 "receive"
             );
 
             let mut event = None;
             assert!(matches!(
-                driver::Context::dispatch(
-                    driver.driver(),
-                    turn.reactor(),
-                    |completion, _source| {
-                        assert!(event.replace(completion).is_none());
-                        ControlFlow::Continue(())
-                    }
-                ),
+                driver::Context::dispatch(&mut driver, turn.reactor(), |completion, _source| {
+                    assert!(event.replace(completion).is_none());
+                    ControlFlow::Continue(())
+                }),
                 Dispatch::Ready {
                     drain: Drain::Drained,
                     retained: None
@@ -199,7 +191,7 @@ fn receive_binds_lease() {
                         copy(&shared, &budget);
                         assert_eq!(shared.as_slice(), b"typed");
                     }
-                    Descriptor::from(socket).close(driver.driver());
+                    Descriptor::from(socket).close(&mut driver);
                 }
             }
         },
@@ -218,106 +210,105 @@ fn account_recycles_owner() {
 
     runtime.with_scope(
         |scope| {
-            scope.with_driver(|mut driver, mut schedule| {
-                let sock1 = Install::bind_udp(
-                    driver.reborrow(),
-                    ([127, 0, 0, 1], 0).into(),
-                    common::DATAGRAM,
-                );
-                let (sock1, addr1) = sock1.expect("bind datagram");
-                let target1 = sock1
-                    .driver()
-                    .targets::<KeyTag<1>>()
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL);
-                let peer = (UdpSocket::bind("127.0.0.1:0")).expect("datagram peer");
-                driver
-                    .submit_recv(&sock1, target1)
-                    .expect("receive fixture");
+            let (_, mut driver, mut schedule) = scope.split();
+            let sock1 = Install::bind_udp(
+                driver.reborrow(),
+                ([127, 0, 0, 1], 0).into(),
+                common::DATAGRAM,
+            );
+            let (sock1, addr1) = sock1.expect("bind datagram");
+            let target1 = sock1
+                .driver()
+                .targets::<KeyTag<1>>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL);
+            let peer = (UdpSocket::bind("127.0.0.1:0")).expect("datagram peer");
+            driver
+                .submit_recv(&sock1, target1)
+                .expect("receive fixture");
 
-                let first = (receive_payload(&mut schedule, &mut driver, &peer, addr1, b"shared"))
-                    .expect("received payload");
-                let ptr = first.as_slice().as_ptr();
-                let shared = first.into_shared();
-                let bytes = shared.resident();
-                let budget = (driver.storage.budget(Resident::bytes(bytes)))
-                    .expect("resident budget domain");
-                let held = {
-                    let (retained, held) = {
-                        let shared = shared;
-                        let retained =
-                            (shared.try_get(1..6, &budget)).expect("accounted receive owner");
-                        let held = (retained.try_clone()).expect("retained edge must fit");
-                        let held = held.project(1..4);
-                        let held = held.expect("retained alias");
-                        assert_eq!(held.as_ref(), b"are");
-                        assert_eq!(budget.resident(), bytes);
-                        (retained, held)
-                    };
-                    assert_eq!(retained.as_ref(), b"hared");
-                    held
+            let first = (receive_payload(&mut schedule, &mut driver, &peer, addr1, b"shared"))
+                .expect("received payload");
+            let ptr = first.as_slice().as_ptr();
+            let shared = first.into_shared();
+            let bytes = shared.resident();
+            let budget =
+                (driver.storage.budget(Resident::bytes(bytes))).expect("resident budget domain");
+            let held = {
+                let (retained, held) = {
+                    let shared = shared;
+                    let retained =
+                        (shared.try_get(1..6, &budget)).expect("accounted receive owner");
+                    let held = (retained.try_clone()).expect("retained edge must fit");
+                    let held = held.project(1..4);
+                    let held = held.expect("retained alias");
+                    assert_eq!(held.as_ref(), b"are");
+                    assert_eq!(budget.resident(), bytes);
+                    (retained, held)
                 };
-                assert_eq!(budget.resident(), bytes);
+                assert_eq!(retained.as_ref(), b"hared");
+                held
+            };
+            assert_eq!(budget.resident(), bytes);
 
-                let (sock2, sock3) = {
-                    let (sock2, second) = {
-                        let held = held;
-                        let sock2 = Install::bind_udp(
-                            driver.reborrow(),
-                            ([127, 0, 0, 1], 0).into(),
-                            common::DATAGRAM,
-                        );
-                        let (sock2, addr2) = sock2.expect("bind second datagram");
-                        let target2 = sock2
-                            .driver()
-                            .targets::<KeyTag<1>>()
-                            .bind(SlotIndex::from(1_u16), Epoch::INITIAL);
-                        driver
-                            .submit_recv(&sock2, target2)
-                            .expect("receive fixture");
-                        let second =
-                            (receive_payload(&mut schedule, &mut driver, &peer, addr2, b"second"))
-                                .expect("second payload");
-                        let second = second.into_shared();
-                        assert_eq!(held.as_ref(), b"are");
-                        (sock2, second)
-                    };
-                    assert_eq!(budget.resident(), 0);
-                    assert!(
-                        driver::Context::commit(&mut driver, schedule.begin().reactor()).is_ok(),
-                        "reclaim terminal receive buffer"
-                    );
-
-                    let sock3 = Install::bind_udp(
+            let (sock2, sock3) = {
+                let (sock2, second) = {
+                    let held = held;
+                    let sock2 = Install::bind_udp(
                         driver.reborrow(),
                         ([127, 0, 0, 1], 0).into(),
                         common::DATAGRAM,
                     );
-                    let (sock3, addr3) = sock3.expect("bind third datagram");
-                    let target3 = sock3
+                    let (sock2, addr2) = sock2.expect("bind second datagram");
+                    let target2 = sock2
                         .driver()
                         .targets::<KeyTag<1>>()
-                        .bind(SlotIndex::from(2_u16), Epoch::INITIAL);
+                        .bind(SlotIndex::from(1_u16), Epoch::INITIAL);
                     driver
-                        .submit_recv(&sock3, target3)
+                        .submit_recv(&sock2, target2)
                         .expect("receive fixture");
-                    {
-                        let third =
-                            (receive_payload(&mut schedule, &mut driver, &peer, addr3, b"third"))
-                                .expect("received payload");
-                        assert_eq!(third.as_slice(), b"third");
-                        assert_eq!(
-                            third.as_slice().as_ptr(),
-                            ptr,
-                            "the third receive must reuse the exact terminally returned buffer"
-                        );
-                    }
-                    assert_eq!(second.as_slice(), b"second");
-                    (sock2, sock3)
+                    let second =
+                        (receive_payload(&mut schedule, &mut driver, &peer, addr2, b"second"))
+                            .expect("second payload");
+                    let second = second.into_shared();
+                    assert_eq!(held.as_ref(), b"are");
+                    (sock2, second)
                 };
-                Descriptor::from(sock1).close(&mut driver);
-                Descriptor::from(sock2).close(&mut driver);
-                Descriptor::from(sock3).close(&mut driver);
-            })
+                assert_eq!(budget.resident(), 0);
+                assert!(
+                    driver::Context::commit(&mut driver, schedule.begin().reactor()).is_ok(),
+                    "reclaim terminal receive buffer"
+                );
+
+                let sock3 = Install::bind_udp(
+                    driver.reborrow(),
+                    ([127, 0, 0, 1], 0).into(),
+                    common::DATAGRAM,
+                );
+                let (sock3, addr3) = sock3.expect("bind third datagram");
+                let target3 = sock3
+                    .driver()
+                    .targets::<KeyTag<1>>()
+                    .bind(SlotIndex::from(2_u16), Epoch::INITIAL);
+                driver
+                    .submit_recv(&sock3, target3)
+                    .expect("receive fixture");
+                {
+                    let third =
+                        (receive_payload(&mut schedule, &mut driver, &peer, addr3, b"third"))
+                            .expect("received payload");
+                    assert_eq!(third.as_slice(), b"third");
+                    assert_eq!(
+                        third.as_slice().as_ptr(),
+                        ptr,
+                        "the third receive must reuse the exact terminally returned buffer"
+                    );
+                }
+                assert_eq!(second.as_slice(), b"second");
+                (sock2, sock3)
+            };
+            Descriptor::from(sock1).close(&mut driver);
+            Descriptor::from(sock2).close(&mut driver);
+            Descriptor::from(sock3).close(&mut driver);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -332,85 +323,84 @@ fn retained_receive_buffers_allow_accept() {
         Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
     runtime.with_scope(
         |scope| {
-            scope.with_driver(|mut driver, mut schedule| {
-                let (socket, address) =
-                    Install::bind_udp(driver.reborrow(), common::LOCALHOST, common::DATAGRAM)
-                        .expect("bind datagram");
-                let target = driver
-                    .driver_ref()
-                    .targets::<KeyTag<1>>()
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL);
-                driver.submit_recv(&socket, target).expect("receive");
-                let peer = UdpSocket::bind(common::LOCALHOST).expect("datagram peer");
-                let held = [
-                    receive_payload(&mut schedule, &mut driver, &peer, address, b"first")
-                        .expect("first buffer"),
-                    receive_payload(&mut schedule, &mut driver, &peer, address, b"second")
-                        .expect("second buffer"),
-                ];
+            let (_, mut driver, mut schedule) = scope.split();
+            let (socket, address) =
+                Install::bind_udp(driver.reborrow(), common::LOCALHOST, common::DATAGRAM)
+                    .expect("bind datagram");
+            let target = driver
+                .driver_ref()
+                .targets::<KeyTag<1>>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL);
+            driver.submit_recv(&socket, target).expect("receive");
+            let peer = UdpSocket::bind(common::LOCALHOST).expect("datagram peer");
+            let held = [
+                receive_payload(&mut schedule, &mut driver, &peer, address, b"first")
+                    .expect("first buffer"),
+                receive_payload(&mut schedule, &mut driver, &peer, address, b"second")
+                    .expect("second buffer"),
+            ];
 
-                let listener = Listener::bind(common::LOCALHOST).expect("listener");
-                let (listener, address) =
-                    Install::adopt_bound(driver.reborrow(), listener).expect("install listener");
-                let target = driver
-                    .driver_ref()
-                    .targets::<KeyTag<2, kind::Accept>>()
-                    .bind(SlotIndex::ZERO, Epoch::INITIAL);
-                let flights = driver
-                    .storage
-                    .reborrow()
-                    .try_flights(flight::Need::<KeyTag<2, kind::Accept>>::new(
-                        flight::Capacity::fixed::<1>(),
-                    ))
-                    .expect("accept storage")
-                    .slots();
-                let accept = flights
-                    .accept(
-                        driver.reborrow(),
-                        &listener,
-                        target.operation::<kind::Accept>(),
-                    )
-                    .expect("accept");
-                let peer = TcpStream::connect(address).expect("connect peer");
-                let mut accepted = None;
-                for _ in 0..16 {
-                    let mut turn = schedule.begin();
-                    let result = driver.dispatch(turn.reactor(), |event, _| {
-                        match event.into_kind() {
-                            Kind::Accept(done) => match done.into_parts().2 {
-                                accept::Outcome::Accepted(slot) => {
-                                    accepted = Some(slot.bind());
-                                }
-                                accept::Outcome::Failed(error) => panic!("accept: {error:?}"),
-                            },
-                            Kind::Recv(done) => {
-                                let (_, flow, outcome) = done.into_parts();
-                                assert!(matches!(outcome, Outcome::Exhausted(_)));
-                                assert_eq!(flow, Flow::Last);
+            let listener = Listener::bind(common::LOCALHOST).expect("listener");
+            let (listener, address) =
+                Install::adopt_bound(driver.reborrow(), listener).expect("install listener");
+            let target = driver
+                .driver_ref()
+                .targets::<KeyTag<2, kind::Accept>>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL);
+            let flights = driver
+                .storage
+                .reborrow()
+                .try_flights(flight::Need::<KeyTag<2, kind::Accept>>::new(
+                    flight::Capacity::fixed::<1>(),
+                ))
+                .expect("accept storage")
+                .slots();
+            let accept = flights
+                .accept(
+                    driver.reborrow(),
+                    &listener,
+                    target.operation::<kind::Accept>(),
+                )
+                .expect("accept");
+            let peer = TcpStream::connect(address).expect("connect peer");
+            let mut accepted = None;
+            for _ in 0..16 {
+                let mut turn = schedule.begin();
+                let result = driver.dispatch(turn.reactor(), |event, _| {
+                    match event.into_kind() {
+                        Kind::Accept(done) => match done.into_parts().2 {
+                            accept::Outcome::Accepted(slot) => {
+                                accepted = Some(slot.bind());
                             }
-                            event => {
-                                panic!("unexpected event: {:?}", std::mem::discriminant(&event))
-                            }
+                            accept::Outcome::Failed(error) => panic!("accept: {error:?}"),
+                        },
+                        Kind::Recv(done) => {
+                            let (_, flow, outcome) = done.into_parts();
+                            assert!(matches!(outcome, Outcome::Exhausted(_)));
+                            assert_eq!(flow, Flow::Last);
                         }
-                        ControlFlow::Continue(())
-                    });
-                    assert!(matches!(result, Dispatch::Ready { retained: None, .. }));
-                    if accepted.is_some() {
-                        break;
+                        event => {
+                            panic!("unexpected event: {:?}", std::mem::discriminant(&event))
+                        }
                     }
-                    driver
-                        .wait(turn.reactor(), Some(Duration::from_millis(50)))
-                        .expect("accept progress");
+                    ControlFlow::Continue(())
+                });
+                assert!(matches!(result, Dispatch::Ready { retained: None, .. }));
+                if accepted.is_some() {
+                    break;
                 }
-                accepted
-                    .expect("accept with held receive buffers")
-                    .close(&mut driver);
-                drop(held);
-                drop(accept);
-                listener.close(&mut driver);
-                Descriptor::from(socket).close(&mut driver);
-                drop(peer);
-            });
+                driver
+                    .wait(turn.reactor(), Some(Duration::from_millis(50)))
+                    .expect("accept progress");
+            }
+            accepted
+                .expect("accept with held receive buffers")
+                .close(&mut driver);
+            drop(held);
+            drop(accept);
+            listener.close(&mut driver);
+            Descriptor::from(socket).close(&mut driver);
+            drop(peer);
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
@@ -434,13 +424,13 @@ fn dispatch_retains_blocker() {
     runtime.with_turn(
         |turn, mut driver| {
             let socket = Install::bind_udp(
-                driver.driver().reborrow(),
+                driver.reborrow(),
                 ([127, 0, 0, 1], 0).into(),
                 common::DATAGRAM,
             );
             let (socket, address) = socket.expect("bind datagram");
             let spare = Install::bind_udp(
-                driver.driver().reborrow(),
+                driver.reborrow(),
                 ([127, 0, 0, 1], 0).into(),
                 common::DATAGRAM,
             );
@@ -456,19 +446,15 @@ fn dispatch_retains_blocker() {
             let peer = (UdpSocket::bind("127.0.0.1:0")).expect("datagram peer");
             assert!(peer.send_to(b"direct", address).is_ok(), "send");
             assert!(
-                driver::Context::wait(
-                    driver.driver(),
-                    turn.reactor(),
-                    Some(Duration::from_secs(1)),
-                )
-                .is_ok(),
+                driver::Context::wait(&mut driver, turn.reactor(), Some(Duration::from_secs(1)),)
+                    .is_ok(),
                 "receive"
             );
 
             let mut calls = 0;
             let mut spare = Some(spare);
             let outcome =
-                driver::Context::dispatch(driver.driver(), turn.reactor(), |event, driver| {
+                driver::Context::dispatch(&mut driver, turn.reactor(), |event, driver| {
                     calls += 1;
                     let spare = (spare.take()).expect("single callback");
                     Descriptor::from(spare).close(driver);
@@ -505,7 +491,7 @@ fn dispatch_retains_blocker() {
                             let buffer = buffer;
                             assert_eq!(buffer.as_slice(), b"direct");
                         }
-                        Descriptor::from(socket).close(driver.driver());
+                        Descriptor::from(socket).close(&mut driver);
                     }
                 }
             }

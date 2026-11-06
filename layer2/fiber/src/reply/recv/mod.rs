@@ -115,7 +115,7 @@ impl<'s, 'arena, 'credits, 'region, D, E, K> Handle<'s, 'arena, 'credits, 'regio
     fn poll<O>(
         &self,
         mut context: pin::Pin<&mut context::Context<'_, 'region>>,
-        mut extract: impl FnMut(
+        extract: impl FnOnce(
             Option<&mut reply::Slot<'_, 's, 'arena, 'credits, 'region, D, E>>,
         ) -> task::Poll<O>,
     ) -> task::Poll<O> {
@@ -123,14 +123,11 @@ impl<'s, 'arena, 'credits, 'region, D, E, K> Handle<'s, 'arena, 'credits, 'regio
         let Some((mut slot, signal)) = self.slot(context.as_mut().region_token()) else {
             return extract(None);
         };
-        loop {
-            if let task::Poll::Ready(output) = extract(Some(&mut slot)) {
-                return task::Poll::Ready(output);
-            }
-            if signal.poll(wake.completion()).is_pending() {
-                return task::Poll::Pending;
-            }
+        let output = extract(Some(&mut slot));
+        if output.is_pending() {
+            signal.register(wake.completion());
         }
+        output
     }
 
     fn slot<'a>(

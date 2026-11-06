@@ -169,7 +169,10 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
     }
 
     pub(super) fn retry(&self) -> Option<()> {
-        self.table(|table| Some(table.front(DEFERRED)?.move_to_back(QUEUED)))
+        self.table(|table| {
+            table.front(DEFERRED)?.move_to_back(QUEUED);
+            Some(())
+        })
     }
 
     pub(super) fn take_request(&self) -> Option<(side::Ticket<'d, ID>, Source<I, P>)> {

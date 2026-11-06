@@ -93,9 +93,8 @@ impl<'a, 'd> delivery::Context<driver::Context<'a, 'd>> for Host<Backend> {
     type Failure = fault::Fault;
     type Dispatch = Dispatch<'d>;
 
-    fn with<R>(host: &mut driver::Context<'a, 'd>, run: impl FnOnce(&mut Self::Backend) -> R) -> R {
-        let mut native = host.native();
-        run(native.as_mut())
+    fn backend<'s>(host: &'s mut driver::Context<'a, 'd>) -> &'s mut Self::Backend {
+        &mut host.storage.0.backend
     }
 
     fn resolve(
@@ -138,9 +137,9 @@ where
     type State = PollState<N>;
     type Queue = DoneQueue<N>;
 
-    fn shutdown() -> events::Udata {
+    fn shutdown(interest: dope_sys::engine::register::Interest) -> events::Udata {
         let () = Self::LAYOUT;
-        events::Udata::Shutdown
+        events::Udata::Shutdown(interest)
     }
 }
 

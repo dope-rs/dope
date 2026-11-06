@@ -103,10 +103,9 @@ impl<'d> Scoped<'d> for life::Scope<'_, 'd> {
         &mut self,
         op: impl for<'context, 'turn> FnOnce(driver::Context<'context, 'd>, &mut Guard<'turn, 'd>) -> R,
     ) -> R {
-        self.with_driver(|context, mut schedule| {
-            let mut turn = schedule.begin();
-            op(context, &mut turn)
-        })
+        let (_, context, mut schedule) = self.split();
+        let mut turn = schedule.begin();
+        op(context, &mut turn)
     }
     fn with_flights<ID: Identity, const N: usize>(
         &mut self,

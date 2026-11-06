@@ -7,25 +7,24 @@ use crate::app::dispatch;
 ///
 /// # Safety
 /// The call must retain the installed owner selected for `R`.
-unsafe fn activate<'a, 'driver, 'turn, 'root, 'd, M, R>(
-    call: executor::raw::Call<'a, M, (), executor::raw::Activate<'driver, 'turn, 'root, 'd>>,
+unsafe fn activate<'a, 'driver, 'turn, 'd, M, R>(
+    call: executor::raw::Call<'a, M, (), executor::raw::Activate<'driver, 'turn, 'd>>,
 ) where
-    'd: 'driver + 'turn + 'root,
+    'd: 'driver + 'turn,
     M: dispatch::raw::Activate<'d, R>,
     R: route::App,
 {
     let (owner, (), wake) = call.into_parts();
-    wake.map(|target, turn, driver| {
-        let target = driver
-            .driver_ref()
-            .targets::<R>()
-            .bind(target.slot(), target.epoch());
-        let mut root = dispatch::raw::Context::<dispatch::raw::Retained>::new(driver);
-        let mut driver = root.narrow::<M::Access>();
-        // SAFETY: the caller retains the installed owner selected for R;
-        // rebinding preserves its slot and epoch and narrowing preserves access.
-        unsafe { M::activate(owner, target, turn, &mut driver) };
-    });
+    let (target, turn, driver) = wake.into_parts();
+    let target = driver
+        .driver_ref()
+        .targets::<R>()
+        .bind(target.slot(), target.epoch());
+    let mut root = dispatch::raw::Context::<dispatch::raw::Retained>::new(driver);
+    let mut driver = root.narrow::<M::Access>();
+    // SAFETY: the caller retains the installed owner selected for R;
+    // rebinding preserves its slot and epoch and narrowing preserves access.
+    unsafe { M::activate(owner, target, turn, &mut driver) };
 }
 
 /// Statically selected activation capability for one exact route.
@@ -41,15 +40,10 @@ pub unsafe trait Wakes<'d, M, R: route::App> {
 
     /// # Safety
     /// The call retains the exact pinned owner and plan selected for this route.
-    unsafe fn call<'a, 'driver, 'turn, 'root>(
-        call: executor::raw::Call<
-            'a,
-            M,
-            Self::Plan,
-            executor::raw::Activate<'driver, 'turn, 'root, 'd>,
-        >,
+    unsafe fn call<'a, 'driver, 'turn>(
+        call: executor::raw::Call<'a, M, Self::Plan, executor::raw::Activate<'driver, 'turn, 'd>>,
     ) where
-        'd: 'driver + 'turn + 'root;
+        'd: 'driver + 'turn;
 }
 
 // SAFETY: projection preserves the exact pinned owner and selected inner plan.
@@ -69,15 +63,10 @@ where
         <<M::Inner as dispatch::raw::Manifold<'d>>::Activate as Wakes<'d, M::Inner, R>>::select()
     }
 
-    unsafe fn call<'a, 'driver, 'turn, 'root>(
-        call: executor::raw::Call<
-            'a,
-            M,
-            Self::Plan,
-            executor::raw::Activate<'driver, 'turn, 'root, 'd>,
-        >,
+    unsafe fn call<'a, 'driver, 'turn>(
+        call: executor::raw::Call<'a, M, Self::Plan, executor::raw::Activate<'driver, 'turn, 'd>>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         // SAFETY: projection keeps the installed owner pinned and preserves its selected plan.
         unsafe {
@@ -102,15 +91,10 @@ where
         Some(())
     }
 
-    unsafe fn call<'a, 'driver, 'turn, 'root>(
-        call: executor::raw::Call<
-            'a,
-            M,
-            Self::Plan,
-            executor::raw::Activate<'driver, 'turn, 'root, 'd>,
-        >,
+    unsafe fn call<'a, 'driver, 'turn>(
+        call: executor::raw::Call<'a, M, Self::Plan, executor::raw::Activate<'driver, 'turn, 'd>>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         // SAFETY: this call retains the exact installed owner selected for R.
         unsafe { activate::<M, R>(call) };
@@ -131,15 +115,10 @@ where
         Some(())
     }
 
-    unsafe fn call<'a, 'driver, 'turn, 'root>(
-        call: executor::raw::Call<
-            'a,
-            M,
-            Self::Plan,
-            executor::raw::Activate<'driver, 'turn, 'root, 'd>,
-        >,
+    unsafe fn call<'a, 'driver, 'turn>(
+        call: executor::raw::Call<'a, M, Self::Plan, executor::raw::Activate<'driver, 'turn, 'd>>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         // SAFETY: this call retains the exact installed owner selected for R.
         unsafe { activate::<M, R>(call) };

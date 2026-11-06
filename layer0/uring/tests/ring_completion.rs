@@ -9,8 +9,8 @@ use dope_sys::{
         reactor::{
             Full,
             complete::{
-                Decode, Drain as _, Entry as _, Head as _, Inspect as _, Outcome as _, Value as _,
-                flags, flags::Meta as _,
+                Decode, Drain as _, Entry as _, Head as _, Inspect as _, Outcome as _, flags,
+                flags::Meta as _,
             },
             submit::{self, Control as _, Poll as _, Queue as _, Ready as _},
         },
@@ -39,7 +39,13 @@ fn cancel_all_accepts_count() {
 
     let mut ring = Uring::try_ring::<2, 4>(false).expect("ring fixture");
     let (reader, _writer) = UnixStream::pair().expect("unix stream pair");
-    let poll = Poll::new(reader.as_fd(), TOKEN);
+    let poll = Poll::new(
+        dope_sys::engine::register::Source {
+            fd: reader.as_fd(),
+            interest: dope_sys::engine::register::Interest::Readable,
+        },
+        TOKEN,
+    );
     {
         let queue = ring.sq();
         // SAFETY: `reader` remains live until the cancelled poll CQE is consumed
@@ -137,7 +143,6 @@ fn multishot_keeps_tail() {
                     _ => None,
                 }
                 .expect("poll completion failed");
-                let value: bounded::U32<0, { i32::MAX as u32 }> = value.into();
                 assert!(value.get() & u32::from(libc::POLLIN.unsigned_abs()) != 0);
                 assert!(meta.flow() == flags::Flow::More);
             })
@@ -229,7 +234,7 @@ fn batches_wrap() {
                 entry
                     .into_parts()
                     .try_inspect(|token, value, meta| {
-                        assert!(matches!(value, Decode::Value(value) if value.is_zero()));
+                        assert!(matches!(value, Decode::Value(value) if value.get() == 0));
                         assert!(meta.flow() == flags::Flow::Last);
                         assert!(meta.buffer().is_none());
                         let index = (token.0.checked_sub(base))
@@ -282,7 +287,7 @@ fn commit_tracks_tail() {
         .into_parts()
         .try_inspect(|token, value, meta| {
             assert!(token == TOKEN);
-            assert!(matches!(value, Decode::Value(value) if value.is_zero()));
+            assert!(matches!(value, Decode::Value(value) if value.get() == 0));
             assert!(meta.flow() == flags::Flow::Last);
         })
         .expect("completion flags");
@@ -314,7 +319,7 @@ fn large_backing_reopens() {
             .into_parts()
             .try_inspect(|token, value, meta| {
                 assert_eq!(token.0, sequence);
-                assert!(matches!(value, Decode::Value(value) if value.is_zero()));
+                assert!(matches!(value, Decode::Value(value) if value.get() == 0));
                 assert!(meta.flow() == flags::Flow::Last);
             })
             .expect("completion flags");
@@ -345,7 +350,7 @@ fn inspection_retains_head() {
             let head = queue.front().expect("published completion");
             let parts = head.parts();
             assert_eq!(parts.token.0, token);
-            assert!(matches!(parts.outcome.decode(), Decode::Value(value) if value.is_zero()));
+            assert!(matches!(parts.outcome.decode(), Decode::Value(value) if value.get() == 0));
         }
         assert_eq!(queue.len().get(), 0);
         assert_eq!(queue.available().get(), 1);

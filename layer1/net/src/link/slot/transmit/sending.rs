@@ -1,7 +1,8 @@
 use dope_core::{
     driver::{
+        self,
         result::SubmitCause,
-        retained::{self, flight},
+        retained::flight,
         route::{self, Identity, kind},
     },
     io::transfer,
@@ -25,12 +26,12 @@ use crate::{
     wire::{self, send, terminal},
 };
 
-pub struct Sending<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> {
-    pub(super) slot: &'a mut types::Connection<'w, 'd, ID, W, S>,
+pub struct Sending<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> {
+    pub(super) slot: &'a mut types::Control<'w, 'd, ID, W>,
 }
 
-impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, ID, W, S> {
-    pub(in crate::link::slot) fn new(slot: &'a mut types::Connection<'w, 'd, ID, W, S>) -> Self {
+impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, W> {
+    pub(in crate::link::slot) fn new(slot: &'a mut types::Control<'w, 'd, ID, W>) -> Self {
         Self { slot }
     }
 
@@ -39,26 +40,23 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
     }
 
     pub fn discard(&mut self) {
-        self.slot
-            .control
-            .engine
-            .discard(&mut self.slot.control.terminal);
+        self.slot.engine.discard(&mut self.slot.terminal);
     }
 
-    pub(super) fn finish_end(slot: &mut types::Connection<'w, 'd, ID, W, S>) {
-        let kind = slot.control.terminal.kind();
-        match slot.control.terminal.finish_send() {
+    pub(super) fn finish_end(slot: &mut types::Control<'w, 'd, ID, W>) {
+        let kind = slot.terminal.kind();
+        match slot.terminal.finish_send() {
             terminal::Wake::Idle => {}
-            terminal::Wake::Ready => slot.control.engine.ready_handle().activate(),
+            terminal::Wake::Ready => slot.engine.ready_handle().activate(),
         }
-        if slot.control.terminal.is_done() {
+        if slot.terminal.is_done() {
             match kind {
                 Some(terminal::Kind::Clean) => {
-                    slot.control.engine.operations.lifecycle.close.seal();
-                    slot.control.engine.operations.lifecycle.drain();
+                    slot.engine.operations.lifecycle.close.seal();
+                    slot.engine.operations.lifecycle.drain();
                 }
                 Some(terminal::Kind::Failed) | None => {
-                    slot.control.engine.operations.lifecycle.close();
+                    slot.engine.operations.lifecycle.close();
                 }
             }
         }
@@ -68,28 +66,21 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
     pub fn finish(
         &mut self,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Finalize<()> {
         let target = self.target();
         let slot = &mut *self.slot;
-        if !slot.control.terminal.has_send() {
+        if !slot.terminal.has_send() {
             return Finalize::Settled;
         }
-        if slot
-            .control
-            .engine
-            .operations
-            .lifecycle
-            .close
-            .is_discarded()
-        {
+        if slot.engine.operations.lifecycle.close.is_discarded() {
             Self::finish_end(slot);
             return Finalize::Abandoned;
         }
-        if slot.control.engine.operations.sending.is_inflight() {
+        if slot.engine.operations.sending.is_inflight() {
             return Finalize::Armed(());
         }
-        match slot.control.engine.operations.lifecycle.close.request() {
+        match slot.engine.operations.lifecycle.close.request() {
             state::Request::Ready => {}
             state::Request::Discarded => {
                 Self::finish_end(slot);
@@ -99,7 +90,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
         }
         match graceful::flush(slot, slots, driver, target, sending::Source::Terminal) {
             outcome::Progress::Submitted => Finalize::Armed(()),
-            outcome::Progress::Idle if slot.control.engine.operations.lifecycle.is_waiting() => {
+            outcome::Progress::Idle if slot.engine.operations.lifecycle.is_waiting() => {
                 Finalize::Armed(())
             }
             outcome::Progress::Rejected(error) => {
@@ -130,7 +121,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
         B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
-        let done = self.slot.control.engine.operations.queue_done()?;
+        let done = self.slot.engine.operations.queue_done()?;
         match done {
             reclaim::Completion::Submitted(bytes) => {
                 if queue.is_active() {
@@ -160,7 +151,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
         queue: &mut egress::Output<'_, '_, 'd, IOV, B, D>,
         key: pool::Key<'d, ID>,
     ) {
-        let acks = &mut self.slot.control.engine.operations.acknowledgements;
+        let acks = &mut self.slot.engine.operations.acknowledgements;
         let held = matches!(
             <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::abort(acks),
             reclaim::Abort::Retained
@@ -172,14 +163,14 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
 
     pub(in crate::link) fn has_ack(&self) -> bool {
         <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::has_pending(
-            &self.slot.control.engine.operations.acknowledgements,
+            &self.slot.engine.operations.acknowledgements,
         )
     }
 
     pub fn flush_queue(
         &mut self,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> outcome::Progress {
         let target = self.target();
         graceful::flush(self.slot, slots, driver, target, sending::Source::Queued)
@@ -188,7 +179,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
     pub fn flush_direct(
         &mut self,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> outcome::Progress {
         let target = self.target();
         graceful::flush(self.slot, slots, driver, target, sending::Source::Direct)
@@ -197,29 +188,25 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
     pub fn seal(
         &mut self,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Finalize<outcome::Wait<'d, ID>> {
         let target = self.target();
         let slot = &mut *self.slot;
-        let Some(fd) = slot.control.engine.establish.fd() else {
+        let Some(fd) = slot.engine.establish.fd() else {
             return Finalize::Settled;
         };
-        match slot.control.engine.operations.lifecycle.close.request() {
+        match slot.engine.operations.lifecycle.close.request() {
             state::Request::Ready | state::Request::Duplicate => {}
             state::Request::Discarded => return Finalize::Abandoned,
         }
         let progress = if matches!(
-            slot.control.engine.operations.lifecycle.close.check_seal(),
+            slot.engine.operations.lifecycle.close.check_seal(),
             state::Seal::Duplicate
         ) {
             graceful::flush(slot, slots, driver, target, sending::Source::Terminal)
         } else {
-            let end = slot.control.engine.send(&mut slot.control.terminal);
-            let submit = slot
-                .control
-                .engine
-                .operations
-                .submission(sending::Source::Terminal);
+            let end = slot.engine.send(&mut slot.terminal);
+            let submit = slot.engine.operations.submission(sending::Source::Terminal);
             let (captured, handoff) = graceful::submit_pending(
                 send::Context::new(&mut slot.wire, send::Storage::new(&mut slot.send)),
                 submit,
@@ -229,7 +216,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
                 target,
                 end,
             );
-            slot.control.engine.captured(captured);
+            slot.engine.captured(captured);
             handoff.progress()
         };
         if let outcome::Progress::Rejected(error) = progress {
@@ -238,38 +225,38 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'a, 'w, 'd, I
             }
             return Finalize::Rejected(event::SendFailure::Terminal(error));
         }
-        if slot.control.engine.operations.sending.is_inflight()
-            || slot.control.engine.operations.lifecycle.is_waiting()
+        if slot.engine.operations.sending.is_inflight()
+            || slot.engine.operations.lifecycle.is_waiting()
         {
-            slot.control.engine.operations.lifecycle.close();
+            slot.engine.operations.lifecycle.close();
             return Finalize::Armed(outcome::Wait::new(slot));
         }
         Finalize::Settled
     }
 }
 
-impl<'sending, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Sending<'sending, 'w, 'd, ID, W, S>
+impl<'sending, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'sending, 'w, 'd, ID, W>
 where
     'd: 'w,
 {
     pub(in crate::link) fn sent(
         self,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         bytes: transfer::Len,
         key: pool::Key<'d, ID, kind::Send>,
     ) -> (Terminal, send::Availability) {
         let target = key.target();
         let conn = &mut *self.slot;
-        let Some(fd) = conn.control.engine.establish.fd() else {
-            let origin = match conn.control.engine.operations.finish_send() {
+        let Some(fd) = conn.engine.establish.fd() else {
+            let origin = match conn.engine.operations.finish_send() {
                 sending::Done::Active(origin) => origin,
                 sending::Done::Idle => return (Terminal::Drop, send::Availability::Unchanged),
             };
             conn.discard();
             return (Terminal::closed(origin), send::Availability::Unchanged);
         };
-        let done = match conn.control.engine.operations.try_complete_send(bytes) {
+        let done = match conn.engine.operations.try_complete_send(bytes) {
             Ok(done) => done,
             Err(error) => {
                 conn.discard();
@@ -288,33 +275,26 @@ where
         };
         let done = send::Completion::from_sent(send::Storage::new(&mut conn.send), sent);
         let context = send::Context::new(&mut conn.wire, done);
-        let (submit, avail, captured) = match conn.control.engine.send(&mut conn.control.terminal) {
+        let (submit, avail, captured) = match conn.engine.send(&mut conn.terminal) {
             terminal::Admission::Open(end) => {
                 let done = <W::Send as send::Policy<W>>::after_send::<ID>(context, end);
                 let (next, captured) = done.into_parts();
                 let (ready, avail) = next.into_parts();
-                let op = conn.control.engine.operations.submission(source);
+                let op = conn.engine.operations.submission(source);
                 let ready = ready.resolve(captured);
                 let submit = op.submit(fd, slots, driver, target, ready);
                 (submit, avail, captured)
             }
             terminal::Admission::Closed => {
-                let end = conn.control.terminal.drain();
+                let end = conn.terminal.drain();
                 let next = <W::Send as send::Policy<W>>::settle::<ID>(context, end);
                 let (ready, avail) = next.into_parts();
-                if conn
-                    .control
-                    .engine
-                    .operations
-                    .lifecycle
-                    .close
-                    .is_discarded()
-                {
+                if conn.engine.operations.lifecycle.close.is_discarded() {
                     return (Terminal::closed(origin), avail);
                 }
                 let ready = ready.close_after();
                 let captured = terminal::Captured::None;
-                let op = conn.control.engine.operations.submission(source);
+                let op = conn.engine.operations.submission(source);
                 let submit = op.submit(fd, slots, driver, target, ready);
                 (submit, avail, captured)
             }
@@ -323,19 +303,18 @@ where
         match handoff.progress() {
             outcome::Progress::Submitted | outcome::Progress::Idle => {}
             outcome::Progress::Rejected(error) => {
-                conn.control.engine.captured(captured);
+                conn.engine.captured(captured);
                 conn.discard();
                 return (Terminal::rejected(origin, error), avail);
             }
         }
-        conn.control.engine.captured(captured);
-        if let terminal::Admission::Open(end) = conn.control.engine.send(&mut conn.control.terminal)
-        {
-            let Some(fd) = conn.control.engine.establish.fd() else {
+        conn.engine.captured(captured);
+        if let terminal::Admission::Open(end) = conn.engine.send(&mut conn.terminal) {
+            let Some(fd) = conn.engine.establish.fd() else {
                 conn.discard();
                 return (Terminal::closed(origin), avail);
             };
-            let op = conn.control.engine.operations.submission(source);
+            let op = conn.engine.operations.submission(source);
             let (captured, handoff) = graceful::submit_pending(
                 send::Context::new(&mut conn.wire, send::Storage::new(&mut conn.send)),
                 op,
@@ -345,14 +324,14 @@ where
                 target,
                 terminal::Admission::Open(end),
             );
-            conn.control.engine.captured(captured);
+            conn.engine.captured(captured);
             if let outcome::Progress::Rejected(error) = handoff.progress() {
                 conn.discard();
                 return (Terminal::rejected(origin, error), avail);
             }
         }
-        if conn.control.engine.operations.sending.is_inflight()
-            || conn.control.engine.operations.lifecycle.is_waiting()
+        if conn.engine.operations.sending.is_inflight()
+            || conn.engine.operations.lifecycle.is_waiting()
         {
             return (Terminal::Pending, avail);
         }
@@ -360,21 +339,21 @@ where
         (Terminal::sent(origin, sent), avail)
     }
 
-    fn wake(conn: &mut types::Connection<'w, 'd, ID, W, S>, origin: SendSource) {
+    fn wake(conn: &mut types::Control<'w, 'd, ID, W>, origin: SendSource) {
         if origin == SendSource::Terminal {
             if !conn.send.as_slice().is_empty() {
-                conn.control.engine.ready_handle().activate();
+                conn.engine.ready_handle().activate();
             } else {
                 Self::finish_end(conn);
             }
-        } else if conn.control.terminal.has_send() {
-            conn.control.engine.ready_handle().activate();
+        } else if conn.terminal.has_send() {
+            conn.engine.ready_handle().activate();
         }
     }
 
     pub(in crate::link) fn failed(self, error: dope_core::Errno) -> Terminal {
         let conn = &mut *self.slot;
-        let origin = match conn.control.engine.operations.finish_send() {
+        let origin = match conn.engine.operations.finish_send() {
             sending::Done::Active(origin) => origin,
             sending::Done::Idle => return Terminal::Drop,
         };

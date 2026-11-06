@@ -33,7 +33,7 @@ impl<C> Group<C> {
             generation: cell::Cell::new(num::NonZero::<u64>::MIN),
             context: cell::Cell::new(ptr::NonNull::from(context)),
             available: cell::Cell::new(false),
-            attachment: cell::Cell::new(Attachment::Retired),
+            attachment: cell::Cell::new(Attachment::Active),
         }
     }
 
@@ -104,7 +104,7 @@ impl<T: Copy, S: Copy, C> Entry<T, S, C> {
     pub(in crate::driver::receive::credit::storage) fn new(header: &Group<C>) -> Self {
         Self {
             header: ptr::NonNull::from(header),
-            state: cell::Cell::new(State::Detached),
+            state: cell::Cell::new(State::Idle),
             invariant: marker::PhantomData,
         }
     }

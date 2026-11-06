@@ -2,7 +2,7 @@ use std::mem;
 
 use dope_sys::{
     io::reactor::complete::{
-        self, Decode, Flags as _, Outcome as _, Record as _, Value as _,
+        self, Decode, Flags as _, Outcome as _, Record as _,
         flags::{self, Meta as _},
     },
     probe::{self, Check, Failure},
@@ -50,7 +50,7 @@ impl<T: complete::raw::Token, P: Copy> probe::Outcome for Outcome<T, P> {
 
     fn zero(self) -> Result<(), Failure<P, Observed<T>>> {
         let result = self.success()?;
-        if result.is_zero() {
+        if result.get() == 0 {
             Ok(())
         } else {
             Err(self.unexpected())

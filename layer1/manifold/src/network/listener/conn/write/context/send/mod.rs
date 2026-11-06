@@ -1,11 +1,7 @@
 use std::{convert::Infallible, ops::ControlFlow, task};
 
 use conn::write;
-use dope_core::driver::{
-    retained::{self, flight},
-    route::Identity,
-    schedule::app,
-};
+use dope_core::driver::{self, retained::flight, route::Identity, schedule::app};
 use dope_net::{
     link::{egress, pool::pending, slot::types},
     wire,
@@ -16,44 +12,50 @@ use egress::{
 };
 use o3::base::cell::region;
 use write::error;
-use writer::flow::SlotFlow as _;
 
 use crate::network::listener::{
     conn,
-    writer::{self, deadline::Slot, memory},
+    writer::{deadline::Slot, memory},
 };
 
-type Payload<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B, S> =
-    Send<'a, 'p, 's, 'w, 'd, ID, W, C, B, memory::Body<'a, 'p, 's, 'e, 'd, ID, S, B>>;
-
-type Header<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B> =
-    Send<'a, 'p, 's, 'w, 'd, ID, W, C, B, memory::Buffer<'a, 'p, 's, 'e, 'd, ID, B>>;
-
-type Bounded<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B> =
-    Send<'a, 'p, 's, 'w, 'd, ID, W, C, B, memory::Bounded<'a, 'p, 's, 'e, 'd, ID, B>>;
+type Bounded<'a, 'c, 'p, 's, 'w, 'e, 'd, ID, W, C, B> =
+    Header<'a, 'c, 'p, 's, 'w, 'e, 'd, ID, W, C, B, ()>;
 
 pub(super) mod body;
 pub(super) mod capacity;
 
-pub(super) struct Send<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B, M>
-where
+pub(super) struct Header<
+    'a,
+    'c,
+    'p,
+    's,
+    'w,
+    'e,
+    'd: 'w,
+    ID: Identity,
+    W: wire::Spec + 'w + 'd,
+    C,
+    B,
+    P = memory::Plan<'a, 'p, 's, 'e, 'd, ID, B>,
+> where
     B: data::raw::Payload<'d>,
 {
-    slot: Slot<'a, 'w, 'd, ID, W, conn::State<'p, 's, 'd, ID, C, B>>,
-    flights: &'a flight::Slots<'d, ID>,
-    pending: pending::Handle<'a, 'd, ID>,
-    buffer: M,
-    lease: app::Lease<'a, 'd>,
+    pub(super) slot: &'a mut Slot<'c, 'p, 's, 'w, 'd, ID, W, C, B>,
+    pub(super) flights: &'a flight::Slots<'d, ID>,
+    pub(super) pending: pending::Handle<'a, 'd, ID>,
+    pub(super) buffer: memory::Buffer<'a, 'p, 's, 'e, 'd, ID, B, P>,
+    pub(super) lease: app::Lease<'a, 'd>,
 }
 
-impl<'e, 'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W, C, B> Header<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B>
+impl<'e, 'a, 'c, 'p, 's, 'w, 'd: 'w, ID: Identity, W, C, B>
+    Header<'a, 'c, 'p, 's, 'w, 'e, 'd, ID, W, C, B>
 where
     W: wire::Spec + 'w + 'd,
     B: data::raw::Payload<'d>,
 {
     pub(in crate::network::listener::conn::write::context) fn try_draft<R, F, E>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         call: F,
     ) -> Result<write::Outcome<R>, error::Error<B, R, E>>
     where
@@ -67,7 +69,7 @@ where
 
     pub(in crate::network::listener::conn::write::context) fn try_header<H, R, E>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         call: H,
     ) -> Result<write::Outcome<R>, error::Error<B, R, E>>
     where
@@ -81,7 +83,7 @@ where
         >,
     {
         let Self {
-            mut slot,
+            slot,
             flights: slots,
             pending: ready,
             buffer,
@@ -109,7 +111,7 @@ where
                         return Ok(write::Outcome::Deferred(write::Deferred::Capacity));
                     }
                 };
-                let commit = write::Commit::try_with(&mut slot.state.conn, header, call);
+                let commit = write::Commit::try_with(&mut *slot.conn, header, call);
                 let commit = match commit {
                     Ok(commit) => commit,
                     Err(cause) => {
@@ -127,18 +129,18 @@ where
                 };
                 match status {
                     reserve::Publish::Published => lease.commit().run(|| {
-                        Self::apply_end(&mut slot, end);
+                        apply_end(slot, end);
                         ready.wake();
                     }),
                     reserve::Publish::Empty => {
-                        Self::apply_end(&mut slot, end);
+                        apply_end(slot, end);
                         slot.cancel_idle(queue.pending());
                     }
                 }
                 Ok(write::Outcome::Committed(value))
             }
             memory::Buffer::Direct(flight) => {
-                let commit = write::Commit::try_with(&mut slot.state.conn, flight, call);
+                let commit = write::Commit::try_with(&mut *slot.conn, flight, call);
                 let commit = match commit {
                     Ok(commit) => commit,
                     Err(cause) => {
@@ -153,64 +155,52 @@ where
                         slot.ensure_send(driver.driver_ref().clock().now());
                         slot.advance_send(slots, ready, driver);
                         lease.commit().run(|| {
-                            Self::apply_end(&mut slot, end);
+                            apply_end(slot, end);
                             ready.wake();
                         });
                     }
                     None => {
                         slot.cancel_send();
-                        Self::apply_end(&mut slot, end);
+                        apply_end(slot, end);
                     }
                 }
                 Ok(write::Outcome::Committed(value))
             }
         }
     }
-
-    fn apply_end(
-        slot: &mut types::Connection<'w, 'd, ID, W, conn::State<'p, 's, 'd, ID, C, B>>,
-        end: write::End,
-    ) {
-        match end {
-            write::End::Open => {}
-            write::End::Shutdown => slot.shutdown(),
-            write::End::Close => slot.close_after(),
-        }
-    }
 }
 
-impl<'e, 'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W, C, B> Bounded<'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B>
+impl<'e, 'a, 'c, 'p, 's, 'w, 'd: 'w, ID: Identity, W, C, B>
+    Bounded<'a, 'c, 'p, 's, 'w, 'e, 'd, ID, W, C, B>
 where
     W: wire::Spec + 'w + 'd,
     B: data::raw::Payload<'d> + 'd,
 {
     pub(in crate::network::listener::conn::write::context) fn execute<R, H>(
         mut self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         commit: H,
     ) -> Result<write::Outcome<R>, error::Error<B, R, Infallible>>
     where
         H: FnOnce(&mut C, &mut [u8]) -> write::Draft<B, R>,
     {
         let draft = match &mut self.buffer {
-            memory::Bounded::Direct(flight) => commit(&mut self.slot.state.conn, flight.as_mut()),
-            memory::Bounded::Queued { slot, .. } => {
-                commit(&mut self.slot.state.conn, slot.as_mut())
-            }
+            memory::Bounded::Direct(flight) => commit(&mut *self.slot.conn, flight.as_mut()),
+            memory::Bounded::Queued { slot, .. } => commit(&mut *self.slot.conn, slot.as_mut()),
         };
         self.publish(driver, draft)
     }
 
     pub(in crate::network::listener::conn::write::context) fn try_prefix<R, H>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         call: H,
     ) -> Result<write::Outcome<R>, error::Error<B, R, Infallible>>
     where
         H: FnOnce(&mut C, &mut [u8]) -> write::Draft<Infallible, R>,
     {
         let Self {
-            mut slot,
+            slot,
             flights,
             pending,
             buffer,
@@ -242,7 +232,7 @@ where
                 }
             }
         };
-        Send {
+        Header {
             slot,
             flights,
             pending,
@@ -254,11 +244,11 @@ where
 
     fn publish<R>(
         self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         draft: write::Draft<B, R>,
     ) -> Result<write::Outcome<R>, error::Error<B, R, Infallible>> {
         let Self {
-            mut slot,
+            slot,
             flights,
             pending,
             buffer,
@@ -280,13 +270,13 @@ where
                         slot.ensure_send(driver.driver_ref().clock().now());
                         slot.advance_send(flights, pending, driver);
                         lease.commit().run(|| {
-                            Header::apply_end(&mut slot, end);
+                            apply_end(slot, end);
                             pending.wake();
                         });
                     }
                     None => {
                         slot.cancel_send();
-                        Header::apply_end(&mut slot, end);
+                        apply_end(slot, end);
                     }
                 }
                 Ok(write::Outcome::Committed(receipt))
@@ -305,7 +295,7 @@ where
                 };
                 let checked = match checked.split() {
                     ControlFlow::Break((receipt, end)) => {
-                        Header::apply_end(&mut slot, end);
+                        apply_end(slot, end);
                         slot.cancel_idle(queue.pending());
                         return Ok(write::Outcome::Committed(receipt));
                     }
@@ -339,16 +329,27 @@ where
                 };
                 match publish {
                     reserve::Publish::Published => lease.commit().run(|| {
-                        Header::apply_end(&mut slot, end);
+                        apply_end(slot, end);
                         pending.wake();
                     }),
                     reserve::Publish::Empty => {
-                        Header::apply_end(&mut slot, end);
+                        apply_end(slot, end);
                         slot.cancel_idle(queue.pending());
                     }
                 }
                 Ok(write::Outcome::Committed(receipt))
             }
         }
+    }
+}
+
+fn apply_end<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w>(
+    slot: &mut types::Control<'w, 'd, ID, W>,
+    end: write::End,
+) {
+    match end {
+        write::End::Open => {}
+        write::End::Shutdown => slot.shutdown(),
+        write::End::Close => slot.close_after(),
     }
 }

@@ -2,7 +2,7 @@ use std::pin;
 
 use data::{compose, exec};
 use dope_core::{
-    driver::{result::SubmitCause, retained, route::Identity, schedule, schedule::clock},
+    driver::{self, result::SubmitCause, route::Identity, schedule, schedule::clock},
     io::event::net::send::Completion,
 };
 use dope_net::link::{
@@ -72,9 +72,9 @@ type Connections<'n, 'p, 's, 'w, 'd, ID, T, A> = pool::Pool<
     Reserve<'d, <A as handler::Application<'d, ID>>::Egress>,
 >;
 /// Retirement borrows each participant independently throughout all three phases.
-type Closing<'app, 'accept, 'deadline, 'd, ID, A> = (
+type Closing<'app, 'accept, 'deadline, 'p, 'd, ID, A> = (
     pin::Pin<&'app mut A>,
-    pin::Pin<&'accept mut accept::Accept<'d, ID>>,
+    pin::Pin<&'accept mut accept::Accept<'p, 'd, ID>>,
     &'deadline mut deadline::Schedule<'d, ID>,
 );
 pub(in crate::network::listener) fn release_payload<
@@ -219,7 +219,7 @@ where
     fn settle<O>(
         &mut self,
         done: Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         direct: impl for<'a> FnOnce(send::Direct<'a, Record<'p, 's, 'd, ID, A>>) -> O,
         free: impl FnMut(pool::Key<'d, ID>, Payload<'p, 's, 'd, ID, A::Egress>),
     ) -> SendOutcome<'d, ID, O>
@@ -245,10 +245,10 @@ where
     pub(in crate::network::listener) fn close(
         &mut self,
         app: pin::Pin<&mut A>,
-        accept: pin::Pin<&mut accept::Accept<'d, ID>>,
+        accept: pin::Pin<&mut accept::Accept<'p, 'd, ID>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         <A::Input as input::Mode<A::Wire>>::Ingress: drain::Policy<A::Wire>,
     {
@@ -269,23 +269,23 @@ where
                     '_,
                     '_,
                     '_,
-                    '_,
                     'w,
                     'd,
                     ID,
                     _,
                     Record<'p, 's, 'd, ID, A>,
                     (),
-                    Closing<'_, '_, '_, 'd, ID, A>,
+                    Closing<'_, '_, '_, 'p, 'd, ID, A>,
                 >| {
                     use close::{Decision, Phase};
 
-                    let ((app, accept, due), claim, phase, slots, slot, driver) = scope;
-                    let key = slot.key();
+                    let ((app, accept, due), claim, phase, slots, conn, driver) = scope;
+                    let key = conn.key();
                     // SAFETY: the retirement scope lends the initialized slot for
                     // this exact key together with the schedule covering it.
-                    let mut slot =
-                        Slot::from(unsafe { depot::raw::Proof::new(((slot, &mut **due), key)) });
+                    let mut slot = Slot::from(unsafe {
+                        depot::raw::Proof::new(((&mut *conn, &mut **due), key))
+                    });
                     let () = *claim;
 
                     match phase {
@@ -327,10 +327,10 @@ where
 
                                 A::close(
                                     app.as_mut(),
-                                    Ctx::sealed(&mut slot, turn.reborrow().app()),
+                                    Ctx::sealed(slot.sealed(), turn.reborrow().app()),
                                 );
                             }
-                            if let Some(admit) = slot.state.admission.take() {
+                            if let Some(admit) = conn.state.admission.take() {
                                 accept.as_mut().release(admit);
                             }
                             Decision::Ready
@@ -342,16 +342,14 @@ where
                     '_,
                     '_,
                     '_,
-                    '_,
                     'd,
                     (),
-                    Closing<'_, '_, '_, 'd, ID, A>,
+                    Closing<'_, '_, '_, 'p, 'd, ID, A>,
                     Record<'p, 's, 'd, ID, A>,
                 >| {
                     close::Approval::Ready(conn::Retired::take(key, scope.2, scope.3))
                 },
                 failed: |scope: close::Failed<
-                    '_,
                     '_,
                     '_,
                     '_,
@@ -367,7 +365,7 @@ where
                     { listener::IOV_CAP },
                     _,
                     (),
-                    Closing<'_, '_, '_, 'd, ID, A>,
+                    Closing<'_, '_, '_, 'p, 'd, ID, A>,
                 >| {
                     let (_, claim, io, _) = scope;
                     let cause = io.failure();
@@ -376,10 +374,10 @@ where
                     io.connection().state.fail(conn::Failure::Receive(error));
                 },
             },
-            |(app, _accept, _due): &mut (pin::Pin<&mut A>, _, _), data| {
+            |(app, _accept, _due): &mut (pin::Pin<&mut A>, _, _), data, _| {
                 writer::release_payload(app.as_mut(), key, data, handler::Disposition::Closed);
             },
-            |pool, (app, _accept, _due), _driver, outcome| match outcome {
+            |_, (app, _accept, _due), _driver, outcome| match outcome {
                 close::Outcome::Retired((egress, retired)) => {
                     if let Some(egress) = egress {
                         writer::release_egress(
@@ -395,26 +393,9 @@ where
                         policy.retire(app.as_mut(), retired);
                     }
                 }
-                close::Outcome::Pending((), deferred) => match deferred {
-                    close::Deferred::Terminal
-                    | close::Deferred::Setup
-                    | close::Deferred::Send
-                    | close::Deferred::Recv
-                    | close::Deferred::Ingress
-                    | close::Deferred::Egress
-                    | close::Deferred::Scheduled => {}
-                    close::Deferred::Owner(wait) => {
-                        if !pool
-                            .inspect()
-                            .get(key)
-                            .is_some_and(|slot| slot.send_status().is_waiting())
-                        {
-                            wait.reschedule();
-                        }
-                    }
-                    close::Deferred::Retire(next) => next.reschedule(),
-                },
-                close::Outcome::Stale(()) | close::Outcome::Missing(()) => {}
+                close::Outcome::Pending(())
+                | close::Outcome::Stale(())
+                | close::Outcome::Missing(()) => {}
             },
         );
     }

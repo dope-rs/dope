@@ -90,7 +90,7 @@ fn fiber_listener_roundtrip() {
                     &mut sess,
                     |sess| sess.driver(),
                     |listener, sess| {
-                        let pool = storage.handle();
+                        let pool = listener.handle();
                         let peer = Peer::at(addr).try_connect().expect("client connect");
                         peer.set_nodelay(true).expect("client nodelay");
                         peer.read_wait(Some(GUARD)).expect("client read timeout");
@@ -236,7 +236,7 @@ fn cancelled_inflight_reuses_slot() {
                         &mut sess,
                         |sess| sess.driver(),
                         |listener, sess| {
-                            let handle = storage.handle();
+                            let handle = listener.handle();
                             sess.with_quiesce(
                                 &mut finish,
                                 Host::new(listener),

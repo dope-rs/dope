@@ -76,7 +76,7 @@ impl Blocked {
             Retry::new(&mut files, &mut state, &mut poll).send(
                 NonZeroUsize::MIN,
                 Physical::at::<1>(),
-                || Data::bytes(bytes::Prefix::new(&PAYLOAD)),
+                Data::bytes(bytes::Prefix::new(&PAYLOAD)),
                 vacant,
             );
         }

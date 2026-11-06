@@ -53,7 +53,7 @@ impl<'a, 'e, 'd, S: data::raw::Payload<'d>, I: identity::Identity> Receiver<'a, 
         let Some(head) = pause.front() else {
             return Progress::Idle;
         };
-        let request::Front::Ready(work) = requests.admit_front() else {
+        let Some(work) = requests.admit_front() else {
             return Progress::Idle;
         };
         match work.move_with(|token, queue, target| head.transfer_to(token, queue, target)) {
@@ -124,14 +124,10 @@ impl<'a, 'e, 'd, S: data::raw::Payload<'d>, I: identity::Identity> Receiver<'a, 
             let Some(head) = pause.head(requests.region(), &mut classify) else {
                 return;
             };
-            let mut work = match requests.admit_front() {
-                request::Front::Ready(work) => work,
-                request::Front::Exhausted => {
-                    return;
-                }
+            let Some(mut work) = requests.admit_front() else {
+                return;
             };
-            let valid = work.with_region(|region| validate(region, head.kind()));
-            if valid {
+            if validate(work.region(), head.kind()) {
                 let moved =
                     work.move_with(|token, queue, target| head.transfer_to(token, queue, target));
                 match moved {
@@ -143,8 +139,7 @@ impl<'a, 'e, 'd, S: data::raw::Payload<'d>, I: identity::Identity> Receiver<'a, 
                     None => return,
                 }
             } else {
-                let rejected =
-                    work.with_region(|token| head.take(token).map(front::Front::into_inner));
+                let rejected = head.take(work.region()).map(front::Front::into_inner);
                 let Some(rejected) = rejected else {
                     return;
                 };
@@ -154,10 +149,6 @@ impl<'a, 'e, 'd, S: data::raw::Payload<'d>, I: identity::Identity> Receiver<'a, 
                 return;
             }
         }
-    }
-
-    pub(super) fn take_close(&self) -> Option<close::Reason> {
-        self.slot.state().take_close(self.txn)
     }
 }
 
@@ -290,11 +281,20 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
         Ok(())
     }
 
-    pub fn close(&self, conn: conn::Id<'d, ID>, reason: close::Reason) {
+    /// Retires this generation; full close supersedes write-half shutdown.
+    pub fn close(&self, conn: conn::Id<'d, ID>, rule: close::Directive) {
         let Some(slot) = self.arena.get(metadata::Lane::from_slot(conn.slot())) else {
             return;
         };
-        slot.state().close(conn, reason);
+        slot.state().close(conn, rule);
+    }
+
+    /// Consumes this generation's pending close independently of payload draining.
+    pub fn take_close(&self, conn: conn::Id<'d, ID>) -> Option<close::Directive> {
+        self.arena
+            .get(metadata::Lane::from_slot(conn.slot()))?
+            .state()
+            .take_close(conn)
     }
 
     /// Orders write-half shutdown after all payloads already admitted for this
@@ -309,13 +309,8 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
     pub(super) fn finish_drain<'p, O: data::raw::Payload<'d>, ROUTE: Identity>(
         slot: arena::Slot<'_, 'e, 'd, B, state::Entry<'d, conn::Id<'d, ID>>>,
         proof: state::Transaction<conn::Id<'d, ID>>,
-        close: Option<close::Reason>,
         requests: &mut request::Requests<'_, '_, 'p, 'd, O, ROUTE>,
     ) {
-        if let Some(reason) = close {
-            requests.close(close::Directive::reconnect(reason));
-            return;
-        }
         if !slot.queue().is_empty() {
             return;
         }
@@ -341,11 +336,8 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
             return;
         };
         let (slot, proof) = (receiver.slot, receiver.txn);
-        let close = receiver.take_close();
-        if close.is_none() {
-            receiver.drain_map::<O, K, ROUTE>(requests, classify, validate, reject);
-        }
-        Self::finish_drain(slot, proof, close, requests);
+        receiver.drain_map::<O, K, ROUTE>(requests, classify, validate, reject);
+        Self::finish_drain(slot, proof, requests);
     }
 
     pub fn drain<'p>(&self, requests: &mut request::Requests<'_, '_, 'p, 'd, B, ID>) {
@@ -353,10 +345,7 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
             return;
         };
         let (slot, proof) = (receiver.slot, receiver.txn);
-        let close = receiver.take_close();
-        if close.is_none() {
-            receiver.drain(requests);
-        }
-        Self::finish_drain(slot, proof, close, requests);
+        receiver.drain(requests);
+        Self::finish_drain(slot, proof, requests);
     }
 }

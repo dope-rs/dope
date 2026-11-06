@@ -19,4 +19,8 @@ impl delivery::Event for Kernel<'_> {
     fn data(self) -> usize {
         self.0.udata.addr()
     }
+
+    fn eof(&self) -> bool {
+        self.0.flags & libc::EV_EOF != 0
+    }
 }

@@ -78,7 +78,7 @@ where
             None => install,
         };
         install
-            .in_stage(stage, app, |listener, stage| {
+            .in_stage(stage, app, |listener, _wait, stage| {
                 next(app::Host::new(listener), stage)
             })
             .map_err(crate::BuildError::Create)

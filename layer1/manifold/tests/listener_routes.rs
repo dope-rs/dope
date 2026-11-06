@@ -86,7 +86,7 @@ fn local_slots_reuse() {
                         hash,
                         &mut session,
                         session::Scope::driver,
-                        |prepared, session| {
+                        |prepared, _wait, session| {
                             let left = prepared.build(
                                 App { trace: first.clone(), gate: accepted[0].clone(), observe: trace::check },
                                 &mut session.driver(),
@@ -103,7 +103,7 @@ fn local_slots_reuse() {
                                 hash,
                                 session,
                                 session::Scope::driver,
-                                |right, session| {
+                                |right, _wait, session| {
                                     let b = right.local_addr();
                                     session.with_quiesce(
                                         &mut finish,
@@ -172,7 +172,6 @@ fn local_slots_reuse() {
 #[test]
 fn installed_control_retains_accept_failure() {
     use std::{
-        cell::Cell,
         net::{SocketAddr, TcpListener},
         os::fd::AsFd as _,
     };
@@ -183,99 +182,121 @@ fn installed_control_retains_accept_failure() {
         dope_sys::io::socket::{How, Socket as _},
     };
     use dope_manifold::network::listener::AcceptError;
-    use dope_test::{
-        fibers,
-        harness::{GUARD, signals::LocalGate},
-    };
+    use dope_test::harness::GUARD;
 
-    let fault = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("listener address");
-    let bound = fault.try_clone().expect("listener fault descriptor");
-    let observed = Cell::new(None);
-    let ready = LocalGate::new();
-    let settings = One::driver().expect("listener resources");
-    let mut creation = Attempt::new();
-    let executor = Executor::new(&mut creation, settings);
-    executor
-        .as_ref()
-        .map_err(|error| error.kind())
-        .expect("executor");
-    executor.ok().expect("executor").run(|executor| {
+    for (per_ip, retiring) in [
+        (None, false),
+        (None, true),
+        (Some(PerIp::fixed::<1>()), true),
+    ] {
+        let fault =
+            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("listener address");
+        let bound = fault.try_clone().expect("listener fault descriptor");
+        let settings = One::driver().expect("listener resources");
+        let mut creation = Attempt::new();
+        let executor = Executor::new(&mut creation, settings);
         executor
-            .enter_with(
-                |mut session| {
-                    let hash = session.hash_state(listener::Domain::DEFAULT);
-                    listener::Install::<KeyTag<0>, fixture::Env, _>::new(
-                        listener::config::Prepared {
-                            connections: Capacity::fixed::<1>(),
-                            direct_flights: listener::config::Flights::Minimum,
-                            bind: fault.local_addr().expect("bound address"),
-                            backlog: Backlog::fixed::<1>(),
-                            stream: Default::default(),
-                            per_ip: None,
-                            transport: Default::default(),
-                            egress: Default::default(),
-                        },
-                        domain::Local::new(Identity),
-                    )
-                    .with_bound(Some(bound))
-                    .with_driver(
-                        App {
-                            trace: Rc::new(trace::Trace::default()),
-                            gate: Gate::new(),
-                            observe: trace::check,
-                        },
-                        hash,
-                        &mut session,
-                        session::Scope::driver,
-                        |listener, session| {
-                            let mut finish = Completion::new();
-                            session
-                                .with_quiesce(
-                                    &mut finish,
-                                    fixture::Host {
-                                        listener,
-                                        observed: &observed,
-                                        ready: ready.handle(),
-                                    },
-                                    GUARD,
-                                    |mut app| {
-                                        let shutdown =
-                                            Backend::shutdown::<Errno>(fault.as_fd(), How::READ);
-                                        if std::env::consts::OS == "macos" {
-                                            assert_eq!(
-                                                shutdown,
-                                                Err(Errno::try_from(libc::ENOTCONN)
-                                                    .expect("not connected errno"))
-                                            );
-                                            assert_eq!(observed.get(), None);
-                                            return;
-                                        }
-                                        shutdown.expect("stop native listener");
-                                        assert_eq!(
-                                            fibers::TEST
-                                                .try_wait(&mut app, &ready.handle(), 1)
-                                                .expect("observe terminal accept"),
-                                            Wait::Reached
-                                        );
-                                        assert_eq!(
-                                            observed.get(),
-                                            Some(AcceptError::Completion(
-                                                accept::Failure::Syscall(Errno::INVALID_ARGUMENT)
-                                            ))
-                                        );
-                                    },
-                                )
-                                .expect("listener retirement");
-                        },
-                    )
-                    .expect("install listener");
-                },
-                recovery::Policy::new(|_| {}, common::recover),
-            )
             .as_ref()
-            .map_err(|error| error.cause())
-            .expect("finish executor");
-    });
+            .map_err(|error| error.kind())
+            .expect("executor");
+        executor.ok().expect("executor").run(|executor| {
+            executor
+                .enter_with(
+                    |mut session| {
+                        let hash = session.hash_state(listener::Domain::DEFAULT);
+                        listener::Install::<KeyTag<0>, fixture::Env, _>::new(
+                            listener::config::Prepared {
+                                connections: Capacity::fixed::<1>(),
+                                direct_flights: listener::config::Flights::Minimum,
+                                bind: fault.local_addr().expect("bound address"),
+                                backlog: Backlog::fixed::<1>(),
+                                stream: Default::default(),
+                                per_ip,
+                                transport: Default::default(),
+                                egress: Default::default(),
+                            },
+                            domain::Local::new(Identity),
+                        )
+                        .with_bound(Some(bound))
+                        .prepare(
+                            hash,
+                            &mut session,
+                            session::Scope::driver,
+                            |prepared, wait, session| {
+                                let watch = wait.watch();
+                                let listener = prepared
+                                    .build(
+                                        App {
+                                            trace: Rc::new(trace::Trace::default()),
+                                            gate: Gate::new(),
+                                            observe: trace::check,
+                                        },
+                                        &mut session.driver(),
+                                    )
+                                    .expect("build listener");
+                                let mut finish = Completion::new();
+                                session
+                                    .with_quiesce(
+                                        &mut finish,
+                                        dope_manifold::app::Host::new(listener),
+                                        GUARD,
+                                        |mut app| {
+                                            let shutdown = Backend::shutdown::<Errno>(
+                                                fault.as_fd(),
+                                                How::READ,
+                                            );
+                                            if std::env::consts::OS == "macos" {
+                                                assert_eq!(
+                                                    shutdown,
+                                                    Err(Errno::try_from(libc::ENOTCONN)
+                                                        .expect("not connected errno"))
+                                                );
+                                                assert_eq!(watch.error(), None);
+                                                return;
+                                            }
+                                            shutdown.expect("stop native listener");
+                                            if retiring {
+                                                app.drive_for(
+                                                    GUARD,
+                                                    dope_fiber::task::done::Once::new(
+                                                        dope_fiber::abi::Ready::new(()),
+                                                    ),
+                                                )
+                                                .expect("arm accept before shutdown");
+                                                assert_eq!(watch.error(), None);
+                                            } else {
+                                                assert_eq!(
+                                                    app.drive_for(GUARD, wait)
+                                                        .expect("observe terminal accept"),
+                                                    AcceptError::Completion(
+                                                        accept::Failure::Syscall(
+                                                            Errno::INVALID_ARGUMENT
+                                                        )
+                                                    )
+                                                );
+                                            }
+                                        },
+                                    )
+                                    .expect("listener retirement");
+                                if std::env::consts::OS != "macos" {
+                                    assert_eq!(
+                                        watch.error(),
+                                        Some(AcceptError::Completion(accept::Failure::Syscall(
+                                            Errno::INVALID_ARGUMENT
+                                        )))
+                                    );
+                                }
+                            },
+                        )
+                        .expect("install listener");
+                    },
+                    recovery::Policy::new(|_| {}, common::recover),
+                )
+                .as_ref()
+                .map_err(|error| error.cause())
+                .expect("finish executor");
+        });
+    }
 }
 
 #[test]
@@ -328,5 +349,12 @@ fn burst_recovers() {
             |outcome| outcome.expect("native lifecycle"),
         )
         .expect("listener run");
-    assert!(reports.events().expect("reclamation").is_empty());
+    assert!(
+        reports.events().expect("reclamation").iter().all(|event| {
+            matches!(event, Reclaimed::AcceptRoute {
+                cause: accept::Failure::Syscall(error), flow: Flow::Last, ..
+            } if error.code().get() == libc::ENFILE)
+        }),
+        "reclamation: {reports:?}"
+    );
 }

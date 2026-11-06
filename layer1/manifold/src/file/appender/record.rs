@@ -24,8 +24,8 @@ impl Record<'_, '_> {
         })
     }
 
-    pub fn commit(self) {
-        self.bytes.commit();
+    pub fn commit(self) -> usize {
+        self.bytes.commit().len()
     }
 }
 

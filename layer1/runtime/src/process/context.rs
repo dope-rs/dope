@@ -46,8 +46,7 @@ impl<'run> executor::Build for Context<'run> {
         attempt: &mut creation::Attempt,
         config: settings::Config,
     ) -> Result<executor::Executor<(), Self::Shutdown>, create::Error<'_>> {
-        executor::Executor::with_seed(attempt, config, self.seed)?
-            .shutdown(self.shutdown)
-            .map_err(create::Error::from)
+        self.shutdown
+            .attach(executor::Executor::with_seed(attempt, config, self.seed))
     }
 }

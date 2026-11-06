@@ -40,6 +40,7 @@ pub struct Outcome<
 impl<'issued, 'life: 'issued, 'd: 'life, O, Q, E, R> Outcome<'issued, 'life, 'd, O, Q, E, R>
 where
     O: lending::raw::Resume<'d>,
+    Q: executor::Startup,
 {
     pub(crate) fn rejected(
         core: &'issued mut session::Core<'life, 'd, Q>,

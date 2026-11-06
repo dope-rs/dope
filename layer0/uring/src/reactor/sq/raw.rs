@@ -199,27 +199,6 @@ impl<'queue, T: complete::raw::Token> submit::Queue<'queue, T> for Queue<'queue,
     }
 }
 
-impl<T, const N: usize> Reservation<'_, T, N> {
-    /// # Safety
-    /// Every initialized address must remain live through completion or quiescence.
-    unsafe fn push<'resources>(
-        self,
-        values: &'resources mut [libc::c_int; N],
-        mut init: impl FnMut(&'resources mut libc::c_int) -> sq::Submit<'resources, T>,
-    ) {
-        let Self { queue, count } = self;
-        let mut entries = [const { mem::MaybeUninit::uninit() }; N];
-        // The reservation's exact count fits both arrays and initializes this prefix.
-        for (entry, value) in entries.iter_mut().zip(values).take(count.get()) {
-            entry.write(init(value));
-        }
-        queue.0.push(
-            ptr::NonNull::from(&entries).cast::<sq::Submit<'resources, T>>(),
-            count,
-        );
-    }
-}
-
 impl<'queue, T: complete::raw::Token> submit::raw::Vacancy<'queue, T> for Vacancy<'queue, T> {
     type Entry = sq::Entry;
     type Owned = sq::Owned<T>;
@@ -410,13 +389,16 @@ impl<T: complete::raw::Token, const N: usize> tuning::raw::Chain<T, N> for Reser
         slot: Self::Target,
         token: T,
     ) {
-        // SAFETY: the caller retains every pinned scalar until all option
-        // CQEs arrive, and its cursor has the reserved exact count.
-        unsafe {
-            self.push(values, |value| {
-                Self::option(slot, options.pop(), value, token)
-            })
-        };
+        let Self { queue, count } = self;
+        let mut entries = [const { mem::MaybeUninit::uninit() }; N];
+        // The reservation's exact count fits both arrays and initializes this prefix.
+        for (entry, value) in entries.iter_mut().zip(values).take(count.get()) {
+            entry.write(Self::option(slot, options.pop(), value, token));
+        }
+        queue.0.push(
+            ptr::NonNull::from(&entries).cast::<sq::Submit<'_, T>>(),
+            count,
+        );
     }
 }
 

@@ -83,6 +83,7 @@ where
         app: A,
         build: impl for<'n, 'p, 's> FnOnce(
             listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>,
+            listener::Wait<'p, 'd>,
             &mut lending::Stage<'stage, 'scope, 'life, 'e, 'd, S, Q>,
         ) -> O,
     ) -> Result<O, creation::Error>
@@ -106,6 +107,7 @@ where
         make: impl FnOnce(driver::Binding<'d>) -> Result<A, FactoryError>,
         build: impl for<'n, 'p, 's> FnOnce(
             listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>,
+            listener::Wait<'p, 'd>,
             &mut lending::Stage<'stage, 'scope, 'life, 'e, 'd, S, Q>,
         ) -> O,
     ) -> Result<O, crate::BuildError<FactoryError>>
@@ -131,6 +133,7 @@ where
         context: impl for<'a> Fn(&'a mut C) -> driver::Context<'a, 'd>,
         build: impl for<'n, 'p, 's> FnOnce(
             listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>,
+            listener::Wait<'p, 'd>,
             &mut C,
         ) -> O,
     ) -> Result<O, creation::Error>
@@ -140,9 +143,9 @@ where
         E::Wire: 'd,
         R: change::Prepare<'w, 'd, ID, E::Wire>,
     {
-        self.prepare(hash, owner, &context, |prepared, owner| {
+        self.prepare(hash, owner, &context, |prepared, wait, owner| {
             let listener = prepared.build(app, &mut context(owner))?;
-            Ok(build(listener, owner))
+            Ok(build(listener, wait, owner))
         })?
     }
 
@@ -154,6 +157,7 @@ where
         context: impl for<'a> Fn(&'a mut C) -> driver::Context<'a, 'd>,
         build: impl for<'n, 'p, 's> FnOnce(
             listener::Prepared<'n, 'p, 's, 'w, 'd, ID, E, R, B>,
+            listener::Wait<'p, 'd>,
             &mut C,
         ) -> O,
     ) -> Result<O, creation::Error>
@@ -191,6 +195,7 @@ where
             .unwrap_or(<E::Admission as quota::Policy>::PER_IP);
         let accept = accept::Prepared::<ID>::try_new(conns, limit, hash)?;
         let driver = context(owner).driver_ref();
+        let watch = listener::Watch::new();
         memory::Arena::<ID, B>::try_with(shape, conns.into(), driver, |writes, setup| {
             change::raw::Storage::<ID, _, IOV_CAP, _>::try_with(
                 setup,
@@ -205,10 +210,12 @@ where
                             lifetime: life,
                             application: times,
                             accept,
+                            watch: &watch,
                             writes,
                             pool,
                             owner: marker::PhantomData,
                         },
+                        listener::Wait::new(&watch),
                         owner,
                     )
                 },
@@ -226,6 +233,7 @@ where
         make: impl FnOnce(driver::Binding<'d>) -> Result<A, FactoryError>,
         build: impl for<'n, 'p, 's> FnOnce(
             listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>,
+            listener::Wait<'p, 'd>,
             &mut C,
         ) -> O,
     ) -> Result<O, crate::BuildError<FactoryError>>

@@ -75,14 +75,11 @@ where
 
     const COORDS: usize = M::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         let mut this = self.as_mut().project();
         match this.injected.get() {
             Injection::Waiting if *this.due <= turn.clock().now() => {
@@ -125,14 +122,11 @@ where
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         M::shutdown(self.as_mut().project().inner, turn, driver);
         self
     }
@@ -151,7 +145,7 @@ where
         self: Pin<&mut Self>,
         target: route::Target<'d, M::Route>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, '_, 'd, Self::Access>,
+        driver: &mut raw::Context<'_, 'd, Self::Access>,
     ) {
         let mut this = self.project();
         let mut run = || {

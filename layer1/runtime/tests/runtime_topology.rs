@@ -30,6 +30,7 @@ static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
 fn derives_prepared_layout() {
+    assert!((PROFILE_CONFIG.file_slots()) == (<Profile as settings::Profile>::FILES));
     let storage = Storage(
         claim::Claim::new(settings::Routes::singleton::<KeyTag<1>>()).files(Files::new(
             Accept::from(slots::Slots::fixed::<2>()),
@@ -44,8 +45,10 @@ fn derives_prepared_layout() {
             ))
             .schedule(Schedule::fixed::<6, 7>()),
     );
-    let prepared = (topology::Plan::new(storage, install).for_profile::<Profile>())
-        .expect("distinct resource routes must prepare");
+    let (prepared, allocs) =
+        Tracker::usage(|| topology::Plan::new(storage, install).for_profile::<Profile>());
+    assert_eq!(allocs, (0, 0));
+    let prepared = prepared.expect("distinct resource routes must prepare");
     let layout = prepared.layout();
 
     assert_eq!(layout.file_slots().accept().count().get(), 6);
@@ -53,19 +56,6 @@ fn derives_prepared_layout() {
     assert!((layout.queue_layout()) == (settings::QueueLayout::fixed::<8, 8>()));
     assert_eq!(layout.schedule().ready().count().get(), 6);
     assert_eq!(layout.schedule().timers().count().get(), 7);
-}
-
-#[test]
-fn resolves_without_alloc() {
-    assert!((PROFILE_CONFIG.file_slots()) == (<Profile as settings::Profile>::FILES));
-    let storage = Storage(claim::Claim::new(settings::Routes::singleton::<KeyTag<1>>()));
-    let install = Install(claim::Claim::new(settings::Routes::singleton::<KeyTag<2>>()));
-
-    let (prepared, allocs) =
-        Tracker::usage(|| topology::Plan::new(storage, install).for_profile::<Profile>());
-
-    assert_eq!(allocs, (0, 0));
-    assert!(prepared.is_ok(), "static resource tree is valid");
 }
 
 #[test]

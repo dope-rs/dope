@@ -1,8 +1,8 @@
 use std::{convert, mem, num, pin::Pin, rc::Rc};
 
-use conn::write::{self, error};
+use conn::write;
 use dope_core::{
-    driver::{receive::credit, retained, route, schedule::clock},
+    driver::{self, receive::credit, route, schedule::clock},
     io::recv,
     random::Seed,
 };
@@ -25,7 +25,6 @@ use o3::{
         hold::{limits, scope},
         resident, segments,
         storage::{self, Shared},
-        write::consume,
     },
     depot::queue::tagged::entry,
 };
@@ -39,24 +38,16 @@ pub enum State {
     Done,
 }
 
-pub enum Event<'a> {
-    Prefix(&'a State, usize),
-    Written(
-        Result<write::Outcome<()>, error::Error<segments::Chain<Shared>, (), convert::Infallible>>,
-    ),
-}
-
-pub struct App<F> {
+pub struct App {
     pub(crate) state: State,
     pub(crate) opened: Gate,
     pub(crate) first: Gate,
     pub(crate) second: Gate,
     pub(crate) closed: Gate,
     pub(crate) seen: Rc<Trace<Vec<u8>, 16>>,
-    pub(crate) observe: F,
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(Event<'a>) + Unpin> Application<'d, ID> for App<F> {
+impl<'d, ID: route::Identity> Application<'d, ID> for App {
     type Build = convert::Infallible;
     type Conn = ();
     type Wire = Identity;
@@ -91,14 +82,12 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Event<'a>) + Unpin> Application<'d, 
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(Event<'a>) + Unpin> handler::Borrowed<'d, ID>
-    for App<F>
-{
+impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, (), Self::Egress>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         this.seen.record(chunk.as_ref().to_vec());
@@ -107,10 +96,11 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(Event<'a>) + Unpin> handler::Borrowe
                 this.state = State::Second;
                 let body = Value::Checked(body);
                 let done = conn.write().try_bounded(driver, |_, prefix| {
-                    (this.observe)(Event::Prefix(&this.state, prefix.len()));
+                    assert!(matches!(this.state, State::Second));
+                    assert_eq!(prefix.len(), write::Prefix::CAPACITY);
                     write::Draft::new(0, Some(body), ())
                 });
-                (this.observe)(Event::Written(done));
+                assert!(matches!(done, Ok(write::Outcome::Committed(()))));
                 this.first.hit();
             }
             State::Second => {
@@ -154,34 +144,22 @@ pub struct DynamicState {
     pub(crate) prefix_completions: usize,
 }
 
-pub enum DynamicEvent<'d> {
-    Chunk(u8, usize),
-    Consumed(Option<Result<(), consume::scope::Error>>),
-    Prefix(u8, usize),
-    Written(
-        Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>,
-    ),
-    Drained(u8),
-}
-
-pub struct DynamicApp<F> {
+pub struct DynamicApp {
+    pub(crate) gated: bool,
     pub(crate) first: Gate,
     pub(crate) prefix: Gate,
     pub(crate) drained: Gate,
     pub(crate) second: Gate,
     pub(crate) closed: Gate,
     pub(crate) seen: Rc<Trace<Vec<u8>, 16>>,
-    pub(crate) observe: F,
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> Application<'d, ID>
-    for DynamicApp<F>
-{
+impl<'d, ID: route::Identity> Application<'d, ID> for DynamicApp {
     type Build = convert::Infallible;
-    type Conn = DynamicState;
+    type Conn = (DynamicState, bool);
     type Wire = Identity;
     type WireFailure = failures::Close;
-    type Retirement = retire::Close;
+    type Retirement = ();
     type Egress = resident::Shared<'d>;
     type Input = receive::GatedScoped;
     type Send = send::Ready;
@@ -191,7 +169,11 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> Applicati
     }
 
     fn connection(self: Pin<&Self>, _: &Seed) -> Result<Self::Conn, Self::Build> {
-        Ok(DynamicState::default())
+        Ok((DynamicState::default(), self.gated))
+    }
+
+    fn is_gated(conn: &Self::Conn) -> bool {
+        conn.1
     }
 
     fn deadline(self: Pin<&Self>, _: clock::Clock<'_, 'd>) -> Option<clock::Deadline<'d>> {
@@ -200,82 +182,126 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> Applicati
 
     fn is_blocked(
         self: Pin<&Self>,
-        conn: conn::Ref<'_, '_, '_, '_, 'd, ID, Identity, DynamicState>,
+        conn: conn::Ref<'_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
     ) -> bool {
+        let id = conn.id();
+        let conn = conn.map_state(|state| &state.0);
+        assert!(conn.id() == id);
         conn.state().phase == 1
     }
 
     fn close<'e, 'a, 'p, 's, 'w>(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, DynamicState>,
-    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, DynamicState>
+        mut conn: conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>,
+    ) -> conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, Identity, Self::Conn>
     where
         'd: 'w,
     {
-        self.get_mut().closed.hit();
+        let gated = conn.state().1;
+        assert_eq!(conn.map_state(|state| &mut state.0).state().phase, 4);
+        assert_eq!(conn.state().1, gated);
         conn
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> send::Notify<'d, ID>
-    for DynamicApp<F>
-{
-    fn send(
-        self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, DynamicState>,
-    ) {
-        let this = self.get_mut();
-        conn.state_mut().prefix_completions += 1;
-        this.prefix.hit();
+impl DynamicApp {
+    fn drained(&mut self, state: &mut DynamicState) {
+        assert_eq!(state.phase, 1);
+        state.phase = 2;
+        self.drained.hit();
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin> handler::Gated<'d, ID>
-    for DynamicApp<F>
-{
+impl<'d, ID: route::Identity> retire::Policy<'d, DynamicApp, ID> for () {
+    fn select() -> Option<Self> {
+        Some(())
+    }
+
+    fn retire(
+        self,
+        app: Pin<&mut DynamicApp>,
+        conn: conn::Retired<'_, '_, 'd, ID, Identity, (DynamicState, bool)>,
+    ) {
+        let id = conn.id();
+        let conn = conn.map_state(|state| state.0);
+        assert!(conn.id() == id);
+        assert_eq!(conn.state().phase, 4);
+        assert!(conn.failure().is_none() && conn.transmit().is_none());
+        assert_eq!(conn.response_len(), 0);
+        app.closed.hit();
+    }
+}
+
+impl<'d, ID: route::Identity> send::Notify<'d, ID> for DynamicApp {
+    fn send(
+        self: Pin<&mut Self>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
+    ) {
+        let this = self.get_mut();
+        let mut conn = conn.map_state(|state| &mut state.0);
+        conn.state_mut().prefix_completions += 1;
+        this.prefix.hit();
+        if matches!(conn.write().pending(), egress::Pending::Absent) {
+            assert!(!this.gated);
+            this.drained(conn.state_mut());
+            conn.state_mut().phase = 4;
+            conn.close_after();
+        }
+    }
+}
+
+impl<'d, ID: route::Identity> handler::Gated<'d, ID> for DynamicApp {
     fn send_drained(
         self: Pin<&mut Self>,
-        mut conn: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Identity, DynamicState>,
+        mut conn: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
     ) -> handler::PostDrain {
-        (self.observe)(DynamicEvent::Drained(conn.state().phase));
-        conn.state_mut().phase = 2;
-        self.get_mut().drained.hit();
+        assert!(conn.state().1);
+        conn.state_mut().1 = false;
+        let id = conn.id();
+        let mut conn = conn.map_state(|state| &mut state.0);
+        assert!(conn.id() == id);
+        self.get_mut().drained(conn.state_mut());
         handler::PostDrain::Idle
     }
 }
 
-impl<'w, 'd: 'w, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin>
-    handler::Scoped<'w, 'd, ID> for DynamicApp<F>
-{
+impl<'w, 'd: 'w, ID: route::Identity> handler::Scoped<'w, 'd, ID> for DynamicApp {
     fn retention(&self) -> Budget {
         Budget::new(limits::Bound::new(0), 4096)
     }
 
     fn scoped_chunk(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, DynamicState>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, Self::Conn>,
         chunk: scoped::Input<'_, 'w, 'd, Identity>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
+        let id = conn.id();
+        let remaining = conn.work().remaining();
+        let mut conn = conn.map_state(|state| &mut state.0);
+        assert!(conn.id() == id);
+        assert_eq!(conn.work().remaining(), remaining);
         let this = self.get_mut();
         this.seen.record(chunk.as_ref().to_vec());
-        (this.observe)(DynamicEvent::Chunk(
-            conn.state().phase,
-            conn.state().prefix_completions,
-        ));
-        match conn.state().phase {
+        let state = conn.state();
+        assert!(state.phase <= 1 || (matches!(state.phase, 2 | 3) && state.prefix_completions > 0));
+        match state.phase {
             0 => {
                 conn.state_mut().phase = 1;
                 let body = egress::NonEmpty::from_array(&QUEUED_BODY);
                 let body = Value::Checked(body);
                 let done = conn.write().try_bounded(driver, |state, prefix| {
-                    (this.observe)(DynamicEvent::Prefix(state.phase, prefix.len()));
+                    assert_eq!(state.phase, 1);
+                    assert_eq!(prefix.len(), write::Prefix::CAPACITY);
                     write::Draft::new(0, Some(body), ())
                 });
-                (this.observe)(DynamicEvent::Written(done));
+                assert!(matches!(done, Ok(write::Outcome::Committed(()))));
                 this.first.hit();
-                return Outcome::Continue;
+                if this.gated {
+                    return Outcome::Continue;
+                }
             }
+            1 if !this.gated => this.second.hit(),
             2 => {
                 conn.state_mut().phase = 3;
             }
@@ -296,7 +322,7 @@ impl<'w, 'd: 'w, ID: route::Identity, F: for<'a> Fn(DynamicEvent<'a>) + Unpin>
                 Err(error) => (None, Some(Err(error))),
             }
         });
-        (this.observe)(DynamicEvent::Consumed(consumed));
+        assert!(matches!(consumed, Some(Ok(()))));
         Outcome::Continue
     }
 }
@@ -484,7 +510,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for BorrowedApp {
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, BorrowedWire, ()>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         for &byte in chunk.as_ref() {
             self.seen.record(byte);

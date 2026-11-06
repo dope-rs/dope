@@ -9,4 +9,5 @@ pub mod executor;
 pub mod process;
 pub mod random;
 pub mod shutdown;
+pub mod signal;
 pub mod topology;

@@ -1,7 +1,7 @@
 use std::{convert, net, pin::Pin, time};
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule::clock},
+    driver::{self, route::Identity, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
@@ -20,6 +20,7 @@ pub struct App {
     pub(crate) payload: Option<Vec<u8>>,
     pub(crate) close: Gate,
     pub(crate) chunk: Option<Gate>,
+    pub(crate) timeout: Option<conn::deadline::Kind>,
 }
 
 #[derive(Debug)]
@@ -45,7 +46,7 @@ impl<'d, ID: Identity> Application<'d, ID> for App {
     type Build = convert::Infallible;
     type Wire = Wire;
     type WireFailure = failures::Close;
-    type Retirement = retire::Close;
+    type Retirement = ();
     type Egress = resident::Shared<'d>;
     type Input = receive::Borrowed;
     type Send = send::Silent;
@@ -65,7 +66,7 @@ impl<'d, ID: Identity> Application<'d, ID> for App {
     fn drain<'e>(
         self: Pin<&mut Self>,
         _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, u8>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> handler::Drain {
         handler::Drain::Complete
     }
@@ -83,12 +84,27 @@ impl<'d, ID: Identity> Application<'d, ID> for App {
     }
 }
 
+impl<'d, ID: Identity> retire::Policy<'d, App, ID> for () {
+    fn select() -> Option<Self> {
+        Some(())
+    }
+
+    fn retire(self, app: Pin<&mut App>, conn: conn::Retired<'_, '_, 'd, ID, Wire, u8>) {
+        if let Some(expected) = app.timeout {
+            assert!(
+                matches!(conn.failure(), Some(conn::Failure::Timeout(kind)) if *kind == expected),
+                "missing {expected:?} expiry"
+            );
+        }
+    }
+}
+
 impl<'d, ID: Identity> handler::Borrowed<'d, ID> for App {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, u8>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         assert!(!chunk.as_ref().is_empty());
         if let Some(gate) = self.as_ref().get_ref().chunk.as_ref() {

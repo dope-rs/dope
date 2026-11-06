@@ -5,7 +5,7 @@ use o3::base::cell::region;
 use crate::{
     abi,
     core::driver::{
-        retained,
+        self,
         schedule::{
             app,
             ready::{self, wake::Waker},
@@ -118,7 +118,7 @@ pub struct Context<'poll, 'd: 'poll> {
     wake: wake::Waker<'d>,
     root: wake::RootWaker<'d>,
     work: app::Work<'poll, 'd>,
-    driver: retained::Context<'poll, 'poll, 'd>,
+    driver: driver::Context<'poll, 'd>,
     requeue: cell::Cell<Requeue>,
 }
 
@@ -127,7 +127,7 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
         wake: wake::Waker<'d>,
         root: wake::RootWaker<'d>,
         work: app::Work<'poll, 'd>,
-        driver: retained::Context<'poll, 'poll, 'd>,
+        driver: driver::Context<'poll, 'd>,
         run: impl for<'context> FnOnce(pin::Pin<&'context mut Self>) -> R,
     ) -> R {
         let mut context = pin::pin!(Self {
@@ -151,7 +151,7 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
     pub fn with_target<R>(
         target: ready::Target<'d>,
         work: app::Work<'poll, 'd>,
-        driver: retained::Context<'poll, 'poll, 'd>,
+        driver: driver::Context<'poll, 'd>,
         run: impl for<'context> FnOnce(pin::Pin<&'context mut Self>) -> R,
     ) -> R {
         let root = wake::RootWaker::from(target);
@@ -173,11 +173,11 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
         self.get_ref().wake.completion()
     }
 
-    pub(crate) fn work(self: pin::Pin<&Self>) -> app::Work<'poll, 'd> {
+    pub fn work(self: pin::Pin<&Self>) -> app::Work<'poll, 'd> {
         self.get_ref().work
     }
 
-    pub fn driver(self: pin::Pin<&mut Self>) -> retained::Context<'_, '_, 'd> {
+    pub fn driver(self: pin::Pin<&mut Self>) -> driver::Context<'_, 'd> {
         self.project().driver.reborrow()
     }
 

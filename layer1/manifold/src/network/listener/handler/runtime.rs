@@ -2,8 +2,8 @@ use std::{ops, pin};
 
 use dope_core::{
     driver::{
-        retained,
-        route::{self, Identity, table::conn},
+        self,
+        route::{self, Identity, table::conn as table},
         schedule,
     },
     io::event::net::recv,
@@ -16,8 +16,8 @@ use dope_net::{
 use crate::{
     app::{env, receive::ingress},
     network::listener::{
-        self,
-        handler::{self, failures, policy, send},
+        self, conn,
+        handler::{self, failures, policy},
     },
 };
 
@@ -25,34 +25,22 @@ use crate::{
 pub trait Runtime<'w, 'd: 'w, ID: Identity>:
     handler::Application<'d, ID, WireFailure: failures::Policy<'w, 'd, Self, ID>>
 {
-    fn send<'listener, 'turn, 'driver, 'region, 'owner, E>(
-        work: send::Pending<
-            'listener,
-            '_,
-            '_,
-            '_,
-            'turn,
-            'driver,
-            'region,
-            'owner,
-            'w,
-            'd,
-            ID,
-            Self,
-            E,
-        >,
-    ) where
-        'd: 'owner,
-        E: env::Spec<Wire = Self::Wire>;
+    const SEND: bool;
 
-    fn retained(&self, count: conn::Capacity) -> Result<domain::Retained, crate::ConfigError>;
-    fn resident(&self, count: conn::Capacity) -> Result<domain::Resident, crate::ConfigError>;
+    fn send(
+        app: pin::Pin<&mut Self>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
+        driver: &mut driver::Context<'_, 'd>,
+    );
+
+    fn retained(&self, count: table::Capacity) -> Result<domain::Retained, crate::ConfigError>;
+    fn resident(&self, count: table::Capacity) -> Result<domain::Resident, crate::ConfigError>;
 
     fn dispatch<E>(
         listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, Self, E>>,
         item: recv::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ops::ControlFlow<recv::Completion<'d>>
     where
         E: env::Spec<Wire = Self::Wire>;
@@ -61,7 +49,7 @@ pub trait Runtime<'w, 'd: 'w, ID: Identity>:
         listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, Self, E>>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         E: env::Spec<Wire = Self::Wire>;
 }
@@ -74,34 +62,21 @@ where
     <A::Input as input::Mode<A::Wire>>::Reserve:
         Choice<A::Wire, <A::Input as input::Mode<A::Wire>>::Ingress>,
 {
-    fn send<'listener, 'turn, 'driver, 'region, 'owner, E>(
-        work: send::Pending<
-            'listener,
-            '_,
-            '_,
-            '_,
-            'turn,
-            'driver,
-            'region,
-            'owner,
-            'w,
-            'd,
-            ID,
-            Self,
-            E,
-        >,
-    ) where
-        'd: 'owner,
-        E: env::Spec<Wire = Self::Wire>,
-    {
-        <A::Input as policy::Policy<'w, 'd, ID, A>>::send(work);
+    const SEND: bool = <A::Input as policy::Policy<'w, 'd, ID, A>>::SEND;
+
+    fn send(
+        app: pin::Pin<&mut Self>,
+        scope: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
+        <A::Input as policy::Policy<'w, 'd, ID, A>>::send(app, scope, driver);
     }
 
-    fn retained(&self, count: conn::Capacity) -> Result<domain::Retained, crate::ConfigError> {
+    fn retained(&self, count: table::Capacity) -> Result<domain::Retained, crate::ConfigError> {
         <A::Input as policy::Policy<'w, 'd, ID, A>>::retained(self, count)
     }
 
-    fn resident(&self, count: conn::Capacity) -> Result<domain::Resident, crate::ConfigError> {
+    fn resident(&self, count: table::Capacity) -> Result<domain::Resident, crate::ConfigError> {
         <A::Input as policy::Policy<'w, 'd, ID, A>>::resident(self, count)
     }
 
@@ -109,7 +84,7 @@ where
         listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, Self, E>>,
         item: recv::Completion<'d>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> ops::ControlFlow<recv::Completion<'d>>
     where
         E: env::Spec<Wire = Self::Wire>,
@@ -123,7 +98,7 @@ where
         listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, Self, E>>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         E: env::Spec<Wire = Self::Wire>,
     {

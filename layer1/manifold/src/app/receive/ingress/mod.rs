@@ -1,6 +1,6 @@
 use std::{convert, mem, pin};
 
-use dope_core::driver::{receive::Stale, retained, route::Identity, schedule};
+use dope_core::driver::{self, receive::Stale, route::Identity, schedule};
 use dope_net::{
     link::{
         event,
@@ -100,7 +100,7 @@ fn finish_eof<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>
     key: pool::Key<'d, ID>,
     end: End,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) {
     let dead = P::storage(policy.as_mut())
         .get_mut(key)
@@ -127,7 +127,7 @@ fn discard_with_cause<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 
     key: pool::Key<'d, ID>,
     err: CloseCause,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) {
     prepare_terminal(policy.as_mut(), key);
     match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
@@ -144,7 +144,7 @@ fn finish_chunk<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID
     key: pool::Key<'d, ID>,
     done: Outcome,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) {
     match done {
         done @ (Outcome::Continue | Outcome::CloseAfter) => {
@@ -168,13 +168,13 @@ fn finish_chunk<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID
     }
 }
 
-fn drive_control<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
+fn drive_control<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
     mut policy: pin::Pin<&mut P>,
     ctrl: A,
     turn: schedule::Turn<'a, 'd>,
-    driver: &'a mut retained::Context<'c, 'owner, 'd>,
+    driver: &'a mut driver::Context<'c, 'd>,
 ) where
-    'd: 'owner + 'w + 'p,
+    'd: 'w + 'p,
     P: Policy<'p, 'w, 'd, ID>,
     A: arrival::Arrival<'d, Observed = event::Control<'d>>,
 {
@@ -186,7 +186,7 @@ fn drive_control<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
             completion: done,
             next,
         } => {
-            driver.driver().reclaim(done);
+            driver.reclaim(done);
             next
         }
         event::Dispatch::Retired(done)
@@ -194,7 +194,7 @@ fn drive_control<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
             completion: done,
             cause: Stale,
         } => {
-            driver.driver().reclaim(done);
+            driver.reclaim(done);
             return;
         }
         event::Dispatch::Rejected {
@@ -202,7 +202,7 @@ fn drive_control<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
             key,
             error,
         } => {
-            driver.driver().reclaim(done);
+            driver.reclaim(done);
             discard_with_cause(policy, key, CloseCause::Receive(error), turn, driver);
             return;
         }
@@ -220,7 +220,7 @@ fn discard_pending<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
     mut pending: Chunk<'w, 'd, P::Wire, Disabled>,
     cause: event::ParkError,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     P: Policy<'p, 'w, 'd, ID>,
 {
@@ -233,7 +233,7 @@ fn apply_control<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
     mut policy: pin::Pin<&mut P>,
     next: event::ControlRecv<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     P: Policy<'p, 'w, 'd, ID>,
 {
@@ -288,7 +288,7 @@ fn apply_parked<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
     policy: pin::Pin<&mut P>,
     parked: event::ParkRecv<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     P: Policy<'p, 'w, 'd, ID>,
 {

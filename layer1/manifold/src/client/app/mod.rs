@@ -180,6 +180,11 @@ pub trait Application<'d, ID: Identity = KeyTag<0>>: Sized {
 pub trait Receive<'d, ID: Identity = KeyTag<0>>: Application<'d, ID> {
     type Continuation: resume::Mode;
 
+    /// Stops new admission; pending work keeps receiving until the next inspection.
+    fn withdraw(&mut self, _: conn::Id<'d, ID>, _: &mut Self::Conn) -> Fence {
+        Fence::Ready
+    }
+
     /// Classifies application-owned retained state for connection retirement.
     fn quiesce<'a>(
         &self,
@@ -301,6 +306,11 @@ const _: () = {
 };
 
 pub trait Lifecycle<'w, 'd: 'w, ID: Identity = KeyTag<0>>: Receive<'d, ID> {
+    /// Consumes pending close control through native retirement.
+    fn take_close(&self, _: conn::Id<'d, ID>) -> Option<close::Directive> {
+        None
+    }
+
     fn prepare<'e, O>(
         &mut self,
         conn: conn::Ctx<'_, 'd, ID, Self::Wire, Self::Conn, O>,

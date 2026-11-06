@@ -1,4 +1,4 @@
-use std::{ops, os::fd, task, time};
+use std::{ops, task, time};
 
 use crate::{
     engine::{Buffer, Source, life, register},
@@ -16,7 +16,7 @@ pub trait Register {
     /// # Safety
     /// Retain the source's exact descriptor until engine quiescence or destruction,
     /// including when a submission is published before this method returns an error.
-    unsafe fn register(&mut self, source: fd::BorrowedFd<'_>) -> Result<(), register::Error>;
+    unsafe fn register(&mut self, source: register::Source<'_>) -> Result<(), register::Error>;
 }
 
 /// Finishes native retirement and rearms the retained generation source.

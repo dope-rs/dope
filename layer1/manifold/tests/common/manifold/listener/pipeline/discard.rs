@@ -7,13 +7,13 @@ use std::{
 };
 
 use dope_core::{
-    driver::{retained, route, schedule::clock},
+    driver::{self, route, schedule::clock},
     random::Seed,
 };
 use dope_manifold::{
     app::receive::{self, Outcome, limits},
     network::listener::{
-        conn::{self, deadline::Arm, write, write::error},
+        conn::{self, write, write::error},
         handler::{self, Application, failures, retire, send},
     },
 };
@@ -43,7 +43,7 @@ pub enum Event<'a, 'd> {
     Length(usize),
     Discard(discard::Start),
     Discarded,
-    Deadline(Arm<'d>),
+    Deadline(Result<(), conn::deadline::Error>),
     Write(Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>),
 }
 
@@ -89,7 +89,7 @@ impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Even
     fn timeout(
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Vec<u8>>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> handler::Timeout<'d> {
         if let Finish::Timeout(expired) = &self.as_ref().get_ref().finish {
             expired.hit();
@@ -117,7 +117,7 @@ impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Even
     fn discarded(
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Vec<u8>>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         (self.observe)(Event::Discarded);
     }
@@ -163,7 +163,7 @@ impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Even
         self: Pin<&mut Self>,
         conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Vec<u8>>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.as_ref().get_ref();
         reply(&this.finish, &this.observe, conn, chunk.as_ref(), driver)
@@ -179,7 +179,7 @@ impl<'w, 'd: 'w, ID: route::Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> handler:
         self: Pin<&mut Self>,
         conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, Vec<u8>>,
         chunk: Chunk<'w, 'd, Identity, Disabled>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.as_ref().get_ref();
         reply(&this.finish, &this.observe, conn, chunk.as_ref(), driver)
@@ -191,7 +191,7 @@ fn reply<'w, 'd: 'w, ID: route::Identity>(
     observe: &impl for<'a, 'b> Fn(Event<'a, 'b>),
     mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, Vec<u8>>,
     chunk: &[u8],
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> Outcome {
     if !matches!(finish, Finish::Payload) {
         if !conn.state().is_empty() {

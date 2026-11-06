@@ -1,5 +1,3 @@
-//! Raw retained owners can be driven only after exact-root installation.
-
 use std::{marker, mem, ops, pin};
 
 use dope_core::{
@@ -30,26 +28,23 @@ pub use probe::Probe;
 pub use resume::Resume;
 pub use wakes::Wakes;
 
-/// Ordinary driver access. Retained submissions are not expressible through
-/// a context carrying this marker.
+/// Ordinary driver access.
 pub struct Plain;
 
-/// Driver access authorized to retain storage owned by the installed app.
+/// Driver access for retained submissions.
 pub struct Retained;
 
 /// A statically narrowed driver context.
 ///
-/// Plain callbacks cannot call the retained submission boundary.
-/// Narrowing is one-way; a plain callback cannot recover retained authority.
+/// Plain contexts do not expose `submit_file`.
 #[repr(transparent)]
-pub struct Context<'a, 'owner, 'd: 'owner, A> {
-    inner: retained::Context<'a, 'owner, 'd>,
+pub struct Context<'a, 'd, A> {
+    inner: driver::Context<'a, 'd>,
     access: marker::PhantomData<A>,
 }
 
-impl<'a, 'owner, 'd: 'owner> Context<'a, 'owner, 'd, Retained> {
-    /// Constructs the root retained view after exact app installation.
-    pub fn new(inner: retained::Context<'a, 'owner, 'd>) -> Self {
+impl<'a, 'd> Context<'a, 'd, Retained> {
+    pub fn new(inner: driver::Context<'a, 'd>) -> Self {
         Self {
             inner,
             access: marker::PhantomData,
@@ -58,15 +53,14 @@ impl<'a, 'owner, 'd: 'owner> Context<'a, 'owner, 'd, Retained> {
 
     /// Narrows retained authority to the exact capability declared by one
     /// statically selected manifold callback.
-    pub fn narrow<A>(&mut self) -> Context<'_, 'owner, 'd, A> {
+    pub fn narrow<A>(&mut self) -> Context<'_, 'd, A> {
         Context {
             inner: self.inner.reborrow(),
             access: marker::PhantomData,
         }
     }
 
-    /// Reborrows the same exact retained app authority.
-    pub fn reborrow(&mut self) -> Context<'_, 'owner, 'd, Retained> {
+    pub fn reborrow(&mut self) -> Context<'_, 'd, Retained> {
         self.narrow()
     }
 
@@ -79,7 +73,7 @@ impl<'a, 'owner, 'd: 'owner> Context<'a, 'owner, 'd, Retained> {
         entry: fs::Submission<'borrow, 'd, Tag, C>,
     ) -> Result<flight::Flight<'d, C>, SubmitError>
     where
-        'owner: 'borrow,
+        'd: 'borrow,
         Tag: route::Tag,
         C: kind::Flight,
     {
@@ -89,7 +83,7 @@ impl<'a, 'owner, 'd: 'owner> Context<'a, 'owner, 'd, Retained> {
     }
 }
 
-impl<'a, 'owner, 'd: 'owner> ops::Deref for Context<'a, 'owner, 'd, Plain> {
+impl<'a, 'd> ops::Deref for Context<'a, 'd, Plain> {
     type Target = driver::Context<'a, 'd>;
 
     fn deref(&self) -> &Self::Target {
@@ -97,21 +91,21 @@ impl<'a, 'owner, 'd: 'owner> ops::Deref for Context<'a, 'owner, 'd, Plain> {
     }
 }
 
-impl<'a, 'owner, 'd: 'owner> ops::DerefMut for Context<'a, 'owner, 'd, Plain> {
+impl<'a, 'd> ops::DerefMut for Context<'a, 'd, Plain> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
-impl<'a, 'owner, 'd: 'owner> ops::Deref for Context<'a, 'owner, 'd, Retained> {
-    type Target = retained::Context<'a, 'owner, 'd>;
+impl<'a, 'd> ops::Deref for Context<'a, 'd, Retained> {
+    type Target = driver::Context<'a, 'd>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<'a, 'owner, 'd: 'owner> ops::DerefMut for Context<'a, 'owner, 'd, Retained> {
+impl<'a, 'd> ops::DerefMut for Context<'a, 'd, Retained> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -221,39 +215,35 @@ pub unsafe trait Manifold<'d>: Sized {
 
     /// # Safety
     /// The enclosing exact dispatcher must have installed this pinned owner.
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root;
+        driver: &mut Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self>;
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root;
+        driver: &mut Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self>;
 }
 
 const _: () = {
     assert!(
-        std::mem::size_of::<Context<'_, '_, '_, Plain>>()
+        std::mem::size_of::<Context<'_, '_, Plain>>()
             == std::mem::size_of::<driver::Context<'_, '_>>()
     );
     assert!(
-        std::mem::align_of::<Context<'_, '_, '_, Plain>>()
+        std::mem::align_of::<Context<'_, '_, Plain>>()
             == std::mem::align_of::<driver::Context<'_, '_>>()
     );
     assert!(
-        std::mem::size_of::<Context<'_, '_, '_, Retained>>()
-            == std::mem::size_of::<retained::Context<'_, '_, '_>>()
+        std::mem::size_of::<Context<'_, '_, Retained>>()
+            == std::mem::size_of::<driver::Context<'_, '_>>()
     );
     assert!(
-        std::mem::align_of::<Context<'_, '_, '_, Retained>>()
-            == std::mem::align_of::<retained::Context<'_, '_, '_>>()
+        std::mem::align_of::<Context<'_, '_, Retained>>()
+            == std::mem::align_of::<driver::Context<'_, '_>>()
     );
 };
 

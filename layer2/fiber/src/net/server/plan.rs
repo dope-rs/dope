@@ -1,5 +1,3 @@
-use std::cell;
-
 use dope::{
     core::driver::route::{Identity, KeyTag},
     net::wire::{self, domain},
@@ -74,7 +72,6 @@ impl<W: wire::Spec, ID: Identity> Plan<W, ID> {
             connections: Table::try_new(self.layout, true, ctx.region())?,
             accepts: shared::Fifo::try_new(cap.entries().get())?,
             waiters: waits,
-            accept_error: cell::Cell::new(None),
         })
     }
 }

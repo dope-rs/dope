@@ -1,6 +1,6 @@
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{
         pool,
@@ -42,39 +42,36 @@ where
         + app::Lifecycle<'w, 'd, ID>
         + app::Application<'d, ID, Requests = Self>,
 {
-    fn drain<'p, 'owner, S, E, X>(
+    fn drain<'p, S, E, X>(
         engine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
         X: Mode<'d, ID>
             + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>;
-    fn follow<'p, 'machine, 'turn, 'driver, 'context, 'owner, S, E, X>(
+    fn follow<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
         engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         follow: flow::Follow,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
         X: Mode<'d, ID>
             + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>;
 
-    fn finish<'p, 'machine, 'turn, 'driver, 'context, 'owner, S, E, X>(
+    fn finish<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
@@ -94,6 +91,7 @@ where
             else {
                 return;
             };
+            let _ = State::poll_close(&mut slot, this.app);
             let done = slot.sending().finish(slots, driver);
             pending.wait_send(slot.send_status().is_waiting());
             let update = match done {
@@ -122,13 +120,12 @@ where
         engine.maybe_close(key, turn, driver);
     }
 
-    fn submit<'p, 'machine, 'turn, 'driver, 'context, 'owner, S, E, X>(
+    fn submit<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
@@ -140,6 +137,9 @@ where
         let follow = {
             let this = engine.as_mut().project();
             let Some(mut sender) = this.links.sender(key, target) else {
+                if let Some(slot) = this.links.pool_mut().get_mut(key) {
+                    let _ = State::poll_close(slot, this.app);
+                }
                 return;
             };
             let liveness::Egress {
@@ -151,13 +151,18 @@ where
             if !slot.is_connected() {
                 return;
             }
-            let bound = match State::active(&mut slot, |active| {
+            let active = State::active(&mut slot, |active| {
                 this.app.prepare(
                     conn::Ctx::new(active, turn.reborrow().app()),
                     egress.reborrow(),
                     driver,
                 );
-            }) {
+            });
+            match State::poll_close(&mut slot, this.app) {
+                flow::Apply::Applied(flow::Flow::Continue(())) => {}
+                flow::Apply::Applied(flow::Flow::Discarded(())) | flow::Apply::Sealed => return,
+            }
+            let bound = match active {
                 flow::Active::Ready(flow::Flow::Continue(())) => true,
                 flow::Active::Opening => false,
                 flow::Active::Ready(flow::Flow::Discarded(())) => {
@@ -252,13 +257,12 @@ where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID> + app::Requests<'d, ID>,
     A::Continuation: liveness::Inspection<'d, ID, A>,
 {
-    fn drain<'p, 'owner, S, E, X>(
+    fn drain<'p, S, E, X>(
         mut engine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
@@ -296,7 +300,7 @@ where
                 queue.reborrow(),
                 turn.reborrow().app(),
                 wake,
-                driver.driver().reborrow(),
+                driver.reborrow(),
             );
             this.app.drain(&mut reqs);
             let done = reqs.finish();
@@ -355,14 +359,13 @@ where
         );
     }
 
-    fn follow<'p, 'machine, 'turn, 'driver, 'context, 'owner, S, E, X>(
+    fn follow<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         follow: flow::Follow,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
@@ -392,13 +395,12 @@ where
     A: app::Application<'d, ID, Requests = request::Disabled>,
     A::Continuation: liveness::Inspection<'d, ID, A>,
 {
-    fn drain<'p, 'owner, S, E, X>(
+    fn drain<'p, S, E, X>(
         _: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         _: pool::Key<'d, ID>,
         _: schedule::Turn<'_, 'd>,
-        _: &mut retained::Context<'_, 'owner, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
@@ -407,14 +409,13 @@ where
     {
     }
 
-    fn follow<'p, 'machine, 'turn, 'driver, 'context, 'owner, S, E, X>(
+    fn follow<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         follow: flow::Follow,
         _: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,

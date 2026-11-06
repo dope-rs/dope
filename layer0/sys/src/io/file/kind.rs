@@ -19,7 +19,7 @@ impl Kind {
         }
     }
 
-    pub(super) const fn from_mode(mode: libc::mode_t) -> Self {
+    pub const fn from_mode(mode: libc::mode_t) -> Self {
         Self(mode & libc::S_IFMT)
     }
 

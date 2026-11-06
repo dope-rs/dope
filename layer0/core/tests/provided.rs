@@ -12,8 +12,7 @@ use std::{cell, mem, net, num, ops, time};
 
 use dope_core::{
     driver::{
-        life::domain::Domain, result::poll, retained::flight, route, route::indices::SlotIndex,
-        storage,
+        life::domain, result::poll, retained::flight, route, route::indices::SlotIndex, storage,
     },
     io::{event, event::net::recv::Outcome},
 };
@@ -40,8 +39,8 @@ fn joined_arenas() {
     let driver = driver
         .map_err(|error| error.kind())
         .expect("driver creation");
-    let mut domain = Domain::new(driver);
-    let result = domain.start().expect("fresh domain").scope(
+    let mut teardown = domain::Teardown::default();
+    let result = domain::Generation::new(driver).start(&mut teardown).scope(
         storage::Scope::new((first, second)),
         Joined(&drops),
         recovery::Policy::new(|event| reports.push(event), recover),
@@ -68,11 +67,13 @@ fn forgotten_account() {
         .expect("native driver creation");
     let mut reports = Reports::new::<route::Route>(config, []);
 
-    let mut domain = Domain::new(driver);
-    let result = domain.start().expect("fresh generation").enter_with(
-        (),
-        |mut scope, _, _| {
-            scope.with_driver(|mut context, mut schedule| {
+    let mut teardown = domain::Teardown::default();
+    let result = domain::Generation::new(driver)
+        .start(&mut teardown)
+        .enter_with(
+            (),
+            |mut scope, _, _| {
+                let (_, mut context, mut schedule) = scope.split();
                 let mut turn = schedule.begin();
                 let receiver = Install::bind_udp(
                     context.reborrow(),
@@ -147,10 +148,9 @@ fn forgotten_account() {
                 let (budget, resident) = account.expect("receive account must survive owner leaks");
                 assert_eq!(budget.resident(), resident);
                 Descriptor::from(socket).close(&mut context);
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-    );
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+        );
     assert!(
         matches!(reports.events(), Ok([])) || matches!(reports.matches_one(&Canceled), Ok(true)),
         "unexpected reclamation: {reports:?}"

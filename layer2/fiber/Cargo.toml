@@ -20,3 +20,7 @@ pin-project.workspace = true
 dope-test.workspace = true
 dope-core = { path = "../../layer0/core" }
 libc.workspace = true
+
+[[test]]
+name = "signal"
+harness = false

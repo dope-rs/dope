@@ -10,7 +10,7 @@ use o3::{
     buffer::bytes::{self, bounded::MAX},
 };
 
-use crate::{Kqueue, file::Options};
+use crate::{Kqueue, file::Options, raw};
 
 /// A file request retaining its exact descriptor and buffer borrows.
 #[repr(transparent)]
@@ -22,9 +22,13 @@ enum State<'a> {
         path: &'a std::ffi::CStr,
         options: &'a Options,
     },
+    Metadata {
+        file: fd::BorrowedFd<'a>,
+        output: &'a mut raw::Metadata,
+    },
     Read {
         file: fd::BorrowedFd<'a>,
-        output: bytes::bounded::Value<&'a mut [u8]>,
+        output: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
         offset: file::Offset,
     },
     Write {
@@ -54,6 +58,7 @@ enum State<'a> {
 impl<'a> request::Request<'a> for Request<'a> {
     type Buffer = bytes::Prefix<'a, MAX>;
     type Options = Options;
+    type Metadata = raw::Metadata;
 
     fn options(flags: Open, mode: Mode) -> Self::Options {
         Options { flags, mode }
@@ -61,6 +66,10 @@ impl<'a> request::Request<'a> for Request<'a> {
 
     fn open(dir: fd::BorrowedFd<'a>, path: &'a std::ffi::CStr, options: &'a Self::Options) -> Self {
         Self(State::Open { dir, path, options }, ThreadBound::NEW)
+    }
+
+    fn metadata(file: fd::BorrowedFd<'a>, output: &'a mut Self::Metadata) -> Self {
+        Self(State::Metadata { file, output }, ThreadBound::NEW)
     }
 
     fn write(file: fd::BorrowedFd<'a>, input: Self::Buffer, offset: file::Offset) -> Self {
@@ -76,7 +85,7 @@ impl<'a> request::Request<'a> for Request<'a> {
 
     fn read(
         file: fd::BorrowedFd<'a>,
-        output: bytes::bounded::Value<&'a mut [u8]>,
+        output: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
         offset: file::Offset,
     ) -> Self {
         Self(
@@ -112,12 +121,15 @@ impl request::Execute for Request<'_> {
             State::Open { dir, path, options } => {
                 return done.opened(Kqueue::open_at(dir, path, options.flags, options.mode));
             }
+            State::Metadata { file, output } => {
+                Kqueue::metadata::<dope_sys::Errno>(file).map(|value| output.write(value))
+            }
             State::Read {
                 file,
                 output,
                 offset,
             } => {
-                let result = Kqueue::read_at(file, output.into_inner(), offset)
+                let result = Kqueue::read_uninit_at(file, output.into_inner(), offset)
                     .map(|read| bytes::Prefix::<MAX>::new(read).len());
                 return done.read(result);
             }

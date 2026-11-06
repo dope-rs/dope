@@ -28,6 +28,7 @@ type Context<'a, 'e, 'd> = turns::Context<'a, 'e, 'd, Option<ready::Target<'d>>,
 type Retired<'a, 'life, 'd, const TAKE: bool, const REPORT: bool = true> =
     turns::Retired<'a, 'd, Option<ready::Target<'d>>, KeyTag<0>, Owner<'life, 'd, TAKE, REPORT>>;
 
+#[derive(Default)]
 pub struct Probe<'d> {
     pub(crate) eof: Gate,
     pub(crate) release: Gate,
@@ -41,20 +42,6 @@ pub struct Probe<'d> {
 }
 
 impl<'d> Probe<'d> {
-    pub fn new() -> Self {
-        Self {
-            eof: Gate::new(),
-            release: Gate::new(),
-            closed: Gate::new(),
-            connection: Cell::new(None),
-            target: Cell::new(None),
-            failure: Cell::new(None),
-            offered: Cell::new(0),
-            quarantined: Cell::new(0),
-            cleared: Cell::new(0),
-        }
-    }
-
     pub fn send(&self) {
         self.release.hit();
         self.target
@@ -88,13 +75,13 @@ fn check_failure(failure: conn::Transmit) {
     );
 }
 
-pub struct Logic<const TAKE: bool, const REPORT: bool = true> {
+struct Logic<const TAKE: bool, const REPORT: bool = true> {
     pending: Option<Shared>,
     sent: bool,
 }
 
 impl<const TAKE: bool, const REPORT: bool> Logic<TAKE, REPORT> {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             pending: Some(Shared::try_copy(b"x").expect("send payload")),
             sent: false,
@@ -535,7 +522,7 @@ pub fn check_transmit<const TAKE: bool, const REPORT: bool>() {
     let mut reports = Reports::<_>::new(runtime.config(), [Id::fixed::<0>()]);
     runtime.with_scope(
         |mut runtime| {
-            let probe = Probe::new();
+            let probe = Probe::default();
             let hash = runtime.hash_state(health::Domain::DEFAULT);
             let peers = Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
             let run = |app: &mut dyn RuntimeCase| {

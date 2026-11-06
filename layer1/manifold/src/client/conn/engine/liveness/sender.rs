@@ -1,4 +1,4 @@
-use dope_core::driver::{retained, route::Identity, schedule::ready};
+use dope_core::driver::{self, route::Identity, schedule::ready};
 use dope_net::link::{pool, slot::transmit};
 
 use crate::{
@@ -57,7 +57,7 @@ where
 
     pub(in crate::client::conn::engine) fn submit(
         &mut self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> transmit::Attempt {
         self.native.submit(driver)
     }

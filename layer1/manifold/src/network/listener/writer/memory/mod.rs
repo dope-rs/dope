@@ -17,7 +17,7 @@ use o3::{
     buffer::{resident, segments::scatter},
     depot::{arena::pool::recycle, capacity},
 };
-use reserve::{demand, exact};
+use reserve::demand;
 
 use crate::network::listener::{self, writer};
 
@@ -250,6 +250,9 @@ pub(in crate::network::listener) type HeaderSlot<'p, 's, 'd, ID> =
 pub(in crate::network::listener) type DirectSlot<'p, 's, 'd, ID, B = resident::Shared<'d>> =
     release::Lease<'p, 's, 'd, Flight<B>, ID>;
 
+pub(in crate::network::listener) type Plan<'a, 'p, 's, 'e, 'd, ID, B> =
+    reserve::Plan<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>>;
+
 pub(in crate::network::listener) enum Buffer<
     'a,
     'p,
@@ -258,7 +261,7 @@ pub(in crate::network::listener) enum Buffer<
     'd,
     ID: Identity,
     B = resident::Shared<'d>,
-    P = reserve::Plan<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>>,
+    P = Plan<'a, 'p, 's, 'e, 'd, ID, B>,
 > where
     B: data::raw::Payload<'d>,
 {
@@ -274,20 +277,6 @@ pub(in crate::network::listener) enum Buffer<
             writer::Reserve<'d, B>,
         >,
         plan: P,
-    },
-}
-
-pub(in crate::network::listener) enum Body<'a, 'p, 's, 'e, 'd, ID: Identity, S, B>
-where
-    B: data::raw::Payload<'d>,
-{
-    Direct {
-        slot: DirectSlot<'p, 's, 'd, ID, B>,
-        value: egress::NonEmpty<S>,
-    },
-    Queued {
-        offer:
-            exact::Offer<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>, S>,
     },
 }
 

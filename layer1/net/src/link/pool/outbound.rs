@@ -3,7 +3,7 @@ use std::{marker, mem, ops};
 use dope_core::{
     driver,
     driver::{
-        result, retained,
+        result,
         route::{self, Identity, KeyTag, table},
     },
     io::{
@@ -32,7 +32,6 @@ use crate::{
     wire::{
         self,
         open::{self, Runtime as _},
-        terminal,
     },
 };
 
@@ -98,16 +97,12 @@ where
         &self.outbound
     }
 
-    /// Returns the retained target and selected state of an established connection.
-    pub fn target<X>(
-        &self,
-        key: pool::Key<'d, ID>,
-        peek: impl FnOnce(&types::Connection<'w, 'd, ID, W, S>) -> X,
-    ) -> Option<(T::Prepared, X)> {
+    /// Returns the retained target and its established connection state.
+    pub fn target(&self, key: pool::Key<'d, ID>) -> Option<(T::Prepared, &S)> {
         let view = self.storage.inspect();
         let slot = view.get(key)?;
         slot.engine.establish.connected()?;
-        Some((*self.addresses.prepared(slot), peek(slot)))
+        Some((*self.addresses.prepared(slot), &slot.state))
     }
 
     pub fn send_slot(
@@ -193,11 +188,8 @@ where
             engine.ready_handle().set_target(key.target().dispatch());
             let output = lease.commit_with(|key| {
                 let slot = types::Connection::<ID, W, S> {
-                    control: types::Control::new(engine, terminal::State::open()),
-                    wire,
-                    send,
+                    control: types::Control::new(engine, wire, send, key),
                     state,
-                    key,
                 };
                 let output = complete(&slot);
                 (slot, output)
@@ -227,7 +219,7 @@ where
     pub fn finish_open<X>(
         &mut self,
         done: Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         make: impl for<'slot> FnOnce(&'slot types::Connection<'w, 'd, ID, W, S>) -> (X, option::Set),
     ) -> event::Socket<'d, ID, X> {
         use dope_core::io::event::net::socket::{Failure, Outcome};
@@ -281,7 +273,7 @@ where
     fn complete<X, P>(
         &mut self,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         peek: impl for<'slot> FnOnce(&'slot types::Connection<'w, 'd, ID, W, S>) -> X,
         peer: impl FnOnce(&AddressTable<'d, ID, T::Prepared>, &types::Connection<'w, 'd, ID, W, S>) -> P,
     ) -> Result<event::Connect<'d, ID, X, P>, connect::Completion<'d>> {
@@ -334,7 +326,7 @@ where
     pub fn try_finish<X>(
         &mut self,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         peek: impl for<'slot> FnOnce(&'slot types::Connection<'w, 'd, ID, W, S>) -> X,
     ) -> Result<event::Connect<'d, ID, X, socket::Addr>, connect::Completion<'d>> {
         self.complete(done, driver, peek, |addrs, slot| {
@@ -345,7 +337,7 @@ where
     pub fn try_attach<X>(
         &mut self,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         peek: impl for<'slot> FnOnce(&'slot types::Connection<'w, 'd, ID, W, S>) -> X,
     ) -> Result<event::Connect<'d, ID, X, ()>, connect::Completion<'d>> {
         self.complete(done, driver, peek, |_, _| ())

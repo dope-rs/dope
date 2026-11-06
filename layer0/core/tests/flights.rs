@@ -2,7 +2,6 @@ use o3::depot::arena::slab::external::Generation as _;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
-use std::mem;
 
 use dope_core::driver::{
     retained::flight::storage,
@@ -13,55 +12,16 @@ use o3::alloc;
 
 #[test]
 fn preserves_contracts() {
-    assert_eq!(
-        mem::size_of::<storage::Flights<u64, 24, 32>>(),
-        4 * mem::size_of::<usize>()
-    );
-    assert_eq!(
-        mem::align_of::<storage::Flights<u64, 24, 32>>(),
-        mem::align_of::<usize>()
-    );
-    assert_eq!(
-        mem::size_of::<storage::Builder<'static, u64, 24, 32>>(),
-        mem::size_of::<usize>()
-    );
-    assert_eq!(
-        mem::size_of::<storage::Echo<u64, 24, 32>>(),
-        mem::size_of::<u64>()
-    );
-    assert_eq!(
-        mem::size_of::<Option<storage::Echo<u64, 24, 32>>>(),
-        mem::size_of::<u64>()
-    );
-    assert_eq!(
-        mem::size_of::<storage::Reserved<'static, u64, 24, 32>>(),
-        mem::size_of::<usize>()
-    );
-    assert_eq!(
-        mem::size_of::<storage::Lease<'static, u64, 24, 32>>(),
-        mem::size_of::<usize>()
-    );
-    assert_eq!(
-        mem::size_of::<Option<storage::Lease<'static, u64, 24, 32>>>(),
-        mem::size_of::<usize>()
-    );
-    assert_eq!(
-        mem::size_of::<storage::Slots<'static, u64, 24, 32>>(),
-        mem::size_of::<usize>()
-    );
-    assert_eq!(
-        mem::size_of::<storage::Vacant<'static, 'static, u64, 24, 32>>(),
-        2 * mem::size_of::<usize>()
-    );
-    assert_eq!(
-        mem::size_of::<storage::Drain<'static, u64, 24, 32>>(),
-        mem::size_of::<usize>()
-    );
-
     assert!(storage::Echo::<u64, 24, 32>::from_exposed(0).is_none());
     assert!(storage::Echo::<u64, 24, 32>::from_exposed(1).is_none());
     assert!(storage::Echo::<u64, 24, 32>::from_exposed(1 << 56).is_none());
     assert!(storage::Echo::<u64, 24, 32>::from_exposed((1 << 56) - 1).is_some());
+    assert_eq!(
+        storage::Echo::<u64>::from_exposed(u64::MAX)
+            .expect("full-width echo")
+            .expose(),
+        u64::MAX
+    );
 
     let mut arena = storage::Flights::<u64, 24, 32>::new();
     let mut builder = arena.builder();

@@ -27,7 +27,10 @@ pub enum Lifecycle {
     Dropped,
 }
 
-pub struct Rejected<'a, const PARK: bool>(pub &'a RefCell<Vec<Lifecycle>>);
+pub struct Rejected<'a, const PARK: bool>(
+    pub &'a RefCell<Vec<Lifecycle>>,
+    pub Option<&'a dope_runtime::process::lifecycle::Main>,
+);
 
 impl<'d, const PARK: bool> executor::raw::Layout<'d> for Rejected<'_, PARK> {
     type ParkPlan = ();
@@ -74,23 +77,24 @@ unsafe impl<'d, const PARK: bool> executor::raw::App<'d> for Rejected<'_, PARK> 
     /// # Safety
     /// The owner and plan must pass installation and coordinator admission.
     /// This fixture exceeds the coordinator limit and must never be invoked.
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
         _: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         unreachable!("rejected")
     }
 
-    fn shutdown<'app, 'turn, 'driver, 'owner>(
-        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>,
-    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>
-    where
-        'd: 'owner,
-    {
+    fn shutdown<'app, 'turn, 'driver>(
+        shutdown: executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self>,
+    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self> {
         let (app, turn, driver) = shutdown.into_parts();
+        if let Some(main) = app.1 {
+            main.wait_done(Duration::ZERO)
+                .expect("failure precedes cleanup");
+        }
         app.0.borrow_mut().push(Lifecycle::Stopped);
         executor::raw::Shutdown::new(app, turn, driver)
     }

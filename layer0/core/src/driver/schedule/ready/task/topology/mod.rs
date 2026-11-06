@@ -124,6 +124,7 @@ impl<I: raw::Index> app::Drain for Drain<'_, '_, I> {
 
     fn next_when<P>(
         &mut self,
+        (): &mut (),
         take: impl FnOnce() -> Option<P>,
     ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
         let item = self.peek()?;

@@ -67,7 +67,6 @@ pub enum Deferral<'w, 'd, W: wire::Spec + 'w> {
     Ready,
     Unavailable(Chunk<'w, 'd, W, Disabled>),
     Occupied(Chunk<'w, 'd, W, Disabled>),
-    Full(Chunk<'w, 'd, W, Disabled>),
 }
 
 pub(in crate::link::pool) struct State<'d, ID: Identity, P: storage::raw::Mode> {

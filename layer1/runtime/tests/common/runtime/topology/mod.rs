@@ -75,6 +75,21 @@ impl storage::Build for Storage {
     }
 }
 
+impl storage::Create for Storage {
+    type Error = <Self as storage::Build>::Error;
+
+    fn try_build<'p, 'd>(
+        self,
+        context: storage::Context<'_, 'd>,
+    ) -> Result<Self::Output<'p, 'd>, Self::Error>
+    where
+        Self: 'd,
+        'd: 'p,
+    {
+        storage::Build::try_build(self, &mut (), context)
+    }
+}
+
 pub struct Install(pub claim::Claim);
 
 impl settings::Resource for Install {

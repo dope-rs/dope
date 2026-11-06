@@ -35,9 +35,8 @@ pub(super) enum Signal {
 enum WriteState {
     Open,
     Sealed,
-    Close(close::Reason),
+    Close(close::Directive),
     Shutdown,
-    CloseAndShutdown(close::Reason),
 }
 
 impl WriteState {
@@ -45,36 +44,17 @@ impl WriteState {
         matches!(self, Self::Open)
     }
 
-    fn close(self, reason: close::Reason) -> Self {
-        match self {
-            Self::Open | Self::Sealed => Self::Close(reason),
-            Self::Shutdown => Self::CloseAndShutdown(reason),
-            Self::Close(reason) => Self::Close(reason),
-            Self::CloseAndShutdown(reason) => Self::CloseAndShutdown(reason),
-        }
-    }
-
     const fn shutdown(self) -> Self {
         match self {
             Self::Open | Self::Sealed | Self::Shutdown => Self::Shutdown,
-            Self::Close(reason) | Self::CloseAndShutdown(reason) => Self::CloseAndShutdown(reason),
-        }
-    }
-
-    const fn take_close(self) -> (Self, Option<close::Reason>) {
-        match self {
-            Self::Close(reason) => (Self::Sealed, Some(reason)),
-            Self::CloseAndShutdown(reason) => (Self::Shutdown, Some(reason)),
-            Self::Open | Self::Sealed | Self::Shutdown => (self, None),
+            Self::Close(_) => self,
         }
     }
 
     const fn take_signal(self) -> (Self, Signal) {
         match self {
             Self::Shutdown => (Self::Sealed, Signal::Shutdown),
-            Self::Open | Self::Sealed | Self::Close(_) | Self::CloseAndShutdown(_) => {
-                (self, Signal::Clear)
-            }
+            Self::Open | Self::Sealed | Self::Close(_) => (self, Signal::Clear),
         }
     }
 }
@@ -91,7 +71,8 @@ enum State<'d, I: identity::Identity> {
     Active(Publication<'d, I>),
     Suspended(Publication<'d, I>),
     Publishing(I),
-    Draining { connection: I },
+    Draining(Publication<'d, I>),
+    Retired(Publication<'d, I>),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -109,7 +90,10 @@ pub(super) struct Drain<'a, 'd, I: identity::Identity> {
 
 impl<I: identity::Identity> Drain<'_, '_, I> {
     pub(super) fn finish(self) {
-        self.entry.state.set(State::Idle);
+        let State::Draining(live) = self.entry.state.get() else {
+            unreachable!("drain");
+        };
+        self.entry.state.set(State::Retired(live));
     }
 }
 
@@ -155,7 +139,9 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
     }
 
     pub(super) fn suspend(&self, proof: Transaction<I>) -> Suspension {
-        if self.generation.get() != proof.generation {
+        if self.generation.get() != proof.generation
+            || matches!(self.write.get(), WriteState::Close(_))
+        {
             return Suspension::Stale;
         }
         let State::Active(live) = self.state.get() else {
@@ -188,10 +174,12 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
     ) -> Result<(), error::Open> {
         match self.state.get() {
             State::Idle => {}
+            State::Retired(live) if live.connection != conn => {}
             State::Active(_)
             | State::Suspended(_)
             | State::Publishing(_)
-            | State::Draining { .. } => {
+            | State::Draining(_)
+            | State::Retired(_) => {
                 return Err(error::Open::Occupied);
             }
         }
@@ -213,16 +201,19 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
                 return Err(Busy);
             }
             State::Active(live) | State::Suspended(live) if live.connection == conn => {
-                self.write.set(WriteState::Sealed);
+                if !matches!(self.write.get(), WriteState::Close(_)) {
+                    self.write.set(WriteState::Sealed);
+                }
                 let _ = self.advance();
-                self.state.set(State::Draining { connection: conn });
+                self.state.set(State::Draining(live));
             }
-            State::Draining { connection: owner } if owner == conn => {}
+            State::Draining(live) if live.connection == conn => {}
             State::Idle
             | State::Active(_)
             | State::Suspended(_)
             | State::Publishing(_)
-            | State::Draining { .. } => {
+            | State::Draining(_)
+            | State::Retired(_) => {
                 return Ok(None);
             }
         }
@@ -232,39 +223,51 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
     /// Seals writers and restores Active, invalidating the suspended loan.
     /// Its exclusive Requests borrow prevents another suspension until that
     /// loan ends, even when the generation cannot advance.
-    pub(super) fn close(&self, conn: I, reason: close::Reason) {
-        match self.state.get() {
-            State::Publishing(owner) if owner == conn => {
-                self.write.set(self.write.get().close(reason));
-            }
-            State::Active(live) if live.connection == conn => {
-                self.write.set(self.write.get().close(reason));
-                live.ready.wake();
+    pub(super) fn close(&self, conn: I, rule: close::Directive) {
+        let ready = match self.state.get() {
+            State::Publishing(owner) if owner == conn => None,
+            State::Active(live) | State::Draining(live) | State::Retired(live)
+                if live.connection == conn =>
+            {
+                Some(live.ready)
             }
             State::Suspended(live) if live.connection == conn => {
-                self.write.set(self.write.get().close(reason));
                 let _ = self.advance();
                 self.state.set(State::Active(live));
-                live.ready.wake();
-            }
-            State::Draining { connection: live } if live == conn => {
-                self.write.set(self.write.get().close(reason));
+                Some(live.ready)
             }
             State::Idle
             | State::Active(_)
             | State::Suspended(_)
             | State::Publishing(_)
-            | State::Draining { .. } => {}
+            | State::Draining(_)
+            | State::Retired(_) => return,
+        };
+        let rule = match self.write.get() {
+            WriteState::Close(current) => current.merge(rule),
+            WriteState::Open | WriteState::Sealed | WriteState::Shutdown => rule,
+        };
+        self.write.set(WriteState::Close(rule));
+        if let Some(ready) = ready {
+            ready.wake();
         }
     }
 
-    pub(super) fn take_close(&self, proof: Transaction<I>) -> Option<close::Reason> {
-        if self.transaction(proof.connection) != Some(proof) {
-            return None;
+    pub(super) fn take_close(&self, conn: I) -> Option<close::Directive> {
+        match self.state.get() {
+            State::Active(live)
+            | State::Suspended(live)
+            | State::Draining(live)
+            | State::Retired(live)
+                if live.connection == conn => {}
+            State::Publishing(owner) if owner == conn => {}
+            _ => return None,
         }
-        let (next, reason) = self.write.get().take_close();
-        self.write.set(next);
-        reason
+        let WriteState::Close(rule) = self.write.get() else {
+            return None;
+        };
+        self.write.set(WriteState::Sealed);
+        Some(rule)
     }
 
     pub(super) fn shutdown(&self, conn: I) -> Result<(), error::Shutdown> {
@@ -291,7 +294,7 @@ impl<'d, I: identity::Identity> Entry<'d, I> {
 
     pub(super) fn signal(&self) -> Signal {
         match self.write.get() {
-            WriteState::Shutdown | WriteState::CloseAndShutdown(_) => Signal::Shutdown,
+            WriteState::Shutdown => Signal::Shutdown,
             WriteState::Open | WriteState::Sealed | WriteState::Close(_) => Signal::Clear,
         }
     }

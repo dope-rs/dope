@@ -30,14 +30,14 @@ fn reports_pending() {
             .try_driver(Runtime::quic::<2, 8>().config())
             .map_err(|error| error.kind())
             .expect("driver");
-        let mut domain = domain::Domain::new(driver)
+        let mut teardown = domain::Teardown::default();
+        let generation = domain::Generation::new(driver)
             .fd(source)
             .expect("shutdown registration");
         let seen = Cell::new(0);
         assert!(
-            domain
-                .start()
-                .expect("fresh generation")
+            generation
+                .start(&mut teardown)
                 .enter_with(
                     (),
                     |mut scope, _, mut source| {

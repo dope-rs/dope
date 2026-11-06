@@ -5,7 +5,7 @@ pub(super) mod phase;
 
 use std::pin;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use flush::Flush as _;
 
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
 fn submit<'p, 'w, 'd: 'p + 'w, ID, A, S, E, X>(
     mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
     work: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) where
     ID: Identity + 'd,
     A: app::Application<'d, ID>,
@@ -62,7 +62,7 @@ pub(in crate::client) trait Run<'d> {
     fn run(
         self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         active: bool,
     );
 }
@@ -92,7 +92,7 @@ where
     fn run(
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         mut active: bool,
     ) {
         for _ in 0..phase::Local::COUNT {
@@ -158,7 +158,7 @@ where
     fn run(
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         mut active: bool,
     ) {
         for _ in 0..phase::Local::COUNT {
@@ -233,7 +233,7 @@ where
     fn run(
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         mut active: bool,
     ) {
         for _ in 0..phase::Service::COUNT {
@@ -299,7 +299,7 @@ where
     fn run(
         mut self: pin::Pin<&mut Self>,
         work: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         mut active: bool,
     ) {
         for _ in 0..phase::Local::COUNT {

@@ -2,8 +2,8 @@ use std::{net, ops::ControlFlow, pin};
 
 use dope_core::{
     driver::{
-        result,
-        retained::{self, flight},
+        self, result,
+        retained::flight,
         route::{self, Identity, indices::SlotIndex, kind::Recv, lease},
         schedule::{self, app},
     },
@@ -119,14 +119,11 @@ unsafe impl<'d, ID: Identity, H: Handler<'d, ID>> dispatch::raw::Manifold<'d>
     const COORDS: usize = 0;
 
     /// A zero-budget pass must not inherit an earlier admission failure.
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
+    ) -> pin::Pin<&'a mut Self> {
         let mut this = self.as_mut().project();
         if !this.sender.is_accepting() {
             this.sender.drain(turn.reborrow().maint(), |error| {
@@ -157,14 +154,11 @@ unsafe impl<'d, ID: Identity, H: Handler<'d, ID>> dispatch::raw::Manifold<'d>
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> pin::Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> pin::Pin<&'a mut Self> {
         let mut this = self.as_mut().project();
         this.sender.stop();
         for member in this.members.iter_mut() {
@@ -193,14 +187,11 @@ impl<'d, ID: Identity, H> Endpoint<'d, ID, H> {
             .map(|member| member.addr)
     }
 
-    fn arm<'owner>(
+    fn arm(
         self: pin::Pin<&mut Self>,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
-    ) -> Result<(), Failure>
-    where
-        'd: 'owner,
-    {
+        driver: &mut driver::Context<'_, 'd>,
+    ) -> Result<(), Failure> {
         let this = self.project();
         while work.remaining() != 0 {
             let Some(slot) = this.ready.pop_front() else {
@@ -221,14 +212,11 @@ impl<'d, ID: Identity, H> Endpoint<'d, ID, H> {
         Ok(())
     }
 
-    fn flush<'owner>(
+    fn flush(
         self: pin::Pin<&mut Self>,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, 'owner, 'd>,
-    ) -> Result<(), Failure>
-    where
-        'd: 'owner,
-    {
+        driver: &mut driver::Context<'_, 'd>,
+    ) -> Result<(), Failure> {
         let this = self.project();
         this.sender
             .flush_with(
@@ -244,7 +232,7 @@ impl<'d, ID: Identity, H> Endpoint<'d, ID, H> {
             .map_err(Failure::Send)
     }
 
-    fn fail(self: pin::Pin<&mut Self>, failure: Failure, driver: &mut retained::Context<'_, '_, 'd>)
+    fn fail(self: pin::Pin<&mut Self>, failure: Failure, driver: &mut driver::Context<'_, 'd>)
     where
         H: Handler<'d, ID>,
     {
@@ -328,7 +316,7 @@ unsafe impl<'d, ID: Identity, H: Handler<'d, ID>> dispatch::raw::Activate<'d, ID
         self: pin::Pin<&mut Self>,
         target: route::Target<'d, ID>,
         _: schedule::Turn<'turn, 'd>,
-        _: &mut dispatch::raw::Context<'_, '_, 'd, Self::Access>,
+        _: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
     ) {
         if target.epoch() != route::Epoch::INITIAL {
             return;

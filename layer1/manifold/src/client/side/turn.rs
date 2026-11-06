@@ -1,7 +1,7 @@
 use std::pin;
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule},
+    driver::{self, route::Identity, schedule},
     io::event::net::{connect, send, socket},
 };
 use dope_net::link::oneshot::{self, Busy, Dispatch, Unsent};
@@ -47,7 +47,7 @@ where
     pub(in crate::client) fn poll(
         &mut self,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let now = driver.driver_ref().clock().now();
         let target = self.machine.as_ref().backoff();
@@ -127,7 +127,7 @@ where
     pub(in crate::client) fn cancel(
         &mut self,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         loop {
             let admit = self
@@ -180,7 +180,7 @@ where
     pub(in crate::client) fn socket(
         &mut self,
         done: socket::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let step = self.edit_io(driver, |io| io.socket(done));
         self.settle(step);
@@ -189,7 +189,7 @@ where
     pub(in crate::client) fn connect(
         &mut self,
         done: connect::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), connect::Completion<'d>> {
         let step = self.edit_io(driver, |io| io.connect(done))?;
         self.settle(step);
@@ -199,7 +199,7 @@ where
     pub(in crate::client) fn send(
         &mut self,
         done: send::Completion<'d>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), send::Completion<'d>> {
         let step = self.edit_io(driver, |io| io.send(done))?;
         self.settle(step);
@@ -208,10 +208,9 @@ where
 
     fn edit_io<R>(
         &mut self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         edit: impl FnOnce(
             &mut oneshot::raw::Io<
-                '_,
                 '_,
                 '_,
                 'd,
@@ -242,19 +241,18 @@ where
     fn try_submit(
         &mut self,
         req: side::Request<'d, I::Payload, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<(), Busy> {
         let target = req.target();
         let found = {
             let this = self.machine.as_ref().project_ref();
-            this.links
-                .pool()
-                .target(target.key(), |slot| slot.state.options())
+            this.links.pool().target(target.key())
         };
-        let Some((peer, opts)) = found else {
+        let Some((peer, state)) = found else {
             self.reject(req, side::Error::Stale);
             return Ok(());
         };
+        let opts = state.options();
         let local = target.key().lane();
         let now = driver.driver_ref().clock().now();
         let span = <E::Timing as timing::Policy>::CONNECT_DEADLINE;

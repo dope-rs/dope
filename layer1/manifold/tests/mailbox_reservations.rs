@@ -5,8 +5,6 @@ use o3::depot::arena::slab::Vacancy;
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
-use std::mem;
-
 use dope_core::driver::{
     life::{creation::Attempt, domain, recovery},
     route::{Epoch, KeyTag, indices::SlotIndex},
@@ -15,7 +13,6 @@ use dope_core::driver::{
     storage::Create as _,
 };
 use dope_manifold::{app::creation, client::attempt::queue, timing::Throughput};
-use dope_net::tcp;
 use dope_runtime::executor::{Executor, session};
 use dope_test::{
     alloc::Tracker,
@@ -23,7 +20,7 @@ use dope_test::{
     scope::{self, Driver},
 };
 use o3::depot::capacity::Count;
-use queue::mailbox::{Cancellation, Conflict, Error, Poll, Vacant};
+use queue::mailbox::{Cancellation, Conflict, Error, Poll};
 
 use crate::common::recover;
 use crate::common::scenario::{case::attempt::Mailbox, ports::Loopback};
@@ -88,14 +85,6 @@ fn avoids_allocation() {
     assert!(
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn retains_lease_layout() {
-    assert_eq!(
-        mem::size_of::<Option<Vacant<'static, 'static, tcp::Tcp, u64, u64>>>(),
-        mem::size_of::<Vacant<'static, 'static, tcp::Tcp, u64, u64>>(),
     );
 }
 

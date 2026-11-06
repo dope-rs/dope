@@ -64,10 +64,13 @@ where
 {
     unsafe fn decode(raw: usize) -> Decoded<flight::raw::Echo> {
         if raw == usize::MAX {
-            return Decoded::Shutdown;
+            return Decoded::Shutdown(dope_sys::engine::register::Interest::Readable);
+        }
+        if raw == usize::MAX - 1 {
+            return Decoded::Shutdown(dope_sys::engine::register::Interest::Closed);
         }
         // SAFETY: Decode receives user data from this context's native reactor;
-        // the shutdown sentinel has been removed before flight decoding.
+        // the shutdown sentinels have been removed before flight decoding.
         match unsafe { flight::raw::Echo::from_kernel(raw as u64) } {
             Some(key) => Decoded::Public(key),
             None => Decoded::Empty,

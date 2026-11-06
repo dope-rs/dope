@@ -10,7 +10,7 @@ use dope::{
 use o3::{base::Call, buffer::resident};
 
 use crate::{
-    core::driver::{retained, schedule::clock},
+    core::driver::{self, schedule::clock},
     manifold::{
         app::receive::{self, Failure, limits},
         network::listener::{
@@ -72,7 +72,7 @@ where
     fn activate<'e, 'a, 'p, 's, 'r>(
         self: pin::Pin<&mut Self>,
         mut conn: conn::Ctx<'e, 'a, 'p, 's, 'r, 'd, ID, W, (), Self::Egress>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> conn::Ctx<'e, 'a, 'p, 's, 'r, 'd, ID, W, (), Self::Egress>
     where
         'd: 'r,
@@ -85,17 +85,13 @@ where
         self: pin::Pin<&mut Self>,
         conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
         end: receive::End,
-        _: &mut retained::Context<'_, '_, 'd>,
-    ) -> handler::Eof {
+        _: &mut driver::Context<'_, 'd>,
+    ) {
         self.get_mut()
             .port
             .connections
             .channel()
             .end(conn.id(), end);
-        match end {
-            receive::End::Read => handler::Eof::Hold,
-            receive::End::Both => handler::Eof::Close,
-        }
     }
 
     fn close<'e, 'a, 'p, 's, 'r>(
@@ -228,7 +224,7 @@ impl<'scope, 'w, 'd: 'w, W: input::Execution + 'd, F: FnMut(open::Error<'w, W>),
     fn send(
         self: pin::Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) {
         self.as_ref().get_ref().sync_send(&mut conn);
     }
@@ -247,7 +243,7 @@ impl<'scope, 'w, 'd: 'w, W: input::Execution + 'd, F: FnMut(open::Error<'w, W>),
         self: pin::Pin<&mut Self>,
         conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, W, (), Self::Egress>,
         chunk: Chunk<'w, 'd, W>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         if !matches!(
             self.get_mut()

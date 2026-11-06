@@ -17,7 +17,7 @@ pub type Selection<I, P, C> = Option<Result<(I, P), C>>;
 /// A stable batch whose front is consumed only after application admission.
 /// A selected item carries the exact receipt returned by `take`; implementations
 /// cannot create an admission independently of that callback.
-pub trait Drain {
+pub trait Drain<C = ()> {
     type Candidate<'a>
     where
         Self: 'a;
@@ -27,6 +27,7 @@ pub trait Drain {
 
     fn next_when<P>(
         &mut self,
+        context: &mut C,
         take: impl FnOnce() -> Option<P>,
     ) -> Selection<Self::Item<'_>, P, Self::Candidate<'_>>;
 }
@@ -104,11 +105,12 @@ impl<'turn, 'd> Work<'turn, 'd> {
         self.run(|| claim().map(|value| (value, Permit::new())))
     }
 
-    pub fn next<'a, R: Drain>(
+    pub fn next<'a, C, R: Drain<C>>(
         self,
         ready: &'a mut R,
+        context: &mut C,
     ) -> Next<'turn, 'd, R::Item<'a>, R::Candidate<'a>> {
-        match Drain::next_when(ready, || self.permit()) {
+        match Drain::next_when(ready, context, || self.permit()) {
             None => Next::Empty,
             Some(Ok((value, permit))) => Next::Item(value, permit),
             Some(Err(value)) => Next::Exhausted(value),

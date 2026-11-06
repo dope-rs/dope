@@ -1,6 +1,6 @@
 use dope_core::{
     driver::{
-        result, retained,
+        self, result,
         route::{
             Identity, indices,
             table::{self, conn},
@@ -109,14 +109,14 @@ where
         })?
     }
 
-    pub(crate) fn poll<'ctx, 'owner, E>(
+    pub(crate) fn poll<'ctx, E>(
         &mut self,
         now: clock::Moment<'d>,
-        driver: &mut retained::Context<'ctx, 'owner, 'd>,
+        driver: &mut driver::Context<'ctx, 'd>,
         submit: impl FnOnce(
             attempt::Id<'d, ID>,
             attempt::Plan<T>,
-            &mut retained::Context<'ctx, 'owner, 'd>,
+            &mut driver::Context<'ctx, 'd>,
         ) -> opening::Attempt<'d, ID, attempt::Plan<T>, (), E>,
     ) -> service::Opening<'d, E, ID>
     where
@@ -195,11 +195,9 @@ where
         Ok(())
     }
 
-    pub(crate) fn is_retired(&mut self, key: attempt::Id<'d, ID>) -> bool {
-        let Some(member) = self.dials.active(key) else {
-            return false;
-        };
-        !self.feedback.is_enabled() || !self.membership.contains(member)
+    pub(crate) fn is_current(&self, key: attempt::Id<'d, ID>) -> Option<bool> {
+        let member = self.dials.active(key)?;
+        Some(self.feedback.is_enabled() && self.membership.contains(member))
     }
 
     /// Retires one connection and returns the exact cause of member unavailability.

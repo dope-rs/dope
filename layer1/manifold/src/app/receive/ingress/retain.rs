@@ -32,22 +32,20 @@ where
         'd: 'w,
         W: 'w + 'd;
 
-    type Admission<'a, 'c, 'owner, 'd>
-        = ingress::Single<'a, 'c, 'owner, 'd>
+    type Admission<'a, 'c, 'd>
+        = ingress::Single<'a, 'c, 'd>
     where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner,
+        'd: 'a + 'c,
         W: 'd;
 
-    fn drive_data<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
+    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
         policy: pin::Pin<&mut P>,
         data: A,
-        work: Self::Admission<'a, 'c, 'owner, 'd>,
+        work: Self::Admission<'a, 'c, 'd>,
     ) where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner + 'w + 'p,
+        'd: 'a + 'c + 'w + 'p,
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,

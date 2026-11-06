@@ -1,5 +1,4 @@
 use dope_test::alloc::Tracker;
-use o3::depot::queue::resident;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -16,7 +15,7 @@ fn table_allocates_once() {
         let slot = (table.try_slot(0)).expect("test precondition");
         let mut reg = storage::Registration::new();
         assert_eq!(slot.try_keep(&mut reg, 1), Ok(()));
-        assert!(slot.take_one() == resident::Take::Item(1));
+        assert!(slot.take_one() == Some(1));
         assert_eq!(slot.try_keep(&mut reg, 2), Ok(()));
     });
     assert_eq!(hot, [0, 0]);

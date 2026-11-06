@@ -224,37 +224,43 @@ impl<S, I> Prepared<S, I>
 where
     S: storage::Create,
 {
-    pub fn try_create<F, R, Done>(
+    pub fn try_create<C, F, R, Done>(
         self,
+        context: C,
         op: F,
         report: impl recovery::Observe,
         finish: impl for<'owner> FnOnce(
-            Result<R, topology::EnterError<'owner, S::Error, (I, F), R>>,
+            Result<R, topology::EnterError<'owner, S::Error, (I, F), R, C::Shutdown>>,
         ) -> Done,
     ) -> Done
     where
+        C: executor::Build,
         F: for<'scope, 'life, 'p, 'd> FnOnce(
-            topology::Worker<'scope, 'life, 'p, 'd, S, I, ()>,
+            topology::Worker<'scope, 'life, 'p, 'd, S, I, C::Shutdown>,
         ) -> R,
     {
-        self.domain.try_create((self.installer, op), report, finish)
+        self.domain
+            .try_create(context, (self.installer, op), report, finish)
     }
 
-    pub fn try_scope<O, R, Done>(
+    pub fn try_scope<C, O, R, Done>(
         self,
+        context: C,
         op: O,
         report: impl recovery::Observe,
         finish: impl for<'owner> FnOnce(
-            Result<R, topology::EnterError<'owner, S::Error, (I, O), R>>,
+            Result<R, topology::EnterError<'owner, S::Error, (I, O), R, C::Shutdown>>,
         ) -> Done,
     ) -> Done
     where
+        C: executor::Build,
         O: for<'scope, 'life, 'p, 'd> ops::Operation<
                 'd,
-                topology::Worker<'scope, 'life, 'p, 'd, S, I, ()>,
+                topology::Worker<'scope, 'life, 'p, 'd, S, I, C::Shutdown>,
                 Output = R,
             >,
     {
-        self.domain.try_create((self.installer, op), report, finish)
+        self.domain
+            .try_create(context, (self.installer, op), report, finish)
     }
 }

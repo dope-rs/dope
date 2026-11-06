@@ -9,11 +9,9 @@ use dope_core::driver::{
     },
 };
 use o3::{
-    depot::{
-        arena::{linked::slots, slab::external::errors},
-        queue::pool,
-    },
-    mem::{Lease, lease},
+    alloc::BoxSliceExt,
+    depot::arena::slab::external::errors,
+    mem::{raw, slot},
 };
 
 use crate::{
@@ -213,24 +211,12 @@ impl Store for () {
 
 #[repr(transparent)]
 pub struct Taken<'a, 'w, 'd: 'w, W: wire::Spec + 'w> {
-    removed: Detached<'a, 'w, 'd, W>,
+    occupied: raw::Occupied<'a, Chunk<'w, 'd, W, Disabled>>,
 }
 
-/// One deferred tail lane and one backing entry per connection.
+/// One deferred tail per connection.
 pub struct Queued<'w, 'd: 'w, W: wire::Spec + 'w> {
-    chunks: pool::Lanes<Chunk<'w, 'd, W, Disabled>>,
-}
-
-impl<'w, 'd: 'w, W: wire::Spec + 'w> Queued<'w, 'd, W> {
-    fn try_new(conns: conn::Capacity) -> crate::Result<Self> {
-        let count = conns.entries().get();
-        let plan = pool::Plan::new(count, count)
-            .map_err(crate::ConfigError::ReceiveLayout)
-            .map_err(crate::Resource::Config)?;
-        Ok(Self {
-            chunks: pool::Lanes::try_new(plan).map_err(crate::Resource::Allocation)?,
-        })
-    }
+    chunks: Box<[slot::Storage<Chunk<'w, 'd, W, Disabled>>]>,
 }
 
 impl<'w, 'd: 'w, W: wire::Spec + 'w> Seal for Queued<'w, 'd, W> {}
@@ -239,7 +225,10 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w> Store for Queued<'w, 'd, W> {
     fn try_new<T, Tag: route::Tag>(cap: conn::Capacity) -> crate::Result<Table<T, Tag, Self>> {
         Ok(Table {
             slab: Slab::try_new(cap.into()).map_err(crate::Resource::Allocation)?,
-            tail: Self::try_new(cap)?,
+            tail: Self {
+                chunks: Box::try_init(cap.entries().get(), || slot::Storage::new(()))
+                    .map_err(crate::Resource::Allocation)?,
+            },
             storage: (),
         })
     }
@@ -247,26 +236,30 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w> Store for Queued<'w, 'd, W> {
     fn pending<T, Tag: route::Tag>(
         slot: Slot<'_, T, Tag, Self>,
     ) -> (occupied::Entry<'_, T, Tag>, bool) {
-        let (entry, chunks) = slot.split();
-        (entry, !chunks.is_empty())
+        let (entry, chunk) = slot.split();
+        (entry, chunk.get().is_some())
     }
 
     fn clear<'a, 'v, 'owner: 'v, ID: Identity + 'v, V: wire::Spec + 'v + 'owner, T>(
         slot: Slot<'a, types::Connection<'v, 'owner, ID, V, T>, ID, Self>,
     ) -> Cleared<'a, types::Connection<'v, 'owner, ID, V, T>, ID> {
-        let (entry, mut chunks) = slot.split();
-        chunks.clear();
+        let (entry, chunk) = slot.split();
+        if let Some(occupied) = chunk.occupied() {
+            occupied.clear();
+        }
         Cleared { entry }
     }
 }
 
 impl<'a, 'w, 'd: 'w, W: wire::Spec + 'w> Taken<'a, 'w, 'd, W> {
-    pub(in crate::link::pool::recv) fn new(removed: Detached<'a, 'w, 'd, W>) -> Self {
-        Self { removed }
+    pub(in crate::link::pool::recv) fn new(
+        occupied: raw::Occupied<'a, Chunk<'w, 'd, W, Disabled>>,
+    ) -> Self {
+        Self { occupied }
     }
 
     pub fn commit(self) -> Chunk<'w, 'd, W, Disabled> {
-        self.removed.into_parts().1
+        self.occupied.take().0
     }
 }
 
@@ -332,17 +325,21 @@ impl<'a, 'w, 'd: 'w, T, Tag: route::Tag, W: wire::Spec + 'w> Slot<'a, T, Tag, Qu
         self,
     ) -> (
         occupied::Entry<'a, T, Tag>,
-        pool::Lane<'a, Chunk<'w, 'd, W, Disabled>>,
+        &'a mut slot::Storage<Chunk<'w, 'd, W, Disabled>>,
     ) {
         use o3::depot::raw::Proof;
 
         let Self { entry, tail } = self;
         // SAFETY: Table retains both fixed allocations and never lends either
         // owner mutably. The occupied slot belongs to this original table.
-        let chunks =
-            unsafe { Proof::new((&mut tail.chunks, entry.key().slot().index().get() as usize)) }
-                .into();
-        (entry, chunks)
+        let chunk = unsafe {
+            Proof::new((
+                tail.chunks.as_mut(),
+                entry.key().slot().index().get() as usize,
+            ))
+        }
+        .into();
+        (entry, chunk)
     }
 }
 
@@ -384,10 +381,6 @@ impl<'a, 'w: 'a, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S>
     }
 }
 
-type Detached<'a, 'w, 'd, W> = Lease<
-    slots::Vacant<Chunk<'w, 'd, W, Disabled>, slots::Bound<'a, Chunk<'w, 'd, W, Disabled>>>,
-    lease::Open,
->;
 type Occupied<'a, 'w, 'd, ID, W, U, P> = (
     occupied::Entry<'a, types::Connection<'w, 'd, ID, W, U>, ID>,
     recv::Borrow<'a, 'd, ID, P>,

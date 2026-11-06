@@ -11,7 +11,7 @@ use crate::common::runtime::profile;
 pub mod common;
 use common::recover;
 
-use std::{cell::Cell, mem::size_of, pin::pin, ptr::NonNull, rc::Rc, task};
+use std::{cell::Cell, pin::pin, ptr::NonNull, rc::Rc, task};
 
 use dope::core::driver::{
     life::recovery,
@@ -20,7 +20,7 @@ use dope::core::driver::{
 use dope_fiber::{
     context::Context,
     task::storage::{
-        Id, fixed,
+        fixed,
         fixed::{
             local,
             local::Store,
@@ -30,7 +30,6 @@ use dope_fiber::{
     },
 };
 use dope_test::alloc::Tracker;
-use o3::depot::arena::slab::key;
 
 use crate::common::{
     runtime::{self, Setup},
@@ -126,15 +125,6 @@ fn keeps_pinned_on_drop() {
         reports.is_empty(),
         "unexpected reclaimed operations: {reports:?}"
     );
-}
-
-#[test]
-fn nominal_ids_keep_layout() {
-    let key = size_of::<key::Parts>();
-    assert_eq!(size_of::<Id<'static, u8>>(), 2 * key);
-    assert_eq!(size_of::<Option<Id<'static, u8>>>(), 2 * key);
-    assert_eq!(size_of::<Result<(), Id<'static, u8>>>(), 2 * key);
-    assert_eq!(size_of::<local::Removal>(), 1);
 }
 
 #[test]

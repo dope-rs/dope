@@ -2,7 +2,7 @@ use std::task;
 
 use crate::{
     abi, context,
-    core::driver::{retained, schedule::app},
+    core::driver::{self, schedule::app},
     task::storage::{
         set,
         set::{
@@ -55,11 +55,11 @@ impl<'a, 'd, F: abi::Fiber<'d>, M, D, G> Drain<'a, 'd, F, M, D, G> {
     pub(in crate::task::storage::set) fn drive(
         mut self,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> set::Length {
         let mut done = set::Length::ZERO;
         loop {
-            let (mut running, permit) = match work.next(&mut self) {
+            let (mut running, permit) = match work.next(&mut self, &mut ()) {
                 app::Next::Item(running, permit) => (running, permit),
                 app::Next::Empty => return done,
                 app::Next::Exhausted(queued) => {
@@ -74,11 +74,10 @@ impl<'a, 'd, F: abi::Fiber<'d>, M, D, G> Drain<'a, 'd, F, M, D, G> {
                 work,
                 driver.reborrow(),
                 |mut context| {
-                    running.poll(|fiber| {
-                        // SAFETY: Running retains the live pinned slot and is
-                        // consumed by completion before another poll is possible.
-                        unsafe { context::raw::Live::new(fiber).with(context.as_mut(), permit) }
-                    })
+                    let (fiber, _) = running.parts();
+                    // SAFETY: Running retains the live pinned slot and is
+                    // consumed by completion before another poll is possible.
+                    unsafe { context::raw::Live::new(fiber).with(context.as_mut(), permit) }
                 },
             );
             let task::Poll::Ready(output) = poll else {
@@ -102,6 +101,7 @@ impl<'a, 'd, F: abi::Fiber<'d>, M, D, G> app::Drain for Drain<'a, 'd, F, M, D, G
 
     fn next_when<P>(
         &mut self,
+        (): &mut (),
         take: impl FnOnce() -> Option<P>,
     ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
         let queued = self.peek()?;
@@ -122,7 +122,10 @@ impl<'d, F: abi::Fiber<'d>, M, D, G> Drop for Drain<'_, 'd, F, M, D, G> {
                 queued.wake();
             } else if let Some(index) = queue.slot().peek() {
                 // SAFETY: the retained topology front proves this live runnable root.
-                unsafe { slot::raw::Queued::new(self.view.scheduled(index)) }.wake();
+                unsafe { slot::Running::new(self.view.scheduled(index)) }
+                    .wakers()
+                    .0
+                    .wake();
             }
         }
     }

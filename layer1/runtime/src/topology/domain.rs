@@ -135,19 +135,21 @@ impl<S> Domain<S>
 where
     S: storage::Create,
 {
-    pub(super) fn try_create<O, Done>(
+    pub(super) fn try_create<C, O, Done>(
         self,
+        ctx: C,
         op: O,
         report: impl recovery::Observe,
         finish: impl for<'owner> FnOnce(
-            Result<O::Output, EnterError<'owner, S::Error, O, O::Output>>,
+            Result<O::Output, EnterError<'owner, S::Error, O, O::Output, C::Shutdown>>,
         ) -> Done,
     ) -> Done
     where
-        O: executor::Op<S, ()>,
+        C: executor::Build,
+        O: executor::Op<S, C::Shutdown>,
     {
         let mut attempt = creation::Attempt::new();
-        let exec = match executor::Executor::new(&mut attempt, self.layout) {
+        let exec = match ctx.try_build(&mut attempt, self.layout) {
             Ok(exec) => exec.with_plan(self.storage),
             Err(cause) => {
                 return finish(Err(EnterError::Runtime(domain::Rejected {

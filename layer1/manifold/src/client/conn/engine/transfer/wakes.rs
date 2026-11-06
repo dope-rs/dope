@@ -1,7 +1,7 @@
 use std::pin;
 
 use dope_core::{
-    driver::{retained, route, route::Identity, schedule},
+    driver::{self, route, route::Identity, schedule},
     io::event::net::send,
 };
 use dope_net::link::{
@@ -36,13 +36,12 @@ use crate::{
 };
 
 pub(in crate::client::conn::engine) trait Activation<'d, ID: Identity + 'd, C> {
-    fn activate<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn activate<'machine, 'turn, 'driver, 'context>(
         self: pin::Pin<&'machine mut Self>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut dispatch::raw::Context<'context, 'owner, 'd, dispatch::raw::Retained>,
-    ) where
-        'd: 'owner;
+        driver: &'driver mut dispatch::raw::Context<'context, 'd, dispatch::raw::Retained>,
+    );
 }
 
 pub(in crate::client) trait Settlement<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>:
@@ -55,24 +54,22 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
-    fn sent<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn sent<'machine, 'turn, 'driver, 'context>(
         engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>;
 
     /// Re-submits this key's request policy and re-checks the close condition.
-    fn settle<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn settle<'machine, 'turn, 'driver, 'context>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
         drain: bool,
     ) where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         X: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
     {
@@ -95,13 +92,12 @@ where
 }
 
 pub(in crate::client) trait Completion<'d> {
-    fn complete<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn complete<'machine, 'turn, 'driver, 'context>(
         self: pin::Pin<&'machine mut Self>,
         done: send::Completion<'d>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
-    ) where
-        'd: 'owner;
+        driver: &'driver mut driver::Context<'context, 'd>,
+    );
 }
 
 impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Completion<'d>
@@ -116,14 +112,12 @@ where
     A::Continuation: Settlement<'p, 'w, 'd, ID, A, S, E, X>,
     Self: close::ClosePhase<'d, ID, A, S, E>,
 {
-    fn complete<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn complete<'machine, 'turn, 'driver, 'context>(
         mut self: pin::Pin<&'machine mut Self>,
         done: send::Completion<'d>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
-    ) where
-        'd: 'owner,
-    {
+        driver: &'driver mut driver::Context<'context, 'd>,
+    ) {
         let mut engine = self.as_mut();
         let target = engine.as_ref().backoff();
         let result = {
@@ -131,6 +125,7 @@ where
             this.links.settle(
                 done,
                 driver,
+                this.app,
                 |slot, outcome| {
                     match outcome {
                         SendOutcome::Terminal { .. } => {}
@@ -230,14 +225,12 @@ where
         + close::ClosePhase<'d, ID, A, S, E>
         + connect::Connect<'d, ID, A, S, E>,
 {
-    fn activate<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn activate<'machine, 'turn, 'driver, 'context>(
         self: pin::Pin<&'machine mut Self>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut dispatch::raw::Context<'context, 'owner, 'd, dispatch::raw::Retained>,
-    ) where
-        'd: 'owner,
-    {
+        driver: &'driver mut dispatch::raw::Context<'context, 'd, dispatch::raw::Retained>,
+    ) {
         let key = self
             .as_ref()
             .project_ref()
@@ -268,14 +261,12 @@ where
         + close::ClosePhase<'d, ID, A, S, E>
         + connect::Connect<'d, ID, A, S, E>,
 {
-    fn activate<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn activate<'machine, 'turn, 'driver, 'context>(
         mut self: pin::Pin<&'machine mut Self>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut dispatch::raw::Context<'context, 'owner, 'd, dispatch::raw::Retained>,
-    ) where
-        'd: 'owner,
-    {
+        driver: &'driver mut dispatch::raw::Context<'context, 'd, dispatch::raw::Retained>,
+    ) {
         let key = {
             let this = self.as_mut().project();
             this.links.pool_mut().update_target(target, |slot| {
@@ -305,13 +296,12 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn sent<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn sent<'machine, 'turn, 'driver, 'context>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
     {
         let mut drain = false;
@@ -348,13 +338,12 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn sent<'machine, 'turn, 'driver, 'context, 'owner>(
+    fn sent<'machine, 'turn, 'driver, 'context>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        'd: 'owner,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
     {
         let mut drain = false;
@@ -393,13 +382,13 @@ where
     }
 }
 
-fn apply<'p, 'w, 'd, 'machine, 'turn, 'driver, 'context, 'owner, ID: Identity + 'd, A, S, E, X>(
+fn apply<'p, 'w, 'd, 'machine, 'turn, 'driver, 'context, ID: Identity + 'd, A, S, E, X>(
     mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
     key: Option<pool::Key<'d, ID>>,
     turn: schedule::Turn<'turn, 'd>,
-    driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+    driver: &'driver mut driver::Context<'context, 'd>,
 ) where
-    'd: 'owner + 'w,
+    'd: 'w,
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
     A::Requests: Policy<'w, 'd, ID, A>,
     S: attempt::Control<'d, E::Transport, ID>,

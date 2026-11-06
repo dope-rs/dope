@@ -89,14 +89,11 @@ where
 
     const COORDS: usize = M::COORDS;
 
-    unsafe fn pre_park<'a, 'turn, 'root>(
+    unsafe fn pre_park<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, 'root, 'd, Self::PrePark>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut raw::Context<'_, 'd, Self::PrePark>,
+    ) -> Pin<&'a mut Self> {
         let mut this = self.as_mut().project();
         // SAFETY: projection retains the exact installed owner and its loans.
         unsafe { M::pre_park(this.inner.as_mut(), turn.reborrow(), driver) };
@@ -189,14 +186,11 @@ where
         self
     }
 
-    fn shutdown<'a, 'turn, 'root>(
+    fn shutdown<'a, 'turn>(
         mut self: Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, 'root, 'd, Self::Shutdown>,
-    ) -> Pin<&'a mut Self>
-    where
-        Self: 'root,
-    {
+        driver: &mut raw::Context<'_, 'd, Self::Shutdown>,
+    ) -> Pin<&'a mut Self> {
         M::shutdown(self.as_mut().project().inner, turn, driver);
         self
     }
@@ -209,7 +203,7 @@ where
 {
     type Access = raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn, 'root>(
+    fn dispatch<'app, 'driver, 'turn>(
         call: executor::raw::Call<
             'app,
             Self,
@@ -217,13 +211,10 @@ where
             (
                 io::Event<'d>,
                 schedule::Turn<'turn, 'd>,
-                raw::Context<'driver, 'root, 'd, Self::Access>,
+                raw::Context<'driver, 'd, Self::Access>,
             ),
         >,
-    ) -> ControlFlow<io::Event<'d>>
-    where
-        'd: 'root,
-    {
+    ) -> ControlFlow<io::Event<'d>> {
         let (owner, (), (done, turn, mut driver)) = call.into_parts();
         let mut this = owner.project();
         let kind = done.into_kind();
@@ -284,7 +275,7 @@ where
         self: Pin<&mut Self>,
         target: route::Target<'d, M::Route>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &mut raw::Context<'_, '_, 'd, Self::Access>,
+        driver: &mut raw::Context<'_, 'd, Self::Access>,
     ) {
         let mut this = self.project();
         if matches!(this.phase, Phase::Stopping)

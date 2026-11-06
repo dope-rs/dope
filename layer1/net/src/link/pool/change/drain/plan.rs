@@ -2,10 +2,8 @@ use std::ops::ControlFlow;
 
 use dope_core::{
     driver::{
-        retained::{
-            self,
-            flight::{self, cancel::Outcome},
-        },
+        self,
+        retained::flight::{self, cancel::Outcome},
         route::{self, Identity, kind},
         schedule::maint,
     },
@@ -24,9 +22,7 @@ use crate::{
         event,
         pool::{
             change::{
-                close::{
-                    Approval, Commit, Decision, Deferred, Failed, Failure, Io, Owner, Phase, Resume,
-                },
+                close::{Approval, Commit, Decision, Failed, Failure, Io, Owner, Phase, Resume},
                 drain::Branch,
             },
             recv::{
@@ -71,13 +67,10 @@ pub(in crate::link::pool::change) struct Storage<
     pub(in crate::link::pool::change) recv: recv::Borrow<'a, 'd, ID, M::Ingress>,
 }
 
-pub(in crate::link::pool::change) struct Turn<'a, 'm, 'r, 'o, 'd, ID: Identity>
-where
-    'd: 'o,
-{
+pub(in crate::link::pool::change) struct Turn<'a, 'm, 'r, 'd, ID: Identity> {
     pub(in crate::link::pool::change) target: route::Target<'d, ID>,
     pub(in crate::link::pool::change) work: maint::Work<'m, 'd>,
-    pub(in crate::link::pool::change) driver: &'a mut retained::Context<'r, 'o, 'd>,
+    pub(in crate::link::pool::change) driver: &'a mut driver::Context<'r, 'd>,
 }
 
 pub(in crate::link::pool::change) struct Call<'a, 'd, ID: Identity, C, X, O, K, F> {
@@ -93,7 +86,6 @@ pub(in crate::link::pool::change) struct Plan<
     'a,
     'm,
     'r,
-    'o,
     'p,
     'w,
     'd,
@@ -110,47 +102,25 @@ pub(in crate::link::pool::change) struct Plan<
     K,
     F,
 > where
-    'd: 'w + 'o,
+    'd: 'w,
 {
     pub(in crate::link::pool::change) storage: Storage<'a, 'p, 'w, 'd, ID, W, S, M, B, IOV, D>,
-    pub(in crate::link::pool::change) turn: Turn<'a, 'm, 'r, 'o, 'd, ID>,
+    pub(in crate::link::pool::change) turn: Turn<'a, 'm, 'r, 'd, ID>,
     pub(in crate::link::pool::change) call: Call<'a, 'd, ID, C, X, O, K, F>,
 }
 
-impl<
-    'a,
-    'm,
-    'r,
-    'o,
-    'p,
-    'w,
-    'd,
-    ID: Identity + 'w,
-    W,
-    S,
-    M,
-    B,
-    const IOV: usize,
-    D,
-    C,
-    X,
-    O,
-    K,
-    F,
-    R,
-> Plan<'a, 'm, 'r, 'o, 'p, 'w, 'd, ID, W, S, M, B, IOV, D, C, X, O, K, F>
+impl<'a, 'm, 'r, 'p, 'w, 'd, ID: Identity + 'w, W, S, M, B, const IOV: usize, D, C, X, O, K, F, R>
+    Plan<'a, 'm, 'r, 'p, 'w, 'd, ID, W, S, M, B, IOV, D, C, X, O, K, F>
 where
-    'd: 'w + 'o,
+    'd: 'w,
     W: wire::Spec + 'w + 'd,
     M: input::Mode<W>,
     D: demand::Mode,
-    F: for<'x, 'c, 'i, 'v> FnMut(
-        Failed<'x, 'c, 'i, 'v, 'r, 'o, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>,
-    ),
+    F: for<'x, 'c, 'i, 'v> FnMut(Failed<'x, 'c, 'i, 'v, 'r, 'p, 'w, 'd, ID, W, S, B, IOV, D, C, X>),
     O: for<'x, 'c, 'f, 's, 'v> FnMut(
-        Owner<'x, 'c, 'f, 's, 'v, 'r, 'o, 'w, 'd, ID, W, S, C, X>,
+        Owner<'x, 'c, 'f, 's, 'v, 'r, 'w, 'd, ID, W, S, C, X>,
     ) -> Decision<'d, ID>,
-    K: for<'x, 'c, 'v> FnMut(Commit<'x, 'c, 'v, 'r, 'o, 'd, C, X, S>) -> Approval<S, R>,
+    K: for<'x, 'c, 'v> FnMut(Commit<'x, 'c, 'v, 'r, 'd, C, X, S>) -> Approval<S, R>,
 {
     pub(super) fn pop(&mut self) -> Step<'d, ID, R, B>
     where
@@ -186,11 +156,11 @@ where
                                     return Step::Done(self.fail(Failure::Receive(error)));
                                 }
                                 ControlFlow::Break((state, ())) => {
-                                    self.turn.driver.driver().reclaim(state.retire())
+                                    self.turn.driver.reclaim(state.retire())
                                 }
                             }
                         } else {
-                            self.turn.driver.driver().reclaim(ctrl.retire());
+                            self.turn.driver.reclaim(ctrl.retire());
                         }
                     }
                 }
@@ -224,7 +194,7 @@ where
                     Cancel::Armed(flight) => flight,
                     Cancel::Idle => return Step::Done(Branch::Resume(next)),
                 };
-                match flight.try_stop(self.turn.driver.driver()) {
+                match flight.try_stop(self.turn.driver) {
                     Ok(Outcome::Submitted | Outcome::Queued | Outcome::Completed) => {}
                     Ok(Outcome::Deferred) => {
                         return Step::Done(Branch::Resume(next));
@@ -232,12 +202,12 @@ where
                     Err(cause) => {
                         engine.operations.lifecycle.close.deny_cancel();
                         self.turn.driver.rejected(cause);
-                        return Step::Done(Branch::Pending(Deferred::Send));
+                        return Step::Done(Branch::Pending);
                     }
                 }
                 engine.operations.lifecycle.close.mark_cancel();
             }
-            return Step::Done(Branch::Pending(Deferred::Send));
+            return Step::Done(Branch::Pending);
         }
         slot.engine.operations.recv.pause();
         if slot.engine.operations.recv.has_cancel() {
@@ -247,7 +217,7 @@ where
                 Cancel::Armed(flight) => flight,
                 Cancel::Idle => return Step::Done(Branch::Resume(next)),
             };
-            match flight.try_stop(self.turn.driver.driver()) {
+            match flight.try_stop(self.turn.driver) {
                 Ok(Outcome::Submitted | Outcome::Queued | Outcome::Completed) => {}
                 Ok(Outcome::Deferred) => {
                     return Step::Done(Branch::Resume(next));
@@ -255,11 +225,11 @@ where
                 Err(cause) => {
                     engine.operations.recv.deny_cancel();
                     self.turn.driver.rejected(cause);
-                    return Step::Done(Branch::Pending(Deferred::Recv));
+                    return Step::Done(Branch::Pending);
                 }
             }
             engine.operations.recv.cancel_sent();
-            return Step::Done(Branch::Pending(Deferred::Recv));
+            return Step::Done(Branch::Pending);
         }
         match self
             .storage
@@ -308,17 +278,17 @@ where
             egress::Clear::Retry => {
                 return Step::Done(Branch::Resume(Resume::new(self.storage.entry.get())));
             }
-            egress::Clear::Waiting => return Step::Done(Branch::Pending(Deferred::Egress)),
+            egress::Clear::Waiting => return Step::Done(Branch::Pending),
         }
         let slot = self.storage.entry.get();
         if slot.engine.operations.sending.is_inflight() {
-            return Step::Done(Branch::Pending(Deferred::Send));
+            return Step::Done(Branch::Pending);
         }
         if slot.engine.establish.pending_fd().is_some() {
-            return Step::Done(Branch::Pending(Deferred::Setup));
+            return Step::Done(Branch::Pending);
         }
         if slot.engine.operations.recv.is_armed() {
-            return Step::Done(Branch::Pending(Deferred::Recv));
+            return Step::Done(Branch::Pending);
         }
         Step::Continue
     }
@@ -337,7 +307,7 @@ where
             Decision::External(wait) => {
                 let target = self.storage.entry.get().engine.ready_handle().target();
                 if wait.matches(self.storage.entry.get().key, target) {
-                    Step::Done(Branch::Pending(Deferred::Owner(wait)))
+                    Step::Done(Branch::Owner(wait))
                 } else {
                     Step::Done(Branch::Stale)
                 }
@@ -345,7 +315,7 @@ where
             Decision::Stale => Step::Done(Branch::Stale),
             Decision::Ready => {
                 if self.storage.entry.get().terminal.is_pending() {
-                    Step::Done(Branch::Pending(Deferred::Terminal))
+                    Step::Done(Branch::Pending)
                 } else {
                     Step::Continue
                 }
@@ -376,10 +346,7 @@ where
                         .close
                         .owner
                         .restore(owner);
-                    return Err((
-                        slot,
-                        Branch::Pending(Deferred::Retire(Resume::from_target(target))),
-                    ));
+                    return Err((slot, Branch::Resume(Resume::from_target(target))));
                 }
                 setup::Retire::Unavailable => {
                     slot.control
@@ -401,9 +368,9 @@ where
             ));
             let (state, branch) = match result {
                 Approval::Ready(proof) => {
-                    handle.set_target(slot.key.target().dispatch());
-                    reclaim.close(turn.driver.driver());
-                    return Ok((proof, slot.send.release()));
+                    handle.set_target(slot.control.key.target().dispatch());
+                    reclaim.close(turn.driver);
+                    return Ok((proof, slot.control.send.release()));
                 }
                 Approval::Pending(state) => {
                     (state, Branch::Resume(Resume::from_target(handle.target())))

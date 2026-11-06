@@ -1,5 +1,5 @@
 use app::failure::{self, Controlled, Observed};
-use dope_core::driver::{retained, route::Identity};
+use dope_core::driver::{self, route::Identity};
 use dope_net::link::event;
 
 use crate::{
@@ -21,7 +21,7 @@ where
         app: &mut A,
         owner: attempt::Id<'d, ID>,
         cause: event::ConnectError,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 }
 
@@ -39,7 +39,7 @@ where
         _: &mut A,
         owner: attempt::Id<'d, ID>,
         cause: event::ConnectError,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let now = driver.driver_ref().clock().now();
         ctrl.fail(owner, cause, now);
@@ -60,7 +60,7 @@ where
         app: &mut A,
         owner: attempt::Id<'d, ID>,
         cause: event::ConnectError,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let now = driver.driver_ref().clock().now();
         ctrl.fail(owner, cause, now);
@@ -84,7 +84,7 @@ where
         app: &mut A,
         owner: attempt::Id<'d, ID>,
         cause: event::ConnectError,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) {
         let (owner, cause) = match ctrl.failed(owner) {
             Ok(attempt::Transition::Applied) => (owner, attempt::ConnectFault::Transport(cause)),

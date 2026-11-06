@@ -1,6 +1,6 @@
 use std::convert;
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::pool::{
         self,
@@ -22,20 +22,15 @@ pub(in crate::client) trait Policy<'w, 'd: 'w, ID: Identity, A>:
 where
     A: app::Application<'d, ID>,
 {
-    fn receive<'input, 'turn, 'driver, 'context, 'owner, R>(
+    fn receive<'input, 'turn, 'driver, 'context, R>(
         recv: R,
         key: pool::Key<'d, ID>,
-        input: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> crate::Receiving<'w, 'd, A::Wire, Self>
     where
         'w: 'input,
-        'd: 'owner,
         R: app::Receiver<'w, 'd, ID, A>;
 }
 
@@ -45,20 +40,15 @@ where
     Borrowed: Dispatch<A::Wire, Strategy = ingress::Batched>,
     <Borrowed as input::Mode<A::Wire>>::Kind: delivery::BorrowedData,
 {
-    fn receive<'input, 'turn, 'driver, 'context, 'owner, R>(
+    fn receive<'input, 'turn, 'driver, 'context, R>(
         recv: R,
         key: pool::Key<'d, ID>,
-        input: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> Progress<convert::Infallible>
     where
         'w: 'input,
-        'd: 'owner,
         R: app::Receiver<'w, 'd, ID, A>,
     {
         recv.borrowed(key, input, turn, driver)
@@ -71,20 +61,15 @@ where
     <<A::Wire as wire::Spec>::Receive as receive::Policy<A::Wire>>::Credit:
         delivery::Ownership<A::Wire>,
 {
-    fn receive<'input, 'turn, 'driver, 'context, 'owner, R>(
+    fn receive<'input, 'turn, 'driver, 'context, R>(
         recv: R,
         key: pool::Key<'d, ID>,
-        input: <crate::Ingress<A::Wire, Self> as ingress::Strategy<A::Wire, Self>>::Value<
-            'input,
-            'w,
-            'd,
-        >,
+        input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut retained::Context<'context, 'owner, 'd>,
+        driver: &'driver mut driver::Context<'context, 'd>,
     ) -> Progress<convert::Infallible>
     where
         'w: 'input,
-        'd: 'owner,
         R: app::Receiver<'w, 'd, ID, A>,
     {
         recv.retained(key, input, turn, driver)

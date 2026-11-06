@@ -4,10 +4,7 @@ use dope_core::{
     driver::{
         self,
         result::SubmitCause,
-        retained::{
-            self,
-            flight::{self, cancel},
-        },
+        retained::flight::{self, cancel},
         route,
         route::Identity,
         schedule::clock,
@@ -68,7 +65,7 @@ where
         done: socket::Completion<'d>,
         target: route::Target<'d, ID>,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> phase::Socket<'d> {
         let current = mem::replace(&mut self.phase, Phase::Retired);
         let (phase, progress) = current.socket(
@@ -89,7 +86,7 @@ where
         now: clock::Moment<'d>,
         target: route::Target<'d, ID>,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<phase::Progress<'d>, connect::Completion<'d>> {
         use phase::Progress;
 
@@ -143,13 +140,13 @@ where
         &mut self,
         target: route::Target<'d, ID>,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> phase::Retry<'d> {
         use phase::Retry;
 
         let current = mem::replace(&mut self.phase, Phase::Retired);
         if self.authority.is_none() {
-            let (phase, progress) = current.cancel(driver.driver());
+            let (phase, progress) = current.cancel(driver);
             self.phase = phase;
             return Retry::Cancel(progress);
         }
@@ -172,7 +169,7 @@ where
         done: Completion<'d>,
         target: route::Target<'d, ID>,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Result<phase::SendProgress<'d>, Completion<'d>> {
         let phase = mem::replace(&mut self.phase, Phase::Retired);
         let tx = match phase {
@@ -227,7 +224,7 @@ where
         fd: handles::Descriptor<'d>,
         target: route::Target<'d, ID>,
         slots: &flight::Slots<'d, ID>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> phase::SendProgress<'d> {
         // SAFETY: only this cell's matching flight advances offset, by at most
         // its submitted prefix. StableOwner retains the same immutable backing.

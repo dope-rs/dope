@@ -69,7 +69,8 @@ fn multishot_slot_reuse() {
                             started.elapsed() < Duration::from_secs(1),
                             "accept deadline"
                         );
-                        scope.with_driver(|mut driver, mut schedule| {
+                        {
+                            let (_, mut driver, mut schedule) = scope.split();
                             let mut turn = schedule.begin();
                             driver
                                 .wait(turn.reactor(), Some(Duration::from_millis(50)))
@@ -95,12 +96,13 @@ fn multishot_slot_reuse() {
                                 dispatch,
                                 poll::Dispatch::Ready { retained: None, .. }
                             ));
-                        });
+                        };
                     }
                     let fd = accepted.expect("accepted descriptor");
                     assert_eq!(fd.index(), SlotIndex::ZERO);
                     let current = fd.ready_handle();
-                    scope.with_driver(|mut driver, mut schedule| {
+                    {
+                        let (_, mut driver, mut schedule) = scope.split();
                         let mut turn = schedule.begin();
                         let ready = driver
                             .driver_ref()
@@ -122,7 +124,7 @@ fn multishot_slot_reuse() {
                         driver
                             .wait(turn.reactor(), Some(Duration::from_millis(50)))
                             .expect("close progress");
-                    });
+                    };
                     previous = Some(current);
                     assert_eq!(peer.read(&mut [0_u8; 1]).expect("closed peer"), 0);
                 }

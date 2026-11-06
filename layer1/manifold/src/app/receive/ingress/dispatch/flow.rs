@@ -1,6 +1,6 @@
 use std::{convert, ops::ControlFlow, pin};
 
-use dope_core::driver::{retained, route::Identity, schedule};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{
         event,
@@ -19,7 +19,7 @@ pub(in crate::app::receive::ingress) fn apply<'p, 'w, 'd: 'w + 'p, ID: Identity 
     mut policy: pin::Pin<&mut P>,
     next: event::DispatchRecv<'d, ID, C>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
     read: F,
 ) where
     P: Policy<'p, 'w, 'd, ID>,
@@ -29,7 +29,7 @@ pub(in crate::app::receive::ingress) fn apply<'p, 'w, 'd: 'w + 'p, ID: Identity 
         pool::Key<'d, ID>,
         C,
         schedule::Turn<'_, 'd>,
-        &mut retained::Context<'_, '_, 'd>,
+        &mut driver::Context<'_, 'd>,
     ) -> Progress<Chunk<'w, 'd, P::Wire, Disabled>>,
 {
     match next {
@@ -49,7 +49,7 @@ pub(in crate::app::receive::ingress) fn settle<'p, 'w, 'd: 'w + 'p, ID: Identity
     key: pool::Key<'d, ID>,
     done: Progress<Chunk<'w, 'd, P::Wire, Disabled>>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
 ) -> ControlFlow<()>
 where
     P: Policy<'p, 'w, 'd, ID>,
@@ -65,7 +65,6 @@ where
                 }
                 Deferral::Unavailable(pending) => (pending, event::ParkError::Unavailable),
                 Deferral::Occupied(pending) => (pending, event::ParkError::Occupied),
-                Deferral::Full(pending) => (pending, event::ParkError::Full),
             };
             ingress::discard_pending(policy, key, pending, cause, turn, driver);
         }
@@ -86,7 +85,7 @@ pub(in crate::app::receive::ingress) fn apply_done<
     mut policy: pin::Pin<&mut P>,
     next: event::DispatchRecv<'d, ID, C>,
     turn: schedule::Turn<'_, 'd>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
     read: F,
 ) where
     P: Policy<'p, 'w, 'd, ID>,
@@ -95,7 +94,7 @@ pub(in crate::app::receive::ingress) fn apply_done<
         pool::Key<'d, ID>,
         C,
         schedule::Turn<'_, 'd>,
-        &mut retained::Context<'_, '_, 'd>,
+        &mut driver::Context<'_, 'd>,
     ) -> Progress<convert::Infallible>,
 {
     match next {

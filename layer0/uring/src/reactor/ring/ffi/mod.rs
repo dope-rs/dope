@@ -21,6 +21,7 @@ pub(crate) const ACCEPT: u8 = 13;
 pub(crate) const ASYNC_CANCEL: u8 = 14;
 pub(crate) const CONNECT: u8 = 16;
 pub(crate) const CLOSE: u8 = 19;
+pub(crate) const STATX: u8 = 21;
 pub(crate) const READ: u8 = 22;
 pub(crate) const WRITE: u8 = 23;
 pub(crate) const SEND: u8 = 26;

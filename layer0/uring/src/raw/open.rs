@@ -8,7 +8,6 @@ use dope_sys::{
         reactor::complete::{Decode, Outcome as _},
     },
 };
-use o3::base::num::bounded;
 
 use crate::{
     Uring,
@@ -24,7 +23,6 @@ unsafe impl file::raw::Completion for Uring {
     unsafe fn open(raw: Self::Outcome) -> Result<file::Opened, Self::Invalid> {
         match raw.decode() {
             Decode::Value(value) => {
-                let value: bounded::U32<0, { i32::MAX as u32 }> = value.into();
                 // SAFETY: the caller owns this successful open completion exactly once.
                 let owned =
                     unsafe { <fd::OwnedFd as fd::FromRawFd>::from_raw_fd(value.get() as i32) };

@@ -5,7 +5,7 @@ use dope_core::driver::{
     route::KeyTag,
 };
 
-use crate::common::file::{Retain as _, Submit as _};
+use crate::common::file::Submit as _;
 
 pub mod common;
 
@@ -13,6 +13,7 @@ use std::{
     env,
     fs::{File, OpenOptions, read_dir, write},
     io::{Seek as _, SeekFrom},
+    mem::MaybeUninit,
     ops,
     os::fd::AsFd as _,
     time::Duration,
@@ -62,22 +63,15 @@ unsafe fn submit_unobserved_open<'a, 'd>(
     scope: &mut life::Scope<'a, 'd>,
     request: &fs::OpenRequest,
 ) {
-    scope.with_driver(|context, mut ctl| {
-        let mut turn = ctl.begin();
-        let mut context = context.retained();
-        let owner = target(context.driver_ref(), 0);
-        // SAFETY: the backing owner outlives the runtime scope and its final
-        // quiescence, including assertion failure and early-return paths.
-        unsafe { context.submit(request.submission(owner)) }.expect("retained fixture");
-        assert!(
-            driver::Context::wait(
-                context.driver(),
-                turn.reactor(),
-                Some(Duration::from_secs(1)),
-            )
-            .is_ok()
-        );
-    });
+    let (_, mut context, mut ctl) = scope.split();
+    let mut turn = ctl.begin();
+    let owner = target(context.driver_ref(), 0);
+    // SAFETY: the backing owner outlives the runtime scope and its final
+    // quiescence, including assertion failure and early-return paths.
+    unsafe { context.submit(request.submission(owner)) }.expect("retained fixture");
+    assert!(
+        driver::Context::wait(&mut context, turn.reactor(), Some(Duration::from_secs(1)),).is_ok()
+    );
 }
 
 fn drive_until<'d, R: Tag, C: Class>(
@@ -138,7 +132,7 @@ fn sync_completes() {
             }
             .expect("retained fixture");
 
-            let event = drive_until(driver.driver(), turn, done, |event| match event {
+            let event = drive_until(&mut driver, turn, done, |event| match event {
                 Kind::Sync(done) => Some(done.token()),
                 _ => None,
             });
@@ -173,7 +167,7 @@ fn read_at_completes() {
         .write(true)
         .open(&path)
         .expect("write only file");
-    let mut output = [0xa5; 8];
+    let mut output = [MaybeUninit::new(0xa5); 8];
     let mut reports = Vec::new();
 
     rt::Runtime::quic::<2, 8>().with_turn(
@@ -187,7 +181,7 @@ fn read_at_completes() {
                     Err(Errno::BAD_DESCRIPTOR),
                 ),
             ] {
-                output.fill(0xa5);
+                output.fill(MaybeUninit::new(0xa5));
                 let target = target(driver.driver_ref(), 3);
                 let done = target.operation::<kind::Read>();
                 // SAFETY: both descriptors and the exclusive output remain outside
@@ -195,15 +189,13 @@ fn read_at_completes() {
                 unsafe {
                     driver.submit(Submission::<Route, kind::Read>::read_at(
                         fd,
-                        bounded::Value::try_new(&mut output[1..7])
-                            .map_err(|e| e.into_parts().1)
-                            .expect("bounded output"),
+                        bounded::Value::try_from(&mut output[1..7]).expect("bounded output"),
                         offset,
                         target,
                     ))
                 }
                 .expect("read admission");
-                let event = drive_until(driver.driver(), turn, done, |event| match event {
+                let event = drive_until(&mut driver, turn, done, |event| match event {
                     Kind::Read(done) => Some(done.token()),
                     _ => None,
                 })
@@ -214,10 +206,12 @@ fn read_at_completes() {
                 }
                 .expect("typed read completion");
                 assert_eq!(done.outcome().map(|len| len.into_raw()), expected);
+                // SAFETY: every byte was initialized before the read, including sentinels.
+                let output = unsafe { output.assume_init_ref() };
                 if expected == Ok(3) {
-                    assert_eq!(&output, b"\xa5hij\xa5\xa5\xa5\xa5");
+                    assert_eq!(output, b"\xa5hij\xa5\xa5\xa5\xa5");
                 } else {
-                    assert_eq!(output, [0xa5; 8]);
+                    assert_eq!(output, &[0xa5; 8]);
                 }
             }
         },
@@ -236,28 +230,26 @@ fn finish_drains_reads() {
     let path = tmp.path().join("data");
     write(&path, b"retained").expect("fixture data");
     let file = File::open(path).expect("readable file");
-    let mut output = [0_u8; 8];
+    let mut output = [MaybeUninit::uninit(); 8];
     let mut reports = Vec::new();
 
     rt::Runtime::quic::<2, 8>().with_scope(
         |scope| {
-            scope.with_driver(|context, _| {
-                let mut driver = context.retained();
+            {
+                let (_, mut driver, _) = scope.split();
                 let target = target(driver.driver_ref(), 4);
                 // SAFETY: the descriptor and exclusive output outlive this scope
                 // and its quiescence; this deliberately abandons normal delivery.
                 unsafe {
                     driver.submit(Submission::<Route, kind::Read>::read_at(
                         file.as_fd(),
-                        bounded::Value::try_new(output.as_mut_slice())
-                            .map_err(|e| e.into_parts().1)
-                            .expect("bounded output"),
+                        bounded::Value::try_from(output.as_mut_slice()).expect("bounded output"),
                         fs::Offset::fixed::<0>(),
                         target,
                     ))
                 }
                 .expect("read admission");
-            });
+            };
             scope.quiesce();
         },
         recovery::Policy::new(|event| reports.push(event), recover),
@@ -269,7 +261,8 @@ fn finish_drains_reads() {
             result: Ok(len), ..
         } => {
             assert_eq!(len.into_raw(), 8);
-            assert_eq!(&output, b"retained");
+            // SAFETY: the retired successful read initialized all eight bytes.
+            assert_eq!(unsafe { output.assume_init_ref() }, b"retained");
         }
         Reclaimed::Read {
             result: Err(errno), ..
@@ -305,7 +298,7 @@ fn creates_component() {
                 // SAFETY: the backing owner outlives the runtime scope and its final
                 // quiescence, including assertion failure and early-return paths.
                 unsafe { driver.submit(request.submission(target)) }.expect("retained fixture");
-                let event = drive_until(driver.driver(), turn, done, |event| match event {
+                let event = drive_until(&mut driver, turn, done, |event| match event {
                     Kind::Open(done) => Some(done.token()),
                     _ => None,
                 });
@@ -365,9 +358,9 @@ fn finish_drains_opens() {
         .queue_layout(QueueLayout::fixed::<256, 256>())
         .with_scope(
             |scope| {
-                scope.with_driver(|context, mut ctl| {
+                {
+                    let (_, mut driver, mut ctl) = scope.split();
                     let mut turn = ctl.begin();
-                    let mut driver = context.retained();
                     for (index, request) in requests.iter().enumerate() {
                         let owner = target(driver.driver_ref(), index as u16);
                         // SAFETY: the backing owner outlives the runtime scope and its final
@@ -377,13 +370,13 @@ fn finish_drains_opens() {
                     }
                     assert!(
                         driver::Context::wait(
-                            driver.driver(),
+                            &mut driver,
                             turn.reactor(),
                             Some(Duration::from_secs(1)),
                         )
                         .is_ok()
                     );
-                });
+                };
                 scope.quiesce();
             },
             recovery::Policy::new(|event| reports.push(event), recover),
@@ -453,10 +446,10 @@ fn reaps_unobserved_open() {
         .expect("driver creation");
     let mut reports = Vec::new();
 
+    let mut teardown = domain::Teardown::default();
     assert!(
-        domain::Domain::new(driver)
-            .start()
-            .expect("fresh generation")
+        domain::Generation::new(driver)
+            .start(&mut teardown)
             .enter_with(
                 (),
                 |mut scope, _, _| {

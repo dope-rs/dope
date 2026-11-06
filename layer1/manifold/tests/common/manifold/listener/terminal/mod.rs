@@ -5,16 +5,14 @@ pub mod wire;
 use std::{cell::Cell, convert, marker::PhantomData, num, pin::Pin, rc::Rc, time::Duration};
 
 use dope_core::{
-    driver::{retained, route::Identity, schedule::clock},
+    driver::{self, route::Identity, schedule::clock},
     io::socket,
 };
 use dope_manifold::{
     app::receive::{self, Outcome, limits::Budget},
     network::listener::{
         conn::{
-            self,
-            deadline::Arm,
-            write,
+            self, write,
             write::{
                 body::{self, Admit},
                 error,
@@ -52,7 +50,7 @@ pub struct Probe<I, F> {
 }
 
 pub enum Observation<'d> {
-    Deadline(Arm<'d>),
+    Deadline(Result<(), conn::deadline::Error>),
     Write(Result<write::Outcome<()>, error::Error<Shared, (), convert::Infallible>>),
     Owned(Admit<Shared>),
     Replay(Option<Result<(), scope::Error>>),
@@ -61,7 +59,7 @@ pub enum Observation<'d> {
 
 pub fn accepted(event: Observation<'_>) {
     assert!(match event {
-        Observation::Deadline(armed) => matches!(armed, Arm::Armed),
+        Observation::Deadline(armed) => armed.is_ok(),
         Observation::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
         Observation::Owned(result) => matches!(result, Admit::Committed),
         Observation::Replay(result) => matches!(result, Some(Ok(()))),
@@ -205,7 +203,7 @@ where
     fn timeout(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> handler::Timeout<'d> {
         let this = self.get_mut();
         match &this.ingress {
@@ -260,8 +258,8 @@ where
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
         _: receive::End,
-        driver: &mut retained::Context<'_, '_, 'd>,
-    ) -> handler::Eof {
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
         let this = self.get_mut();
         this.events.push(Event::Eof);
         if matches!(this.ingress, Ingress::Hold | Ingress::HalfClose(_)) {
@@ -272,11 +270,6 @@ where
                 conn.deadline()
                     .try_ensure(driver.driver_ref().clock().now()),
             ));
-            handler::Eof::Hold
-        } else if matches!(this.ingress, Ingress::Held | Ingress::Shutting(_)) {
-            handler::Eof::Hold
-        } else {
-            handler::Eof::Close
         }
     }
 
@@ -357,7 +350,7 @@ where
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, I::Conn, Shared>,
         chunk: R,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         this.events.push(Event::Chunk(chunk.as_ref().to_vec()));
@@ -428,7 +421,7 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin> handler::
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, Scope, Shared>,
         chunk: scoped::Input<'_, 'w, 'd, Wire>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         this.events.push(Event::Chunk(chunk.as_ref().to_vec()));

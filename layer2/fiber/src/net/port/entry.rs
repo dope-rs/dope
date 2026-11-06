@@ -202,17 +202,17 @@ impl<'d> Staged<'_, 'd> {
         requests: &mut request::Requests<'_, '_, '_, 'd, resident::Shared<'d>, ROUTE>,
     ) -> Result<(), exact::Failure> {
         match requests.admit(self.pending) {
-            request::Admission::Ready(ready) => {
+            Ok(request::Admission::Ready(ready)) => {
                 self.state.state.set(Request::Inflight);
                 ready.push();
                 Ok(())
             }
-            request::Admission::Exhausted(send) | request::Admission::Saturated(send) => {
+            Err(send) | Ok(request::Admission::Saturated(send)) => {
                 self.pending = send;
                 self.restore();
                 Ok(())
             }
-            request::Admission::Rejected(rejected) => {
+            Ok(request::Admission::Rejected(rejected)) => {
                 let reason = rejected.cause();
                 self.state
                     .state

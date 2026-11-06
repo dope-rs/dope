@@ -1,7 +1,7 @@
 use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{retained::Context, route, schedule::clock},
+    driver::{Context, route, schedule::clock},
     io::socket,
     random::Seed,
 };
@@ -147,7 +147,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Opening {
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, ()>,
         _: R,
-        _: &mut Context<'_, '_, 'd>,
+        _: &mut Context<'_, 'd>,
     ) -> Outcome {
         Outcome::Continue
     }
@@ -215,7 +215,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Allocation {
         self: Pin<&mut Self>,
         _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
         _: R,
-        _: &mut Context<'_, '_, 'd>,
+        _: &mut Context<'_, 'd>,
     ) -> Outcome {
         Outcome::Continue
     }

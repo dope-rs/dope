@@ -6,7 +6,7 @@ use slot::state::State;
 use crate::{
     abi,
     context::wake,
-    core::driver::{retained, schedule::app},
+    core::driver::{self, schedule::app},
     task::storage::{
         self, Id, phase,
         scope::{Domain, Scope, Scoped},
@@ -135,7 +135,7 @@ where
     pub fn poll_ready(
         &mut self,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> Length {
         if ready::Queue::is_empty(&self.pool.view()) {
             return Length::ZERO;
@@ -220,7 +220,7 @@ pub trait Access<'d, F: abi::Fiber<'d>, M, D> {
     fn poll_ready(
         &mut self,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> set::Length;
     fn take_done(&mut self) -> Option<(M, F::Output)>;
     fn wake_next(&mut self);
@@ -273,7 +273,7 @@ impl<'s, 'd, F: abi::Fiber<'d>, M, D, G> Access<'d, F, M, Domain<'s, D>>
     fn poll_ready(
         &mut self,
         work: app::Work<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> set::Length {
         self.source.as_mut().get_mut().poll_ready(work, driver)
     }

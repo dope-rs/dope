@@ -99,7 +99,7 @@ fn drains_after_client_drop() {
             .expect("empty composition");
         let (source, trigger) = shutdown::Pair::new().expect("shutdown source").split();
         trigger.fire().expect("request shutdown");
-        prepared.try_with(
+        prepared.try_create(
             source,
             |worker: topology::Worker<'_, '_, '_, '_, _, _, _>| {
                 worker.lend(|(), stage| {

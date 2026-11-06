@@ -175,7 +175,7 @@ impl Main {
         Backend::duplicate(self.0.as_fd()).map(|fd| Self(fd, marker::PhantomData))
     }
 
-    pub(crate) fn request(&self) -> Result<(), Errno> {
+    pub fn request(&self) -> Result<(), Errno> {
         shutdown(self.0.as_fd()).map_or(Ok(()), Err)
     }
 
@@ -217,12 +217,15 @@ impl fd::AsFd for Main {
 }
 
 impl executor::Startup for &Main {
+    const INTEREST: dope_core::dope_sys::engine::register::Interest =
+        dope_core::dope_sys::engine::register::Interest::Closed;
+
     fn installed(&self) -> Result<(), executor::InstallError> {
         Ok(())
     }
 }
 
-/// Observes endpoint readability without consuming its lifecycle event.
+/// Observes terminal shutdown without consuming lifecycle records.
 impl executor::Build for &Main {
     type Shutdown = Self;
 
@@ -346,23 +349,33 @@ impl Worker {
         if event == bus::Event::Failed {
             self.phase.set(Phase::Failed);
         }
-        let failure = loop {
+        let result = loop {
             match Backend::send_quiet::<Errno>(self.socket.as_fd(), &[event.encode()]) {
-                Ok([_]) => return Ok(()),
+                Ok([_]) => break Ok(()),
                 Ok(bytes) => {
-                    break bus::Write::Record(bus::RecordSize {
+                    break Err(bus::Write::Record(bus::RecordSize {
                         expected: 1,
                         actual: bytes.len(),
-                    });
+                    }));
                 }
                 Err(error) if error.is_intr() => {}
-                Err(error) => break bus::Write::Syscall(error),
+                Err(error) => break Err(bus::Write::Syscall(error)),
             }
+        };
+        let shutdown = if result.is_err() || event == bus::Event::Failed {
+            shutdown(self.socket.as_fd())
+        } else {
+            None
+        };
+        let (failure, shutdown) = match (result, shutdown) {
+            (Ok(()), None) => return Ok(()),
+            (Ok(()), Some(error)) => (bus::Write::Shutdown(error), None),
+            (Err(failure), shutdown) => (failure, shutdown),
         };
         let fault = bus::Fault {
             event,
             failure,
-            shutdown: shutdown(self.socket.as_fd()),
+            shutdown,
         };
         self.failure.set(Some(fault));
         Err(fault)

@@ -1,7 +1,7 @@
 use std::{ops::ControlFlow, pin};
 
 use dope_core::driver::{
-    retained, route,
+    self, route,
     route::Identity,
     schedule::{self, ready},
 };
@@ -21,23 +21,19 @@ pub(crate) enum Replay {
     Waiting,
 }
 
-pub(crate) trait Admission<'a, 'c: 'a, 'owner: 'a, 'd: 'a + 'c + 'owner>:
-    Sized
-    + Into<(
-        &'a mut retained::Context<'c, 'owner, 'd>,
-        schedule::Turn<'a, 'd>,
-    )>
+pub(crate) trait Admission<'a, 'c: 'a, 'd: 'a + 'c>:
+    Sized + Into<(&'a mut driver::Context<'c, 'd>, schedule::Turn<'a, 'd>)>
 {
     fn fresh(
         turn: schedule::Turn<'a, 'd>,
-        driver: &'a mut retained::Context<'c, 'owner, 'd>,
+        driver: &'a mut driver::Context<'c, 'd>,
     ) -> schedule::Capacity<Self>;
 
     fn replay(
         replay: Replay,
         ready: ready::Key<'d>,
         turn: schedule::Turn<'a, 'd>,
-        driver: &'a mut retained::Context<'c, 'owner, 'd>,
+        driver: &'a mut driver::Context<'c, 'd>,
     ) -> schedule::Capacity<Self>;
 }
 
@@ -53,21 +49,19 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         'd: 'w,
         W: 'w + 'd;
 
-    type Admission<'a, 'c, 'owner, 'd>: Admission<'a, 'c, 'owner, 'd>
+    type Admission<'a, 'c, 'd>: Admission<'a, 'c, 'd>
     where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner,
+        'd: 'a + 'c,
         W: 'd;
 
-    fn drive_data<'p, 'a, 'c, 'owner, 'w, 'd, ID: Identity + 'd, P, A>(
+    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
         policy: pin::Pin<&mut P>,
         data: A,
-        work: Self::Admission<'a, 'c, 'owner, 'd>,
+        work: Self::Admission<'a, 'c, 'd>,
     ) where
         'c: 'a,
-        'owner: 'a,
-        'd: 'a + 'c + 'owner + 'w + 'p,
+        'd: 'a + 'c + 'w + 'p,
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
@@ -78,7 +72,7 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         _: &delivery::Resumed<'d, ID>,
         _: bool,
         _: schedule::Turn<'_, 'd>,
-        _: &mut retained::Context<'_, '_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
     ) -> ControlFlow<(), bool>
     where
         'd: 'w + 'p,
@@ -93,7 +87,7 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         mut policy: pin::Pin<&mut P>,
         target: route::Target<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     ) where
         'd: 'w + 'p,
         W: 'w + 'd,

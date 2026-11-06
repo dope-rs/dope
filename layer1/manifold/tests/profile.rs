@@ -1,19 +1,15 @@
 pub mod common;
 
-use std::mem;
-
+use crate::common::manifold::profile::DriverOnly;
 use dope_core::driver::{
     route::{KeyTag, table::conn::Capacity},
     settings::{Config, Domain, Progress},
 };
 use dope_manifold::{
-    app::{env::Bundle, receive},
+    app::receive,
     network::{datagram::plan, listener::topology},
     timing::{Balanced, Throughput},
 };
-use dope_net::{tcp::Tcp, wire::Identity};
-
-use crate::common::manifold::profile::{DriverOnly, TimingOnly};
 
 #[test]
 fn completion_progress() {
@@ -23,12 +19,6 @@ fn completion_progress() {
     ] {
         assert!(mode == Progress::BatchedWhenSupported);
     }
-}
-
-#[test]
-fn bundle_types() {
-    type Split = Bundle<Tcp, Identity, DriverOnly, TimingOnly>;
-    assert_eq!(mem::size_of::<Split>(), 0);
 }
 
 #[test]

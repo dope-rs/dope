@@ -16,10 +16,6 @@ pub mod common;
 fn admission_bounds() {
     assert_eq!(Len::try_new(0), Ok(Len::ZERO));
     assert_eq!(Len::try_new(transfer::MAX_BYTES), Ok(Len::MAX));
-    assert_eq!(
-        std::mem::size_of::<Result<Len, o3::buffer::bytes::bounded::Overflow>>(),
-        2 * std::mem::size_of::<usize>()
-    );
     let observed = Len::try_new(transfer::MAX_BYTES + 1);
 
     assert!(matches!(observed, Err(cause) if cause.actual() == transfer::MAX_BYTES + 1));
@@ -125,6 +121,26 @@ fn cursor_keeps_owner() {
         .expect("remaining chunk");
     assert_eq!(last.bytes(), b"def");
     assert_eq!(chunks.remaining(), 0);
+}
+
+#[test]
+fn contiguous_keeps_owner() {
+    use dope_core::io::socket::msg::raw::Vectored as _;
+    use dope_sys::io::socket::msg::{Header, Iovec};
+    use o3::depot::array;
+
+    let bytes = b"ab";
+    let mut header = Header::new();
+    let iovecs = [Iovec::from_slice(bytes)];
+    let view = {
+        // SAFETY: the borrowed descriptor retains two static bytes.
+        let graph = unsafe { (&mut header, &iovecs, array::Len::MAX, Len::fixed::<2>()).retain() };
+        graph.contiguous().expect("sole descriptor")
+    };
+    assert_eq!(view.as_slice().as_ptr(), bytes.as_ptr());
+    assert_eq!(view.as_slice(), bytes);
+    assert_eq!(view.len(), Len::fixed::<2>());
+    assert!(Message::default().view().contiguous().is_none());
 }
 
 #[test]

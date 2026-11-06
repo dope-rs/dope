@@ -2,7 +2,7 @@ use std::{net, num, pin};
 
 use dope_core::{
     driver::{
-        result, retained,
+        self, result,
         route::{Identity, KeyTag, indices},
         schedule,
         schedule::{app, clock},
@@ -157,7 +157,7 @@ pub trait Application<'d, ID: Identity>: Ingress<'d, ID> {
         sock: pin::Pin<&mut hook::Socket<'d, ID, Self::Hooks>>,
         now: clock::Moment<'d>,
         work: app::Work<'turn, 'd>,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
     );
 
     /// Contributes application work or a deadline in addition to socket I/O.

@@ -2,7 +2,6 @@ use dope_core::{
     driver,
     driver::{
         life::{self, recovery},
-        retained,
         schedule::{clock, state},
         settings,
     },
@@ -54,18 +53,16 @@ impl Runtime {
         self,
         run: impl for<'turn, 'scope, 'd> FnOnce(
             &'turn mut scope::Guard<'scope, 'd>,
-            retained::Context<'turn, 'd, 'd>,
+            driver::Context<'turn, 'd>,
         ),
         policy: impl recovery::Observe,
         finish: impl for<'owner> FnOnce(Result<(), Error<'owner, ()>>),
     ) {
         self.with_scope(
             |scope| {
-                scope.with_driver(|ctx, mut sched| {
-                    let mut active = sched.begin_at(clock::Sample::new(time::Instant::now()));
-                    let owner = retained::raw::Owner::from_driver(ctx.driver_ref());
-                    run(&mut active, retained::Context::new(ctx, owner));
-                });
+                let (_, ctx, mut sched) = scope.split();
+                let mut active = sched.begin_at(clock::Sample::new(time::Instant::now()));
+                run(&mut active, ctx);
             },
             policy,
             finish,

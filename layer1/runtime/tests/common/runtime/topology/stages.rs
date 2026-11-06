@@ -114,24 +114,21 @@ unsafe impl<'d> executor::raw::App<'d> for Owner<'_> {
         Some(())
     }
 
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         app: Pin<&'app mut Self>,
         _: &mut Self::ParkPlan,
-        mut park: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        mut park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         if app.events.get() == 0x123456 && park.next_step().is_some() {
             app.events.set(0x1234567);
         }
     }
 
-    fn shutdown<'app, 'turn, 'driver, 'owner>(
-        call: executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>,
-    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'owner, 'd, Self>
-    where
-        'd: 'owner,
-    {
+    fn shutdown<'app, 'turn, 'driver>(
+        call: executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self>,
+    ) -> executor::raw::Shutdown<'app, 'turn, 'driver, 'd, Self> {
         let (app, turn, driver) = call.into_parts();
         assert_eq!(app.events.get(), 0x123);
         app.events.set(0x1234);
@@ -232,12 +229,12 @@ unsafe impl<'d> executor::raw::App<'d> for Borrowed<'_, '_, 'd, '_> {
         None
     }
 
-    unsafe fn park<'app, 'driver, 'turn, 'root>(
+    unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
         plan: &mut Self::ParkPlan,
-        _: executor::raw::Park<'driver, 'turn, 'root, 'd>,
+        _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
-        'd: 'driver + 'turn + 'root,
+        'd: 'driver + 'turn,
     {
         match *plan {}
     }

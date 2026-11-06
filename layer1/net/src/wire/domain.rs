@@ -117,6 +117,13 @@ pub trait Init<W: wire::Spec> {
         'd: 'w;
 }
 
+/// Changes opening policy while retaining installed storage and connections.
+pub trait Reconfigure {
+    type Config;
+
+    fn reconfigure(&mut self, config: Self::Config);
+}
+
 /// Bounds shared by connection, receive-retention, and receive-buffer owners.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Limits {

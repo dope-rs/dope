@@ -91,7 +91,7 @@ impl<'report, 'scope, 'life: 'scope, 'p: 'life, 'd: 'p, Q: executor::Startup>
         owner: Owner,
         stage: &mut lending::Stage<'_, 'scope, 'life, 'p, 'd, Storage, Q>,
     ) -> Self::Output {
-        let storage = stage.with_stage(|stage| mem::size_of_val(stage.storage()));
+        let storage = mem::size_of_val(stage.storage());
         stage.lend_for(self.1, owner, Create(storage), TIMEOUT)
     }
 }

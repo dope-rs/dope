@@ -8,12 +8,12 @@ use crate::{
     wire::{self, send},
 };
 
-pub struct Status<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> {
-    slot: &'a types::Connection<'w, 'd, ID, W, S>,
+pub struct Status<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> {
+    slot: &'a types::Control<'w, 'd, ID, W>,
 }
 
-impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w, S> Status<'a, 'w, 'd, ID, W, S> {
-    pub(in crate::link::slot) fn new(slot: &'a types::Connection<'w, 'd, ID, W, S>) -> Self {
+impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Status<'a, 'w, 'd, ID, W> {
+    pub(in crate::link::slot) fn new(slot: &'a types::Control<'w, 'd, ID, W>) -> Self {
         Self { slot }
     }
 

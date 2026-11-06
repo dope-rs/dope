@@ -2,8 +2,9 @@
 use std::mem;
 
 use dope_core::driver::{
+    self,
     receive::Registration,
-    retained::{self, flight},
+    retained::flight,
     route::{Identity, KeyTag},
     schedule::ready,
 };
@@ -29,8 +30,8 @@ pub enum Decision<'d, ID: Identity> {
 pub struct Resume<'d>(ready::Target<'d>);
 
 impl<'d> Resume<'d> {
-    pub(in crate::link::pool::change) fn new<'w, ID: Identity + 'w, W: wire::Spec, S>(
-        slot: &types::Connection<'w, 'd, ID, W, S>,
+    pub(in crate::link::pool::change) fn new<'w, ID: Identity + 'w, W: wire::Spec>(
+        slot: &types::Control<'w, 'd, ID, W>,
     ) -> Self {
         Self(slot.io().wake_target())
     }
@@ -45,7 +46,7 @@ impl<'d> Resume<'d> {
 }
 
 impl<'d, ID: Identity> Decision<'d, ID> {
-    pub fn runnable<'w, W: wire::Spec, S>(slot: &types::Connection<'w, 'd, ID, W, S>) -> Self
+    pub fn runnable<'w, W: wire::Spec>(slot: &types::Control<'w, 'd, ID, W>) -> Self
     where
         ID: 'w,
     {
@@ -137,19 +138,6 @@ impl<'a, 'p, 'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec, S, B, const IOV: usiz
     }
 }
 
-#[must_use = "deferred close evidence must reach its pending owner"]
-pub enum Deferred<'d, ID: Identity> {
-    Terminal,
-    Setup,
-    Send,
-    Recv,
-    Ingress,
-    Owner(outcome::Wait<'d, ID>),
-    Egress,
-    Retire(Resume<'d>),
-    Scheduled,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Phase {
@@ -198,22 +186,22 @@ const _: () = {
 };
 
 /// Owner transition with independently borrowed application, claim, slot and driver.
-pub type Owner<'ctx, 'claim, 'flights, 'slot, 'driver, 'runtime, 'region, 'w, 'd, ID, W, S, C, X> = (
+pub type Owner<'ctx, 'claim, 'flights, 'slot, 'driver, 'runtime, 'w, 'd, ID, W, S, C, X> = (
     &'ctx mut X,
     &'claim C,
     Phase,
     &'flights flight::Slots<'d, ID>,
     &'slot mut types::Connection<'w, 'd, ID, W, S>,
-    &'driver mut retained::Context<'runtime, 'region, 'd>,
+    &'driver mut driver::Context<'runtime, 'd>,
 );
 
 /// Commit transition retaining its claim and returned connection state.
-pub type Commit<'ctx, 'claim, 'driver, 'runtime, 'region, 'd, C, X, S> = (
+pub type Commit<'ctx, 'claim, 'driver, 'runtime, 'd, C, X, S> = (
     &'ctx mut X,
     &'claim C,
     S,
     Kind,
-    &'driver mut retained::Context<'runtime, 'region, 'd>,
+    &'driver mut driver::Context<'runtime, 'd>,
 );
 
 /// Failed transition retaining its exact connection and output loans.
@@ -223,7 +211,6 @@ pub type Failed<
     'io,
     'driver,
     'runtime,
-    'region,
     'p,
     'w,
     'd,
@@ -239,7 +226,7 @@ pub type Failed<
     &'ctx mut X,
     &'claim C,
     Io<'io, 'p, 'w, 'd, ID, W, S, B, IOV, D>,
-    &'driver mut retained::Context<'runtime, 'region, 'd>,
+    &'driver mut driver::Context<'runtime, 'd>,
 );
 
 /// One application's authority and callbacks for an occupied close transition.
@@ -252,9 +239,9 @@ pub struct Handler<'a, C, X, O, K, F> {
 }
 
 /// Exact authority returned by terminal close dispatch.
-pub enum Outcome<R, C, D> {
+pub enum Outcome<R, C> {
     Retired(R),
-    Pending(C, D),
+    Pending(C),
     Stale(C),
     Missing(C),
 }

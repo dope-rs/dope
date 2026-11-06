@@ -269,59 +269,58 @@ fn bounded_snapshot_preserves_pending_generation() {
 
         Runtime { config }.with_scope(
             |scope| {
-                scope.with_driver(|context, mut control| {
-                    let dref = context.driver_ref();
-                    let targets: Vec<_> = (0..count)
-                        .map(|slot| {
-                            dref.targets::<KeyTag<ROUTE>>()
-                                .bind(SlotIndex::from(slot as u16), Epoch::INITIAL)
-                                .dispatch()
-                        })
-                        .collect();
-                    let slots = (targets
-                        .iter()
-                        .copied()
-                        .map(|target| dref.ready().make_slot(target))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map(Vec::into_boxed_slice))
-                    .expect("ready slots");
-                    for slot in &slots[..queued] {
-                        slot.activate();
-                    }
+                let (_, context, mut control) = scope.split();
+                let dref = context.driver_ref();
+                let targets: Vec<_> = (0..count)
+                    .map(|slot| {
+                        dref.targets::<KeyTag<ROUTE>>()
+                            .bind(SlotIndex::from(slot as u16), Epoch::INITIAL)
+                            .dispatch()
+                    })
+                    .collect();
+                let slots = (targets
+                    .iter()
+                    .copied()
+                    .map(|target| dref.ready().make_slot(target))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Vec::into_boxed_slice))
+                .expect("ready slots");
+                for slot in &slots[..queued] {
+                    slot.activate();
+                }
 
-                    {
-                        let turn = control.begin();
-                        let mut next = 0;
-                        let drained = turn.ready_round(|token| {
-                            assert!(targets[next].matches(token));
-                            next += 1;
-                            if pending {
-                                slots[queued].activate();
-                            }
-                        });
-                        assert_eq!(drained, schedule::LIMIT);
-                        assert_eq!(next, schedule::LIMIT);
-                        assert!(turn.is_exhausted());
-                        assert!(dref.ready().has_ready());
-                    }
+                {
                     let turn = control.begin();
-                    let mut next = schedule::LIMIT;
+                    let mut next = 0;
                     let drained = turn.ready_round(|token| {
                         assert!(targets[next].matches(token));
                         next += 1;
+                        if pending {
+                            slots[queued].activate();
+                        }
                     });
-                    assert_eq!(drained, backlog);
-                    assert_eq!(next, queued);
-                    if pending {
-                        assert_eq!(
-                            turn.ready_round(|token| {
-                                assert!(targets[queued].matches(token));
-                            }),
-                            1
-                        );
-                    }
-                    assert!(!dref.ready().has_ready());
+                    assert_eq!(drained, schedule::LIMIT);
+                    assert_eq!(next, schedule::LIMIT);
+                    assert!(turn.is_exhausted());
+                    assert!(dref.ready().has_ready());
+                }
+                let turn = control.begin();
+                let mut next = schedule::LIMIT;
+                let drained = turn.ready_round(|token| {
+                    assert!(targets[next].matches(token));
+                    next += 1;
                 });
+                assert_eq!(drained, backlog);
+                assert_eq!(next, queued);
+                if pending {
+                    assert_eq!(
+                        turn.ready_round(|token| {
+                            assert!(targets[queued].matches(token));
+                        }),
+                        1
+                    );
+                }
+                assert!(!dref.ready().has_ready());
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             finish,

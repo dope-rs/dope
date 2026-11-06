@@ -81,10 +81,7 @@ where
         owner: &mut State<'life, 'd, P, Self, ID, MAX>,
         input: codec::Input<'id, 'input, 'd, R>,
         _: &mut session::Context<'_, 'e, 'life, 'd, P, Self, ID, MAX>,
-    ) -> Result<
-        codec::Parse<'id, <Self::Codec as codec::Codec>::Head<'input, 'd, R>>,
-        <Self::Codec as codec::Codec>::Error,
-    >
+    ) -> codec::Parsed<'id, 'input, 'd, Self::Codec, R>
     where
         'd: 'input,
     {

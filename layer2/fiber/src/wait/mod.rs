@@ -89,16 +89,14 @@ pub struct Queue<'d> {
     links: depot::raw::Links<cell::Cell<Option<Active<'d>>>>,
     len: cell::Cell<usize>,
     capacity: Capacity,
-    driver: driver::Reference<'d>,
 }
 
 impl<'d> Queue<'d> {
-    pub const fn new(driver: driver::Reference<'d>, capacity: Capacity) -> Self {
+    pub const fn new(_: driver::Reference<'d>, capacity: Capacity) -> Self {
         Self {
             links: depot::raw::Links::new(),
             len: cell::Cell::new(0),
             capacity,
-            driver,
         }
     }
 
@@ -111,9 +109,6 @@ impl<'d> Queue<'d> {
         waiter: Pin<&Waiter<'target, 'd>>,
         context: Pin<&context::Context<'poll, 'd>>,
     ) -> Result<(), Error<'d>> {
-        if !context.waker().belongs_to(self.driver) {
-            return Err(Error::Foreign);
-        }
         let target = Target::queue(self);
         let Some(wake) = waiter.replace(target, context.completion()) else {
             return Ok(());
@@ -194,6 +189,7 @@ impl<'d> Notifier<'d> {
         }
     }
 
+    #[inline]
     pub fn try_register<'target, 'poll>(
         &'target self,
         waiter: Pin<&Waiter<'target, 'd>>,
@@ -423,7 +419,7 @@ const _: () = {
         mem::size_of::<Option<wake::Waker<'static>>>() == mem::size_of::<wake::Waker<'static>>()
     );
     assert!(mem::size_of::<Option<Link<'static>>>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Queue<'static>>() == 5 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Queue<'static>>() == 4 * mem::size_of::<usize>());
     assert!(
         mem::size_of::<Notifier<'static>>()
             == mem::size_of::<Queue<'static>>() + mem::size_of::<usize>()

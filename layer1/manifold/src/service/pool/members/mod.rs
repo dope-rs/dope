@@ -249,14 +249,8 @@ impl<'h, 'd, I, A, R: sync::Policy> Set<'h, 'd, I, A, R> {
         let Some(entry) = Self::settle(entry, &mut self.queue) else {
             return Update::Ignored;
         };
-        let failure = match failure::Failure::try_new(entry, target) {
-            Ok(failure) => failure,
-            Err(
-                failure::Rejected::Generation
-                | failure::Rejected::Probe
-                | failure::Rejected::Backoff
-                | failure::Rejected::Exhausted,
-            ) => return Update::Ignored,
+        let Some(failure) = failure::Failure::try_new(entry, target) else {
+            return Update::Ignored;
         };
         failure.apply(&mut self.queue, backoff, now);
         Update::Applied

@@ -155,6 +155,23 @@ impl<'d, C, O> State<'d, C, O> {
         }
     }
 
+    /// Applies pending control before native I/O or retirement.
+    pub(in crate::client) fn poll_close<'w, ID: Identity, W, A>(
+        slot: &mut types::Connection<'w, 'd, ID, W, Self>,
+        app: &A,
+    ) -> Apply
+    where
+        'd: 'w,
+        W: wire::Spec + 'd,
+        A: app::Lifecycle<'w, 'd, ID>,
+    {
+        let Some(rule) = app.take_close(conn::Id::from_key(slot.key())) else {
+            return Apply::Applied(Flow::Continue(()));
+        };
+        slot.io().wake_target().wake();
+        Self::apply(slot, rule)
+    }
+
     /// Merges a close directive and immediately settles its I/O effect.
     pub(in crate::client) fn apply<ID: Identity, W>(
         slot: &mut types::Connection<'_, 'd, ID, W, Self>,
@@ -221,7 +238,7 @@ impl<'d, C, O> State<'d, C, O> {
         drain: &drain::Drain<'d, ID>,
         quiesce: impl for<'a> FnOnce(app::Barrier<'a, 'd, ID>) -> app::Drain<'a, 'd, ID>,
     ) -> Approval<Self, drain::Commit<'d, ID, C>> {
-        let Some(rule) = self.closing.commit(drain.rule()) else {
+        let Some(rule) = self.closing.commit() else {
             return Approval::Stale(self);
         };
         let Some(active) = self.phase.take() else {

@@ -1,9 +1,5 @@
 use dope_core::{
-    driver::{
-        retained::{self, flight},
-        route,
-        route::Identity,
-    },
+    driver::{self, retained::flight, route, route::Identity},
     io::fd::handles,
 };
 
@@ -19,7 +15,7 @@ pub(super) fn submit_pending<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w>(
     submit: sending::Submission<'_, 'd, <W::Send as send::Policy<W>>::Reclaim>,
     fd: &handles::Descriptor<'d>,
     slots: &flight::Slots<'d, ID>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
     target: route::Target<'d, ID>,
     end: terminal::Admission<terminal::Send<'_, terminal::Error<'w, W>>>,
 ) -> (terminal::Captured, outcome::Handoff)
@@ -41,10 +37,10 @@ where
     (captured, handoff)
 }
 
-pub(super) fn flush<'w, 'd, ID: Identity + 'w, W, S>(
-    slot: &mut types::Connection<'w, 'd, ID, W, S>,
+pub(super) fn flush<'w, 'd, ID: Identity + 'w, W>(
+    slot: &mut types::Control<'w, 'd, ID, W>,
     slots: &flight::Slots<'d, ID>,
-    driver: &mut retained::Context<'_, '_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
     target: route::Target<'d, ID>,
     source: sending::Source,
 ) -> outcome::Progress
@@ -52,27 +48,14 @@ where
     'd: 'w,
     W: wire::Spec + 'w,
 {
-    if slot
-        .control
-        .engine
-        .operations
-        .lifecycle
-        .close
-        .is_discarded()
-    {
+    if slot.engine.operations.lifecycle.close.is_discarded() {
         return outcome::Progress::Idle;
     }
-    let end = slot.control.engine.send(&mut slot.control.terminal);
-    let Some(fd) = slot.control.engine.establish.fd() else {
+    let end = slot.engine.send(&mut slot.terminal);
+    let Some(fd) = slot.engine.establish.fd() else {
         return outcome::Progress::Idle;
     };
-    let Some(op) = slot
-        .control
-        .engine
-        .operations
-        .submission(source)
-        .try_ready()
-    else {
+    let Some(op) = slot.engine.operations.submission(source).try_ready() else {
         return outcome::Progress::Idle;
     };
     let context = send::Context::new(&mut slot.wire, send::Storage::new(&mut slot.send));
@@ -85,7 +68,7 @@ where
             (attempt, captured)
         }
         terminal::Admission::Closed => {
-            let end = slot.control.terminal.drain();
+            let end = slot.terminal.drain();
             let ready = <W::Send as send::Policy<W>>::drain::<ID>(context, end).close_after();
             let captured = terminal::Captured::None;
             let attempt = op.submit(fd, slots, driver, target, ready);
@@ -93,6 +76,6 @@ where
         }
     };
     let result = outcome::Handoff::from_attempt(attempt);
-    slot.control.engine.captured(captured);
+    slot.engine.captured(captured);
     result.progress()
 }

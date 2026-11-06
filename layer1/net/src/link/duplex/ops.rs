@@ -1,5 +1,5 @@
 use dope_core::{
-    driver::{result, retained, retained::flight, route, route::kind, schedule::ready},
+    driver::{self, result, retained::flight, route, route::kind, schedule::ready},
     io::{event::batch::Flow, fd::handles, transfer},
 };
 
@@ -87,7 +87,7 @@ impl<'d, P: reclaim::Policy> State<'d, P> {
 
     pub(in crate::link) fn shutdown<Tag: route::Tag + route::Select<kind::Send>>(
         &mut self,
-        driver: &mut retained::Context<'_, '_, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
         slots: &flight::Slots<'d, Tag>,
         fd: &handles::Descriptor<'d>,
         target: route::Target<'d, Tag>,

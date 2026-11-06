@@ -1,4 +1,4 @@
-use std::{convert::Infallible, ops, os::fd, task, time};
+use std::{convert::Infallible, ops, task, time};
 
 use dope_sys::{
     Budget, engine,

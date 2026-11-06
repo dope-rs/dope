@@ -69,13 +69,13 @@ impl<'a, 'd, Source> Prepared<'a, 'd, Source> {
             index: prepared.0.index,
             lane: prepared.0.lane,
         };
-        let node = entry.queue.store.node(entry.index);
-        node.lane.set(entry.lane);
-        // SAFETY: Prepared retains the sole detached resident transition.
-        links::Detached::from_source(unsafe {
-            depot::raw::Proof::new((&node.hook, key(entry.index)))
-        })
-        .park();
+        let raw = key(entry.index).raw();
+        let cell = entry.queue.store.cell(entry.index);
+        // The exclusive task vacancy excludes prior node and hook loans.
+        cell.set(mem::MaybeUninit::new(store::Node {
+            hook: links::Hook::vacant(raw, raw),
+            lane: entry.lane,
+        }));
         Dequeued(entry)
     }
 }
@@ -290,7 +290,7 @@ impl<'d, Source> Queue<'d, Source> {
         let entry = Entry {
             queue: self,
             index,
-            lane: node.lane.get(),
+            lane: node.lane,
         };
         if key(index).is_linked(&node.hook) {
             Resident::Linked(entry)

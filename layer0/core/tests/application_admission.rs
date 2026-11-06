@@ -22,7 +22,8 @@ fn is_atomic() {
 
     Runtime { config }.with_scope(
         |scope| {
-            scope.with_driver(|_, mut schedule| {
+            {
+                let (_, _, mut schedule) = scope.split();
                 {
                     let active = schedule.begin();
                     let work = active.turn().app();
@@ -121,7 +122,7 @@ fn is_atomic() {
                     }
                     assert!(work.permit().is_none());
                 }
-            });
+            };
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
