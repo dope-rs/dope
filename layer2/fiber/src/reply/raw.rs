@@ -5,29 +5,34 @@ use crate::reply::{
     retain::{self, pool::Owner},
 };
 
-pub(in crate::reply) fn try_map<C, T, E>(
-    mut batch: Batch<'_, '_, '_, '_, C>,
-    mut make: impl for<'slot> FnMut(&C, array::Slot<'slot, T>) -> Result<array::Written<'slot>, E>,
-) -> Result<Result<Vec<T>, E>, alloc::Error> {
-    let count = batch.len().get();
-    let block = array::Block::try_new(count, ())?;
-    // SAFETY: this consumed batch retains the FIFO and its exact count together.
-    // Each iteration borrows its current row through the callback, then retires
-    // that row once. Callback failure leaves the remainder owned by Batch.
-    let values = unsafe {
-        alloc::raw::try_map(block, 0..count, move |slot, _| {
-            let Some(owned) = batch.owned.take() else {
-                unreachable!("batch")
-            };
-            let Some(item) = owned.data.iter().next() else {
-                unreachable!("row")
-            };
-            let value = make(&item.value, slot);
-            batch.owned = owned.retire();
-            value
-        })
-    };
-    Ok(values.map(array::Block::into_vec))
+impl<C> Batch<'_, '_, '_, '_, C> {
+    /// Maps this retained batch into one exactly sized allocation. Each slot's
+    /// consuming insertion commits its value before further callback work.
+    /// Visited rows retire after their callbacks; errors defer the remaining rows.
+    pub fn try_map<T, E>(
+        mut self,
+        mut make: impl for<'slot> FnMut(&C, array::Slot<'slot, T>) -> Result<array::Written<'slot>, E>,
+    ) -> Result<Result<Vec<T>, E>, alloc::Error> {
+        let count = self.len().get();
+        let block = array::Block::try_new(count, ())?;
+        // SAFETY: this consumed batch retains the FIFO and its exact count together.
+        // Each iteration borrows its current row through the callback, then retires
+        // that row once. Callback failure leaves the remainder owned by Batch.
+        let values = unsafe {
+            alloc::raw::try_map(block, 0..count, move |slot, _| {
+                let Some(owned) = self.owned.take() else {
+                    unreachable!("batch")
+                };
+                let Some(item) = owned.data.iter().next() else {
+                    unreachable!("row")
+                };
+                let value = make(&item.value, slot);
+                self.owned = owned.retire();
+                value
+            })
+        };
+        Ok(values.map(array::Block::into_vec))
+    }
 }
 
 // SAFETY: both conversions preserve the same bounded lane value unchanged.

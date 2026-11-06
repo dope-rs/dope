@@ -3,7 +3,7 @@
 use std::{cell::OnceCell, marker, mem};
 
 use o3::{
-    alloc::{self, array},
+    alloc,
     base::cell::region,
     depot::{arena::linked, capacity, queue::pool::fifo},
     mem::rc,
@@ -122,11 +122,9 @@ impl<C> Owned<'_, '_, '_, C> {
     }
 }
 
-struct Retired<'arena, 'credits, 'region, C>(Owned<'arena, 'credits, 'region, C>);
-
 /// Fixed retirement storage for detached reply batches.
 pub struct Batches<'arena, 'credits, 'region, C> {
-    queued: Cell<Retired<'arena, 'credits, 'region, C>>,
+    queued: Cell<Owned<'arena, 'credits, 'region, C>>,
     owner: marker::PhantomData<fn(&'arena ()) -> &'arena ()>,
 }
 
@@ -156,11 +154,11 @@ impl<'arena, 'credits, 'region, C> Batches<'arena, 'credits, 'region, C> {
     /// Releases at most one physical item. The batch credit remains attached
     /// until the final node has been removed.
     pub(in crate::reply) fn advance(&self) -> Advance {
-        let Some(retired) = self.queued.pop_front() else {
+        let Some(owned) = self.queued.pop_front() else {
             return Advance::Idle;
         };
-        if let Some(owned) = retired.0.retire() {
-            self.queued.push(Retired(owned));
+        if let Some(owned) = owned.retire() {
+            self.queued.push(owned);
         }
         Advance::Dropped
     }
@@ -169,7 +167,7 @@ impl<'arena, 'credits, 'region, C> Batches<'arena, 'credits, 'region, C> {
     /// bounding this queue to one FIFO per entry in the exact arena.
     fn retire(&self, owned: Owned<'arena, 'credits, 'region, C>) {
         owned.credit.wake();
-        self.queued.push(Retired(owned));
+        self.queued.push(owned);
     }
 }
 
@@ -216,16 +214,6 @@ impl<'s, 'arena, 'credits, 'region, C> Batch<'s, 'arena, 'credits, 'region, C> {
 
     pub fn iter(&self) -> BatchIter<'_, C> {
         BatchIter::new(self.owned.as_ref().map(|owned| owned.data.iter()))
-    }
-
-    /// Maps this retained batch into one exactly sized allocation. Each slot's
-    /// consuming insertion commits its value before further callback work.
-    /// Visited rows retire after their callbacks; errors defer the remaining rows.
-    pub fn try_map<T, E>(
-        self,
-        make: impl for<'slot> FnMut(&C, array::Slot<'slot, T>) -> Result<array::Written<'slot>, E>,
-    ) -> Result<Result<Vec<T>, E>, alloc::Error> {
-        raw::try_map(self, make)
     }
 }
 
