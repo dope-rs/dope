@@ -206,6 +206,7 @@ impl<'arena, 'credits, 'region> Key<'arena, 'credits, 'region> {
         lanes.wake_local(lane, self.entry());
     }
 
+    #[inline]
     fn parts(self) -> Parts<'arena, 'credits, 'region> {
         // SAFETY: Entry's immutable ordinal is exactly the one used to bind
         // this resident; the original allocation provenance and lifetime survive.
@@ -239,7 +240,7 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
         let Some(grant) = self.state().bytes.release() else {
             return;
         };
-        let parts = self.parts();
+        let parts = self.key.parts();
         parts.core.lanes.release_data(grant);
         parts.finish();
     }
@@ -253,7 +254,7 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
         let Some(grant) = self.state().values.release() else {
             return;
         };
-        let parts = self.parts();
+        let parts = self.key.parts();
         parts.core.lanes.release_data(grant);
         parts.finish();
     }
@@ -270,17 +271,13 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
 
     fn drop_lease(self) {
         if self.state().drop_lease() == rc::Release::Last {
-            self.parts().finish();
+            self.key.parts().finish();
         }
     }
 
     pub(in crate::reply::retain) fn wake(self) {
-        let parts = self.parts();
+        let parts = self.key.parts();
         parts.core.lanes.wake(parts.active.lane());
-    }
-
-    fn parts(self) -> Parts<'arena, 'credits, 'region> {
-        self.key.parts()
     }
 }
 
@@ -308,7 +305,7 @@ impl<'credits> Return for LeaseEdge<'_, 'credits, '_> {
     type Item = payload::Grant<'credits, payload::Used>;
 
     fn return_item(self, grant: Self::Item) {
-        let parts = self.active.parts();
+        let parts = self.active.key.parts();
         parts.core.lanes.release_data(grant);
     }
 }

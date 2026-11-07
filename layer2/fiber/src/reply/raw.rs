@@ -1,7 +1,7 @@
 use o3::{alloc, alloc::array, base::num::bounded, depot};
 
 use crate::reply::{
-    Batch, Drain, LaneIndex, Owned, State,
+    Batch, Drain, LaneIndex, State,
     retain::{self, pool::Owner},
 };
 
@@ -20,11 +20,14 @@ impl<C> Batch<'_, '_, '_, '_, C> {
         // that row once. Callback failure leaves the remainder owned by Batch.
         let values = unsafe {
             alloc::raw::try_map(block, 0..count, move |slot, _| {
-                let Some(owned) = self.owned.as_ref() else {
+                let Some(owned) = self.owned.occupied() else {
                     unreachable!("batch")
                 };
-                let value = make(&owned.data.front().value, slot);
-                self.owned = self.owned.take().and_then(Owned::retire);
+                let value = make(&owned.get().data.front().value, slot);
+                let (owned, vacant) = owned.take();
+                if let Some(owned) = owned.retire() {
+                    vacant.insert(owned);
+                }
                 value
             })
         };

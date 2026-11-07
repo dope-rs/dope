@@ -2,7 +2,7 @@ use std::{cell, marker};
 
 use o3::{depot, depot::arena::linked::fifo::ends};
 
-use crate::reply::{Item, Owned, retain, retain::grant::entries};
+use crate::reply::{Owned, retain, retain::grant::entries};
 
 impl<C> Owned<'_, '_, '_, C> {
     #[inline(always)]
@@ -10,13 +10,12 @@ impl<C> Owned<'_, '_, '_, C> {
         let Self { data, credit } = self;
         let mut sum = credit.sum;
         let edge = credit.edge;
-        let (Item { value, amount }, data) = data.pop();
+        let (item, data) = data.pop();
         // SAFETY: try_new captures this completed slot's entire FIFO and sum
         // together. This private owner removes each original member once and
         // never accepts an independently supplied item or credit.
-        let part = unsafe { sum.take(amount) };
-        edge.active.parts().core.lanes.release_data(part);
-        drop(value);
+        let part = unsafe { sum.take(item.amount) };
+        edge.active.key.parts().core.lanes.release_data(part);
         Some(Self {
             data: data?,
             credit: retain::Batch { edge, sum },

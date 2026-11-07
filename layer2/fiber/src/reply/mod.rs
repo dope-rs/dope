@@ -114,7 +114,7 @@ pub(in crate::reply) enum Advance {
 
 /// A linear, allocation-free owner of one completed reply's data chain.
 pub struct Batch<'s, 'arena, 'credits, 'region, C> {
-    owned: Option<Owned<'arena, 'credits, 'region, C>>,
+    owned: o3::mem::slot::Storage<Owned<'arena, 'credits, 'region, C>>,
     retire: &'s Batches<'arena, 'credits, 'region, C>,
 }
 
@@ -153,7 +153,7 @@ impl<'arena, 'credits, 'region, C> Batches<'arena, 'credits, 'region, C> {
 impl<'s, 'arena, 'credits, 'region, C> Batch<'s, 'arena, 'credits, 'region, C> {
     fn empty(retire: &'s Batches<'arena, 'credits, 'region, C>) -> Self {
         Self {
-            owned: None,
+            owned: o3::mem::slot::Storage::new(()),
             retire,
         }
     }
@@ -174,32 +174,32 @@ impl<'s, 'arena, 'credits, 'region, C> Batch<'s, 'arena, 'credits, 'region, C> {
         let credit = owners.payload.try_batch()?;
         let data = front.take();
         Ok(Self {
-            owned: Some(Owned { data, credit }),
+            owned: o3::mem::slot::Storage::filled(Owned { data, credit }, ()),
             retire,
         })
     }
 
     pub fn len(&self) -> Length {
         self.owned
-            .as_ref()
+            .get()
             .map_or(Length::ZERO, |owned| Length(owned.credit.sum.len()))
     }
 
     pub fn usage(&self) -> usage::Usage {
         self.owned
-            .as_ref()
+            .get()
             .map_or(usage::Usage::ZERO, |owned| owned.credit.usage())
     }
 
     pub fn iter(&self) -> BatchIter<'_, C> {
-        BatchIter::new(self.owned.as_ref().map(|owned| owned.data.iter()))
+        BatchIter::new(self.owned.get().map(|owned| owned.data.iter()))
     }
 }
 
 impl<C> Drop for Batch<'_, '_, '_, '_, C> {
     fn drop(&mut self) {
-        if let Some(owned) = self.owned.take() {
-            self.retire.retire(owned);
+        if let Some(owned) = self.owned.occupied() {
+            self.retire.retire(owned.take().0);
         }
     }
 }
