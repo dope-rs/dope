@@ -2,7 +2,6 @@ mod commit;
 pub(in crate::conn) mod log;
 pub(in crate::conn) mod peer;
 pub(in crate::conn) mod queue;
-pub(in crate::conn) mod request;
 mod state;
 mod writer;
 
@@ -273,17 +272,6 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
             },
         )?;
         Ok(())
-    }
-
-    pub(in crate::conn) fn reset(
-        &mut self,
-        id: Id,
-        error: errors::Code,
-        params: Option<&param::Set>,
-        ready: bool,
-        control: &mut control::Pending,
-    ) -> Result<(), Error> {
-        request::Request::new(id, error, params, ready, control, &mut release::Ignore).apply(self)
     }
 
     pub(in crate::conn) fn stop_sending(

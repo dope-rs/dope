@@ -22,7 +22,6 @@ impl Key {
 // generation-bearing representation, vacancy, and stable index unchanged.
 unsafe impl depot::raw::Key for Key {
     type Raw = <key::Handle<control::Tag, { owner::MAX }> as depot::raw::Key>::Raw;
-    type Live = Self;
 
     const VACANT: Self::Raw =
         <key::Handle<control::Tag, { owner::MAX }> as depot::raw::Key>::VACANT;
@@ -45,13 +44,5 @@ unsafe impl depot::raw::Key for Key {
 
     fn decode(raw: Self::Raw) -> Option<Self> {
         <key::Handle<control::Tag, { owner::MAX }> as depot::raw::Key>::decode(raw).map(Self)
-    }
-
-    fn into_live(self) -> Self::Live {
-        self
-    }
-
-    fn from_live(live: Self::Live) -> Self {
-        live
     }
 }

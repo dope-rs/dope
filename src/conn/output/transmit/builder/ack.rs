@@ -41,11 +41,7 @@ pub(in crate::conn::output::transmit) fn minimum<K: numbers::AckSpace, const DUE
     spaces: &numbers::Spaces,
     now: time::Instant,
 ) -> Option<usize> {
-    let (ranges, _) = if DUE {
-        spaces.due_ack::<K>(now)?.into_parts()
-    } else {
-        spaces.pending_ack::<K>(now)?.into_parts()
-    };
+    let (ranges, _) = spaces.ack_intent::<K, DUE>(now)?;
     Some(base(ranges.largest, ranges.delay, ranges.first_range))
 }
 
@@ -54,11 +50,7 @@ pub(in crate::conn::output::transmit) fn encoded_len<K: numbers::AckSpace, const
     now: time::Instant,
     limit: usize,
 ) -> Option<usize> {
-    let (ranges, _) = if DUE {
-        spaces.due_ack::<K>(now)?.into_parts()
-    } else {
-        spaces.pending_ack::<K>(now)?.into_parts()
-    };
+    let (ranges, _) = spaces.ack_intent::<K, DUE>(now)?;
     let base = base(ranges.largest, ranges.delay, ranges.first_range);
     (base <= limit).then(|| select(base, ranges.additional, limit).1)
 }
@@ -69,14 +61,7 @@ pub(in crate::conn::output::transmit) fn append<K: numbers::AckSpace, const DUE:
     out: &mut (impl Sink<Error = alloc::Error> + AsRef<[u8]>),
     limit: usize,
 ) -> Result<numbers::AckCommit, transmit::Admission<crypto::Dimensions>> {
-    let parts = if DUE {
-        spaces.due_ack::<K>(now).map(numbers::DueAck::into_parts)
-    } else {
-        spaces
-            .pending_ack::<K>(now)
-            .map(numbers::PendingAck::into_parts)
-    };
-    let Some((ranges, commit)) = parts else {
+    let Some((ranges, commit)) = spaces.ack_intent::<K, DUE>(now) else {
         return Ok(numbers::AckCommit::NONE);
     };
     let largest = ranges.largest;

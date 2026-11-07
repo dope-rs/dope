@@ -45,7 +45,6 @@ impl<Tag> Eq for Key<Tag> {}
 // SAFETY: the wrapped slab handle owns the complete validated raw-key contract.
 unsafe impl<Tag> depot::raw::Key for Key<Tag> {
     type Raw = u64;
-    type Live = Self;
 
     const VACANT: Self::Raw = 0;
 
@@ -65,14 +64,6 @@ unsafe impl<Tag> depot::raw::Key for Key<Tag> {
 
     fn decode(raw: Self::Raw) -> Option<Self> {
         <key::Handle<Tag> as depot::raw::Key>::decode(raw).map(Self)
-    }
-
-    fn into_live(self) -> Self::Live {
-        self
-    }
-
-    fn from_live(live: Self::Live) -> Self {
-        live
     }
 }
 

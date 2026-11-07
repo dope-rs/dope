@@ -9,23 +9,12 @@ use crate::{
     },
 };
 use packet::kind;
-use std::{marker, mem, time};
+use std::{mem, time};
 
 pub(crate) mod count;
 mod ranges;
 
 pub(crate) use ranges::Iter;
-
-trait AckAuthority {}
-
-/// Any ACK debt may be carried by a packet which was already going out.
-struct Carry;
-/// Only debt whose immediate condition or deadline has fired may create a
-/// standalone ACK packet.
-struct Due;
-
-impl AckAuthority for Carry {}
-impl AckAuthority for Due {}
 
 /// A packet kind which is allowed to carry an ACK for exactly one packet
 /// number space. The sealed, zero-sized kind is shared with packet protection,
@@ -48,36 +37,6 @@ impl AckSpace for kind::Handshake {
 impl AckSpace for kind::OneRtt {
     const DELAYED: bool = true;
     const EPOCH: conn::Epoch = conn::Epoch::Application;
-}
-
-/// Borrowed proof that an ACK is pending in packet kind `K`'s exact receive
-/// space. Its lifetime freezes the receive window through range encoding.
-#[must_use = "an ACK intent must be encoded or deliberately dropped"]
-struct AckIntent<'space, K: AckSpace, Authority: AckAuthority> {
-    ranges: ranges::AckView<'space>,
-    commit: AckCommit,
-    kind: marker::PhantomData<fn() -> (K, Authority)>,
-}
-
-impl<'space, K: AckSpace, Authority: AckAuthority> AckIntent<'space, K, Authority> {
-    fn into_parts(self) -> (ranges::AckView<'space>, AckCommit) {
-        (self.ranges, self.commit)
-    }
-}
-
-pub(crate) struct PendingAck<'space, K: AckSpace>(AckIntent<'space, K, Carry>);
-pub(crate) struct DueAck<'space, K: AckSpace>(AckIntent<'space, K, Due>);
-
-impl<'space, K: AckSpace> PendingAck<'space, K> {
-    pub(crate) fn into_parts(self) -> (ranges::AckView<'space>, AckCommit) {
-        self.0.into_parts()
-    }
-}
-
-impl<'space, K: AckSpace> DueAck<'space, K> {
-    pub(crate) fn into_parts(self) -> (ranges::AckView<'space>, AckCommit) {
-        self.0.into_parts()
-    }
 }
 
 /// One-byte proof of the exact ACK space committed by a published packet.
@@ -304,24 +263,18 @@ impl Spaces {
             .flatten()
     }
 
-    pub(crate) fn pending_ack<K: AckSpace>(&self, now: time::Instant) -> Option<PendingAck<'_, K>> {
-        if !self.has_ack::<K>() {
-            return None;
-        }
-        self.ack_intent::<K, Carry>(now).map(PendingAck)
-    }
-
-    pub(crate) fn due_ack<K: AckSpace>(&self, now: time::Instant) -> Option<DueAck<'_, K>> {
-        if !self.is_ack_ready::<K>(now) {
-            return None;
-        }
-        self.ack_intent::<K, Due>(now).map(DueAck)
-    }
-
-    fn ack_intent<K: AckSpace, Authority: AckAuthority>(
+    pub(crate) fn ack_intent<K: AckSpace, const DUE: bool>(
         &self,
         now: time::Instant,
-    ) -> Option<AckIntent<'_, K, Authority>> {
+    ) -> Option<(ranges::AckView<'_>, AckCommit)> {
+        let ready = if DUE {
+            self.is_ack_ready::<K>(now)
+        } else {
+            self.has_ack::<K>()
+        };
+        if !ready {
+            return None;
+        }
         let receive = K::EPOCH.bind(&self.spaces);
         let mut ranges = receive.packets.ack()?;
         if K::DELAYED {
@@ -330,11 +283,7 @@ impl Spaces {
                 >> u32::from(receive.ack_delay_exponent);
             ranges.delay = varint::VarInt::saturate(micros);
         }
-        Some(AckIntent {
-            ranges,
-            commit: AckCommit::from_epoch(K::EPOCH),
-            kind: marker::PhantomData,
-        })
+        Some((ranges, AckCommit::from_epoch(K::EPOCH)))
     }
 
     /// Commits one admitted packet and updates the exact ACK debt owner.

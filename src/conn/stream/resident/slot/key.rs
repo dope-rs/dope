@@ -8,7 +8,6 @@ use crate::conn::stream::resident::slot;
 // vacancy, and derives its direct index from the low word.
 unsafe impl<Side> depot::raw::Key for slot::Handle<Side> {
     type Raw = u64;
-    type Live = Self;
 
     const VACANT: Self::Raw = 0;
 
@@ -31,13 +30,5 @@ unsafe impl<Side> depot::raw::Key for slot::Handle<Side> {
         num::NonZero::<u64>::new(raw)
             .filter(|raw| raw.get() as u32 != 0)
             .map(slot::Handle::from_raw)
-    }
-
-    fn into_live(self) -> Self::Live {
-        self
-    }
-
-    fn from_live(live: Self::Live) -> Self {
-        live
     }
 }

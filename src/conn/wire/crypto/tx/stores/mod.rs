@@ -55,7 +55,6 @@ impl Key {
 // owner generation and encoded index; zero alone is reserved for vacancy.
 unsafe impl depot::raw::Key for Key {
     type Raw = u64;
-    type Live = Self;
 
     const VACANT: Self::Raw = 0;
 
@@ -78,14 +77,6 @@ unsafe impl depot::raw::Key for Key {
         NonZero::<u64>::new(raw)
             .filter(|raw| raw.get() as u16 != 0 && raw.get() >> 48 == 0)
             .map(Self)
-    }
-
-    fn into_live(self) -> Self::Live {
-        self
-    }
-
-    fn from_live(live: Self::Live) -> Self {
-        live
     }
 }
 

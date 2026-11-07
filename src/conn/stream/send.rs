@@ -136,11 +136,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer:
         stream: id::Send<'conn>,
         code: crate::errors::Code,
     ) -> Result<(), Error> {
-        let result = self.kernel().reset(stream.id(), code);
-        if result.is_ok() {
-            self.track();
-        }
-        result
+        self.reset_with(stream, code, &mut release::Ignore)
     }
 
     pub fn reset_with<E: release::Sink>(

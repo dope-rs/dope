@@ -2,15 +2,21 @@ use crate::stream::release;
 
 use o3::buffer::{self, resident::Shared};
 
-use std::mem;
+use std::{convert, mem};
 
 use crate::errors::detail;
-use crate::wire::stream::{Direction, Id, Initiator};
+use crate::wire::{
+    stream::{Direction, Id, Initiator},
+    varint,
+};
 use crate::{conn, stream};
-use conn::stream::{Error, SendOutcome, abandon, resident, state::transmit};
+use conn::stream::{
+    Access, Error, SendOutcome, Streams, abandon, resident,
+    state::{resident::Table, streams, transmit},
+};
 use send::admit;
 use stream::send;
-use transmit::request;
+use transmit::queue;
 
 /// The single unbranded send kernel used by the branded access API.
 #[repr(transparent)]
@@ -145,19 +151,41 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         )
     }
 
-    pub(in crate::conn) fn reset(
+    fn reset<E: release::Sink, F>(
         &mut self,
         id: Id,
         code: crate::errors::Code,
-    ) -> Result<(), Error> {
+        sink: &mut E,
+        select: impl for<'map, 'table> FnOnce(
+            &'map mut queue::Map<D>,
+            &'table mut Table,
+            varint::VarInt,
+            queue::Preparation,
+        ) -> Result<Option<queue::Occupied<'map, D>>, F>,
+        map_error: impl FnOnce(Error) -> F,
+    ) -> Result<(), F> {
         let ready = Self::is_available(self.connection);
-        transmit::Sender::new(&mut self.connection.streams).reset(
-            id,
-            code,
-            self.connection.peer.transport_params.as_ref(),
-            ready,
-            &mut self.connection.control,
-        )
+        let sender = transmit::Sender::new(&mut self.connection.streams);
+        sender
+            .validate(id, Access::Send, ready)
+            .map_err(map_error)?;
+        if sender.is_send_done(id) {
+            return Ok(());
+        }
+        let stream = streams::Relative::new(id, sender.local());
+        let credit = queue::Entry::limit(self.connection.peer.transport_params.as_ref(), stream);
+        let Streams { state, events } = &mut *sender.streams;
+        let (slots, tx) = (&mut state.resident, &mut state.transmit);
+        let (log, map) = (&mut tx.deliveries, &mut tx.map);
+        let Some(mut slot) = select(map, slots, credit, queue::Preparation::new(stream))? else {
+            return Ok(());
+        };
+        let Some(freed) = slot.reset::<E>(log, &mut self.connection.control, code) else {
+            return Ok(());
+        };
+        freed.commit(release::Cause::Reset, events, sink);
+        slot.refresh(true);
+        Ok(())
     }
 
     pub(in crate::conn) fn reset_with<E: release::Sink>(
@@ -166,16 +194,17 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         code: crate::errors::Code,
         sink: &mut E,
     ) -> Result<(), Error> {
-        let ready = Self::is_available(self.connection);
-        let request = request::Request::new(
+        self.reset(
             id,
             code,
-            self.connection.peer.transport_params.as_ref(),
-            ready,
-            &mut self.connection.control,
             sink,
-        );
-        request.apply(&mut transmit::Sender::new(&mut self.connection.streams))
+            |map, table, credit, mode| {
+                map.try_prepared(queue::Id::new(id), None, credit, mode, table, |_, slot| {
+                    slot
+                })
+            },
+            convert::identity,
+        )
     }
 
     pub(in crate::conn) fn abandon_with<E: release::Sink>(
@@ -232,16 +261,13 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         code: crate::errors::Code,
         sink: &mut E,
     ) -> Result<(), resident::Error> {
-        let ready = Self::is_available(self.connection);
-        let request = request::Request::new(
-            local,
+        self.reset(
+            local.id(),
             code,
-            self.connection.peer.transport_params.as_ref(),
-            ready,
-            &mut self.connection.control,
             sink,
-        );
-        request.try_apply(&mut transmit::Sender::new(&mut self.connection.streams))
+            |map, table, credit, mode| map.try_live(local, credit, mode, table),
+            resident::Error::Stream,
+        )
     }
 }
 
