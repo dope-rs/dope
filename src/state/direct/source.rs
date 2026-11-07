@@ -40,6 +40,18 @@ impl<'d> Cursor<'d> {
         }
     }
 
+    pub(crate) fn remaining(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn view(&self) -> <recv::Shared<'d> as buffer::Source>::View<'_> {
+        view(self, self.len)
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        buffer::Read::as_slice(&view(self, self.len))
+    }
+
     pub(crate) fn head(&mut self) -> Option<Head<'_, 'd>> {
         if self.len == 0 {
             return None;
@@ -142,38 +154,6 @@ impl<'d> access::Head<'d> for Head<'_, 'd> {
         let consumed = self.cursor.len - self.remaining;
         self.cursor.len = self.remaining;
         consumed
-    }
-}
-
-impl<'d> buffer::Source for Cursor<'d> {
-    type View<'input>
-        = bounded::Value<buffer::View<'input, storage::Shared<provided::Owner<'d>>>>
-    where
-        Self: 'input;
-
-    fn remaining(&self) -> usize {
-        self.len
-    }
-}
-
-impl<'d> buffer::Cursor for Cursor<'d> {
-    fn try_get<'input>(
-        &'input self,
-        range: ops::Range<usize>,
-    ) -> Result<Self::View<'input>, range::Error> {
-        self.view().try_get(range)
-    }
-}
-
-impl<'d> buffer::Complete for Cursor<'d> {
-    fn view(&self) -> Self::View<'_> {
-        view(self, self.len)
-    }
-}
-
-impl AsRef<[u8]> for Cursor<'_> {
-    fn as_ref(&self) -> &[u8] {
-        buffer::Read::as_slice(&view(self, self.len))
     }
 }
 

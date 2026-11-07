@@ -179,7 +179,7 @@ impl From<Arc<rustls::ServerConfig>> for Config<roles::Server> {
 }
 
 pub(super) struct Pools {
-    pub(super) sessions: recycle::Store<()>,
+    sessions: recycle::Store<()>,
     pub(super) recv: buffers::Receive,
     pub(super) send: pool::Pool,
 }
@@ -207,18 +207,16 @@ impl<ID: route::Identity> domain::Reconfigure for Runtime<'_, '_, roles::Server,
 
 impl<R: roles::Protocol, ID: route::Identity> Runtime<'_, '_, R, ID> {
     fn ready(&self) -> Option<waiters::Resource> {
-        if self.buffers.recv.available() == 0 {
-            return None;
-        }
-        if self.waiters.has_waiters(waiters::Resource::Recv) {
-            return Some(waiters::Resource::Recv);
-        }
-        if self.buffers.send.available() != 0
-            && self.waiters.has_waiters(waiters::Resource::HandshakeEgress)
+        let resource = if self.waiters.has_waiters(waiters::Resource::Recv) {
+            waiters::Resource::Recv
+        } else if self.waiters.has_waiters(waiters::Resource::HandshakeEgress)
+            && self.buffers.send.available() != 0
         {
-            return Some(waiters::Resource::HandshakeEgress);
-        }
-        None
+            waiters::Resource::HandshakeEgress
+        } else {
+            return None;
+        };
+        (self.buffers.recv.available() != 0).then_some(resource)
     }
 }
 
@@ -262,7 +260,7 @@ where
                 let opened = R::open(&self.role, roles::Contract(())).and_then(|conn| {
                     tls::Connection::new(
                         conn,
-                        buffers::Buffers::new(&self.buffers.recv, &self.buffers.send),
+                        self.buffers,
                         lease,
                         tls::SendState { buffer: pending },
                     )

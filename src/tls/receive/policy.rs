@@ -153,8 +153,7 @@ impl<R: roles::Protocol> reserve::Try<tls::Tls<R>> for Policy<R> {
         'd: 'w,
         'w: 'a,
     {
-        let open = wire.native.is_handshaking();
-        let recv = match wire.buffers.try_reserve() {
+        let recv = match wire.buffers.recv.try_reserve() {
             Ok(Some(recv)) => recv,
             Ok(None) => {
                 return reserve::Outcome::Blocked(Blocked {
@@ -169,25 +168,22 @@ impl<R: roles::Protocol> reserve::Try<tls::Tls<R>> for Policy<R> {
                 ));
             }
         };
-        let (true, Some(send)) = (open, send) else {
-            return reserve::Outcome::Ready(Transaction {
-                wire,
-                send: None,
-                run,
-                recv,
-            });
-        };
-        let Some(send) = send.reserve(wire.buffers.send_pool()) else {
-            drop(recv);
-            run.waiters.wake(waiters::Resource::Recv);
-            return reserve::Outcome::Blocked(Blocked {
-                waiters: &mut run.waiters,
-                kind: waiters::Resource::HandshakeEgress,
-            });
+        let send = if let (true, Some(send)) = (wire.native.is_handshaking(), send) {
+            let Some(send) = send.reserve(&wire.buffers.send) else {
+                drop(recv);
+                run.waiters.wake(waiters::Resource::Recv);
+                return reserve::Outcome::Blocked(Blocked {
+                    waiters: &mut run.waiters,
+                    kind: waiters::Resource::HandshakeEgress,
+                });
+            };
+            Some(send)
+        } else {
+            None
         };
         reserve::Outcome::Ready(Transaction {
             wire,
-            send: Some(send),
+            send,
             run,
             recv,
         })

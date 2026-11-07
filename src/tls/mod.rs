@@ -15,10 +15,7 @@ use o3::{
     mem::{Lease, Return, lease},
 };
 
-use crate::{
-    error,
-    state::{self, buffers},
-};
+use crate::{error, state};
 
 pub mod client;
 pub mod endpoint;
@@ -77,7 +74,7 @@ pub struct Connection<
     ID: route::Identity + 'd = route::KeyTag<0>,
 > {
     pub(crate) native: rustls::Connection,
-    pub(crate) buffers: buffers::Buffers<'d>,
+    buffers: &'d endpoint::Pools,
     pub(crate) peer_closed: bool,
     pub(crate) local_closed: bool,
     pub(crate) failed: bool,
@@ -87,9 +84,9 @@ pub struct Connection<
 }
 
 impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID> {
-    pub(crate) fn new(
+    fn new(
         native: rustls::Connection,
-        buffers: buffers::Buffers<'d>,
+        buffers: &'d endpoint::Pools,
         lease: Unique<'d, ()>,
         mut send: SendState<'d>,
     ) -> Result<(Self, SendState<'d>), error::Error> {
@@ -142,7 +139,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
         &self,
         store: &'a mut SendState<'d>,
     ) -> Option<&'a mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>> {
-        store.try_buffer(self.buffers.send_pool())
+        store.try_buffer(&self.buffers.send)
     }
     pub(crate) fn emit_into(
         &mut self,

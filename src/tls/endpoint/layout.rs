@@ -45,7 +45,7 @@ impl TryFrom<usize> for Staged {
 #[derive(Clone, Copy)]
 pub struct Plan {
     staged: Option<Staged>,
-    send: Option<num::NonZero<usize>>,
+    send: num::NonZero<usize>,
     growing: Option<num::NonZero<u32>>,
 }
 
@@ -53,7 +53,7 @@ impl Plan {
     pub(super) const fn new() -> Self {
         Self {
             staged: None,
-            send: None,
+            send: num::NonZero::<usize>::MIN.saturating_add(DEFAULT_CIPHERTEXT_SLOTS - 1),
             growing: None,
         }
     }
@@ -64,7 +64,7 @@ impl Plan {
     }
 
     pub(super) const fn with_send(mut self, max: num::NonZero<usize>) -> Self {
-        self.send = Some(max);
+        self.send = max;
         self
     }
 
@@ -86,11 +86,7 @@ impl Plan {
             ),
         };
         let recv = held + 1;
-        let limit = match self.send {
-            Some(send) => send,
-            None => num::NonZero::<usize>::MIN.saturating_add(DEFAULT_CIPHERTEXT_SLOTS - 1),
-        };
-        let send = limit.min(cap).get();
+        let send = self.send.min(cap).get();
         Layout::try_new(recv, send, self.growing)
     }
 }

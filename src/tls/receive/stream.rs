@@ -2,7 +2,10 @@ use o3::buffer::Complete as _;
 use std::{mem, ops};
 
 use direct::source::Cursor;
-use dope::{core::io::transfer, net::wire::receive::mode::access};
+use dope::{
+    core::io::{recv, transfer},
+    net::wire::receive::mode::access,
+};
 use o3::{
     base::num::bounded,
     buffer::{
@@ -32,7 +35,7 @@ impl<'w, 'd> Retained<'w, 'd> {
         plain: Cursor<'d>,
     ) -> Result<Option<Self>, error::Error> {
         let staged = staged.filter(|chunk| !chunk.is_empty());
-        let body = buffer::Source::remaining(&plain);
+        let body = plain.remaining();
         let plain = (body != 0).then_some(plain);
         let stage = staged.as_ref().map_or(0, buffer::Source::remaining);
         let len = bounded::Usize::<{ transfer::MAX_BYTES }>::ZERO
@@ -73,7 +76,7 @@ impl AsRef<[u8]> for Retained<'_, '_> {
         if let Some(staged) = self.staged.as_ref().filter(|head| !head.is_empty()) {
             staged.as_ref()
         } else {
-            self.plain.as_ref().map_or(&[], AsRef::as_ref)
+            self.plain.as_ref().map_or(&[], Cursor::as_slice)
         }
     }
 }
@@ -172,7 +175,7 @@ pub(super) enum Backing<'input, 'w: 'input, 'd: 'input> {
             'input,
         >,
     ),
-    Plain(<Cursor<'d> as buffer::Source>::View<'input>),
+    Plain(<recv::Shared<'d> as buffer::Source>::View<'input>),
 }
 
 #[doc(hidden)]

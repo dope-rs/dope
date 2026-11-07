@@ -44,28 +44,11 @@ impl Receive {
             Self::Growing(pool) => pool.available(),
         }
     }
-}
 
-pub(crate) struct Buffers<'d> {
-    recv_pool: &'d Receive,
-    pending_pool: &'d pool::Pool,
-}
-
-impl<'d> Buffers<'d> {
-    pub(crate) fn new(recv: &'d Receive, send: &'d pool::Pool) -> Self {
-        Self {
-            recv_pool: recv,
-            pending_pool: send,
-        }
-    }
-
-    pub(crate) fn send_pool(&self) -> &'d pool::Pool {
-        self.pending_pool
-    }
-    pub(crate) fn try_reserve(&self) -> Result<Option<Reserve<'d>>, alloc::Exhausted> {
-        let recv = match self.recv_pool {
-            Receive::Fixed(pool) => pool.borrow(),
-            Receive::Growing(pool) => pool.try_borrow()?,
+    pub(crate) fn try_reserve(&self) -> Result<Option<Reserve<'_>>, alloc::Exhausted> {
+        let recv = match self {
+            Self::Fixed(pool) => pool.borrow(),
+            Self::Growing(pool) => pool.try_borrow()?,
         };
         Ok(recv.map(Reserve))
     }
