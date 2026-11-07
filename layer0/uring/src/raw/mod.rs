@@ -19,7 +19,7 @@ impl Metadata {
 
     /// # Safety
     /// A successful native operation initialized this output and ended access.
-    pub unsafe fn try_result(&self) -> Result<(file::Kind, file::Offset), file::MetadataError> {
+    pub unsafe fn try_result(&self) -> Result<file::MetadataValue, file::MetadataError> {
         // SAFETY: the successful native writer initialized the complete statx.
         let raw = unsafe { self.0.assume_init_ref() };
         if let Some(missing) = NonZero::new(Self::MASK & !raw.stx_mask) {
@@ -27,7 +27,11 @@ impl Metadata {
         }
         let size =
             file::Offset::new(raw.stx_size).ok_or(file::MetadataError::Overflow(raw.stx_size))?;
-        Ok((file::Kind::from_mode(raw.stx_mode.into()), size))
+        let identity = (raw.stx_mask & libc::STATX_INO != 0).then_some(file::Identity {
+            device: libc::makedev(raw.stx_dev_major, raw.stx_dev_minor),
+            inode: raw.stx_ino,
+        });
+        Ok((file::Kind::from_mode(raw.stx_mode.into()), size, identity))
     }
 }
 

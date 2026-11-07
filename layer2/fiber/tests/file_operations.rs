@@ -90,10 +90,11 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                         let read::Completion::Metadata { file, result } = completed else {
                             panic!("metadata completion")
                         };
-                        let (kind, length) = result.expect("metadata succeeds");
+                        let (kind, length, identity) = result.expect("metadata succeeds");
                         assert_eq!(file.as_fd().as_raw_fd(), descriptor);
                         assert!(kind.is_regular());
                         assert_eq!(length, file::Len::fixed::<3>());
+                        assert!(identity.is_some());
                         let mut request =
                             read::Read::try_new(file, output, file::Offset::fixed::<0>())
                                 .ok()

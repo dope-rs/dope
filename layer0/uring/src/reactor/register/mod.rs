@@ -166,7 +166,7 @@ impl<T> register::Registry for Register<'_, T> {
     }
     fn file_range<const MAX: u32>(
         &mut self,
-        len: bounded::U32<1, MAX>,
+        len: bounded::U32<0, MAX>,
     ) -> Result<(), kernel::Errno<error::Register<25>>> {
         use crate::reactor::ring::ffi;
 

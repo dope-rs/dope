@@ -64,7 +64,7 @@ pub struct Metadata {
 enum MetadataState {
     Idle,
     Scratch(Box<raw::Scratch>),
-    Done(Result<(fs::Kind, fs::Len), MetadataError>),
+    Done(Result<fs::metadata::Value, MetadataError>),
 }
 
 impl Metadata {
@@ -116,7 +116,7 @@ pub enum Completion<R: Return> {
     },
     Metadata {
         file: fs::File,
-        result: Result<(fs::Kind, fs::Len), MetadataError>,
+        result: Result<fs::metadata::Value, MetadataError>,
     },
     Prepare(Result<appender::Prepared, appender::OpenError>),
 }

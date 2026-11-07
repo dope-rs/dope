@@ -54,7 +54,7 @@ impl Metadata {
         self,
         native: Result<(), dope_core::Errno>,
         free: &mut Option<Box<Scratch>>,
-    ) -> (fs::File, Result<(fs::Kind, fs::Len), MetadataError>) {
+    ) -> (fs::File, Result<fs::metadata::Value, MetadataError>) {
         let MetadataState::Scratch(scratch) = self.state else {
             unreachable!("metadata")
         };
@@ -62,7 +62,7 @@ impl Metadata {
             Ok(()) => {
                 // SAFETY: the matching original CQ ended native writes and filled output.
                 unsafe { scratch.output.try_result() }
-                    .map(|(kind, length)| (kind, fs::Len::from(length)))
+                    .map(|(kind, length, identity)| (kind, fs::Len::from(length), identity))
                     .map_err(MetadataError::Value)
             }
             Err(cause) => Err(MetadataError::Operation(Error::System(cause))),
@@ -473,7 +473,7 @@ impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> event::Drive<'d>
                                             Error::Shutdown,
                                         )))
                                     }
-                                    Ok((kind, length)) => {
+                                    Ok((kind, length, _)) => {
                                         match file::Locked::from_locked(file, kind) {
                                             Err(cause) => Preparation::Done(Err(
                                                 appender::OpenError::Lock(cause),

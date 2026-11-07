@@ -17,7 +17,7 @@ use crate::{
 
 /// Allocation-free description of a bounded direct task plane.
 pub struct Plan<'d, R: tree::Tree<'d>> {
-    limit: quota::Limit,
+    quota: quota::Bounded,
     driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
     tree: marker::PhantomData<fn() -> R>,
 }
@@ -25,7 +25,7 @@ pub struct Plan<'d, R: tree::Tree<'d>> {
 impl<'d, R: tree::Tree<'d>> Plan<'d, R> {
     pub fn new(limit: quota::Limit) -> Self {
         Self {
-            limit,
+            quota: quota::Bounded::new(limit, R::TASKS),
             driver: marker::PhantomData,
             tree: marker::PhantomData,
         }
@@ -34,7 +34,8 @@ impl<'d, R: tree::Tree<'d>> Plan<'d, R> {
 
 impl<'d, R: tree::Build<'d>> Plan<'d, R> {
     pub fn try_prepare(self) -> Result<Plane<'d, R, quota::Bounded>, alloc::Error> {
-        self.try_prepare_with_capacity(capacity::Count::MAX)
+        let physical = capacity::Count::new(self.quota.available().get() as u32);
+        self.try_prepare_with_capacity(physical)
     }
 
     /// Caps each route's physical slots independently of the global admission limit.
@@ -43,9 +44,9 @@ impl<'d, R: tree::Build<'d>> Plan<'d, R> {
         self,
         physical: capacity::Count,
     ) -> Result<Plane<'d, R, quota::Bounded>, alloc::Error> {
-        Ok(Plane::bounded(
+        Ok(Plane::with_quota(
             R::try_build_with_capacity(physical)?,
-            self.limit,
+            self.quota,
         ))
     }
 }

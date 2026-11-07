@@ -9,7 +9,6 @@ pub(in crate::client) enum Start {
 
 #[derive(Clone, Copy)]
 pub(super) enum Step {
-    Done,
     Intake,
     Lane(indices::SlotIndex),
 }
@@ -90,7 +89,10 @@ impl State {
         let step = match self {
             Self::Draining(cursor) => {
                 match (cursor.lane.filter(|lane| capacity.contains(*lane)), queue) {
-                    (None, registry::Queue::Empty) => Step::Done,
+                    (None, registry::Queue::Empty) => {
+                        *self = Self::Done;
+                        return None;
+                    }
                     (None, registry::Queue::Pending) => Step::Intake,
                     (Some(_), registry::Queue::Pending) if matches!(cursor.next, Next::Intake) => {
                         Step::Intake
@@ -102,16 +104,12 @@ impl State {
             }
             Self::Open | Self::Done => return None,
         };
-        if matches!(step, Step::Done) {
-            *self = Self::Done;
-            return None;
-        }
         match (self, step) {
             (Self::Draining(cursor), Step::Intake) => Some(Plan::Intake(cursor)),
             (Self::Draining(cursor), Step::Lane(lane)) => {
                 Some(Plan::Lane(cursor, lane, capacity.next(lane)))
             }
-            (Self::Open | Self::Done, _) | (Self::Draining(_), Step::Done) => None,
+            (Self::Open | Self::Done, _) => None,
         }
     }
 

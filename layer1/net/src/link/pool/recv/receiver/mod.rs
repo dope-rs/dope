@@ -23,7 +23,9 @@ use crate::{
         event,
         pool::{
             self, pending,
-            recv::{Deferral, Failure, Ready, Resumption, arrival, delivery, input, storage},
+            recv::{
+                Deferral, Failure, Ready, Resumption, arrival, delivery, input, reserve, storage,
+            },
         },
     },
     wire::{self, open::Runtime as _},
@@ -61,6 +63,21 @@ where
         pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
     ) -> Self {
         Self { pool }
+    }
+
+    /// Reserves the statically selected ingress policy for one observed data
+    /// completion.
+    pub fn data<A>(
+        self,
+        done: A,
+        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    ) -> reserve::Reservation<'a, 'w, 'd, ID, W, M>
+    where
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
+        M::Reserve: reserve::Choice<W, M::Ingress>,
+        input::Receipt<W, M>: 'a,
+    {
+        <M::Reserve as reserve::Choice<W, M::Ingress>>::reserve(self.pool, done, capture)
     }
 
     pub fn arm(

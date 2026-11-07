@@ -101,7 +101,7 @@ fn grant_before_probe() {
                 };
 
                 assert!(matches!(
-                    pool.reserve().data(first, |_, _| ()),
+                    pool.recv().data(first, |_, _| ()),
                     event::Reservation::Drop
                 ));
                 {
@@ -181,7 +181,7 @@ fn grant_before_probe() {
                                 }
                                 .expect("preserved native data");
                                 assert!(matches!(
-                                    pool.reserve().data(done, |_, _| ()),
+                                    pool.recv().data(done, |_, _| ()),
                                     event::Reservation::Parked(ParkRecv::Deferred)
                                 ));
                                 assert!(!pool.inspect().has_rearm());

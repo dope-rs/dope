@@ -13,7 +13,7 @@ pub struct Plan<'d, R>
 where
     R: tree::Tree<'d>,
 {
-    limit: quota::Limit,
+    quota: quota::Bounded,
     brand: marker::PhantomData<fn(&'d ()) -> &'d ()>,
     tree: marker::PhantomData<fn() -> R>,
 }
@@ -24,7 +24,7 @@ where
 {
     pub fn new(limit: quota::Limit) -> Self {
         Self {
-            limit,
+            quota: quota::Bounded::new(limit, R::TASKS),
             brand: marker::PhantomData,
             tree: marker::PhantomData,
         }
@@ -48,11 +48,9 @@ where
         owners: owner::Capacity,
         physical: capacity::Count,
     ) -> Result<Plane<'d, R, quota::Bounded, queue::Owned<'d, Source>>, queue::PrepareError> {
-        let tasks = R::TASKS;
-        let quota = quota::Bounded::new(self.limit, tasks);
-        let physical = physical.min(capacity::Count::new(quota.available().get() as u32));
+        let physical = physical.min(capacity::Count::new(self.quota.available().get() as u32));
         let routes = R::try_build_with_capacity(physical).map_err(queue::PrepareError::Routes)?;
-        let (active, tasks) = Active::new(routes, quota);
+        let (active, tasks) = Active::new(routes, self.quota);
         let queue = queue::Owned::try_new(tasks, owners)?;
         Ok(Plane::from_parts(active, queue))
     }

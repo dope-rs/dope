@@ -86,7 +86,7 @@ where
         let this = self.project();
         this.links
             .pool_mut()
-            .reserve()
+            .recv()
             .data(data, |key, state| match state.conn() {
                 Some(conn) => this.app.receipt(conn::Id::from_key(key), conn, token),
                 None => Default::default(),

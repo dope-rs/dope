@@ -30,7 +30,7 @@ pub mod common;
 #[test]
 fn multishot_slot_reuse() {
     Runtime::quic::<2, 8>()
-        .file_slots(settings::FileSlots::fixed::<1, 1>())
+        .file_slots(settings::FileSlots::fixed::<1, 2>())
         .with_scope(
             |scope| {
                 let mut driver = scope.context();
@@ -38,9 +38,13 @@ fn multishot_slot_reuse() {
                     .driver_ref()
                     .targets::<KeyTag<0, kind::Accept>>()
                     .bind(SlotIndex::ZERO, Epoch::INITIAL);
+                let spare = Listener::bind(common::LOCALHOST).expect("outbound slot");
+                let (spare, _) =
+                    Install::adopt_bound(driver.reborrow(), spare).expect("outbound install");
                 let listener = Listener::bind(common::LOCALHOST).expect("listener");
                 let (listener, address) =
                     Install::adopt_bound(driver.reborrow(), listener).expect("install listener");
+                spare.close(&mut driver);
                 let flights = driver
                     .storage
                     .reborrow()
@@ -58,7 +62,7 @@ fn multishot_slot_reuse() {
                     .expect("multishot accept");
                 let mut previous: Option<ready::Handle<'_>> = None;
 
-                for _ in 0..8 {
+                for round in 0..8 {
                     let mut peer = TcpStream::connect(address).expect("connect peer");
                     peer.set_read_timeout(Some(Duration::from_secs(1)))
                         .expect("peer deadline");
@@ -100,6 +104,13 @@ fn multishot_slot_reuse() {
                     }
                     let fd = accepted.expect("accepted descriptor");
                     assert_eq!(fd.index(), SlotIndex::ZERO);
+                    if round == 7 {
+                        let (_peer, done) = common::driver::accept::connect(scope, address);
+                        let (token, flow, outcome) = done.into_parts();
+                        assert!(accept.matches(token));
+                        assert_eq!(flow, Flow::Last);
+                        assert!(matches!(outcome, Outcome::Failed(error) if error.is_resource()));
+                    }
                     let current = fd.ready_handle();
                     {
                         let (_, mut driver, mut schedule) = scope.split();

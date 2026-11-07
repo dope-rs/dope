@@ -9,7 +9,6 @@ use crate::executor::{boot, root};
 pub struct Context<'poll, 'd: 'poll> {
     wake: ready::Target<'d>,
     work: app::Work<'poll, 'd>,
-    clock: clock::Clock<'poll, 'd>,
     cause: boot::Cause,
 }
 
@@ -17,15 +16,9 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
     pub(crate) fn new(
         wake: ready::Target<'d>,
         work: app::Work<'poll, 'd>,
-        clock: clock::Clock<'poll, 'd>,
         cause: boot::Cause,
     ) -> Self {
-        Self {
-            wake,
-            work,
-            clock,
-            cause,
-        }
+        Self { wake, work, cause }
     }
 
     pub fn into_parts(
@@ -36,16 +29,16 @@ impl<'poll, 'd: 'poll> Context<'poll, 'd> {
         clock::Clock<'poll, 'd>,
         boot::Cause,
     ) {
-        (self.wake, self.work, self.clock, self.cause)
+        (self.wake, self.work, self.work.clock(), self.cause)
     }
 
     pub fn into_poll(self) -> (root::Budget<'poll, 'd>, clock::Clock<'poll, 'd>) {
-        (root::Budget::new(self.wake, self.work), self.clock)
+        (root::Budget::new(self.wake, self.work), self.work.clock())
     }
 }
 
 const fn assert_layout() {
-    assert!(mem::size_of::<Context<'static, 'static>>() == 5 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Context<'static, 'static>>() == 4 * mem::size_of::<usize>());
     assert!(mem::align_of::<Context<'static, 'static>>() == mem::align_of::<usize>());
 }
 

@@ -28,7 +28,7 @@ pub trait Registry {
         &mut self,
         count: bounded::U32<1, MAX>,
     ) -> Result<(), Self::Files>;
-    fn file_range<const MAX: u32>(&mut self, len: bounded::U32<1, MAX>) -> Result<(), Self::Range>;
+    fn file_range<const MAX: u32>(&mut self, len: bounded::U32<0, MAX>) -> Result<(), Self::Range>;
     fn install(&mut self, slot: Self::Target, file: fd::BorrowedFd<'_>)
     -> Result<(), Self::Update>;
     fn occupy(

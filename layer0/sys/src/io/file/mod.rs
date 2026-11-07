@@ -24,7 +24,7 @@ pub mod raw;
 mod sync;
 
 pub use kind::Kind;
-pub use metadata::{Error as MetadataError, Metadata};
+pub use metadata::{Error as MetadataError, Identity, Metadata, Value as MetadataValue};
 pub use mode::Mode;
 pub use open::Open;
 

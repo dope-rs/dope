@@ -66,7 +66,7 @@ impl<'a> request::Request<'a> for Borrowed<'a> {
         let mut entry = sq::Entry::new(files::METADATA, sq::Descriptor::File(raw));
         let fields = entry.fields();
         fields.address = c"".as_ptr() as u64;
-        fields.length = Self::Metadata::MASK;
+        fields.length = Self::Metadata::MASK | libc::STATX_INO;
         fields.offset = (output.0.as_mut_ptr() as u64).to_ne_bytes();
         fields.options = libc::AT_EMPTY_PATH as u32;
         Self::new(entry.flags(sq::Flags::ASYNC))

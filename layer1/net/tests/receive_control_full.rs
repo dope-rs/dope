@@ -34,7 +34,7 @@ fn full_returns_exhausted() {
             }
             .expect("native data owner");
             assert!(matches!(
-                pool.reserve().data(done, |_, _| ()),
+                pool.recv().data(done, |_, _| ()),
                 Reservation::Parked(ParkRecv::Deferred)
             ));
         }

@@ -62,7 +62,7 @@ fn parked_receipt_is_preserved() {
         let mut captures = 0;
         pool.suspend(key);
         assert!(matches!(
-            pool.reserve().data(done, |_, _| {
+            pool.recv().data(done, |_, _| {
                 captures += 1;
                 publication
             }),
@@ -83,7 +83,7 @@ fn parked_receipt_is_preserved() {
             _ => panic!("queued completion"),
         };
         assert!(!pool.sender_with_recv(key).expect("send owner").1);
-        let data = match pool.reserve().data(done, |_, _| {
+        let data = match pool.recv().data(done, |_, _| {
             captures += 1;
             publication
         }) {
@@ -108,7 +108,7 @@ fn tail_keeps_cancel() {
     let (reports, input) = eof::run::<input::Scoped>(|pool, key, scope, peer| {
         let (flow, done) = eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
         assert!(flow == Flow::More || std::env::consts::OS != "linux");
-        let data = match pool.reserve().data(done, |_, _| ()) {
+        let data = match pool.recv().data(done, |_, _| ()) {
             Reservation::Ready(data) => Some(data),
             _ => None,
         }
@@ -194,7 +194,7 @@ fn tail_keeps_cancel() {
 fn credit_return_keeps_eof() {
     let (reports, input) = eof::run::<input::Retained>(|pool, key, scope, peer| {
         let (flow, done) = eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
-        let data = match pool.reserve().data(done, |_, _| ()) {
+        let data = match pool.recv().data(done, |_, _| ()) {
             Reservation::Ready(data) => Some(data),
             _ => None,
         }
@@ -216,7 +216,7 @@ fn credit_return_keeps_eof() {
             }
             .expect("late native buffer");
             assert!(matches!(
-                pool.reserve().data(late, |_, _| ()),
+                pool.recv().data(late, |_, _| ()),
                 Reservation::Drop
             ));
         }
@@ -462,7 +462,7 @@ fn closing_wakes_exhaustion() {
             }
             .expect("native buffer");
             assert!(matches!(
-                pool.reserve().data(done, |_, _| ()),
+                pool.recv().data(done, |_, _| ()),
                 Reservation::Parked(ParkRecv::Deferred)
             ));
         }

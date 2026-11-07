@@ -316,7 +316,8 @@ impl<T> prepare::Prepare for Ring<T> {
             registry.cancel_all().map_err(Rejection::Cancel)?;
             registry.sparse_files(files).map_err(Rejection::Files)?;
             if let Some(range) = range {
-                registry.file_range(range).map_err(Rejection::Range)?;
+                let len = range.abs_diff(bounded::U32::exact::<1>());
+                registry.file_range(len).map_err(Rejection::Range)?;
             }
             Ok(())
         };

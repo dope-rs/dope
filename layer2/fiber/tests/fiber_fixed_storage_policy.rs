@@ -68,17 +68,17 @@ fn heap_keeps_owner_layout() {
     let (slots, full) = Tracker::usage(Slab1024::try_new);
     assert_eq!(full.0, 1);
     drop(slots.expect("heap task extent"));
-    let (legacy, prepared) =
+    let (bounded, prepared) =
         Tracker::usage(|| direct::Plan::<Leaf<Slab1024>>::new(Limit::new(1)).try_prepare());
-    let legacy = legacy.expect("full heap task plan");
-    assert_eq!(prepared, full);
+    let bounded = bounded.expect("bounded heap task plan");
+    assert_eq!(prepared, (full.0, full.1 / 1024));
     for (physical, logical) in [(2, 1), (1, 2)] {
         let (plane, allocated) = Tracker::usage(|| {
             direct::Plan::<Leaf<Slab1024>>::new(Limit::new(logical))
                 .try_prepare_with_capacity(Count::new(physical))
         });
         let plane = plane.expect("capped heap task plan");
-        assert_eq!(mem::size_of_val(&plane), mem::size_of_val(&legacy));
+        assert_eq!(mem::size_of_val(&plane), mem::size_of_val(&bounded));
         assert_eq!(allocated.0, 1);
         assert_eq!(allocated.1 * 1024, full.1 * physical as usize);
         let mut plane = pin::pin!(plane);

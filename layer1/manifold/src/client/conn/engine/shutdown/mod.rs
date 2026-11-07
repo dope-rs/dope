@@ -147,9 +147,7 @@ where
             let lane = match step {
                 quota::Admission::Item(state::Step::Intake) => continue,
                 quota::Admission::Item(state::Step::Lane(lane)) => lane,
-                quota::Admission::Item(state::Step::Done)
-                | quota::Admission::Empty
-                | quota::Admission::Exhausted => return,
+                quota::Admission::Empty | quota::Admission::Exhausted => return,
             };
             if let Some(key) = self
                 .as_ref()

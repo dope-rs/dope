@@ -238,21 +238,42 @@ fn metadata_keeps_descriptor() {
     let path = u64::from_ne_bytes(data[16..24].try_into().expect("path address"));
     // SAFETY: the request retains its static, terminated empty path.
     assert!(unsafe { std::ffi::CStr::from_ptr(path as *const _) }.is_empty());
-    assert_eq!(&data[24..28], &0x201_u32.to_ne_bytes());
+    assert_eq!(&data[24..28], &(0x201_u32 | libc::STATX_INO).to_ne_bytes());
     assert_eq!(&data[28..32], &0x1000_u32.to_ne_bytes());
     assert_eq!(&data[32..], &[0; 32]);
     let address = ptr::from_mut(&mut output).cast::<libc::statx>();
     // SAFETY: the live descriptor and native output remain exclusively borrowed.
     assert_eq!(
-        unsafe { libc::statx(file.as_raw_fd(), c"".as_ptr(), 0x1000, 0x201, address) },
+        unsafe {
+            libc::statx(
+                file.as_raw_fd(),
+                c"".as_ptr(),
+                0x1000,
+                0x201 | libc::STATX_INO,
+                address,
+            )
+        },
         0
     );
     // SAFETY: statx succeeded and no longer accesses the output.
+    let (kind, _, identity) = unsafe { output.try_result() }.expect("native metadata");
+    assert!(kind.is_dir());
+    assert_eq!(
+        identity,
+        Some(
+            <Uring as file::File>::metadata::<dope_sys::Errno>(file.as_fd())
+                .expect("descriptor metadata")
+                .identity()
+        )
+    );
+    // SAFETY: the initialized result remains exclusively owned.
+    unsafe { (*address).stx_mask &= !libc::STATX_INO };
+    // SAFETY: the initialized result has no remaining native writer.
     assert!(
         unsafe { output.try_result() }
-            .expect("native metadata")
-            .0
-            .is_dir()
+            .expect("type and size")
+            .2
+            .is_none()
     );
     let size = i64::MAX as u64 + 1;
     // SAFETY: the successful native result is initialized and exclusively owned.

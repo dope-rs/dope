@@ -262,12 +262,7 @@ impl<'turn, 'd> RootReady<'turn, 'd, modes::Boot> {
     where
         R: boot::Root<'d>,
     {
-        let context = boot::Context::new(
-            wake,
-            self.ready.core.turn.turn().app(),
-            self.ready.core.driver.driver_ref().clock(),
-            cause,
-        );
+        let context = boot::Context::new(wake, self.ready.core.turn.turn().app(), cause);
         let output = R::poll(root, context);
         (self.skip(), output)
     }

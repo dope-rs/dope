@@ -23,12 +23,12 @@ impl Metadata {
 
     /// # Safety
     /// The matching metadata operation succeeded and all native access to this output ended.
-    pub unsafe fn try_result(&self) -> Result<(file::Kind, file::Offset), file::MetadataError> {
+    pub unsafe fn try_result(&self) -> Result<file::MetadataValue, file::MetadataError> {
         // SAFETY: the caller retains this output's successful completion proof.
         let value = unsafe { self.0.assume_init_ref() };
         let size = value.size();
         let length = file::Offset::new(size as u64).ok_or(file::MetadataError::Negative(size))?;
-        Ok((value.kind(), length))
+        Ok((value.kind(), length, Some(value.identity())))
     }
 }
 

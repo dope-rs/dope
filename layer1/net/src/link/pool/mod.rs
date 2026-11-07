@@ -21,7 +21,6 @@ use self::{
     change::{accept, drain},
     recv::{
         input::{self, Dispatch},
-        reserve::Reserve,
         storage::queue::Ops as _,
     },
 };
@@ -242,10 +241,6 @@ where
         work: maint::Work<'_, 'd>,
     ) {
         self.prepared.egress.maintain(token, work);
-    }
-
-    pub fn reserve(&mut self) -> Reserve<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
-        Reserve::new(self)
     }
 
     pub fn settle(
