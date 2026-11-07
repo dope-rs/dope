@@ -443,6 +443,7 @@ impl<D: buffer::raw::Segment> Map<D> {
             }
             *remaining = self.core.restart();
         }
+        quota = quota.min(control.available().get());
         let work = (*remaining as usize).min(conn::STREAM_SCHEDULE_WORK_LIMIT);
         for _ in 0..work {
             let Some(mut active) = self.core.active() else {

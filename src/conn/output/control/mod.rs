@@ -4,6 +4,7 @@ use crate::conn::stream::state::transmit::queue;
 use crate::conn::wire::path::probe;
 use crate::errors;
 use crate::wire::stream;
+use o3::depot::array::Index;
 use o3::depot::capacity::{Count, Reason};
 
 mod blocked;
@@ -258,40 +259,34 @@ enum Lane {
 }
 
 impl Lane {
-    const fn bind<T>(self, values: &[T; LANE_COUNT]) -> &T {
+    #[inline]
+    const fn index(self) -> Index<LANE_COUNT> {
         match self {
-            Self::Done => &values[0],
-            Self::NewCid => &values[1],
-            Self::RetireCid => &values[2],
-            Self::Stop => &values[3],
-            Self::Reset => &values[4],
-            Self::MaxData => &values[5],
-            Self::MaxStreamData => &values[6],
-            Self::MaxBidi => &values[7],
-            Self::MaxUni => &values[8],
-            Self::Response => &values[9],
-            Self::Challenge => &values[10],
+            Self::Done => Index::at::<0>(),
+            Self::NewCid => Index::at::<1>(),
+            Self::RetireCid => Index::at::<2>(),
+            Self::Stop => Index::at::<3>(),
+            Self::Reset => Index::at::<4>(),
+            Self::MaxData => Index::at::<5>(),
+            Self::MaxStreamData => Index::at::<6>(),
+            Self::MaxBidi => Index::at::<7>(),
+            Self::MaxUni => Index::at::<8>(),
+            Self::Response => Index::at::<9>(),
+            Self::Challenge => Index::at::<10>(),
         }
+    }
+
+    fn bind<T>(self, values: &[T; LANE_COUNT]) -> &T {
+        self.index().get(values)
     }
 
     fn bind_mut<T>(self, values: &mut [T; LANE_COUNT]) -> &mut T {
-        match self {
-            Self::Done => &mut values[0],
-            Self::NewCid => &mut values[1],
-            Self::RetireCid => &mut values[2],
-            Self::Stop => &mut values[3],
-            Self::Reset => &mut values[4],
-            Self::MaxData => &mut values[5],
-            Self::MaxStreamData => &mut values[6],
-            Self::MaxBidi => &mut values[7],
-            Self::MaxUni => &mut values[8],
-            Self::Response => &mut values[9],
-            Self::Challenge => &mut values[10],
-        }
+        self.index().get_mut(values)
     }
 
+    #[inline]
     const fn bit(self) -> u16 {
-        1 << self as u8
+        1 << self.index().index()
     }
 
     fn from_bit(bit: u16) -> Option<Self> {

@@ -13,6 +13,49 @@ use peer::{Pair, Receiver as _};
 static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
+fn full_journal_sends_before_retry() {
+    use dope_quic::errors::Code;
+    use peer::Scope as _;
+
+    let config = peer::Config::new(1024, 65536, 0, 33);
+    let server = config
+        .try_build()
+        .expect("server options")
+        .into_builder()
+        .journals(|journals| journals.control::<32>())
+        .try_build()
+        .expect("bounded control journal");
+    let mut pair = Pair::try_new(server, config.try_build().expect("client options"))
+        .expect("connected peers");
+    let ids: Vec<_> = (0..33)
+        .map(|_| {
+            let mut send = pair.client.send_streams();
+            let id = send.open_uni().expect("stream credit");
+            send.send(id, b"x").expect("stream payload");
+            id
+        })
+        .collect();
+    let mut now = Instant::now() + Duration::from_secs(1);
+    pair.exchange(now, 4).expect("stream delivery");
+    for id in ids {
+        pair.server.recv().stop(id.id(), Code::ZERO).expect("stop");
+    }
+    let reset = pair.server.send_streams().open_uni().expect("reverse stream");
+    pair.server.send_streams().reset(reset, Code::ZERO).expect("reset");
+    for _ in 0..4 {
+        now += Duration::from_millis(30);
+        pair.exchange(now, 1).expect("send queued stops and retry");
+    }
+    let mut events = pair.client.poll();
+    assert_eq!(
+        std::iter::from_fn(|| events.poll_event())
+            .filter(|event| matches!(event, peer::Event::Stopped { error_code, .. } | peer::Event::Reset { error_code, .. } if *error_code == Code::ZERO))
+            .count(),
+        34
+    );
+}
+
+#[test]
 fn control_stream_retry() {
     use o3::depot::capacity;
     use peer::Scope as _;

@@ -27,14 +27,19 @@ impl<T, const MAX: usize> Split<T, MAX> {
         self.values.try_insert()
     }
 
-    pub(crate) fn try_extend<'a, 'b, U>(
-        &'a mut self,
+    pub(crate) fn try_extend<'b, U>(
+        &mut self,
         input: &'b [U],
-    ) -> Result<storage::Batch<'a, 'b, T, U, MAX>, capacity::Reason> {
-        Ok(storage::Batch {
-            growth: growth::Growth::try_new(&mut self.values, input.len())?,
-            input,
-        })
+        mut map: impl FnMut(&'b U) -> T,
+    ) -> Result<(), capacity::Reason> {
+        growth::Growth::try_new(&mut self.values, input.len())?.grow();
+        for item in input {
+            storage::Vacant {
+                values: &mut self.values,
+            }
+            .push(map(item));
+        }
+        Ok(())
     }
 
     pub(crate) fn ready_mut(&mut self) -> &mut [T] {

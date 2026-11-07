@@ -85,8 +85,7 @@ impl<'a> Queue<'a> {
         }
         self.state
             .retirements
-            .try_extend(retiring.as_slice())?
-            .commit(|&sequence| (sequence, None));
+            .try_extend(retiring.as_slice(), |&sequence| (sequence, None))?;
         self.state.retired = end;
         Ok(())
     }
@@ -209,22 +208,20 @@ impl<'a> Queue<'a> {
             });
         };
         let entries = [(first, data[0], paths[0]), (second, data[1], paths[1])];
-        let growth = self
-            .state
+        self.state
             .challenges
-            .try_extend(&entries)
+            .try_extend(&entries, |&(key, data, path)| probe::Challenge {
+                key,
+                data,
+                control: None,
+                sent: probe::Sent::Pending,
+                path: Some(path),
+            })
             .map_err(|reason| probe::Error::Capacity {
                 data: data[0],
                 reason,
             })?;
         self.state.next_control_key = after;
-        growth.commit(|&(key, data, path)| probe::Challenge {
-            key,
-            data,
-            control: None,
-            sent: probe::Sent::Pending,
-            path: Some(path),
-        });
         Ok(())
     }
 }

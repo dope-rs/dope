@@ -72,26 +72,8 @@ impl<'a> Output<'a> {
         packet: &numbers::Packet,
     ) -> Option<path::OutputPermit> {
         let observed = self.path.address.get(path)?;
+        let cid = self.cid_for(path, observed)?;
         ceiling = ceiling.min(usize::from(observed.address.max_payload().get()));
-        if Some(observed.address) != self.path.address.active {
-            if self
-                .path
-                .address
-                .candidate
-                .is_some_and(|item| item.path() == path)
-            {
-                self.path.peer.spare()?;
-            } else if self
-                .path
-                .address
-                .previous
-                .is_some_and(|item| item.path() == path)
-            {
-                self.path.peer.previous()?;
-            } else {
-                return None;
-            }
-        }
         let mut expanded = observed.validated;
         if !observed.validated {
             let inner = Activity::credit(false, observed.received, observed.sent);
@@ -103,7 +85,7 @@ impl<'a> Output<'a> {
         }
         let route = path::OutputRoute { path: Some(path) };
         let minimum = 1usize
-            .saturating_add(self.cid(route).len())
+            .saturating_add(cid.len())
             .saturating_add(usize::from(packet.encoded_len()))
             .saturating_add(9)
             .saturating_add(conn::TAG_LEN);
@@ -134,28 +116,36 @@ impl<'a> Output<'a> {
         let Some(observed) = self.path.address.get(path) else {
             unreachable!("path")
         };
-        if Some(observed.address) == self.path.address.active {
-            return self.path.peer.id().as_ref_id();
-        }
-        if route.path().is_some_and(|path| {
-            self.path
-                .address
-                .previous
-                .is_some_and(|item| item.path() == path)
-        }) && let Some(cid) = self.path.peer.previous()
+        self.cid_for(path, observed)
+            .unwrap_or_else(|| unreachable!("pathcid"))
+    }
+
+    #[inline(always)]
+    fn cid_for(
+        &self,
+        path: path::Key,
+        observed: &path::address::state::Observed,
+    ) -> Option<cid::Ref<'a>> {
+        let peer = if self.path.address.active.as_ref() == Some(&observed.address) {
+            Some(self.path.peer.id())
+        } else if self
+            .path
+            .address
+            .candidate
+            .is_some_and(|item| item.path() == path)
         {
-            return cid.as_ref_id();
-        }
-        let spare = route.path().is_some_and(|path| {
-            self.path
-                .address
-                .candidate
-                .is_some_and(|item| item.path() == path)
-        });
-        if spare && let Some(cid) = self.path.peer.spare() {
-            return cid.as_ref_id();
-        }
-        unreachable!("pathcid")
+            self.path.peer.spare()
+        } else if self
+            .path
+            .address
+            .previous
+            .is_some_and(|item| item.path() == path)
+        {
+            self.path.peer.previous()
+        } else {
+            None
+        };
+        peer.map(cid::Id::as_ref_id)
     }
 
     pub(in crate::conn) fn has_output(&self, control: &control::Pending) -> bool {

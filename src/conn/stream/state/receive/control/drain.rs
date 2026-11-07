@@ -19,8 +19,8 @@ impl<'a, B: stream::Recv, D: buffer::raw::Segment> Drain<'a, B, D> {
     ) -> Self {
         Self {
             streams: state,
+            remaining: left.min(ctrl.available().get()),
             control: records::Records::new(ctrl),
-            remaining: left,
         }
     }
 
