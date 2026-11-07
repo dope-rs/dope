@@ -101,27 +101,6 @@ struct Owned<'arena, 'credits, 'region, C> {
     credit: retain::Batch<'arena, 'credits, 'region>,
 }
 
-impl<C> Owned<'_, '_, '_, C> {
-    #[inline(always)]
-    fn retire(self) -> Option<Self> {
-        let Self { data, mut credit } = self;
-        let data = {
-            let (item, next) = data.pop();
-            // SAFETY: try_new captures this completed slot's entire FIFO and sum
-            // together. This private owner removes each original member once and
-            // never accepts an independently supplied item or credit.
-            let part = unsafe { credit.sum.take(item.amount) };
-            part.into_inner().release();
-            credit.returned(item.amount);
-            next
-        };
-        Some(Self {
-            data: data?,
-            credit,
-        })
-    }
-}
-
 /// Fixed retirement storage for detached reply batches.
 pub struct Batches<'arena, 'credits, 'region, C> {
     queued: Cell<Owned<'arena, 'credits, 'region, C>>,

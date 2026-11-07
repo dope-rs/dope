@@ -7,7 +7,11 @@ use dope_core::{
 use mode::access;
 use o3::{
     buffer,
-    buffer::{hold, resident, storage::range, write::consume},
+    buffer::{
+        hold, resident,
+        storage::{self, range},
+        write::consume,
+    },
 };
 use reserve::Completion as _;
 
@@ -190,7 +194,7 @@ where
     fn try_copy<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<storage::Owned<resident::Budget<'d>>, hold::Error>
     where
         Self: 'a,
     {
@@ -202,7 +206,7 @@ where
     fn try_retain<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<hold::Retained<'d>, hold::Error>
     where
         Self: 'a,
     {

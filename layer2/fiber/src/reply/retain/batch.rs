@@ -18,10 +18,6 @@ impl Batch<'_, '_, '_> {
         self.edge.wake();
     }
 
-    pub(in crate::reply) fn returned(&self, amount: payload::Value) {
-        self.edge.returned(amount);
-    }
-
     pub(in crate::reply) fn usage(&self) -> usage::Usage {
         self.sum.usage()
     }

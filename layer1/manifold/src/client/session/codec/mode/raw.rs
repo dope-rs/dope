@@ -3,7 +3,7 @@ use std::{mem, num::NonZero, ops};
 use o3::buffer::{
     self, hold,
     resident::{self, staging::Buf},
-    storage::range,
+    storage::{self, range},
     write::{Sink as _, consume},
 };
 
@@ -279,12 +279,12 @@ unsafe impl<'d, B: Buffer<'d>, C: hold::raw::Retain<'d>> hold::raw::Retain<'d>
     fn try_copy<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<storage::Owned<resident::Budget<'d>>, hold::Error>
     where
         Self: 'a,
     {
         match plan {
-            View::Vacant => Ok(resident::Shared::new()),
+            View::Vacant => Ok(storage::Owned::default()),
             View::Staged(view) => Buf::try_copy(B::staged_view(view), budget),
             View::Direct(view) => C::try_copy(view, budget),
         }
@@ -293,12 +293,12 @@ unsafe impl<'d, B: Buffer<'d>, C: hold::raw::Retain<'d>> hold::raw::Retain<'d>
     fn try_retain<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<hold::Retained<'d>, hold::Error>
     where
         Self: 'a,
     {
         match plan {
-            View::Vacant => Self::try_copy(plan, budget),
+            View::Vacant => Ok(resident::Shared::new().into()),
             View::Staged(view) => Buf::try_retain(B::staged_view(view), budget),
             View::Direct(view) => C::try_retain(view, budget),
         }

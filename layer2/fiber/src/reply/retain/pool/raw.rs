@@ -2,7 +2,27 @@ use std::{cell, marker};
 
 use o3::{depot, depot::arena::linked::fifo::ends};
 
-use crate::reply::retain::grant::entries;
+use crate::reply::{Item, Owned, retain, retain::grant::entries};
+
+impl<C> Owned<'_, '_, '_, C> {
+    #[inline(always)]
+    pub(in crate::reply) fn retire(self) -> Option<Self> {
+        let Self { data, credit } = self;
+        let mut sum = credit.sum;
+        let edge = credit.edge;
+        let (Item { value, amount }, data) = data.pop();
+        // SAFETY: try_new captures this completed slot's entire FIFO and sum
+        // together. This private owner removes each original member once and
+        // never accepts an independently supplied item or credit.
+        let part = unsafe { sum.take(amount) };
+        edge.active.parts().core.lanes.release_data(part);
+        drop(value);
+        Some(Self {
+            data: data?,
+            credit: retain::Batch { edge, sum },
+        })
+    }
+}
 
 /// # Safety
 /// Retain the original pool and grant as one affine owner; consume it only once.

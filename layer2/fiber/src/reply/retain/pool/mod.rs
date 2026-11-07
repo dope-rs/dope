@@ -290,10 +290,6 @@ impl<'arena, 'credits, 'region> LeaseEdge<'arena, 'credits, 'region> {
         Ok(Self { active })
     }
 
-    pub(in crate::reply::retain) fn returned(&self, value: payload::Value) {
-        self.active.parts().core.lanes.returned(value);
-    }
-
     pub(in crate::reply::retain) fn wake(&self) {
         self.active.wake();
     }
