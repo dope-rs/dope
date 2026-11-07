@@ -1,5 +1,7 @@
 pub mod common;
 
+use std::num::NonZero;
+
 use dope_manifold::client::session::codec::{
     Bytes, Input, Parse, Stateless,
     staging::{Buffered, Policy},
@@ -35,15 +37,19 @@ fn borrows_receive_chunk() {
 }
 
 #[test]
-fn plans_deferred_range() {
+fn plans_prefix_payload() {
     let bytes = { (storage::Shared::try_copy(b"xxpayloadxx")).expect("source storage") };
     let source = bytes.as_ptr().wrapping_add(2);
     try_with_budget(7, |budget| {
         let plan = { (Plan::new(1, 1)).expect("direct test plan") };
         let limit = <Buffered as Policy>::limit(plan);
         let deferred = {
-            (Input::with(&bytes, &budget, limit, |input| input.try_plan(2..9)))
-                .expect("the codec range must be in bounds")
+            Input::with(&bytes, &budget, limit, |input| {
+                input
+                    .try_prefix(2, NonZero::new(9).expect("prefix end"))
+                    .map(|(payload, _)| payload)
+            })
+            .expect("the codec range must be in bounds")
         };
         assert_eq!(deferred.as_slice().as_ptr(), source);
         assert_eq!(deferred.as_slice(), b"payload");

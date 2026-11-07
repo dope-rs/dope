@@ -4,7 +4,6 @@ use crate::{
     link::pool::{
         change::drain,
         recv::{self, storage, storage::tail},
-        send::Finish,
     },
     wire::{
         self,
@@ -13,7 +12,7 @@ use crate::{
 };
 
 pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
-    storage::raw::Mode + drain::Strategy<W> + Finish<W>
+    Sized + storage::raw::Mode + drain::Strategy<W>
 {
     fn credits<'a, 'd, ID: Identity, T, S, R>(
         _: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self, R>>,

@@ -46,6 +46,16 @@ pub fn buffer<'d>(budget: &resident::Budget<'d>) -> read::Buffer<'d> {
     Owned::try_allocate(budget, 8).expect("charged output")
 }
 
+pub struct Capture<'a, 'd>(pub &'a Cell<Option<read::Buffer<'d>>>);
+
+impl<'d> o3::mem::Return for Capture<'_, 'd> {
+    type Item = read::Buffer<'d>;
+
+    fn return_item(self, item: Self::Item) {
+        self.0.set(Some(item));
+    }
+}
+
 pub struct Profile;
 
 fn identity(fd: RawFd) -> Result<(u128, u128), Errno> {

@@ -45,7 +45,9 @@ impl<'arena, 'region, ID: Identity> Position<'arena, 'region, ID> {
         self,
         entries: &'a mut array::Block<T, layout::Domain<'arena>>,
     ) -> &'a mut T {
-        layout::raw::entry_mut(self, entries)
+        // SAFETY: try_new checked this connection's index against the immutable
+        // extent retained by both invariant arena brands.
+        unsafe { entries.get_unchecked_mut(self.connection.index().into_usize()) }
     }
 }
 

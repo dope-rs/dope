@@ -90,11 +90,6 @@ where
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum Failure {
-    Receive(dope_core::Errno),
-}
-
 /// Retains the exact failure with its connection and pool output loans.
 pub struct Io<
     'a,
@@ -108,7 +103,7 @@ pub struct Io<
     const IOV: usize,
     D: demand::Mode,
 > {
-    pub(in crate::link::pool::change) cause: Failure,
+    pub(in crate::link::pool::change) cause: dope_core::Errno,
     pub(in crate::link::pool::change) connection: &'a mut types::Connection<'w, 'd, ID, W, S>,
     pub(in crate::link::pool::change) egress: &'a mut egress::Storage<'p, 'd, ID, B, IOV, D>,
 }
@@ -116,7 +111,7 @@ pub struct Io<
 impl<'a, 'p, 'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec, S, B, const IOV: usize, D: demand::Mode>
     Io<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D>
 {
-    pub fn failure(&self) -> Failure {
+    pub fn failure(&self) -> dope_core::Errno {
         self.cause
     }
 
@@ -147,7 +142,6 @@ pub enum Phase {
 
 const _: () = {
     assert!(mem::size_of::<Phase>() == 1);
-    assert!(mem::size_of::<Failure>() == mem::size_of::<dope_core::Errno>());
     let limit = mem::size_of::<(usize, usize, dope_core::Errno)>();
     assert!(
         mem::size_of::<

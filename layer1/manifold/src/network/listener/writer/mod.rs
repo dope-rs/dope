@@ -222,10 +222,7 @@ where
         driver: &mut driver::Context<'_, 'd>,
         direct: impl for<'a> FnOnce(send::Direct<'a, Record<'p, 's, 'd, ID, A>>) -> O,
         free: impl FnMut(pool::Key<'d, ID>, Payload<'p, 's, 'd, ID, A::Egress>),
-    ) -> SendOutcome<'d, ID, O>
-    where
-        <A::Input as input::Mode<A::Wire>>::Ingress: send::Finish<A::Wire>,
-    {
+    ) -> SendOutcome<'d, ID, O> {
         self.pool
             .settle(done)
             .settle(driver, direct, free, |conn, outcome| {
@@ -368,9 +365,8 @@ where
                     Closing<'_, '_, '_, 'p, 'd, ID, A>,
                 >| {
                     let (_, claim, io, _) = scope;
-                    let cause = io.failure();
+                    let error = io.failure();
                     let () = *claim;
-                    let close::Failure::Receive(error) = cause;
                     io.connection().state.fail(conn::Failure::Receive(error));
                 },
             },

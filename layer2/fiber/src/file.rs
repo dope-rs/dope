@@ -2,7 +2,7 @@
 
 use std::{ops::ControlFlow, task};
 
-use o3::mem::Rejected;
+use o3::mem::{Rejected, Return};
 
 use crate::{
     abi::{self, machine},
@@ -10,20 +10,20 @@ use crate::{
     manifold::file::read,
 };
 
-enum Stage<'p, 'd> {
-    Request(read::Request<'d>),
-    Ticket(read::Ticket<'p, 'd>),
+enum Stage<'p, 'd, R: Return> {
+    Request(read::Request<R>),
+    Ticket(read::Ticket<'p, 'd, R>),
 }
 
 /// Cancellation drops only the reply ticket. The Reader keeps native inputs.
 #[must_use = "a fiber does nothing unless it is driven"]
-pub struct Operation<'p, 'd> {
-    port: &'p read::Port<'d>,
-    stage: machine::Machine<Stage<'p, 'd>>,
+pub struct Operation<'p, 'd, R: Return = read::Release<'d>> {
+    port: &'p read::Port<'d, R>,
+    stage: machine::Machine<Stage<'p, 'd, R>>,
 }
 
-impl<'p, 'd> Operation<'p, 'd> {
-    pub fn new(port: &'p read::Port<'d>, request: read::Request<'d>) -> Self {
+impl<'p, 'd, R: Return> Operation<'p, 'd, R> {
+    pub fn new(port: &'p read::Port<'d, R>, request: read::Request<R>) -> Self {
         Self {
             port,
             stage: machine::Machine::new(Stage::Request(request)),
@@ -31,8 +31,11 @@ impl<'p, 'd> Operation<'p, 'd> {
     }
 }
 
-impl<'d> abi::Fiber<'d> for Operation<'_, 'd> {
-    type Output = Result<read::Completion<'d>, Rejected<read::Request<'d>, read::Admission>>;
+// No field has a pinned projection; the request moves into the Reader's stable slot.
+impl<R: Return> Unpin for Operation<'_, '_, R> {}
+
+impl<'d, R: Return<Item = read::Buffer<'d>>> abi::Fiber<'d> for Operation<'_, 'd, R> {
+    type Output = Result<read::Completion<R>, Rejected<read::Request<R>, read::Admission>>;
 
     fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> task::Poll<Self::Output> {
         let (this, cx) = call.into_parts();

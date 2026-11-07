@@ -467,7 +467,7 @@ fn forced_finish_retains() {
             let error = result.expect_err("forced quiescence timeout");
             assert!(matches!(error,
                 session::Error::Quiesce { output: (), drive, disarm: None }
-                    if drive.kind() == drive::Kind::QuiescenceTimeout
+                    if matches!(drive, drive::Error::QuiescenceTimeout)
             ));
         },
         recovery::Policy::new(

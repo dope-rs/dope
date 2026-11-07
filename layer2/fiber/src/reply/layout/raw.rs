@@ -3,26 +3,13 @@
 use std::mem;
 
 use dope::{core::driver::route::Identity, manifold::client::conn};
-use o3::alloc::{self, array};
+use o3::alloc;
 
 use crate::reply::{
     Arena, Lane, LaneIndex,
-    layout::{Domain, Position},
+    layout::Domain,
     usage::Footprint,
 };
-
-pub(super) fn entry_mut<'a, 'arena, ID: Identity, T>(
-    position: Position<'arena, '_, ID>,
-    entries: &'a mut array::Block<T, Domain<'arena>>,
-) -> &'a mut T {
-    // SAFETY: the checked physical position and immutable allocation extent
-    // retain the same invariant arena brand; the owner is exclusively borrowed.
-    unsafe {
-        &mut *entries
-            .as_mut_ptr()
-            .add(position.connection().index().into_usize())
-    }
-}
 
 /// Borrowed raw projection of one reply arena.
 #[repr(transparent)]

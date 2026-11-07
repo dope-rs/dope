@@ -40,7 +40,7 @@ impl Stateless for Bytes {
                 None => Parse::CapacityExhausted,
             });
         };
-        let (head, consumed) = input.try_prefix(count)?;
+        let (head, consumed) = input.try_prefix(0, count)?;
         Ok(Parse::Item { head, consumed })
     }
 }

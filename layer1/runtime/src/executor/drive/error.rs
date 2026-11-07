@@ -4,10 +4,9 @@ use dope_core::{
     Errno,
     driver::{life, result::poll, schedule::ready},
 };
-use drive::{clock, regress::Regression};
 use poll::fault;
 
-use crate::executor::drive;
+use crate::executor::drive::{clock, regress::Regression};
 
 /// Failure while driving one executor application.
 
@@ -32,22 +31,6 @@ impl Error {
 
     pub(crate) const fn quiesce(clock::Elapsed: clock::Elapsed) -> Self {
         Self::QuiescenceTimeout
-    }
-
-    #[must_use]
-    pub const fn kind(&self) -> drive::Kind<'_> {
-        match self {
-            Self::Boot(error) => drive::Kind::Boot(error),
-            Self::Capacity(error) => drive::Kind::Capacity(error),
-            Self::Poll(error) => drive::Kind::Poll(error),
-            Self::Completion(fault) => drive::Kind::Completion(fault),
-            Self::Deadline(range) => drive::Kind::Deadline(range),
-            Self::ClockMovedBackwards(error) => drive::Kind::ClockMovedBackwards(error),
-            Self::TimerDisarm(error) => drive::Kind::TimerDisarm(error),
-            Self::Shutdown => drive::Kind::Shutdown,
-            Self::QuiescenceTimeout => drive::Kind::QuiescenceTimeout,
-            Self::Timeout => drive::Kind::Timeout,
-        }
     }
 }
 

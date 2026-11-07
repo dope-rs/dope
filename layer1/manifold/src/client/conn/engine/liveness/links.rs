@@ -12,7 +12,7 @@ use dope_core::{
 use dope_net::{
     link::{
         event,
-        pool::{self, change::opening, recv::input, send},
+        pool::{self, change::opening},
     },
     wire::open,
 };
@@ -184,7 +184,6 @@ where
         target: ready::Target<'d>,
     ) -> event::SendOutcome<'d, ID, ()>
     where
-        <A::Input as input::Mode<A::Wire>>::Ingress: send::Finish<A::Wire>,
         A: app::Lifecycle<'w, 'd, ID>,
     {
         self.pool.settle(done).settle_owned(

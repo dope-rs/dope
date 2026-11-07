@@ -1,7 +1,7 @@
 use dope::{
     core::driver::life::{creation::Attempt, recovery},
     runtime::{
-        executor::{drive::Kind, session::Completion},
+        executor::{drive, session::Completion},
         shutdown::Pair,
     },
 };
@@ -40,7 +40,7 @@ fn finishes_interrupted_app() {
                     })
                     .expect("shutdown application teardown failed");
                 let error = result.expect_err("pending app must be interrupted");
-                assert!((error.kind()) == (Kind::Shutdown));
+                assert!(matches!(error, drive::Error::Shutdown));
             },
             recovery::Policy::new(|event| reports.push(event), recover),
         );

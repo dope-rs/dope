@@ -341,7 +341,7 @@ fn shutdown_reaps_slot() {
             .with_quiesce(&mut finish, Host::new(endpoint), Duration::ZERO, |_| {});
         assert!(
             matches!(result, Err(dope_runtime::executor::session::Error::Quiesce { output: (), drive, disarm: None })
-                    if drive.kind() == drive::Kind::QuiescenceTimeout)
+                    if matches!(drive, drive::Error::QuiescenceTimeout))
         );
 
         let endpoint = {

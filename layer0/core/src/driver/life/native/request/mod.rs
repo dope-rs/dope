@@ -5,15 +5,14 @@ use dope_sys::io::{request, request::Source};
 
 use crate::{
     Backend,
+    driver::{retained::flight, route, route::kind},
     io::{fd::handles, socket},
 };
 
 pub(crate) mod bound;
 mod connect;
-mod datagram;
 pub(crate) use connect::Connect;
 pub(crate) mod permits;
-pub(crate) use datagram::Datagram;
 
 pub(crate) enum Context {}
 
@@ -54,10 +53,16 @@ impl Lowered {
         >(Self::target(slot)))
     }
 
-    pub(super) fn recv_msg(fd: &handles::Datagram<'_>) -> Self {
-        Self(request::Lower::recv_msg::<
-            { <Backend as Source<Context>>::GROUP },
-        >(<Backend as Source<Context>>::datagram(fd)))
+    pub(crate) fn recv_msg<'d, Tag: route::Tag>(
+        fd: &handles::Datagram<'d>,
+        vacancy: flight::Vacant<'_, 'd, Tag, kind::Recv>,
+    ) -> bound::Bound<'d, Self, kind::Recv> {
+        bound::Bound::new(
+            Self(request::Lower::recv_msg::<
+                { <Backend as Source<Context>>::GROUP },
+            >(<Backend as Source<Context>>::datagram(fd))),
+            vacancy,
+        )
     }
 
     pub(crate) fn shutdown(slot: &handles::PhysicalSlot) -> Self {

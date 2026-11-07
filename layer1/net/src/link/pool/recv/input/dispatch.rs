@@ -16,19 +16,25 @@ use crate::{
                 },
                 storage::{self, queue::Ops as _, tail},
             },
-            send,
         },
         slot::recv::Capture,
     },
     wire::{
         self,
         receive::{self, mode, reserve},
+        send::Availability,
     },
 };
 
-pub trait Dispatch<W: wire::Spec>: storage::raw::Mode + drain::Policy<W> + send::Finish<W> {
+pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W> {
     /// Selects direct or buffered delivery under this exact storage loan.
     type Delivery<'a, 'd: 'a, R: 'a>: observed::Delivery<'a, 'd, W, Self, R>;
+
+    fn release<'w, 'd: 'w, ID: Identity + 'w>(_: Availability, _: &mut W::Runtime<'w, 'd, ID>)
+    where
+        W: 'w + 'd,
+    {
+    }
 
     fn dispatch<'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
         pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
@@ -201,6 +207,15 @@ where
     W::Receive: receive::Policy<W, Reserve = reserve::Waiting<R>>,
 {
     type Delivery<'a, 'd: 'a, C: 'a> = observed::Buffered;
+
+    fn release<'w, 'd: 'w, ID: Identity + 'w>(space: Availability, run: &mut W::Runtime<'w, 'd, ID>)
+    where
+        W: 'w + 'd,
+    {
+        if space == Availability::Released {
+            R::release_send::<ID>(run);
+        }
+    }
 
     fn resume<'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
         pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,

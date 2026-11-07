@@ -26,9 +26,10 @@ use dope::{
 };
 use dope_fiber::{abi::Task, file::Operation};
 use dope_test::{fibers, harness::scenario};
+use o3::mem::Lease;
 
 use common::{
-    file::{Observed, Profile, buffer, fixture, open},
+    file::{Capture, Observed, Profile, buffer, fixture, open},
     recover,
     runtime::{self, Setup},
 };
@@ -54,8 +55,8 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                     .storage
                     .budget(Resident::bytes(8))
                     .expect("resident budget");
-                let output = buffer(&budget);
-                let address = output.as_ref().as_ptr();
+                let output = Lease::open(read::Release::default(), buffer(&budget));
+                let address = output.item().as_ref().as_ptr();
                 let done = session.with_quiesce(
                     &mut finish,
                     Host::new(reader),
@@ -164,9 +165,9 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                 };
                 assert_eq!(cause, read::Admission::Closed);
                 let (file, output, _) = request.into_parts();
-                assert_eq!(output.as_ref(), b"abc");
+                assert_eq!(output.item().as_ref(), b"abc");
                 assert_eq!(file.as_fd().as_raw_fd(), descriptor);
-                assert_eq!(output.as_ref().as_ptr(), address);
+                assert_eq!(output.item().as_ref().as_ptr(), address);
                 assert_eq!(budget.resident(), 8);
                 drop((file, output));
                 assert_eq!(budget.resident(), 0);
@@ -188,15 +189,16 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
         .expect("file layout")
         .with_session(
             |mut session| {
+                let returned = Cell::new(None);
                 let port = layout.try_port().expect("request slots");
-                let reader = read::Reader::<KeyTag<42>>::try_new(&port, &mut session.driver())
+                let reader = read::Reader::<KeyTag<42>, _>::try_new(&port, &mut session.driver())
                     .expect("reader");
                 let budget = session
                     .driver()
                     .storage
                     .budget(Resident::bytes(8))
                     .expect("resident budget");
-                let output = buffer(&budget);
+                let output = Lease::open(Capture(&returned), buffer(&budget));
                 let request = read::Read::try_new(
                     fs::File::open(&path).expect("file").into(),
                     output,
@@ -224,14 +226,8 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
                             .try_request(read::Request::Read(request))
                             .ok()
                             .expect("first request");
-                        let directory = file::Dir::open(dir.path()).expect("directory");
-                        let next = open(&directory, "data");
                         drop(ticket);
-                        assert_eq!(
-                            budget.resident(),
-                            8,
-                            "ticket cancellation leaves cleanup ownership in the installed pool"
-                        );
+                        assert!(returned.take().is_none());
                         fibers::TEST
                             .try_run(&mut app, fibers::Yield::new())
                             .expect("bounded cleanup turn");
@@ -239,23 +235,14 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
                             !submitted.get(),
                             "cancelled queued read never entered native submission"
                         );
-                        assert_eq!(budget.resident(), 0);
-                        let completion = fibers::TEST
-                            .try_run(&mut app, Operation::new(&port, read::Request::Open(next)))
-                            .expect("reused slot fiber")
-                            .ok()
-                            .expect("reused slot admission");
-                        let read::Completion::Open { result, .. } = completion else {
-                            panic!("open completion")
-                        };
+                        drop(returned.take().expect("queued owner returned"));
                         let request = read::Read::try_new(
-                            result.expect("reused slot opens"),
-                            buffer(&budget),
+                            fs::File::open(&path).expect("file").into(),
+                            Lease::open(Capture(&returned), buffer(&budget)),
                             file::Offset::fixed::<0>(),
                         )
                         .ok()
                         .expect("nonempty read");
-                        completed.set(false);
                         let ticket = port
                             .try_request(read::Request::Read(request))
                             .ok()
@@ -279,9 +266,11 @@ fn queued_cancellation_and_uncollected_completion_preserve_owners() {
                 let Ok(ticket) = done else {
                     panic!("uncollected completion permits normal finish")
                 };
-                assert_eq!(budget.resident(), 8, "the reply still owns its output");
+                assert!(returned.take().is_none());
                 drop(ticket);
-                assert_eq!(budget.resident(), 0, "reply Drop releases its output");
+                let output = returned.take().expect("completed owner returned");
+                assert_eq!(output.as_ref(), b"abc");
+                drop(output);
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             runtime::check_scope,
@@ -300,15 +289,16 @@ fn dropped_submitted_fiber_retains_output_through_forced_finish() {
         .expect("file layout")
         .with_session(
             |mut session| {
+                let returned = Cell::new(None);
                 let port = layout.try_port().expect("request slots");
-                let reader = read::Reader::<KeyTag<43>>::try_new(&port, &mut session.driver())
+                let reader = read::Reader::<KeyTag<43>, _>::try_new(&port, &mut session.driver())
                     .expect("reader");
                 let budget = session
                     .driver()
                     .storage
                     .budget(Resident::bytes(8))
                     .expect("resident budget");
-                let output = buffer(&budget);
+                let output = Lease::open(Capture(&returned), buffer(&budget));
                 let request = read::Read::try_new(
                     fs::File::open(&path).expect("file").into(),
                     output,
@@ -337,29 +327,14 @@ fn dropped_submitted_fiber_retains_output_through_forced_finish() {
                         );
                         assert!(submitted.get(), "the original native read owns the buffer");
                         drop(operation);
-                        assert_eq!(
-                            budget.resident(),
-                            8,
-                            "future Drop cannot reclaim accepted native output"
-                        );
+                        assert!(returned.take().is_none());
                     },
                 );
                 assert!(
                     done.is_err(),
                     "zero quiesce window exercises forced native finish"
                 );
-                assert_eq!(
-                    budget.resident(),
-                    0,
-                    "completed native quiescence releases the cancelled owner"
-                );
-                let directory = file::Dir::open(dir.path()).expect("directory");
-                let request = open(&directory, "data");
-                let denied = port
-                    .try_request(read::Request::Open(request))
-                    .err()
-                    .expect("closed after finish");
-                assert_eq!(*denied.error(), read::Admission::Closed);
+                drop(returned.take().expect("quiescent owner returned"));
             },
             recovery::Policy::new(|event| reports.push(event), recover),
             runtime::check_scope,

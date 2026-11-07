@@ -117,6 +117,7 @@ impl<'id, 'a, 'd, R: buffer::Cursor> Input<'id, 'a, 'd, R> {
 
     pub fn try_prefix(
         &self,
+        start: usize,
         count: num::NonZero<usize>,
     ) -> Result<
         (
@@ -126,7 +127,7 @@ impl<'id, 'a, 'd, R: buffer::Cursor> Input<'id, 'a, 'd, R> {
         Error,
     > {
         self.inner
-            .try_prefix::<{ transfer::MAX_BYTES as u32 }>(count)
+            .try_prefix::<{ transfer::MAX_BYTES as u32 }>(start, count)
     }
 
     pub fn try_plan(
@@ -144,7 +145,7 @@ impl<'id, 'a, 'd, R: buffer::Cursor> Input<'id, 'a, 'd, R> {
         &self,
         amount: num::NonZero<usize>,
     ) -> Result<End<'id, { transfer::MAX_BYTES as u32 }>, Error> {
-        let (_, consumed) = self.try_prefix(amount)?;
+        let (_, consumed) = self.try_prefix(0, amount)?;
         Ok(consumed)
     }
 

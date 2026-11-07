@@ -18,7 +18,7 @@ use o3::{
     alloc,
     buffer::{bytes::bounded, resident, storage},
     depot::queue::indexed::shared,
-    mem::{Rejected, quota},
+    mem::{self, Rejected, Return, lease::Open, quota},
 };
 
 use crate::{
@@ -34,10 +34,22 @@ const WORK: usize = 1;
 /// Exclusive storage carrying its original resident-byte charge.
 pub type Buffer<'d> = storage::Owned<resident::Budget<'d>>;
 
+#[derive(Debug, Default)]
+pub struct Release<'d>(marker::PhantomData<Buffer<'d>>);
+
+impl<'d> Return for Release<'d> {
+    type Item = Buffer<'d>;
+
+    #[inline]
+    fn return_item(self, item: Self::Item) {
+        drop(item);
+    }
+}
+
 /// A read whose nonempty buffer capacity was admitted exactly once.
-pub struct Read<'d> {
+pub struct Read<R: Return> {
     file: fs::File,
-    output: Buffer<'d>,
+    output: mem::Lease<R, Open>,
     offset: fs::Offset,
     length: transfer::NonZero,
 }
@@ -61,33 +73,31 @@ impl Metadata {
         }
     }
 
-    pub fn into_file(self) -> fs::File {
-        self.file
-    }
-
-    fn release(self, free: &mut Option<Box<raw::Scratch>>) -> fs::File {
-        if let MetadataState::Scratch(scratch) = self.state {
+    #[inline]
+    fn release(&mut self, free: &mut Option<Box<raw::Scratch>>) {
+        if let MetadataState::Scratch(scratch) =
+            std::mem::replace(&mut self.state, MetadataState::Idle)
+        {
             raw::Scratch::release(free, scratch);
         }
-        self.file
     }
 }
 
 /// One request owns every descriptor, path, option, and output it submits.
-pub enum Request<'d> {
+pub enum Request<R: Return> {
     Open(fs::OpenRequest),
     Rename {
         directory: fs::Dir,
         old: fs::path::Owned,
         new: fs::path::Owned,
     },
-    Read(Read<'d>),
+    Read(Read<R>),
     Metadata(Metadata),
     Prepare(Prepare),
 }
 
 /// A terminal native operation returns its original request owners unchanged.
-pub enum Completion<'d> {
+pub enum Completion<R: Return> {
     Open {
         request: fs::OpenRequest,
         result: Result<fs::File, Error>,
@@ -99,7 +109,7 @@ pub enum Completion<'d> {
         result: Result<(), Error>,
     },
     Read {
-        request: Read<'d>,
+        request: Read<R>,
         result: Result<transfer::Len, Error>,
     },
     Metadata {
@@ -158,7 +168,7 @@ impl<ID: Identity> Layout<ID> {
         })
     }
 
-    pub fn try_port<'d>(&self) -> Result<Port<'d>, CreateError> {
+    pub fn try_port<'d, R: Return<Item = Buffer<'d>>>(&self) -> Result<Port<'d, R>, CreateError> {
         Port::try_new(self.capacity)
     }
 }
@@ -169,13 +179,13 @@ impl<ID: Identity> settings::Resource for Layout<ID> {
     }
 }
 
-impl<'d> Read<'d> {
+impl<'d, R: Return<Item = Buffer<'d>>> Read<R> {
     pub fn try_new(
         file: fs::File,
-        output: Buffer<'d>,
+        output: mem::Lease<R, Open>,
         offset: fs::Offset,
-    ) -> Result<Self, Rejected<(fs::File, Buffer<'d>, fs::Offset), SizeError>> {
-        let length = transfer::Len::try_new(output.capacity())
+    ) -> Result<Self, Rejected<(fs::File, mem::Lease<R, Open>, fs::Offset), SizeError>> {
+        let length = transfer::Len::try_new(output.item().capacity())
             .map_err(SizeError::Overflow)
             .and_then(|length| length.nonzero().ok_or(SizeError::Empty));
         let length = match length {
@@ -196,28 +206,24 @@ impl<'d> Read<'d> {
         self
     }
 
-    pub const fn length(&self) -> transfer::NonZero {
-        self.length
-    }
-
     pub const fn offset(&self) -> fs::Offset {
         self.offset
     }
 
     /// A completed request exposes only its successfully read prefix.
-    pub fn into_parts(self) -> (fs::File, Buffer<'d>, fs::Offset) {
+    pub fn into_parts(self) -> (fs::File, mem::Lease<R, Open>, fs::Offset) {
         (self.file, self.output, self.offset)
     }
 }
 
-type Slot<'a, 'd> = shared::Slot<'a, (), raw::Entry<'d>, 2>;
+type Slot<'a, 'd, R> = shared::Slot<'a, (), raw::Entry<'d, R>, 2>;
 
 /// A worker-local request/reply port. Construct once, then install one Reader.
 ///
 /// Slots bound queued, native, and uncollected operations together. Buffer
 /// residency remains charged by each supplied owner, including after completion.
-pub struct Port<'d> {
-    slots: shared::Fifo<(), raw::Entry<'d>, 2>,
+pub struct Port<'d, R: Return = Release<'d>> {
+    slots: shared::Fifo<(), raw::Entry<'d, R>, 2>,
     capacity: table::Capacity,
     bound: cell::Cell<bool>,
     accepting: cell::Cell<bool>,
@@ -225,8 +231,8 @@ pub struct Port<'d> {
 }
 
 /// The installed owner retains the port and native flight group until Finish.
-pub struct Reader<'p, 'd, ID: Identity> {
-    port: &'p Port<'d>,
+pub struct Reader<'p, 'd, ID: Identity, R: Return = Release<'d>> {
+    port: &'p Port<'d, R>,
     _route: lease::Owner<'d, ID>,
     flights: flight::Slots<'d, ID>,
     closing: Option<indices::SlotIndex>,
@@ -235,18 +241,18 @@ pub struct Reader<'p, 'd, ID: Identity> {
 
 // No field is structurally pinned: the borrowed port retains its fixed heap
 // slots, and the route and flight handles do not retain their own addresses.
-impl<ID: Identity> Unpin for Reader<'_, '_, ID> {}
+impl<ID: Identity, R: Return> Unpin for Reader<'_, '_, ID, R> {}
 
 /// An affine reply registration; dropping it requests cancellation, not reclamation.
 #[must_use = "poll the operation or drop its ticket to cancel it"]
-pub struct Ticket<'p, 'd> {
-    slot: Option<Slot<'p, 'd>>,
+pub struct Ticket<'p, 'd, R: Return = Release<'d>> {
+    slot: Option<Slot<'p, 'd, R>>,
 }
 
 #[must_use = "a pending operation retains its reply registration"]
-pub enum Poll<'p, 'd> {
-    Pending(Ticket<'p, 'd>),
-    Ready(Completion<'d>),
+pub enum Poll<'p, 'd, R: Return = Release<'d>> {
+    Pending(Ticket<'p, 'd, R>),
+    Ready(Completion<R>),
 }
 
 enum Outcome {
@@ -270,7 +276,7 @@ enum Phase<'d> {
     Done(Outcome),
 }
 
-impl<'d> Port<'d> {
+impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
     fn try_new(capacity: table::Capacity) -> Result<Self, CreateError> {
         let mut indices = capacity.into_iter();
         let slots = shared::Fifo::try_with(capacity.count().get(), || {
@@ -296,8 +302,8 @@ impl<'d> Port<'d> {
     /// waiter is registered. The caller retains its existing task admission policy.
     pub fn try_request(
         &self,
-        mut request: Request<'d>,
-    ) -> Result<Ticket<'_, 'd>, Rejected<Request<'d>, Admission>> {
+        mut request: Request<R>,
+    ) -> Result<Ticket<'_, 'd, R>, Rejected<Request<R>, Admission>> {
         if !self.accepting.get() {
             return Err(Rejected::new(request, Admission::Closed));
         }
@@ -305,7 +311,7 @@ impl<'d> Port<'d> {
             return Err(Rejected::new(request, Admission::Full));
         };
         if let Request::Read(read) = &mut request {
-            read.output.truncate(0);
+            read.output.item_mut().truncate(0);
         }
         let entry = slot.state();
         entry.insert(request);
@@ -316,7 +322,7 @@ impl<'d> Port<'d> {
         Ok(Ticket { slot: Some(slot) })
     }
 
-    fn settle(&self, slot: &Slot<'_, 'd>, outcome: Outcome) {
+    fn settle(&self, slot: &Slot<'_, 'd, R>, outcome: Outcome) {
         slot.clear::<WORK>();
         self.pending.set(self.pending.get() - 1);
         let entry = slot.state();
@@ -333,8 +339,8 @@ impl<'d> Port<'d> {
     }
 }
 
-impl<'p, 'd> Ticket<'p, 'd> {
-    pub fn poll(mut self, waiter: wake::Waker<'d>) -> Poll<'p, 'd> {
+impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
+    pub fn poll(mut self, waiter: wake::Waker<'d>) -> Poll<'p, 'd, R> {
         let Some(slot) = self.slot.take() else {
             unreachable!("ticket")
         };
@@ -386,7 +392,7 @@ impl<'p, 'd> Ticket<'p, 'd> {
     }
 }
 
-impl Drop for Ticket<'_, '_> {
+impl<R: Return> Drop for Ticket<'_, '_, R> {
     fn drop(&mut self) {
         let Some(slot) = self.slot.take() else { return };
         let entry = slot.state();
@@ -407,9 +413,9 @@ impl Drop for Ticket<'_, '_> {
     }
 }
 
-impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
+impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
     pub fn try_new(
-        port: &'p Port<'d>,
+        port: &'p Port<'d, R>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<Self, CreateError> {
         if port.bound.get() {
@@ -435,36 +441,28 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
         })
     }
 
-    fn fail(&mut self, slot: &Slot<'_, 'd>, cause: Error) {
-        let entry = slot.state();
-        let (request, outcome) = match entry.take() {
-            Request::Open(request) => (Request::Open(request), Outcome::Open(Err(cause))),
-            request @ Request::Rename { .. } => (request, Outcome::Rename(Err(cause))),
-            Request::Read(request) => (Request::Read(request), Outcome::Read(Err(cause))),
-            Request::Metadata(request) => (
-                Request::Metadata(Metadata {
-                    file: request.release(&mut self.free),
-                    state: MetadataState::Done(Err(MetadataError::Operation(cause))),
-                }),
-                Outcome::Metadata,
-            ),
+    fn fail(&mut self, slot: &Slot<'_, 'd, R>, cause: Error) {
+        let outcome = slot.state().with_request(|request| match request {
+            Request::Open(_) => Outcome::Open(Err(cause)),
+            Request::Rename { .. } => Outcome::Rename(Err(cause)),
+            Request::Read(_) => Outcome::Read(Err(cause)),
+            Request::Metadata(request) => {
+                request.release(&mut self.free);
+                request.state = MetadataState::Done(Err(MetadataError::Operation(cause)));
+                Outcome::Metadata
+            }
             Request::Prepare(Prepare(preparation)) => {
                 if let Preparation::Metadata { request, .. } = preparation {
-                    drop(request.release(&mut self.free));
+                    request.release(&mut self.free);
                 }
-                (
-                    Request::Prepare(Prepare(Preparation::Done(Err(
-                        appender::OpenError::Request(cause),
-                    )))),
-                    Outcome::Prepare,
-                )
+                *preparation = Preparation::Done(Err(appender::OpenError::Request(cause)));
+                Outcome::Prepare
             }
-        };
-        entry.insert(request);
+        });
         self.port.settle(slot, outcome);
     }
 
-    fn prepare(&self, slot: &Slot<'_, 'd>, preparation: Preparation) {
+    fn prepare(&self, slot: &Slot<'_, 'd, R>, preparation: Preparation) {
         let done = matches!(preparation, Preparation::Done(_));
         let entry = slot.state();
         entry.insert(Request::Prepare(Prepare(preparation)));
@@ -509,7 +507,7 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
 
     fn process(
         &mut self,
-        slot: &Slot<'_, 'd>,
+        slot: &Slot<'_, 'd, R>,
         driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
     ) -> bool {
         let entry = slot.state();
@@ -568,7 +566,7 @@ impl<'p, 'd, ID: Identity> Reader<'p, 'd, ID> {
     }
 }
 
-impl<ID: Identity> Drop for Reader<'_, '_, ID> {
+impl<ID: Identity, R: Return> Drop for Reader<'_, '_, ID, R> {
     fn drop(&mut self) {
         self.port.accepting.set(false);
         while let Some(mut scratch) = self.free.take() {
@@ -590,13 +588,15 @@ impl<'d> Active<'d> {
     }
 }
 
-impl<'d, ID: Identity> dispatch::raw::Install<'d> for Reader<'_, 'd, ID> {
+impl<'d, ID: Identity, R: Return> dispatch::raw::Install<'d> for Reader<'_, 'd, ID, R> {
     fn install(self: pin::Pin<&mut Self>) {
         self.port.accepting.set(true);
     }
 }
 
-impl<'d, ID: Identity> executor::raw::Finishes<'d, Self> for Reader<'_, 'd, ID> {
+impl<'d, ID: Identity, R: Return<Item = Buffer<'d>>> executor::raw::Finishes<'d, Self>
+    for Reader<'_, 'd, ID, R>
+{
     fn call<'app, 'finish, 'owner, 'epoch>(
         finish: executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self>,
     ) -> executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self> {

@@ -21,14 +21,13 @@ use crate::{
         event,
         pool::{
             change::{
-                close::{Approval, Commit, Decision, Failed, Failure, Io, Owner, Phase, Resume},
+                close::{Approval, Commit, Decision, Failed, Io, Owner, Phase, Resume},
                 drain::Branch,
             },
             recv::{
                 self, input,
                 storage::{queue::Ops, tail},
             },
-            send::Finish,
         },
         setup,
         slot::{
@@ -156,7 +155,7 @@ where
                             match retired {
                                 ControlFlow::Continue(Ok(())) => {}
                                 ControlFlow::Continue(Err(error)) => {
-                                    return Step::Done(self.fail(Failure::Receive(error)));
+                                    return Step::Done(self.fail(error));
                                 }
                                 ControlFlow::Break((state, ())) => {
                                     self.turn.driver.reclaim(state.retire())
@@ -173,7 +172,7 @@ where
         }
     }
 
-    pub(super) fn fail(&mut self, cause: Failure) -> Branch<'d, ID, R, B> {
+    pub(super) fn fail(&mut self, cause: dope_core::Errno) -> Branch<'d, ID, R, B> {
         (self.call.failed)((
             self.call.ctx,
             self.call.claim,
@@ -394,7 +393,7 @@ where
         });
         match result {
             Ok((proof, send)) => {
-                <M::Ingress as Finish<W>>::release::<ID>(send, storage.runtime);
+                <M::Ingress as input::Dispatch<W>>::release::<ID>(send, storage.runtime);
                 Branch::Retired(proof)
             }
             Err((_, branch)) => branch,

@@ -268,7 +268,7 @@ where
                     Participants<'_, '_, A, S>,
                 >| {
                     let ((app, ctrl), _, io, driver) = scope;
-                    let close::Failure::Receive(error) = io.failure();
+                    let error = io.failure();
                     let (slot, queue) = io.into_parts();
                     match state::Io::new(slot) {
                         state::Io::Attached(conn) => {

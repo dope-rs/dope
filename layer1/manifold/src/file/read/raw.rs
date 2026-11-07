@@ -9,7 +9,7 @@ use dope_core::{
     io::{self, event::Kind, fs, transfer},
 };
 use dope_runtime::executor;
-use o3::{alloc, buffer::bytes::bounded};
+use o3::{alloc, buffer::bytes::bounded, mem::Return};
 
 use crate::{
     app::{dispatch, dispatch::event},
@@ -72,23 +72,26 @@ impl Metadata {
     }
 }
 
-impl read::Read<'_> {
-    pub fn output(&self) -> bounded::Value<&[u8]> {
+impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
+    pub fn output<'a>(&'a self) -> bounded::Value<&'a [u8]>
+    where
+        'd: 'a,
+    {
         // SAFETY: the private owner retains its admitted capacity, and initialized
         // length cannot exceed it. This borrow prevents resubmission or mutation.
-        bounded::Value::from_raw(unsafe { bounded::raw::Input::new(self.output.as_ref()) })
+        bounded::Value::from_raw(unsafe { bounded::raw::Input::new(self.output.item().as_ref()) })
     }
 }
 
-pub(super) struct Entry<'d> {
+pub(super) struct Entry<'d, R: Return> {
     pub(super) index: indices::SlotIndex,
     pub(super) phase: cell::Cell<Option<Phase<'d>>>,
     pub(super) waiter: cell::Cell<Option<wake::Waker<'d>>>,
     pub(super) detached: cell::Cell<bool>,
-    request: cell::UnsafeCell<Option<Request<'d>>>,
+    request: cell::UnsafeCell<Option<Request<R>>>,
 }
 
-impl<'d> Entry<'d> {
+impl<'d, R: Return> Entry<'d, R> {
     pub(super) fn new(index: indices::SlotIndex) -> Self {
         Self {
             index,
@@ -99,13 +102,13 @@ impl<'d> Entry<'d> {
         }
     }
 
-    pub(super) fn insert(&self, request: Request<'d>) {
+    pub(super) fn insert(&self, request: Request<R>) {
         // SAFETY: callers own removed FREE membership or have taken an unsubmitted
         // or terminal request. No native borrow or application call crosses publication.
         unsafe { *self.request.get() = Some(request) };
     }
 
-    pub(super) fn take(&self) -> Request<'d> {
+    pub(super) fn take(&self) -> Request<R> {
         // SAFETY: callers own a terminal/unsubmitted phase or Finish's native
         // quiescence proof. Native users and request borrows have ended.
         let Some(request) = (unsafe { &mut *self.request.get() }).take() else {
@@ -114,7 +117,7 @@ impl<'d> Entry<'d> {
         request
     }
 
-    pub(super) fn with_request<T>(&self, run: impl FnOnce(&mut Request<'d>) -> T) -> T {
+    pub(super) fn with_request<T>(&self, run: impl FnOnce(&mut Request<R>) -> T) -> T {
         // SAFETY: private callers first take this slot's phase. They invoke no
         // application code and finish the loan before restoring or freeing it.
         // Submitted owners are borrowed only after their matching terminal CQ.
@@ -125,8 +128,8 @@ impl<'d> Entry<'d> {
     }
 }
 
-pub(super) fn submit<'d, ID: Identity>(
-    entry: &Entry<'d>,
+pub(super) fn submit<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>>(
+    entry: &Entry<'d, R>,
     slots: &flight::Slots<'d, ID>,
     free: &mut Option<Box<Scratch>>,
     driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
@@ -163,7 +166,7 @@ pub(super) fn submit<'d, ID: Identity>(
                 // The private owner cannot grow or move its heap while submitted.
                 let output = bounded::Value::from_raw(unsafe {
                     bounded::raw::Input::new(std::slice::from_raw_parts_mut(
-                        request.output.as_mut_ptr().cast(),
+                        request.output.item_mut().as_mut_ptr().cast(),
                         request.length.widen().get(),
                     ))
                 });
@@ -185,12 +188,7 @@ pub(super) fn submit<'d, ID: Identity>(
                 // borrow and stays untouched through original completion or Finish.
                 let result = unsafe { driver.reborrow().submit_file(slots, operation) };
                 if result.is_err() {
-                    let MetadataState::Scratch(scratch) =
-                        mem::replace(&mut request.state, MetadataState::Idle)
-                    else {
-                        unreachable!("metadata")
-                    };
-                    Scratch::release(free, scratch);
+                    request.release(free);
                 }
                 result.map(Active::Sync)
             }
@@ -218,7 +216,9 @@ pub(super) fn submit<'d, ID: Identity>(
 
 // SAFETY: installation retains the port's fixed request slots and the flight
 // group; neither cancellation nor shutdown releases submitted resources.
-unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Reader<'_, 'd, ID> {
+unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Manifold<'d>
+    for Reader<'_, 'd, ID, R>
+{
     type Route = ID;
     type Dispatch = event::Driven<dispatch::raw::Retained>;
     type Install = dispatch::raw::Plain;
@@ -249,7 +249,9 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Manifold<'d> for Reader<'_, 'd, ID>
 }
 
 // SAFETY: unit selection observes this exact installed Reader.
-unsafe impl<'d, ID: Identity> dispatch::raw::Probe<'d, Self> for Reader<'_, 'd, ID> {
+unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Probe<'d, Self>
+    for Reader<'_, 'd, ID, R>
+{
     type Plan = ();
     fn select() -> Option<()> {
         Some(())
@@ -268,9 +270,11 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Probe<'d, Self> for Reader<'_, 'd, 
 
 // SAFETY: the view only borrows this installed owner's request port. Admission
 // cannot access a submitted buffer or release its descriptor.
-unsafe impl<'d, ID: Identity> dispatch::raw::Control<'d> for Reader<'_, 'd, ID> {
+unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Control<'d>
+    for Reader<'_, 'd, ID, R>
+{
     type View<'step>
-        = &'step read::Port<'d>
+        = &'step read::Port<'d, R>
     where
         Self: 'step,
         'd: 'step;
@@ -283,7 +287,9 @@ unsafe impl<'d, ID: Identity> dispatch::raw::Control<'d> for Reader<'_, 'd, ID> 
     }
 }
 
-impl<'d, ID: Identity> event::Drive<'d> for Reader<'_, 'd, ID> {
+impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> event::Drive<'d>
+    for Reader<'_, 'd, ID, R>
+{
     type Access = dispatch::raw::Retained;
 
     fn dispatch<'app, 'driver>(
@@ -320,7 +326,7 @@ impl<'d, ID: Identity> event::Drive<'d> for Reader<'_, 'd, ID> {
                                 Ok(amount) => {
                                     // SAFETY: the matching terminal CQ ended native access
                                     // and initialized this prefix within the admitted capacity.
-                                    unsafe { request.output.set_len(amount.into_raw()) };
+                                    unsafe { request.output.item_mut().set_len(amount.into_raw()) };
                                     Ok(amount)
                                 }
                                 Err(cause) => Err(Error::System(cause)),

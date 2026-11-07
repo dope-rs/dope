@@ -93,7 +93,7 @@ impl<'w, 'd: 'w, ID: route::Identity> handler::Scoped<'w, 'd, ID> for App {
             let Some(len) = num::NonZero::new(input.as_slice().len()) else {
                 return (None, Err(Failure::Empty));
             };
-            match input.try_prefix::<{ u32::MAX }>(len) {
+            match input.try_prefix::<{ u32::MAX }>(0, len) {
                 Ok((_, end)) => (Some(end), Ok(())),
                 Err(error) => (None, Err(Failure::Prefix(error))),
             }

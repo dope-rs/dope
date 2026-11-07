@@ -17,7 +17,6 @@ use crate::{
                 input,
                 storage::{queue::Ops as _, tail, tail::Slot},
             },
-            send::Finish,
         },
     },
     wire::{self, send::Store as _},
@@ -109,7 +108,7 @@ where
                 let conn = entry.remove();
                 (key, conn.control.send.release(), conn.state)
             };
-            <M::Ingress as Finish<W>>::release::<ID>(released, &mut self.runtime);
+            <M::Ingress as input::Dispatch<W>>::release::<ID>(released, &mut self.runtime);
             free(key, Released::State(&mut state), finish.state_token());
         }
     }

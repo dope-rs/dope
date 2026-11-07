@@ -22,15 +22,6 @@ impl<'d, R, C: kind::Class> Bound<'d, R, C> {
     }
 }
 
-impl<'d, C: kind::Class> Bound<'d, request::Datagram<'d>, C> {
-    pub(crate) fn into_raw(self) -> Bound<'d, request::Lowered, C> {
-        Bound {
-            raw: self.raw.into_inner(),
-            reservation: self.reservation,
-        }
-    }
-}
-
 const _: () = {
     assert!(
         mem::size_of::<Bound<'static>>()

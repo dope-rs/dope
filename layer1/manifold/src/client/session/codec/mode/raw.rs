@@ -103,7 +103,7 @@ impl<'d, B: Buffer<'d>, C: buffer::Cursor + buffer::raw::Consume> Source<'d, B, 
     ) -> Result<(), Failure> {
         while let Some(count) = NonZero::new(stage.spare().min(chunk.as_ref().len())) {
             codec::Input::consume(chunk, budget, stage.limit(), |input| {
-                let (prefix, end) = match input.try_prefix(count) {
+                let (prefix, end) = match input.try_prefix(0, count) {
                     Ok(value) => value,
                     Err(error) => return (None, Err(Failure::Input(error))),
                 };

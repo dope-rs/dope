@@ -309,7 +309,7 @@ impl<'w, 'd: 'w, ID: route::Identity> handler::Scoped<'w, 'd, ID> for DynamicApp
             let Some(len) = num::NonZero::new(input.as_slice().len()) else {
                 return (None, None);
             };
-            match input.try_prefix::<{ u32::MAX }>(len) {
+            match input.try_prefix::<{ u32::MAX }>(0, len) {
                 Ok((_, end)) => (Some(end), Some(Ok(()))),
                 Err(error) => (None, Some(Err(error))),
             }

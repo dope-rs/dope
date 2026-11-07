@@ -108,10 +108,8 @@ impl<'d, Tag: route::Tag> Slots<'d, Tag> {
         fd: &handles::Datagram<'d>,
         target: route::Operation<'d, Tag, kind::Recv>,
     ) -> Result<flight::Flight<'d, kind::Recv>, result::SubmitError> {
-        let recv = request::Datagram::new(fd);
         let (permit, space) = self.try_admit(&mut driver, target)?;
-        let entry = bound::Bound::new(recv, space);
-        Ok(permit.submit(entry.into_raw()))
+        Ok(permit.submit(request::Lowered::recv_msg(fd, space)))
     }
 }
 

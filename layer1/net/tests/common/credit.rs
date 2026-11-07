@@ -1,6 +1,7 @@
 use std::{convert::Infallible, net::SocketAddr};
 
 use dope_core::{
+    Errno,
     driver::{
         self,
         life::recovery,
@@ -178,7 +179,7 @@ pub fn release_one<'p, 'd>(
     key: pool::Key<'d, Route>,
     driver: &mut driver::Context<'_, 'd>,
     turn: schedule::Turn<'_, 'd>,
-) -> Result<bool, close::Failure> {
+) -> Result<bool, Errno> {
     let mut released = Ok(false);
     <Disabled as Policy<Identity>>::close(
         pool,
@@ -201,9 +202,9 @@ pub fn release_one<'p, 'd>(
                 Identity,
                 (),
                 (),
-                Result<bool, close::Failure>,
+                Result<bool, Errno>,
             >| close::Decision::Ready,
-            commit: |_: close::Commit<'_, '_, '_, '_, 'd, (), Result<bool, close::Failure>, ()>| {
+            commit: |_: close::Commit<'_, '_, '_, '_, 'd, (), Result<bool, Errno>, ()>| {
                 close::Approval::Ready(())
             },
             failed: |(released, _, failed, _): close::Failed<
@@ -222,10 +223,10 @@ pub fn release_one<'p, 'd>(
                 32,
                 demand::Fallible,
                 (),
-                Result<bool, close::Failure>,
+                Result<bool, Errno>,
             >| *released = Err(failed.failure()),
         },
-        |released: &mut Result<bool, close::Failure>, _: Payload<'d>, _| {
+        |released: &mut Result<bool, Errno>, _: Payload<'d>, _| {
             if let Ok(released) = released {
                 *released = true;
             }

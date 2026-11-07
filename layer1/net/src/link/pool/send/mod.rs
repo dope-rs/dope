@@ -1,9 +1,7 @@
-mod finish;
 use dope_core::{
     driver::{self, route::Identity},
     io::event::net::send::Completion,
 };
-pub use finish::Finish;
 use send::reclaim;
 
 use crate::{
@@ -98,7 +96,6 @@ where
     ) -> SendOutcome<'d, ID, O>
     where
         B: data::raw::Payload<'d>,
-        M::Ingress: Finish<W>,
     {
         self.run(
             driver,
@@ -123,7 +120,6 @@ where
     ) -> SendOutcome<'d, ID, ()>
     where
         B: data::raw::Payload<'d>,
-        M::Ingress: Finish<W>,
     {
         self.run(driver, before, Self::close, |_, body| drop(body), complete)
     }
@@ -317,7 +313,7 @@ where
             complete(egress.connection, &result);
             (result, space)
         };
-        <M::Ingress as Finish<W>>::release::<ID>(space, &mut pool.prepared.runtime);
+        <M::Ingress as input::Dispatch<W>>::release::<ID>(space, &mut pool.prepared.runtime);
         if space == send::Availability::Released {
             pool.prepared.pending.release_send();
         }
