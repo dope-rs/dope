@@ -32,12 +32,9 @@ impl<'a, 'b, B: stream::Recv> Write<'a, 'b, B> {
         B: 'a,
     {
         self.append(permit, prepared.ranges, reserve);
-        self.entry
-            .state
-            .progress
-            .record(prepared.end, frame::Boundary::More);
+        self.entry.state.record(prepared.end, frame::Boundary::More);
         if let Some(end) = prepared.final_size {
-            self.entry.state.progress.record(end, frame::Boundary::End);
+            self.entry.state.record(end, frame::Boundary::End);
         }
     }
 

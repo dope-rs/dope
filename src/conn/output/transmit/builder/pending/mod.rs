@@ -193,7 +193,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             let crypto = input.take_crypto();
             let epoch = plan.epoch;
             let number = plan.packet_number.protected();
-            match journals::Reserve::try_new(records::Tracked::new(input), epoch, number) {
+            match journals::Reserve::try_new(input, epoch, number) {
                 Ok(reserved) => (Records::Tracked(reserved), crypto),
                 Err((input, reason, demand)) => {
                     let (controls, streams) = demand.counts();

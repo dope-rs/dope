@@ -8,42 +8,11 @@ use crate::client::{self, auth, control::Sender, life, protocol};
 use crate::errors;
 use crate::proto::datagram;
 use crate::runtime::brand;
-use crate::runtime::endpoint::{self, control::SendError, owner};
+use crate::runtime::endpoint::{control::SendError, owner};
 use crate::runtime::mux::{self, router::Admission};
 use crate::runtime::routing;
-use life::topology;
 
-/// The dialer binds its protocol bridge and receive storage to the same endpoint.
-type Connection<'pool, 'd, const ID: u8, P, B, A> = endpoint::Endpoint<
-    'd,
-    ID,
-    client::Bridge<'d, ID, P, B>,
-    <P as protocol::Protocol<'d>>::Receive,
-    endpoint::Idle,
-    <A as auth::Mode>::Binding,
-    datagram::Sealed<'pool>,
->;
-
-#[pin_project::pin_project]
-pub(in crate::client) struct Engine<
-    'pool,
-    'd,
-    const ID: u8,
-    P: protocol::Protocol<'d>,
-    B: client::Backoff,
-    A: auth::Mode,
-    C: client::ConfigSource,
-    R: routing::PeerRoute,
-> where
-    A::Binding: owner::Binding<'d, ID>,
-{
-    #[pin]
-    pub(in crate::client) endpoint: Connection<'pool, 'd, ID, P, B, A>,
-    topology: topology::Topology<A, R>,
-    config: C,
-}
-
-impl<'pool, 'd, const ID: u8, P, B, A, C, R> Engine<'pool, 'd, ID, P, B, A, C, R>
+impl<'pool, 'd, const ID: u8, P, B, A, C, R> super::Dialer<'pool, 'd, ID, P, B, A, C, R>
 where
     P: protocol::Protocol<'d>,
     B: client::Backoff,
@@ -52,18 +21,6 @@ where
     C: client::ConfigSource,
     R: routing::PeerRoute,
 {
-    pub(in crate::client) fn new(
-        endpoint: Connection<'pool, 'd, ID, P, B, A>,
-        topology: topology::Topology<A, R>,
-        config: C,
-    ) -> Self {
-        Self {
-            endpoint,
-            topology,
-            config,
-        }
-    }
-
     /// Existing transport deadlines own capacity wakeup.
     pub(in crate::client) fn next_retry(&self) -> Option<time::Instant> {
         let retry = self.endpoint.handler().lifecycle().next_retry()?;

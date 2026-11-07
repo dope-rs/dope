@@ -141,9 +141,14 @@ impl<
         let conn = initial::Client::new(dcid, self.local.value(), options)
             .try_direct::<DOMAIN, B, A::Send>(auth, route, token)?;
         let plan = plan::Plan::new(conn, tls, peer, self.limit, now, self.local);
-        match install::Install::new(self.handler, self.binding)
-            .try_attach(scope, plan, |_, _, _, _, handle| handle)
-            .map_err(|error| errors::Connect::Protocol(error.into()))?
+        match install::try_attach(
+            self.handler,
+            self.binding,
+            scope,
+            plan,
+            |_, _, _, _, handle| handle,
+        )
+        .map_err(|error| errors::Connect::Protocol(error.into()))?
         {
             install::Outcome::Installed(handle) => Ok(handle),
             install::Outcome::Rejected => Err(errors::Connect::ApplicationRejected),

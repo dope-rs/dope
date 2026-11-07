@@ -209,8 +209,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
                 .try_plan(group, planner::Plan::new(segments, parts))?;
             bytes = Build::try_bytes(bytes, impact.accepted_bytes)?;
             recv_n += impact.stream_slots;
-            resident +=
-                usize::from(impact.stream_slots != 0 && streams.resident.read().key(id).is_none());
+            resident += usize::from(impact.stream_slots != 0 && streams.resident.key(id).is_none());
             events += impact.event_slots;
             credit = credit
                 .checked_add(impact.flow_control_bytes)
@@ -234,7 +233,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
                 transmit::Commit::new(&mut streams).plan_credit(id)?
             };
             send_n += slots;
-            if slots != 0 && streams.resident.read().key(id).is_none() {
+            if slots != 0 && streams.resident.key(id).is_none() {
                 resident += usize::from(group.receive().is_none());
             }
             Ok::<_, detail::Plan>(())
@@ -253,7 +252,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
         detail::Plan::try_capacity(
             detail::Slot::Resident,
             resident,
-            streams.resident.read().available(),
+            streams.resident.available(),
         )?;
         let credit = streams.receive.connection_window.try_record(credit)?;
         self.bytes = bytes;

@@ -6,7 +6,7 @@ use o3::{buffer::resident, depot::capacity};
 use dope::core::driver;
 
 use crate::conn::id;
-use crate::runtime::endpoint::{self, config, owner, reactor};
+use crate::runtime::endpoint::{self, config, owner};
 use crate::runtime::mux::{self, app, auth, builder, handler};
 use crate::runtime::receive;
 use crate::runtime::routing;
@@ -67,11 +67,7 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         .bind(driver)
         .map_err(endpoint::BindError::Mux)?;
         let ep = self.endpoint.prepare(driver)?;
-        ep.bind(
-            self.bind,
-            reactor::Engine::new(mux, endpoint::Idle::new()),
-            driver,
-        )
+        ep.bind(self.bind, mux, endpoint::Idle::new(), driver)
     }
 
     pub fn bind_app<'pool, 'd, H, A>(
@@ -97,7 +93,8 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         let ep = self.endpoint.prepare(driver)?;
         ep.bind(
             self.bind,
-            reactor::Engine::new(mux, endpoint::Run::<_, app::Silent>::new(app)),
+            mux,
+            endpoint::Run::<_, app::Silent>::new(app),
             driver,
         )
     }

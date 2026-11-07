@@ -375,8 +375,8 @@ struct Candidate<'a, P> {
     selected: P,
 }
 
-// SAFETY: only Selection constructs this owner, from the immediately preceding
-// traversal of the same exclusive journal; the callback cannot access it.
+// SAFETY: Selection's exclusive traversal or Reserve's frozen inputs retain
+// this retry's exact active node in the same journal.
 unsafe impl depot::raw::Source<Retry> for Candidate<'_, Retry> {
     type Key = storage::Key<log::NodeTag>;
     fn key(&self) -> Self::Key {
@@ -392,8 +392,8 @@ impl Candidate<'_, Retry> {
     }
 }
 
-// SAFETY: this probe was selected under the same retained journal loan, with
-// its exact native generation and carrier count, before any mutation.
+// SAFETY: Selection or Reserve retains this probe's original journal,
+// active node, native generation and admitted carrier count.
 unsafe impl depot::raw::Source<Probe> for Candidate<'_, Probe> {
     type Key = storage::Key<log::NodeTag>;
     fn key(&self) -> Self::Key {

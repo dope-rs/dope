@@ -1,4 +1,3 @@
-use crate::stream::release;
 use o3::buffer;
 
 use std::time;
@@ -22,16 +21,15 @@ pub(super) enum Outcome {
     Lost,
 }
 
-pub(super) fn try_run<const DOMAIN: u8, B, D, E>(
+pub(super) fn try_run<const DOMAIN: u8, B, D>(
     egress: &mut output::Egress,
-    delivery: &mut delivery::Delivery<'_, DOMAIN, B, D, E>,
+    delivery: &mut delivery::Delivery<'_, DOMAIN, B, D>,
     now: time::Instant,
     changed: bool,
 ) -> Result<Outcome, conn::Timing>
 where
     B: stream::Recv,
     D: buffer::raw::Segment,
-    E: release::Sink,
 {
     let recovery = &egress.recovery;
     let largest = conn::Epoch::ALL.map(|epoch| {

@@ -5,9 +5,7 @@ use crate::{
     conn, errors, proto, proto::recovery::numbers, proto::recovery::pmtud, runtime::routing, stream,
 };
 use conn::stream::Streams;
-use conn::{life, output, wire};
-use initial::seed;
-use life::{initial, options};
+use conn::{life::options, output, wire};
 use output::control;
 use proto::param::Set;
 use wire::crypto::chunks;
@@ -16,29 +14,16 @@ use wire::{
     tls,
 };
 
-pub(super) struct Assembly<R, const DOMAIN: u8> {
+pub(super) struct Assembly<const DOMAIN: u8> {
     pub(super) input: options::Options,
     pub(super) wire: tls::Handshake<DOMAIN>,
-    pub(super) role: R,
-}
-
-pub(super) struct Client {
-    pub(super) seed: seed::Seed<seed::Client>,
-    pub(super) token: Option<Vec<u8>>,
+    pub(super) identities: setup::Identities,
+    pub(super) tokens: setup::Tokens,
     pub(super) shard: Option<routing::Shard>,
+    pub(super) valid: bool,
 }
 
-pub(super) struct Server {
-    pub(super) seed: seed::Seed<seed::Server>,
-}
-
-struct Ready {
-    base: seed::Base,
-    tokens: setup::Tokens,
-    shard: Option<routing::Shard>,
-}
-
-impl<const DOMAIN: u8> Assembly<Client, DOMAIN> {
+impl<const DOMAIN: u8> Assembly<DOMAIN> {
     pub(super) fn try_finish<B, D>(
         self,
         peer: &mut Option<Set>,
@@ -50,72 +35,11 @@ impl<const DOMAIN: u8> Assembly<Client, DOMAIN> {
         let Self {
             input,
             wire,
-            role: Client { seed, token, shard },
+            identities,
+            tokens,
+            shard,
+            valid,
         } = self;
-        let (base, seed::Client) = seed.into_parts();
-        Assembly {
-            input,
-            wire,
-            role: Ready {
-                base,
-                tokens: setup::Tokens::Client(token.unwrap_or_default()),
-                shard,
-            },
-        }
-        .try_ready(peer)
-    }
-}
-
-impl<const DOMAIN: u8> Assembly<Server, DOMAIN> {
-    pub(super) fn try_finish<B, D>(self) -> Result<conn::Connection<DOMAIN, B, D>, errors::Connect>
-    where
-        B: stream::Recv,
-        D: buffer::raw::Segment,
-    {
-        let Self {
-            input,
-            wire,
-            role: Server { seed },
-        } = self;
-        let (base, seed::Server { token }) = seed.into_parts();
-        let mut peer = None;
-        Assembly {
-            input,
-            wire,
-            role: Ready {
-                base,
-                tokens: setup::Tokens::Server(token),
-                shard: None,
-            },
-        }
-        .try_ready(&mut peer)
-    }
-}
-
-impl<const DOMAIN: u8> Assembly<Ready, DOMAIN> {
-    fn try_ready<B, D>(
-        self,
-        peer: &mut Option<Set>,
-    ) -> Result<conn::Connection<DOMAIN, B, D>, errors::Connect>
-    where
-        B: stream::Recv,
-        D: buffer::raw::Segment,
-    {
-        let Self {
-            input,
-            wire,
-            role:
-                Ready {
-                    base,
-                    tokens,
-                    shard,
-                },
-        } = self;
-        let dcid = base.initial_dcid;
-        let local = base.local_cid;
-        let valid = base.peer_address_validated;
-        let remote = base.peer_cid;
-        let first = base.peer_first_scid;
         let options::Options {
             transport: cfg,
             datagrams: dgram,
@@ -131,12 +55,7 @@ impl<const DOMAIN: u8> Assembly<Ready, DOMAIN> {
         let strm = logs.stream();
         let side = tokens.initiator();
         let route = path::State::new(setup::Setup {
-            identities: setup::Identities {
-                local_cid: local,
-                original_dcid: dcid,
-                peer_cid: remote,
-                peer_first_scid: first,
-            },
+            identities,
             tokens,
             peer_shard: shard,
             stateless_reset_secret: crypto.stateless_reset_secret,

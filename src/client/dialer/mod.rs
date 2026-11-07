@@ -15,6 +15,7 @@ use dope::runtime::executor;
 use crate::client;
 use crate::client::auth;
 use crate::client::build;
+use crate::client::life::topology;
 use crate::client::protocol;
 use crate::conn::scope;
 use crate::errors;
@@ -23,7 +24,17 @@ use crate::runtime::endpoint::{self, owner};
 use crate::runtime::routing;
 
 mod engine;
-pub(super) use engine::Engine;
+
+/// The dialer binds its protocol bridge and receive storage to the same endpoint.
+type Endpoint<'pool, 'd, const ID: u8, P, B, A> = endpoint::Endpoint<
+    'd,
+    ID,
+    client::Bridge<'d, ID, P, B>,
+    <P as protocol::Protocol<'d>>::Receive,
+    endpoint::Idle,
+    <A as auth::Mode>::Binding,
+    datagram::Sealed<'pool>,
+>;
 
 pub(super) enum Connection {
     Current(client::SlotId),
@@ -45,7 +56,9 @@ pub struct Dialer<
     A::Binding: owner::Binding<'d, ID>,
 {
     #[pin]
-    pub(super) inner: Engine<'pool, 'd, ID, P, B, A, C, R>,
+    pub(super) endpoint: Endpoint<'pool, 'd, ID, P, B, A>,
+    pub(super) topology: topology::Topology<A, R>,
+    pub(super) config: C,
     pub(super) limits: build::WorkLimits,
 }
 
@@ -58,32 +71,16 @@ where
     A::Binding: owner::Binding<'d, ID>,
     C: client::ConfigSource,
     R: routing::PeerRoute,
-    endpoint::Endpoint<
-        'd,
-        ID,
-        client::Bridge<'d, ID, P, B>,
-        P::Receive,
-        endpoint::Idle,
-        A::Binding,
-        datagram::Sealed<'pool>,
-    >: dispatch::raw::Manifold<'d>,
+    Endpoint<'pool, 'd, ID, P, B, A>: dispatch::raw::Manifold<'d>,
 {
-    type Inner = endpoint::Endpoint<
-        'd,
-        ID,
-        client::Bridge<'d, ID, P, B>,
-        P::Receive,
-        endpoint::Idle,
-        A::Binding,
-        datagram::Sealed<'pool>,
-    >;
+    type Inner = Endpoint<'pool, 'd, ID, P, B, A>;
 
     fn inner(self: pin::Pin<&Self>) -> pin::Pin<&Self::Inner> {
-        self.project_ref().inner.project_ref().endpoint
+        self.project_ref().endpoint
     }
 
     fn inner_mut(self: pin::Pin<&mut Self>) -> pin::Pin<&mut Self::Inner> {
-        self.project().inner.project().endpoint
+        self.project().endpoint
     }
 }
 
@@ -118,7 +115,7 @@ where
             ),
         >,
     ) -> ops::ControlFlow<io::Event<'d>> {
-        event::Drive::dispatch(call.map_owner(|owner| owner.project().inner.project().endpoint))
+        event::Drive::dispatch(call.map_owner(|owner| owner.project().endpoint))
     }
 }
 
@@ -132,30 +129,25 @@ where
     R: routing::PeerRoute,
 {
     pub fn protocol(&self) -> &P {
-        self.inner.endpoint.handler().protocol()
+        self.endpoint.handler().protocol()
     }
 
     /// Returns the first permanent failure, if endpoint admission stopped.
     /// Ordinary packet loss and temporary queue saturation do not set this state.
     pub fn failure(&self) -> Option<protocol::Failure> {
-        self.inner.endpoint.handler().failure()
+        self.endpoint.handler().failure()
     }
 
     pub(super) fn protocol_mut(self: pin::Pin<&mut Self>) -> pin::Pin<&mut P> {
-        self.project()
-            .inner
-            .project()
-            .endpoint
-            .handler_mut()
-            .protocol_pin()
+        self.project().endpoint.handler_mut().protocol_pin()
     }
 
     pub fn local_addr(&self) -> net::SocketAddr {
-        self.inner.endpoint.local_addr()
+        self.endpoint.local_addr()
     }
 
     pub fn len(&self) -> usize {
-        self.inner.endpoint.handler().lifecycle().len()
+        self.endpoint.handler().lifecycle().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -163,13 +155,13 @@ where
     }
 
     pub fn smoothed_rtt(&self, slot: client::SlotId) -> Option<time::Duration> {
-        let handle = self.inner.endpoint.handler().lifecycle().handle(slot)?;
-        self.inner.endpoint.conn(handle)?.recovery().smoothed_rtt()
+        let handle = self.endpoint.handler().lifecycle().handle(slot)?;
+        self.endpoint.conn(handle)?.recovery().smoothed_rtt()
     }
 
     pub fn path_stats(&self, slot: client::SlotId) -> Option<client::PathStats> {
-        let handle = self.inner.endpoint.handler().lifecycle().handle(slot)?;
-        let conn = self.inner.endpoint.conn(handle)?;
+        let handle = self.endpoint.handler().lifecycle().handle(slot)?;
+        let conn = self.endpoint.conn(handle)?;
         Some(client::PathStats {
             srtt: conn.recovery().smoothed_rtt(),
             min_rtt: conn.recovery().min_rtt(),
@@ -179,39 +171,31 @@ where
     }
 
     pub fn active_len(&self) -> usize {
-        self.inner.endpoint.len()
+        self.endpoint.len()
     }
 
     /// Exact endpoint slots whose current generation completed protocol
     /// establishment. This deliberately differs from physical mux connection
     /// count during handshakes and reconnect teardown.
     pub fn live_len(&self) -> usize {
-        self.inner.endpoint.handler().lifecycle().live()
+        self.endpoint.handler().lifecycle().live()
     }
 
     /// Seals retry admission and requests closure of every retained generation
     /// at one driver-branded observation.
     pub fn close_all(self: pin::Pin<&mut Self>, now: clock::Moment<'d>) {
-        now.at(self)
-            .apply(|dialer, now| dialer.project().inner.close_at(now));
+        now.at(self).apply(|dialer, now| dialer.close_at(now));
     }
 
     pub fn seal(self: pin::Pin<&mut Self>) {
-        self.project()
-            .inner
-            .project()
-            .endpoint
-            .handler_mut()
-            .life_mut()
-            .seal();
+        self.project().endpoint.handler_mut().life_mut().seal();
     }
 
     /// Closes the whole logical endpoint set while leaving reconnect
     /// admission open. Multipath applications use this to rotate every path
     /// into one new app generation after any constituent path fails.
     pub(super) fn restart_all(self: pin::Pin<&mut Self>, now: clock::Moment<'d>) {
-        now.at(self)
-            .apply(|dialer, now| dialer.project().inner.restart_at(now));
+        now.at(self).apply(|dialer, now| dialer.restart_at(now));
     }
 
     pub(super) fn try_send(
@@ -221,7 +205,7 @@ where
         now: clock::Moment<'d>,
     ) -> Result<(), errors::SendFailure<Vec<u8>>> {
         now.at(self)
-            .apply(|dialer, raw| dialer.project().inner.try_send_at(slot, data, raw))
+            .apply(|dialer, raw| dialer.try_send_at(slot, data, raw))
     }
 
     pub(super) fn with_conn<T>(
@@ -232,13 +216,13 @@ where
             scope::Temporal<'scope, 'd, ID, P::Receive, resident::Shared<'d>>,
         ) -> T,
     ) -> Result<T, errors::Access> {
-        let endpoint = &self.as_ref().get_ref().inner.endpoint;
+        let endpoint = &self.as_ref().get_ref().endpoint;
         let life = endpoint.handler().lifecycle();
         let handle = match target {
             Connection::Current(slot) => life.handle(slot).ok_or(errors::Access::Closed)?,
             Connection::Attempt(attempt) => life.resolve(endpoint.domain().identity(), attempt)?,
         };
-        actions::with_connection(self.project().inner.project().endpoint, handle, now, op)
+        actions::with_connection(self.project().endpoint, handle, now, op)
     }
 
     pub(super) fn try_packet(
@@ -248,6 +232,6 @@ where
         now: clock::Moment<'d>,
     ) -> Result<(), errors::SendFailure<datagram::Packet<'pool>>> {
         now.at(self)
-            .apply(|dialer, raw| dialer.project().inner.try_pool_at(slot, packet, raw))
+            .apply(|dialer, raw| dialer.try_pool_at(slot, packet, raw))
     }
 }

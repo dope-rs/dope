@@ -226,7 +226,7 @@ where
     }
 
     pub(in crate::conn) fn available(&self) -> usize {
-        self.storage.capacity.saturating_sub(self.storage.len)
+        self.storage.available as usize
     }
 
     /// The table's initialized prefix stays within its admitted u32 capacity.

@@ -9,22 +9,20 @@ use rustls::{ClientConfig, client::Resumption, quic};
 use crate::proto::param;
 use crate::{conn, errors, runtime::routing, security::qkdf, stream, wire::packet::cid};
 use conn::{life, wire};
-use life::{
-    initial::{assembly, seed},
-    options,
-    tls::clients,
-};
-use wire::tls::Handshake;
+use life::{initial::assembly, options, tls::clients};
+use wire::{path::setup, tls::Handshake};
 
 pub(crate) struct Client {
-    seed: seed::Seed<seed::Client>,
+    dcid: cid::Id,
+    local: cid::Id,
     input: options::Options,
 }
 
 impl Client {
     pub(crate) fn new(dcid: cid::Id, local: cid::Id, opts: options::Options) -> Self {
         Self {
-            seed: seed::Seed::client(dcid, local),
+            dcid,
+            local,
             input: opts,
         }
     }
@@ -68,11 +66,19 @@ impl Client {
             }
         };
         let hs = hs.bind_auth(auth);
-        let Self { seed, input } = self;
+        let Self { dcid, local, input } = self;
         assembly::Assembly {
             input,
             wire: hs,
-            role: assembly::Client { seed, token, shard },
+            identities: setup::Identities {
+                local_cid: local,
+                original_dcid: dcid,
+                peer_cid: dcid,
+                peer_first_scid: None,
+            },
+            tokens: setup::Tokens::Client(token.unwrap_or_default()),
+            shard,
+            valid: true,
         }
         .try_finish(&mut peer)
     }
@@ -86,7 +92,7 @@ impl Client {
         self.input
             .transport
             .params()
-            .bind_client(&self.seed.local_cid)
+            .bind_client(&self.local)
             .encode(&mut params)?;
         let entries = config.alpn_protocols.as_slice();
         let alpn = Block::try_clone(entries, |protocol| {
@@ -102,7 +108,7 @@ impl Client {
             alpn,
         )
         .map_err(errors::Connect::Setup)?;
-        let keys = qkdf::Initial::try_new(&self.seed.initial_dcid)
+        let keys = qkdf::Initial::try_new(&self.dcid)
             .and_then(qkdf::Pair::try_client)
             .map_err(|error| errors::Connect::Protocol(error.into()))?;
         let mut hs = Handshake::try_new(

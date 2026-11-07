@@ -1,4 +1,3 @@
-use crate::stream::release;
 use o3::buffer;
 
 use std::time;
@@ -10,7 +9,7 @@ use crate::{conn, stream};
 /// Retransmits old-path flight before installing fresh recovery state.
 pub(in crate::conn) fn try_commit<'a, const DOMAIN: u8, B, D>(
     egress: &'a mut output::Egress,
-    mut delivery: delivery::Delivery<'a, DOMAIN, B, D, release::Ignore>,
+    mut delivery: delivery::Delivery<'a, DOMAIN, B, D>,
     now: time::Instant,
 ) -> Result<(), conn::Timing>
 where

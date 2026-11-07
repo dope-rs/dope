@@ -215,6 +215,7 @@ impl Space<'_> {
             .min()
     }
 
+    #[inline]
     pub(in crate::conn::output) fn has_room_for(&self, pn: u64, needed: usize) -> bool {
         self.table.len.saturating_add(needed) <= self.table.limit()
             && self.epoch.bind(&self.table.rings).has_room_for(pn, needed)

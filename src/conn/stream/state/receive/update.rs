@@ -199,7 +199,7 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
         let mut slots = recv.map.parts();
         let retire = match slots.prepared(map::Id::new(id), key, table) {
             map::Slot::Occupied(mut slot) => {
-                slot.reset(code, end);
+                slot.reset(end);
                 slot.push_reset(events, table, code);
                 match slot.try_reclaim() {
                     Ok(reclaim) => {
@@ -326,7 +326,7 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
             .receive
             .map
             .find(map::Id::new(id), &self.resident)
-            .is_some_and(|item| item.state().is_eof() && item.state().reset_error().is_none())
+            .is_some_and(|item| item.state().is_eof() && !item.state().is_reset())
         {
             self.retire_recv(events, id, ctrl);
         }

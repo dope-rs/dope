@@ -1,21 +1,13 @@
-use crate::conn::output::control::journal::storage::Set;
 use crate::conn::wire::path;
 use crate::conn::wire::path::probe;
 
 pub(in crate::conn) struct Replies<'a> {
     state: &'a mut probe::State,
-    control: &'a mut Set,
 }
 
 impl<'a> Replies<'a> {
-    pub(super) const fn new(state: &'a mut probe::State, control: &'a mut Set) -> Self {
-        Self { state, control }
-    }
-
-    pub(in crate::conn) fn retain(&mut self) {
-        self.state
-            .response_controls
-            .retain_ready(|reply| self.control.contains(reply.control));
+    pub(super) const fn new(state: &'a mut probe::State) -> Self {
+        Self { state }
     }
 
     pub(in crate::conn) fn try_queue(

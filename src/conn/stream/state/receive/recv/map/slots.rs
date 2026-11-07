@@ -20,7 +20,7 @@ impl<B: Recv> Slots<'_, B> {
     }
 
     pub(in crate::conn) fn entry(&mut self, id: Id, registry: &Table) -> Slot<'_, B> {
-        if let Some((_, slot)) = registry.read().find::<false>(id.0.id()) {
+        if let Some((_, slot)) = registry.find::<false>(id.0.id()) {
             return self.core.bind_at(slot).map_or(Slot::Unavailable, |entry| {
                 Slot::Occupied(Occupied {
                     entry,
@@ -36,7 +36,7 @@ impl<B: Recv> Slots<'_, B> {
         local: resident::Local,
         table: &Table,
     ) -> Result<Slot<'_, B>, resident::Stale> {
-        let Some(slot) = table.read().try_slot::<false>(local)? else {
+        let Some(slot) = table.try_slot::<false>(local)? else {
             return Ok(self.raw_entry(Id::new(local.id())));
         };
         Ok(self.core.bind_at(slot).map_or(Slot::Unavailable, |entry| {
@@ -57,7 +57,7 @@ impl<B: Recv> Slots<'_, B> {
             return self.raw_entry(id);
         };
         let local = resident::Local::new(id.0.id(), key);
-        let Some(slot) = registry.read().recv_exact(local) else {
+        let Some(slot) = registry.recv_exact(local) else {
             return self.raw_entry(id);
         };
         self.core.bind_at(slot).map_or(Slot::Unavailable, |entry| {

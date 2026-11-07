@@ -39,13 +39,12 @@ pub(in crate::conn) struct Metrics<'a> {
 
 impl State {
     pub(in crate::conn) fn new(max_pmtu: pmtud::Maximum) -> Self {
-        let pmtud = pmtud::Pmtud::new(max_pmtu);
-        let cc = reno::NewReno::new(pmtud.current());
+        let cc = reno::NewReno::new(pmtud::BASE_PMTU);
         let pacer = pacer::Pacer::new(cc.window(), rtt::INITIAL_RTT, cc.mtu());
         Self {
             cc,
             pacer,
-            pmtud,
+            pmtud: pmtud::Pmtud::new(max_pmtu),
             packet_ceiling: max_pmtu,
             probe: None,
         }
@@ -92,8 +91,8 @@ impl State {
     ) {
         self.cc.packet_acked(bytes, sent, flight);
         if let Some((_, probe)) = self.probe.take_if(|(tracked, _)| Some(*tracked) == number) {
-            self.pmtud.probe_acked(probe);
-            self.sync_mtu();
+            self.pmtud.probe_acked();
+            self.cc.set_mtu(probe.get() as u64);
         }
     }
 
@@ -122,40 +121,30 @@ impl State {
     }
 
     pub(in crate::conn) fn set_peer_max(&mut self, max: u64) -> Option<pmtud::Maximum> {
-        let capped = self.pmtud.cap(max)?;
+        let capped = self.pmtud.cap(max, self.cc.mtu())?;
         self.packet_ceiling = capped;
         Some(capped)
     }
 
     pub(in crate::conn) fn restart_path(&mut self) {
-        self.pmtud = pmtud::Pmtud::new(self.packet_ceiling);
-        self.probe = None;
-        self.cc = reno::NewReno::new(self.pmtud.current());
-        self.pacer = pacer::Pacer::new(self.cc.window(), rtt::INITIAL_RTT, self.cc.mtu());
+        *self = Self::new(self.packet_ceiling);
     }
 
     pub(in crate::conn) const fn metrics(&self) -> Metrics<'_> {
         Metrics { state: self }
     }
-
-    fn sync_mtu(&mut self) {
-        let current = self.pmtud.current();
-        if self.cc.mtu() != current {
-            self.cc.set_mtu(current);
-        }
-    }
 }
 
 impl Metrics<'_> {
     pub(in crate::conn) fn current_mtu(&self) -> u64 {
-        self.state.pmtud.current()
+        self.state.cc.mtu()
     }
 
     pub(in crate::conn) fn next_probe(&self, ceiling: num::NonZero<u16>) -> Option<pmtud::Probe> {
         if self.state.probe.is_some() {
             return None;
         }
-        self.state.pmtud.next_probe(ceiling)
+        self.state.pmtud.next_probe(self.state.cc.mtu(), ceiling)
     }
 
     pub(in crate::conn) const fn ceiling(&self) -> usize {
@@ -174,4 +163,4 @@ impl Metrics<'_> {
 const _: () = assert!(std::mem::size_of::<Option<Packet>>() == 8);
 const _: () = assert!(pmtud::MAX_PMTU <= usize::MAX as u64);
 /// Caps the per-path cached-rate state paid by every connection.
-const _: () = assert!(std::mem::size_of::<State>() <= 160);
+const _: () = assert!(std::mem::size_of::<State>() <= 152);

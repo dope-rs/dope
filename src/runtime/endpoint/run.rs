@@ -198,7 +198,12 @@ where
                                     .reject(cause)
                                     .is_break()
                                 {
-                                    Self::stop(mux.as_mut(), this.pooled, this.stopping);
+                                    Self::stop(
+                                        mux.as_mut(),
+                                        this.pooled,
+                                        this.stopping,
+                                        this.rotation,
+                                    );
                                 }
                                 quota::Admission::Item(*this.stopping)
                             }

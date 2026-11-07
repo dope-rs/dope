@@ -10,13 +10,6 @@ use state::resident::{
     table,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::conn) enum Status {
-    Vacant,
-    Unbound,
-    Bound(u32),
-}
-
 pub(in crate::conn) enum Entry<'a> {
     Vacant(Vacant<'a>),
     Unbound(Unbound<'a>),

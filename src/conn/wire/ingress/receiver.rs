@@ -8,7 +8,7 @@ use crate::proto::recovery::pmtud;
 use crate::wire::packet::{self, long, short};
 use crate::wire::stream::Initiator;
 use crate::{security::crypto, stream};
-use ingress::{bodies, retry};
+use ingress::bodies;
 use long::sequence::{self, Sequence as _};
 use path::reset;
 
@@ -168,7 +168,7 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer
                     let (result, authenticated) = if closing {
                         (Ok(()), false)
                     } else {
-                        retry::Retry::new(input).receive(packet.as_ref(), now)
+                        input.receive_retry(packet.as_ref(), now)
                     };
                     if authenticated {
                         token = None;

@@ -9,7 +9,6 @@ use dope::core::driver;
 
 use crate::client;
 use crate::client::auth;
-use crate::client::dialer;
 use crate::client::life;
 use crate::client::protocol;
 use crate::conn::id;
@@ -266,11 +265,13 @@ impl<P, A, B, C, R: routing::PeerRoute> Builder<P, A, B, C, R> {
             .clock()
             .try_attach(|now| life::Lifecycle::try_new(self.backoff, capacity, now))?;
         let bridge = client::Bridge::new(self.protocol, state);
-        let inner = endpoint
+        let endpoint = endpoint
             .bind::<_, A::Binding>(bridge, driver)
             .map_err(Error::Endpoint)?;
         Ok(client::Dialer {
-            inner: dialer::Engine::new(inner, self.topology, self.config_provider),
+            endpoint,
+            topology: self.topology,
+            config: self.config_provider,
             limits: work,
         })
     }

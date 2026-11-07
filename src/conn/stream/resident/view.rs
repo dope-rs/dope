@@ -35,7 +35,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
 
     /// Resolves one wire identity into its resident generational key.
     pub fn key(&self, id: Id) -> Option<Key> {
-        self.connection.streams.state.resident.read().key(id)
+        self.connection.streams.state.resident.key(id)
     }
 
     /// Resolves one wire identity into branded resident auth.
@@ -52,7 +52,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
 
     /// Resolves a generation-checked resident key without hashing.
     pub fn id(&self, key: Key) -> Option<Id> {
-        self.connection.streams.state.resident.read().id(key)
+        self.connection.streams.state.resident.id(key)
     }
 
     /// Validates one retained connection origin for this lexical access.
@@ -65,12 +65,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
 
     /// Recovers branded auth by direct generation lookup without hashing.
     pub fn bind(&self, owner: Owner<'conn>, local: Local) -> Result<Handle<'conn>, super::Stale> {
-        self.connection
-            .streams
-            .state
-            .resident
-            .read()
-            .try_id(local)?;
+        self.connection.streams.state.resident.try_id(local)?;
         Ok(owner.handle(local))
     }
 }

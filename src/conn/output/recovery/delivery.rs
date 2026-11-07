@@ -13,37 +13,27 @@ use crate::conn::wire::tls;
 use crate::{conn, stream};
 use control::revision;
 
-/// One lifetime-bound borrow of the natural delivery owners and release evidence.
-pub(in crate::conn) struct Delivery<
-    'a,
-    const DOMAIN: u8,
-    B: stream::Recv,
-    D: buffer::raw::Segment,
-    E,
-> {
+/// One lifetime-bound borrow of the natural delivery owners.
+pub(in crate::conn) struct Delivery<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
+{
     pub(super) control: &'a mut control::Pending,
     pub(super) handshake: &'a mut tls::Handshake<DOMAIN>,
     pub(super) streams: &'a mut State<B, D>,
     pub(super) stream_events: &'a mut Pending,
-    pub(super) release_evidence: E,
 }
 
-impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E>
-    Delivery<'a, DOMAIN, B, D, E>
-{
+impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Delivery<'a, DOMAIN, B, D> {
     pub(in crate::conn) fn new(
         ctrl: &'a mut control::Pending,
         hs: &'a mut tls::Handshake<DOMAIN>,
         state: &'a mut State<B, D>,
         events: &'a mut Pending,
-        proof: E,
     ) -> Self {
         Self {
             control: ctrl,
             handshake: hs,
             streams: state,
             stream_events: events,
-            release_evidence: proof,
         }
     }
 
@@ -54,11 +44,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E>
     ) -> Result<(), conn::Timing> {
         timer::Timer::try_update(egress, &self.handshake.keys, self.streams.local(), now)
     }
-}
 
-impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E: release::Sink>
-    Delivery<'_, DOMAIN, B, D, E>
-{
     pub(super) fn lose(
         &mut self,
         pkt: journals::Packet,
@@ -94,11 +80,12 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E: release::Sin
         }
     }
 
-    pub(super) fn ack(
+    pub(super) fn ack<E: release::Sink>(
         &mut self,
         pkt: journals::Packet,
         ctrls: stack::raw::Drain<'_, revision::Key, controls::Tag>,
         sends: stack::raw::Drain<'_, delivery::Handle<delivery::Stream>, streams::Tag>,
+        evidence: &mut E,
     ) -> Result<(), conn::Error> {
         if let Some(handle) = pkt.crypto {
             self.handshake.crypto.acknowledge(handle);
@@ -111,7 +98,7 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, E: release::Sin
                 self.stream_events,
                 handle,
                 self.control,
-                &mut self.release_evidence,
+                evidence,
             );
         }
         Ok(())

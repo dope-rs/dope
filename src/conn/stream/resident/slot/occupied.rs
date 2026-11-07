@@ -131,10 +131,9 @@ impl<'a, Side, Value, Auxiliary> Occupied<'a, Side, Value, Auxiliary> {
             entry.generation = next;
             entry.vacancy = Vacancy::free(self.table.free);
             self.table.free = Some(slot::Free(self.node));
+            self.table.available = self.table.available.wrapping_add(1);
         } else {
             entry.vacancy = Vacancy::free(None);
-            self.table.capacity -= 1;
         }
-        self.table.len -= 1;
     }
 }

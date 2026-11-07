@@ -208,7 +208,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         detail::Plan::try_capacity(
             detail::Slot::Resident,
             usize::from(impact.key.is_none()),
-            streams.resident.read().available(),
+            streams.resident.available(),
         )
         .map_err(abandon::Error::Plan)?;
         let mut events = streams

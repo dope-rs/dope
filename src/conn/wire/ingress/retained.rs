@@ -44,7 +44,7 @@ where
             });
             let (meta, start, bytes) = auth.borrow();
             let source = sources::Retained::new(packet, self, start);
-            ingest::Ingest::new(input).try_process(meta, id, bytes, source, views)
+            ingest::try_process(input, meta, id, bytes, source, views)
         })
     }
 }

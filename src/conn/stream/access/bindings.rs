@@ -96,19 +96,11 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer:
         &self,
         handle: resident::Handle<'conn>,
     ) -> Result<Option<u32>, resident::Stale> {
-        Ok(
-            match self
-                .connection
-                .streams
-                .state
-                .resident
-                .read()
-                .binding(handle.local())?
-            {
-                bindings::Status::Vacant | bindings::Status::Unbound => None,
-                bindings::Status::Bound(slot) => Some(slot),
-            },
-        )
+        self.connection
+            .streams
+            .state
+            .resident
+            .bound_slot(handle.local())
     }
 
     pub fn try_bind(&mut self, handle: resident::Handle<'conn>, slot: u32) -> Result<Bind, Fault> {

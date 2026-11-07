@@ -128,34 +128,13 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         params: Option<&param::Set>,
         ready: bool,
     ) -> SendOutcome<W> {
-        if let Err(error) = self.validate(id, Access::Send, ready) {
-            return SendOutcome::Failed {
-                owner: parts,
-                error,
-            };
+        match self.send_with(id, parts, params, ready, plan::Ignore) {
+            admit::Outcome::Retained(plan::Ignore) | admit::Outcome::Discarded(plan::Ignore) => {
+                SendOutcome::Accepted
+            }
+            admit::Outcome::Blocked { owner, .. } => SendOutcome::Blocked(owner),
+            admit::Outcome::Failed { owner, error, .. } => SendOutcome::Failed { owner, error },
         }
-        if self.is_send_done(id) {
-            plan::recycle(&mut self.transmit.map, parts.into_parts());
-            return SendOutcome::Accepted;
-        }
-        let stream = streams::Relative::new(id, self.state.local());
-        let credit = queue::Entry::limit(params, stream);
-        let mode = queue::Preparation::new(stream);
-        let state = &mut self.streams.state;
-        let (registry, transmit) = (&mut state.resident, &mut state.transmit);
-        let plan = match plan::Plan::try_new(
-            parts,
-            &mut transmit.map,
-            |queue| {
-                let slot = registry.read().find::<true>(id).map(|(_, slot)| slot);
-                plan::terminal(queue, slot, stream.is_local())
-            },
-            |_| {},
-        ) {
-            Ok(plan) => plan,
-            Err(rejected) => return rejected.into_outcome(),
-        };
-        plan.apply(queue::Id::new(id), credit, mode, registry)
     }
 
     pub(in crate::conn) fn send_with<C, W>(
@@ -193,7 +172,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
         let plan =
             match plan::Observed::try_new(source, owner, commit, &mut transmit.map, |queue| {
-                let slot = registry.read().find::<true>(id).map(|(_, slot)| slot);
+                let slot = registry.find::<true>(id).map(|(_, slot)| slot);
                 plan::terminal(queue, slot, stream.is_local())
             }) {
                 Ok(plan) => plan,
@@ -237,7 +216,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Sender<'_, B, D> {
         let (registry, transmit) = (&mut state.resident, &mut state.transmit);
         let plan =
             match plan::Observed::try_new(source, owner, commit, &mut transmit.map, |queue| {
-                let slot = registry.read().try_slot::<true>(local).ok()?;
+                let slot = registry.try_slot::<true>(local).ok()?;
                 plan::terminal(queue, slot, stream.is_local())
             }) {
                 Ok(plan) => plan,

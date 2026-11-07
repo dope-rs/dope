@@ -137,7 +137,7 @@ impl<B: Recv> Map<B> {
     }
 
     pub(in crate::conn) fn find(&self, id: Id, registry: &Table) -> Option<Resolved<'_, B>> {
-        let (_, slot) = registry.read().find::<false>(id.0.id())?;
+        let (_, slot) = registry.find::<false>(id.0.id())?;
         self.current(slot)
     }
 
@@ -146,7 +146,7 @@ impl<B: Recv> Map<B> {
         key: resident::Key,
         registry: &Table,
     ) -> Option<Resolved<'_, B>> {
-        let slot = registry.read().slot::<false>(key)?;
+        let slot = registry.slot::<false>(key)?;
         self.current(slot)
     }
 
@@ -156,7 +156,6 @@ impl<B: Recv> Map<B> {
         registry: &Table,
     ) -> Result<Option<Resolved<'_, B>>, resident::Stale> {
         Ok(registry
-            .read()
             .try_slot::<false>(local)?
             .and_then(|slot| self.current(slot)))
     }
@@ -175,7 +174,7 @@ impl<B: Recv> Map<B> {
         event: readable::Handle,
         id: stream::Id,
     ) -> Delivery {
-        let Some(slot) = registry.read().slot::<false>(key) else {
+        let Some(slot) = registry.slot::<false>(key) else {
             return Delivery::Stale;
         };
         let Some(entry) = self.core.bind_at(slot) else {

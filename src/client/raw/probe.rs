@@ -32,7 +32,7 @@ where
 
     fn run(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
         let owner = call.owner();
-        let core = owner.project_ref().inner.get_ref();
+        let core = owner.get_ref();
         let bridge = core.endpoint.handler();
         if bridge.lifecycle().has_events()
             || ((P::DATAGRAMS == protocol::Datagrams::Pull

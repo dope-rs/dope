@@ -1,13 +1,12 @@
 use crate::conn::Selected;
-use crate::conn::stream::state::transmit::log::links::topology::Record;
 use crate::conn::{
     machine::storage::{self, demand},
-    stream::state::transmit::log::{journal, planes},
+    stream::state::transmit::log::planes,
 };
 use o3::depot;
 use o3::depot::index::Access;
+use o3::depot::queue::indexed::keyed;
 use o3::depot::queue::links::Index;
-use o3::depot::{capacity::Reason, queue::indexed::keyed};
 pub(in crate::conn::stream::state::transmit::log) use scan::Scan;
 
 mod scan;
@@ -15,47 +14,6 @@ mod scan;
 pub(in crate::conn::stream::state::transmit::log) enum Account {
     Active,
     Retired,
-}
-
-#[repr(transparent)]
-pub(in crate::conn::stream::state::transmit::log) struct Records<'a> {
-    journal: &'a mut journal::Journal,
-}
-
-impl<'a> Records<'a> {
-    pub(in crate::conn::stream::state::transmit::log) fn new(
-        journal: &'a mut journal::Journal,
-    ) -> Self {
-        Self { journal }
-    }
-}
-
-impl Records<'_> {
-    pub(in crate::conn::stream::state::transmit::log) fn try_reap(
-        &mut self,
-        count: usize,
-    ) -> Result<(), Reason> {
-        while self.journal.storage.groups.remaining().get() < count {
-            let first = Record::reclaim(self.journal).ok_or(Reason::Full)?;
-            let mut next = first.next(Account::Retired);
-            while let Some(record) = next {
-                next = record.next(Account::Retired);
-            }
-        }
-        Ok(())
-    }
-
-    pub(in crate::conn::stream::state::transmit::log) fn try_prune(
-        &mut self,
-        count: usize,
-    ) -> Result<(), Reason> {
-        while self.journal.storage.nodes.remaining().get() < count {
-            Record::reclaim(self.journal)
-                .ok_or(Reason::Full)?
-                .discard(Account::Retired);
-        }
-        Ok(())
-    }
 }
 
 pub(in crate::conn::stream::state::transmit::log) struct Walk<'a, P: planes::Plane> {

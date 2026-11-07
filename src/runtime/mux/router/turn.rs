@@ -371,25 +371,26 @@ impl<
                         let ids = ids.with_token(token);
                         let (conn, tls) = A::accept(server, ids, auth::ServerConfig(cfg, keys))
                             .map_err(errors::Receive::Accept)?;
-                        match install::Install::new(sink.as_mut(), &mut state.binding)
-                            .try_attach(
-                                proof.brand(),
-                                plan::Plan::new(conn, tls, from, cap, now, local),
-                                |sink, binding, slots, key, _| {
-                                    apply(
-                                        brand::Branded::new(scope.reborrow(), None),
-                                        sink,
-                                        slots,
-                                        key,
-                                        binding,
-                                        &mut state.receive_workspace,
-                                        input,
-                                    )
-                                },
-                            )
-                            .map_err(|error| {
-                                errors::Receive::Accept(errors::Connect::Protocol(error.into()))
-                            })? {
+                        match install::try_attach(
+                            sink.as_mut(),
+                            &mut state.binding,
+                            proof.brand(),
+                            plan::Plan::new(conn, tls, from, cap, now, local),
+                            |sink, binding, slots, key, _| {
+                                apply(
+                                    brand::Branded::new(scope.reborrow(), None),
+                                    sink,
+                                    slots,
+                                    key,
+                                    binding,
+                                    &mut state.receive_workspace,
+                                    input,
+                                )
+                            },
+                        )
+                        .map_err(|error| {
+                            errors::Receive::Accept(errors::Connect::Protocol(error.into()))
+                        })? {
                             install::Outcome::Installed(value) => {
                                 value?;
                                 match failure {

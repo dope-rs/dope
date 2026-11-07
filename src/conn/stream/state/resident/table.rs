@@ -9,7 +9,7 @@ use crate::conn::stream::{
     state,
 };
 
-use state::resident::{bindings, events, hash::Hash, node::Node, read, scopes, sides};
+use state::resident::{bindings, events, hash::Hash, node::Node, scopes, sides};
 
 #[derive(Clone, Copy)]
 pub(in crate::conn) struct Capacity {
@@ -45,10 +45,6 @@ impl Table {
         run: impl for<'id> FnOnce(scopes::Scope<'_, 'id>) -> R,
     ) -> R {
         self.core.scope(|scope| run(scopes::Scope::new(scope)))
-    }
-
-    pub(in crate::conn) const fn read(&self) -> read::Read<'_> {
-        read::Read::new(self)
     }
 
     pub(in crate::conn) fn side<const SEND: bool>(&mut self) -> sides::State<'_, SEND> {

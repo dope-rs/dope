@@ -43,24 +43,3 @@ impl Sink for Ignore {
         let evidence::Off = proof;
     }
 }
-
-pub(crate) struct Forward<'a, E: ?Sized>(&'a mut E);
-
-impl<'a, E: Sink + ?Sized> Forward<'a, E> {
-    pub(crate) fn new(evidence: &'a mut E) -> Self {
-        Self(evidence)
-    }
-}
-
-impl<E: Sink + ?Sized> Sink for Forward<'_, E> {
-    type Mode = E::Mode;
-
-    fn release(
-        &mut self,
-        proof: <Self::Mode as evidence::Mode>::Projection,
-        source: admit::Source,
-        cause: release::Cause,
-    ) {
-        self.0.release(proof, source, cause);
-    }
-}

@@ -125,14 +125,7 @@ where
 
     /// Consumes the coalesced retry hint without granting send capacity.
     pub fn take(&mut self) -> writable::Receipt {
-        self.inner
-            .as_mut()
-            .project()
-            .inner
-            .project()
-            .endpoint
-            .handler_mut()
-            .take()
+        self.inner.as_mut().project().endpoint.handler_mut().take()
     }
 
     pub fn path_stats(&self, slot: client::SlotId) -> Option<client::PathStats> {
@@ -231,7 +224,7 @@ where
         &mut self,
     ) -> Result<Option<(client::AttemptId, P::Receive)>, errors::Access> {
         self.0
-            .apply_mut(|ctl, now| ctl.inner.as_mut().project().inner.recv_datagram(now))
+            .apply_mut(|ctl, now| ctl.inner.as_mut().recv_datagram(now))
     }
 
     /// Consumes one native stream event after its connection's connect callback.
@@ -241,7 +234,7 @@ where
         &mut self,
     ) -> Result<Option<(client::AttemptId, protocol::Stream<P::Receive>)>, errors::Access> {
         self.0
-            .apply_mut(|ctl, now| ctl.inner.as_mut().project().inner.recv_stream(now))
+            .apply_mut(|ctl, now| ctl.inner.as_mut().recv_stream(now))
     }
 
     /// Acquires one output position before selecting a logical client slot.
@@ -249,8 +242,7 @@ where
         self,
     ) -> Result<Pooled<'turn, 'pool, 'd, ID, P, B, A::Binding>, control::SendError> {
         self.0.apply(|ctl, now| {
-            let inner =
-                actions::try_sender(ctl.inner.as_mut().project().inner.project().endpoint, now)?;
+            let inner = actions::try_sender(ctl.inner.as_mut().project().endpoint, now)?;
             Ok(Sender::new(inner))
         })
     }

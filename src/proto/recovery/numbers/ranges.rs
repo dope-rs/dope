@@ -139,21 +139,11 @@ impl Window {
     pub(super) fn ack(&self) -> Option<AckView<'_>> {
         let largest = self.largest()?;
         let first = largest.get() - u64::from(self.first_range);
-        let left = self.count_before(first);
-        let scan = match num::NonZero::<u16>::new(left) {
-            None => Scan::Done,
-            Some(left) => {
-                let cursor = first.checked_sub(1)?;
-                let cursor = GapCursor::new(self, cursor)?;
-                Scan::More {
-                    cursor,
-                    remaining: left,
-                }
-            }
-        };
         let iter = Iter {
             received: self,
-            scan,
+            scan: first
+                .checked_sub(1)
+                .and_then(|cursor| GapCursor::new(self, cursor)),
         };
         Some(AckView {
             largest: varint::VarInt::from(largest),
@@ -167,35 +157,24 @@ impl Window {
 #[derive(Clone)]
 pub(crate) struct Iter<'space> {
     received: &'space Window,
-    scan: Scan,
+    scan: Option<GapCursor>,
 }
 
 #[derive(Clone, Copy)]
-struct GapCursor(u64);
+struct GapCursor(num::NonZero<u64>);
 
 impl GapCursor {
     fn new(received: &Window, cursor: u64) -> Option<Self> {
-        (cursor > received.base() && !received.is_set(cursor)).then_some(Self(cursor))
+        let cursor = num::NonZero::new(cursor)?;
+        (cursor.get() > received.base() && !received.is_set(cursor.get())).then_some(Self(cursor))
     }
-}
-
-#[derive(Clone, Copy)]
-enum Scan {
-    Done,
-    More {
-        cursor: GapCursor,
-        remaining: num::NonZero<u16>,
-    },
 }
 
 impl Iter<'_> {
     pub(crate) fn remaining(&self) -> count::Count {
-        let left = match self.scan {
-            Scan::Done => 0,
-            Scan::More {
-                remaining: left, ..
-            } => left.get(),
-        };
+        let left = self
+            .scan
+            .map_or(0, |cursor| self.received.count_before(cursor.0.get()));
         count::Count::from_raw(left)
     }
 }
@@ -204,18 +183,12 @@ impl Iterator for Iter<'_> {
     type Item = (varint::VarInt, varint::VarInt);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Scan::More {
-            cursor: GapCursor(mut cursor),
-            remaining: left,
-        } = self.scan
-        else {
-            return None;
-        };
+        let mut cursor = self.scan?.0.get();
         let mut gap = 1;
         cursor -= 1;
         while !self.received.is_set(cursor) {
             if cursor == self.received.base() {
-                self.scan = Scan::Done;
+                self.scan = None;
                 return None;
             }
             gap += 1;
@@ -226,17 +199,9 @@ impl Iterator for Iter<'_> {
             cursor -= 1;
             range += 1;
         }
-        let smallest = cursor;
-        self.scan = match num::NonZero::<u16>::new(left.get() - 1) {
-            None => Scan::Done,
-            Some(left) => smallest
-                .checked_sub(1)
-                .and_then(|cursor| GapCursor::new(self.received, cursor))
-                .map_or(Scan::Done, |cursor| Scan::More {
-                    cursor,
-                    remaining: left,
-                }),
-        };
+        self.scan = cursor
+            .checked_sub(1)
+            .and_then(|cursor| GapCursor::new(self.received, cursor));
         Some((
             varint::VarInt::from_u16(gap - 1),
             varint::VarInt::from_u16(range),

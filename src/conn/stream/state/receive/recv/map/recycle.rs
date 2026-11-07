@@ -33,7 +33,7 @@ impl<B: stream::Recv> slot::Recycle for Fresh<'_, B> {
         }
         .clear();
         value.buffer.next = 0;
-        value.state.progress.recycle();
+        value.state.recycle();
         value.control_flags = 0;
     }
 }
@@ -58,6 +58,6 @@ impl<B: stream::Recv> slot::Recycle for Recycle<'_, B> {
         }
         .clear();
         value.buffer.next = 0;
-        value.state.progress.recycle();
+        value.state.recycle();
     }
 }

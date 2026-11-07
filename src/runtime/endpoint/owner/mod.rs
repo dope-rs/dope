@@ -13,6 +13,7 @@ use crate::runtime::mux::{
         set::Dispatch,
         wire::{cert, packet},
     },
+    router,
 };
 use crate::runtime::routing;
 
@@ -74,7 +75,8 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
     pub(super) fn bind<H, A, M>(
         self,
         bind: net::SocketAddr,
-        runtime: reactor::Engine<'d, H, ID, R::Buffer<'d>, A, M::Mode, Q>,
+        mux: router::Router<H, ID, R::Buffer<'d>, M::Mode>,
+        app: A,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Bound<'d, ID, H, R, A, M, Q>
     where
@@ -84,6 +86,7 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
     {
+        let runtime = reactor::Engine::new(mux, app, self.rotation);
         let udp = self
             .datagram
             .bind(bind, runtime, driver)
@@ -91,14 +94,14 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
         Ok(Endpoint {
             udp,
             packet: self.packet,
-            rotation: self.rotation,
         })
     }
 
     pub(super) fn adopt<H, A, M>(
         self,
         lease: Lease,
-        runtime: reactor::Engine<'d, H, ID, R::Buffer<'d>, A, M::Mode, Q>,
+        mux: router::Router<H, ID, R::Buffer<'d>, M::Mode>,
+        app: A,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Bound<'d, ID, H, R, A, M, Q>
     where
@@ -108,6 +111,7 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
     {
+        let runtime = reactor::Engine::new(mux, app, self.rotation);
         let udp = self
             .datagram
             .adopt(lease, runtime, driver)
@@ -115,7 +119,6 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
         Ok(Endpoint {
             udp,
             packet: self.packet,
-            rotation: self.rotation,
         })
     }
 }

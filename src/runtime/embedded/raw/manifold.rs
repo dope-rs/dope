@@ -27,11 +27,17 @@ where
     type Shutdown = dispatch::raw::Plain;
 
     unsafe fn pre_park<'a, 'turn>(
-        self: pin::Pin<&'a mut Self>,
+        mut self: pin::Pin<&'a mut Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut dispatch::raw::Context<'_, 'd, Self::PrePark>,
     ) -> pin::Pin<&'a mut Self> {
-        S::pre_park(self, turn, driver)
+        if *self.as_ref().project_ref().stopping {
+            self.as_mut()
+                .shutdown_at(turn.app(), driver.driver_ref().clock().now());
+        } else {
+            S::drive(self.as_mut(), turn.app(), driver);
+        }
+        self
     }
 
     fn shutdown<'a, 'turn>(

@@ -200,7 +200,7 @@ impl<D: buffer::raw::Segment> Map<D> {
         id: stream::Id,
         registry: &Table,
     ) -> Option<queue::Resolved<'_>> {
-        let (_, slot) = registry.read().find::<true>(id)?;
+        let (_, slot) = registry.find::<true>(id)?;
         self.core.current(slot).map(Resolved)
     }
 
@@ -209,7 +209,7 @@ impl<D: buffer::raw::Segment> Map<D> {
         key: resident::Key,
         registry: &Table,
     ) -> Option<queue::Resolved<'_>> {
-        let slot = registry.read().slot::<true>(key)?;
+        let slot = registry.slot::<true>(key)?;
         self.core.current(slot).map(Resolved)
     }
 
@@ -319,7 +319,7 @@ impl<D: buffer::raw::Segment> Map<D> {
         id: stream::Id,
         registry: &Table,
     ) -> Option<(resident::Key, Occupied<'_, D>)> {
-        let (key, slot) = registry.read().find::<true>(id)?;
+        let (key, slot) = registry.find::<true>(id)?;
         let entry = self.core.bind_at(slot)?;
         if entry.id() != id {
             return None;

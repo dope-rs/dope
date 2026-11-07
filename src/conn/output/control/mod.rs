@@ -102,7 +102,7 @@ impl Pending {
     }
 
     pub(in crate::conn) fn replies(&mut self) -> probe::Replies<'_> {
-        self.probe.replies(&mut self.storage)
+        self.probe.replies()
     }
 
     pub(in crate::conn) fn done_slots(&self) -> Count {

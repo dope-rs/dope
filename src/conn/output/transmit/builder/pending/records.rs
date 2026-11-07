@@ -26,26 +26,7 @@ use transmit::log::journal;
 #[must_use]
 pub(super) enum Records<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> {
     Untracked(Input<'a, DOMAIN, B, D>),
-    Tracked(journals::Reserve<Tracked<'a, DOMAIN, B, D>>),
-}
-
-#[repr(transparent)]
-pub(super) struct Tracked<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>(
-    journal::Reserve<Input<'a, DOMAIN, B, D>>,
-);
-
-impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Tracked<'a, DOMAIN, B, D> {
-    pub(super) fn new(owner: journal::Reserve<Input<'a, DOMAIN, B, D>>) -> Self {
-        Self(owner)
-    }
-
-    fn owner(&self) -> &Input<'a, DOMAIN, B, D> {
-        self.0.owner()
-    }
-
-    pub(super) fn cancel(self) -> Input<'a, DOMAIN, B, D> {
-        self.0.cancel()
-    }
+    Tracked(journals::Reserve<journal::Reserve<Input<'a, DOMAIN, B, D>>>),
 }
 
 pub(in crate::conn) struct Input<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> {
@@ -310,11 +291,11 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journal:
     }
 }
 
-// SAFETY: only the private packet admission constructs Tracked from its
-// original stream reservation. No caller can reopen its control selections;
-// publication consumes the retained lists through the scoped slot iterator.
+// SAFETY: the stream reservation retains the original private packet input.
+// Its disjoint contexts preserve frozen selections; publication consumes
+// those same lists through the scoped slot iterator.
 unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journals::raw::Owner
-    for Tracked<'_, DOMAIN, B, D>
+    for journal::Reserve<Input<'_, DOMAIN, B, D>>
 {
     type Control = encode::Written;
     type Context<'a>
@@ -333,7 +314,7 @@ unsafe impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> journals
         &mut array::Vec<encode::Written, { conn::PACKET_CONTROL_CAPACITY }>,
         Self::Context<'_>,
     ) {
-        let (scope, root) = journal::Reserve::parts(&mut self.0);
+        let (scope, root) = journal::Reserve::parts(self);
         (
             root.table,
             root.controls,

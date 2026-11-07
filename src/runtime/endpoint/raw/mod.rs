@@ -62,7 +62,7 @@ where
     type Install = dispatch::raw::Projected<Self>;
     type Finish = Self;
     type Activate = dispatch::raw::Projected<Self>;
-    type Probe = Self;
+    type Probe = dispatch::raw::Projected<Self>;
     type PrePark = dispatch::raw::Retained;
     type Shutdown = dispatch::raw::Plain;
 
@@ -80,10 +80,9 @@ where
         let time = driver.driver_ref().clock().now();
         let count = time.at(self.as_mut()).apply(|state, now| {
             let this = state.project();
-            let mut host = this.udp.handler_mut();
-            let mut mux = host.as_mut().mux_mut();
-            this.rotation
-                .maintain_at(now, &mut protocol::Io::new(mux.as_mut()))
+            let host = this.udp.handler_mut().project();
+            host.rotation
+                .maintain_at(now, &mut protocol::Io::new(host.mux))
                 .started()
         });
         if count != 0 {
@@ -97,67 +96,8 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut dispatch::raw::Context<'_, 'd, Self::Shutdown>,
     ) -> pin::Pin<&'a mut Self> {
-        let this = self.as_mut().project();
-        this.rotation.seal();
-        dispatch::raw::Manifold::shutdown(this.udp, turn, driver);
+        dispatch::raw::Manifold::shutdown(self.as_mut().project().udp, turn, driver);
         self
-    }
-}
-
-// SAFETY: selection and projection preserve the exact UDP owner and plan;
-// the outer owner adds only its own rotation deadline.
-unsafe impl<'d, const ID: u8, H, B, A, M, Q: Residency + buffer::raw::Source>
-    dispatch::raw::Probe<'d, Self> for endpoint::Endpoint<'d, ID, H, B, A, M, Q>
-where
-    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
-    B: Storage<'d, resident::Shared<'d>>,
-    M: owner::Binding<'d, ID>,
-    datagram::Endpoint<
-        'd,
-        route::KeyTag<ID>,
-        reactor::Engine<'d, H, ID, B, A, M::Mode, Q>,
-        endpoint::Payload<Q>,
-    >: dispatch::raw::Manifold<
-            'd,
-            Route = route::KeyTag<ID>,
-            PrePark = dispatch::raw::Retained,
-            Shutdown = dispatch::raw::Plain,
-        > + event::Drive<'d, Access = dispatch::raw::Plain>,
-{
-    type Plan = <<<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<
-        'd,
-    >>::Probe as dispatch::raw::Probe<
-        'd,
-        <Self as dispatch::raw::Projection<'d>>::Inner,
-    >>::Plan;
-
-    fn select() -> Option<Self::Plan> {
-        <<<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::Probe as dispatch::raw::Probe<
-            'd,
-            <Self as dispatch::raw::Projection<'d>>::Inner,
-        >>::select()
-    }
-
-    fn run(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
-        let this = call.owner().project_ref();
-        let deadline = this.rotation.deadline();
-        let clock = call.clock();
-        let base = <<<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<
-            'd,
-        >>::Probe as dispatch::raw::Probe<'d, <Self as dispatch::raw::Projection<'d>>::Inner>>::run(
-            call.map_owner(dispatch::raw::Projection::inner),
-        );
-        match deadline {
-            Some(until) => base.reduce(schedule::Progress::until(clock.deadline_at(until))),
-            None => base,
-        }
-    }
-
-    fn stop(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
-        <<<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::Probe as dispatch::raw::Probe<
-            'd,
-            <Self as dispatch::raw::Projection<'d>>::Inner,
-        >>::stop(call.map_owner(dispatch::raw::Projection::inner))
     }
 }
 

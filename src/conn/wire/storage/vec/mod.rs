@@ -43,24 +43,6 @@ impl<T, const MAX: usize> Vec<T, MAX> {
         }
         Ok(storage::Vacant { values: self })
     }
-
-    pub(in crate::conn::wire::storage) fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
-        let (len, entries) = self.backing.parts_mut();
-        let original = len.raw();
-        let mut deleted = 0;
-        for index in 0..original {
-            let entry = unsafe { entries.as_mut_ptr().add(index as usize) };
-            if keep(unsafe { (*entry).assume_init_ref() }) {
-                if deleted != 0 {
-                    unsafe { ptr::copy(entry, entry.sub(deleted as usize), 1) };
-                }
-            } else {
-                deleted += 1;
-                unsafe { (*entry).assume_init_drop() };
-            }
-        }
-        *len = capacity::Count::new(original - deleted);
-    }
 }
 
 impl<T, const MAX: usize> ops::Deref for Vec<T, MAX> {

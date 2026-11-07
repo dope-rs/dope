@@ -9,7 +9,7 @@ use dope::core::{driver, io::datagram::Lease};
 use crate::conn::id;
 use crate::conn::life::{accept, options};
 use crate::errors;
-use crate::runtime::endpoint::{self, config, reactor};
+use crate::runtime::endpoint::{self, config};
 use crate::runtime::mux::{app, builder, handler};
 use crate::runtime::receive;
 use crate::{
@@ -173,10 +173,9 @@ impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
             .bind(driver)
             .map_err(endpoint::BindError::Mux)?;
         let ep = self.endpoint.prepare(driver)?;
-        let runtime = reactor::Engine::new(mux, app);
         match self.bind {
-            Socket::Bind(address) => ep.bind(address, runtime, driver),
-            Socket::Adopt(lease) => ep.adopt(lease, runtime, driver),
+            Socket::Bind(address) => ep.bind(address, mux, app, driver),
+            Socket::Adopt(lease) => ep.adopt(lease, mux, app, driver),
         }
     }
 

@@ -83,14 +83,14 @@ impl<'state, B: stream::Recv, D: buffer::raw::Segment> Commit<'state, B, D> {
             return Ok(queue::StopImpact::NONE);
         }
         let create = !streams::Relative::new(id, self.local()).is_local();
-        let key = self.resident.read().key(id);
+        let key = self.resident.key(id);
         if let Some(key) = key
             && self.transmit.map.find_key(key, &self.resident).is_some()
         {
             return Ok(queue::StopImpact {
                 key: Some(key),
                 active: true,
-                event_slots: usize::from(!self.resident.read().has_event::<true>(key)),
+                event_slots: usize::from(!self.resident.has_event::<true>(key)),
                 stream_slots: 0,
             });
         }

@@ -5,21 +5,17 @@ use rustls::{ServerConfig, quic};
 
 use crate::{conn, errors, security::qkdf, stream};
 use conn::{life, wire};
-use initial::{assembly, seed};
-use life::{accept, initial, options, tls::servers};
-use wire::tls;
+use life::{accept, initial::assembly, options, tls::servers};
+use wire::{path::setup, tls};
 
 pub(crate) struct Acceptor {
-    seed: seed::Seed<seed::Server>,
+    ids: accept::Ids,
     input: options::Options,
 }
 
 impl Acceptor {
     pub(crate) fn new(ids: accept::Ids, opts: options::Options) -> Self {
-        Self {
-            seed: seed::Seed::server(ids),
-            input: opts,
-        }
+        Self { ids, input: opts }
     }
 
     pub(crate) fn try_owned<const DOMAIN: u8, B, D>(
@@ -36,15 +32,15 @@ impl Acceptor {
             .security
             .stateless_reset_secret
             .as_ref()
-            .map(|secret| secret.token_for(&self.seed.local_cid));
+            .map(|secret| secret.token_for(&self.ids.local_cid));
         let mut params = Vec::new();
         self.input
             .transport
             .params()
             .bind_server(
-                &self.seed.local_cid,
-                &self.seed.original_dcid,
-                self.seed.retry_scid.as_ref(),
+                &self.ids.local_cid,
+                &self.ids.tp_original_dcid,
+                self.ids.retry_scid.as_ref(),
                 reset.as_ref(),
             )
             .encode(&mut params)?;
@@ -52,7 +48,7 @@ impl Acceptor {
             .map_err(errors::Connect::Setup)?;
         let keys = match keys {
             Some(keys) => keys,
-            None => qkdf::Initial::try_new(&self.seed.initial_dcid)
+            None => qkdf::Initial::try_new(&self.ids.initial_dcid)
                 .and_then(qkdf::Pair::try_server)
                 .map_err(|error| errors::Connect::Protocol(error.into()))?,
         };
@@ -64,13 +60,21 @@ impl Acceptor {
             None,
         )
         .map_err(errors::Connect::TlsCrypto)?;
-        let Self { seed, input } = self;
+        let Self { ids, input } = self;
         assembly::Assembly {
             input,
             wire: hs,
-            role: assembly::Server { seed },
+            identities: setup::Identities {
+                local_cid: ids.local_cid,
+                original_dcid: ids.initial_dcid,
+                peer_cid: ids.peer_cid,
+                peer_first_scid: Some(ids.peer_cid),
+            },
+            tokens: setup::Tokens::Server(ids.issued_address_token),
+            shard: None,
+            valid: ids.peer_address_validated,
         }
-        .try_finish()
+        .try_finish(&mut None)
     }
 
     pub(crate) fn try_pooled<'pool, const DOMAIN: u8, B, D>(

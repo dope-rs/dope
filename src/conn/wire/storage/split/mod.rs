@@ -65,23 +65,6 @@ impl<T, const MAX: usize> Split<T, MAX> {
         Some(Selected { owner: self, index })
     }
 
-    pub(crate) fn retain_ready(&mut self, mut keep: impl FnMut(&T) -> bool) {
-        let mut left = self.ready.raw();
-        let mut ready = capacity::Count::EMPTY;
-        self.values.retain(|value| {
-            if left == 0 {
-                return true;
-            }
-            left -= 1;
-            if !keep(value) {
-                return false;
-            }
-            ready = capacity::Count::new(ready.raw() + 1);
-            true
-        });
-        self.ready = ready;
-    }
-
     /// Removes matching values and retains the resulting publication slot.
     pub(crate) fn remove_all(
         &mut self,

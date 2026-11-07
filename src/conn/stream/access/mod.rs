@@ -1,5 +1,4 @@
 pub mod bindings;
-mod query;
 mod usage;
 mod view;
 

@@ -16,28 +16,11 @@ use conn::{
 };
 use transmit::builder;
 
-pub(super) struct Retry<
-    'a,
-    'driver,
-    const DOMAIN: u8,
-    B: stream::Recv,
-    const RECONCILE: bool,
-    D: buffer::raw::Segment,
-> {
-    input: &'a mut ingress::Input<'driver, DOMAIN, B, RECONCILE, D>,
-}
-
-impl<'a, 'driver, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::Segment>
-    Retry<'a, 'driver, DOMAIN, B, RECONCILE, D>
+impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::Segment>
+    ingress::Input<'_, DOMAIN, B, RECONCILE, D>
 {
-    pub(super) const fn new(
-        input: &'a mut ingress::Input<'driver, DOMAIN, B, RECONCILE, D>,
-    ) -> Self {
-        Self { input }
-    }
-
-    pub(super) fn receive(
-        self,
+    pub(super) fn receive_retry(
+        &mut self,
         wire: &[u8],
         now: time::Instant,
     ) -> (Result<(), conn::Error>, bool) {
@@ -45,7 +28,7 @@ impl<'a, 'driver, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: b
         let result = (|| {
             use builder::crypto::Room;
 
-            let input = self.input;
+            let input = self;
             if !matches!(input.connection.peer.local, Initiator::Client)
                 || input.connection.control.probe().is_retry()
             {
@@ -59,29 +42,28 @@ impl<'a, 'driver, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: b
             let retry = retry::Ref::decode(wire).map_err(conn::Error::Long)?;
             let odcid = input.connection.path.origin.original_dcid;
             let local = input.connection.path.local.id();
-            let mut buf = mem::take(&mut input.connection.scratch.header);
-            buf.clear();
+            let buf = &mut input.connection.scratch.header;
             let (peer, size) = {
-                let check = match retry.verify_into(odcid.as_ref_id(), local.as_ref_id(), &mut buf)
-                {
+                let check = match retry.verify_into(odcid.as_ref_id(), local.as_ref_id(), buf) {
                     Ok(check) => check,
                     Err(error) => {
                         buf.clear();
-                        input.connection.scratch.header = buf;
                         return Err(conn::Error::Retry(error));
                     }
                 };
                 let Some(valid) = check else {
-                    buf.clear();
-                    input.connection.scratch.header = buf;
                     return Ok(());
                 };
                 authenticated = true;
                 let peer = valid.scid().into_owned();
-                input.connection.path.peer.validate_id(peer.as_ref_id())?;
-                (peer, valid.token().len())
+                let size = valid.token().len();
+                if let Err(error) = input.connection.path.peer.validate_id(peer.as_ref_id()) {
+                    buf.clear();
+                    return Err(error);
+                }
+                (peer, size)
             };
-            input.connection.scratch.header = input.connection.path.origin.retry(buf);
+            *buf = input.connection.path.origin.retry(mem::take(buf));
             let pmtu = input.connection.egress.cc.metrics().current_mtu() as usize;
             let limit = input.connection.egress.cc.metrics().ceiling().min(pmtu);
             let Some(number) = conn::Epoch::Initial

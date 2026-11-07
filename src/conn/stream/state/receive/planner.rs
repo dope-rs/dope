@@ -127,14 +127,14 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Planner<'_, B, D> {
             return Ok(Impact::none());
         }
         let recv = &self.receive;
-        let found = self.resident.read().key(id).and_then(|key| {
+        let found = self.resident.key(id).and_then(|key| {
             recv.map
                 .find_key(key, &self.resident)
                 .map(|stream| (key, stream))
         });
         if found
             .as_ref()
-            .is_some_and(|entry| entry.1.state().reset_error().is_some())
+            .is_some_and(|entry| entry.1.state().is_reset())
         {
             return Ok(Impact::none());
         }

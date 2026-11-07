@@ -14,8 +14,7 @@ use crate::{conn::stream::resident::slot, wire::stream};
 pub(in crate::conn) struct Table<Side, Value, Auxiliary> {
     pub(in crate::conn::stream::resident::slot) nodes: Vec<Node<Side, Value, Auxiliary>>,
     pub(in crate::conn::stream::resident::slot) free: Option<Free>,
-    pub(in crate::conn::stream::resident::slot) capacity: usize,
-    pub(in crate::conn::stream::resident::slot) len: usize,
+    pub(in crate::conn::stream::resident::slot) available: u32,
     side: marker::PhantomData<fn() -> Side>,
 }
 
@@ -24,8 +23,7 @@ impl<Side, Value: Reusable, Auxiliary: Default> Table<Side, Value, Auxiliary> {
         Ok(Self {
             nodes: Vec::try_new(capacity.0 as usize)?,
             free: None,
-            capacity: capacity.0 as usize,
-            len: 0,
+            available: capacity.0,
             side: marker::PhantomData,
         })
     }
@@ -74,7 +72,7 @@ impl<Side, Value: Reusable, Auxiliary: Default> Table<Side, Value, Auxiliary> {
         id: stream::Id,
         init: Value::Init,
     ) -> Option<Occupied<'_, Side, Value, Auxiliary>> {
-        if self.len == self.capacity {
+        if self.available == 0 {
             return None;
         }
         let index = if let Some(Free(index)) = self.free {
@@ -87,10 +85,9 @@ impl<Side, Value: Reusable, Auxiliary: Default> Table<Side, Value, Auxiliary> {
         } else {
             let raw = self.nodes.len() as u32;
             let index = Index(NonZero::<u32>::MIN.saturating_add(raw));
-            // SAFETY: initially C slots are reserved. With E exhausted slots,
-            // nodes.len() = live + free + E and self.capacity = C - E.
-            // This arm has no free slots and passed live < self.capacity, so
-            // nodes.len() < C <= nodes.capacity(). The exclusive table never shrinks.
+            // SAFETY: available counts recycled and uninitialized slots.
+            // With no free slots, available > 0 proves nodes.len() is below
+            // the original allocation; exhausted generations never restore credit.
             (unsafe { alloc::raw::VecExt::vacancy(&mut self.nodes) })(Node {
                 id,
                 generation: Generation::<MAX_GENERATION>::INITIAL,
@@ -101,12 +98,12 @@ impl<Side, Value: Reusable, Auxiliary: Default> Table<Side, Value, Auxiliary> {
             });
             index
         };
-        self.len += 1;
+        self.available = self.available.wrapping_sub(1);
         Some(Occupied::new(self, index))
     }
 }
 
 const _: () = {
-    assert!(mem::size_of::<Table<(), (), ()>>() == 6 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Table<(), (), ()>>() == 4 * mem::size_of::<usize>());
     assert!(mem::align_of::<Table<(), (), ()>>() == mem::align_of::<usize>());
 };

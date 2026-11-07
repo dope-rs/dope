@@ -44,20 +44,18 @@ where
         // SAFETY: inherited from this forwarding method's installed-root contract.
         unsafe {
             dispatch::raw::Manifold::pre_park(
-                self.as_mut().project().inner.project().endpoint,
+                self.as_mut().project().endpoint,
                 turn.reborrow(),
                 driver,
             )
         };
         let budget = self.as_ref().get_ref().limits.events.get();
         let now = driver.driver_ref().clock().now();
-        self.as_mut().project().inner.drain_ready(now, budget);
+        self.as_mut().drain_ready(now, budget);
         let mut changed = false;
         let mut left = self.as_ref().get_ref().limits.retries.get();
         while left != 0 {
-            let Some(did) =
-                brand::Token::with(|scope| self.as_mut().project().inner.try_due(scope, now))
-            else {
+            let Some(did) = brand::Token::with(|scope| self.as_mut().try_due(scope, now)) else {
                 break;
             };
             left -= 1;
@@ -66,11 +64,7 @@ where
         if changed {
             // SAFETY: the same installed endpoint remains structurally pinned.
             unsafe {
-                dispatch::raw::Manifold::pre_park(
-                    self.as_mut().project().inner.project().endpoint,
-                    turn,
-                    driver,
-                )
+                dispatch::raw::Manifold::pre_park(self.as_mut().project().endpoint, turn, driver)
             };
         }
         self
@@ -84,9 +78,9 @@ where
         self.as_mut().seal();
         {
             let this = self.as_mut().project();
-            dispatch::raw::Manifold::shutdown(this.inner.project().endpoint, turn, driver);
+            dispatch::raw::Manifold::shutdown(this.endpoint, turn, driver);
         }
-        self.as_mut().project().inner.drain_events(usize::MAX);
+        self.as_mut().drain_events(usize::MAX);
         self
     }
 }
@@ -109,7 +103,7 @@ where
         let finish =
             <dispatch::raw::Projected<Self> as executor::raw::Finishes<'d, Self>>::call(finish);
         let (mut owner, install, proof) = finish.into_parts();
-        owner.as_mut().project().inner.drain_events(usize::MAX);
+        owner.as_mut().drain_events(usize::MAX);
         executor::raw::Finish::new(owner, install, proof)
     }
 }

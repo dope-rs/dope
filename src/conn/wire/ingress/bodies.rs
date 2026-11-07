@@ -164,7 +164,8 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::ra
             bytes,
             pto,
         });
-        ingest::Ingest::new(input).try_process(
+        ingest::try_process(
+            input,
             auth.meta,
             id,
             auth.body(),

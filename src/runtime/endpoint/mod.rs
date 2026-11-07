@@ -34,10 +34,7 @@ use settings::demands;
 use crate::{
     conn::{id, life::status},
     errors,
-    proto::{
-        cid,
-        datagram::{Sealed, Size},
-    },
+    proto::datagram::{Sealed, Size},
     runtime::{
         mux::{
             auth, builder,
@@ -326,7 +323,6 @@ pub struct Endpoint<
     #[pin]
     pub(in crate::runtime::endpoint) udp: Transport<'d, ID, H, B, A, M::Mode, Q>,
     pub(in crate::runtime::endpoint) packet: Size,
-    pub(in crate::runtime::endpoint) rotation: clock::Bound<'d, cid::Schedule>,
 }
 
 impl<'d, const ID: u8, H, B, A, M, Q: buffer::Residency + buffer::raw::Source>
@@ -342,8 +338,9 @@ where
     ) -> executor::raw::Finish<'app, 'finish, 'owner, 'epoch, 'd, Self> {
         let (mut owner, install, proof) = finish.into_parts();
         let mut this = owner.as_mut().project();
-        this.rotation.seal();
-        manage::Shutdown::new(this.udp.as_mut().handler_mut().mux_mut()).finish(proof);
+        let host = this.udp.as_mut().handler_mut().project();
+        host.rotation.seal();
+        manage::Shutdown::new(host.mux).finish(proof);
         let child = executor::raw::Finish::new(this.udp, install, proof);
         let child = <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Finish as executor::raw::Finishes<'d, _>>::call(
             child

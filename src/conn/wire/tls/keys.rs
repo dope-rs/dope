@@ -135,10 +135,8 @@ impl ReadKeys {
 
     fn try_fill(&mut self, fails: &mut ciphers::Failures) -> Result<(), Update> {
         if self.lookahead.is_none() {
-            let mut secrets = self.secrets.clone();
-            let next = self.next.try_next(secrets.next_packet_keys().remote)?;
+            let next = self.next.try_next(self.secrets.next_packet_keys().remote)?;
             fails.admit(next.open_limit())?;
-            self.secrets = secrets;
             self.lookahead = Some(next);
         }
         Ok(())
@@ -198,9 +196,9 @@ impl WriteKeys {
 
     fn try_fill(&mut self) -> Result<(), crypto::Dimensions> {
         if self.next.is_none() {
-            let mut secrets = self.secrets.clone();
-            let next = self.current.try_next(secrets.next_packet_keys().local)?;
-            self.secrets = secrets;
+            let next = self
+                .current
+                .try_next(self.secrets.next_packet_keys().local)?;
             self.next = Some(next);
         }
         Ok(())

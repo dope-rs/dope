@@ -13,4 +13,4 @@ pub use mode::Mode;
 pub use sink::Sink;
 
 pub(in crate::stream) use dispatch::Dispatch;
-pub(crate) use sink::{Forward, Ignore};
+pub(crate) use sink::Ignore;

@@ -219,7 +219,6 @@ impl<'conn, const DOMAIN: u8, B: Recv, D: buffer::raw::Segment> Receive<'conn, D
             .streams
             .state
             .resident
-            .read()
             .try_id(local)
             .map_err(resident::Error::Stale)?;
         self.stop(id, code).map_err(resident::Error::Stream)

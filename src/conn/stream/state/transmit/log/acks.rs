@@ -73,7 +73,7 @@ impl<D: buffer::raw::Segment> Ack<'_, '_, D> {
         };
         let retired = done?;
         let close = prepare(id)?;
-        let (key, _) = registry.read().find::<true>(id)?;
+        let (key, _) = registry.find::<true>(id)?;
         let recycle = Recycle::new(control, &mut state.deliveries);
         match Occupied::retire(retired, key, registry, recycle) {
             queue::Removal::Absent => None,

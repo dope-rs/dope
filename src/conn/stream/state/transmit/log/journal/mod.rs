@@ -5,7 +5,7 @@ use crate::conn::{
     stream::state::transmit::log::{self, links, planes},
 };
 use links::{
-    storage::{Records, Scan},
+    storage::{Account, Scan},
     topology::{Group, Record, Tables},
 };
 use o3::depot::{
@@ -96,9 +96,18 @@ impl Journal {
         if !self.ledger.has_room(upper) {
             return Err(Reason::Full);
         }
-        let mut records = Records::new(self);
-        records.try_reap(upper)?;
-        records.try_prune(upper)?;
+        while self.storage.groups.remaining().get() < upper {
+            let first = Record::reclaim(self).ok_or(Reason::Full)?;
+            let mut next = first.next(Account::Retired);
+            while let Some(record) = next {
+                next = record.next(Account::Retired);
+            }
+        }
+        while self.storage.nodes.remaining().get() < upper {
+            Record::reclaim(self)
+                .ok_or(Reason::Full)?
+                .discard(Account::Retired);
+        }
         let count = Count::new(upper as u32);
         let Tables { nodes, groups } = &mut self.storage;
         let groups = groups.try_grow(count)?;

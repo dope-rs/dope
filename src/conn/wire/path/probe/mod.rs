@@ -158,8 +158,8 @@ impl State {
         Challenges::new(&mut self.challenges, control)
     }
 
-    pub(in crate::conn) fn replies<'a>(&'a mut self, control: &'a mut Set) -> Replies<'a> {
-        Replies::new(self, control)
+    pub(in crate::conn) fn replies(&mut self) -> Replies<'_> {
+        Replies::new(self)
     }
 
     pub(in crate::conn) const fn view(&self) -> view::View<'_> {

@@ -1,6 +1,5 @@
 use crate::conn::{
     self,
-    machine::storage,
     output::{
         control::{self, encode},
         delivery, journals,
@@ -321,7 +320,7 @@ impl<'a, D: buffer::raw::Segment> Scope<'a, D> {
         for (entry, slot) in supply.consume(self.entries.drain()) {
             let handle = match entry {
                 Entry::Retry(selected) => {
-                    let live = Access::into_live(Selected {
+                    let live = Access::into_live(log::Candidate {
                         journal: &mut self.state.deliveries,
                         selected,
                     });
@@ -330,7 +329,7 @@ impl<'a, D: buffer::raw::Segment> Scope<'a, D> {
                     log::Retry::commit(live)
                 }
                 Entry::Probe(selected) => {
-                    let live = Access::into_live(Selected {
+                    let live = Access::into_live(log::Candidate {
                         journal: &mut self.state.deliveries,
                         selected,
                     });
@@ -381,27 +380,6 @@ impl<'a, D: buffer::raw::Segment> Scope<'a, D> {
             peer: &mut self.state.peer,
             next: self.sent,
         });
-    }
-}
-
-struct Selected<'a, P> {
-    journal: &'a mut journal::Journal,
-    selected: P,
-}
-
-// SAFETY: this retry comes from the immutable inputs retained by Reserve.
-unsafe impl depot::raw::Source<log::Retry> for Selected<'_, log::Retry> {
-    type Key = storage::Key<log::NodeTag>;
-    fn key(&self) -> Self::Key {
-        self.selected.key()
-    }
-}
-
-// SAFETY: this probe retains its original journal, generation and carrier proof.
-unsafe impl depot::raw::Source<log::Probe> for Selected<'_, log::Probe> {
-    type Key = storage::Key<log::NodeTag>;
-    fn key(&self) -> Self::Key {
-        self.selected.key()
     }
 }
 

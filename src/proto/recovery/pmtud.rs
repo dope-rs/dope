@@ -65,7 +65,6 @@ impl Probe {
 }
 
 pub(crate) struct Pmtud {
-    current: u64,
     upper_bound: u64,
     failures: Failures,
 }
@@ -73,20 +72,15 @@ pub(crate) struct Pmtud {
 impl Pmtud {
     pub(crate) fn new(max_pmtu: Maximum) -> Self {
         Self {
-            current: BASE_PMTU,
             upper_bound: max_pmtu.get(),
             failures: Failures::None,
         }
     }
 
-    pub(crate) const fn current(&self) -> u64 {
-        self.current
-    }
-
     /// Applies the authenticated peer UDP payload ceiling before discovery can
     /// arm a probe. Transport parameters guarantee a minimum of 1200 bytes.
-    pub(crate) fn cap(&mut self, max: u64) -> Option<Maximum> {
-        if self.current != BASE_PMTU || !matches!(self.failures, Failures::None) {
+    pub(crate) fn cap(&mut self, max: u64, current: u64) -> Option<Maximum> {
+        if current != BASE_PMTU || !matches!(self.failures, Failures::None) {
             return None;
         }
         let maximum = Maximum::new(self.upper_bound.min(max))?;
@@ -94,18 +88,17 @@ impl Pmtud {
         Some(maximum)
     }
 
-    pub(crate) fn next_probe(&self, ceiling: num::NonZero<u16>) -> Option<Probe> {
+    pub(crate) fn next_probe(&self, current: u64, ceiling: num::NonZero<u16>) -> Option<Probe> {
         let upper_bound = self.upper_bound.min(u64::from(ceiling.get()));
-        if upper_bound <= self.current + SEARCH_DONE_INTERVAL {
+        if upper_bound <= current + SEARCH_DONE_INTERVAL {
             return None;
         }
-        let size = (self.current + upper_bound) / 2;
+        let size = (current + upper_bound) / 2;
         let size = num::NonZero::<u16>::new(u16::try_from(size).ok()?)?;
         Some(Probe(size))
     }
 
-    pub(crate) fn probe_acked(&mut self, probe: Probe) {
-        self.current = probe.get() as u64;
+    pub(crate) fn probe_acked(&mut self) {
         self.failures = Failures::None;
     }
 
@@ -122,5 +115,5 @@ const _: () = assert!(MAX_PMTU <= u64::MAX - SEARCH_DONE_INTERVAL);
 const _: () = assert!(mem::size_of::<Option<Probe>>() == mem::size_of::<u16>());
 const _: () = assert!(mem::size_of::<Maximum>() == mem::size_of::<u16>());
 const _: () = assert!(mem::size_of::<Option<Maximum>>() == mem::size_of::<u16>());
-const _: () = assert!(mem::size_of::<Pmtud>() <= 32);
+const _: () = assert!(mem::size_of::<Pmtud>() <= 16);
 const _: () = assert!(MAX_PROBES_PER_SIZE == 3);

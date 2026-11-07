@@ -113,106 +113,6 @@ where
     }
 }
 
-impl<'d, const ID: u8, H, B> Endpoint<'d, ID, H, B>
-where
-    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
-    B: stream::Recv,
-{
-    fn drive<'turn>(
-        self: pin::Pin<&mut Self>,
-        work: app::Work<'turn, 'd>,
-        driver: &mut driver::Context<'_, 'd>,
-    ) {
-        let now = driver.driver_ref().clock().now();
-        now.at(self).apply(|runtime, raw| {
-            let mut mux = runtime.project().mux;
-            while mux.as_ref().schedule(raw).is_break() {
-                let Some(permit) = work.permit() else {
-                    return;
-                };
-                mux.as_mut().drive_net(permit, now);
-            }
-        });
-    }
-}
-
-impl<'d, const ID: u8, H, B, A> Endpoint<'d, ID, H, B, Run<A>>
-where
-    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
-    B: stream::Recv,
-    A: Driver<'d, H, ID, B, resident::Shared<'d>>,
-{
-    fn drive<'turn>(
-        self: pin::Pin<&mut Self>,
-        work: app::Work<'turn, 'd>,
-        driver: &mut driver::Context<'_, 'd>,
-    ) {
-        let now = driver.driver_ref().clock().now();
-        now.at(self).apply(|runtime, raw| {
-            let mut this = runtime.project();
-            let mut mux = this.mux.as_mut();
-            let schedule = this.schedule;
-            loop {
-                let app = has_work(mux.as_ref(), &schedule.app);
-                let net = mux.as_ref().schedule(raw).is_break();
-                let admit = schedule.work.admit(|source| match source {
-                    Work::Application => {
-                        use crate::runtime::mux::app::BATCH_QUANTUM;
-
-                        if !app {
-                            return quota::Admission::Empty;
-                        }
-                        let parent = this.ready.target();
-                        let quantum = usize::from(BATCH_QUANTUM.get());
-                        let mut driven = 0usize;
-                        while driven < quantum {
-                            let outcome =
-                                drive(mux.as_mut(), &mut schedule.app, parent, work, driver, raw);
-                            let batch = match outcome {
-                                quota::Admission::Empty => {
-                                    return if driven == 0 {
-                                        quota::Admission::Empty
-                                    } else {
-                                        quota::Admission::Item(())
-                                    };
-                                }
-                                quota::Admission::Exhausted => {
-                                    return if driven == 0 {
-                                        quota::Admission::Exhausted
-                                    } else {
-                                        quota::Admission::Item(())
-                                    };
-                                }
-                                quota::Admission::Item(step::Flow::Batch) => true,
-                                quota::Admission::Item(step::Flow::Yield) => false,
-                            };
-                            driven += 1;
-                            if !batch {
-                                break;
-                            }
-                        }
-                        quota::Admission::Item(())
-                    }
-                    Work::Transport => {
-                        if !net {
-                            return quota::Admission::Empty;
-                        }
-                        let Some(permit) = work.permit() else {
-                            return quota::Admission::Exhausted;
-                        };
-                        mux.as_mut().drive_net(permit, now);
-                        quota::Admission::Item(())
-                    }
-                });
-                match admit {
-                    quota::Admission::Item(()) => {}
-                    quota::Admission::Empty | quota::Admission::Exhausted => break,
-                }
-            }
-        });
-    }
-}
-
 impl<'d, const ID: u8, H, B, S> Endpoint<'d, ID, H, B, S>
 where
     H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
@@ -296,11 +196,11 @@ where
     H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
     B: stream::Recv,
 {
-    fn pre_park<'a, 'turn>(
-        endpoint: pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
-    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>;
+    fn drive<'turn>(
+        endpoint: pin::Pin<&mut embedded::Endpoint<'d, ID, H, B, Self>>,
+        work: app::Work<'turn, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
+    );
 
     fn augment(
         endpoint: pin::Pin<&embedded::Endpoint<'d, ID, H, B, Self>>,
@@ -313,19 +213,21 @@ where
     H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
     B: stream::Recv,
 {
-    fn pre_park<'a, 'turn>(
-        mut endpoint: pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B>>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
-    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B>> {
-        if *endpoint.as_ref().project_ref().stopping {
-            endpoint
-                .as_mut()
-                .shutdown_at(turn.app(), driver.driver_ref().clock().now());
-        } else {
-            endpoint.as_mut().drive(turn.app(), driver);
-        }
-        endpoint
+    fn drive<'turn>(
+        endpoint: pin::Pin<&mut embedded::Endpoint<'d, ID, H, B>>,
+        work: app::Work<'turn, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
+        let now = driver.driver_ref().clock().now();
+        now.at(endpoint).apply(|runtime, raw| {
+            let mut mux = runtime.project().mux;
+            while mux.as_ref().schedule(raw).is_break() {
+                let Some(permit) = work.permit() else {
+                    return;
+                };
+                mux.as_mut().drive_net(permit, now);
+            }
+        });
     }
 
     fn augment(
@@ -342,19 +244,74 @@ where
     B: stream::Recv,
     A: Driver<'d, H, ID, B, resident::Shared<'d>>,
 {
-    fn pre_park<'a, 'turn>(
-        mut endpoint: pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
-    ) -> pin::Pin<&'a mut embedded::Endpoint<'d, ID, H, B, Self>> {
-        if *endpoint.as_ref().project_ref().stopping {
-            endpoint
-                .as_mut()
-                .shutdown_at(turn.app(), driver.driver_ref().clock().now());
-        } else {
-            endpoint.as_mut().drive(turn.app(), driver);
-        }
-        endpoint
+    fn drive<'turn>(
+        endpoint: pin::Pin<&mut embedded::Endpoint<'d, ID, H, B, Self>>,
+        work: app::Work<'turn, 'd>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
+        let now = driver.driver_ref().clock().now();
+        now.at(endpoint).apply(|runtime, raw| {
+            let mut this = runtime.project();
+            let mut mux = this.mux.as_mut();
+            let schedule = this.schedule;
+            loop {
+                let app = has_work(mux.as_ref(), &schedule.app);
+                let net = mux.as_ref().schedule(raw).is_break();
+                let admit = schedule.work.admit(|source| match source {
+                    Work::Application => {
+                        use crate::runtime::mux::app::BATCH_QUANTUM;
+
+                        if !app {
+                            return quota::Admission::Empty;
+                        }
+                        let parent = this.ready.target();
+                        let quantum = usize::from(BATCH_QUANTUM.get());
+                        let mut driven = 0usize;
+                        while driven < quantum {
+                            let outcome =
+                                drive(mux.as_mut(), &mut schedule.app, parent, work, driver, raw);
+                            let batch = match outcome {
+                                quota::Admission::Empty => {
+                                    return if driven == 0 {
+                                        quota::Admission::Empty
+                                    } else {
+                                        quota::Admission::Item(())
+                                    };
+                                }
+                                quota::Admission::Exhausted => {
+                                    return if driven == 0 {
+                                        quota::Admission::Exhausted
+                                    } else {
+                                        quota::Admission::Item(())
+                                    };
+                                }
+                                quota::Admission::Item(step::Flow::Batch) => true,
+                                quota::Admission::Item(step::Flow::Yield) => false,
+                            };
+                            driven += 1;
+                            if !batch {
+                                break;
+                            }
+                        }
+                        quota::Admission::Item(())
+                    }
+                    Work::Transport => {
+                        if !net {
+                            return quota::Admission::Empty;
+                        }
+                        let Some(permit) = work.permit() else {
+                            return quota::Admission::Exhausted;
+                        };
+                        mux.as_mut().drive_net(permit, now);
+                        quota::Admission::Item(())
+                    }
+                });
+                match admit {
+                    quota::Admission::Item(()) => {}
+                    quota::Admission::Empty | quota::Admission::Exhausted => break,
+                }
+            }
+        });
     }
 
     fn augment(

@@ -6,7 +6,10 @@ use common::suite::peers::{
     packet::{self, bytes, params},
     tls,
 };
-use common::suite::{mux::dispatch, tokens};
+use common::suite::{
+    mux::{dispatch, retry},
+    tokens,
+};
 use dope_quic::conn::{self, life::accept, life::options::Options, life::tls::clients};
 use dope_quic::errors;
 use dope_quic::proto::{epoch, param};
@@ -60,6 +63,25 @@ fn retains_peer_route() {
         server
             .receive_from(&mut work, &mut client, now)
             .expect("client Initial");
+        if route.is_some() && accepted {
+            let mut wire = retry::try_wire(
+                initial.as_slice(),
+                plain.as_slice(),
+                other.as_slice(),
+                b"tok",
+            )
+            .expect("wrong-shard Retry");
+            assert!(matches!(
+                client.receive(&mut work, &mut wire, now),
+                Err(peer::Transfer::Input(conn::Error::ProtocolViolation))
+            ));
+            let (result, activity) = Tracker::measure(|| client.receive(&mut work, &mut wire, now));
+            assert!(matches!(
+                result,
+                Err(peer::Transfer::Input(conn::Error::ProtocolViolation))
+            ));
+            assert_eq!(activity, [0; 4]);
+        }
         let result = client.receive_from(&mut work, &mut server, now);
         if accepted {
             result.expect("peer CID satisfies the retained route");

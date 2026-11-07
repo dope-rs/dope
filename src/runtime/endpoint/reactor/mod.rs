@@ -7,7 +7,7 @@ use o3::mem::quota;
 use dope::core::io::datagram::{ReceiveError, Residency};
 use o3::buffer;
 
-use crate::proto::datagram::Sealed;
+use crate::proto::{cid, datagram::Sealed};
 
 pub(super) mod buffers;
 pub(super) mod queue;
@@ -77,6 +77,7 @@ pub struct Engine<
 {
     #[pin]
     pub(super) mux: router::Router<H, ID, B, M>,
+    pub(super) rotation: clock::Bound<'d, cid::Schedule>,
     pub(super) app: A,
     pub(super) pooled: buffers::Pending<Q, Interest<'d, H, ID, B>>,
     pub(super) flush: Gate,
@@ -90,9 +91,14 @@ where
     B: stream::Recv,
     M: auth::Mode<ID, Send = Shared<'d>, Identity = id::Driver<'d>>,
 {
-    pub(super) fn new(mux: router::Router<H, ID, B, M>, app: A) -> Self {
+    pub(super) fn new(
+        mux: router::Router<H, ID, B, M>,
+        app: A,
+        rotation: clock::Bound<'d, cid::Schedule>,
+    ) -> Self {
         Self {
             mux,
+            rotation,
             app,
             pooled: buffers::Pending::new(),
             flush: Gate::new(),
@@ -116,7 +122,9 @@ where
         mut mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
         pooled: &mut buffers::Pending<Q, Interest<'d, H, ID, B>>,
         stopping: &mut bool,
+        rotation: &mut clock::Bound<'d, cid::Schedule>,
     ) {
+        rotation.seal();
         pooled.clear();
         if let Some(clear) =
             <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Writable::clear()
@@ -175,6 +183,9 @@ where
                     ControlFlow::Continue(None) => schedule::Progress::Quiescent,
                 }),
         );
+        if let Some(until) = this.rotation.deadline() {
+            state = state.reduce(schedule::Progress::until(clock.deadline_at(until)));
+        }
         ready(state)
     }
 }
@@ -229,7 +240,7 @@ where
                     if error.cause() == SubmitCause::IdentityExhausted)
                     && !*this.stopping
                 {
-                    Self::stop(this.mux, this.pooled, this.stopping);
+                    Self::stop(this.mux, this.pooled, this.stopping, this.rotation);
                 }
                 return;
             }
@@ -270,7 +281,7 @@ where
         let (_, _, _, data, _) = done.into_parts();
         this.mux.as_mut().output().reclaim(data);
         if failed && !*this.stopping {
-            Self::stop(this.mux, this.pooled, this.stopping);
+            Self::stop(this.mux, this.pooled, this.stopping, this.rotation);
         }
     }
 }
@@ -338,7 +349,12 @@ where
                                     .reject(cause)
                                     .is_break()
                                 {
-                                    Self::stop(mux.as_mut(), this.pooled, this.stopping);
+                                    Self::stop(
+                                        mux.as_mut(),
+                                        this.pooled,
+                                        this.stopping,
+                                        this.rotation,
+                                    );
                                 }
                                 quota::Admission::Item(*this.stopping)
                             }
@@ -405,7 +421,7 @@ where
 {
     fn shutdown(self: pin::Pin<&mut Self>) {
         let this = self.project();
-        Self::stop(this.mux, this.pooled, this.stopping);
+        Self::stop(this.mux, this.pooled, this.stopping, this.rotation);
     }
 }
 

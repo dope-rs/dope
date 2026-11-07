@@ -65,14 +65,10 @@ impl<'a, Tag> Slot<'a, Tag> {
     }
 }
 
-pub(in crate::conn) struct Supply<Tag> {
-    count: Count,
-    tag: marker::PhantomData<fn(Tag) -> Tag>,
-}
+pub(in crate::conn) struct Supply<Tag>(marker::PhantomData<fn(Tag) -> Tag>);
 
 pub(in crate::conn) struct Slots<'a, T, Tag> {
     values: init::IntoIter<'a, T>,
-    remaining: usize,
     tag: marker::PhantomData<fn(&'a Tag) -> &'a Tag>,
 }
 
@@ -137,29 +133,15 @@ impl Demand {
     pub(in crate::conn::output) const fn counts(self) -> (Count, Count) {
         (self.controls, self.streams)
     }
-
-    pub(in crate::conn::output::journals) fn supplies(
-        self,
-    ) -> (Supply<controls::Tag>, Supply<streams::Tag>) {
-        (Supply::new(self.controls), Supply::new(self.streams))
-    }
 }
 
 impl<Tag> Supply<Tag> {
-    fn new(count: Count) -> Self {
-        Self {
-            count,
-            tag: marker::PhantomData,
-        }
-    }
-
     pub(in crate::conn) fn consume<'a, T>(
         self,
         values: init::IntoIter<'a, T>,
     ) -> Slots<'a, T, Tag> {
         Slots {
             values,
-            remaining: usize::from(self.count.get()),
             tag: marker::PhantomData,
         }
     }
@@ -169,18 +151,13 @@ impl<'a, T, Tag> Iterator for Slots<'a, T, Tag> {
     type Item = (T, Slot<'a, Tag>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-        self.remaining -= 1;
         self.values
             .next()
             .map(|value| (value, Slot(marker::PhantomData)))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.values.len().min(self.remaining);
-        (len, Some(len))
+        self.values.size_hint()
     }
 }
 
@@ -228,7 +205,7 @@ impl Transmission {
 const _: () = {
     assert!(mem::size_of::<Demand>() == 2);
     assert!(mem::size_of::<Slot<'static, controls::Tag>>() == 0);
-    assert!(mem::size_of::<Supply<controls::Tag>>() == 1);
+    assert!(mem::size_of::<Supply<controls::Tag>>() == 0);
     assert!(mem::size_of::<Transmission>() == 1);
     assert!(mem::size_of::<Packet>() == 48);
 };
@@ -292,7 +269,6 @@ pub(in crate::conn::output) struct Reserve<O: raw::Owner> {
     owner: O,
     epoch: conn::Epoch,
     pn: header::Number,
-    demand: Demand,
     next: NonZero<usize>,
 }
 
@@ -312,7 +288,6 @@ impl<O: raw::Owner> Reserve<O> {
             owner,
             epoch,
             pn,
-            demand,
             next,
         })
     }
@@ -339,13 +314,12 @@ impl<O: raw::Owner> Reserve<O> {
         let mut packet = Packet::new(tx, self.pn, now, bytes);
         packet.crypto = crypto;
         let charged = packet.flight();
-        let (control, stream) = self.demand.supplies();
         let (table, controls, context) = self.owner.parts();
         let (window, pools, len, flight) = table.parts(self.epoch);
         O::write(
             pools.entry(&mut packet),
-            control.consume(controls.drain()),
-            stream,
+            Supply(marker::PhantomData).consume(controls.drain()),
+            Supply(marker::PhantomData),
             context,
         );
         *len = self.next.get();

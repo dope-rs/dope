@@ -91,7 +91,7 @@ impl<'map, B: Recv> Occupied<'map, B> {
     }
 
     fn key(&self, registry: &Table) -> Option<resident::Key> {
-        registry.read().key(self.entry.id())
+        registry.key(self.entry.id())
     }
 
     fn borrow(&mut self) -> views::Write<'map, '_, B> {
@@ -166,17 +166,13 @@ impl<'map, B: Recv> Occupied<'map, B> {
             .observe(permit, offset, record, boundary);
     }
 
-    pub(in crate::conn::stream::state::receive) fn reset(
-        &mut self,
-        code: crate::errors::Code,
-        end: u64,
-    ) {
-        self.entry.get_mut().state.reset(code, end);
+    pub(in crate::conn::stream::state::receive) fn reset(&mut self, end: u64) {
+        self.entry.get_mut().state.reset(end);
     }
 
     pub(in crate::conn) fn stop(&mut self, ctrl: &mut control::Pending, code: crate::errors::Code) {
         let state = &mut self.entry.get_mut().state;
-        if state.reset_error().is_some() {
+        if state.is_reset() {
             return;
         }
         ctrl.remove(&mut state.max_stream_data);
@@ -295,7 +291,7 @@ impl<B: Recv, R> DeliveryRead<'_, B, R> {
         let limit = (free != 0)
             .then(|| stream.credit.release(base, free))
             .flatten();
-        let reset = stream.reset_error().is_some();
+        let reset = stream.is_reset();
         let done = reset || stream.is_eof();
         let credit = match limit {
             None => false,
@@ -356,7 +352,7 @@ impl<B: Recv> Reclaim<'_, B> {
     pub(in crate::conn) fn remove(self, registry: &mut Table, ctrl: &mut control::Pending) {
         let Occupied { entry, arena } = self.slot;
         let id = entry.id();
-        let Some(key) = registry.read().key(id) else {
+        let Some(key) = registry.key(id) else {
             return;
         };
         let slot = entry.handle().index();

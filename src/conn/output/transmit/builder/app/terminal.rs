@@ -15,6 +15,7 @@ use crate::conn::output::{
 };
 use crate::conn::wire::path;
 use crate::proto::recovery::{numbers, pmtud};
+use crate::security::crypto::output::Draft;
 use crate::wire::frame::close;
 use crate::{
     stream,
@@ -64,89 +65,45 @@ pub(in crate::conn::output::transmit) fn probe<
         return Ok(None);
     };
 
-    let mut frames = mem::take(&mut build.connection.scratch.frames);
-    frames.clear();
-    let ack = match ack::append::<kind::OneRtt, false>(
-        &build.connection.receive.packet_numbers,
-        now,
-        &mut frames,
-        space,
-    ) {
-        Ok(ack) => ack,
-        Err(error) => {
-            build.connection.scratch.frames = frames;
-            return Err(error.into_error());
-        }
-    };
-    let padding = space - frames.len();
-    if let Err(rejected) = write::Append::new(&mut frames).try_tail::<0, 1>(
-        [&[frame::TYPE_PING]],
-        padding,
-        frame::TYPE_PADDING,
-    ) {
-        let (_, error) = rejected.into_parts();
-        build.connection.scratch.frames = frames;
-        return Err(transmit::Admission::Payload {
-            error,
-            requested: 1 + padding,
-        });
-    }
-
-    let mut header = mem::take(&mut build.connection.scratch.header);
-    header.clear();
     let dcid = *build.connection.path.peer.id();
-    let encoded = match short::Ref::new(dcid.as_ref_id(), number.encoding(), phase)
-        .encode_into(&mut header)
-    {
-        Ok(encoded) => encoded,
-        Err(error) => {
-            build.connection.scratch.header = header;
-            build.connection.scratch.frames = frames;
-            return Err(transmit::Admission::Payload {
-                error,
-                requested: overhead,
-            });
-        }
+    let target = build.destination;
+    target.prefix(dst)?;
+    let mut draft = Draft::try_new(
+        dst.append(),
+        short::Ref::new(dcid.as_ref_id(), number.encoding(), phase),
+    )
+    .map_err(transmit::Admission::Protection)?;
+    let ack = {
+        let mut frames = draft.append();
+        let ack = ack::append::<kind::OneRtt, false>(
+            &build.connection.receive.packet_numbers,
+            now,
+            &mut frames,
+            space,
+        )
+        .map_err(transmit::Admission::into_error)?;
+        let padding = space - frames.len();
+        frames
+            .try_tail::<0, 1>([&[frame::TYPE_PING]], padding, frame::TYPE_PADDING)
+            .map_err(|rejected| transmit::Admission::Payload {
+                error: rejected.into_parts().1,
+                requested: 1 + padding,
+            })?;
+        ack
     };
     let mut commit = Plan::new(conn::Epoch::Application, number);
     commit.flags.ack = ack;
     commit.flags.set_elicit(true);
     commit.flags.set_flight(true);
     commit.path.pmtud_probe = Some(probe);
-    let target = build.destination;
-    if let Err(error) = target.prefix(dst) {
-        header.clear();
-        build.connection.scratch.header = header;
-        build.connection.scratch.frames = frames;
-        return Err(error);
-    }
-    let prepared =
-        match pending::Packet::try_new(journal::Schedule::new(build).finish(), commit, target) {
-            Ok(prepared) => prepared,
-            Err((scratch, error)) => {
-                header.clear();
-                scratch.header = header;
-                scratch.frames = frames;
-                return Err(error.into_error());
-            }
-        };
-    let ((), mut prepared) = match prepared.protect(seals::Segments::new(dst, encoded, &frames)) {
+    let prepared = pending::Packet::try_new(journal::Schedule::new(build).finish(), commit, target)
+        .map_err(|(_, error)| error.into_error())?;
+    let ((), prepared) = match prepared.protect(draft) {
         Ok(output) => output,
         Err(failure) => {
-            let mut failure = failure.release();
-            let scratch = failure.scratch();
-            header.clear();
-            scratch.header = header;
-            frames.clear();
-            scratch.frames = frames;
             return failure.into_error().map_or(Ok(None), Err);
         }
     };
-
-    header.clear();
-    prepared.scratch().header = header;
-    frames.clear();
-    prepared.scratch().frames = frames;
     Ok(Some(prepared))
 }
 

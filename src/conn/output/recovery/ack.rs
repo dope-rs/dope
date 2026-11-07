@@ -15,10 +15,11 @@ pub(in crate::conn) struct Receipt<'a> {
 
 pub(in crate::conn) fn try_apply<'a, const DOMAIN: u8, B, D, E>(
     egress: &'a mut output::Egress,
-    mut delivery: delivery::Delivery<'a, DOMAIN, B, D, E>,
+    mut delivery: delivery::Delivery<'a, DOMAIN, B, D>,
     epoch: conn::Epoch,
     receipt: Receipt<'_>,
     now: time::Instant,
+    evidence: &mut E,
 ) -> Result<(), conn::Error>
 where
     B: stream::Recv,
@@ -49,7 +50,7 @@ where
                 journal.transmission.is_flight(),
                 cc::Packet::from_epoch(epoch, journal.pn),
             );
-            delivery.ack(journal, controls, streams)
+            delivery.ack(journal, controls, streams, evidence)
         },
     );
     if valid && elicits {
