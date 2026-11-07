@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "dope-quic"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "aws-lc-rs",
  "dope",
@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "dope-tls"
-version = "0.34.0"
+version = "0.34.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "317460bdf72c150e775f7448766c0527c99314077d65620d224ccced46fac93f"
+checksum = "c0a69ef2eb4ba5272e0244043c4a700788249824be8497c12b60e56aedd6dd64"
 dependencies = [
  "dope",
  "o3",
@@ -268,9 +268,9 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "o3"
-version = "0.37.0"
+version = "0.37.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c5afa8677417ff202988911972099d50e5483db40a90dccb72418090e0db2fd"
+checksum = "4e8dd3a6d76a7828c36d171b3ab8b938e992f5c8f280a4310fb63e6ac95c67cf"
 
 [[package]]
 name = "once_cell"
