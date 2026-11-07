@@ -125,11 +125,10 @@ where
         now: time::Instant,
     ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect> {
         setup::Setup::with(self, |setup| {
-            let ready = setup.reserve(&options)?;
             if !routing::PeerRoute::matches(routing::Plain, &dcid) {
-                drop(options);
                 return Err(errors::Connect::InvalidConfig);
             }
+            let ready = setup.reserve(&options)?;
             ready.finish(
                 scope,
                 auth.try_clone()?,

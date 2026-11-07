@@ -177,11 +177,6 @@ pub(crate) struct Ready {
     pub(super) sealed: bool,
 }
 
-/// Connection-local append view over a shared GSO flight.
-pub(in crate::conn) struct GsoAppend<'batch> {
-    batch: &'batch mut Gso,
-}
-
 impl Gso {
     pub(crate) const fn new(limits: datagram::GsoLimits) -> Self {
         Self {
@@ -230,10 +225,6 @@ impl Gso {
         } else {
             Err(value)
         }
-    }
-
-    pub(in crate::conn) fn append(&mut self) -> GsoAppend<'_> {
-        GsoAppend { batch: self }
     }
 
     pub(crate) fn take(&mut self) -> Option<Ready> {
@@ -302,23 +293,6 @@ const _: () = {
     assert!(size_of::<Storage>() == 4 * size_of::<usize>());
     assert!(size_of::<Gso>() == 5 * size_of::<usize>());
 };
-
-impl<'batch> Sink for GsoAppend<'batch> {
-    type Reservation<'sink>
-        = permits::Gso<'sink>
-    where
-        Self: 'sink;
-
-    const PAD_TO_CEILING: bool = true;
-
-    fn reserve(
-        &mut self,
-        limit: usize,
-        overhead: usize,
-    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
-        self.batch.reserve(limit, overhead)
-    }
-}
 
 impl Sink for Vec<Vec<u8>> {
     type Reservation<'sink> = permits::Fresh<'sink>;

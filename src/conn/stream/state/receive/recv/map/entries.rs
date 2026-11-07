@@ -86,6 +86,10 @@ pub(in crate::conn) struct Occupied<'map, B: Recv> {
 }
 
 impl<'map, B: Recv> Occupied<'map, B> {
+    pub(in crate::conn::stream::state::receive) fn state(&self) -> &recv::State {
+        &self.entry.get().state
+    }
+
     pub(in crate::conn) fn id(&self) -> stream::Id {
         self.entry.id()
     }

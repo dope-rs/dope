@@ -224,39 +224,6 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
         }
     }
 
-    pub(in crate::conn) fn retire_recv(
-        &mut self,
-        events: &mut queue::Pending,
-        id: Id,
-        ctrl: &mut control::Pending,
-    ) {
-        if self.is_recv_done(id) {
-            return;
-        }
-        let stream::State {
-            resident: table,
-            receive: recv,
-            ..
-        } = self.state;
-        let mut slots = recv.map.parts();
-        let mut retire = true;
-        if let map::Slot::Occupied(slot) = slots.entry(map::Id::new(id), table) {
-            match slot.try_reclaim() {
-                Ok(mut reclaim) => {
-                    reclaim.cancel_read(events, table);
-                    reclaim.remove(table, ctrl);
-                }
-                Err(slot) => {
-                    slot.retain(ctrl);
-                    retire = false;
-                }
-            }
-        }
-        if retire {
-            self.close_recv(id, ctrl);
-        }
-    }
-
     pub(in crate::conn) fn acknowledge<E: release::Sink>(
         &mut self,
         events: &mut queue::Pending,
@@ -314,6 +281,7 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
         if stream.is_local() {
             if let Some(count) = count {
                 *dir.bind_mut(&mut self.local_initiated.active) = count;
+                return;
             }
         } else if matches!(dir, Direction::Bidi) {
             let closed = self.is_recv_done(id);
@@ -321,15 +289,33 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
             if self.closed.insert(half) == closed::Insertion::Inserted && closed {
                 self.release_peer(Direction::Bidi, ctrl);
             }
+            if closed {
+                return;
+            }
         }
-        if self
-            .receive
-            .map
-            .find(map::Id::new(id), &self.resident)
-            .is_some_and(|item| item.state().is_eof() && !item.state().is_reset())
-        {
-            self.retire_recv(events, id, ctrl);
+        let stream::State {
+            resident: table,
+            receive: recv,
+            ..
+        } = self.state;
+        let mut slots = recv.map.parts();
+        let map::Slot::Occupied(slot) = slots.entry(map::Id::new(id), table) else {
+            return;
+        };
+        if !slot.state().is_eof() || slot.state().is_reset() {
+            return;
         }
+        match slot.try_reclaim() {
+            Ok(mut reclaim) => {
+                reclaim.cancel_read(events, table);
+                reclaim.remove(table, ctrl);
+            }
+            Err(slot) => {
+                slot.retain(ctrl);
+                return;
+            }
+        }
+        self.close_recv(id, ctrl);
     }
 }
 

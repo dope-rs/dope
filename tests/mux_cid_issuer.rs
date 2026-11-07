@@ -87,4 +87,15 @@ fn issues_distinct_entropy() {
     }
 
     assert_eq!(issued.len(), routes.len() * 2);
+    assert!(matches!(
+        Pin::new(&mut mux).observe(now, |mut turn| {
+            turn.protocol().connect(
+                routes[0].0,
+                &auth,
+                Options::default(),
+                vec![0; ENTROPY_LEN - 1],
+            )
+        }),
+        Err(dope_quic::errors::Connect::InvalidConfig)
+    ));
 }

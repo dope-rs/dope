@@ -71,12 +71,11 @@ where
         now: time::Instant,
     ) -> Result<id::Handle<E::Identity, DOMAIN>, errors::Connect> {
         setup::Setup::with(self, |setup| {
-            let ready = setup.reserve(&opts)?;
-            let permit = pool.reserve()?;
             if !routing::PeerRoute::matches(routing::Plain, &dcid) {
-                drop(opts);
                 return Err(errors::Connect::InvalidConfig);
             }
+            let ready = setup.reserve(&opts)?;
+            let permit = pool.reserve()?;
             ready.finish(
                 scope,
                 pool.authority().try_clone()?,

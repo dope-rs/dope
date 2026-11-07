@@ -466,13 +466,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         bytes: usize,
         active: Peer,
     ) -> Result<(), Error> {
-        let mut append = batch.append();
-        batch::Batch::new(&mut *self.connection, Policy::Exact(active)).fill(
-            &mut append,
-            now,
-            1,
-            bytes,
-        )
+        batch::Batch::new(&mut *self.connection, Policy::Exact(active)).fill(batch, now, 1, bytes)
     }
 
     fn report<const OBSERVE: bool>(
