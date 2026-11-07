@@ -94,7 +94,7 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Retained<'w, 'd> {
     fn try_copy<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<storage::Owned<resident::Budget<'d>>, hold::Error>
     where
         Self: 'a,
     {
@@ -111,7 +111,7 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Retained<'w, 'd> {
     fn try_retain<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<hold::Retained<'d>, hold::Error>
     where
         Self: 'a,
     {
@@ -141,15 +141,14 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Current<'_, 'w, 'd> {
     fn try_copy<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<storage::Owned<resident::Budget<'d>>, hold::Error>
     where
         Self: 'a,
     {
         match &plan.backing {
-            Backing::Empty => Ok(resident::Shared::new()),
+            Backing::Empty => Ok(storage::Owned::default()),
             Backing::Staged(plan) => {
-                resident::Exact::try_copy(budget, buffer::Read::as_slice(plan))
-                    .map(resident::Exact::into_shared)
+                storage::Owned::try_from_slice(budget, buffer::Read::as_slice(plan))
                     .map_err(hold::Error::Resident)
             }
             Backing::Plain(plan) => {
@@ -174,15 +173,16 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Current<'_, 'w, 'd> {
     fn try_retain<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<hold::Retained<'d>, hold::Error>
     where
         Self: 'a,
     {
         match &plan.backing {
-            Backing::Empty => Ok(resident::Shared::new()),
+            Backing::Empty => Ok(resident::Shared::new().into()),
             Backing::Staged(plan) => plan
                 .try_own()
                 .map(resident::Shared::from)
+                .map(Into::into)
                 .map_err(resident::AllocError::Retain)
                 .map_err(hold::Error::Resident),
             Backing::Plain(plan) => {

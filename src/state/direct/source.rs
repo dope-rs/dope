@@ -73,7 +73,7 @@ unsafe impl<'d> hold::raw::Retain<'d> for Head<'_, 'd> {
     fn try_copy<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<storage::Owned<resident::Budget<'d>>, hold::Error>
     where
         Self: 'a,
     {
@@ -90,7 +90,7 @@ unsafe impl<'d> hold::raw::Retain<'d> for Head<'_, 'd> {
     fn try_retain<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,
-    ) -> Result<resident::Shared<'d>, hold::Error>
+    ) -> Result<hold::Retained<'d>, hold::Error>
     where
         Self: 'a,
     {
