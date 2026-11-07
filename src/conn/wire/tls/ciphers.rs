@@ -121,12 +121,6 @@ pub(in crate::conn) struct LongWrite<K: kind::Long> {
     usage: Usage,
 }
 
-/// Borrowed admission auth for a long-header write key.
-pub(in crate::conn) struct LongAccess<'key, K: kind::Long> {
-    key: &'key crypto::Key<K, origin::Local, op::Seal>,
-    usage: &'key Usage,
-}
-
 /// A single reserved long-header encryption operation.
 #[repr(transparent)]
 pub(in crate::conn) struct LongPermit<'key, K: kind::Long> {
@@ -146,18 +140,11 @@ impl<K: kind::Long> LongWrite<K> {
         self.usage.is_exhausted()
     }
 
-    pub(in crate::conn) const fn access(&self) -> LongAccess<'_, K> {
-        LongAccess {
-            key: &self.protection,
-            usage: &self.usage,
-        }
-    }
-}
-
-impl<'key, K: kind::Long> LongAccess<'key, K> {
-    pub(in crate::conn) fn permit(self) -> Result<LongPermit<'key, K>, crypto::Error> {
+    pub(in crate::conn) fn permit(&self) -> Result<LongPermit<'_, K>, crypto::Error> {
         self.usage.record()?;
-        Ok(LongPermit { key: self.key })
+        Ok(LongPermit {
+            key: &self.protection,
+        })
     }
 }
 
@@ -410,11 +397,6 @@ const _: () = {
                 + mem::size_of::<LongKeys>()
                 + mem::size_of::<Failures>()
     );
-    assert!(
-        mem::size_of::<LongAccess<'_, kind::Initial>>()
-            == 2 * mem::size_of::<&crypto::Key<kind::Initial, origin::Local, op::Seal>>()
-    );
-    assert!(!mem::needs_drop::<LongAccess<'_, kind::Initial>>());
     assert!(
         mem::size_of::<LongPermit<'_, kind::Initial>>()
             == mem::size_of::<&crypto::Key<kind::Initial, origin::Local, op::Seal>>()

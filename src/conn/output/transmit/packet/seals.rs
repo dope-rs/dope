@@ -50,31 +50,24 @@ pub(in crate::conn::output::transmit) trait Seal<const DOMAIN: u8>:
 pub(in crate::conn::output::transmit) trait LongKind<const DOMAIN: u8>:
     kind::Long + Sized
 {
-    fn write_key<'key>(state: tls::Borrow<'key, DOMAIN>)
-    -> Option<ciphers::LongAccess<'key, Self>>;
+    fn write_key<'key>(state: tls::Borrow<'key, DOMAIN>) -> Option<&'key ciphers::LongWrite<Self>>;
 }
 
 impl<const DOMAIN: u8> LongKind<DOMAIN> for kind::Initial {
-    fn write_key<'key>(
-        state: tls::Borrow<'key, DOMAIN>,
-    ) -> Option<ciphers::LongAccess<'key, Self>> {
-        state.get().long.initial().map(ciphers::LongWrite::access)
+    fn write_key<'key>(state: tls::Borrow<'key, DOMAIN>) -> Option<&'key ciphers::LongWrite<Self>> {
+        state.get().long.initial()
     }
 }
 
 impl<const DOMAIN: u8> LongKind<DOMAIN> for kind::Handshake {
-    fn write_key<'key>(
-        state: tls::Borrow<'key, DOMAIN>,
-    ) -> Option<ciphers::LongAccess<'key, Self>> {
-        state.get().long.handshake().map(ciphers::LongWrite::access)
+    fn write_key<'key>(state: tls::Borrow<'key, DOMAIN>) -> Option<&'key ciphers::LongWrite<Self>> {
+        state.get().long.handshake()
     }
 }
 
 impl<const DOMAIN: u8> LongKind<DOMAIN> for kind::ZeroRtt {
-    fn write_key<'key>(
-        state: tls::Borrow<'key, DOMAIN>,
-    ) -> Option<ciphers::LongAccess<'key, Self>> {
-        state.get().long.early().map(ciphers::LongWrite::access)
+    fn write_key<'key>(state: tls::Borrow<'key, DOMAIN>) -> Option<&'key ciphers::LongWrite<Self>> {
+        state.get().long.early()
     }
 }
 
@@ -115,7 +108,7 @@ impl<'a, 'b, 'c, const DOMAIN: u8, K: LongKind<DOMAIN>> Seal<DOMAIN> for Long<'a
         Self: 'key,
     {
         K::write_key(state)
-            .map(ciphers::LongAccess::permit)
+            .map(ciphers::LongWrite::permit)
             .transpose()
     }
 

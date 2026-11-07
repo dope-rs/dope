@@ -69,10 +69,9 @@ pub(in crate::conn::wire::ingress) struct Prepared<
     buffer: marker::PhantomData<fn() -> B>,
 }
 
-/// Terminal operations retain the packet owner after its consuming control pass.
-pub(super) struct Applied<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, S> {
-    _backing: S,
-    input: Preparation<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto>,
+/// Terminal operations after the consuming control pass.
+pub(super) struct Applied<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> {
+    records: record::Records<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>,
 }
 
 pub(super) enum Control<'row, 'wire, 'id> {
@@ -260,7 +259,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
             Control<'row, 'wire, 'id>,
         ) -> Result<frames::Disposition, conn::Error>,
     ) -> (
-        Applied<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, S>,
+        Applied<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>,
         Result<frames::Disposition, conn::Error>,
     ) {
         let body = self.input.body;
@@ -284,18 +283,16 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
         };
         (
             Applied {
-                _backing: self.backing,
-                input: self.input,
+                records: self.input.records,
             },
             result,
         )
     }
 }
 
-impl<'id, S> Applied<'_, '_, '_, '_, 'id, '_, '_, '_, '_, '_, S> {
+impl<'id> Applied<'_, '_, '_, 'id, '_, '_, '_, '_> {
     pub(super) fn operations(&self) -> impl Iterator<Item = record::Operation<'_>> {
-        self.input
-            .records
+        self.records
             .as_slice()
             .iter()
             .map(record::FrameRecord::operation)
