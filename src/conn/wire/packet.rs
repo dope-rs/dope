@@ -310,16 +310,8 @@ impl Sink for Vec<Vec<u8>> {
     }
 }
 
-pub(in crate::conn) struct Slot<'a> {
-    pub(in crate::conn) packet: &'a mut Vec<u8>,
-    pub(in crate::conn) emitted: bool,
-}
-
-impl<'packet> Sink for Slot<'packet> {
-    type Reservation<'sink>
-        = permits::Single<'sink, 'packet>
-    where
-        Self: 'sink;
+impl Sink for Vec<u8> {
+    type Reservation<'sink> = permits::Single<'sink>;
 
     fn reserve(
         &mut self,

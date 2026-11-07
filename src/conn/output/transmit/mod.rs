@@ -10,7 +10,7 @@ use o3::{
 use std::{collections, num::NonZero, time};
 
 use crate::conn::output::{Count, control};
-use crate::conn::wire::packet::{Allocation, Batch, Fresh, Gso, Sink, Slot};
+use crate::conn::wire::packet::{Allocation, Batch, Fresh, Gso, Sink};
 use crate::security::crypto;
 use crate::stream;
 use crate::wire::frame::decode::error;
@@ -507,18 +507,8 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         bytes: usize,
         active: Peer,
     ) -> (Option<Destination>, Result<(), Error>) {
-        let mut sink = Slot {
-            packet,
-            emitted: false,
-        };
         let (outcome, result) = batch::Batch::new(&mut *self.connection, Policy::Fallback(active))
-            .report::<false, _>(&mut sink, now, 1, bytes);
-        match result {
-            Ok(()) => (
-                sink.emitted.then_some(outcome.destination).flatten(),
-                Ok(()),
-            ),
-            Err(error) => (outcome.destination, Err(error)),
-        }
+            .report::<false, _>(packet, now, 1, bytes);
+        (outcome.destination, result)
     }
 }

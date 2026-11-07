@@ -35,8 +35,8 @@ pub(in crate::conn) struct Fresh<'sink> {
     limit: usize,
 }
 
-pub(in crate::conn) struct Single<'sink, 'packet> {
-    sink: &'sink mut packet::Slot<'packet>,
+pub(in crate::conn) struct Single<'sink> {
+    sink: &'sink mut Vec<u8>,
     limit: usize,
 }
 
@@ -57,8 +57,8 @@ pub(in crate::conn) struct ValidFresh<'sink> {
     packet: Vec<u8>,
 }
 
-pub(in crate::conn) struct ValidSingle<'sink, 'packet> {
-    sink: &'sink mut packet::Slot<'packet>,
+pub(in crate::conn) struct ValidSingle<'sink> {
+    _sink: &'sink mut Vec<u8>,
 }
 
 impl<'sink> Batch<'sink> {
@@ -94,16 +94,15 @@ impl<'sink> Fresh<'sink> {
     }
 }
 
-impl<'sink, 'packet> Single<'sink, 'packet> {
+impl<'sink> Single<'sink> {
     pub(super) fn new(
-        sink: &'sink mut packet::Slot<'packet>,
+        sink: &'sink mut Vec<u8>,
         limit: usize,
         overhead: usize,
     ) -> Result<Self, packet::Allocation> {
-        sink.packet.clear();
+        sink.clear();
         let outer = packet::outer_limit(limit, overhead)?;
-        sink.packet
-            .try_grow(outer)
+        sink.try_grow(outer)
             .map_err(|error| packet::Allocation::Payload {
                 error,
                 requested: outer,
@@ -248,11 +247,11 @@ impl<'sink> Reservation for Fresh<'sink> {
     }
 }
 
-impl<'sink, 'packet> Reservation for Single<'sink, 'packet> {
-    type Validated = ValidSingle<'sink, 'packet>;
+impl<'sink> Reservation for Single<'sink> {
+    type Validated = ValidSingle<'sink>;
 
     fn out(&mut self) -> write::Append<'_> {
-        write::Append::new(self.sink.packet)
+        write::Append::new(self.sink)
     }
 
     fn limit(&self) -> usize {
@@ -260,19 +259,17 @@ impl<'sink, 'packet> Reservation for Single<'sink, 'packet> {
     }
 
     fn validate(self, overhead: usize) -> Result<Self::Validated, Self> {
-        if self.sink.packet.len() > overhead && self.sink.packet.len() <= self.limit + overhead {
-            return Ok(ValidSingle { sink: self.sink });
+        if self.sink.len() > overhead && self.sink.len() <= self.limit + overhead {
+            return Ok(ValidSingle { _sink: self.sink });
         }
         Err(self)
     }
 
-    fn publish<T, U>(packet: Self::Validated, state: T, commit: impl FnOnce(T) -> U) -> U {
-        let output = commit(state);
-        packet.sink.emitted = true;
-        output
+    fn publish<T, U>(_packet: Self::Validated, state: T, commit: impl FnOnce(T) -> U) -> U {
+        commit(state)
     }
 
     fn rollback(self) {
-        self.sink.packet.clear();
+        self.sink.clear();
     }
 }
