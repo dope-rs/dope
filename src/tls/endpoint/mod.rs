@@ -216,7 +216,11 @@ impl<R: roles::Protocol, ID: route::Identity> Runtime<'_, '_, R, ID> {
         } else {
             return None;
         };
-        (self.buffers.recv.available() != 0).then_some(resource)
+        match &self.buffers.recv {
+            buffers::Receive::Fixed(pool) => pool.available() != 0,
+            buffers::Receive::Growing(pool) => !pool.is_full(),
+        }
+        .then_some(resource)
     }
 }
 

@@ -73,6 +73,7 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
         end.with_growth(NonZero::<u32>::MIN)
     } else if escaped {
         end.with_staged(Staged::fixed::<0>())
+            .with_growth(NonZero::<u32>::MIN)
     } else {
         end
     };

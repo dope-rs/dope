@@ -38,13 +38,6 @@ pub(crate) enum Receive {
 }
 
 impl Receive {
-    pub(crate) fn available(&self) -> usize {
-        match self {
-            Self::Fixed(pool) => pool.available(),
-            Self::Growing(pool) => pool.available(),
-        }
-    }
-
     pub(crate) fn try_reserve(&self) -> Result<Option<Reserve<'_>>, alloc::Exhausted> {
         let recv = match self {
             Self::Fixed(pool) => pool.borrow(),
