@@ -200,12 +200,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         accept: recv::Acceptance,
         tag: K,
     ) -> Result<state::EntryKey, attach::Error> {
-        Register::new(token.borrow_mut(&self.arena.state)).insert(
-            self,
-            accept,
-            tag,
-            self.arena.backing.items.fifo(),
-        )
+        Register::new(token.borrow_mut(&self.arena.state)).insert(self, accept, tag)
     }
 
     pub(in crate::reply) fn group_with<I, R, const N: usize>(

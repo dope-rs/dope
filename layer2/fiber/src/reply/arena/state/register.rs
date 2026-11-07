@@ -1,6 +1,6 @@
 use std::{mem::MaybeUninit, num::NonZero, ops::ControlFlow};
 
-use o3::depot::{arena::slab, array::init, queue::pool::fifo};
+use o3::depot::{arena::slab, array::init};
 use slab::{Vacancy, entries::Pending};
 use state::order::Queues;
 
@@ -67,7 +67,6 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
         accept: recv::Acceptance,
         tag: K,
-        data: fifo::Fifo<'arena, reply::Item<D>, false>,
     ) -> Result<state::EntryKey, attach::Error> {
         let state = &mut *self.state;
         let full = attach::Error::Full {
@@ -95,7 +94,6 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             plan,
             accept,
             tag,
-            data,
         ))
     }
 
@@ -164,25 +162,9 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             state.order.remove::<1>(capacity.index().into());
         }
         let keys = commands.map_with(plans, |vacant, (plan, tag)| {
-            Self::publish(
-                &mut state.order,
-                lane,
-                vacant,
-                plan,
-                accept,
-                tag,
-                lane.arena.backing.items.fifo(),
-            )
+            Self::publish(&mut state.order, lane, vacant, plan, accept, tag)
         });
-        let terminal = Self::publish(
-            &mut state.order,
-            lane,
-            terminal,
-            tail,
-            mode,
-            end,
-            lane.arena.backing.items.fifo(),
-        );
+        let terminal = Self::publish(&mut state.order, lane, terminal, tail, mode, end);
         Ok((keys, terminal, output))
     }
 
@@ -194,7 +176,6 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         plan: pool::Registration<'arena, 'credits, 'region, entries::Unit>,
         accept: recv::Acceptance,
         tag: K,
-        data: fifo::Fifo<'arena, reply::Item<D>, false>,
     ) -> state::EntryKey {
         let raw = vacant.insert_with(|raw| {
             let route = queues.route(lane.index).into_state();
@@ -202,7 +183,9 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             // SAFETY: the vacancy retains Entries' validated physical domain.
             let key = unsafe { state::EntryKey::from_raw(raw) };
             state::Entry {
-                body: state::EntryBody::Attached(state::Attached(reply::State::new(data))),
+                body: state::EntryBody::Attached(state::Attached(reply::State::new(
+                    lane.arena.backing.items.fifo(),
+                ))),
                 owners: pool::Owner::new(plan, key.index(), accept),
                 signal: state::Signal::new(),
             }
