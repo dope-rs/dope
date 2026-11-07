@@ -34,7 +34,7 @@ impl<'d> access::Use<'d, Option<Result<resident::Shared<'d>, Error>>> for Retain
             let result = (|| {
                 let count = NonZero::new(input.as_slice().len()).ok_or(Error::Empty)?;
                 let (prefix, end) = input
-                    .try_prefix::<{ transfer::MAX_BYTES as u32 }>(count)
+                    .try_prefix::<{ transfer::MAX_BYTES as u32 }>(0, count)
                     .map_err(Error::Prefix)?;
                 let saved = prefix
                     .bind(hold::Policy::share())
