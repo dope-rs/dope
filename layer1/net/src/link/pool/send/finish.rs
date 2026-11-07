@@ -1,7 +1,4 @@
-use std::convert::Infallible;
-
 use dope_core::driver::route::Identity;
-use o3::base::Call;
 
 use crate::wire::{
     self,
@@ -11,13 +8,10 @@ use crate::wire::{
 
 /// Delivers returned send capacity under the exact receive reservation policy.
 pub trait Finish<W: wire::Spec>: Sized {
-    fn release<'w, 'd: 'w, ID: Identity + 'w>(
-        _: Availability,
-    ) -> Option<impl for<'a> Call<&'a mut W::Runtime<'w, 'd, ID>>>
+    fn release<'w, 'd: 'w, ID: Identity + 'w>(_: Availability, _: &mut W::Runtime<'w, 'd, ID>)
     where
         W: 'w + 'd,
     {
-        None::<Infallible>
     }
 }
 
@@ -48,15 +42,12 @@ where
     P: reserve::Try<W>,
     W::Receive: Policy<W, Reserve = reserve::Waiting<P>>,
 {
-    fn release<'w, 'd: 'w, ID: Identity + 'w>(
-        space: Availability,
-    ) -> Option<impl for<'a> Call<&'a mut W::Runtime<'w, 'd, ID>>>
+    fn release<'w, 'd: 'w, ID: Identity + 'w>(space: Availability, run: &mut W::Runtime<'w, 'd, ID>)
     where
         W: 'w + 'd,
     {
-        match space {
-            Availability::Released => Some(P::release_send::<ID>),
-            Availability::Unchanged => None,
+        if space == Availability::Released {
+            P::release_send::<ID>(run);
         }
     }
 }

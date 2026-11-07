@@ -12,13 +12,13 @@ use o3::{
     alloc::tail,
     depot::arena::linked::fifo::ends,
     mem,
-    mem::{Rejected, credit::fair, raw::Source as _},
+    mem::{credit::fair, raw::Source as _},
 };
 use wake::{Wait, Wake};
 
 use crate::reply::{
     LaneIndex, Length,
-    arena::state::EntryKey,
+    arena::state::Index,
     layout, recv, retain,
     retain::{
         grant::{entries, payload},
@@ -64,11 +64,11 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         self.credits.waiters.state(lane).waiting.set(None);
     }
 
-    pub(super) fn cancel_entry(&self, lane: LaneIndex, key: EntryKey) {
+    pub(super) fn cancel_entry(&self, lane: LaneIndex, key: Index) {
         self.credits.waiters.state(lane).cancel(key);
     }
 
-    pub(super) fn wait_local(&self, lane: LaneIndex, key: EntryKey) {
+    pub(super) fn wait_local(&self, lane: LaneIndex, key: Index) {
         self.credits
             .waiters
             .state(lane)
@@ -76,7 +76,7 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
             .set(Some(Wait { key, request: None }));
     }
 
-    pub(super) fn wake_local(&self, lane: LaneIndex, key: EntryKey) {
+    pub(super) fn wake_local(&self, lane: LaneIndex, key: Index) {
         let wake = self.credits.waiters.state(lane);
         if wake
             .waiting
@@ -93,7 +93,7 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
     pub(super) fn take_waiting<A>(
         &self,
         lane: LaneIndex,
-        key: EntryKey,
+        key: Index,
         sum: &mut payload::raw::Sum<'credits>,
         amount: A,
         acceptance: recv::Acceptance,
@@ -143,7 +143,6 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         self.credits
             .payload(lane)
             .try_acquire(payload::Failure::new(usage))
-            .map(payload::Grant::new)
             .map_err(|rejected| match Acquire::new(rejected.discard()) {
                 Acquire::Capacity(cause) => cause,
                 Acquire::Backpressure(cause) => usage::Capacity::Unavailable(cause),
@@ -155,7 +154,7 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         A: mem::raw::Amount<3, usize>,
     {
         let returned = grant.amount();
-        grant.into_inner().release();
+        grant.release();
         self.returned(returned);
     }
 
@@ -277,7 +276,7 @@ pub(in crate::reply) struct Registration<
     'arena,
     'credits,
     'region: 'arena,
-    A: mem::raw::Amount<2, usize>,
+    A: mem::raw::Amount<1, usize>,
 > {
     lane: pool::Lane<'arena, 'credits, 'region>,
     grant: entries::Grant<'credits, A>,
@@ -359,7 +358,7 @@ impl<'credits, 'region> Credits<'credits, 'region> {
 
     pub(in crate::reply::retain::pool) fn can_admit<A>(&self, lane: LaneIndex, request: A) -> bool
     where
-        A: mem::raw::Amount<2, usize>,
+        A: mem::raw::Amount<1, usize>,
     {
         self.capacity(lane)
             .can_acquire(mem::raw::Amount::get(request))
@@ -379,7 +378,7 @@ impl<'credits, 'region> Credits<'credits, 'region> {
         self.payload(lane).can_acquire(amount)
     }
 
-    pub(in crate::reply::retain::pool) fn shared_slots(&self) -> [usize; 2] {
+    pub(in crate::reply::retain::pool) fn shared_slots(&self) -> [usize; 1] {
         self.waiters.slots.header().shared()
     }
 
@@ -390,7 +389,7 @@ impl<'credits, 'region> Credits<'credits, 'region> {
     pub(in crate::reply::retain::pool) fn capacity(
         &self,
         lane: LaneIndex,
-    ) -> retain::raw::Lane<'credits, 2, entries::Tag> {
+    ) -> retain::raw::Lane<'credits, 1, entries::Tag> {
         let state = &self.waiters.slot(lane).credit;
         // SAFETY: the borrowed slot belongs to this pool's original credit layout.
         state.capacity()
@@ -406,7 +405,7 @@ impl<'credits, 'region> Credits<'credits, 'region> {
     }
 }
 
-impl<'arena, 'credits, 'region, A: mem::raw::Amount<2, usize>>
+impl<'arena, 'credits, 'region, A: mem::raw::Amount<1, usize>>
     Registration<'arena, 'credits, 'region, A>
 {
     pub(in crate::reply) fn try_new(
@@ -417,35 +416,26 @@ impl<'arena, 'credits, 'region, A: mem::raw::Amount<2, usize>>
         let grant = credits
             .capacity(lane.index())
             .try_acquire(request)
-            .map_err(Rejected::discard)?;
+            .map_err(|error| match error.discard() {
+                fair::Cause::Overflow {
+                    held, requested, ..
+                } => fair::Cause::Overflow {
+                    axis: fair::Axis::at::<0>(),
+                    held,
+                    requested,
+                },
+                fair::Cause::Exhausted {
+                    required,
+                    available,
+                    ..
+                } => fair::Cause::Exhausted {
+                    axis: fair::Axis::at::<0>(),
+                    required,
+                    available,
+                },
+            })?;
         credits.entries.set(credits.entries.get().admit(request));
-        Ok(Self {
-            lane,
-            grant: entries::Grant::new(grant),
-        })
-    }
-}
-
-impl<'arena, 'credits, 'region, A> Registration<'arena, 'credits, 'region, A>
-where
-    A: mem::raw::Amount<2, usize>
-        + mem::raw::Exact<2, usize, A, Input = (), Right = entries::Units<0, 1>>,
-    A::Left: mem::raw::Amount<2, usize>,
-{
-    pub(in crate::reply) fn split(
-        self,
-    ) -> (
-        Registration<'arena, 'credits, 'region, A::Left>,
-        entries::Grant<'credits, entries::Units<0, 1>>,
-    ) {
-        let (left, order) = self.grant.split();
-        (
-            Registration {
-                lane: self.lane,
-                grant: left,
-            },
-            order,
-        )
+        Ok(Self { lane, grant })
     }
 }
 
@@ -456,13 +446,10 @@ impl<'arena, 'credits, 'region, const N: usize>
         self,
         values: [T; N],
     ) -> (
-        [(
-            Registration<'arena, 'credits, 'region, entries::Units<1, 1>>,
-            T,
-        ); N],
-        Registration<'arena, 'credits, 'region, entries::Units<1, 1>>,
+        [(Registration<'arena, 'credits, 'region, entries::Unit>, T); N],
+        Registration<'arena, 'credits, 'region, entries::Unit>,
     ) {
-        let (commands, terminal) = self.grant.split_group(values);
+        let (commands, terminal) = entries::Group::split_group(self.grant, values);
         let lane = self.lane;
         (
             commands.map(|(grant, value)| (Registration { lane, grant }, value)),
@@ -474,12 +461,12 @@ impl<'arena, 'credits, 'region, const N: usize>
     }
 }
 
-impl<'arena, 'credits, 'region> Registration<'arena, 'credits, 'region, entries::Units<1, 0>> {
+impl<'arena, 'credits, 'region> Registration<'arena, 'credits, 'region, entries::Unit> {
     pub(in crate::reply::retain::pool) fn into_parts(
         self,
     ) -> (
         pool::Lane<'arena, 'credits, 'region>,
-        entries::Grant<'credits, entries::Units<1, 0>>,
+        entries::Grant<'credits, entries::Unit>,
     ) {
         (self.lane, self.grant)
     }
@@ -488,19 +475,18 @@ impl<'arena, 'credits, 'region> Registration<'arena, 'credits, 'region, entries:
 // SAFETY: release consumes the caller's original counted acquisition exactly
 // once. The private Payload owner captures its issuing key and grant together.
 unsafe impl<'credits> pool::raw::Release<'credits> for Credits<'credits, '_> {
-    unsafe fn release_slot(&self, grant: entries::Grant<'credits, entries::Units<1, 0>>) {
-        grant.into_inner().release();
-        self.entries
-            .set(self.entries.get().release(entries::Units::<1, 0>::VALUE));
+    unsafe fn release_slot(&self, grant: entries::Grant<'credits, entries::Unit>) {
+        grant.release();
+        self.entries.set(self.entries.get().release(entries::Unit));
     }
 }
 
 const _: () = {
     assert!(
-        size_of::<Registration<'static, 'static, 'static, entries::Units<1, 0>>>()
+        size_of::<Registration<'static, 'static, 'static, entries::Unit>>()
             == 3 * size_of::<usize>()
     );
     assert!(!needs_drop::<
-        Registration<'static, 'static, 'static, entries::Units<1, 0>>,
+        Registration<'static, 'static, 'static, entries::Unit>,
     >());
 };

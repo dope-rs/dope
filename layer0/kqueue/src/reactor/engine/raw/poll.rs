@@ -123,13 +123,13 @@ where
         &'a mut self,
         quota: Q,
         timeout: Option<time::Duration>,
-        busy: impl FnOnce() -> bool,
+        busy: bool,
     ) -> Result<(), Self::Error>
     where
         C::Context: 'a,
     {
         let work = Work::new(quota);
         // SAFETY: this engine boundary retains every registered flight and its storage.
-        unsafe { work.wait(self, timeout, busy()) }
+        unsafe { work.wait(self, timeout, busy) }
     }
 }

@@ -6,6 +6,7 @@ use crate::reply::{
     Failed, Slot,
     recv::outcome,
     retain::{self, grant::payload},
+    usage::Footprint,
 };
 
 pub(super) enum End<E> {
@@ -16,12 +17,12 @@ pub(super) enum End<E> {
 
 /// Exclusive slot capability whose terminal payload is proven failed.
 #[repr(C)]
-pub struct Fault<'a, 's, 'arena, 'credits, 'region, D, E = D> {
+pub struct Fault<'a, 's, 'arena, 'credits, 'region, D: Footprint, E = D> {
     credit: Credit<'a, 's, 'arena, 'credits, 'region, D, E>,
     failure: E,
 }
 
-struct Credit<'a, 's, 'arena, 'credits, 'region, D, E> {
+struct Credit<'a, 's, 'arena, 'credits, 'region, D: Footprint, E> {
     slot: Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
     amount: payload::Failure,
 }
@@ -42,7 +43,9 @@ impl<E> End<E> {
     }
 }
 
-impl<'a, 's, 'arena, 'credits, 'region, D, E> Fault<'a, 's, 'arena, 'credits, 'region, D, E> {
+impl<'a, 's, 'arena, 'credits, 'region, D: Footprint, E>
+    Fault<'a, 's, 'arena, 'credits, 'region, D, E>
+{
     pub(super) fn observe(
         slot: Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
     ) -> Option<outcome::Terminal<'a, 's, 'arena, 'credits, 'region, D, E>> {
@@ -71,7 +74,7 @@ impl<'a, 's, 'arena, 'credits, 'region, D, E> Fault<'a, 's, 'arena, 'credits, 'r
     }
 }
 
-impl<D, E> Drop for Credit<'_, '_, '_, '_, '_, D, E> {
+impl<D: Footprint, E> Drop for Credit<'_, '_, '_, '_, '_, D, E> {
     fn drop(&mut self) {
         // SAFETY: the removed member and payload come from this exact owned slot.
         unsafe { retain::raw::Remove::remove(&mut self.slot.owners.payload, self.amount) }
@@ -83,8 +86,8 @@ const _: () = {
     assert!(mem::size_of::<End<()>>() == 3 * mem::size_of::<usize>());
     assert!(mem::size_of::<End<u64>>() == 4 * mem::size_of::<usize>());
     assert!(
-        mem::size_of::<Fault<'static, 'static, 'static, 'static, 'static, u64, u64>>()
-            == mem::size_of::<Slot<'static, 'static, 'static, 'static, 'static, u64, u64>>()
+        mem::size_of::<Fault<'static, 'static, 'static, 'static, 'static, (), u64>>()
+            == mem::size_of::<Slot<'static, 'static, 'static, 'static, 'static, (), u64>>()
                 + mem::size_of::<Failed<u64>>()
     );
 };

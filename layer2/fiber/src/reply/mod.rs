@@ -13,6 +13,7 @@ use crate::reply::{
     arena::{backing::Backing, retire::Cell},
     recv::outcome::Completion,
     retain::pool,
+    usage::Footprint,
 };
 
 mod arena;
@@ -77,17 +78,17 @@ impl Length {
 }
 
 /// Immutable traversal of one detached reply batch.
-pub struct BatchIter<'batch, C> {
+pub struct BatchIter<'batch, C: Footprint> {
     inner: Option<linked::Iter<'batch, Item<C>>>,
 }
 
-impl<'batch, C> BatchIter<'batch, C> {
+impl<'batch, C: Footprint> BatchIter<'batch, C> {
     pub(in crate::reply) const fn new(inner: Option<linked::Iter<'batch, Item<C>>>) -> Self {
         Self { inner }
     }
 }
 
-impl<'batch, C> Iterator for BatchIter<'batch, C> {
+impl<'batch, C: Footprint> Iterator for BatchIter<'batch, C> {
     type Item = &'batch C;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -96,13 +97,13 @@ impl<'batch, C> Iterator for BatchIter<'batch, C> {
     }
 }
 
-struct Owned<'arena, 'credits, 'region, C> {
+struct Owned<'arena, 'credits, 'region, C: Footprint> {
     data: fifo::Nonempty<'arena, Item<C>, false>,
     credit: retain::Batch<'arena, 'credits, 'region>,
 }
 
 /// Fixed retirement storage for detached reply batches.
-pub struct Batches<'arena, 'credits, 'region, C> {
+pub struct Batches<'arena, 'credits, 'region, C: Footprint> {
     queued: Cell<Owned<'arena, 'credits, 'region, C>>,
     owner: marker::PhantomData<fn(&'arena ()) -> &'arena ()>,
 }
@@ -113,12 +114,12 @@ pub(in crate::reply) enum Advance {
 }
 
 /// A linear, allocation-free owner of one completed reply's data chain.
-pub struct Batch<'s, 'arena, 'credits, 'region, C> {
+pub struct Batch<'s, 'arena, 'credits, 'region, C: Footprint> {
     owned: o3::mem::slot::Storage<Owned<'arena, 'credits, 'region, C>>,
     retire: &'s Batches<'arena, 'credits, 'region, C>,
 }
 
-impl<'arena, 'credits, 'region, C> Batches<'arena, 'credits, 'region, C> {
+impl<'arena, 'credits, 'region, C: Footprint> Batches<'arena, 'credits, 'region, C> {
     pub(in crate::reply) fn try_new(capacity: capacity::Count) -> Result<Self, alloc::Error> {
         Ok(Self {
             queued: Cell::try_new(capacity)?,
@@ -150,7 +151,7 @@ impl<'arena, 'credits, 'region, C> Batches<'arena, 'credits, 'region, C> {
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, C> Batch<'s, 'arena, 'credits, 'region, C> {
+impl<'s, 'arena, 'credits, 'region, C: Footprint> Batch<'s, 'arena, 'credits, 'region, C> {
     fn empty(retire: &'s Batches<'arena, 'credits, 'region, C>) -> Self {
         Self {
             owned: o3::mem::slot::Storage::new(()),
@@ -196,7 +197,7 @@ impl<'s, 'arena, 'credits, 'region, C> Batch<'s, 'arena, 'credits, 'region, C> {
     }
 }
 
-impl<C> Drop for Batch<'_, '_, '_, '_, C> {
+impl<C: Footprint> Drop for Batch<'_, '_, '_, '_, C> {
     fn drop(&mut self) {
         if let Some(owned) = self.owned.occupied() {
             self.retire.retire(owned.take().0);
@@ -207,29 +208,29 @@ impl<C> Drop for Batch<'_, '_, '_, '_, C> {
 const _: () = {
     assert!(mem::size_of::<Length>() == mem::size_of::<usize>());
     assert!(
-        mem::size_of::<OnceCell<Batches<'static, 'static, 'static, u64>>>()
+        mem::size_of::<OnceCell<Batches<'static, 'static, 'static, ()>>>()
             == 3 * mem::size_of::<usize>()
     );
-    assert!(mem::size_of::<Owned<'static, 'static, 'static, u64>>() == 7 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Owned<'static, 'static, 'static, ()>>() == 7 * mem::size_of::<usize>());
     assert!(
-        mem::size_of::<Option<Owned<'static, 'static, 'static, u64>>>()
-            == mem::size_of::<Owned<'static, 'static, 'static, u64>>()
+        mem::size_of::<Option<Owned<'static, 'static, 'static, ()>>>()
+            == mem::size_of::<Owned<'static, 'static, 'static, ()>>()
     );
     assert!(
-        mem::size_of::<Batch<'static, 'static, 'static, 'static, u64>>()
+        mem::size_of::<Batch<'static, 'static, 'static, 'static, ()>>()
             == 8 * mem::size_of::<usize>()
     );
 };
 
 /// The original reply backing scope, before its tagged arena is constructed.
-pub struct Storage<'arena, 'credits, 'region, D> {
+pub struct Storage<'arena, 'credits, 'region, D: Footprint> {
     backing: &'arena Backing<'credits, 'region, D>,
     layout: layout::Layout,
     proof: region::Identity<'region>,
     owner: marker::PhantomData<fn(&'arena ()) -> &'arena ()>,
 }
 
-impl<'region, D> Storage<'_, '_, 'region, D> {
+impl<'region, D: Footprint> Storage<'_, '_, 'region, D> {
     /// Lends the accounting and data backing before constructing owner-bearing tags.
     pub fn try_with<R>(
         layout: layout::Layout,
@@ -247,7 +248,7 @@ impl<'region, D> Storage<'_, '_, 'region, D> {
     }
 }
 
-impl<'arena, 'credits, 'region, D> Storage<'arena, 'credits, 'region, D> {
+impl<'arena, 'credits, 'region, D: Footprint> Storage<'arena, 'credits, 'region, D> {
     pub fn try_arena<E, K, R>(
         self,
         run: impl for<'scope> FnOnce(&'scope Arena<'arena, 'credits, 'region, D, E, K>) -> R,

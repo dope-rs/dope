@@ -1,12 +1,18 @@
 use crate::sockets::ops::{
-    Context, Engine, Index, Key, Operation, Table, Uring, admit, device, sq, tuning,
+    Context, Engine, Index, Key, Operation, Table, Uring, admit, device, request, sq, tuning,
 };
 
-impl<'r, C, H, const N: usize> tuning::raw::Connect<Engine<C>, H, sq::Borrowed<'r>, N>
-    for Operation<H>
+impl<'r, C, H, const N: usize>
+    tuning::raw::Connect<Engine<C>, H, request::Borrowed<'r, sq::Fixed>, N> for Operation<H>
 where
     C: Context<Tuning = Table<Key<C>, N>> + admit::Context<Native = Uring, Key = Key<C>>,
-    H: device::raw::Connect<Engine<C>, sq::Borrowed<'r>, N, Slot = sq::Fixed, Index = Index<C>>,
+    H: device::raw::Connect<
+            Engine<C>,
+            request::Borrowed<'r, sq::Fixed>,
+            N,
+            Slot = sq::Fixed,
+            Index = Index<C>,
+        >,
     H::Reserve: device::Reserve<Key = Key<C>>,
 {
     unsafe fn try_connect(self) -> Result<H::Output, H::Error> {

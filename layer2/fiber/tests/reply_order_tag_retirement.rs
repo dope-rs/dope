@@ -24,13 +24,14 @@ fn retains_rows_after_tags() {
             assert!(lane.contains_cutoff(cutoff, &token));
             assert!(!other.contains_cutoff(cutoff, &token));
             assert!(cutoff != lane.cutoff(&token));
-            assert!(lane.select(&mut token).is_cutoff(cutoff));
             assert!(
                 lane.select(&mut token)
                     .try_push(Counted::mixed(&rows))
                     .is_ok()
             );
-            lane.complete(&mut token);
+            let selected = lane.select(&mut token);
+            assert!(selected.is_cutoff(cutoff));
+            selected.complete();
             assert_eq!(tags.count(), 1);
             let row = done
                 .try_take(&mut token)

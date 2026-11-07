@@ -5,11 +5,7 @@ use std::{cell, marker, num::NonZero};
 use dope::core::driver::{route::Identity, schedule::app};
 use o3::{alloc, base::cell::region, depot::capacity};
 
-use crate::reply::{
-    self, Length, Storage,
-    arena::state::{Advance, Retire, Start},
-    layout,
-};
+use crate::reply::{self, Length, Storage, arena::state::Advance, layout, usage::Footprint};
 
 pub(in crate::reply) mod backing;
 pub(in crate::reply) mod control;
@@ -26,12 +22,13 @@ use crate::reply::arena::progress::Work;
 /// A fixed-capacity, multi-lane reply arena protected by a runtime region.
 /// `'arena` brands backing and handles; `'credits` lends the accounting epoch; `'region` owns mutations.
 /// `'region: 'credits: 'arena` keeps credit state alive through the backing's drop path.
-pub struct Arena<'arena, 'credits, 'region, D, E = D, K = ()> {
+pub struct Arena<'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
     state:
         region::Value<region::Identity<'region>, state::Book<'arena, 'credits, 'region, D, E, K>>,
     retire: retire::State,
     pub(in crate::reply) backing: &'arena Backing<'credits, 'region, D>,
     pub(in crate::reply) batches: cell::OnceCell<reply::Batches<'arena, 'credits, 'region, D>>,
+    limit: layout::Limit,
     lanes: NonZero<u32>,
     next: cell::Cell<Retirement>,
     owner: marker::PhantomData<fn(&'arena ()) -> &'arena ()>,
@@ -54,7 +51,7 @@ impl Retirement {
     }
 }
 
-impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, K> {
+impl<'arena, 'credits, 'region, D: Footprint, E, K> Arena<'arena, 'credits, 'region, D, E, K> {
     pub(in crate::reply) fn try_new(
         backing: &'arena Backing<'credits, 'region, D>,
         layout: layout::Layout,
@@ -65,6 +62,7 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
             retire: retire::State::try_new(capacity::Count::new(layout.entries().get()))?,
             backing,
             batches: cell::OnceCell::new(),
+            limit: layout.limit(),
             lanes: layout.lane_count(),
             next: cell::Cell::new(Retirement::Batch),
             owner: marker::PhantomData,
@@ -133,7 +131,8 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
                 }
                 Retirement::Released => {
                     if let Some(released) = self.backing.resources.pop_released() {
-                        return Retire(token.borrow_mut(&self.state))
+                        return token
+                            .borrow_mut(&self.state)
                             .retained(released)
                             .map(|lane| Released::new(lane, self.domain()));
                     }
@@ -152,25 +151,14 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
         &self,
         token: &mut region::Token<region::Identity<'region>>,
     ) -> Option<Option<Released<'arena>>> {
-        let active = match self.retire.active.take() {
-            Some(active) => active,
-            None => {
-                let retired = self.retire.pop()?;
-                match Retire(token.borrow_mut(&self.state)).begin(retired) {
-                    Start::Drained(lane) => return Some(Some(Released::new(lane, self.domain()))),
-                    Start::Draining(active) => active,
-                }
+        let retired = self.retire.active.take().or_else(|| self.retire.pop())?;
+        Some(match token.borrow_mut(&self.state).retire(retired) {
+            Advance::Draining(retired) => {
+                self.retire.active.set(Some(retired));
+                None
             }
-        };
-        Some(
-            match Retire(token.borrow_mut(&self.state)).advance(active) {
-                Advance::Draining(active) => {
-                    self.retire.active.set(Some(active));
-                    None
-                }
-                Advance::Complete(lane) => lane.map(|lane| Released::new(lane, self.domain())),
-            },
-        )
+            Advance::Complete(lane) => lane.map(|lane| Released::new(lane, self.domain())),
+        })
     }
 
     /// Performs waiter and retirement work under the connector's application budget.
@@ -206,7 +194,7 @@ impl<'arena, 'credits, 'region, D, E, K> Arena<'arena, 'credits, 'region, D, E, 
     }
 }
 
-impl<'region, D, E, K> Arena<'_, '_, 'region, D, E, K> {
+impl<'region, D: Footprint, E, K> Arena<'_, '_, 'region, D, E, K> {
     /// Lends one arena while its original data and credit storage remain owned.
     /// The scope retains the arena itself, so abandoning a loan cannot skip
     /// teardown of its registered entries and detached batches.
@@ -235,7 +223,7 @@ impl<'region, D, E, K> Arena<'_, '_, 'region, D, E, K> {
     }
 }
 
-impl<D, E, K> Drop for Arena<'_, '_, '_, D, E, K> {
+impl<D: Footprint, E, K> Drop for Arena<'_, '_, '_, D, E, K> {
     fn drop(&mut self) {
         if let Some(batches) = self.batches.get_mut() {
             while let reply::Advance::Dropped = batches.advance() {}

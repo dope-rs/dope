@@ -7,6 +7,7 @@ use crate::reply::{
     self, LaneIndex,
     retain::{grant::payload, pool::Pool},
     usage,
+    usage::Footprint,
 };
 
 const ENTRY: usize = 0;
@@ -27,7 +28,7 @@ impl<'arena, 'credits, 'region> Lane<'arena, 'credits, 'region> {
         self.pool
     }
 
-    pub(in crate::reply) const fn new<'s, D, E, K>(
+    pub(in crate::reply) const fn new<'s, D: Footprint, E, K>(
         lane: reply::Lane<'s, 'arena, 'credits, 'region, D, E, K>,
     ) -> Self {
         Self {
@@ -46,7 +47,7 @@ impl<'arena, 'credits, 'region> Lane<'arena, 'credits, 'region> {
 
     pub(in crate::reply) fn registration<A>(self, request: A) -> reply::Registration
     where
-        A: mem::raw::Amount<2, usize>,
+        A: mem::raw::Amount<1, usize>,
     {
         if self.pool.lanes().credits.can_admit(self.index, request) {
             reply::Registration::Available

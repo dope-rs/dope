@@ -9,7 +9,6 @@ use dope_core::{
     },
     io::event::net::recv::ControlKind,
 };
-use o3::base::Call as _;
 use wire::{receive::Policy, send::Store as _};
 
 use crate::{
@@ -395,9 +394,7 @@ where
         });
         match result {
             Ok((proof, send)) => {
-                if let Some(release) = <M::Ingress as Finish<W>>::release::<ID>(send) {
-                    release.call(storage.runtime);
-                }
+                <M::Ingress as Finish<W>>::release::<ID>(send, storage.runtime);
                 Branch::Retired(proof)
             }
             Err((_, branch)) => branch,

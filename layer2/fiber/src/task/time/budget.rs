@@ -1,6 +1,6 @@
 //! One absolute time budget backed by one reusable driver timer slot.
 
-use core::{pin, task};
+use core::{ops::ControlFlow, pin, task};
 use std::{mem, time};
 
 use crate::{
@@ -240,9 +240,9 @@ impl<'d> abi::Fiber<'d> for Sleep<'_, 'd> {
                 SleepState::Armed(outcome) => (outcome, alarm.poll(now, wake)),
             };
             if polled.is_pending() {
-                machine::Flow::Suspend(task::Poll::Pending)
+                task::Poll::Pending
             } else {
-                machine::Flow::Complete(task::Poll::Ready(outcome))
+                task::Poll::Ready(outcome)
             }
         })
     }
@@ -300,7 +300,7 @@ where
                 State::Armed { alarm, elapsed } => (alarm.poll(now, wake), elapsed),
             };
             match polled {
-                timer::Poll::Ready => machine::Step::Complete(Poll::Ready(Err(elapsed))),
+                timer::Poll::Ready => ControlFlow::Break(Err(elapsed)),
                 timer::Poll::Pending(alarm) => match unsafe {
                     // SAFETY: this sole child receives the timeout's PollCall
                     // admission. The machine ends its polling authority on Ready.
@@ -308,11 +308,9 @@ where
                 } {
                     Poll::Ready(output) => {
                         alarm.cancel();
-                        machine::Step::Complete(Poll::Ready(Ok(output)))
+                        ControlFlow::Break(Ok(output))
                     }
-                    Poll::Pending => {
-                        machine::Step::Suspend(State::Armed { alarm, elapsed }, Poll::Pending)
-                    }
+                    Poll::Pending => ControlFlow::Continue(State::Armed { alarm, elapsed }),
                 },
             }
         })

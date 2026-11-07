@@ -227,7 +227,7 @@ impl Bytes {
 impl Buffers {
     pub const EMPTY: Self = Self(capacity::Count::EMPTY);
 
-    pub(in crate::client::session) const fn into_raw(self) -> usize {
+    pub const fn get(self) -> usize {
         self.0.get()
     }
 }

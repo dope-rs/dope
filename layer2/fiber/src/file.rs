@@ -1,6 +1,6 @@
 //! Owned file operations backed by an installed manifold Reader.
 
-use std::task;
+use std::{ops::ControlFlow, task};
 
 use o3::mem::Rejected;
 
@@ -43,16 +43,12 @@ impl<'d> abi::Fiber<'d> for Operation<'_, 'd> {
                 Stage::Ticket(ticket) => ticket,
                 Stage::Request(request) => match this.port.try_request(request) {
                     Ok(ticket) => ticket,
-                    Err(cause) => return machine::Step::Complete(task::Poll::Ready(Err(cause))),
+                    Err(cause) => return ControlFlow::Break(Err(cause)),
                 },
             };
             match ticket.poll(waiter) {
-                read::Poll::Pending(ticket) => {
-                    machine::Step::Suspend(Stage::Ticket(ticket), task::Poll::Pending)
-                }
-                read::Poll::Ready(completion) => {
-                    machine::Step::Complete(task::Poll::Ready(Ok(completion)))
-                }
+                read::Poll::Pending(ticket) => ControlFlow::Continue(Stage::Ticket(ticket)),
+                read::Poll::Ready(completion) => ControlFlow::Break(Ok(completion)),
             }
         })
     }

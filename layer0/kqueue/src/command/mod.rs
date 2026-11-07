@@ -1,6 +1,5 @@
 use dope_sys::{
     io::{
-        self,
         reactor::{
             complete,
             read::Arm as _,
@@ -11,22 +10,19 @@ use dope_sys::{
             },
             retry,
         },
-        request::{Borrow, Lower},
-        socket::{Domain, Kind, Prepare as _, addr},
+        request::Lower,
+        socket::{Domain, Kind, Prepare as _},
     },
     table::change,
 };
-use libc::socklen_t;
 pub(crate) use lowered::Lowered;
 pub(crate) use message::Message;
-use o3::{base::marker::ThreadBound, buffer::bytes};
-pub(crate) use retained::Retained;
+use o3::base::marker::ThreadBound;
 
 use crate::{Kqueue, sockets::Handle};
 
 mod lowered;
 mod message;
-mod retained;
 
 type Slot<C> = <<<C as Driver>::Context as store::Context>::Slots as change::raw::Slots>::Physical;
 
@@ -49,10 +45,6 @@ impl<I, O, D, M> Lower for Command<Lowered<I, O, D, M>> {
     type Outbound = O;
     type Domain = D;
     type Datagram = M;
-    type Borrowed<'a>
-        = Command<Retained<'a, I>>
-    where
-        Self: 'a;
 
     fn socket(slot: Self::Outbound, socket: Self::Domain) -> Self {
         Self::new(Lowered::SocketAt { socket, slot })
@@ -72,38 +64,6 @@ impl<I, O, D, M> Lower for Command<Lowered<I, O, D, M>> {
 
     fn shutdown(slot: Self::Target) -> Self {
         Self::new(Lowered::ShutdownWrite { slot })
-    }
-}
-
-impl<'a, I> Borrow<'a> for Command<Retained<'a, I>> {
-    type Target = I;
-    type Buffer = bytes::Prefix<'a, { i32::MAX as usize }>;
-
-    fn accept(
-        listener: Self::Target,
-        address: &'a mut libc::sockaddr_storage,
-        len: &'a mut socklen_t,
-    ) -> Self {
-        Self::new(Retained::Accept {
-            listener,
-            addr: address,
-            len,
-        })
-    }
-
-    fn send(slot: Self::Target, input: Self::Buffer) -> Self {
-        Self::new(Retained::Send { slot, input })
-    }
-
-    fn send_msg<M: io::raw::Message<'a>>(slot: Self::Target, message: M) -> Self {
-        Self::new(Retained::SendMsg {
-            slot,
-            msg: message.header(),
-        })
-    }
-
-    fn connect(slot: Self::Target, addr: addr::Addr<'a>) -> Self {
-        Self::new(Retained::Connect { slot, addr })
     }
 }
 

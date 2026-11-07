@@ -14,7 +14,7 @@ pub(super) struct Entry<'credits> {
     pub(in crate::reply::retain::pool) life: Life,
     pub(in crate::reply::retain::pool) values: raw::Axis<'credits, payload::Values>,
     pub(in crate::reply::retain::pool) bytes: raw::Axis<'credits, payload::Bytes>,
-    leases: Refs,
+    pub(in crate::reply::retain::pool) leases: Refs,
     pub(in crate::reply::retain::pool) released: pool::raw::Link<Index>,
 }
 
@@ -37,14 +37,6 @@ impl<'credits> Entry<'credits> {
     pub(in crate::reply::retain::pool) fn is_active(&self) -> bool {
         self.values.is_active() || self.bytes.is_active() || self.leases.is_active()
     }
-
-    pub(in crate::reply::retain::pool) fn try_lease(&self) -> Result<(), rc::Error> {
-        self.leases.try_hold()
-    }
-
-    pub(in crate::reply::retain::pool) fn drop_lease(&self) -> rc::Release {
-        self.leases.release()
-    }
 }
 
 const _: () = {
@@ -52,7 +44,7 @@ const _: () = {
 };
 
 #[repr(transparent)]
-struct Refs(mem::raw::Count);
+pub(in crate::reply::retain::pool) struct Refs(mem::raw::Count);
 
 // SAFETY: each embedded owner domain always projects its own unchanged count.
 unsafe impl mem::raw::Edge for Refs {
@@ -70,7 +62,8 @@ impl Refs {
         !mem::raw::Edge::is_empty(self)
     }
 
-    fn try_hold(&self) -> Result<(), rc::Error> {
+    #[inline]
+    pub(in crate::reply::retain::pool) fn try_hold(&self) -> Result<(), rc::Error> {
         if self.is_active() {
             // SAFETY: this local nonempty domain retains an existing owner;
             // no user code or interleaving can release it during acquisition.
@@ -83,7 +76,7 @@ impl Refs {
         Ok(())
     }
 
-    fn release(&self) -> rc::Release {
+    pub(in crate::reply::retain::pool) fn release(&self) -> rc::Release {
         // SAFETY: only the matching Values, Bytes, or LeaseEdge destructor
         // reaches this private operation, transferring one original live edge.
         unsafe { mem::raw::Edge::release(self) }

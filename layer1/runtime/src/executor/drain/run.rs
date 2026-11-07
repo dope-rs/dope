@@ -27,7 +27,7 @@ where
                 return Ok(drain::Outcome::Forced);
             }
         };
-        let Some(idle) = state.next_app(tick, &mut shutdown)?.skip().park().sync()? else {
+        let Some(idle) = state.next_app(tick, &mut shutdown)?.park().sync()? else {
             continue;
         };
         let drain = idle.drain();

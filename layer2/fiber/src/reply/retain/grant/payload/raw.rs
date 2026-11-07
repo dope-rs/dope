@@ -7,11 +7,11 @@ use o3::{
 
 use crate::reply::{
     retain,
-    retain::grant::payload::{Credit, Grant, Tag},
+    retain::grant::payload::{Grant, Tag},
     usage,
 };
 
-pub(in crate::reply) struct Sum<'credits>(Credit<'credits, [usize; 3]>);
+pub(in crate::reply) struct Sum<'credits>(Grant<'credits, [usize; 3]>);
 
 impl<'credits> Sum<'credits> {
     pub(in crate::reply) fn new(lane: retain::raw::Lane<'credits, 3, Tag>) -> Self {
@@ -46,7 +46,7 @@ impl<'credits> Sum<'credits> {
     where
         A: mem::raw::Amount<3, usize>,
     {
-        let grant = grant.0.into_array();
+        let grant = grant.into_array();
         // SAFETY: the caller's owning operation retains the exact same-source
         // acquisition; Bound excludes target replacement until commit.
         unsafe { self.0.bind_mut(grant) }.merge();
@@ -59,7 +59,7 @@ impl<'credits> Sum<'credits> {
         A: mem::raw::Amount<3, usize>,
     {
         // SAFETY: the original item is a member of this exclusively borrowed sum.
-        Grant(unsafe { self.0.bind_mut(Parts(amount)) }.split(()))
+        unsafe { self.0.bind_mut(Parts(amount)) }.split(())
     }
 }
 

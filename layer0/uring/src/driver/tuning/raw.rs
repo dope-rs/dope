@@ -4,6 +4,7 @@ use dope_sys::{
     engine::ring::{Backend as _, Context},
     io::{
         reactor::submit::Queue as _,
+        request,
         socket::{
             option,
             option::tuning::{self, device},
@@ -39,7 +40,7 @@ impl<T: Codec, F, const N: usize> Vacant<'_, T, F, N> {
         queue: sq::raw::Queue<'_, T>,
         count: capacity::Limit<N>,
         options: impl option::Cursor,
-        last: Option<sq::Borrowed<'_>>,
+        last: Option<request::Borrowed<'_, sq::Fixed>>,
         reserve: impl FnOnce() -> Result<(Key<T>, R), E>,
     ) -> Result<(F, R), tuning::Error<F, E>> {
         use tuning::raw::Chain as _;

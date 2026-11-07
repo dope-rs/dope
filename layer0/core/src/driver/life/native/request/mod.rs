@@ -1,15 +1,11 @@
 //! Driver-owned request lowering and retained submission authority.
 use std::mem;
 
-use dope_sys::io::{
-    request,
-    request::Source,
-    socket::addr::{Length, Storage},
-};
+use dope_sys::io::{request, request::Source};
 
 use crate::{
     Backend,
-    io::{fd::handles, socket, socket::msg, transfer},
+    io::{fd::handles, socket},
 };
 
 pub(crate) mod bound;
@@ -20,6 +16,9 @@ pub(crate) mod permits;
 pub(crate) use datagram::Datagram;
 
 pub(crate) enum Context {}
+
+pub(crate) type Borrowed<'a> =
+    request::Borrowed<'a, <<Backend as Source<Context>>::Raw as request::Lower>::Target>;
 
 impl request::Context for Context {
     type Target = handles::PhysicalSlot;
@@ -32,7 +31,7 @@ impl request::Context for Context {
 }
 
 impl Lowered {
-    fn target(
+    pub(crate) fn target(
         slot: &handles::PhysicalSlot,
     ) -> <<Backend as Source<Context>>::Raw as request::Lower>::Target {
         <Backend as Source<Context>>::target(*slot)
@@ -66,48 +65,9 @@ impl Lowered {
     }
 }
 
-impl<'a> Borrowed<'a> {
-    pub(crate) fn accept(
-        listener: &'a handles::PhysicalSlot,
-        peer: &'a mut Storage<Length>,
-    ) -> Self {
-        let (address, len) = peer.output_mut();
-        Self(request::Borrow::accept(
-            Lowered::target(listener),
-            address,
-            len,
-        ))
-    }
-
-    pub(crate) fn send(slot: &'a handles::PhysicalSlot, buffer: transfer::View<'a>) -> Self {
-        Self(request::Borrow::send(
-            Lowered::target(slot),
-            buffer.into_prefix(),
-        ))
-    }
-
-    pub(crate) fn send_msg(slot: &'a handles::PhysicalSlot, message: msg::Message<'a>) -> Self {
-        Self(request::Borrow::send_msg(Lowered::target(slot), message))
-    }
-
-    pub(crate) fn connect<A: socket::Prepared + 'a>(
-        slot: handles::PhysicalSlot,
-        addr: &'a A,
-    ) -> Self {
-        Self(request::Borrow::connect(
-            Lowered::target(&slot),
-            addr.view().native(),
-        ))
-    }
-}
-
 /// Request representation selected and proven by the active backend.
 #[repr(transparent)]
 pub(crate) struct Lowered(<Backend as Source<Context>>::Raw);
-
-/// Request representation retaining every caller-owned borrow in its type.
-#[repr(transparent)]
-pub(crate) struct Borrowed<'a>(<<Backend as Source<Context>>::Raw as request::Lower>::Borrowed<'a>);
 
 impl Lowered {
     fn into_inner(self) -> <Backend as Source<Context>>::Raw {
@@ -115,25 +75,7 @@ impl Lowered {
     }
 }
 
-impl<'a> Borrowed<'a> {
-    fn into_inner(self) -> <<Backend as Source<Context>>::Raw as request::Lower>::Borrowed<'a> {
-        self.0
-    }
-}
-
 const _: () = {
     assert!(mem::size_of::<Lowered>() == mem::size_of::<<Backend as Source<Context>>::Raw>());
     assert!(mem::align_of::<Lowered>() == mem::align_of::<<Backend as Source<Context>>::Raw>());
-    assert!(
-        mem::size_of::<Borrowed<'static>>()
-            == mem::size_of::<
-                <<Backend as Source<Context>>::Raw as request::Lower>::Borrowed<'static>,
-            >()
-    );
-    assert!(
-        mem::align_of::<Borrowed<'static>>()
-            == mem::align_of::<
-                <<Backend as Source<Context>>::Raw as request::Lower>::Borrowed<'static>,
-            >()
-    );
 };

@@ -8,6 +8,7 @@ use o3::alloc::{self, array};
 use crate::reply::{
     Arena, Lane, LaneIndex,
     layout::{Domain, Position},
+    usage::Footprint,
 };
 
 pub(super) fn entry_mut<'a, 'arena, ID: Identity, T>(
@@ -25,11 +26,13 @@ pub(super) fn entry_mut<'a, 'arena, ID: Identity, T>(
 
 /// Borrowed raw projection of one reply arena.
 #[repr(transparent)]
-pub struct View<'a, 'arena, 'credits, 'region, D, E = D, K = ()> {
+pub struct View<'a, 'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
     arena: &'a Arena<'arena, 'credits, 'region, D, E, K>,
 }
 
-impl<'a, 'arena, 'credits, 'region, D, E, K> View<'a, 'arena, 'credits, 'region, D, E, K> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    View<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub(in crate::reply) const fn new(
         arena: &'a Arena<'arena, 'credits, 'region, D, E, K>,
     ) -> Self {

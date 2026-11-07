@@ -136,15 +136,15 @@ where
         let target = engine.as_ref().backoff();
         let follow = {
             let this = engine.as_mut().project();
-            let Some(mut sender) = this.links.sender(key, target) else {
-                if let Some(slot) = this.links.pool_mut().get_mut(key) {
+            let (pool, liveness) = this.links.parts();
+            let Some((mut sender, queued)) = pool.send_slot(key) else {
+                if let Some(slot) = pool.get_mut(key) {
                     let _ = State::poll_close(slot, this.app);
                 }
                 return;
             };
-            let queued = sender.has_queued_recv();
-            let liveness::Egress {
-                connection: mut slot,
+            let pool::EgressMut {
+                connection: slot,
                 pending: handle,
                 queue: egress,
                 ..
@@ -152,7 +152,7 @@ where
             if !slot.is_connected() {
                 return;
             }
-            let active = State::active(&mut slot, |active| {
+            let active = State::active(slot, |active| {
                 this.app.prepare(
                     conn::Ctx::new(active, turn.reborrow().app()),
                     queued,
@@ -160,7 +160,7 @@ where
                     driver,
                 );
             });
-            match State::poll_close(&mut slot, this.app) {
+            match State::poll_close(slot, this.app) {
                 flow::Apply::Applied(flow::Flow::Continue(())) => {}
                 flow::Apply::Applied(flow::Flow::Discarded(())) | flow::Apply::Sealed => return,
             }
@@ -178,8 +178,8 @@ where
             }
             let armed = slot.send_status().is_inflight();
             let done = sender.submit(driver);
-            let liveness::Egress {
-                connection: mut slot,
+            let pool::EgressMut {
+                connection: slot,
                 pending: handle,
                 queue: egress,
                 ..
@@ -243,8 +243,10 @@ where
                 (true, reclaim::Advance::Ready) => flow::Follow::Released,
                 (true, reclaim::Advance::Idle) => flow::Follow::Bound,
             };
+            // SAFETY: the native sender retains this key's slot from the paired pool.
+            let source = unsafe { engine::raw::reunite(liveness, slot, key) };
             update.apply(
-                slot,
+                liveness::Change::new(source, target),
                 driver.driver_ref().clock().now(),
                 <E::Timing as timing::Policy>::SEND_DEADLINE,
             );

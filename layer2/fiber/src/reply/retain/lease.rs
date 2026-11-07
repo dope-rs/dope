@@ -2,22 +2,37 @@
 
 use std::mem::size_of;
 
-use o3::mem;
+use o3::{depot::arena::linked::slots, mem};
 
-use crate::reply::retain::pool;
+use crate::reply::{
+    Item,
+    retain::{grant::payload, pool::LeaseEdge},
+    usage,
+};
 
 /// A linear value owner whose payload and reply accounting cannot separate.
 pub struct Lease<'arena, 'credits, 'region, T> {
-    owned: (
-        T,
-        Option<mem::Lease<pool::LeaseEdge<'arena, 'credits, 'region>>>,
+    owned: (T, Option<mem::Lease<LeaseEdge<'arena, 'credits, 'region>>>),
+}
+
+/// A scalar reply retained in its original pool slot.
+pub struct Node<'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>> {
+    pub(in crate::reply) owned: (
+        slots::Live<Item<D>, slots::Borrow<'arena, Item<D>, false>>,
+        mem::Lease<LeaseEdge<'arena, 'credits, 'region, payload::Failure<usage::Bytes>>>,
     ),
+}
+
+impl<D: usage::Footprint<Amount = usage::Bytes>> Node<'_, '_, '_, D> {
+    pub fn get(&self) -> &D {
+        &self.owned.0.get().value
+    }
 }
 
 impl<'arena, 'credits, 'region, T> Lease<'arena, 'credits, 'region, T> {
     pub(in crate::reply) fn new(
         value: T,
-        claim: Option<mem::Lease<pool::LeaseEdge<'arena, 'credits, 'region>>>,
+        claim: Option<mem::Lease<LeaseEdge<'arena, 'credits, 'region>>>,
     ) -> Self {
         Self {
             owned: (value, claim),
@@ -36,8 +51,8 @@ impl<'arena, 'credits, 'region, T> Lease<'arena, 'credits, 'region, T> {
 
 const _: () = {
     assert!(
-        size_of::<Option<mem::Lease<pool::LeaseEdge<'static, 'static, 'static>>>>()
-            == size_of::<mem::Lease<pool::LeaseEdge<'static, 'static, 'static>>>()
+        size_of::<Option<mem::Lease<LeaseEdge<'static, 'static, 'static>>>>()
+            == size_of::<mem::Lease<LeaseEdge<'static, 'static, 'static>>>()
     );
     assert!(size_of::<Lease<'static, 'static, 'static, ()>>() == 4 * size_of::<usize>());
 };

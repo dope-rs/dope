@@ -2,9 +2,16 @@
 
 use std::{mem, num::NonZero};
 
-use o3::depot::capacity;
+use o3::{
+    alloc,
+    depot::{self, capacity},
+};
 
-use crate::reply::{retain::grant, usage};
+use crate::reply::{
+    Item,
+    retain::grant,
+    usage::{self, amount::Amount as _},
+};
 
 mod domain;
 mod position;
@@ -118,9 +125,8 @@ impl Limit {
 pub struct Layout {
     lanes: NonZero<u32>,
     entries: NonZero<u32>,
-    data: Data,
     limit: Limit,
-    admission: grant::Plan<2>,
+    admission: grant::Plan<1>,
     payload: grant::Plan<3>,
 }
 
@@ -267,7 +273,6 @@ impl Layout {
         Ok(Self {
             lanes,
             entries,
-            data: capacity.data,
             limit,
             admission: admit,
             payload,
@@ -287,6 +292,17 @@ impl Layout {
         )
     }
 
+    /// Allocation layout of the reply data nodes.
+    pub fn try_data_layout<D: usage::Footprint>(
+        self,
+    ) -> Result<std::alloc::Layout, alloc::Overflow> {
+        depot::raw::Arena::<Item<D>, (), false>::try_layout(self.data_capacity::<D>())
+    }
+
+    pub(super) fn data_capacity<D: usage::Footprint>(self) -> usize {
+        self.payload.capacity(self.lanes, D::Amount::AXIS)
+    }
+
     pub const fn lane_count(self) -> NonZero<u32> {
         self.lanes
     }
@@ -304,11 +320,7 @@ impl Layout {
         self.entries
     }
 
-    pub(super) const fn data(self) -> Data {
-        self.data
-    }
-
-    pub(super) const fn admission(self) -> grant::Plan<2> {
+    pub(super) const fn admission(self) -> grant::Plan<1> {
         self.admission
     }
 

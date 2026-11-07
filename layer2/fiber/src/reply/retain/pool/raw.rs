@@ -2,9 +2,9 @@ use std::{cell, marker};
 
 use o3::{depot, depot::arena::linked::fifo::ends};
 
-use crate::reply::{Owned, retain, retain::grant::entries};
+use crate::reply::{Owned, retain, retain::grant::entries, usage::Footprint};
 
-impl<C> Owned<'_, '_, '_, C> {
+impl<C: Footprint> Owned<'_, '_, '_, C> {
     #[inline(always)]
     pub(in crate::reply) fn retire(self) -> Option<Self> {
         let Self { data, credit } = self;
@@ -28,7 +28,7 @@ impl<C> Owned<'_, '_, '_, C> {
 pub(super) unsafe trait Release<'credits> {
     /// # Safety
     /// `grant` must be this pool's original still-counted entry acquisition.
-    unsafe fn release_slot(&self, grant: entries::Grant<'credits, entries::Units<1, 0>>);
+    unsafe fn release_slot(&self, grant: entries::Grant<'credits, entries::Unit>);
 }
 
 const END: u32 = u32::MAX - 1;

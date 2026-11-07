@@ -233,18 +233,54 @@ const _: () = {
 
 /// Reports the logical resources retained by a reply value.
 pub trait Footprint {
-    fn footprint(&self) -> Usage;
+    type Amount: amount::Amount;
+
+    fn footprint(&self) -> Self::Amount;
 }
 
 /// Describes a reply value before constructing its owned representation.
-pub trait Build<C> {
+pub trait Build<C: Footprint> {
     type Error;
 
-    fn usage(&self) -> Usage;
+    fn usage(&self) -> C::Amount;
 
     fn try_build(self) -> Result<C, (Self, Self::Error)>
     where
         Self: Sized;
+}
+
+impl Footprint for () {
+    type Amount = Usage;
+
+    fn footprint(&self) -> Usage {
+        Usage::ZERO
+    }
+}
+
+pub(in crate::reply) mod amount {
+    use super::{Bytes, Usage, Values};
+
+    pub trait Amount: Copy + Eq + 'static {
+        const AXIS: usize;
+
+        fn usage(self) -> Usage;
+    }
+
+    impl Amount for Usage {
+        const AXIS: usize = 0;
+
+        fn usage(self) -> Usage {
+            self
+        }
+    }
+
+    impl Amount for Bytes {
+        const AXIS: usize = 1;
+
+        fn usage(self) -> Usage {
+            Usage::new(self, Values::new(1))
+        }
+    }
 }
 
 pub enum PushError<B, E, C> {

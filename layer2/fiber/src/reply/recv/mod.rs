@@ -13,6 +13,7 @@ use crate::{
         self, Lane,
         arena::{retire::Retired, state},
         order,
+        usage::Footprint,
     },
 };
 
@@ -36,7 +37,7 @@ const _: () = {
 };
 
 /// Extracts one logical value from a reply slot.
-pub trait Extract<'s, 'arena, 'credits, 'region, D, E = D> {
+pub trait Extract<'s, 'arena, 'credits, 'region, D: Footprint, E = D> {
     type Context: Unpin;
     type Output;
     const ACCEPTANCE: Acceptance = Acceptance::Payload;
@@ -47,12 +48,14 @@ pub trait Extract<'s, 'arena, 'credits, 'region, D, E = D> {
     ) -> Option<Self::Output>;
 }
 
-struct Registration<'s, 'arena, 'credits, 'region, D, E, K> {
+struct Registration<'s, 'arena, 'credits, 'region, D: Footprint, E, K> {
     lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
     key: state::EntryKey,
 }
 
-impl<'s, 'arena, 'credits, 'region, D, E, K> Registration<'s, 'arena, 'credits, 'region, D, E, K> {
+impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Registration<'s, 'arena, 'credits, 'region, D, E, K>
+{
     fn live(
         &self,
     ) -> state::Registered<'s, reply::Arena<'arena, 'credits, 'region, D, E, K>, &Self> {
@@ -61,17 +64,19 @@ impl<'s, 'arena, 'credits, 'region, D, E, K> Registration<'s, 'arena, 'credits, 
     }
 }
 
-impl<D, E, K> Drop for Registration<'_, '_, '_, '_, D, E, K> {
+impl<D: Footprint, E, K> Drop for Registration<'_, '_, '_, '_, D, E, K> {
     fn drop(&mut self) {
-        self.lane.defer_retire(Retired::new(self.key));
+        self.lane.defer_retire(Retired::new(self.key.index()));
     }
 }
 
-struct Handle<'s, 'arena, 'credits, 'region, D, E, K> {
+struct Handle<'s, 'arena, 'credits, 'region, D: Footprint, E, K> {
     reg: Option<Registration<'s, 'arena, 'credits, 'region, D, E, K>>,
 }
 
-impl<'s, 'arena, 'credits, 'region, D, E, K> Handle<'s, 'arena, 'credits, 'region, D, E, K> {
+impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Handle<'s, 'arena, 'credits, 'region, D, E, K>
+{
     const fn new() -> Self {
         Self { reg: None }
     }
@@ -177,7 +182,7 @@ pub struct Response<
     'arena,
     'credits,
     'region,
-    D,
+    D: Footprint,
     X: Extract<'s, 'arena, 'credits, 'region, D, E>,
     E = D,
     K = (),
@@ -186,8 +191,16 @@ pub struct Response<
     extract: X::Context,
 }
 
-impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
-    Response<'s, 'arena, 'credits, 'region, D, X, E, K>
+impl<
+    's,
+    'arena,
+    'credits,
+    'region,
+    D: Footprint,
+    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    E,
+    K,
+> Response<'s, 'arena, 'credits, 'region, D, X, E, K>
 {
     /// Consumes typed group input only after every response, slot, and credit is admitted.
     /// Any admission failure leaves every response and lane order unchanged.
@@ -269,8 +282,8 @@ impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region,
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
-    Default for Response<'s, 'arena, 'credits, 'region, D, X, E, K>
+impl<'s, 'arena, 'credits, 'region, D: Footprint, X, E, K> Default
+    for Response<'s, 'arena, 'credits, 'region, D, X, E, K>
 where
     X: Extract<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
 {
@@ -279,8 +292,16 @@ where
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
-    attach::Attach<'s, 'arena, 'credits, 'region, D, E, K>
+impl<
+    's,
+    'arena,
+    'credits,
+    'region,
+    D: Footprint,
+    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    E,
+    K,
+> attach::Attach<'s, 'arena, 'credits, 'region, D, E, K>
     for Response<'s, 'arena, 'credits, 'region, D, X, E, K>
 {
     fn try_ordered(
@@ -310,8 +331,16 @@ impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region,
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
-    abi::Fiber<'region> for Response<'s, 'arena, 'credits, 'region, D, X, E, K>
+impl<
+    's,
+    'arena,
+    'credits,
+    'region,
+    D: Footprint,
+    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    E,
+    K,
+> abi::Fiber<'region> for Response<'s, 'arena, 'credits, 'region, D, X, E, K>
 {
     type Output = X::Output;
 
@@ -326,7 +355,7 @@ pub struct Stream<
     'arena,
     'credits,
     'region,
-    D,
+    D: Footprint,
     X: Extract<'s, 'arena, 'credits, 'region, D, E>,
     E = D,
     K = (),
@@ -335,8 +364,16 @@ pub struct Stream<
     extract: X::Context,
 }
 
-impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
-    Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
+impl<
+    's,
+    'arena,
+    'credits,
+    'region,
+    D: Footprint,
+    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    E,
+    K,
+> Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
 {
     pub const fn new() -> Self
     where
@@ -372,8 +409,8 @@ impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region,
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
-    Default for Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
+impl<'s, 'arena, 'credits, 'region, D: Footprint, X, E, K> Default
+    for Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
 where
     X: Extract<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
 {
@@ -382,8 +419,16 @@ where
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, D, X: Extract<'s, 'arena, 'credits, 'region, D, E>, E, K>
-    attach::Attach<'s, 'arena, 'credits, 'region, D, E, K>
+impl<
+    's,
+    'arena,
+    'credits,
+    'region,
+    D: Footprint,
+    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    E,
+    K,
+> attach::Attach<'s, 'arena, 'credits, 'region, D, E, K>
     for Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
 {
     fn try_ordered(

@@ -3,9 +3,10 @@ use o3::{alloc, alloc::array, base::num::bounded, depot};
 use crate::reply::{
     Batch, Drain, LaneIndex, State,
     retain::{self, pool::Owner},
+    usage::Footprint,
 };
 
-impl<C> Batch<'_, '_, '_, '_, C> {
+impl<C: Footprint> Batch<'_, '_, '_, '_, C> {
     /// Maps this retained batch into one exactly sized allocation. Each slot's
     /// consuming insertion commits its value before further callback work.
     /// Visited rows retire after their callbacks; errors defer the remaining rows.
@@ -50,12 +51,12 @@ unsafe impl depot::raw::Compact for LaneIndex {
 }
 
 /// Exclusive retirement of one slot and its original resource owner.
-pub(in crate::reply) struct Retire<'a, 'arena, 'credits, 'region, D, E> {
+pub(in crate::reply) struct Retire<'a, 'arena, 'credits, 'region, D: Footprint, E> {
     state: &'a mut State<'arena, D, E>,
     owner: &'a mut Owner<'arena, 'credits, 'region>,
 }
 
-impl<'a, 'arena, 'credits, 'region, D, E> Retire<'a, 'arena, 'credits, 'region, D, E> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E> Retire<'a, 'arena, 'credits, 'region, D, E> {
     /// # Safety
     /// Both arguments must be the slot and owner from the same original entry.
     pub(in crate::reply) unsafe fn new(
@@ -66,7 +67,7 @@ impl<'a, 'arena, 'credits, 'region, D, E> Retire<'a, 'arena, 'credits, 'region, 
     }
 }
 
-impl<D, E> Retire<'_, '_, '_, '_, D, E> {
+impl<D: Footprint, E> Retire<'_, '_, '_, '_, D, E> {
     pub(in crate::reply) fn advance(&mut self) -> Drain {
         if let Some(item) = self.state.take_data() {
             // SAFETY: the removed member and payload come from this exact owned slot.

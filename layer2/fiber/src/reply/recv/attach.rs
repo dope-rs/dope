@@ -4,7 +4,7 @@ use core::{mem, num::NonZero};
 
 use o3::{base::cell::region, depot::capacity, mem::credit::fair};
 
-use crate::reply::{Lane, LaneIndex, layout, order, usage};
+use crate::reply::{Lane, LaneIndex, layout, order, usage, usage::Footprint};
 
 /// Exact reason a reply owner could not attach to an arena lane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,7 +31,7 @@ pub enum Error {
 }
 
 /// Attaches a response owner to one arena lane.
-pub trait Attach<'s, 'arena, 'credits, 'region, D, E = D, K = ()> {
+pub trait Attach<'s, 'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
     fn try_ordered(
         &mut self,
         token: &mut region::Token<region::Identity<'region>>,

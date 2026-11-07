@@ -25,13 +25,13 @@ pub(crate) fn accept(file: sq::Fixed) -> sq::Entry {
     use crate::reactor::ring::ffi;
 
     let mut entry = sq::Entry::new(ACCEPT, sq::Descriptor::Fixed(file));
-    entry.fields().index(ffi::FILE_INDEX_ALLOC);
+    entry.fields().index = ffi::FILE_INDEX_ALLOC;
     entry
 }
 
 pub(crate) fn shutdown(file: sq::Fixed, how: How) -> sq::Entry {
     let mut entry = sq::Entry::new(SHUTDOWN, sq::Descriptor::Fixed(file));
-    entry.fields().length(how.raw() as u32);
+    entry.fields().length = how.raw() as u32;
     entry
 }
 
@@ -43,10 +43,10 @@ pub(crate) fn set_option(file: sq::Fixed, option: Kind, value: &libc::c_int) -> 
     pair[..4].copy_from_slice(&level.to_ne_bytes());
     pair[4..].copy_from_slice(&name.to_ne_bytes());
     let mut entry = sq::Entry::new(SET_OPTION, sq::Descriptor::Fixed(file));
-    let mut fields = entry.fields();
-    fields.command(ffi::SOCKET_SETSOCKOPT);
-    fields.address(u64::from_ne_bytes(pair));
-    fields.index(mem::size_of::<libc::c_int>() as u32);
-    fields.address3(ptr::from_ref(value) as u64);
+    let fields = entry.fields();
+    fields.offset[..4].copy_from_slice(&ffi::SOCKET_SETSOCKOPT.to_ne_bytes());
+    fields.address = u64::from_ne_bytes(pair);
+    fields.index = mem::size_of::<libc::c_int>() as u32;
+    fields.address3 = ptr::from_ref(value) as u64;
     sq::Borrowed::new(entry)
 }

@@ -13,17 +13,35 @@ use crate::reply::{
         grant::{self, entries},
         pool::{self, Lane},
     },
+    usage::Footprint,
 };
 
 /// Exclusive registration access to the owning reply book.
-pub(in crate::reply::arena) struct Register<'a, 'arena, 'credits, 'region, D, E, K> {
+pub(in crate::reply::arena) struct Register<'a, 'arena, 'credits, 'region, D: Footprint, E, K> {
     state: &'a mut state::Book<'arena, 'credits, 'region, D, E, K>,
+}
+
+pub(in crate::reply::arena) struct Ordered<K = ()> {
+    key: state::EntryKey,
+    tag: K,
+}
+
+impl<K> Ordered<K> {
+    pub(super) const fn key(&self) -> state::EntryKey {
+        self.key
+    }
+
+    pub(super) const fn tag(&self) -> &K {
+        &self.tag
+    }
 }
 
 type Vacant<'a, 'arena, 'credits, 'region, D, E, const ROOT: bool> =
     slab::Vacant<Pending<'a, state::Entry<'arena, 'credits, 'region, D, E>>, state::EntryTag, ROOT>;
 
-impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'region, D, E, K> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Register<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub(in crate::reply::arena) const fn new(
         state: &'a mut state::Book<'arena, 'credits, 'region, D, E, K>,
     ) -> Self {
@@ -41,7 +59,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'reg
                 Registration::Full
             };
         }
-        Lane::new(lane).registration(entries::Units::<1, 1>::VALUE)
+        Lane::new(lane).registration(entries::Unit)
     }
 
     pub(in crate::reply::arena) fn insert(
@@ -61,12 +79,12 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'reg
             Vacancy::IdentityExhausted => attach::Error::IdentityExhausted,
         })?;
         let capacity = Lane::new(lane);
-        let plan = pool::Registration::try_new(capacity, entries::Units::<1, 1>::VALUE).map_err(
-            |cause| attach::Error::Capacity {
+        let plan = pool::Registration::try_new(capacity, entries::Unit).map_err(|cause| {
+            attach::Error::Capacity {
                 lane: lane.index,
                 cause,
-            },
-        )?;
+            }
+        })?;
         if !capacity.has_reserve() {
             state.order.remove::<1>(capacity.index().into());
         }
@@ -93,7 +111,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'reg
         let request = entries::Group::<N>::VALUE;
         let state = &mut *self.state;
         let needed = NonZero::<usize>::MIN.saturating_add(N);
-        let capacity = grant::Plan::<2>::entry_limit(state.slots.capacity(), lane.arena.lanes);
+        let capacity = grant::Plan::<1>::entry_limit(state.slots.capacity(), lane.arena.lanes);
         if needed.get() > capacity {
             return Err((
                 attach::Error::Oversized {
@@ -170,15 +188,14 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'reg
 
     /// Publishes one attachment from a distinct reserved entry in this bounded store.
     fn publish<const ROOT: bool>(
-        queues: &mut Queues<'credits, K>,
+        queues: &mut Queues<K>,
         lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
         vacant: Vacant<'_, 'arena, 'credits, 'region, D, E, ROOT>,
-        plan: pool::Registration<'arena, 'credits, 'region, entries::Units<1, 1>>,
+        plan: pool::Registration<'arena, 'credits, 'region, entries::Unit>,
         accept: recv::Acceptance,
         tag: K,
         data: fifo::Fifo<'arena, reply::Item<D>, false>,
     ) -> state::EntryKey {
-        let (entry, order) = plan.split();
         let raw = vacant.insert_with(|raw| {
             let route = queues.route(lane.index).into_state();
             route.live = route.live.wrapping_add(1);
@@ -186,15 +203,13 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Register<'a, 'arena, 'credits, 'reg
             let key = unsafe { state::EntryKey::from_raw(raw) };
             state::Entry {
                 body: state::EntryBody::Attached(state::Attached(reply::State::new(data))),
-                owners: pool::Owner::new(entry, key, accept),
+                owners: pool::Owner::new(plan, key.index(), accept),
                 signal: state::Signal::new(),
             }
         });
         // SAFETY: insertion preserves the reserved physical identity.
         let key = unsafe { state::EntryKey::from_raw(raw) };
-        queues
-            .route(lane.index)
-            .push(state::Ordered::new(key, order, tag));
+        queues.route(lane.index).push(Ordered { key, tag });
         key
     }
 }

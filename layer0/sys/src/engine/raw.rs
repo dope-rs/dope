@@ -67,7 +67,7 @@ pub trait Poll {
         &'a mut self,
         quota: Q,
         timeout: Option<time::Duration>,
-        busy: impl FnOnce() -> bool,
+        busy: bool,
     ) -> Result<(), Self::Error>
     where
         Self::Context: 'a;

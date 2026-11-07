@@ -119,20 +119,6 @@ where
         let source = unsafe { engine::raw::reunite(&mut self.liveness, slot, key) };
         Some(liveness::Change::new(source, target))
     }
-    pub(in crate::client::conn::engine) fn sender(
-        &mut self,
-        key: pool::Key<'d, ID>,
-        target: ready::Target<'d>,
-    ) -> Option<liveness::Sender<'_, 'p, 'w, 'd, ID, A, E, X>> {
-        let (native, queued_recv) = self.pool.send_slot(key)?;
-        Some(liveness::Sender {
-            native,
-            queued_recv,
-            liveness: &mut self.liveness,
-            key,
-            target,
-        })
-    }
     pub(in crate::client::conn::engine) fn open<P, R>(
         &mut self,
         socket: socket::StreamSpec,

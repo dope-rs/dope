@@ -1,6 +1,6 @@
 use dope_sys::{
     engine::admit::{self, Context},
-    io::reactor::submit,
+    io::{reactor::submit, request},
     table::token::Codec,
 };
 
@@ -11,9 +11,9 @@ where
     C: Context<Native = Uring, Key = Key<T>>,
     T: Codec,
 {
-    unsafe fn retain(self, request: sq::Borrowed<'_>, key: Key<T>) {
+    unsafe fn retain(self, request: request::Borrowed<'_, sq::Fixed>, key: Key<T>) {
         // SAFETY: the host retains every encoded pointee through this flight's completion.
-        unsafe { submit::raw::Vacancy::push(self, request, T::flight(key)) };
+        unsafe { self.push_retained(request, T::flight(key)) };
     }
 
     unsafe fn file(self, request: sq::Borrowed<'_>, key: Key<T>) {

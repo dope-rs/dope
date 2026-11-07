@@ -109,9 +109,7 @@ where
                 let conn = entry.remove();
                 (key, conn.control.send.release(), conn.state)
             };
-            if let Some(release) = <M::Ingress as Finish<W>>::release::<ID>(released) {
-                release.call(&mut self.runtime);
-            }
+            <M::Ingress as Finish<W>>::release::<ID>(released, &mut self.runtime);
             free(key, Released::State(&mut state), finish.state_token());
         }
     }

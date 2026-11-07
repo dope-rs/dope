@@ -1,7 +1,7 @@
 use core::{pin::Pin, task::Poll};
 
 use crate::{
-    context::{Admission, Context, PollResult},
+    context::{Admission, Context, Continue, PollResult},
     core::driver::schedule::app::step,
 };
 
@@ -19,21 +19,10 @@ impl<'call, 'turn, 'd: 'turn, F> PollCall<'call, 'turn, 'd, F> {
         context: Pin<&'call mut Context<'turn, 'd>>,
         poll: impl FnOnce(Self) -> Poll<T>,
     ) -> PollResult<T> {
-        let Some(_permit) = context.as_ref().get_ref().work.permit() else {
-            context.as_ref().get_ref().requeue();
+        let Continue::Permit(_permit) = context.as_ref().try_continue() else {
             return PollResult::Exhausted;
         };
         PollResult::Polled(poll(Self { fiber, context }))
-    }
-
-    pub(crate) fn map<T: 'call>(
-        self,
-        project: impl FnOnce(Pin<&'call mut F>) -> Pin<&'call mut T>,
-    ) -> PollCall<'call, 'turn, 'd, T> {
-        PollCall {
-            fiber: project(self.fiber),
-            context: self.context,
-        }
     }
 
     pub(crate) fn delegated<'permit>(

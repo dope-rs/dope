@@ -49,13 +49,7 @@ impl<'a, 'd> Admission<'a, 'd> {
         let (raw, reserve) = bound.into_parts();
         // SAFETY: the caller retains these exact native inputs. Submission
         // precedes commitment of the reserved flight.
-        unsafe {
-            admit::raw::Retain::<Host<Backend>>::retain(
-                self.native,
-                raw.into_inner(),
-                reserve.key(),
-            )
-        };
+        unsafe { admit::raw::Retain::<Host<Backend>>::retain(self.native, raw, reserve.key()) };
         reserve.commit()
     }
 

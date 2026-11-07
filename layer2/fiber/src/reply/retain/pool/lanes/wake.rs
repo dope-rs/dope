@@ -4,13 +4,13 @@ use dope::core::driver::schedule::ready;
 
 use crate::reply::{
     LaneIndex,
-    arena::state::EntryKey,
+    arena::state::Index,
     retain::{grant::payload, pool},
 };
 
 #[derive(Clone, Copy)]
 pub(super) struct Wait {
-    pub(super) key: EntryKey,
+    pub(super) key: Index,
     pub(super) request: Option<payload::Requested>,
 }
 
@@ -29,7 +29,7 @@ impl Wake<'_> {
         }
     }
 
-    pub(super) fn cancel(&self, key: EntryKey) {
+    pub(super) fn cancel(&self, key: Index) {
         if self.waiting.get().is_some_and(|wait| wait.key == key) {
             self.waiting.set(None);
         }

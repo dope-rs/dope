@@ -6,7 +6,7 @@ use o3::mem::{self, raw::Source as _, rc};
 
 use crate::reply::{
     LaneIndex,
-    arena::state::EntryKey,
+    arena::state::Index,
     layout, order, recv,
     retain::{
         self,
@@ -26,7 +26,7 @@ pub(in crate::reply) struct Payload<'arena, 'credits, 'region> {
     key: Key<'arena, 'credits, 'region>,
     lane: LaneIndex,
     sum: payload::raw::Sum<'credits>,
-    entry: entries::Grant<'credits, entries::Units<1, 0>>,
+    entry: entries::Grant<'credits, entries::Unit>,
 }
 
 /// One removed member and its exact source owner, kept inseparable until
@@ -36,23 +36,18 @@ pub(in crate::reply) struct Removal<'a, 'arena, 'credits, 'region, A: mem::raw::
     grant: payload::Grant<'credits, A>,
 }
 
-struct Retention<'a, 'arena, 'credits, 'region> {
-    owner: &'a mut Payload<'arena, 'credits, 'region>,
-    grant: payload::Grant<'credits, payload::Failure>,
-}
-
 impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
     #[inline]
     pub(in crate::reply) fn new(
-        admitted: pool::Registration<'arena, 'credits, 'region, entries::Units<1, 0>>,
-        key: EntryKey,
+        admitted: pool::Registration<'arena, 'credits, 'region, entries::Unit>,
+        entry_index: Index,
         acceptance: recv::Acceptance,
     ) -> Self {
         let (lane, entry) = admitted.into_parts();
         let pool = lane.pool();
         let index = lane.index();
         let sum = payload::raw::Sum::new(pool.lanes().credits.payload(index));
-        let key = pool.bind(key);
+        let key = pool.bind(entry_index);
         Self {
             order: order::State::Linked,
             acceptance: Some(acceptance),
@@ -123,12 +118,12 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
         A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     >(
         &mut self,
-        key: EntryKey,
         amount: A,
         limit: layout::Limit,
         acceptance: recv::Acceptance,
     ) -> Result<(), Acquire> {
         let lanes = &self.key.parts().core.lanes;
+        let key = self.key.state().index();
         let [items, values, bytes] = amount.get();
         let current = self.sum.usage();
         let next = current
@@ -197,6 +192,23 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
         unsafe { self.sum.merge(grant) };
     }
 
+    fn try_lease<A: mem::raw::Amount<3, usize>>(
+        &mut self,
+        data: payload::Grant<'credits, payload::Data>,
+        grant: payload::Grant<'credits, A>,
+    ) -> Result<mem::Lease<LeaseEdge<'arena, 'credits, 'region, A>>, rc::Error> {
+        let edge = match LeaseEdge::try_new(self.activate()) {
+            Ok(edge) => edge,
+            Err(error) => {
+                self.restore(data);
+                self.restore(grant);
+                return Err(error);
+            }
+        };
+        self.key.release_data(self.lane, data);
+        Ok(mem::Lease::new(edge, grant))
+    }
+
     pub(in crate::reply) fn try_batch(
         &mut self,
     ) -> Result<retain::Batch<'arena, 'credits, 'region>, rc::Error> {
@@ -226,7 +238,7 @@ unsafe impl<'arena, 'credits, 'region> retain::raw::Remove<'arena, 'credits, 're
     }
 }
 
-impl<'arena, 'credits, 'region> Retention<'_, 'arena, 'credits, 'region> {
+impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::Failure> {
     fn try_hold(self) -> Result<retain::Held<'arena, 'credits, 'region>, rc::Error> {
         let Self { owner, grant } = self;
         let held = match payload::Failure::split(grant) {
@@ -303,7 +315,7 @@ impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::
     ) -> Result<retain::Held<'arena, 'credits, 'region>, rc::Error> {
         let Self { owner, grant } = self;
         let (data, grant) = payload::Value::split(grant);
-        let held = match (Retention {
+        let held = match (Removal {
             owner: &mut *owner,
             grant,
         })
@@ -329,19 +341,24 @@ impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::
                 owner.key.release_data(owner.lane, data);
                 Ok(None)
             }
-            Some(grant) => {
-                let edge = match LeaseEdge::try_new(owner.activate()) {
-                    Ok(edge) => edge,
-                    Err(error) => {
-                        owner.restore(data);
-                        owner.restore(grant);
-                        return Err(error);
-                    }
-                };
-                owner.key.release_data(owner.lane, data);
-                Ok(Some(mem::Lease::new(edge, grant)))
-            }
+            Some(grant) => owner.try_lease(data, grant).map(Some),
         }
+    }
+}
+
+impl<'arena, 'credits, 'region>
+    Removal<'_, 'arena, 'credits, 'region, payload::Value<usage::Bytes>>
+{
+    #[inline]
+    pub(in crate::reply) fn try_value(
+        self,
+    ) -> Result<
+        mem::Lease<LeaseEdge<'arena, 'credits, 'region, payload::Failure<usage::Bytes>>>,
+        rc::Error,
+    > {
+        let Self { owner, grant } = self;
+        let (data, grant) = payload::Value::split(grant);
+        owner.try_lease(data, grant)
     }
 }
 

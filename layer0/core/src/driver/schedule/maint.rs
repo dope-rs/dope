@@ -25,10 +25,6 @@ impl<'turn, 'd> Work<'turn, 'd> {
         self.state.lanes.maint.admit_with(run)
     }
 
-    pub fn apply(self, run: impl FnOnce() -> quota::Acquire) {
-        self.state.lanes.maint.apply(run);
-    }
-
     pub fn permit(self) -> Option<Permit<'turn, 'd>> {
         match self.state.lanes.maint.take() {
             quota::Take::Taken => Some(Permit::new()),

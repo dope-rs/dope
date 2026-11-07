@@ -376,7 +376,7 @@ impl submit::Control for Uring {
         use crate::reactor::op::files;
 
         let mut entry = sq::Entry::new(files::CLOSE, sq::Descriptor::File(0));
-        entry.fields().index(slot.encode());
+        entry.fields().index = slot.encode();
         entry.user_data(complete)
     }
 

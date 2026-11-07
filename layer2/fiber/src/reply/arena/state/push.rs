@@ -1,14 +1,18 @@
 //! Resource-accounted reply insertion.
 
-use o3::depot::{self, arena::slab, index::Initialized};
+use o3::{
+    base::cell::region,
+    depot::{self, arena::slab, index::Initialized},
+};
 use state::order::{Front, Lease, Slot};
 
 use crate::reply::{
     self,
     arena::state,
-    layout, order, recv,
+    order, recv,
     retain::{grant::payload, pool},
-    slot, usage,
+    slot,
+    usage::{self, Footprint, amount::Amount as _},
 };
 
 enum Reject {
@@ -31,27 +35,30 @@ impl Reject {
 }
 
 /// One selected reply front retained through inspection and insertion.
-pub struct Push<'a, 'arena, 'credits, 'region, D, E = D, K = ()> {
+pub struct Push<'a, 'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
     front: Option<(
-        Front<'a, 'credits, K>,
+        Front<'a, K>,
         state::EntryKey,
         &'a mut state::Entry<'arena, 'credits, 'region, D, E>,
     )>,
-    limit: &'a layout::Limit,
+    arena: &'a reply::Arena<'arena, 'credits, 'region, D, E, K>,
 }
 
-impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region, D, E, K> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Push<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub(in crate::reply::arena) fn new(
-        state: &'a mut state::Book<'arena, 'credits, 'region, D, E, K>,
-        lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
+        lane: reply::Lane<'a, 'arena, 'credits, 'region, D, E, K>,
+        token: &'a mut region::Token<region::Identity<'region>>,
     ) -> Self {
+        let state = token.borrow_mut(&lane.arena.state);
         let front = match state.order.route(lane.index).front() {
             Some(mut front) => {
-                let key = front.value().key;
+                let key = front.value().key();
                 // SAFETY: Book inserts the entry before linking its order item;
                 // this retained front prevents that entry from being reclaimed.
                 let live = unsafe {
-                    depot::raw::Proof::<_, Initialized<state::Ordered<'credits, K>>>::new((
+                    depot::raw::Proof::<_, Initialized<state::Ordered<K>>>::new((
                         (&mut state.slots.0, front),
                         key.index().into(),
                     ))
@@ -63,12 +70,12 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         };
         Self {
             front,
-            limit: &state.limit,
+            arena: lane.arena,
         }
     }
 
     pub fn tag(&mut self) -> Option<&K> {
-        Some(&self.front.as_mut()?.0.value().tag)
+        Some(self.front.as_mut()?.0.value().tag())
     }
 
     pub fn is_cutoff(&self, cutoff: order::Cutoff<'arena>) -> bool {
@@ -87,6 +94,26 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
                 _ => order::Front::Open,
             },
             state::EntryBody::Draining(_) | state::EntryBody::Drained => order::Front::Detached,
+        }
+    }
+
+    pub fn complete(self) -> order::Depth {
+        let arena = self.arena;
+        match self.head() {
+            state::Head::Attached(open) => open.complete(),
+            state::Head::Draining(order) => order.reclaim(),
+            state::Head::Drained(order) => {
+                let lane = reply::Lane {
+                    arena,
+                    index: order.owner.lane(),
+                };
+                let (depth, retired) = order.retire();
+                if let Some(retired) = retired {
+                    lane.defer_retire(retired);
+                }
+                depth
+            }
+            state::Head::Empty(depth) => depth,
         }
     }
 
@@ -119,9 +146,9 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
 
     fn try_data(
         self,
-        usage: usage::Usage,
+        usage: D::Amount,
     ) -> Result<Option<slot::Push<'a, 'arena, 'credits, 'region, D, K>>, Reject> {
-        let limit = *self.limit;
+        let limit = self.arena.limit;
         let open = self.attached().map_err(Reject::Front)?;
         let Some(accept) = open.acceptance() else {
             return Ok(None);
@@ -138,7 +165,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         self,
         usage: usage::Usage,
     ) -> Result<Failure<'a, 'arena, 'credits, 'region, E, K>, Reject> {
-        let limit = *self.limit;
+        let limit = self.arena.limit;
         let open = self.attached().map_err(Reject::Front)?;
         let (order, slot, signal) = open.failure();
         let lease = order
@@ -151,10 +178,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
         })
     }
 
-    pub fn try_push(self, item: D) -> Result<(), usage::InsertError<D>>
-    where
-        D: usage::Footprint,
-    {
+    pub fn try_push(self, item: D) -> Result<(), usage::InsertError<D>> {
         let usage = item.footprint();
         let held = match self.try_data(usage) {
             Ok(Some(held)) => held,
@@ -167,7 +191,6 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
 
     pub fn try_build<B>(self, builder: B) -> Result<(), usage::PushError<B, B::Error, D>>
     where
-        D: usage::Footprint,
         B: usage::Build<D>,
     {
         let usage = builder.usage();
@@ -191,7 +214,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
             }
         };
         let declared = held.usage();
-        let actual = item.footprint();
+        let actual = item.footprint().usage();
         if actual != declared {
             return Err(usage::PushError::Footprint {
                 value: item,
@@ -205,9 +228,9 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Push<'a, 'arena, 'credits, 'region,
 
     pub fn try_fail(self, item: E) -> Result<order::Depth, usage::InsertError<E>>
     where
-        E: usage::Footprint,
+        E: Footprint,
     {
-        let usage = item.footprint();
+        let usage = item.footprint().usage();
         let held = match self.try_failure(usage) {
             Ok(held) => held,
             Err(reject) => return Err(reject.into_error(item)),

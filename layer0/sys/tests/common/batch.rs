@@ -35,7 +35,7 @@ impl engine::raw::Poll for Batch {
         &'a mut self,
         _quota: Q,
         _timeout: Option<time::Duration>,
-        _busy: impl FnOnce() -> bool,
+        _busy: bool,
     ) -> Result<(), Self::Error>
     where
         Self::Context: 'a,

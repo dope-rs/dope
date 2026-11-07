@@ -1,6 +1,5 @@
 use std::marker;
 
-use o3::mem::quota;
 pub(in crate::driver::schedule::ready) mod cells;
 pub(in crate::driver::schedule::ready) mod layout;
 pub(in crate::driver::schedule::ready) mod payload;
@@ -12,7 +11,6 @@ use o3::alloc;
 use state::lanes;
 
 use crate::{
-    dope_sys::Budget as _,
     driver,
     driver::{
         receive,
@@ -149,18 +147,13 @@ impl Arena {
     where
         'd: 'a,
     {
-        let Some(mut ready) = self.ready.drain() else {
-            return 0;
-        };
-        let mut drained = 0;
-        while let quota::Admission::Item(index) = budget.admit(|| ready.next()) {
-            drained += 1;
+        self.ready.drain(budget, |index| {
             let index = index.0;
             let header = self.entries.slots.header();
             let target = if index.get() < header.descriptor_end.count().get() {
                 let slot = indices::SlotIndex::from(index.0.get() - 1);
                 let Some(target) = self.descriptors.target_at(slot) else {
-                    continue;
+                    return;
                 };
                 target
             } else {
@@ -171,8 +164,7 @@ impl Arena {
                     .dispatch()
             };
             activate(route::Erased::new(target, access.driver));
-        }
-        drained
+        })
     }
 
     pub(crate) fn has_ready(&self) -> bool {

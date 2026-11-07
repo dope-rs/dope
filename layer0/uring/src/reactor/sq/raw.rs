@@ -4,6 +4,7 @@ use dope_sys::{
     engine::admit::{self, Context},
     io::{
         reactor::{Full, complete, submit},
+        request,
         socket::{option, option::tuning},
     },
     kernel,
@@ -24,8 +25,8 @@ impl Deferred {
     /// # Safety
     /// Retain every encoded address until a submitted request completes or
     /// this capability is dropped without submission.
-    pub(crate) unsafe fn new(entry: sq::Borrowed<'_>) -> Self {
-        Self(entry.0)
+    pub(crate) unsafe fn new(request: request::Borrowed<'_, sq::Fixed>) -> Self {
+        Self(sq::Entry::retained(request).0)
     }
 
     pub(crate) fn submit<T: complete::raw::Token>(self, vacancy: Vacancy<'_, T>, token: T) {
@@ -37,6 +38,16 @@ pub struct Queue<'a, T>(&'a mut State, marker::PhantomData<fn(T) -> T>);
 
 #[must_use = "reserved submission capacity must be prepared or released"]
 pub struct Vacancy<'queue, T>(&'queue mut State, marker::PhantomData<fn(T) -> T>);
+
+impl<T: complete::raw::Token> Vacancy<'_, T> {
+    /// # Safety
+    /// Retain every request address through terminal completion or quiescence.
+    pub(crate) unsafe fn push_retained(self, request: request::Borrowed<'_, sq::Fixed>, token: T) {
+        let entry = self.0.next();
+        entry.write(request);
+        entry.fields().token(token);
+    }
+}
 
 impl<C, T> admit::Guard<C> for Vacancy<'_, T>
 where
@@ -360,14 +371,17 @@ impl State {
     fn push_one<E>(&mut self, entry: ptr::NonNull<E>) -> &mut sq::Entry {
         const { assert!(mem::size_of::<E>() == mem::size_of::<sq::Entry>()) };
         const { assert!(mem::align_of::<E>() == mem::align_of::<sq::Entry>()) };
+        let target = self.next();
+        // SAFETY: the admitted destination cannot overlap the caller-owned SQE.
+        unsafe { ptr::copy_nonoverlapping(entry.as_ptr().cast::<sq::Entry>(), target, 1) };
+        target
+    }
+
+    fn next(&mut self) -> &mut sq::Entry {
         let index = (self.cursor.tail & self.axis.mask()) as usize;
         // SAFETY: the exact one-slot reservation and ring mask prove this slot
-        // is free and in bounds. The caller-owned SQE cannot alias the mapping.
-        let target = unsafe {
-            let target = self.entries.as_ptr().add(index);
-            ptr::copy_nonoverlapping(entry.as_ptr().cast::<sq::Entry>(), target, 1);
-            &mut *target
-        };
+        // is free and in bounds. Publication follows complete initialization.
+        let target = unsafe { &mut *self.entries.as_ptr().add(index) };
         self.cursor.tail = self.cursor.tail.wrapping_add(1);
         target
     }

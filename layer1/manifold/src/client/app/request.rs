@@ -223,13 +223,12 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Requests<'_, 'turn,
         ready: &'a mut R,
     ) -> Option<(R::Item<'a>, Work<'a, 'turn, 'e, 'd, B>)> {
         let drain = &mut *self.drain;
-        match drain.work.next(ready, drain.region) {
-            app::Next::Item(value, permit) => Some((value, Work { drain, permit })),
-            app::Next::Exhausted(_) => {
+        match ready.next_when(drain.region, || drain.work.permit())? {
+            Ok((value, permit)) => Some((value, Work { drain, permit })),
+            Err(_) => {
                 drain.state.insert(Flag::Exhausted);
                 None
             }
-            app::Next::Empty => None,
         }
     }
 

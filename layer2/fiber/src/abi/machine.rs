@@ -1,34 +1,4 @@
-use core::task::Poll;
-
-pub trait Terminal {
-    const TERMINAL: Self;
-}
-
-impl<T> Terminal for Poll<T> {
-    const TERMINAL: Self = Self::Pending;
-}
-
-impl Terminal for () {
-    const TERMINAL: Self = ();
-}
-
-/// One exhaustive transition that retains the live state in place.
-#[derive(Debug)]
-pub enum Flow<R> {
-    /// Retains the live state before returning the accompanying result.
-    Suspend(R),
-    /// Drops the live state before returning the terminal result.
-    Complete(R),
-}
-
-/// One exhaustive transition from a live machine state.
-#[derive(Debug)]
-pub enum Step<T, R> {
-    /// Restores the live state before returning the accompanying result.
-    Suspend(T, R),
-    /// Returns the result and leaves the machine terminal.
-    Complete(R),
-}
+use core::{ops::ControlFlow, task::Poll};
 
 /// Fiber state that can be retained only through its current transition.
 #[derive(Debug)]
@@ -44,30 +14,28 @@ impl<T> Machine<T> {
     }
 
     /// Borrows one live transition, or returns the terminal result.
-    pub fn turn<R: Terminal>(&mut self, run: impl FnOnce(&mut T) -> Flow<R>) -> R {
+    pub fn turn<O>(&mut self, run: impl FnOnce(&mut T) -> Poll<O>) -> Poll<O> {
         let Some(state) = self.state.as_mut() else {
-            return R::TERMINAL;
+            return Poll::Pending;
         };
-        match run(state) {
-            Flow::Suspend(result) => result,
-            Flow::Complete(result) => {
-                self.state = None;
-                result
-            }
+        let result = run(state);
+        if result.is_ready() {
+            self.state = None;
         }
+        result
     }
 
     /// Runs one live transition, or returns the terminal result.
-    pub fn step<R: Terminal>(&mut self, run: impl FnOnce(T) -> Step<T, R>) -> R {
+    pub fn step<O>(&mut self, run: impl FnOnce(T) -> ControlFlow<O, T>) -> Poll<O> {
         let Some(state) = self.state.take() else {
-            return R::TERMINAL;
+            return Poll::Pending;
         };
         match run(state) {
-            Step::Suspend(state, result) => {
+            ControlFlow::Continue(state) => {
                 self.state = Some(state);
-                result
+                Poll::Pending
             }
-            Step::Complete(result) => result,
+            ControlFlow::Break(output) => Poll::Ready(output),
         }
     }
 

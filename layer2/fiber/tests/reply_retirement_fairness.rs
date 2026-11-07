@@ -1,14 +1,6 @@
-use std::{pin::pin, task::Poll};
-
-use dope::core::driver::{
-    life::recovery,
-    route::{Epoch, KeyTag, indices::SlotIndex},
-    schedule,
-};
-use dope_fiber::{
-    abi,
-    context::Context,
-    reply::{Arena, LaneIndex, Retirement, Work, layout, recv, recv::attach::Attach as _},
+use dope::core::driver::{life::recovery, schedule};
+use dope_fiber::reply::{
+    Arena, LaneIndex, Retirement, Work, layout, recv, recv::attach::Attach as _,
 };
 
 pub mod common;
@@ -27,14 +19,7 @@ fn retire_lanes_fairly() {
     let drops = Drops::new();
     Setup::for_profile::<profile::Tasks>().with_scope(
         |scope| {
-            let (_, context, mut control) = scope.split();
-            let core = context.driver_ref();
-            let route = core
-                .targets::<KeyTag<0>>()
-                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                .dispatch();
-            let root = core.ready().make_slot(route).expect("ready slot");
-            let mut driver = context;
+            let (_, mut driver, mut control) = scope.split();
             let layout = layout::Layout::new(capacity(2, 2, 10, 10, 10), limit(8, 8, 8))
                 .expect("reply layout");
             Arena::try_batches(layout, driver.region_token().proof(), |arena, batches| {
@@ -52,22 +37,10 @@ fn retire_lanes_fairly() {
                     );
                 }
                 lane.complete(driver.region_token());
-                let batch = {
-                    let turn = control.begin();
-                    let mut source = pin!(abi::Task::new(source));
-                    let result = Context::with_target(
-                        root.target(),
-                        turn.turn().app(),
-                        driver.reborrow(),
-                        |context| context.poll(source.as_mut()),
-                    );
-                    assert!(result.is_ready(), "completed batch must be ready");
-                    let Poll::Ready(batch) = result else {
-                        return;
-                    };
-                    turn.ready_round(|_| {});
-                    batch.expect("batch retention")
-                };
+                let batch = source
+                    .try_take(driver.region_token())
+                    .expect("completed batch must be ready")
+                    .expect("batch retention");
                 let mut pending = recv::Response::<_, Never>::new();
                 pending
                     .try_attach(driver.region_token(), other)

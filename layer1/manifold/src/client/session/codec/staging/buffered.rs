@@ -28,7 +28,7 @@ impl Seal for Buffered {
         staging::Layout::new(
             count.entries().get(),
             plan,
-            shared.into_raw(),
+            shared.get(),
             reserve.into_raw(),
         )
     }

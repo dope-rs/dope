@@ -40,13 +40,13 @@ where
         &'a mut self,
         quota: Q,
         timeout: Option<time::Duration>,
-        busy: impl FnOnce() -> bool,
+        busy: bool,
     ) -> Result<(), Self::Error>
     where
         C: 'a,
     {
         quota.refund();
-        if busy() || self.tuning.has_pending() || timeout.is_some_and(|span| span.is_zero()) {
+        if busy || self.tuning.has_pending() || timeout.is_some_and(|span| span.is_zero()) {
             self.ring.commit()
         } else {
             self.ring.try_wait(timeout)

@@ -51,10 +51,10 @@ const _: () = {
     assert!(mem::align_of::<Status>() == mem::align_of::<bool>());
     assert!(
         mem::size_of::<self::Parked<'_, '_, modes::Boot>>()
-            == mem::size_of::<turn::Polled<'_, '_, modes::Boot>>()
+            == mem::size_of::<turn::ready::Ready<'_, '_, modes::Boot>>()
     );
     assert!(
         mem::align_of::<self::Parked<'_, '_, modes::Boot>>()
-            == mem::align_of::<turn::Polled<'_, '_, modes::Boot>>()
+            == mem::align_of::<turn::ready::Ready<'_, '_, modes::Boot>>()
     );
 };

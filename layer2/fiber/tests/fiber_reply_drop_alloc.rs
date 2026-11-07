@@ -367,64 +367,39 @@ fn owner_holds_credits() {
 #[test]
 fn batch_drops_before_pool() {
     for forget in [false, true] {
-        let mut finish = Completion::new();
         let drops = Drops::new();
         let mut measure = None;
-        let mut reports = Vec::with_capacity(1);
 
-        Setup::throughput().with_session(
-            |mut session| {
-                let proof = session.driver().region_token().proof();
-                let layout = Layout::new(support::capacity(1, 4, 4, 1, 4), support::limit(4, 1, 4))
-                    .expect("reply layout");
-                Arena::try_batches(layout, proof, |arena, batches| {
-                    let lane = arena.try_lane(LaneIndex::ZERO);
-                    let lane = (lane).expect("lane exists");
-                    let mut response = recv::Response::<_, TakeBatch>::with(batches);
+        region::Token::scope(|mut token| {
+            let layout = Layout::new(support::capacity(1, 4, 4, 1, 4), support::limit(4, 1, 4))
+                .expect("reply layout");
+            Arena::try_batches(layout, token.proof(), |arena, batches| {
+                let lane = arena.try_lane(LaneIndex::ZERO);
+                let lane = (lane).expect("lane exists");
+                let mut response = recv::Response::<_, TakeBatch>::with(batches);
+                assert!((response.try_attach(&mut token, lane)) == (Ok(())));
+                for _ in 0..4 {
                     assert!(
-                        (response.try_attach(session.driver().region_token(), lane)) == (Ok(()))
+                        lane.select(&mut token)
+                            .try_push(Counted::data(&drops))
+                            .is_ok()
                     );
-                    for _ in 0..4 {
-                        assert!(
-                            lane.select(session.driver().region_token())
-                                .try_push(Counted::data(&drops))
-                                .is_ok()
-                        );
-                    }
-                    lane.complete(session.driver().region_token());
-                    let outcome = session.with_quiesce(
-                        &mut finish,
-                        Empty {},
-                        scenario::TIMEOUT,
-                        |mut app| app.drive(Once::new(response)),
-                    );
-                    assert!(
-                        outcome.is_ok(),
-                        "finalize test app: {:?}",
-                        outcome.as_ref().err().map(|error| error.cause())
-                    );
-                    let batch = outcome
-                        .ok()
-                        .expect("finalize test app")
-                        .expect("receive completed batch")
-                        .expect("reply retention");
-                    assert_eq!(batch.len().get(), 4);
-                    measure = Some(Tracker::begin());
-                    if forget {
-                        mem::forget(batch);
-                        assert_eq!(arena.inflight().get(), 1);
-                        assert_eq!(drops.count(), 0);
-                    }
-                })
-                .expect("reply storage construction");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            runtime::check_scope,
-        );
-        assert!(
-            matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-            "unexpected reclaimed operations: {reports:?}"
-        );
+                }
+                lane.complete(&mut token);
+                let batch = response
+                    .try_take(&mut token)
+                    .expect("receive completed batch")
+                    .expect("reply retention");
+                assert_eq!(batch.len().get(), 4);
+                measure = Some(Tracker::begin());
+                if forget {
+                    mem::forget(batch);
+                    assert_eq!(arena.inflight().get(), 1);
+                    assert_eq!(drops.count(), 0);
+                }
+            })
+            .expect("reply storage construction");
+        });
 
         let measure = (measure).expect("allocation measurement must start");
         let allocs = measure.finish().allocations;
@@ -432,4 +407,99 @@ fn batch_drops_before_pool() {
         assert_eq!(allocs, 0);
         assert_eq!(drops.count(), 4);
     }
+}
+
+#[test]
+fn scalar_nodes_return_data() {
+    use dope_fiber::reply::{layout::Entries, usage, usage::PushError};
+
+    use builds::{SCALAR, ScalarBuild, TakeScalar};
+
+    let drops = Drops::new();
+    let bytes = std::hint::black_box(SCALAR);
+    let layout = Layout::single(Entries::new(3), support::limit(1, 96, 2)).expect("reply layout");
+    region::Token::scope(|mut token| {
+        Arena::try_with(layout, token.proof(), |arena| {
+            let measure = Tracker::begin();
+            let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+            let mut replies = [const { recv::Response::<_, TakeScalar>::new() }; 3];
+            for reply in &mut replies {
+                reply
+                    .try_attach(&mut token, lane)
+                    .expect("reply attachment");
+            }
+            assert!(
+                lane.select(&mut token)
+                    .try_build(ScalarBuild {
+                        bytes: &bytes,
+                        drops: &drops,
+                    })
+                    .is_ok()
+            );
+            let builder = match lane.select(&mut token).try_build(ScalarBuild {
+                bytes: &bytes,
+                drops: &drops,
+            }) {
+                Err(PushError::Backpressure { builder, cause }) => {
+                    assert_eq!(
+                        cause.into_parts(),
+                        (
+                            usage::Resource::Items,
+                            usage::Required::new(1),
+                            usage::Available::new(0),
+                        )
+                    );
+                    builder
+                }
+                _ => panic!("queued item"),
+            };
+            lane.complete(&mut token);
+            let first = replies[0]
+                .try_take(&mut token)
+                .expect("completed reply")
+                .expect("scalar node");
+            assert!(lane.select(&mut token).try_build(builder).is_ok());
+            lane.complete(&mut token);
+            let second = replies[1]
+                .try_take(&mut token)
+                .expect("completed reply")
+                .expect("scalar node");
+            let mut nodes = [first, second];
+            let address = std::ptr::from_ref(nodes[0].get());
+            nodes.swap(0, 1);
+            assert_eq!(std::ptr::from_ref(nodes[1].get()), address);
+            assert_eq!(nodes[1].get().bytes, SCALAR);
+            let [second, first] = nodes;
+
+            let builder = match lane.select(&mut token).try_build(ScalarBuild {
+                bytes: &bytes,
+                drops: &drops,
+            }) {
+                Err(PushError::Backpressure { builder, cause }) => {
+                    assert_eq!(
+                        cause.into_parts(),
+                        (
+                            usage::Resource::Values,
+                            usage::Required::new(1),
+                            usage::Available::new(0),
+                        )
+                    );
+                    builder
+                }
+                _ => panic!("retained values"),
+            };
+            drop(first);
+            assert_eq!(drops.count(), 1);
+            assert!(lane.select(&mut token).try_build(builder).is_ok());
+            lane.complete(&mut token);
+            let third = replies[2]
+                .try_take(&mut token)
+                .expect("completed reply")
+                .expect("scalar node");
+            drop((second, third, replies));
+            assert_eq!(drops.count(), 3);
+            assert_eq!(measure.finish().allocations, 0);
+        })
+        .expect("reply arena");
+    });
 }

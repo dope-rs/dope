@@ -3,7 +3,7 @@ use dope_sys::{
     io::{
         file,
         reactor::{
-            complete::{self, Vacancy},
+            complete::Vacancy,
             read::Arm as _,
             ready::{
                 self, store,
@@ -11,29 +11,27 @@ use dope_sys::{
             },
             retry,
         },
-        request::{self, Execute as _},
+        request::{self, Execute as _, Retained},
     },
     table::change,
 };
 
-use crate::{Command, Kqueue, command::Retained, reactor::Guard};
+use crate::{Kqueue, reactor::Guard};
 type Key<C> = <<C as ready::Driver>::Context as Exec>::Key;
 type Slot<C> =
     <<<C as ready::Driver>::Context as store::Context>::Slots as change::raw::Slots>::Physical;
 
-impl<C> submit::raw::Retain<C> for Command<Retained<'_, Slot<C>>>
+impl<'a, C, V> admit::raw::Retain<C> for Guard<'a, C::State, V>
 where
-    C: submit::Context,
+    C: submit::Context + admit::Context<Native = Kqueue, Key = Key<C>>,
+    C::Context: 'a,
+    V: Vacancy<Event = <C::Context as Exec>::Event>,
+    C::Inputs: request::Context<Target = Slot<C>>,
 {
-    unsafe fn retain<'a>(
-        self,
-        state: &'a mut C::State,
-        key: <C::Context as Exec>::Key,
-        vacant: impl complete::Vacancy<Event = <C::Context as Exec>::Event>,
-    ) where
-        C::Context: 'a,
-    {
-        match self.0 {
+    unsafe fn retain(self, request: request::Borrowed<'_, Slot<C>>, key: Key<C>) {
+        let state = self.state;
+        let vacant = self.vacant;
+        match request.into_inner() {
             Retained::Accept {
                 listener,
                 addr,
@@ -65,19 +63,6 @@ where
                 retry::raw::Write::connect(&mut state.write(), key, slot, addr, vacant)
             }
         }
-    }
-}
-
-impl<'a, C, V> admit::raw::Retain<C> for Guard<'a, C::State, V>
-where
-    C: submit::Context + admit::Context<Native = Kqueue, Key = Key<C>>,
-    C::Context: 'a,
-    V: Vacancy<Event = <C::Context as Exec>::Event>,
-    C::Inputs: request::Context<Target = Slot<C>>,
-{
-    unsafe fn retain(self, request: Command<Retained<'_, Slot<C>>>, key: Key<C>) {
-        // SAFETY: the host retains every request pointee until completion or quiescence.
-        unsafe { submit::raw::Retain::<C>::retain(request, self.state, key, self.vacant) };
     }
 
     unsafe fn file(self, request: <Kqueue as file::File>::Request<'_>, key: Key<C>) {

@@ -4,7 +4,6 @@ use dope_core::{
     io::event::net::send::Completion,
 };
 pub use finish::Finish;
-use o3::base::Call as _;
 use send::reclaim;
 
 use crate::{
@@ -318,9 +317,7 @@ where
             complete(egress.connection, &result);
             (result, space)
         };
-        if let Some(release) = <M::Ingress as Finish<W>>::release::<ID>(space) {
-            release.call(&mut pool.prepared.runtime);
-        }
+        <M::Ingress as Finish<W>>::release::<ID>(space, &mut pool.prepared.runtime);
         if space == send::Availability::Released {
             pool.prepared.pending.release_send();
         }

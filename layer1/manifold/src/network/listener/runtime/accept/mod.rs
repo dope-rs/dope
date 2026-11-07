@@ -26,7 +26,7 @@ use o3::{
     alloc,
     base::{cell::region, time::Positive},
     depot::capacity,
-    mem::quota::{self, Acquire},
+    mem::quota,
 };
 type Route<ID> = <ID as route::Materialize<kind::Accept>>::With;
 type Binding<'n, 'd, ID> = (Accept<'n, 'd, ID, ()>, flight::Need<Route<ID>>);
@@ -283,9 +283,9 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
                 self.mode.progress(driver.driver_ref(), &driver.regions().0),
                 schedule::Progress::Runnable
             ) {
-                work.apply(|| {
+                let _ = work.run(|| {
                     self.as_mut().stop_accept(driver);
-                    Acquire::Item
+                    Some(())
                 });
             }
             return Ok(());
@@ -310,9 +310,9 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
                 }
                 if *interest == mode::Interest::Full {
                     if arm.is_live() {
-                        work.apply(|| {
+                        let _ = work.run(|| {
                             arm.stop(driver);
-                            Acquire::Item
+                            Some(())
                         });
                     }
                     if slots == 0 || arm.is_live() || !ready {

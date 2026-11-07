@@ -175,6 +175,7 @@ impl<'d, F: Fiber<'d>> Fiber<'d> for pin::Pin<&mut Task<F>> {
     type Output = F::Output;
 
     fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> Poll<Self::Output> {
-        Task::<F>::poll(call.map(|fiber| fiber.get_mut().as_mut()))
+        let (this, admit) = call.into_admit();
+        admit.poll(this.get_mut().as_mut()).0
     }
 }

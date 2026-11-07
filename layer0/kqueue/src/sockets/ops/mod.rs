@@ -11,7 +11,7 @@ use dope_sys::{
     table::change,
 };
 
-use crate::{Command, Kqueue, command::Retained, reactor::Engine, sockets::Handle};
+use crate::{Kqueue, reactor::Engine, sockets::Handle};
 
 type Key<C> = <<C as ready::Driver>::Context as Exec>::Key;
 type Slot<C> = <<<C as ready::Driver>::Context as Context>::Slots as change::raw::Slots>::Physical;

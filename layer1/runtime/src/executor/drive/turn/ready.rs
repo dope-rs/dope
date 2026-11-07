@@ -147,8 +147,9 @@ impl<'turn, 'd, M> Ready<'turn, 'd, M>
 where
     M: modes::Mode<'d>,
 {
-    pub(crate) fn skip(self) -> turn::Polled<'turn, 'd, M> {
-        turn::Polled::new(self.core, self.events, self.status)
+    pub(crate) fn park(mut self) -> turn::Parked<'turn, 'd, M> {
+        M::park(&mut self.core);
+        turn::Parked::new(self.core, self.events, self.status)
     }
 
     pub(crate) fn sync(mut self) -> Result<poll::Commit, poll::Error> {
@@ -257,10 +258,7 @@ impl<'turn, 'd> RootReady<'turn, 'd, modes::Boot> {
         root: R,
         wake: Target<'d>,
         cause: boot::Cause,
-    ) -> (
-        turn::Polled<'turn, 'd, modes::Boot>,
-        boot::Poll<R, R::Output>,
-    )
+    ) -> (Ready<'turn, 'd, modes::Boot>, boot::Poll<R, R::Output>)
     where
         R: boot::Root<'d>,
     {
@@ -283,8 +281,8 @@ where
         matches!(self.root, ready::Readiness::Ready)
     }
 
-    pub(crate) fn skip(self) -> turn::Polled<'turn, 'd, M> {
-        self.ready.skip()
+    pub(crate) fn skip(self) -> Ready<'turn, 'd, M> {
+        self.ready
     }
 }
 
@@ -297,7 +295,7 @@ where
         root: pin::Pin<&mut P>,
         wake: Target<'d>,
     ) -> (
-        turn::Polled<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
+        Ready<'turn, 'd, modes::App<'turn, 'app, 'd, D, S>>,
         task::Poll<P::Output>,
     )
     where

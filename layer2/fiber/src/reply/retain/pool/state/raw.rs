@@ -13,7 +13,7 @@ pub(in crate::reply::retain::pool) struct Axis<'credits, A: mem::raw::Sum<3, usi
 impl<A: mem::raw::Sum<3, usize>> Drop for Axis<'_, A> {
     fn drop(&mut self) {
         if let Some(grant) = self.grant.get_mut().take() {
-            grant.into_inner().release();
+            grant.release();
         }
     }
 }
@@ -53,12 +53,11 @@ impl<'credits, A: mem::raw::Sum<3, usize>> Axis<'credits, A> {
         &self,
         mut grant: payload::Grant<'credits, A>,
     ) {
-        if let Some(stored) = self.grant.take() {
-            let mut stored = stored.into_inner();
+        if let Some(mut stored) = self.grant.take() {
             // SAFETY: this axis stores only grants returned through one exact
             // pool lane, whose admitted total bounds the component sum.
-            unsafe { stored.bind_mut(grant.into_inner()) }.merge();
-            grant = payload::Grant::new(stored);
+            unsafe { stored.bind_mut(grant) }.merge();
+            grant = stored;
         }
         self.grant.set(Some(grant));
     }

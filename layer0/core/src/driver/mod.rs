@@ -356,18 +356,16 @@ impl<'a, 'd> Context<'a, 'd> {
     ) -> Result<(), poll::Error> {
         let quota = native::Backend::new(work);
         quota.reclaim(self);
-        let retry = self.storage.0.retry;
         let owner = self.driver_ref();
-        let pending = self.storage.0.lifecycle.pending;
+        let busy = self.storage.0.retry
+            || self.storage.0.lifecycle.pending
+            || owner.has_deferred()
+            || owner.ready().has_ready();
         let mut native = self.native();
         // SAFETY: Context retains this driver's registered storage and branded
         // flight owners throughout maintenance and native completion processing.
-        unsafe {
-            engine::raw::Poll::wait(native.as_mut(), quota, timeout, || {
-                retry || pending || owner.has_deferred() || owner.ready().has_ready()
-            })
-        }
-        .map_err(poll::Error::from_backend)?;
+        unsafe { engine::raw::Poll::wait(native.as_mut(), quota, timeout, busy) }
+            .map_err(poll::Error::from_backend)?;
         self.storage.0.retry = false;
         Ok(())
     }

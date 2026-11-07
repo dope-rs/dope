@@ -1,6 +1,6 @@
 use std::{cell, mem, num};
 
-use drain::Drain;
+use drain::Queued;
 use o3::{
     alloc,
     alloc::{Error, array},
@@ -8,11 +8,17 @@ use o3::{
         self,
         index::{bitmap, bitmap::entry},
     },
-    mem::Return,
+    mem::quota,
 };
 use state::{Phase, Side};
 
-use crate::driver::{schedule::ready, settings};
+use crate::{
+    dope_sys::Budget as _,
+    driver::{
+        schedule::{ready, state::lanes},
+        settings,
+    },
+};
 
 mod drain;
 mod state;
@@ -37,8 +43,28 @@ impl Set {
         self.store.is_empty(Side::A) && self.store.is_empty(Side::B)
     }
 
-    pub(in crate::driver::schedule::ready) fn drain(&self) -> Option<Drain<'_>> {
-        Some(Drain::new(self, self.start()?))
+    pub(in crate::driver::schedule::ready) fn drain(
+        &self,
+        budget: &mut lanes::Budget<'_, '_, ready::Lane>,
+        mut activate: impl FnMut(Queued),
+    ) -> usize {
+        let Some(side) = self.start() else {
+            return 0;
+        };
+        let mut drained = 0;
+        if let quota::Admission::Item(mut index) = budget.admit(|| self.store.next(side)) {
+            self.store.state().draining(side);
+            loop {
+                drained += 1;
+                activate(Queued(index));
+                let quota::Admission::Item(next) = budget.admit(|| self.store.next(side)) else {
+                    break;
+                };
+                index = next;
+            }
+        }
+        self.pause(side);
+        drained
     }
 
     pub(in crate::driver::schedule::ready) fn insert(&self, index: ready::DynamicIndex) {
@@ -61,7 +87,7 @@ impl Set {
         use bitmap::Access as _;
 
         let state = self.store.state();
-        let side = match state.phase() {
+        match state.phase() {
             Phase::Draining => None,
             Phase::Paused(side) => Some(if self.store.is_empty(side) {
                 state.active()
@@ -69,9 +95,7 @@ impl Set {
                 side
             }),
             Phase::Idle => Some(state.active()),
-        }?;
-        state.draining(side);
-        Some(side)
+        }
     }
 
     fn pause(&self, side: Side) {
@@ -94,14 +118,6 @@ impl Set {
         } else {
             state.paused(pending);
         }
-    }
-}
-
-impl Return for &Set {
-    type Item = Side;
-
-    fn return_item(self, side: Side) {
-        self.pause(side);
     }
 }
 

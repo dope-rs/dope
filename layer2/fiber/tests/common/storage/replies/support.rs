@@ -62,8 +62,8 @@ pub struct OwnerTag<'a, T>(pub &'a T);
 
 pub struct Finish;
 
-impl<'s, 'arena, 'credits, 'region, D, E> recv::Extract<'s, 'arena, 'credits, 'region, D, E>
-    for Finish
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
+    recv::Extract<'s, 'arena, 'credits, 'region, D, E> for Finish
 {
     type Output = Result<(), E>;
     type Context = ();
@@ -225,6 +225,8 @@ impl<'a> Cause<'a> {
 }
 
 impl usage::Footprint for Counted<'_> {
+    type Amount = usage::Usage;
+
     fn footprint(&self) -> usage::Usage {
         Usage::new(
             Bytes::new(self.bytes),
@@ -266,7 +268,9 @@ pub enum Error {
     Terminal,
 }
 
-impl<'s, 'arena, 'credits, 'region, D> recv::Extract<'s, 'arena, 'credits, 'region, D> for Never {
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint>
+    recv::Extract<'s, 'arena, 'credits, 'region, D> for Never
+{
     type Output = ();
 
     type Context = ();

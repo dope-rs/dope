@@ -155,7 +155,7 @@ impl<'a, 'p, 'd, M> Lane<'a, 'p, 'd, M> {
         self,
         amount: credit::Amount,
     ) -> Result<credit::Grant<'p>, egress::Admission> {
-        match self.account().credit().try_acquire(amount) {
+        match mem::raw::Charge::try_new(self.account().credit(), amount) {
             Ok(grant) => Ok(Grant::from(grant)),
             Err(rejected) => {
                 let (amount, cause) = rejected.into_parts();

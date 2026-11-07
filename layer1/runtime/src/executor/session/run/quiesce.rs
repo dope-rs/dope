@@ -24,7 +24,7 @@ where
                 poll::Commit::Pending => continue,
             }
         }
-        let Some(idle) = ready.skip().park().sync()? else {
+        let Some(idle) = ready.park().sync()? else {
             continue;
         };
         let progress = idle.shutdown();

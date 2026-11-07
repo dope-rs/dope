@@ -15,10 +15,6 @@ pub(in crate::reply::arena::state) enum EntryTag {}
 pub(in crate::reply) struct EntryKey(key::Handle<EntryTag>);
 
 impl EntryKey {
-    pub(in crate::reply) const fn new(index: Index, epoch: key::Generation) -> Self {
-        Self(key::Handle::from_parts(key::Parts::new(index.raw(), epoch)))
-    }
-
     /// # Safety
     /// The handle must come from this reply layout's bounded entry store.
     pub(super) const unsafe fn from_raw(raw: key::Handle<EntryTag>) -> Self {
@@ -30,26 +26,18 @@ impl EntryKey {
     }
 
     pub(in crate::reply) fn index(self) -> Index {
-        // SAFETY: EntryKey construction requires Index for these exact low bits.
+        // SAFETY: EntryKey construction retains this bounded entry-store index.
         unsafe { depot::raw::Compact::from_raw(self.0.index()) }
-    }
-
-    pub(in crate::reply) const fn generation(self) -> key::Generation {
-        self.0.generation()
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
 pub(in crate::reply) struct Index(bounded::U32<0, { layout::MAXIMUM_ENTRIES.get() as u32 - 1 }>);
 
 impl Index {
     pub(in crate::reply) const fn get(self) -> usize {
         self.0.into_usize()
-    }
-
-    pub(in crate::reply::arena::state) const fn raw(self) -> u32 {
-        self.0.get()
     }
 }
 

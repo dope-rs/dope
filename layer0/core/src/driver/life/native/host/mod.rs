@@ -25,7 +25,7 @@ use dope_sys::{
             },
             retry,
         },
-        request::{Lower, Source},
+        request::{Borrowed, Lower, Source},
         socket::{Prepare, option::tuning},
     },
     memory::{buffer, buffer::provided},
@@ -273,8 +273,10 @@ where
         assert!(mem::size_of::<Done<N>>() == 4 * word);
         assert!(mem::size_of::<complete::Dequeued<Done<N>>>() == 5 * word);
         assert!(mem::size_of::<Option<complete::Dequeued<Done<N>>>>() == 5 * word);
-        assert!(mem::size_of::<<N::Raw as Lower>::Borrowed<'_>>() == 3 * word);
-        assert!(mem::align_of::<<N::Raw as Lower>::Borrowed<'_>>() == mem::align_of::<usize>());
+        assert!(mem::size_of::<Borrowed<'_, <N::Raw as Lower>::Target>>() == 3 * word);
+        assert!(
+            mem::align_of::<Borrowed<'_, <N::Raw as Lower>::Target>>() == mem::align_of::<usize>()
+        );
         assert!(
             mem::size_of::<PollState<N>>()
                 == mem::size_of::<(Writes<N>, Files<N>, ReadyPoll<N>, Registry<N>, Pool<N>)>()

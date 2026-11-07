@@ -1,6 +1,6 @@
 use std::{cell, mem};
 
-use o3::depot::arena::{linked::fifo::ends, slab::key};
+use o3::depot::arena::linked::fifo::ends;
 
 use crate::reply::{
     LaneIndex,
@@ -12,22 +12,10 @@ pub(super) struct Queue(ends::Cell<pool::raw::Slot<Index>>);
 
 #[derive(Clone, Copy)]
 enum LifeState {
-    Vacant {
-        epoch: key::Generation,
-        dormant: LaneIndex,
-    },
-    Active {
-        epoch: key::Generation,
-        lane: LaneIndex,
-    },
-    Retired {
-        epoch: key::Generation,
-        lane: LaneIndex,
-    },
-    Queued {
-        epoch: key::Generation,
-        lane: LaneIndex,
-    },
+    Vacant { dormant: LaneIndex },
+    Active { lane: LaneIndex },
+    Retired { lane: LaneIndex },
+    Queued { lane: LaneIndex },
 }
 
 #[repr(transparent)]
@@ -35,7 +23,6 @@ pub(super) struct Life(cell::Cell<LifeState>);
 
 pub(super) struct Ready<'a, 'credits> {
     slot: &'a Entry<'credits>,
-    epoch: key::Generation,
     lane: LaneIndex,
 }
 
@@ -73,10 +60,7 @@ impl Queue {
         ready: Ready<'_, 'credits>,
     ) -> LaneIndex {
         let lane = ready.lane;
-        ready.slot.life.0.set(LifeState::Queued {
-            epoch: ready.epoch,
-            lane,
-        });
+        ready.slot.life.0.set(LifeState::Queued { lane });
         pool::raw::Domain::push_back(
             &Links {
                 chain: &self.0,
@@ -103,33 +87,24 @@ impl Queue {
 impl Life {
     pub(in crate::reply::retain::pool) const fn new() -> Self {
         Self(cell::Cell::new(LifeState::Vacant {
-            epoch: key::Generation::MIN,
             dormant: LaneIndex::ZERO,
         }))
     }
 
-    pub(in crate::reply::retain::pool) fn bind(&self, epoch: key::Generation) {
-        let dormant = self.lane();
-        self.0.set(LifeState::Vacant { epoch, dormant });
-    }
-
     pub(in crate::reply::retain::pool) fn activate(&self, lane: LaneIndex) {
-        if let LifeState::Vacant { epoch, .. } = self.0.get() {
-            self.0.set(LifeState::Active { epoch, lane });
+        if let LifeState::Vacant { .. } = self.0.get() {
+            self.0.set(LifeState::Active { lane });
         }
     }
 
     pub(in crate::reply::retain::pool) fn retire(&self, retained: bool) {
         match self.0.get() {
             LifeState::Vacant { .. } | LifeState::Queued { .. } => {}
-            LifeState::Active { epoch, lane } | LifeState::Retired { epoch, lane } => {
+            LifeState::Active { lane } | LifeState::Retired { lane } => {
                 self.0.set(if retained {
-                    LifeState::Retired { epoch, lane }
+                    LifeState::Retired { lane }
                 } else {
-                    LifeState::Vacant {
-                        epoch,
-                        dormant: lane,
-                    }
+                    LifeState::Vacant { dormant: lane }
                 });
             }
         }
@@ -139,28 +114,17 @@ impl Life {
         matches!(self.0.get(), LifeState::Vacant { .. })
     }
 
-    pub(in crate::reply::retain::pool) fn settle(&self) -> key::Generation {
-        let epoch = self.generation();
+    pub(in crate::reply::retain::pool) fn settle(&self) {
         let dormant = self.lane();
-        self.0.set(LifeState::Vacant { epoch, dormant });
-        epoch
-    }
-
-    pub(in crate::reply::retain::pool) fn generation(&self) -> key::Generation {
-        match self.0.get() {
-            LifeState::Vacant { epoch, .. }
-            | LifeState::Active { epoch, .. }
-            | LifeState::Retired { epoch, .. }
-            | LifeState::Queued { epoch, .. } => epoch,
-        }
+        self.0.set(LifeState::Vacant { dormant });
     }
 
     pub(in crate::reply::retain::pool) fn lane(&self) -> LaneIndex {
         match self.0.get() {
-            LifeState::Vacant { dormant: lane, .. }
-            | LifeState::Active { lane, .. }
-            | LifeState::Retired { lane, .. }
-            | LifeState::Queued { lane, .. } => lane,
+            LifeState::Vacant { dormant: lane }
+            | LifeState::Active { lane }
+            | LifeState::Retired { lane }
+            | LifeState::Queued { lane } => lane,
         }
     }
 }
@@ -168,7 +132,7 @@ impl Life {
 impl<'a, 'credits> Ready<'a, 'credits> {
     pub(in crate::reply::retain::pool) fn new(slot: &'a Entry<'credits>) -> Option<Self> {
         match slot.life.0.get() {
-            LifeState::Retired { epoch, lane } => Some(Self { slot, epoch, lane }),
+            LifeState::Retired { lane } => Some(Self { slot, lane }),
             LifeState::Vacant { .. } | LifeState::Active { .. } | LifeState::Queued { .. } => None,
         }
     }
@@ -176,6 +140,6 @@ impl<'a, 'credits> Ready<'a, 'credits> {
 
 const _: () = {
     assert!(mem::size_of::<Queue>() == 2 * mem::size_of::<u32>());
-    assert!(mem::size_of::<Life>() == 3 * mem::size_of::<u32>());
+    assert!(mem::size_of::<Life>() == 2 * mem::size_of::<u32>());
     assert!(mem::size_of::<Ready<'static, 'static>>() == 2 * mem::size_of::<usize>());
 };

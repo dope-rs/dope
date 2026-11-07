@@ -16,7 +16,7 @@ where
 {
     loop {
         let tick = tick(source)?;
-        let parked = state.next_app(tick, &mut shutdown)?.skip().park();
+        let parked = state.next_app(tick, &mut shutdown)?.park();
         match parked.status() {
             turn::Status::Active => {}
             turn::Status::Shutdown => return Ok(()),

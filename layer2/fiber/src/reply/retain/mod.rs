@@ -15,7 +15,7 @@ mod values;
 
 pub(crate) use batch::Batch;
 pub use bytes::Bytes;
-pub use lease::Lease;
+pub use lease::{Lease, Node};
 pub use retained::Retained;
 pub use values::Values;
 
@@ -23,10 +23,8 @@ pub use values::Values;
 /// The caller owns the matching byte storage and protocol-value records.
 #[must_use = "dropping the reservation returns its payload credits"]
 pub struct Reservation<'arena, 'credits, 'region> {
-    held: mem::Lease<Return<'arena, 'credits, 'region>>,
+    held: mem::Lease<pool::Lane<'arena, 'credits, 'region>>,
 }
-
-struct Return<'arena, 'credits, 'region>(pool::Lane<'arena, 'credits, 'region>);
 
 impl<'arena, 'credits, 'region> Reservation<'arena, 'credits, 'region> {
     pub(in crate::reply) fn try_new(
@@ -35,7 +33,7 @@ impl<'arena, 'credits, 'region> Reservation<'arena, 'credits, 'region> {
     ) -> Result<Self, usage::Capacity> {
         let grant = lane.try_reserve(usage)?;
         Ok(Self {
-            held: mem::Lease::new(Return(lane), grant),
+            held: mem::Lease::new(lane, grant),
         })
     }
 
@@ -44,11 +42,11 @@ impl<'arena, 'credits, 'region> Reservation<'arena, 'credits, 'region> {
     }
 }
 
-impl<'credits> mem::Return for Return<'_, 'credits, '_> {
+impl<'credits> mem::Return for pool::Lane<'_, 'credits, '_> {
     type Item = payload::Grant<'credits, payload::Failure>;
 
     fn return_item(self, grant: Self::Item) {
-        self.0.release(grant);
+        self.release(grant);
     }
 }
 

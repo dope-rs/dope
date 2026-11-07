@@ -10,38 +10,24 @@ mod cells;
 pub(in crate::reply) use cells::Cell;
 
 pub(in crate::reply) struct Retired {
-    key: state::EntryKey,
+    index: state::Index,
 }
 
 impl Retired {
-    pub(in crate::reply) const fn new(key: state::EntryKey) -> Self {
-        Self { key }
+    pub(in crate::reply) const fn new(index: state::Index) -> Self {
+        Self { index }
     }
 
-    pub(in crate::reply::arena) const fn key(&self) -> state::EntryKey {
-        self.key
-    }
-}
-
-#[repr(transparent)]
-pub(in crate::reply::arena) struct Active(Retired);
-
-impl Active {
-    pub(in crate::reply::arena) const fn new(retired: Retired) -> Self {
-        Self(retired)
-    }
-
-    pub(in crate::reply::arena) const fn retired(&self) -> &Retired {
-        &self.0
+    pub(in crate::reply::arena) const fn index(&self) -> state::Index {
+        self.index
     }
 }
 
-const _: () = assert!(mem::size_of::<Active>() == mem::size_of::<Retired>());
-const _: () = assert!(mem::size_of::<Option<Active>>() == mem::size_of::<Option<Retired>>());
+const _: () = assert!(mem::size_of::<Retired>() == mem::size_of::<u32>());
 
 pub(in crate::reply::arena) struct State {
     queued: Cell<Retired>,
-    pub(in crate::reply::arena) active: cell::Cell<Option<Active>>,
+    pub(in crate::reply::arena) active: cell::Cell<Option<Retired>>,
 }
 
 impl State {

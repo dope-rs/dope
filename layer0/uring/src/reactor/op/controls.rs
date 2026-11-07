@@ -17,23 +17,23 @@ pub(crate) fn poll(source: register::Source<'_>, multi: bool) -> sq::Borrowed<'_
 
     let raw = fd::AsRawFd::as_raw_fd(&source.fd);
     let mut entry = sq::Entry::new(POLL, sq::Descriptor::File(raw));
-    let mut fields = entry.fields();
+    let fields = entry.fields();
     if multi {
-        fields.length(1);
+        fields.length = 1;
     }
     let interest = match source.interest {
         register::Interest::Readable => libc::POLLIN,
         register::Interest::Closed => libc::POLLRDHUP,
     };
-    fields.options(u32::from(interest.unsigned_abs()).rotate_left(ROTATE));
+    fields.options = u32::from(interest.unsigned_abs()).rotate_left(ROTATE);
     sq::Borrowed::new(entry)
 }
 
 pub(crate) fn cancel<T: complete::raw::Token>(token: T, all: bool) -> sq::Entry {
     let mut entry = sq::Entry::new(CANCEL, sq::Descriptor::File(-1));
-    entry.fields().address(sq::raw::Word::encode(token).get());
+    entry.fields().address = sq::raw::Word::encode(token).get();
     if all {
-        entry.fields().options(1);
+        entry.fields().options = 1;
     }
     entry
 }

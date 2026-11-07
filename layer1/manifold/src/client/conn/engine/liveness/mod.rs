@@ -17,7 +17,6 @@ use dope_net::link::oneshot;
 pub(in crate::client::conn::engine) use egress::Egress;
 pub(in crate::client) use links::Links;
 use o3::base::time::Positive;
-pub(in crate::client::conn::engine) use sender::Sender;
 
 use crate::{
     app::creation,
@@ -328,4 +327,3 @@ where
 mod change;
 mod egress;
 mod links;
-mod sender;

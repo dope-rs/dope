@@ -1,8 +1,8 @@
 use std::mem;
 
-use crate::reply::{self, arena::state::order, order::Depth};
+use crate::reply::{self, arena::state::order, order::Depth, usage::Footprint};
 
-pub(super) enum Head<'a, 'arena, 'credits, 'region: 'arena, D, E, K = ()> {
+pub(super) enum Head<'a, 'arena, 'credits, 'region: 'arena, D: Footprint, E, K = ()> {
     Empty(Depth),
     Attached(reply::Open<'a, 'arena, 'credits, 'region, D, E, K>),
     Draining(order::Slot<'a, 'arena, 'credits, 'region, K>),

@@ -10,7 +10,7 @@ use std::{mem::MaybeUninit, os::fd};
 
 use o3::buffer::bytes::bounded;
 
-pub use borrow::Borrow;
+pub use borrow::{Borrowed, Retained};
 pub use complete::Complete;
 pub use context::Context;
 pub use datagram::Datagram;

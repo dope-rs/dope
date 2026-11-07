@@ -3,9 +3,9 @@ use crate::{
     io::{file, request},
 };
 
-type Borrowed<'a, C> = <<<C as Context>::Native as request::Source<
+type Borrowed<'a, C> = request::Borrowed<'a, <<<C as Context>::Native as request::Source<
     <C as Context>::Inputs,
->>::Raw as request::Lower>::Borrowed<'a>;
+>>::Raw as request::Lower>::Target>;
 type File<'a, C> = <<C as Context>::Native as file::File>::Request<'a>;
 
 /// Consumes the exact native requests whose pointees remain owned by the host.

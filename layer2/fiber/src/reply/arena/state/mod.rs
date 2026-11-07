@@ -16,7 +16,8 @@ use crate::{
     reply::{
         Attachment, LaneIndex, layout,
         order::Depth,
-        retain::{grant::entries, pool, pool::Pool},
+        retain::{pool, pool::Pool},
+        usage::Footprint,
     },
 };
 
@@ -30,34 +31,14 @@ mod terminal;
 
 pub(in crate::reply) use keys::{EntryKey, Index};
 pub use push::Push;
-pub(in crate::reply::arena) use register::Register;
-pub(in crate::reply::arena) use retire::{Advance, Retire, Start};
-pub(in crate::reply::arena) use terminal::{Completion, Failure, Terminal};
+pub(in crate::reply::arena) use register::{Ordered, Register};
+pub(in crate::reply::arena) use retire::Advance;
+pub(in crate::reply::arena) use terminal::Failure;
 
 pub(in crate::reply) type Registered<'s, A, P> =
     depot::raw::Proof<(&'s A, EntryKey), Initialized<P>>;
 
-pub(super) struct Ordered<'credits, K = ()> {
-    key: EntryKey,
-    grant: entries::Grant<'credits, entries::Units<0, 1>>,
-    tag: K,
-}
-
-impl<'credits, K> Ordered<'credits, K> {
-    pub(super) const fn new(
-        key: EntryKey,
-        grant: entries::Grant<'credits, entries::Units<0, 1>>,
-        tag: K,
-    ) -> Self {
-        Self { key, grant, tag }
-    }
-
-    fn take(self) -> entries::Grant<'credits, entries::Units<0, 1>> {
-        self.grant
-    }
-}
-
-pub(super) struct Entry<'arena, 'credits, 'region, D, E> {
+pub(super) struct Entry<'arena, 'credits, 'region, D: Footprint, E> {
     pub(super) body: EntryBody<'arena, D, E>,
     pub(super) owners: pool::Owner<'arena, 'credits, 'region>,
     pub(super) signal: Signal<'region>,
@@ -83,7 +64,7 @@ impl<'region> Signal<'region> {
     }
 }
 
-pub(super) enum EntryBody<'arena, D, E> {
+pub(super) enum EntryBody<'arena, D: Footprint, E> {
     Attached(Attached<reply::State<'arena, D, E>>),
     Draining(reply::State<'arena, D, E>),
     Drained,
@@ -119,17 +100,18 @@ const _: () = {
 };
 
 #[repr(transparent)]
-pub(in crate::reply::arena) struct Entries<'arena, 'credits, 'region, D, E>(
+pub(in crate::reply::arena) struct Entries<'arena, 'credits, 'region, D: Footprint, E>(
     slab::Store<Entry<'arena, 'credits, 'region, D, E>, EntryTag>,
 );
 
-pub(in crate::reply::arena) struct Book<'arena, 'credits, 'region, D, E, K> {
+pub(in crate::reply::arena) struct Book<'arena, 'credits, 'region, D: Footprint, E, K> {
     pub(in crate::reply::arena) slots: Entries<'arena, 'credits, 'region, D, E>,
-    pub(in crate::reply::arena) order: order::Queues<'credits, K>,
-    pub(in crate::reply::arena) limit: layout::Limit,
+    pub(in crate::reply::arena) order: order::Queues<K>,
 }
 
-impl<'arena, 'credits, 'region, D, E, K> reply::Arena<'arena, 'credits, 'region, D, E, K> {
+impl<'arena, 'credits, 'region, D: Footprint, E, K>
+    reply::Arena<'arena, 'credits, 'region, D, E, K>
+{
     pub(in crate::reply) fn slot<'a, 's: 'a, P: 'a>(
         token: &'a mut region::Token<region::Identity<'region>>,
         registered: Registered<'s, Self, P>,
@@ -174,12 +156,11 @@ impl<'arena, 'credits, 'region, D, E, K> reply::Arena<'arena, 'credits, 'region,
     }
 }
 
-impl<'arena, 'credits, 'region, D, E, K> Book<'arena, 'credits, 'region, D, E, K> {
+impl<'arena, 'credits, 'region, D: Footprint, E, K> Book<'arena, 'credits, 'region, D, E, K> {
     pub(in crate::reply::arena) fn try_new(layout: layout::Layout) -> Result<Self, alloc::Error> {
         Ok(Self {
             slots: Entries::try_new(layout)?,
             order: order::Queues::try_new(layout)?,
-            limit: layout.limit(),
         })
     }
 
@@ -187,7 +168,7 @@ impl<'arena, 'credits, 'region, D, E, K> Book<'arena, 'credits, 'region, D, E, K
         &self,
         lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
     ) -> Option<&K> {
-        Some(&self.order.view(lane.index).front()?.tag)
+        Some(self.order.view(lane.index).front()?.tag())
     }
 
     pub(in crate::reply::arena) fn depth(
@@ -202,7 +183,7 @@ impl<'arena, 'credits, 'region, D, E, K> Book<'arena, 'credits, 'region, D, E, K
         lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
     ) -> reply::order::Cutoff<'arena> {
         reply::order::Cutoff::new(
-            self.order.view(lane.index).back().map(|entry| entry.key),
+            self.order.view(lane.index).back().map(Ordered::key),
             lane.arena.domain(),
         )
     }
@@ -274,7 +255,7 @@ impl<'arena, 'credits, 'region, D, E, K> Book<'arena, 'credits, 'region, D, E, K
     }
 }
 
-impl<'arena, 'credits, 'region, D, E> Entries<'arena, 'credits, 'region, D, E> {
+impl<'arena, 'credits, 'region, D: Footprint, E> Entries<'arena, 'credits, 'region, D, E> {
     fn try_new(layout: layout::Layout) -> Result<Self, alloc::Error> {
         let count = capacity::Count::new(layout.entries().get());
         Ok(Self(slab::Store::<

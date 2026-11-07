@@ -11,11 +11,11 @@ use crate::reply::retain::{
     pool,
 };
 
-pub(in crate::reply) struct Pools(Pool<2, entries::Tag>, Pool<3, payload::Tag>);
+pub(in crate::reply) struct Pools(Pool<1, entries::Tag>, Pool<3, payload::Tag>);
 
 /// A lane and its immutable backlink, initialized together in one tail allocation.
 pub(in crate::reply) struct State {
-    capacity: mem::raw::State<2, entries::Tag>,
+    capacity: mem::raw::State<1, entries::Tag>,
     payload: mem::raw::State<3, payload::Tag>,
     pools: ptr::NonNull<Pools>,
 }
@@ -49,11 +49,11 @@ pub(in crate::reply) unsafe trait Remove<'arena, 'credits, 'region> {
 }
 
 impl Pools {
-    pub(in crate::reply) fn shared(&self) -> [usize; 2] {
+    pub(in crate::reply) fn shared(&self) -> [usize; 1] {
         self.0.shared()
     }
 
-    pub(in crate::reply) fn new(capacity: grant::Plan<2>, payload: grant::Plan<3>) -> Self {
+    pub(in crate::reply) fn new(capacity: grant::Plan<1>, payload: grant::Plan<3>) -> Self {
         Self(Pool::new(capacity), Pool::new(payload))
     }
 }
@@ -63,7 +63,7 @@ impl State {
     /// The state and pools must be initialized in the same immovable allocation;
     /// all state borrows must keep that complete allocation alive.
     pub(in crate::reply) unsafe fn new(
-        capacity: grant::Plan<2>,
+        capacity: grant::Plan<1>,
         payload: grant::Plan<3>,
         pools: &Pools,
     ) -> Self {
@@ -74,7 +74,7 @@ impl State {
         }
     }
 
-    pub(in crate::reply) fn capacity(&self) -> Lane<'_, 2, entries::Tag> {
+    pub(in crate::reply) fn capacity(&self) -> Lane<'_, 1, entries::Tag> {
         Lane {
             state: self,
             domain: marker::PhantomData,
@@ -118,11 +118,11 @@ impl<const N: usize, Tag> Copy for Lane<'_, N, Tag> {}
 
 // SAFETY: State's immutable backlink was written from the fixed tail header;
 // every Lane borrows a state in that same allocation, keeping both accounts live.
-unsafe impl mem::raw::Source<2> for Lane<'_, 2, entries::Tag> {
+unsafe impl mem::raw::Source<1> for Lane<'_, 1, entries::Tag> {
     type Tag = entries::Tag;
     type Word = usize;
 
-    unsafe fn accounts(&self) -> mem::raw::Accounts<'_, 2, entries::Tag> {
+    unsafe fn accounts(&self) -> mem::raw::Accounts<'_, 1, entries::Tag> {
         (&self.state.pools().0.shared, &self.state.capacity)
     }
 }
@@ -153,7 +153,7 @@ where
 }
 
 const _: () = {
-    assert!(size_of::<Pool<2, ()>>() == 2 * size_of::<usize>());
+    assert!(size_of::<Pool<1, ()>>() == size_of::<usize>());
     assert!(size_of::<Pool<3, ()>>() == 3 * size_of::<usize>());
-    assert!(size_of::<State>() == 11 * size_of::<usize>());
+    assert!(size_of::<State>() == 9 * size_of::<usize>());
 };

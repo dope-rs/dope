@@ -1,4 +1,4 @@
-use std::task;
+use std::{ops::ControlFlow, task};
 
 use dope::{
     core::driver::route::{Identity, KeyTag},
@@ -62,29 +62,27 @@ impl<'scope, 'w, 'd: 'w, T: net::Transport, W: wire::Spec, ID: Identity> abi::Fi
                 Stage::Ticket(lease) => lease,
                 Stage::Init(addr) => match this.host.port.dial(addr) {
                     Ok(lease) => lease,
-                    Err(error) => {
-                        return machine::Step::Complete(task::Poll::Ready(Err(error)));
-                    }
+                    Err(error) => return ControlFlow::Break(Err(error)),
                 },
             };
             let (outcome, lease) = match lease.poll(wake) {
                 mailbox::Poll::Ready(outcome, lease) => (outcome, lease),
                 mailbox::Poll::Pending(lease) => {
-                    return machine::Step::Suspend(Stage::Ticket(lease), task::Poll::Pending);
+                    return ControlFlow::Continue(Stage::Ticket(lease));
                 }
             };
             let error = match outcome {
                 client::Outcome::Connected(conn) => {
                     let io = Io::new(&this.host.port.conns, conn);
                     lease.commit();
-                    return machine::Step::Complete(task::Poll::Ready(Ok(io)));
+                    return ControlFlow::Break(Ok(io));
                 }
                 client::Outcome::Activation => client::ConnectError::Activation,
                 client::Outcome::Transport(cause) => client::ConnectError::Transport(cause),
                 client::Outcome::Open(cause) => client::ConnectError::Open(cause),
             };
             lease.cancel();
-            machine::Step::Complete(task::Poll::Ready(Err(error)))
+            ControlFlow::Break(Err(error))
         })
     }
 }

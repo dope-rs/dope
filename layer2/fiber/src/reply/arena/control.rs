@@ -2,21 +2,23 @@
 
 use o3::base::cell::region;
 
-use crate::reply::{Lane, Registration, arena::state::Register, retain::pool};
+use crate::reply::{Lane, Registration, arena::state::Register, retain::pool, usage::Footprint};
 
-pub struct Control<'a, 'arena, 'credits, 'region: 'a, D, E = D, K = ()> {
+pub struct Control<'a, 'arena, 'credits, 'region: 'a, D: Footprint, E = D, K = ()> {
     lane: Lane<'a, 'arena, 'credits, 'region, D, E, K>,
 }
 
-impl<D, E, K> Copy for Control<'_, '_, '_, '_, D, E, K> {}
+impl<D: Footprint, E, K> Copy for Control<'_, '_, '_, '_, D, E, K> {}
 
-impl<D, E, K> Clone for Control<'_, '_, '_, '_, D, E, K> {
+impl<D: Footprint, E, K> Clone for Control<'_, '_, '_, '_, D, E, K> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, 'arena, 'credits, 'region, D, E, K> Control<'a, 'arena, 'credits, 'region, D, E, K> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Control<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub(super) const fn new(lane: Lane<'a, 'arena, 'credits, 'region, D, E, K>) -> Self {
         Self { lane }
     }

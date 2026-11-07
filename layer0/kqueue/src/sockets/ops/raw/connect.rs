@@ -1,14 +1,13 @@
 use crate::sockets::ops::{
-    Command, Engine, Handle, Key, Kqueue, Operation, Retained, Slot, admit, device, request,
-    submit, tuning,
+    Engine, Handle, Key, Kqueue, Operation, Slot, admit, device, request, submit, tuning,
 };
 
-impl<'r, C, H, const N: usize> tuning::raw::Connect<Engine<C>, H, Command<Retained<'r, Slot<C>>>, N>
+impl<'r, C, H, const N: usize> tuning::raw::Connect<Engine<C>, H, request::Borrowed<'r, Slot<C>>, N>
     for Operation<H>
 where
     C: submit::Context<Handle = Handle> + admit::Context<Native = Kqueue, Key = Key<C>>,
     C::Inputs: request::Context<Target = Slot<C>, Outbound = C::Outbound>,
-    H: device::raw::Connect<Engine<C>, Command<Retained<'r, Slot<C>>>, N, Slot = Slot<C>>,
+    H: device::raw::Connect<Engine<C>, request::Borrowed<'r, Slot<C>>, N, Slot = Slot<C>>,
     H::Reserve: device::Reserve<Key = Key<C>>,
 {
     unsafe fn try_connect(self) -> Result<H::Output, H::Error> {

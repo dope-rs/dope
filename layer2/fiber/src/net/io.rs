@@ -1,6 +1,6 @@
 //! Connection-scoped stream I/O.
 
-use std::task;
+use std::{ops::ControlFlow, task};
 
 use dope::net::wire::{self, receive::Chunk, terminal};
 
@@ -132,31 +132,21 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w, I: identity::Identity> abi::Fiber<'d>
         this.state.step(|state| match state {
             WriteState::Init(payload) | WriteState::Waiting(payload) => {
                 if payload.is_empty() {
-                    return machine::Step::Complete(task::Poll::Ready(Ok(())));
+                    return ControlFlow::Break(Ok(()));
                 }
                 use crate::net::port::result::StageSend;
                 match port.channel().try_send(id, payload, wake) {
-                    StageSend::Staged => {
-                        machine::Step::Suspend(WriteState::Committed, task::Poll::Pending)
-                    }
-                    StageSend::Busy => {
-                        machine::Step::Suspend(WriteState::Waiting(payload), task::Poll::Pending)
-                    }
-                    StageSend::Failed(error) => {
-                        machine::Step::Complete(task::Poll::Ready(Err(error)))
-                    }
+                    StageSend::Staged => ControlFlow::Continue(WriteState::Committed),
+                    StageSend::Busy => ControlFlow::Continue(WriteState::Waiting(payload)),
+                    StageSend::Failed(error) => ControlFlow::Break(Err(error)),
                 }
             }
             WriteState::Committed => {
                 use crate::net::port::result::SendStatus;
                 match port.channel().send_status(id, wake) {
-                    SendStatus::Complete => machine::Step::Complete(task::Poll::Ready(Ok(()))),
-                    SendStatus::Failed(error) => {
-                        machine::Step::Complete(task::Poll::Ready(Err(error)))
-                    }
-                    SendStatus::Pending => {
-                        machine::Step::Suspend(WriteState::Committed, task::Poll::Pending)
-                    }
+                    SendStatus::Complete => ControlFlow::Break(Ok(())),
+                    SendStatus::Failed(error) => ControlFlow::Break(Err(error)),
+                    SendStatus::Pending => ControlFlow::Continue(WriteState::Committed),
                 }
             }
         })

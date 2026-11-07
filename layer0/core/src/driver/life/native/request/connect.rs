@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-type Terminal<'a> = <<Backend as Source<request::Context>>::Raw as Lower>::Borrowed<'a>;
+type Terminal<'a> = request::Borrowed<'a>;
 
 /// Retains the affine descriptor, captured address and exact typed route until submission.
 pub(crate) struct Connect<'a, 'borrow, 'd: 'borrow, Tag: route::Tag> {
@@ -106,7 +106,6 @@ where
         let (fd, last, target) = request.into_parts();
         let reserve = flight::Request::new(slots, target.operation::<kind::Connect>());
         let opts = opts.non_empty();
-        let last = last.into_inner();
         let result = run(native.as_mut(), fd, opts, reserve, last);
         let (fd, target) = native.submitted(result)?;
         Ok(pending::Connection::connect(fd, target.commit()))

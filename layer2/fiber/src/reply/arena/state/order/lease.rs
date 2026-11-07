@@ -7,7 +7,7 @@ use crate::reply::{
     order::Depth,
     recv::Acceptance,
     retain::{self, grant::payload},
-    usage,
+    usage::{self, amount::Amount},
 };
 
 pub(in crate::reply) struct Lease<
@@ -64,7 +64,7 @@ impl<A: mem::raw::Amount<3, usize> + Into<payload::Requested>, K> mem::Return
     }
 }
 
-impl<K> Lease<'_, '_, '_, '_, payload::Value, K> {
+impl<A: Amount, K> Lease<'_, '_, '_, '_, payload::Value<A>, K> {
     pub(in crate::reply) fn keep(self) {
         let (refund, _) = self.inner.into_parts();
         if refund.slot.owner.acceptance == Some(Acceptance::First) {

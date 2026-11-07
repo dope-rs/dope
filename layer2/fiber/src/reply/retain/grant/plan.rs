@@ -6,14 +6,13 @@ pub(in crate::reply) struct Plan<const N: usize> {
     pub(in crate::reply::retain) reserve: [usize; N],
 }
 
-impl Plan<2> {
-    /// Each lane releases an order before its entry, so its held orders
-    /// never exceed its held entries. Equal bounds preserve admission.
+impl Plan<1> {
+    /// Orders retire before their entries and need no separate credit.
     pub(in crate::reply) fn slots(entries: NonZero<u32>, lanes: NonZero<u32>) -> Self {
         let shared = Self::entry_limit(entries.get() as usize, lanes) - 1;
         Self {
-            shared: [shared, shared],
-            reserve: [1, 1],
+            shared: [shared],
+            reserve: [1],
         }
     }
     pub(in crate::reply) fn entry_limit(entries: usize, lanes: NonZero<u32>) -> usize {
@@ -22,11 +21,15 @@ impl Plan<2> {
 
     /// Retains the one reserved order and the shared amount below u32::MAX.
     pub(in crate::reply) const fn order_limit(self) -> NonZero<u32> {
-        NonZero::<u32>::MIN.saturating_add(self.shared[1] as u32)
+        NonZero::<u32>::MIN.saturating_add(self.shared[0] as u32)
     }
 }
 
 impl Plan<3> {
+    pub(in crate::reply) fn capacity(self, lanes: NonZero<u32>, axis: usize) -> usize {
+        self.shared[axis] + self.reserve[axis] * lanes.get() as usize
+    }
+
     pub(in crate::reply) fn payload(capacity: [usize; 3], lanes: NonZero<usize>) -> Self {
         let reserve = capacity.map(|amount| {
             if lanes.get() == 1 {
@@ -47,6 +50,6 @@ impl Plan<3> {
 }
 
 const _: () = {
-    assert!(size_of::<Plan<2>>() == 4 * size_of::<usize>());
+    assert!(size_of::<Plan<1>>() == 2 * size_of::<usize>());
     assert!(size_of::<Plan<3>>() == 6 * size_of::<usize>());
 };

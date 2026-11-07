@@ -46,7 +46,10 @@ impl<'a, 'd, Tag: route::Tag> Submission<'a, 'd, Tag> {
         Tag: route::Select<kind::Send>,
     {
         Self::bind(
-            request::Borrowed::send(fd.slot_ref(), buffer),
+            request::Borrowed::send(
+                request::Lowered::target(fd.slot_ref()),
+                buffer.into_prefix(),
+            ),
             target.operation::<kind::Send>(),
         )
     }
@@ -60,7 +63,7 @@ impl<'a, 'd, Tag: route::Tag> Submission<'a, 'd, Tag> {
         Tag: route::Select<kind::Send>,
     {
         Self::bind(
-            request::Borrowed::send_msg(fd.slot_ref(), msg),
+            request::Borrowed::send_msg(request::Lowered::target(fd.slot_ref()), msg),
             target.operation::<kind::Send>(),
         )
     }
@@ -70,7 +73,11 @@ impl<'a, 'd, Tag: route::Tag> Submission<'a, 'd, Tag> {
         peer: &'a mut Storage<Length>,
         target: route::Operation<'d, Tag, kind::Accept>,
     ) -> Submission<'a, 'd, Tag, kind::Accept> {
-        Self::bind(request::Borrowed::accept(fd.slot_ref(), peer), target)
+        let (address, len) = peer.output_mut();
+        Self::bind(
+            request::Borrowed::accept(request::Lowered::target(fd.slot_ref()), address, len),
+            target,
+        )
     }
 }
 
@@ -97,6 +104,7 @@ where
     /// # Safety
     /// Handles, target and slots belong to `context`'s driver. Retain the exact
     /// borrowed resources in place through terminal completion or quiescence.
+    #[inline(always)]
     pub unsafe fn try_submit<'a>(
         self,
         mut context: driver::Context<'a, 'd>,
@@ -178,7 +186,8 @@ impl<'addr, 'd, Tag: route::Tag> Connect<'addr, 'd, Tag> {
         addr: &'addr A,
         target: route::Target<'d, Tag>,
     ) -> Self {
-        let raw = request::Borrowed::connect(fd.slot(), addr);
+        let raw =
+            request::Borrowed::connect(request::Lowered::target(&fd.slot()), addr.view().native());
         Self {
             fd,
             submission: raw,

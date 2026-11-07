@@ -1,6 +1,6 @@
 //! Reply resource ownership, fair lanes, and retained entry slots.
 
-use std::{mem::size_of, num::NonZero};
+use std::{marker::PhantomData, mem::size_of, num::NonZero};
 
 use o3::{
     alloc::{self, tail},
@@ -12,7 +12,7 @@ use o3::{
 
 use crate::reply::{
     LaneIndex, Length,
-    arena::state::EntryKey,
+    arena::state::Index,
     layout, retain,
     retain::{
         grant::payload,
@@ -116,15 +116,13 @@ impl<'credits, 'region> Pool<'credits, 'region> {
         &tail::View::new(&self.storage).header().lanes
     }
 
-    fn bind<'arena>(&'arena self, entry: EntryKey) -> Key<'arena, 'credits, 'region> {
+    fn bind<'arena>(&'arena self, index: Index) -> Key<'arena, 'credits, 'region> {
         // SAFETY: the arena and this tail share the exact validated entry count;
         // Resident derives from the allocation pointer and retains its provenance.
         let resident = unsafe {
-            alloc::raw::Resident::new(tail::View::new(&self.storage), entry.index().get() as u32)
+            alloc::raw::Resident::new(tail::View::new(&self.storage), index.get() as u32)
         };
-        let key = Key { resident };
-        key.state().life.bind(entry.generation());
-        key
+        Key { resident }
     }
 
     pub(in crate::reply) fn pop_released(&self) -> Option<Released<'_, 'credits>> {
@@ -167,18 +165,14 @@ pub(in crate::reply) struct Released<'arena, 'credits> {
     slot: &'arena Entry<'credits>,
 }
 
-pub(in crate::reply) struct LeaseEdge<'arena, 'credits, 'region> {
+pub(in crate::reply) struct LeaseEdge<'arena, 'credits, 'region, A = payload::Used> {
     active: Active<'arena, 'credits, 'region>,
+    amount: PhantomData<A>,
 }
 
 impl<'arena, 'credits, 'region> Key<'arena, 'credits, 'region> {
     fn state(self) -> &'arena Entry<'credits> {
         self.resident.get()
-    }
-
-    fn entry(self) -> EntryKey {
-        let slot = self.state();
-        EntryKey::new(slot.index(), slot.life.generation())
     }
 
     fn activate(self, lane: LaneIndex) -> Active<'arena, 'credits, 'region> {
@@ -193,8 +187,10 @@ impl<'arena, 'credits, 'region> Key<'arena, 'credits, 'region> {
     }
 
     fn cancel_entry(self, lane: LaneIndex) {
-        let key = self.entry();
-        self.parts().core.lanes.cancel_entry(lane, key);
+        self.parts()
+            .core
+            .lanes
+            .cancel_entry(lane, self.state().index());
     }
 
     fn release_data<A>(self, lane: LaneIndex, grant: payload::Grant<'credits, A>)
@@ -203,7 +199,7 @@ impl<'arena, 'credits, 'region> Key<'arena, 'credits, 'region> {
     {
         let lanes = &self.parts().core.lanes;
         lanes.release_data(grant);
-        lanes.wake_local(lane, self.entry());
+        lanes.wake_local(lane, self.state().index());
     }
 
     #[inline]
@@ -270,7 +266,7 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
     }
 
     fn drop_lease(self) {
-        if self.state().drop_lease() == rc::Release::Last {
+        if self.state().leases.release() == rc::Release::Last {
             self.key.parts().finish();
         }
     }
@@ -281,10 +277,13 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
     }
 }
 
-impl<'arena, 'credits, 'region> LeaseEdge<'arena, 'credits, 'region> {
+impl<'arena, 'credits, 'region, A> LeaseEdge<'arena, 'credits, 'region, A> {
     fn try_new(active: Active<'arena, 'credits, 'region>) -> Result<Self, rc::Error> {
-        active.state().try_lease()?;
-        Ok(Self { active })
+        active.state().leases.try_hold()?;
+        Ok(Self {
+            active,
+            amount: PhantomData,
+        })
     }
 
     pub(in crate::reply::retain) fn wake(&self) {
@@ -293,16 +292,17 @@ impl<'arena, 'credits, 'region> LeaseEdge<'arena, 'credits, 'region> {
 }
 
 impl Released<'_, '_> {
-    pub(in crate::reply) fn settle(self) -> depot::raw::Proof<(Self, EntryKey), Initialized<Self>> {
-        let key = EntryKey::new(self.slot.index(), self.slot.life.settle());
-        // SAFETY: the dequeued release owns this generation's final retention
-        // settlement; its arena entry remains occupied until that settlement is consumed.
-        unsafe { depot::raw::Proof::new((self, key)) }
+    pub(in crate::reply) fn settle(self) -> depot::raw::Proof<(Self, Index), Initialized<Self>> {
+        let index = self.slot.index();
+        self.slot.life.settle();
+        // SAFETY: the dequeued release owns final retention settlement;
+        // its arena entry remains occupied until that settlement is consumed.
+        unsafe { depot::raw::Proof::new((self, index)) }
     }
 }
 
-impl<'credits> Return for LeaseEdge<'_, 'credits, '_> {
-    type Item = payload::Grant<'credits, payload::Used>;
+impl<'credits, A: mem::raw::Amount<3, usize>> Return for LeaseEdge<'_, 'credits, '_, A> {
+    type Item = payload::Grant<'credits, A>;
 
     fn return_item(self, grant: Self::Item) {
         let parts = self.active.key.parts();
@@ -310,7 +310,7 @@ impl<'credits> Return for LeaseEdge<'_, 'credits, '_> {
     }
 }
 
-impl Drop for LeaseEdge<'_, '_, '_> {
+impl<A> Drop for LeaseEdge<'_, '_, '_, A> {
     fn drop(&mut self) {
         self.active.drop_lease();
     }

@@ -4,21 +4,18 @@ use std::{mem::size_of, num};
 
 use o3::mem;
 
-use crate::reply::{retain, usage};
+use crate::reply::{retain, usage, usage::amount::Amount};
 
 pub(in crate::reply) mod raw;
 
 pub(in crate::reply) enum Tag {}
 
-type Credit<'credits, A> = mem::raw::Grant<retain::raw::Lane<'credits, 3, Tag>, 3, A>;
-
-pub(in crate::reply) struct Grant<'credits, A: mem::raw::Amount<3, usize>>(
-    pub(in crate::reply::retain::grant::payload) Credit<'credits, A>,
-);
+pub(in crate::reply) type Grant<'credits, A> =
+    mem::raw::Grant<retain::raw::Lane<'credits, 3, Tag>, 3, A>;
 
 /// One payload data unit, with no value or byte component.
 #[derive(Clone, Copy, Eq, PartialEq)]
-struct Data;
+pub(in crate::reply) struct Data;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::reply) struct Values(num::NonZero<usize>);
@@ -27,10 +24,10 @@ pub(in crate::reply) struct Values(num::NonZero<usize>);
 pub(in crate::reply) struct Bytes(num::NonZero<usize>);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(in crate::reply) struct Value(usage::Usage);
+pub(in crate::reply) struct Value<A = usage::Usage>(A);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(in crate::reply) struct Failure(usage::Usage);
+pub(in crate::reply) struct Failure<A = usage::Usage>(A);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::reply) enum Requested {
@@ -90,9 +87,9 @@ unsafe impl mem::raw::Sum<3, usize> for Bytes {
     }
 }
 
-impl From<Value> for Requested {
-    fn from(value: Value) -> Self {
-        Self::Value(value)
+impl<A: Amount> From<Value<A>> for Requested {
+    fn from(value: Value<A>) -> Self {
+        Self::Value(Value(value.usage()))
     }
 }
 
@@ -103,16 +100,18 @@ impl From<Failure> for Requested {
 }
 
 // SAFETY: `Value` fixes data at one and stores its exact usage components.
-unsafe impl mem::raw::Amount<3, usize> for Value {
+unsafe impl<A: Amount> mem::raw::Amount<3, usize> for Value<A> {
     fn get(self) -> [usize; 3] {
-        [1, self.0.values().get(), self.0.bytes().get()]
+        let usage = self.usage();
+        [1, usage.values().get(), usage.bytes().get()]
     }
 }
 
 // SAFETY: `Failure` fixes data at zero and stores its exact usage components.
-unsafe impl mem::raw::Amount<3, usize> for Failure {
+unsafe impl<A: Amount> mem::raw::Amount<3, usize> for Failure<A> {
     fn get(self) -> [usize; 3] {
-        [0, self.0.values().get(), self.0.bytes().get()]
+        let usage = self.0.usage();
+        [0, usage.values().get(), usage.bytes().get()]
     }
 }
 
@@ -136,30 +135,16 @@ unsafe impl mem::raw::Amount<3, usize> for Used {
     }
 }
 
-impl<'credits, A: mem::raw::Amount<3, usize>> Grant<'credits, A> {
-    pub(in crate::reply) const fn new(inner: Credit<'credits, A>) -> Self {
-        Self(inner)
-    }
-
-    pub(in crate::reply) fn amount(&self) -> A {
-        self.0.amount()
-    }
-
-    pub(in crate::reply) fn into_inner(self) -> Credit<'credits, A> {
-        self.0
-    }
-}
-
 struct SplitValue;
 struct Reclassify<A>(A);
 struct SplitFailure(Values, Bytes);
 
 // SAFETY: Value always partitions into exactly one Data and its stored usage.
-unsafe impl mem::raw::Exact<3, usize, Value> for SplitValue {
+unsafe impl<A: Amount> mem::raw::Exact<3, usize, Value<A>> for SplitValue {
     type Input = ();
     type Left = Data;
-    type Right = Failure;
-    fn parts(self, source: Value, (): ()) -> (Data, Failure) {
+    type Right = Failure<A>;
+    fn parts(self, source: Value<A>, (): ()) -> (Data, Failure<A>) {
         (Data, Failure(source.0))
     }
 }
@@ -196,24 +181,20 @@ impl Bytes {
     }
 }
 
-impl Value {
-    pub(in crate::reply) const fn new(usage: usage::Usage) -> Self {
-        Self(usage)
+impl<A: Amount> Value<A> {
+    pub(in crate::reply) const fn new(amount: A) -> Self {
+        Self(amount)
     }
 
-    pub(in crate::reply) const fn usage(self) -> usage::Usage {
-        self.0
+    pub(in crate::reply) fn usage(self) -> usage::Usage {
+        self.0.usage()
     }
 
     pub(in crate::reply) fn split<'credits>(
         grant: Grant<'credits, Self>,
-    ) -> (
-        Grant<'credits, impl mem::raw::Amount<3, usize>>,
-        Grant<'credits, Failure>,
-    ) {
+    ) -> (Grant<'credits, Data>, Grant<'credits, Failure<A>>) {
         // SAFETY: SplitValue is exact for every Value, including zero usage.
-        let (data, failure) = unsafe { grant.0.bind(SplitValue) }.split(());
-        (Grant(data), Grant(failure))
+        unsafe { grant.bind(SplitValue) }.split(())
     }
 }
 
@@ -244,7 +225,7 @@ impl Failure {
             Used::Bytes(Bytes(num::NonZero::<usize>::new(amount.bytes().get())?))
         };
         // SAFETY: classification preserves the grant's exact usage components.
-        Some(Grant(unsafe { grant.0.bind(Reclassify(used)) }.map()))
+        Some(unsafe { grant.bind(Reclassify(used)) }.map())
     }
 
     pub(in crate::reply::retain) fn split<'credits>(
@@ -257,21 +238,17 @@ impl Failure {
             (None, None) => Class::Zero,
             (Some(values), None) => {
                 // SAFETY: values is the exact sole component of the retained source.
-                Class::Values(Grant(
-                    unsafe { grant.0.bind(Reclassify(Values(values))) }.map(),
-                ))
+                Class::Values(unsafe { grant.bind(Reclassify(Values(values))) }.map())
             }
             (None, Some(bytes)) => {
                 // SAFETY: bytes is the exact sole component of the retained source.
-                Class::Bytes(Grant(
-                    unsafe { grant.0.bind(Reclassify(Bytes(bytes))) }.map(),
-                ))
+                Class::Bytes(unsafe { grant.bind(Reclassify(Bytes(bytes))) }.map())
             }
             (Some(values), Some(bytes)) => {
                 // SAFETY: both exact nonzero source components were extracted above.
                 let (values, bytes) =
-                    unsafe { grant.0.bind(SplitFailure(Values(values), Bytes(bytes))) }.split(());
-                Class::Both(Grant(values), Grant(bytes))
+                    unsafe { grant.bind(SplitFailure(Values(values), Bytes(bytes))) }.split(());
+                Class::Both(values, bytes)
             }
         }
     }

@@ -21,13 +21,14 @@ use crate::reply::{
         control::Control,
         retire::Retired,
         state,
-        state::{Completion, Failure, Push, Register, Terminal},
+        state::{Failure, Push, Register},
     },
     layout::Domain,
     order, recv,
     recv::attach,
     retain::{self, pool},
     usage,
+    usage::Footprint,
 };
 
 /// Identity of one lane within a reply arena layout.
@@ -92,20 +93,22 @@ pub enum Error {
 const _: () = assert!(mem::size_of::<Error>() == 2 * mem::size_of::<u32>());
 
 /// A reply-arena lane branded so it cannot escape its driver-owned arena.
-pub struct Lane<'a, 'arena, 'credits, 'region: 'a, D, E = D, K = ()> {
+pub struct Lane<'a, 'arena, 'credits, 'region: 'a, D: Footprint, E = D, K = ()> {
     pub(in crate::reply) arena: &'a Arena<'arena, 'credits, 'region, D, E, K>,
     pub(in crate::reply) index: LaneIndex,
 }
 
-impl<D, E, K> Copy for Lane<'_, '_, '_, '_, D, E, K> {}
+impl<D: Footprint, E, K> Copy for Lane<'_, '_, '_, '_, D, E, K> {}
 
-impl<D, E, K> Clone for Lane<'_, '_, '_, '_, D, E, K> {
+impl<D: Footprint, E, K> Clone for Lane<'_, '_, '_, '_, D, E, K> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, 'arena, 'credits, 'region, D, E, K> Lane<'a, 'arena, 'credits, 'region, D, E, K> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Lane<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub const fn index(self) -> LaneIndex {
         self.index
     }
@@ -154,7 +157,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Lane<'a, 'arena, 'credits, 'region,
     where
         'a: 'p,
     {
-        Push::new(token.borrow_mut(&self.arena.state), self)
+        Push::new(self, token)
     }
 
     /// Reserves byte and protocol-value credit without installing a reply waiter.
@@ -167,14 +170,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Lane<'a, 'arena, 'credits, 'region,
     }
 
     pub fn complete(self, token: &mut region::Token<region::Identity<'region>>) -> order::Depth {
-        let done = Terminal::new(self, token.borrow_mut(&self.arena.state)).complete();
-        match done {
-            Completion::Complete(depth) => depth,
-            Completion::Drained { depth, retired } => {
-                self.defer_retire(retired);
-                depth
-            }
-        }
+        self.select(token).complete()
     }
 
     /// Stores a zero-resource terminal value inline when an attached reply is
@@ -187,7 +183,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Lane<'a, 'arena, 'credits, 'region,
     where
         E: for<'cause> From<&'cause C>,
     {
-        let failed = Terminal::new(self, token.borrow_mut(&self.arena.state)).fail_one(cause);
+        let failed = self.select(token).fail_one(cause);
         match failed {
             Some(depth) => depth,
             None => token.borrow(&self.arena.state).depth(self),
@@ -195,7 +191,9 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Lane<'a, 'arena, 'credits, 'region,
     }
 }
 
-impl<'a, 'arena, 'credits, 'region, D, E, K> Lane<'a, 'arena, 'credits, 'region, D, E, K> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Lane<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub(in crate::reply) fn register(
         self,
         token: &mut region::Token<region::Identity<'region>>,
@@ -235,7 +233,7 @@ impl<'a, 'region> Retirement<'a, 'region> {
     }
 
     /// Borrows the cause so its owner can retain it across scheduling turns.
-    pub fn fail<'s, 'arena, 'credits, D, E, K, C>(
+    pub fn fail<'s, 'arena, 'credits, D: Footprint, E, K, C>(
         self,
         work: app::Work<'_, 'region>,
         lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
@@ -247,7 +245,7 @@ impl<'a, 'region> Retirement<'a, 'region> {
         let token = self.token;
         loop {
             let admitted = work.run(|| {
-                let failure = Terminal::new(lane, token.borrow_mut(&lane.arena.state)).fail(cause);
+                let failure = lane.select(token).fail(cause);
                 match failure {
                     Failure::Empty => None,
                     Failure::Advanced => Some(()),

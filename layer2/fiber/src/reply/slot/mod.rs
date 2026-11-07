@@ -17,7 +17,7 @@ use crate::reply::{
         grant::payload,
         pool::{Acquire, Owner},
     },
-    usage,
+    usage::{self, Footprint},
 };
 
 mod end;
@@ -25,9 +25,9 @@ mod end;
 use end::End;
 pub use end::Fault;
 
-pub(in crate::reply) struct Item<C> {
+pub(in crate::reply) struct Item<C: Footprint> {
     pub(in crate::reply) value: C,
-    pub(in crate::reply) amount: payload::Value,
+    pub(in crate::reply) amount: payload::Value<C::Amount>,
 }
 
 pub(in crate::reply) struct Failed<C> {
@@ -36,7 +36,7 @@ pub(in crate::reply) struct Failed<C> {
 }
 
 #[repr(C)]
-pub(crate) struct State<'arena, D, E> {
+pub(crate) struct State<'arena, D: Footprint, E> {
     end: End<E>,
     pub(in crate::reply) data: fifo::Fifo<'arena, Item<D>, false>,
 }
@@ -46,7 +46,7 @@ pub(in crate::reply) struct Failure<'a, E> {
 }
 
 /// The exact front order entry and its attached open reply slot.
-pub(in crate::reply) struct Open<'a, 'arena, 'credits, 'region, D, E, K = ()> {
+pub(in crate::reply) struct Open<'a, 'arena, 'credits, 'region, D: Footprint, E, K = ()> {
     order: order::Slot<'a, 'arena, 'credits, 'region, K>,
     state: &'a mut State<'arena, D, E>,
     signal: &'a mut state::Signal<'region>,
@@ -57,7 +57,7 @@ pub(in crate::reply) enum Drain {
     Dropped,
 }
 
-impl<'arena, D, E> State<'arena, D, E> {
+impl<'arena, D: Footprint, E> State<'arena, D, E> {
     pub(in crate::reply) fn new(data: fifo::Fifo<'arena, Item<D>, false>) -> Self {
         Self {
             end: End::Open,
@@ -78,7 +78,9 @@ impl<'arena, D, E> State<'arena, D, E> {
     }
 }
 
-impl<'a, 'arena, 'credits, 'region, D, E, K> Open<'a, 'arena, 'credits, 'region, D, E, K> {
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Open<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub(in crate::reply) const fn new(
         order: order::Slot<'a, 'arena, 'credits, 'region, K>,
         state: &'a mut State<'arena, D, E>,
@@ -98,7 +100,7 @@ impl<'a, 'arena, 'credits, 'region, D, E, K> Open<'a, 'arena, 'credits, 'region,
     pub(in crate::reply) fn try_data(
         self,
         limit: layout::Limit,
-        added: usage::Usage,
+        added: D::Amount,
     ) -> Result<Push<'a, 'arena, 'credits, 'region, D, K>, Acquire> {
         let lease = self.order.try_lease(payload::Value::new(added), limit)?;
         Ok(fifo::Fifo::reserve(Reserve {
@@ -152,13 +154,13 @@ impl<E> Failure<'_, E> {
 }
 
 /// Mutable reply-slot view that prevents arena reentry while borrowed.
-pub struct Slot<'a, 's, 'arena, 'credits, 'region, D, E = D> {
+pub struct Slot<'a, 's, 'arena, 'credits, 'region, D: Footprint, E = D> {
     pub(in crate::reply) state: &'a mut State<'arena, D, E>,
     pub(in crate::reply) owners: &'a mut Owner<'arena, 'credits, 'region>,
     pub(in crate::reply) owner: PhantomData<&'s ()>,
 }
 
-impl<'s, 'arena, 'credits, 'region, D, E> Slot<'_, 's, 'arena, 'credits, 'region, D, E> {
+impl<'s, 'arena, 'credits, 'region, D: Footprint, E> Slot<'_, 's, 'arena, 'credits, 'region, D, E> {
     pub fn terminal(
         &mut self,
     ) -> Option<outcome::Terminal<'_, 's, 'arena, 'credits, 'region, D, E>> {
@@ -179,9 +181,9 @@ impl<'s, 'arena, 'credits, 'region, D, E> Slot<'_, 's, 'arena, 'credits, 'region
         };
         // SAFETY: this front and owner were loaned from the same occupied slot;
         // its immutable original amount remains a live member until front.pop.
+        let amount = payload::Value::new(front.get().amount.usage());
         let claim =
-            unsafe { retain::raw::Remove::remove(&mut self.owners.payload, front.get().amount) }
-                .try_value()?;
+            unsafe { retain::raw::Remove::remove(&mut self.owners.payload, amount) }.try_value()?;
         Ok(Some(retain::Lease::new(front.pop().value, claim)))
     }
 
@@ -200,12 +202,31 @@ impl<'s, 'arena, 'credits, 'region, D, E> Slot<'_, 's, 'arena, 'credits, 'region
     }
 }
 
+impl<'arena, 'credits, 'region, D: Footprint<Amount = usage::Bytes>, E>
+    Slot<'_, '_, 'arena, 'credits, 'region, D, E>
+{
+    pub fn try_node(
+        &mut self,
+    ) -> Result<Option<retain::Node<'arena, 'credits, 'region, D>>, rc::Error> {
+        let Some(front) = self.state.data.front() else {
+            return Ok(None);
+        };
+        // SAFETY: this front and owner belong to the same occupied slot.
+        let claim =
+            unsafe { retain::raw::Remove::remove(&mut self.owners.payload, front.get().amount) }
+                .try_value()?;
+        Ok(Some(retain::Node {
+            owned: (front.detach(), claim),
+        }))
+    }
+}
+
 const _: () = {
-    assert!(mem::size_of::<Item<u64>>() == mem::size_of::<(u64, usage::Usage)>());
+    assert!(mem::size_of::<Item<()>>() == mem::size_of::<usage::Usage>());
     assert!(mem::size_of::<Failed<u64>>() == mem::size_of::<(u64, usage::Usage)>());
-    assert!(mem::size_of::<State<'static, u64, u64>>() == 6 * mem::size_of::<usize>());
+    assert!(mem::size_of::<State<'static, (), u64>>() == 6 * mem::size_of::<usize>());
     assert!(
-        mem::size_of::<State<'static, u64, u64>>()
+        mem::size_of::<State<'static, (), u64>>()
             + mem::size_of::<Owner<'static, 'static, 'static>>()
             == 14 * mem::size_of::<usize>()
     );
@@ -216,28 +237,28 @@ const _: () = {
 };
 
 #[must_use]
-pub(in crate::reply) struct Push<'a, 'arena, 'credits, 'region, C, K = ()> {
+pub(in crate::reply) struct Push<'a, 'arena, 'credits, 'region, C: Footprint, K = ()> {
     entry: slots::Vacant<Item<C>, &'a mut fifo::Fifo<'arena, Item<C>, false>>,
-    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value, K>,
+    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>, K>,
     signal: &'a mut state::Signal<'region>,
 }
 
-struct Reserve<'a, 'arena, 'credits, 'region, C, K> {
+struct Reserve<'a, 'arena, 'credits, 'region, C: Footprint, K> {
     queue: &'a mut fifo::Fifo<'arena, Item<C>, false>,
-    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value, K>,
+    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>, K>,
     signal: &'a mut state::Signal<'region>,
 }
 
-// SAFETY: try_data and try_lease acquire one unused payload slot from this
-// arena's exact pool. The affine lease stays paired with its reserved entry
+// SAFETY: try_data acquires Data for Usage or one Value for Bytes from this
+// arena's selected physical axis. The affine lease stays paired with its reserved entry
 // until both are committed or returned, including an abandoned Push. The signal
 // remains borrowed from that same reply entry through publication.
-unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: 'arena, K> depot::raw::Reserve<'a, 'arena, false>
-    for Reserve<'a, 'arena, 'credits, 'region, C, K>
+unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena, K>
+    depot::raw::Reserve<'a, 'arena, false> for Reserve<'a, 'arena, 'credits, 'region, C, K>
 {
     type Item = Item<C>;
     type Credit = (
-        Lease<'a, 'arena, 'credits, 'region, payload::Value, K>,
+        Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>, K>,
         &'a mut state::Signal<'region>,
     );
     type Reserved = Push<'a, 'arena, 'credits, 'region, C, K>;
@@ -261,7 +282,7 @@ unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: 'arena, K> depot::raw::Reserve
     }
 }
 
-impl<'a, 'arena, 'credits, 'region, C, K> Push<'a, 'arena, 'credits, 'region, C, K> {
+impl<'a, 'arena, 'credits, 'region, C: Footprint, K> Push<'a, 'arena, 'credits, 'region, C, K> {
     pub(in crate::reply) fn usage(&self) -> usage::Usage {
         self.lease.usage()
     }
@@ -276,7 +297,7 @@ impl<'a, 'arena, 'credits, 'region, C, K> Push<'a, 'arena, 'credits, 'region, C,
 
 const _: () = {
     assert!(
-        mem::size_of::<Push<'static, 'static, 'static, 'static, u64>>()
+        mem::size_of::<Push<'static, 'static, 'static, 'static, ()>>()
             == 10 * mem::size_of::<usize>()
     );
 };

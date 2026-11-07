@@ -309,7 +309,7 @@ where
                 return Ok(Outcome::Complete(output, proof));
             }
             let tick = tick(self.source)?;
-            polled = self.state.next_app(tick, &mut shutdown)?.skip();
+            polled = self.state.next_app(tick, &mut shutdown)?;
         }
     }
 }
