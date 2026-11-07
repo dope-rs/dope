@@ -26,6 +26,29 @@ fn pre_handshake_unknown() {
 }
 
 #[test]
+fn probes_wait_for_peer_ceiling() {
+    use common::peer::Pair;
+    use dope_quic::{conn::life::options::Options, proto::param};
+
+    let params = param::Set::builder()
+        .udp_max(1_200)
+        .try_build()
+        .expect("peer ceiling");
+    let mut pair = Pair::try_open(
+        Options::default(),
+        Options::try_from(params).expect("peer options"),
+    )
+    .expect("PMTU peers");
+    let start = Instant::now();
+    for turn in 0..2 {
+        let now = start + Duration::from_millis(turn * 30);
+        pair.exchange(now, 1).expect("handshake and probe ACK");
+    }
+    pair.try_ready().expect("authenticated peer ceiling");
+    assert_eq!(pair.server.view().path().mtu(), 1_200);
+}
+
+#[test]
 fn payload_tracks_mtu() {
     let mut pair = path::try_mtu(65535, 65535).expect("PMTU peers");
     pair.exchange(Instant::now(), 2)

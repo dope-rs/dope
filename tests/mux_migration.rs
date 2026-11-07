@@ -239,6 +239,11 @@ fn migration_retires_oversized_datagram_head() {
 
     at += Duration::from_millis(100);
     let mut flight = dispatch::Capture::output(&mut pair.server, at).expect("migrated output");
+    assert!(
+        flight
+            .iter_mut()
+            .any(|packet| packet.segments_mut().any(|segment| segment.len() > 1_200))
+    );
     Pair::relay(&mut flight, rebound, SERVER, &mut pair.client, at).expect("small tail delivery");
     Pair::discard(&mut pair.client, at).expect("client notification");
     assert_eq!(pair.client.handler().datagrams, vec![vec![0x42; 16]]);

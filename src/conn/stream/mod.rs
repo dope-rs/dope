@@ -12,7 +12,7 @@ use std::{marker, mem, ops};
 
 pub use build::Build;
 use control::owner;
-use event::queue::{Lease, Pending, Popped, Record};
+use event::queue::{Lease, Pending, Popped};
 use o3::alloc::VecExt as _;
 use o3::{alloc, base::num::bounded, buffer, depot::capacity::Shortage};
 use resident::slot;
@@ -309,7 +309,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Streams<B, D> {
         })
     }
 
-    pub(in crate::conn) fn poll_event(&mut self) -> Option<Record> {
+    pub(in crate::conn) fn poll_event(&mut self) -> Option<Event> {
         loop {
             let popped = self.events.pop()?;
             if self.retire(popped) {

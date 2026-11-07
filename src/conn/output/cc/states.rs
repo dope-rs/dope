@@ -44,7 +44,7 @@ impl State {
         Self {
             cc,
             pacer,
-            pmtud: pmtud::Pmtud::new(max_pmtu),
+            pmtud: pmtud::Pmtud::new(pmtud::Maximum::MIN),
             packet_ceiling: max_pmtu,
             probe: None,
         }
@@ -121,13 +121,15 @@ impl State {
     }
 
     pub(in crate::conn) fn set_peer_max(&mut self, max: u64) -> Option<pmtud::Maximum> {
-        let capped = self.pmtud.cap(max, self.cc.mtu())?;
+        let capped = pmtud::Maximum::new(self.packet_ceiling.get().min(max))?;
         self.packet_ceiling = capped;
+        self.pmtud.start(capped);
         Some(capped)
     }
 
     pub(in crate::conn) fn restart_path(&mut self) {
         *self = Self::new(self.packet_ceiling);
+        self.pmtud = pmtud::Pmtud::new(self.packet_ceiling);
     }
 
     pub(in crate::conn) const fn metrics(&self) -> Metrics<'_> {

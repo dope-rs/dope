@@ -15,46 +15,6 @@ mod plan;
 pub(in crate::conn) mod readable;
 pub(in crate::conn) use plan::Plan;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::conn) enum Record {
-    Writable,
-    Readable {
-        id: Id,
-        index: readable::Handle,
-    },
-    Reset {
-        id: Id,
-        error_code: crate::errors::Code,
-    },
-    Stopped {
-        id: Id,
-        error_code: crate::errors::Code,
-    },
-}
-
-impl Record {
-    pub(in crate::conn) fn bind(self) -> Event {
-        match self {
-            Self::Writable => Event::Writable,
-            Self::Readable { id, .. } => Event::Readable { id },
-            Self::Reset {
-                id,
-                error_code: code,
-            } => Event::Reset {
-                id,
-                error_code: code,
-            },
-            Self::Stopped {
-                id,
-                error_code: code,
-            } => Event::Stopped {
-                id,
-                error_code: code,
-            },
-        }
-    }
-}
-
 /// Bounded FIFO whose stream owner retains typed pending state.
 /// Delivery validates generation, owner, and physical queue position.
 pub(in crate::conn) struct Pending {
@@ -219,7 +179,7 @@ pub(in crate::conn) struct Lease {
 }
 
 impl Lease {
-    pub(in crate::conn) const fn event(&self) -> Record {
+    pub(in crate::conn) const fn event(&self) -> Event {
         self.popped.event()
     }
 
@@ -229,15 +189,15 @@ impl Lease {
 }
 
 impl Popped {
-    pub(in crate::conn) const fn event(self) -> Record {
+    pub(in crate::conn) const fn event(self) -> Event {
         match self {
-            Self::Writable => Record::Writable,
-            Self::Readable { id, index, .. } => Record::Readable { id, index },
+            Self::Writable => Event::Writable,
+            Self::Readable { id, .. } => Event::Readable { id },
             Self::Reset {
                 id,
                 error_code: code,
                 ..
-            } => Record::Reset {
+            } => Event::Reset {
                 id,
                 error_code: code,
             },
@@ -245,7 +205,7 @@ impl Popped {
                 id,
                 error_code: code,
                 ..
-            } => Record::Stopped {
+            } => Event::Stopped {
                 id,
                 error_code: code,
             },
@@ -426,7 +386,6 @@ const _: () = {
             && mem::size_of::<Option<Plan>>() == mem::size_of::<Plan>()
             && mem::size_of::<slab::Slab<Popped, Domain, { u32::MAX }, links::Hook, 0, Plan>>()
                 == mem::size_of::<slab::Slab<Popped, Domain>>()
-            && mem::size_of::<Record>() == 24
             && mem::size_of::<Popped>() == 32
             && mem::size_of::<Lease>() == 40
             && mem::size_of::<readable::Handle>() == 8

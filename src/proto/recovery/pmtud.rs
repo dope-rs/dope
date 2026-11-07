@@ -35,6 +35,8 @@ pub(crate) struct Probe(num::NonZero<u16>);
 pub(crate) struct Maximum(datagram::Size);
 
 impl Maximum {
+    pub(crate) const MIN: Self = Self(datagram::Size::MIN);
+
     pub(crate) const fn new(value: u64) -> Option<Self> {
         if value > MAX_PMTU {
             return None;
@@ -77,15 +79,8 @@ impl Pmtud {
         }
     }
 
-    /// Applies the authenticated peer UDP payload ceiling before discovery can
-    /// arm a probe. Transport parameters guarantee a minimum of 1200 bytes.
-    pub(crate) fn cap(&mut self, max: u64, current: u64) -> Option<Maximum> {
-        if current != BASE_PMTU || !matches!(self.failures, Failures::None) {
-            return None;
-        }
-        let maximum = Maximum::new(self.upper_bound.min(max))?;
-        self.upper_bound = maximum.get();
-        Some(maximum)
+    pub(crate) fn start(&mut self, max: Maximum) {
+        self.upper_bound = max.get();
     }
 
     pub(crate) fn next_probe(&self, current: u64, ceiling: num::NonZero<u16>) -> Option<Probe> {

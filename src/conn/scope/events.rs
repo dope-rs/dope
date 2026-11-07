@@ -16,7 +16,7 @@ pub(crate) struct Lease {
 
 impl Lease {
     pub(crate) fn bound_event(&self) -> BoundEvent<'_> {
-        BoundEvent::new(self.raw.event().bind(), self.raw.stream_key())
+        BoundEvent::new(self.raw.event(), self.raw.stream_key())
     }
 }
 

@@ -15,25 +15,24 @@ use o3::depot::{
 use std::num::NonZero;
 
 #[must_use]
-pub(in crate::conn) struct Prepared<O: tx::raw::Owner>(Allocation<O>);
+pub(in crate::conn) struct Prepared<O: tx::raw::Owner> {
+    owner: O,
+    allocation: Allocation,
+}
 
-enum Allocation<O: tx::raw::Owner> {
-    Existing(Root<O, Existing>),
+enum Allocation {
+    Empty,
+    Ready(Ready),
+    Probe(Probe),
     Insert {
-        root: Root<O, Insert>,
+        operation: Insert,
         kind: compact::raw::Vacancy,
     },
 }
 
-struct Root<O, P> {
+struct Root<O> {
     owner: O,
-    operation: P,
-}
-
-enum Existing {
-    Empty,
-    Ready(Ready),
-    Probe(Probe),
+    operation: Insert,
 }
 
 struct Ready {
@@ -68,26 +67,26 @@ impl<O: tx::raw::Owner> Prepared<O> {
         let (owner, selected) = O::select(input);
         let insert = match selected.map(|commit| commit.0) {
             None => {
-                return Ok(Self(Allocation::Existing(Root {
+                return Ok(Self {
                     owner,
-                    operation: Existing::Empty,
-                })));
+                    allocation: Allocation::Empty,
+                });
             }
             Some(commit::State::Ready {
                 key,
                 record,
                 rest: None,
             }) => {
-                return Ok(Self(Allocation::Existing(Root {
+                return Ok(Self {
                     owner,
-                    operation: Existing::Ready(Ready { key, record }),
-                })));
+                    allocation: Allocation::Ready(Ready { key, record }),
+                });
             }
             Some(commit::State::Probe { key, carriers, .. }) => {
-                return Ok(Self(Allocation::Existing(Root {
+                return Ok(Self {
                     owner,
-                    operation: Existing::Probe(Probe { key, carriers }),
-                })));
+                    allocation: Allocation::Probe(Probe { key, carriers }),
+                });
             }
             Some(commit::State::Fresh { epoch, record }) => Insert::Fresh { epoch, record },
             Some(commit::State::Ready {
@@ -97,13 +96,13 @@ impl<O: tx::raw::Owner> Prepared<O> {
             }) => Insert::Split { key, record, rest },
         };
         match owner.tx().deliveries.slots.entries.core.probe() {
-            Some(kind) => Ok(Self(Allocation::Insert {
-                root: Root {
-                    owner,
+            Some(kind) => Ok(Self {
+                owner,
+                allocation: Allocation::Insert {
                     operation: insert,
+                    kind,
                 },
-                kind,
-            })),
+            }),
             None => {
                 let state = match insert {
                     Insert::Fresh { epoch, record } => commit::State::Fresh { epoch, record },
@@ -119,59 +118,44 @@ impl<O: tx::raw::Owner> Prepared<O> {
     }
 
     pub(in crate::conn) fn owner(&self) -> &O {
-        match &self.0 {
-            Allocation::Existing(root) => &root.owner,
-            Allocation::Insert { root, .. } => &root.owner,
-        }
+        &self.owner
     }
 
     pub(in crate::conn) fn is_empty(&self) -> bool {
-        matches!(
-            self.0,
-            Allocation::Existing(Root {
-                operation: Existing::Empty,
-                ..
-            })
-        )
+        matches!(self.allocation, Allocation::Empty)
     }
 
     pub(in crate::conn) fn context(&mut self) -> O::Context<'_> {
-        match &mut self.0 {
-            Allocation::Existing(root) => root.owner.parts().1,
-            Allocation::Insert { root, .. } => root.owner.parts().1,
-        }
+        self.owner.parts().1
     }
 
     pub(in crate::conn) fn cancel(self) -> O {
-        match self.0 {
-            Allocation::Existing(root) => root.owner,
-            Allocation::Insert { root, .. } => root.owner,
-        }
+        self.owner
     }
 
     pub(in crate::conn) fn commit(self) -> (O::Output, Option<delivery::Handle<delivery::Crypto>>) {
-        match self.0 {
-            Allocation::Existing(mut root) => {
-                let handle = match root.operation {
-                    Existing::Empty => None,
-                    Existing::Ready(selected) => Some(
-                        Slot {
-                            owner: &mut root.owner,
-                            operation: selected,
-                        }
-                        .send(),
-                    ),
-                    Existing::Probe(selected) => Some(
-                        Slot {
-                            owner: &mut root.owner,
-                            operation: selected,
-                        }
-                        .probe(),
-                    ),
-                };
-                (root.owner.finish(), handle)
-            }
-            Allocation::Insert { mut root, kind } => {
+        let Self {
+            mut owner,
+            allocation,
+        } = self;
+        let handle = match allocation {
+            Allocation::Empty => None,
+            Allocation::Ready(selected) => Some(
+                Slot {
+                    owner: &mut owner,
+                    operation: selected,
+                }
+                .send(),
+            ),
+            Allocation::Probe(selected) => Some(
+                Slot {
+                    owner: &mut owner,
+                    operation: selected,
+                }
+                .probe(),
+            ),
+            Allocation::Insert { operation, kind } => {
+                let mut root = Root { owner, operation };
                 let (epoch, record, status) = match root.operation {
                     Insert::Fresh { epoch, record } => {
                         (epoch, record, stores::Status::flight(NonZero::<u16>::MIN))
@@ -209,9 +193,10 @@ impl<O: tx::raw::Owner> Prepared<O> {
                 let index = entry.index();
                 let live = unsafe { depot::raw::Proof::new((root, index)) };
                 let (owner, handle) = live.into();
-                (owner, Some(handle))
+                return (owner, Some(handle));
             }
-        }
+        };
+        (owner.finish(), handle)
     }
 }
 
@@ -233,7 +218,7 @@ unsafe impl<O: tx::raw::Owner> depot::raw::Source<Insert> for Selected<'_, O> {
 }
 
 // SAFETY: the insertion leaf supplies this original root and its newly initialized slot.
-unsafe impl<O: tx::raw::Owner> depot::raw::Project<links::Index> for Root<O, Insert> {
+unsafe impl<O: tx::raw::Owner> depot::raw::Project<links::Index> for Root<O> {
     type Output = (O::Output, delivery::Handle<delivery::Crypto>);
 
     unsafe fn project(mut self, index: links::Index) -> Self::Output {

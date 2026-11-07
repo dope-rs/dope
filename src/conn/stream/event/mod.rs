@@ -6,7 +6,7 @@ use o3::buffer::{self, resident};
 
 use std::mem;
 
-use crate::conn::stream::id;
+use crate::conn::stream::{Event, id};
 use crate::{conn, stream};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26,20 +26,20 @@ pub enum Item<'conn> {
 }
 
 impl<'conn> Item<'conn> {
-    fn bind(brand: brand::Token<'conn>, event: queue::Record) -> Self {
+    fn bind(brand: brand::Token<'conn>, event: Event) -> Self {
         match event {
-            queue::Record::Writable => Self::Writable,
-            queue::Record::Readable { id, .. } => Self::Readable {
+            Event::Writable => Self::Writable,
+            Event::Readable { id } => Self::Readable {
                 id: id::Receive::new(brand, id),
             },
-            queue::Record::Reset {
+            Event::Reset {
                 id,
                 error_code: code,
             } => Self::Reset {
                 id: id::Receive::new(brand, id),
                 error_code: code,
             },
-            queue::Record::Stopped {
+            Event::Stopped {
                 id,
                 error_code: code,
             } => Self::Stopped {
