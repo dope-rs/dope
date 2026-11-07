@@ -90,7 +90,6 @@ impl<'d, ID: Identity> From<pool::Key<'d, ID>> for Key<'d, ID> {
 // SAFETY: the niche raw form preserves the complete route target identity.
 unsafe impl<'d, ID: Identity> depot::raw::Key for Key<'d, ID> {
     type Raw = route::raw::Identity<'d, ID>;
-    type Live = Self;
 
     const VACANT: Self::Raw = Self::Raw::VACANT;
 
@@ -102,19 +101,11 @@ unsafe impl<'d, ID: Identity> depot::raw::Key for Key<'d, ID> {
         Self::Raw::from_target(self.key.target())
     }
 
-    fn into_live(self) -> Self::Live {
-        self
-    }
-
     fn from_raw(raw: index::Stored<Self>) -> Self {
         let raw = raw.into_raw();
         // SAFETY: Stored proves this target was emitted by a live Key.
         let target = unsafe { raw.target() };
         Self::new(pool::Key::from_target(target))
-    }
-
-    fn from_live(live: Self::Live) -> Self {
-        live
     }
 
     fn decode(raw: Self::Raw) -> Option<Self> {

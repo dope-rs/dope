@@ -56,7 +56,7 @@ pub fn layout(lanes: usize, entries: usize) -> Result<layout::Layout, layout::Er
     )
 }
 
-pub struct Pending;
+pub struct Pending<T = ()>(std::marker::PhantomData<T>);
 
 pub struct OwnerTag<'a, T>(pub &'a T);
 
@@ -80,11 +80,13 @@ impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
     }
 }
 
-impl<'s, 'arena, 'credits, 'region> recv::Extract<'s, 'arena, 'credits, 'region, ()> for Pending {
+impl<'s, 'arena, 'credits, 'region, T: Unpin> recv::Extract<'s, 'arena, 'credits, 'region, ()>
+    for Pending<T>
+{
     type Output = convert::Infallible;
     const ACCEPTANCE: recv::Acceptance = recv::Acceptance::Unit;
 
-    type Context = ();
+    type Context = T;
 
     fn extract(
         _: &Self::Context,

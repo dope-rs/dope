@@ -10,7 +10,7 @@ pub struct Completion<'d>(Entry<'d, kind::Tuning, Result<(), Errno>>);
 
 impl<'d> Completion<'d> {
     pub const fn token(&self) -> route::Erased<'d, kind::Tuning> {
-        self.0.target()
+        self.0.token()
     }
 
     pub const fn outcome(&self) -> Result<(), Errno> {

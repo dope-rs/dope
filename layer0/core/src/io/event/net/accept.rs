@@ -115,7 +115,7 @@ impl<'d> Completion<'d> {
     }
 
     pub const fn token(&self) -> route::Erased<'d, kind::Accept> {
-        self.0.target()
+        self.0.token()
     }
 
     pub const fn outcome(&self) -> &Outcome<'d> {
@@ -123,7 +123,7 @@ impl<'d> Completion<'d> {
     }
 
     pub fn into_parts(self) -> (route::Erased<'d, kind::Accept>, Flow, Outcome<'d>) {
-        let (target, batch) = self.0.into_parts();
+        let (target, batch) = self.0.split();
         let (flow, outcome) = batch.into_parts();
         (target, flow, outcome)
     }

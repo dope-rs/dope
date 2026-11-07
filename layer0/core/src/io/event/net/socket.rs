@@ -76,14 +76,14 @@ impl<'d> Completion<'d> {
     }
 
     pub const fn token(&self) -> route::Erased<'d, kind::Socket> {
-        self.0.target()
+        self.0.token()
     }
 
     pub fn try_finish<State>(
         self,
         creating: handles::Creation<'d, State>,
     ) -> Result<Finished<'d>, Mismatch<'d, State>> {
-        let (target, outcome) = self.0.into_parts();
+        let (target, outcome) = self.0.split();
         if !target.matches_flight(creating.target()) {
             let done = Self(Entry::new(target, outcome));
             return Err(Mismatch::new(done, creating));
@@ -109,7 +109,7 @@ impl<'d> Completion<'d> {
     }
 
     pub fn into_parts(self) -> (route::Erased<'d, kind::Socket>, Outcome<'d>) {
-        self.0.into_parts()
+        self.0.split()
     }
 }
 

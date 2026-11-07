@@ -8,7 +8,8 @@ use crate::{
 
 pub(in crate::storage::queries::tx) struct Cookies {
     generation: Epoch,
-    values: [Entry; config::MAX_SERVERS],
+    retired: Epoch,
+    values: [Option<Pair>; config::MAX_SERVERS],
 }
 
 /// The exact expected response cookie and its cache-retirement ordering.
@@ -30,21 +31,12 @@ struct Pair {
     server: cookies::Server,
 }
 
-#[derive(Clone, Copy)]
-struct Entry {
-    /// Cleared generations cannot repopulate the cache.
-    retired: Epoch,
-    pair: Option<Pair>,
-}
-
 impl Cookies {
     pub(in crate::storage::queries::tx) const fn new() -> Self {
         Self {
             generation: Epoch::ZERO,
-            values: [Entry {
-                retired: Epoch::ZERO,
-                pair: None,
-            }; config::MAX_SERVERS],
+            retired: Epoch::ZERO,
+            values: [None; config::MAX_SERVERS],
         }
     }
 
@@ -54,7 +46,7 @@ impl Cookies {
         server: index::Server,
         random: &entropy::Datagram<'_>,
     ) -> Result<Cookie, error::Identity> {
-        if let Some(pair) = &server.get(&self.values).pair {
+        if let Some(pair) = server.get(&self.values) {
             return Ok(pair.cookie);
         }
         let next = self.generation.try_next()?;
@@ -67,17 +59,15 @@ impl Cookies {
     }
 
     pub(in crate::storage::queries::tx) fn clear(&mut self) {
-        for value in &mut self.values {
-            value.pair = None;
-            value.retired = self.generation;
-        }
+        self.values.fill(None);
+        self.retired = self.generation;
     }
 
     pub(in crate::storage::queries::tx) fn active(
         &self,
         server: index::Server,
     ) -> Option<&cookies::Server> {
-        Some(&server.get(&self.values).pair.as_ref()?.server)
+        Some(&server.get(&self.values).as_ref()?.server)
     }
 
     pub(in crate::storage::queries::tx) fn cache(
@@ -86,11 +76,10 @@ impl Cookies {
         server: index::Server,
         value: cookies::Server,
     ) -> bool {
-        let entry = server.get_mut(&mut self.values);
-        if cookie.generation <= entry.retired {
+        if cookie.generation <= self.retired {
             return false;
         }
-        entry.pair = Some(Pair {
+        *server.get_mut(&mut self.values) = Some(Pair {
             cookie,
             server: value,
         });

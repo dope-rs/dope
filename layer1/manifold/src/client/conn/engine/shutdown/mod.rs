@@ -142,19 +142,10 @@ where
                         cursor.advance(next);
                         Some(state::Step::Lane(lane))
                     }
-                    state::Plan::Cancel(cursor) => {
-                        let Some(done) = this.links.liveness_mut().cancel_next(cursor, driver)
-                        else {
-                            *this.shutdown = state::State::Done;
-                            return Some(state::Step::Done);
-                        };
-                        settle(this.side.registry, done);
-                        Some(state::Step::Cancel)
-                    }
                 }
             });
             let lane = match step {
-                quota::Admission::Item(state::Step::Intake | state::Step::Cancel) => continue,
+                quota::Admission::Item(state::Step::Intake) => continue,
                 quota::Admission::Item(state::Step::Lane(lane)) => lane,
                 quota::Admission::Item(state::Step::Done)
                 | quota::Admission::Empty

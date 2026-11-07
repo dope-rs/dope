@@ -100,7 +100,7 @@ impl<'d> Completion<'d> {
     }
 
     pub const fn token(&self) -> route::Erased<'d, kind::Recv> {
-        self.0.target()
+        self.0.token()
     }
 
     pub const fn flow(&self) -> Flow {
@@ -126,7 +126,7 @@ impl<'d> Completion<'d> {
     }
 
     pub fn into_parts(self) -> (route::Erased<'d, kind::Recv>, Flow, Outcome<'d>) {
-        let (target, batch) = self.0.into_parts();
+        let (target, batch) = self.0.split();
         let (flow, outcome) = batch.into_parts();
         (target, flow, outcome)
     }
@@ -152,7 +152,7 @@ impl<'d> Completion<'d> {
 
 impl<'d> Data<'d> {
     pub fn into_parts(self) -> (route::Erased<'d, kind::Recv>, Flow, recv::Lease<'d>) {
-        let (target, batch) = self.0.into_parts();
+        let (target, batch) = self.0.split();
         let (flow, lease) = batch.into_parts();
         (target, flow, lease)
     }
@@ -169,7 +169,7 @@ impl<'d> Control<'d> {
     }
 
     pub const fn token(&self) -> route::Erased<'d, kind::Recv> {
-        self.0.target()
+        self.0.token()
     }
 
     pub const fn flow(&self) -> Flow {
@@ -188,13 +188,13 @@ impl<'d> Control<'d> {
 
     pub fn into_parts(self) -> (route::Erased<'d, kind::Recv>, Flow, Status, ControlKind<'d>) {
         let status = self.status();
-        let (target, batch) = self.0.into_parts();
+        let (target, batch) = self.0.split();
         let (flow, outcome) = batch.into_parts();
         (target, flow, status, outcome)
     }
 
     pub fn rejoin(self) -> Completion<'d> {
-        let (target, batch) = self.0.into_parts();
+        let (target, batch) = self.0.split();
         let (flow, outcome) = batch.into_parts();
         Completion::new(target, flow, outcome.into())
     }
@@ -203,7 +203,7 @@ impl<'d> Control<'d> {
         self,
         dispatch: impl FnOnce(ControlKind<'d>) -> ControlFlow<(ControlKind<'d>, E), T>,
     ) -> ControlFlow<(Self, E), T> {
-        let (target, batch) = self.0.into_parts();
+        let (target, batch) = self.0.split();
         let (flow, outcome) = batch.into_parts();
         dispatch(outcome).map_break(|(outcome, cause)| (Self::new(target, flow, outcome), cause))
     }

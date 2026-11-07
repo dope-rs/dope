@@ -216,7 +216,8 @@ impl<'arena, 'credits, 'region, D: Footprint<Amount = usage::Bytes>, E>
             unsafe { retain::raw::Remove::remove(&mut self.owners.payload, front.get().amount) }
                 .try_value()?;
         Ok(Some(retain::Node {
-            owned: (front.detach(), claim),
+            value: front.detach(),
+            _claim: claim,
         }))
     }
 }

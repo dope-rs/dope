@@ -30,7 +30,7 @@ impl<'d> Completion<'d> {
     }
 
     pub const fn token(&self) -> route::Erased<'d, kind::Connect> {
-        self.0.target()
+        self.0.token()
     }
 
     pub(in crate::io) fn resolve(

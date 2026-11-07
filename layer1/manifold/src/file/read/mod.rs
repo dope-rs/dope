@@ -54,6 +54,8 @@ pub struct Read<R: Return> {
     length: transfer::NonZero,
 }
 
+pub type Parts<R> = (fs::File, mem::Lease<R, Open>, fs::Offset);
+
 pub struct Metadata {
     file: fs::File,
     state: MetadataState,
@@ -184,7 +186,7 @@ impl<'d, R: Return<Item = Buffer<'d>>> Read<R> {
         file: fs::File,
         output: mem::Lease<R, Open>,
         offset: fs::Offset,
-    ) -> Result<Self, Rejected<(fs::File, mem::Lease<R, Open>, fs::Offset), SizeError>> {
+    ) -> Result<Self, Rejected<Parts<R>, SizeError>> {
         let length = transfer::Len::try_new(output.item().capacity())
             .map_err(SizeError::Overflow)
             .and_then(|length| length.nonzero().ok_or(SizeError::Empty));
@@ -211,7 +213,7 @@ impl<'d, R: Return<Item = Buffer<'d>>> Read<R> {
     }
 
     /// A completed request exposes only its successfully read prefix.
-    pub fn into_parts(self) -> (fs::File, mem::Lease<R, Open>, fs::Offset) {
+    pub fn into_parts(self) -> Parts<R> {
         (self.file, self.output, self.offset)
     }
 }

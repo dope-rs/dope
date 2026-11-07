@@ -26,7 +26,7 @@ impl<'d> Completion<'d> {
     }
 
     pub const fn token(&self) -> route::Erased<'d, kind::Open> {
-        self.0.target()
+        self.0.token()
     }
 
     pub const fn outcome(&self) -> &Outcome {
@@ -34,6 +34,6 @@ impl<'d> Completion<'d> {
     }
 
     pub fn into_parts(self) -> (route::Erased<'d, kind::Open>, Outcome) {
-        self.0.into_parts()
+        self.0.split()
     }
 }

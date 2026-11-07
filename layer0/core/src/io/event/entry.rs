@@ -2,13 +2,13 @@ use std::mem;
 
 use crate::driver::{route, route::kind};
 
-pub(super) struct Entry<'d, C: kind::Class, T> {
+pub struct Entry<'d, C: kind::Class, T> {
     target: route::Erased<'d, C>,
     value: T,
 }
 
 impl<'d, C: kind::Class, T> Entry<'d, C, T> {
-    pub(super) const fn new(target: route::Erased<'d, C>, value: T) -> Self {
+    pub(in crate::io) const fn new(target: route::Erased<'d, C>, value: T) -> Self {
         const {
             assert!(mem::size_of::<Self>() == mem::size_of::<(route::Erased<'d, C>, T)>());
             assert!(mem::align_of::<Self>() == mem::align_of::<(route::Erased<'d, C>, T)>());
@@ -16,7 +16,7 @@ impl<'d, C: kind::Class, T> Entry<'d, C, T> {
         Self { target, value }
     }
 
-    pub(super) const fn target(&self) -> route::Erased<'d, C> {
+    pub const fn token(&self) -> route::Erased<'d, C> {
         self.target
     }
 
@@ -33,14 +33,18 @@ impl<'d, C: kind::Class, T> Entry<'d, C, T> {
         }
     }
 
-    pub(super) fn into_parts(self) -> (route::Erased<'d, C>, T) {
-        (self.target, self.value)
+    pub(super) fn split(self) -> (route::Erased<'d, C>, T) {
+        let Self { target, value } = self;
+        (target, value)
+    }
+}
+
+impl<'d, C: kind::Class, T: Copy> Entry<'d, C, T> {
+    pub const fn outcome(&self) -> T {
+        self.value
     }
 
-    pub(super) const fn split(self) -> (route::Erased<'d, C>, T)
-    where
-        T: Copy,
-    {
+    pub const fn into_parts(self) -> (route::Erased<'d, C>, T) {
         (self.target, self.value)
     }
 }

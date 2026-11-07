@@ -7,6 +7,47 @@ pub mod common;
 use common::storage::replies::support::{Counted, Drops, Pending, capacity};
 
 #[test]
+fn constructs_after_admission() {
+    let drops = Drops::new();
+    let calls = cell::Cell::new(0);
+    let layout = layout::Layout::bounded(capacity(1, 1, 1, 1, 1)).expect("reply layout");
+    region::Token::scope(|mut token| {
+        Arena::<()>::try_with(layout, token.proof(), |arena| {
+            let lane = arena.try_lane(LaneIndex::ZERO).expect("lane");
+            let make = |input| {
+                calls.set(calls.get() + 1);
+                (input, ())
+            };
+            let (depth, response, ()) = recv::Response::<_, Pending<Counted<'_>>>::try_with(
+                &mut token,
+                lane,
+                (),
+                Counted::data(&drops),
+                make,
+            )
+            .ok()
+            .expect("admitted response");
+            assert_eq!(depth.get(), 1);
+            let (cause, input) = recv::Response::<_, Pending<Counted<'_>>>::try_with(
+                &mut token,
+                lane,
+                (),
+                Counted::data(&drops),
+                make,
+            )
+            .err()
+            .expect("full lane");
+            assert!(matches!(cause, recv::attach::Error::Full { .. }));
+            assert_eq!(calls.get(), 1);
+            assert_eq!(drops.count(), 0);
+            drop((response, input));
+            assert_eq!(drops.count(), 2);
+        })
+        .expect("reply arena");
+    });
+}
+
+#[test]
 fn admission_is_atomic() {
     let layout = layout::Layout::bounded(capacity(3, 6, 6, 6, 6)).expect("reply layout");
     region::Token::scope(|mut token| {

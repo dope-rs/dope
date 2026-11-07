@@ -12,7 +12,6 @@ pub(super) enum Step {
     Done,
     Intake,
     Lane(indices::SlotIndex),
-    Cancel,
 }
 
 #[derive(Clone, Copy)]
@@ -24,7 +23,6 @@ pub(super) enum Primary {
 pub(in crate::client) enum State {
     Open,
     Draining(Cursor),
-    Cancelling(u32),
     Done,
 }
 
@@ -47,7 +45,6 @@ pub(super) enum Plan<'a> {
         indices::SlotIndex,
         Option<indices::SlotIndex>,
     ),
-    Cancel(&'a mut u32),
 }
 
 impl Cursor {
@@ -82,7 +79,7 @@ impl State {
     }
 
     pub(in crate::client) const fn is_draining(&self) -> bool {
-        matches!(self, Self::Draining(_) | Self::Cancelling(_))
+        matches!(self, Self::Draining(_))
     }
 
     pub(super) fn plan(
@@ -103,19 +100,18 @@ impl State {
                     }
                 }
             }
-            Self::Cancelling(_) => Step::Cancel,
             Self::Open | Self::Done => return None,
         };
         if matches!(step, Step::Done) {
-            *self = Self::Cancelling(capacity.count().raw());
+            *self = Self::Done;
+            return None;
         }
         match (self, step) {
-            (Self::Cancelling(cursor), _) => Some(Plan::Cancel(cursor)),
             (Self::Draining(cursor), Step::Intake) => Some(Plan::Intake(cursor)),
             (Self::Draining(cursor), Step::Lane(lane)) => {
                 Some(Plan::Lane(cursor, lane, capacity.next(lane)))
             }
-            (Self::Open | Self::Done, _) | (Self::Draining(_), Step::Done | Step::Cancel) => None,
+            (Self::Open | Self::Done, _) | (Self::Draining(_), Step::Done) => None,
         }
     }
 

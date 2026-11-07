@@ -202,6 +202,28 @@ impl<
     K,
 > Response<'s, 'arena, 'credits, 'region, D, X, E, K>
 {
+    /// Constructs the response only after admission; failure returns the input unchanged.
+    pub fn try_with<I, R>(
+        token: &mut region::Token<region::Identity<'region>>,
+        lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
+        tag: K,
+        input: I,
+        make: impl FnOnce(I) -> (X::Context, R),
+    ) -> Result<(order::Depth, Self, R), (attach::Error, I)> {
+        let key = match lane.register(token, X::ACCEPTANCE, tag) {
+            Ok(key) => key,
+            Err(cause) => return Err((cause, input)),
+        };
+        let (extract, output) = make(input);
+        let response = Self {
+            handle: Handle {
+                reg: Some(Registration { lane, key }),
+            },
+            extract,
+        };
+        Ok((lane.depth(token), response, output))
+    }
+
     /// Consumes typed group input only after every response, slot, and credit is admitted.
     /// Any admission failure leaves every response and lane order unchanged.
     pub fn try_group_by<I, Y, R, const N: usize>(
@@ -280,6 +302,25 @@ impl<
         }
         output
     }
+
+    pub fn poll_next(
+        mut self: pin::Pin<&mut Self>,
+        context: pin::Pin<&mut context::Context<'_, 'region>>,
+    ) -> task::Poll<Option<X::Output>> {
+        let me = self.as_mut().get_mut();
+        let output = me.handle.poll(context, |slot| match slot {
+            Some(slot) => match X::extract(&me.extract, slot) {
+                Some(output) => task::Poll::Ready(Some(output)),
+                None if slot.state.is_finished() => task::Poll::Ready(None),
+                None => task::Poll::Pending,
+            },
+            None => task::Poll::Ready(None),
+        });
+        if matches!(output, task::Poll::Ready(None)) {
+            me.handle.detach();
+        }
+        output
+    }
 }
 
 impl<'s, 'arena, 'credits, 'region, D: Footprint, X, E, K> Default
@@ -350,110 +391,5 @@ impl<
     }
 }
 
-pub struct Stream<
-    's,
-    'arena,
-    'credits,
-    'region,
-    D: Footprint,
-    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
-    E = D,
-    K = (),
-> {
-    handle: Handle<'s, 'arena, 'credits, 'region, D, E, K>,
-    extract: X::Context,
-}
-
-impl<
-    's,
-    'arena,
-    'credits,
-    'region,
-    D: Footprint,
-    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
-    E,
-    K,
-> Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
-{
-    pub const fn new() -> Self
-    where
-        X: Extract<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
-    {
-        Self::with(())
-    }
-
-    pub const fn with(extract: X::Context) -> Self {
-        Self {
-            handle: Handle::new(),
-            extract,
-        }
-    }
-
-    pub fn poll_next(
-        mut self: pin::Pin<&mut Self>,
-        context: pin::Pin<&mut context::Context<'_, 'region>>,
-    ) -> task::Poll<Option<X::Output>> {
-        let me = self.as_mut().get_mut();
-        let output = me.handle.poll(context, |slot| match slot {
-            Some(slot) => match X::extract(&me.extract, slot) {
-                Some(output) => task::Poll::Ready(Some(output)),
-                None if slot.state.is_finished() => task::Poll::Ready(None),
-                None => task::Poll::Pending,
-            },
-            None => task::Poll::Ready(None),
-        });
-        if matches!(output, task::Poll::Ready(None)) {
-            me.handle.detach();
-        }
-        output
-    }
-}
-
-impl<'s, 'arena, 'credits, 'region, D: Footprint, X, E, K> Default
-    for Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
-where
-    X: Extract<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<
-    's,
-    'arena,
-    'credits,
-    'region,
-    D: Footprint,
-    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
-    E,
-    K,
-> attach::Attach<'s, 'arena, 'credits, 'region, D, E, K>
-    for Stream<'s, 'arena, 'credits, 'region, D, X, E, K>
-{
-    fn try_ordered(
-        &mut self,
-        token: &mut region::Token<region::Identity<'region>>,
-        lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
-        tag: K,
-    ) -> Result<order::Depth, attach::Error> {
-        self.handle.try_ordered(token, lane, X::ACCEPTANCE, tag)
-    }
-
-    fn try_tagged(
-        &mut self,
-        token: &mut region::Token<region::Identity<'region>>,
-        lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
-        tag: K,
-    ) -> Result<(), attach::Error> {
-        self.handle.try_attach(token, lane, X::ACCEPTANCE, tag)
-    }
-
-    fn detach(&mut self) {
-        self.handle.detach();
-    }
-
-    fn detach_order(&mut self, token: &region::Token<region::Identity<'region>>) -> order::State {
-        self.handle.detach_order(token)
-    }
-}
+pub type Stream<'s, 'arena, 'credits, 'region, D, X, E = D, K = ()> =
+    Response<'s, 'arena, 'credits, 'region, D, X, E, K>;
