@@ -49,45 +49,49 @@ fn constructs_after_admission() {
 
 #[test]
 fn admission_is_atomic() {
-    let layout = layout::Layout::bounded(capacity(3, 6, 6, 6, 6)).expect("reply layout");
+    const COMMANDS: usize = 257;
+    const CAPACITY: usize = COMMANDS + 4;
+    let layout = layout::Layout::bounded(capacity(3, CAPACITY, CAPACITY, CAPACITY, CAPACITY))
+        .expect("reply layout");
     region::Token::scope(|mut token| {
-        Arena::<(), (), u8>::try_with(layout, token.proof(), |arena| {
+        Arena::<(), (), usize>::try_with(layout, token.proof(), |arena| {
             let first = arena.try_lane(LaneIndex::ZERO).expect("first lane");
             let second = arena.try_lane(LaneIndex::new::<1>()).expect("second lane");
             let third = arena.try_lane(LaneIndex::new::<2>()).expect("third lane");
             first.control().activate(&mut token);
             third.control().activate(&mut token);
 
-            let mut full = [const { recv::Response::<_, Pending, (), u8>::new() }; 4];
-            let mut terminal = recv::Response::<_, Pending, (), u8>::new();
+            let mut full = [const { recv::Response::<_, Pending, (), usize>::new() }; COMMANDS + 2];
+            let mut terminal = recv::Response::<_, Pending, (), usize>::new();
             assert!(matches!(
                 recv::Response::try_group_by(
                     &mut token,
                     first,
                     &mut full,
                     &mut terminal,
-                    ([1, 2, 3, 4], 5, ()),
+                    ([0; COMMANDS + 2], 0, ()),
                     convert::identity,
                 ),
                 Err((recv::attach::Error::Oversized { requested, capacity }, _))
-                    if requested.get() == 5 && capacity.get() == 4
+                    if requested.get() == COMMANDS + 3 && capacity.get() == COMMANDS + 2
             ));
 
-            let mut held = [const { recv::Response::<_, Pending, (), u8>::new() }; 2];
+            let mut held = [const { recv::Response::<_, Pending, (), usize>::new() }; 2];
             for reply in &mut held {
                 reply
                     .try_tagged(&mut token, second, 20)
                     .expect("held reply");
             }
 
-            let mut denied = [const { recv::Response::<_, Pending, (), u8>::new() }; 3];
+            let mut denied =
+                [const { recv::Response::<_, Pending, (), usize>::new() }; COMMANDS + 1];
             assert!(matches!(
                 recv::Response::try_group_by(
                     &mut token,
                     first,
                     &mut denied,
                     &mut terminal,
-                    ([1, 2, 3], 4, ()),
+                    ([0; COMMANDS + 1], 0, ()),
                     convert::identity,
                 ),
                 Err((recv::attach::Error::Capacity { .. }, _))
@@ -99,17 +103,17 @@ fn admission_is_atomic() {
                 reply::Attachment::Detached
             ));
 
-            let mut commands = [const { recv::Response::<_, Pending, (), u8>::new() }; 2];
+            let mut commands = [const { recv::Response::<_, Pending, (), usize>::new() }; COMMANDS];
             recv::Response::try_group_by(
                 &mut token,
                 first,
                 &mut commands,
                 &mut terminal,
-                ([11, 12], 13, ()),
+                (std::array::from_fn(|index| index + 11), COMMANDS + 11, ()),
                 convert::identity,
             )
             .expect("group attachment");
-            assert_eq!(arena.inflight().get(), 5);
+            assert_eq!(arena.inflight().get(), COMMANDS + 3);
             for _ in 0..2 {
                 let selected = arena.pick_active(&mut token).expect("reserved lane");
                 assert!(matches!(
@@ -117,17 +121,17 @@ fn admission_is_atomic() {
                     reply::Registration::Available
                 ));
             }
-            for tag in [11, 12, 13] {
+            for tag in 11..=COMMANDS + 11 {
                 assert_eq!(first.control().front_tag(&token).copied(), Some(tag));
                 first.complete(&mut token);
             }
             assert_eq!(first.select(&mut token).front(), order::Front::Empty);
 
-            let mut other = recv::Response::<_, Pending, (), u8>::new();
+            let mut other = recv::Response::<_, Pending, (), usize>::new();
             other
                 .try_tagged(&mut token, third, 21)
                 .expect("reserved lane");
-            assert_eq!(arena.inflight().get(), 6);
+            assert_eq!(arena.inflight().get(), CAPACITY);
             assert!(arena.pick_active(&mut token).is_none());
         })
         .expect("reply arena");

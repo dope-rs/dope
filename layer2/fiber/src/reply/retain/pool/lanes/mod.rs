@@ -10,7 +10,7 @@ use dope::core::driver::schedule::ready;
 use o3::{
     alloc,
     alloc::tail,
-    depot::arena::linked::fifo::ends,
+    depot::{arena::linked::fifo::ends, array::init},
     mem,
     mem::{credit::fair, raw::Source as _},
 };
@@ -439,25 +439,78 @@ impl<'arena, 'credits, 'region, A: mem::raw::Amount<1, usize>>
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct Remaining(NonZero<usize>);
+
+struct Expand;
+struct Take;
+struct Last;
+
+// SAFETY: Remaining stores the exact nonzero entry count.
+unsafe impl mem::raw::Amount<1, usize> for Remaining {
+    fn get(self) -> [usize; 1] {
+        [self.0.get()]
+    }
+}
+
+// SAFETY: expansion preserves the complete N-command-plus-terminal acquisition.
+unsafe impl<const N: usize> mem::raw::ExactRebind<1, usize, entries::Group<N>> for Expand {
+    type Output = Remaining;
+
+    fn rebind(self, _: entries::Group<N>) -> Remaining {
+        const { assert!(N > 0 && N < usize::MAX) };
+        Remaining(NonZero::<usize>::MIN.saturating_add(N))
+    }
+}
+
+// SAFETY: Group's const domain proves this expansion for every source value.
+unsafe impl<const N: usize> mem::raw::Rebind<1, usize, entries::Group<N>> for Expand {}
+
+// SAFETY: map_group binds Take only for the N command positions of an N+1
+// acquisition, so one terminal unit always remains after this exact partition.
+unsafe impl mem::raw::Exact<1, usize, Remaining> for Take {
+    type Input = ();
+    type Left = Remaining;
+    type Right = entries::Unit;
+
+    fn parts(self, source: Remaining, (): ()) -> (Remaining, entries::Unit) {
+        // SAFETY: the bound command position leaves at least the terminal unit.
+        let rest = unsafe { NonZero::new_unchecked(source.0.get() - 1) };
+        (Remaining(rest), entries::Unit)
+    }
+}
+
+// SAFETY: map_group binds Last only after all N command units were removed.
+unsafe impl mem::raw::ExactRebind<1, usize, Remaining> for Last {
+    type Output = entries::Unit;
+
+    fn rebind(self, _: Remaining) -> Self::Output {
+        entries::Unit
+    }
+}
+
 impl<'arena, 'credits, 'region, const N: usize>
     Registration<'arena, 'credits, 'region, entries::Group<N>>
 {
-    pub(in crate::reply) fn split_group<T>(
+    pub(in crate::reply) fn map_group<T, U, R>(
         self,
-        values: [T; N],
+        commands: init::Guard<'_, T, N, true, init::Full>,
+        values: [U; N],
+        mut map: impl FnMut(T, Registration<'arena, 'credits, 'region, entries::Unit>, U) -> R,
     ) -> (
-        [(Registration<'arena, 'credits, 'region, entries::Unit>, T); N],
+        [R; N],
         Registration<'arena, 'credits, 'region, entries::Unit>,
     ) {
-        let (commands, terminal) = entries::Group::split_group(self.grant, values);
         let lane = self.lane;
-        (
-            commands.map(|(grant, value)| (Registration { lane, grant }, value)),
-            Registration {
-                lane,
-                grant: terminal,
-            },
-        )
+        let mut rest = self.grant.map(Expand);
+        let commands = commands.map_with(values, |command, value| {
+            // SAFETY: Full maps exactly N owned positions, leaving the terminal unit.
+            let grant = unsafe { rest.bind_mut(Take) }.split(());
+            map(command, Registration { lane, grant }, value)
+        });
+        // SAFETY: all N command units were transferred from this exact source.
+        let grant = unsafe { rest.bind(Last) }.map();
+        (commands, Registration { lane, grant })
     }
 }
 

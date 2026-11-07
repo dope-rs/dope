@@ -157,11 +157,10 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             }
         };
         let (tags, end, output) = make(input);
-        let (plans, tail) = plan.split_group(tags);
         if !capacity.has_reserve() {
             state.order.remove::<1>(capacity.index().into());
         }
-        let keys = commands.map_with(plans, |vacant, (plan, tag)| {
+        let (keys, tail) = plan.map_group(commands, tags, |vacant, plan, tag| {
             Self::publish(&mut state.order, lane, vacant, plan, accept, tag)
         });
         let terminal = Self::publish(&mut state.order, lane, terminal, tail, mode, end);
