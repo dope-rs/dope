@@ -147,22 +147,13 @@ pub(in crate::conn::output::transmit) fn build<
                             ) {
                                 return Ok(log::Append::Skip);
                             }
-                            let Some((resolved, chunks)) = map.read(sender) else {
+                            let Some(mut resolved) = map.occupied(sender) else {
                                 return Ok(log::Append::Retired);
                             };
                             if resolved.id() != record.id {
                                 return Ok(log::Append::Retired);
                             }
-                            if builder::Builder::<DOMAIN, B, D>::put_stream(
-                                &mut frames,
-                                limit,
-                                record.id,
-                                resolved.state(),
-                                chunks,
-                                record.range,
-                            )?
-                            .is_none()
-                            {
+                            if !resolved.write_range(record.range, &mut frames, limit)? {
                                 return Ok(log::Append::Full);
                             }
                             Ok(log::Append::Done)

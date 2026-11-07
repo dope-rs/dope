@@ -170,13 +170,6 @@ where
         run(scope::Pool::new(self))
     }
 
-    pub(in crate::conn) fn resolve(
-        &self,
-        handle: slot::Handle<Side>,
-    ) -> Option<slot::Resolved<'_, Side, Value, Auxiliary>> {
-        self.storage.resolve(handle)
-    }
-
     pub(in crate::conn) fn current(
         &self,
         index: u32,
@@ -186,7 +179,6 @@ where
             return None;
         }
         Some(slot::Resolved {
-            id: node.id,
             value: &node.value,
             auxiliary: &node.auxiliary,
             side: marker::PhantomData,

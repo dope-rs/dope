@@ -1,17 +1,11 @@
 use std::num::NonZero;
 
-use o3::{
-    alloc,
-    buffer::{self, write},
-    depot::queue::pool,
-};
+use o3::{alloc, buffer::write};
 
-use crate::stream::outbound::sender::{Position, Range};
+use crate::stream::outbound::sender::Range;
 use crate::{
-    stream::{
-        outbound::{Finish, chunk},
-        send,
-    },
+    conn::Appended,
+    stream::{outbound::Finish, send},
     wire::{stream::Id, varint},
 };
 
@@ -27,11 +21,6 @@ pub(crate) struct Written {
     wire_len: NonZero<u16>,
     bytes: u16,
     pub(super) boundary: send::Boundary,
-}
-
-pub(crate) struct Encoded {
-    pub(super) wire_len: NonZero<u16>,
-    pub(super) bytes: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -83,21 +72,20 @@ impl Prepared {
         self.range
     }
 
-    pub(crate) fn write<O: buffer::raw::Segment>(
+    pub(crate) fn write(
         self,
-        source: &Position,
         out: &mut write::Append<'_>,
         limit: usize,
         id: Id,
-        chunks: pool::View<'_, chunk::Node<O>>,
+        copy: impl FnOnce(Range, &mut write::Append<'_>) -> Result<Option<Appended>, alloc::Error>,
     ) -> Result<Option<Written>, alloc::Error> {
-        let Some(encoded) = source.write(out, limit, id, chunks, self.range)? else {
+        let Some((wire_len, bytes)) = self.range.write(out, limit, id, copy)? else {
             return Ok(None);
         };
         Ok(Some(Written {
             pending: self.pending,
-            wire_len: encoded.wire_len,
-            bytes: encoded.bytes,
+            wire_len,
+            bytes,
             boundary: self.range.boundary(),
         }))
     }
@@ -121,11 +109,5 @@ impl Written {
             encoded_offset: (self.pending.start().get() - self.bytes as u64) | mark,
             end: self.pending.start(),
         }
-    }
-}
-
-impl Encoded {
-    pub(crate) const fn wire_len(self) -> NonZero<u16> {
-        self.wire_len
     }
 }

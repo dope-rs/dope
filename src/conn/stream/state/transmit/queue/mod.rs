@@ -38,7 +38,7 @@ mod error;
 mod occupied;
 mod view;
 pub(in crate::conn) use occupied::Occupied;
-pub(crate) use occupied::{Publication, Reclaim};
+pub(crate) use occupied::{Appended, Publication, Reclaim};
 pub(in crate::conn) use view::View;
 pub(in crate::conn) mod plan;
 pub(in crate::conn) mod recycle;
@@ -195,22 +195,18 @@ impl<D: buffer::raw::Segment> Map<D> {
         })
     }
 
-    pub(in crate::conn) fn find(
-        &self,
-        id: stream::Id,
-        registry: &Table,
-    ) -> Option<queue::Resolved<'_>> {
+    pub(in crate::conn) fn find(&self, id: stream::Id, registry: &Table) -> Option<&queue::Entry> {
         let (_, slot) = registry.find::<true>(id)?;
-        self.core.current(slot).map(Resolved)
+        self.core.current(slot).map(|entry| entry.value())
     }
 
     pub(in crate::conn) fn find_key(
         &self,
         key: resident::Key,
         registry: &Table,
-    ) -> Option<queue::Resolved<'_>> {
+    ) -> Option<&queue::Entry> {
         let slot = registry.slot::<true>(key)?;
-        self.core.current(slot).map(Resolved)
+        self.core.current(slot).map(|entry| entry.value())
     }
 
     pub(in crate::conn::stream::state::transmit) fn try_prepared<'a, R>(
@@ -333,23 +329,7 @@ impl<D: buffer::raw::Segment> Map<D> {
         ))
     }
 
-    pub(in crate::conn) fn read(
-        &self,
-        handle: Handle,
-    ) -> Option<(Resolved<'_>, pool::View<'_, chunk::Node<D>>)> {
-        use o3::depot;
-
-        let entry = self.core.resolve(handle.0)?;
-        // SAFETY: this owner allocates both domains together and never replaces either.
-        // The successful lookup retains the generation until this shared borrow ends.
-        let lane = unsafe { depot::raw::Proof::new((&self.data.lanes, handle.index())) }.into();
-        Some((Resolved(entry), lane))
-    }
-
-    pub(in crate::conn::stream::state::transmit) fn occupied(
-        &mut self,
-        handle: Handle,
-    ) -> Option<Occupied<'_, D>> {
+    pub(in crate::conn) fn occupied(&mut self, handle: Handle) -> Option<Occupied<'_, D>> {
         self.core.occupied(handle.0).map(|entry| Occupied {
             entry,
             data: &mut self.data,
@@ -507,18 +487,6 @@ impl<D: buffer::raw::Segment> Map<D> {
             }
         }
         Ok(())
-    }
-}
-
-pub(in crate::conn) struct Resolved<'map>(slot::Resolved<'map, Side, queue::Entry, ()>);
-
-impl Resolved<'_> {
-    pub(in crate::conn) fn id(&self) -> stream::Id {
-        self.0.id()
-    }
-
-    pub(in crate::conn) fn state(&self) -> &queue::Entry {
-        self.0.value()
     }
 }
 

@@ -2,7 +2,7 @@ pub mod common;
 use crate::common::peer;
 use std::time::{Duration, Instant};
 
-use dope_quic::conn::{stream::SendOutcome, wire::packet::Batch};
+use dope_quic::conn::{output::transmit, stream::SendOutcome, wire::packet::Batch};
 use dope_quic::stream::send;
 use dope_test::alloc::Tracker;
 use o3::buffer::{segments, storage};
@@ -75,7 +75,7 @@ fn reuses_acked_lane() {
     assert_eq!(client.stream_state().wire_bytes(), 0);
 }
 
-fn retire(first: usize) -> usize {
+fn retire(first: usize, owners: usize) -> usize {
     let Pair {
         mut server,
         mut client,
@@ -84,20 +84,23 @@ fn retire(first: usize) -> usize {
     let stream = client.send_streams().open_uni().expect("send lane");
     let peer = stream.bind(&server).expect("peer lane");
     let store = segments::Pool::try_new(segments::Plan {
-        segments: 2,
+        segments: owners,
         chains: 1,
     })
     .expect("segment slots");
     let mut chain = store.into_chain();
-    for len in [first, 1_500] {
-        let owner = storage::Shared::try_copy(&vec![0x61; len]).expect("retained segment");
+    let mut expected = Vec::new();
+    for (byte, len) in (0x61..).zip([first, 1_500, 1_500]).take(owners) {
+        let bytes = vec![byte; len];
+        let owner = storage::Shared::try_copy(&bytes).expect("retained segment");
+        expected.extend(bytes);
         assert!(chain.try_push(owner).is_ok());
     }
     let chain = match chain.into_shape() {
         segments::Shape::Many(chain) => Some(chain),
         _ => None,
     }
-    .expect("two retained owners");
+    .expect("retained owners");
     let parts = send::Parts::from_chain(
         send::Buffer::inline(b"").expect("empty inline prefix"),
         chain,
@@ -107,25 +110,16 @@ fn retire(first: usize) -> usize {
         client.send_streams().try_parts(stream, parts),
         SendOutcome::Accepted
     ));
-    assert_eq!(client.stream_state().segments(), 2);
+    assert_eq!(client.stream_state().segments(), owners);
     let mut now = Instant::now() + Duration::from_secs(1);
     let mut batch = Batch::default();
     client
         .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1_200))
         .expect("first packet");
     assert_eq!(batch.packets(), 1);
-    for packet in batch.iter_mut() {
-        assert!(
-            server
-                .with_scope(|mut scope| scope.input(&mut work).recv_packet(
-                    packet,
-                    now,
-                    |_: &rustls::Error| {}
-                ))
-                .is_ok(),
-            "first packet ingress"
-        );
-    }
+    server
+        .receive_all(&mut work, &mut batch, now)
+        .expect("first packet ingress");
     let mut received = server
         .recv()
         .recv_owned(peer)
@@ -133,26 +127,34 @@ fn retire(first: usize) -> usize {
         .expect("prefix payload");
     let count = received.len();
     assert!(count >= first && count < first + 1_500);
+    if owners == 3 {
+        now = client
+            .view()
+            .recovery()
+            .send_at(now + Duration::from_millis(1));
+        let effects = client
+            .with_scope(|mut scope| scope.output().send_effects(&mut batch, now, 1, 1_200))
+            .expect("held fresh packet");
+        assert!(effects.contains(transmit::Effects::FRESH_STREAM));
+    }
     now += Duration::from_secs(1);
     let (ack, send_result) = server.with_scope(|mut scope| scope.output().send(now));
     send_result.expect("prefix acknowledgement");
     let ((), delta) = Tracker::measure(|| {
         for mut packet in ack {
-            assert!(
-                client
-                    .with_scope(|mut scope| {
-                        scope
-                            .input(&mut work)
-                            .recv_packet(&mut packet, now, |_: &rustls::Error| {})
-                    })
-                    .is_ok(),
-                "ACK ingress"
-            );
+            client
+                .receive(&mut work, &mut packet, now)
+                .expect("ACK ingress");
         }
     });
     assert_eq!(delta[0], 0);
-    assert_eq!(client.stream_state().segments(), 1);
-    assert_eq!(client.stream_state().wire_bytes(), first + 1_500 - count);
+    assert_eq!(client.stream_state().segments(), owners - 1);
+    assert_eq!(client.stream_state().wire_bytes(), expected.len() - count);
+    if owners == 3 {
+        server
+            .receive_all(&mut work, &mut batch, now)
+            .expect("held packet ingress");
+    }
     now += Duration::from_secs(1);
     assert!(
         server.receive_from(&mut work, &mut client, now).is_ok(),
@@ -165,7 +167,7 @@ fn retire(first: usize) -> usize {
             .expect("suffix receive")
             .expect("suffix payload"),
     );
-    assert_eq!(received, vec![0x61; first + 1_500]);
+    assert_eq!(received, expected);
     assert!(server.stream_state().recv_eof(peer).expect("received FIN"));
     now += Duration::from_secs(1);
     client
@@ -178,6 +180,6 @@ fn retire(first: usize) -> usize {
 
 #[test]
 fn retires_segment_prefixes() {
-    let packet = retire(700);
-    assert_eq!(retire(packet), packet);
+    let packet = retire(700, 3);
+    assert_eq!(retire(packet, 2), packet);
 }

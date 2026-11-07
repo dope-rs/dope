@@ -33,6 +33,7 @@ impl slot::Recycle for Recycle<'_> {
             self.deliveries.cancel(group);
         }
         value.stream = outbound::Sender::default();
+        value.cursor.clear();
         value.credit = queue::Credit::new(varint::VarInt::ZERO);
     }
 }

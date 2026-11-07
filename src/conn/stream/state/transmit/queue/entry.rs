@@ -20,6 +20,7 @@ use control::owner;
 /// Mutable state for one live stream send queue.
 pub(in crate::conn) struct Entry {
     pub(super) stream: outbound::Sender,
+    pub(super) cursor: queue::occupied::Cursor,
     pub(super) credit: queue::Credit<kind::StreamBlock>,
     pub(super) delivery_group: Option<log::GroupId>,
     pub(super) reset_stream: owner::Signal<kind::ResetStream>,
@@ -142,6 +143,7 @@ impl slot::Reusable for Entry {
     fn new(init: Self::Init) -> Self {
         Self {
             stream: outbound::Sender::default(),
+            cursor: queue::occupied::Cursor::default(),
             credit: queue::Credit::new(init),
             delivery_group: None,
             reset_stream: owner::Signal::new(),
@@ -163,5 +165,5 @@ impl ops::Deref for Entry {
 
 const _: () = assert!(
     std::mem::size_of::<Entry>()
-        == std::mem::size_of::<outbound::Sender>() + 4 * std::mem::size_of::<u64>()
+        == std::mem::size_of::<outbound::Sender>() + 8 * std::mem::size_of::<u64>()
 );

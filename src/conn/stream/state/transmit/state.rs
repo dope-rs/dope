@@ -121,8 +121,8 @@ impl<D: buffer::raw::Segment> State<D> {
         result
     }
 
-    pub(in crate::conn) fn selection(&mut self) -> (log::Selection<'_>, &queue::Map<D>) {
-        (log::Selection::new(&mut self.deliveries), &self.map)
+    pub(in crate::conn) fn selection(&mut self) -> (log::Selection<'_>, &mut queue::Map<D>) {
+        (log::Selection::new(&mut self.deliveries), &mut self.map)
     }
 
     pub(in crate::conn) fn set_credit(

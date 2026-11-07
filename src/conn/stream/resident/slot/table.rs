@@ -5,9 +5,7 @@ use o3::{
     base::num::Generation,
     depot::queue::{indexed::keyed, links},
 };
-use slot::{
-    Capacity, Free, Handle, Index, MAX_GENERATION, Node, Occupied, Resolved, Reusable, Vacancy,
-};
+use slot::{Capacity, Free, Handle, Index, MAX_GENERATION, Node, Occupied, Reusable, Vacancy};
 
 use crate::{conn::stream::resident::slot, wire::stream};
 
@@ -26,21 +24,6 @@ impl<Side, Value: Reusable, Auxiliary: Default> Table<Side, Value, Auxiliary> {
             available: capacity.0,
             side: marker::PhantomData,
         })
-    }
-
-    pub(in crate::conn) fn resolve(
-        &self,
-        handle: Handle<Side>,
-    ) -> Option<Resolved<'_, Side, Value, Auxiliary>> {
-        let node = self.nodes.get(handle.index() as usize)?;
-        (node.generation.get() == handle.generation() && !node.vacancy.is_free()).then_some(
-            Resolved {
-                id: node.id,
-                value: &node.value,
-                auxiliary: &node.auxiliary,
-                side: marker::PhantomData,
-            },
-        )
     }
 
     pub(in crate::conn) fn bind(

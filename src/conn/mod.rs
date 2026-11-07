@@ -23,7 +23,7 @@ pub mod scope;
 pub mod stream;
 pub mod wire;
 
-pub(crate) use stream::state::transmit::queue::{Publication, Reclaim};
+pub(crate) use stream::state::transmit::queue::{Appended, Publication, Reclaim};
 
 use life::{options, status};
 use machine::Machine;

@@ -113,22 +113,13 @@ impl<'a, 'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                     if record.range.len_usize() > room {
                         return Ok(log::Append::Full);
                     }
-                    let Some((resolved, chunks)) = map.read(sender) else {
+                    let Some(mut resolved) = map.occupied(sender) else {
                         return Ok(log::Append::Retired);
                     };
                     if resolved.id() != record.id {
                         return Ok(log::Append::Retired);
                     }
-                    if builder::Builder::<DOMAIN, B, D>::put_stream(
-                        frames,
-                        limit,
-                        record.id,
-                        resolved.state(),
-                        chunks,
-                        record.range,
-                    )?
-                    .is_none()
-                    {
+                    if !resolved.write_range(record.range, frames, limit)? {
                         return Ok(log::Append::Full);
                     }
                     Ok(log::Append::Done)

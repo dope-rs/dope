@@ -6,18 +6,13 @@ use pending::{Input, Preparation};
 
 use self::app::{early, rtt};
 use crate::conn::output::transmit::permit::{self, fit};
-use crate::stream::outbound;
-use crate::wire::stream::{Id, Initiator};
-use outbound::chunk;
+use crate::wire::stream::Initiator;
 
-use o3::depot::{array, queue::pool};
-use o3::{
-    alloc,
-    buffer::{self, write},
-};
+use o3::buffer::{self, write};
+use o3::depot::array;
 use write::Sink as _;
 
-use std::{mem, num, time};
+use std::{mem, time};
 
 pub(in crate::conn) mod ack;
 pub(super) mod app;
@@ -172,19 +167,6 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Builder<'a,
         route: path::OutputRoute,
     ) -> Option<encode::Selected<'pending>> {
         records.find(|selected| selected.path() == route.path())
-    }
-
-    fn put_stream(
-        out: &mut write::Append<'_>,
-        limit: usize,
-        id: Id,
-        stream: &outbound::Sender,
-        chunks: pool::View<'_, chunk::Node<D>>,
-        range: outbound::Range,
-    ) -> Result<Option<num::NonZero<u16>>, alloc::Error> {
-        stream
-            .write(out, limit, id, chunks, range)
-            .map(|written| written.map(|written| written.wire_len()))
     }
 
     fn can_track(&self) -> bool {

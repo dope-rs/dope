@@ -115,7 +115,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             .find(id, &streams.resident)
             .map_or_else(
                 || id.initiator() != self.connection.peer.local && !streams.is_send_done(id),
-                |resolved| matches!(resolved.state().phase(), queue::Phase::Open),
+                |entry| matches!(entry.phase(), queue::Phase::Open),
             )
     }
 
@@ -125,7 +125,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             .transmit
             .map()
             .find(id.id(), &self.connection.streams.resident)
-            .and_then(|resolved| resolved.state().stop_error())
+            .and_then(|entry| entry.stop_error())
     }
 
     pub fn has_events(&self) -> bool {
@@ -138,7 +138,7 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             .transmit
             .map()
             .find(id.id(), &streams.resident)
-            .map_or(0, |resolved| resolved.state().buffered_len())
+            .map_or(0, |entry| entry.buffered_len())
     }
 
     pub fn usage(&self) -> Usage<'_, D> {

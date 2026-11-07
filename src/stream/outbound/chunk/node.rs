@@ -1,4 +1,4 @@
-use o3::buffer::{self, hold, segments, write};
+use o3::buffer::{self, hold, segments};
 
 use crate::stream::{outbound, release, send};
 
@@ -8,8 +8,6 @@ pub(crate) enum Node<O: buffer::raw::Segment> {
     One(segments::Single<O>),
     Segments(segments::Many<O>),
 }
-
-pub(in crate::stream::outbound) struct Copied;
 
 impl<O: buffer::raw::Segment> Node<O> {
     pub(in crate::stream) fn charge(&self) -> hold::Charge {
@@ -23,7 +21,7 @@ impl<O: buffer::raw::Segment> Node<O> {
         }
     }
 
-    pub(in crate::stream::outbound) fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Buffer(buffer) => buffer.len(),
             Self::One(owner) => owner.len().get(),
@@ -45,49 +43,6 @@ impl<O: buffer::raw::Segment> Node<O> {
             Self::One(_) => 1,
             Self::Segments(segments) => segments.as_chain().count().into_raw() as usize,
         }
-    }
-
-    pub(in crate::stream::outbound) fn copy<W: write::Sink>(
-        &self,
-        offset: usize,
-        len: usize,
-        out: &mut W,
-    ) -> Result<Option<Copied>, W::Error> {
-        let Some(end) = offset.checked_add(len) else {
-            return Ok(None);
-        };
-        let bytes = match self {
-            Self::Buffer(buffer) => buffer.as_slice(),
-            Self::One(owner) => owner.as_ref().as_ref(),
-            Self::Segments(segments) => {
-                if end > segments.len().get() {
-                    return Ok(None);
-                }
-                let mut skip = offset;
-                let mut left = len;
-                for owner in segments.as_chain().segments() {
-                    let bytes = owner.as_ref();
-                    if skip >= bytes.len() {
-                        skip -= bytes.len();
-                        continue;
-                    }
-                    let bytes = &bytes[skip..];
-                    let take = left.min(bytes.len());
-                    out.write_slice(&bytes[..take])?;
-                    left -= take;
-                    skip = 0;
-                    if left == 0 {
-                        break;
-                    }
-                }
-                return Ok(Some(Copied));
-            }
-        };
-        let Some(bytes) = bytes.get(offset..end) else {
-            return Ok(None);
-        };
-        out.write_slice(bytes)?;
-        Ok(Some(Copied))
     }
 
     pub(in crate::stream) fn release<M: release::Mode>(

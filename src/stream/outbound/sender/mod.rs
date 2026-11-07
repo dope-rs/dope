@@ -1,8 +1,4 @@
-use std::{
-    mem,
-    num::NonZero,
-    ops::{self, ControlFlow},
-};
+use std::{mem, num::NonZero, ops::ControlFlow};
 
 use o3::{
     alloc,
@@ -11,6 +7,7 @@ use o3::{
 };
 
 use crate::{
+    conn::Appended,
     errors,
     stream::{outbound, release, send},
     wire::{frame, stream::Id, varint},
@@ -20,7 +17,7 @@ use outbound::{
     Finish, chunk,
     chunk::prefix::{Cursor, Prefix},
 };
-pub(crate) use plans::{Encoded, Prepared, View, Written};
+pub(crate) use plans::{Prepared, View, Written};
 use release::batch;
 
 mod plans;
@@ -43,8 +40,6 @@ pub(crate) struct Append<'a> {
     open: Open<'a>,
     pending: varint::Span,
 }
-
-pub(crate) struct Appended;
 
 struct Source<'lane, 'sender, O: buffer::raw::Segment> {
     sender: &'sender mut Sender,
@@ -71,7 +66,7 @@ impl<'lane, 'sender, O: buffer::raw::Segment> From<Source<'lane, 'sender, O>>
         };
         Head {
             entry,
-            front: &mut sender.position.front,
+            front: &mut sender.front,
             amount,
         }
     }
@@ -101,7 +96,7 @@ impl Replay<'_> {
     }
 
     pub(crate) fn commit(self) {
-        self.sender.position.pending = varint::Span::from_zero(self.sender.position.pending.end());
+        self.sender.pending = varint::Span::from_zero(self.sender.pending.end());
         if matches!(self.sender.finish, Finish::Sent) {
             self.sender.finish = Finish::Marked;
         }
@@ -110,6 +105,41 @@ impl Replay<'_> {
 
 impl Range {
     const FIN: u64 = 1 << 63;
+
+    pub(crate) fn write(
+        self,
+        out: &mut write::Append<'_>,
+        limit: usize,
+        id: Id,
+        copy: impl FnOnce(Range, &mut write::Append<'_>) -> Result<Option<Appended>, alloc::Error>,
+    ) -> Result<Option<(NonZero<u16>, u16)>, alloc::Error> {
+        let room = limit.saturating_sub(out.len());
+        let mut out = out.append();
+        let len = self.len_usize();
+        let boundary = match self.boundary() {
+            send::Boundary::More => frame::Boundary::More,
+            send::Boundary::End => frame::Boundary::End,
+        };
+        let Some(frame::StreamHead) =
+            frame::Frame::write_stream(&mut out, id, self.offset(), boundary, len)?
+        else {
+            return Ok(None);
+        };
+        if out.len().saturating_add(len) <= room {
+            let Some(_) = copy(self, &mut out)? else {
+                out.rollback();
+                return Ok(None);
+            };
+            let wire_len = u16::try_from(out.len()).ok().and_then(NonZero::<u16>::new);
+            if wire_len.is_none() {
+                out.rollback();
+            }
+            Ok(wire_len.map(|wire_len| (wire_len, len as u16)))
+        } else {
+            out.rollback();
+            Ok(None)
+        }
+    }
 
     pub(crate) const fn offset(self) -> u64 {
         self.encoded_offset & !Self::FIN
@@ -141,27 +171,11 @@ impl Range {
     }
 }
 
-pub(crate) struct Position {
-    front: Cursor,
-    base_offset: varint::VarInt,
-    pending: varint::Span,
-}
-
-impl Default for Position {
-    fn default() -> Self {
-        Self {
-            front: Cursor::default(),
-            base_offset: varint::VarInt::ZERO,
-            pending: varint::Span::ZERO,
-        }
-    }
-}
-
 impl<'a> Open<'a> {
     /// Admits one suffix against the remaining offset and allocation domains.
     /// The exclusive loan retains the existing extent and this checked addition.
     pub(crate) fn plan_append(self, bytes: usize) -> Option<Append<'a>> {
-        let pending = self.0.position.pending.try_extend(bytes as u64)?;
+        let pending = self.0.pending.try_extend(bytes as u64)?;
         Some(Append {
             open: self,
             pending,
@@ -175,104 +189,48 @@ impl<'a> Open<'a> {
 
 impl Append<'_> {
     pub(crate) fn commit(self, boundary: send::Boundary) {
-        self.open.0.position.pending = self.pending;
+        self.open.0.pending = self.pending;
         if matches!(boundary, send::Boundary::End) {
             self.open.mark_fin();
         }
     }
 }
 
-impl Position {
-    pub(crate) fn buffered_len(&self) -> usize {
-        (self.pending.end().get() - self.base_offset.get()) as usize
-    }
-
-    pub(crate) fn write<O: buffer::raw::Segment>(
-        &self,
-        out: &mut write::Append<'_>,
-        limit: usize,
-        id: Id,
-        chunks: pool::View<'_, chunk::Node<O>>,
-        range: Range,
-    ) -> Result<Option<Encoded>, alloc::Error> {
-        let room = limit.saturating_sub(out.len());
-        let mut out = out.append();
-        let len = range.len_usize();
-        let boundary = match range.boundary() {
-            send::Boundary::More => frame::Boundary::More,
-            send::Boundary::End => frame::Boundary::End,
-        };
-        let Some(frame::StreamHead) =
-            frame::Frame::write_stream(&mut out, id, range.offset(), boundary, len)?
-        else {
-            return Ok(None);
-        };
-        if out.len().saturating_add(len) <= room {
-            let Some(Appended) = self.copy(range, chunks, &mut out)? else {
-                out.rollback();
-                return Ok(None);
-            };
-            let wire_len = u16::try_from(out.len()).ok().and_then(NonZero::<u16>::new);
-            if wire_len.is_none() {
-                out.rollback();
-            }
-            Ok(wire_len.map(|wire_len| Encoded {
-                wire_len,
-                bytes: len as u16,
-            }))
-        } else {
-            out.rollback();
-            Ok(None)
-        }
-    }
-
-    pub(crate) fn copy<O: buffer::raw::Segment, W: write::Sink>(
-        &self,
-        range: Range,
-        chunks: pool::View<'_, chunk::Node<O>>,
-        out: &mut W,
-    ) -> Result<Option<Appended>, W::Error> {
-        let len = range.len_usize();
-        if len == 0 {
-            return Ok(Some(Appended));
-        }
-        let Some(relative) = range.offset().checked_sub(self.base_offset.get()) else {
-            return Ok(None);
-        };
-        let relative = relative as usize;
-        let Some(mut skip) = self.front.offset().checked_add(relative) else {
-            return Ok(None);
-        };
-        let mut left = len;
-        for segment in chunks.iter() {
-            if left == 0 {
-                break;
-            }
-            let segment_len = segment.len();
-            if skip >= segment_len {
-                skip -= segment_len;
-                continue;
-            }
-            let take = left.min(segment_len - skip);
-            let Some(chunk::Copied) = segment.copy(skip, take, out)? else {
-                return Ok(None);
-            };
-            left -= take;
-            skip = 0;
-        }
-        Ok((left == 0).then_some(Appended))
-    }
-}
-
-#[derive(Default)]
 pub(crate) struct Sender {
-    pub(super) position: Position,
+    front: Cursor,
+    base_offset: varint::VarInt,
+    pending: varint::Span,
     pub(super) finish: Finish,
     stop_error: Option<varint::Stored>,
     reset_error: Option<varint::Stored>,
 }
 
+impl Default for Sender {
+    fn default() -> Self {
+        Self {
+            front: Cursor::default(),
+            base_offset: varint::VarInt::ZERO,
+            pending: varint::Span::ZERO,
+            finish: Finish::More,
+            stop_error: None,
+            reset_error: None,
+        }
+    }
+}
+
 impl Sender {
+    pub(crate) fn head_offset(&self) -> u64 {
+        self.base_offset.get() - self.front.offset() as u64
+    }
+
+    pub(crate) const fn base_offset(&self) -> u64 {
+        self.base_offset.get()
+    }
+
+    pub(crate) fn buffered_len(&self) -> usize {
+        (self.pending.end().get() - self.base_offset.get()) as usize
+    }
+
     pub(crate) fn open(&mut self) -> Option<Open<'_>> {
         match self.finish {
             Finish::More => Some(Open(self)),
@@ -282,7 +240,7 @@ impl Sender {
 
     pub(crate) fn view(&self) -> View {
         View {
-            pending: self.position.pending,
+            pending: self.pending,
             finish: self.finish,
         }
     }
@@ -303,18 +261,17 @@ impl Sender {
 
     pub(crate) fn publish(commit: crate::conn::Publication<'_>) {
         let (sender, written) = commit.into_parts();
-        sender.position.pending = written.pending;
+        sender.pending = written.pending;
         if matches!(written.boundary, send::Boundary::End) {
             sender.finish = Finish::Sent;
         }
     }
 
     pub(crate) fn try_replay(&mut self) -> Result<Replay<'_>, Acknowledged> {
-        if self.position.base_offset != varint::VarInt::ZERO || matches!(self.finish, Finish::Acked)
-        {
+        if self.base_offset != varint::VarInt::ZERO || matches!(self.finish, Finish::Acked) {
             return Err(Acknowledged);
         }
-        let bytes = self.position.buffered_len() - self.view().unsent_len();
+        let bytes = self.buffered_len() - self.view().unsent_len();
         Ok(Replay {
             sender: self,
             bytes,
@@ -323,7 +280,9 @@ impl Sender {
 
     /// A rejected early reset retains no byte owners and restarts its final size.
     pub(crate) fn reject_reset(&mut self) {
-        self.position = Position::default();
+        self.front = Cursor::default();
+        self.base_offset = varint::VarInt::ZERO;
+        self.pending = varint::Span::ZERO;
         self.finish = Finish::More;
     }
 
@@ -354,13 +313,13 @@ impl Sender {
                 ControlFlow::Continue(rest) => rest,
             };
             rest = left;
-            sender.position.front = Cursor::default();
+            sender.front = Cursor::default();
             let (owner, lane) = front.take();
             chunks = lane;
             released.release(owner, buffers);
         }
-        let buffered = sender.position.buffered_len() - len;
-        sender.position.base_offset = base;
+        let buffered = sender.buffered_len() - len;
+        sender.base_offset = base;
         sender.finish = finish;
         if matches!(finish, Finish::Acked) && buffered == 0 {
             Acked::Closed(released)
@@ -378,7 +337,7 @@ impl Sender {
         let end = self.view().next_offset();
         self.stop_error = Some((*code.as_varint()).into());
         let released = self.discard_all::<E>(chunks, buffers);
-        self.position.base_offset = end;
+        self.base_offset = end;
         released
     }
 
@@ -405,7 +364,7 @@ impl Sender {
     ) -> batch::Batch<E::Mode> {
         let end = self.view().next_offset();
         let released = self.discard_all::<E>(chunks, buffers);
-        self.position.base_offset = end;
+        self.base_offset = end;
         self.reset_error = Some((*code.as_varint()).into());
         released
     }
@@ -415,21 +374,13 @@ impl Sender {
         chunks: &mut pool::Lane<'_, chunk::Node<impl buffer::raw::Segment>>,
         buffers: &mut outbound::BufferCache,
     ) -> batch::Batch<E::Mode> {
-        let mut released = batch::Batch::<E::Mode>::wire_bytes(self.position.buffered_len());
+        let mut released = batch::Batch::<E::Mode>::wire_bytes(self.buffered_len());
         while let Some(owner) = chunks.pop_front() {
             released.release(owner, buffers);
         }
-        self.position.pending = varint::Span::empty(self.position.pending.start());
-        self.position.front = Cursor::default();
+        self.pending = varint::Span::empty(self.pending.start());
+        self.front = Cursor::default();
         released
-    }
-}
-
-impl ops::Deref for Sender {
-    type Target = Position;
-
-    fn deref(&self) -> &Self::Target {
-        &self.position
     }
 }
 
@@ -439,5 +390,4 @@ const _: () = assert!(mem::size_of::<Open<'static>>() == mem::size_of::<usize>()
 const _: () = assert!(mem::size_of::<Append<'static>>() == 3 * mem::size_of::<usize>());
 const _: () = assert!(mem::size_of::<Written>() == 3 * mem::size_of::<usize>());
 const _: () = assert!(usize::BITS <= u64::BITS);
-const _: () = assert!(mem::size_of::<Position>() == mem::size_of::<(usize, usize, u64, usize)>());
 const _: () = assert!(mem::size_of::<View>() == mem::size_of::<(u64, usize, Finish)>());

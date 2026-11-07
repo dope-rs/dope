@@ -22,6 +22,99 @@ use queue::{Data, Handle, Removal, Side, budget, recycle};
 use release::batch;
 use resident::slot::{plane, store};
 use send::admit;
+use std::num::NonZero;
+
+pub(crate) struct Appended(());
+
+#[derive(Default)]
+pub(super) struct Cursor {
+    index: Option<o3::depot::arena::linked::slots::Index>,
+    start: u64,
+    segments: o3::buffer::segments::scatter::raw::Position,
+}
+
+impl Cursor {
+    pub(super) fn clear(&mut self) {
+        self.index = None;
+    }
+
+    #[inline(always)]
+    fn copy<D: buffer::raw::Segment>(
+        &mut self,
+        source: &outbound::Sender,
+        chunks: pool::View<'_, chunk::Node<D>>,
+        range: outbound::Range,
+        out: &mut write::Append<'_>,
+    ) -> Result<Option<Appended>, alloc::Error> {
+        use o3::buffer::{raw::Chunks as _, segments::scatter};
+        use o3::depot::{index::Initialized, raw::Proof};
+        use write::Sink as _;
+
+        let length = range.len_usize();
+        let mut left = length;
+        if left == 0 {
+            return Ok(Some(Appended(())));
+        }
+        let offset = range.offset();
+        if offset < source.base_offset() {
+            return Ok(None);
+        }
+        let (mut nodes, mut start) = match self.index {
+            Some(index) if self.start <= offset => {
+                // SAFETY: this occupied owner's saved member remains in its exact lane.
+                let nodes = unsafe { Proof::<_, Initialized<()>>::new((chunks, index)) }.into();
+                (nodes, self.start)
+            }
+            _ => (chunks.iter(), source.head_offset()),
+        };
+        let mut skip = (offset - start) as usize;
+        while let Some((index, segment)) = nodes.next_with_index() {
+            let len = segment.len();
+            if skip >= len {
+                skip -= len;
+                start += len as u64;
+                continue;
+            }
+            let first = left == length;
+            if first && self.index != Some(index) {
+                self.segments = scatter::raw::Position::new();
+                self.index = Some(index);
+                self.start = start;
+            }
+            let take = left.min(len - skip);
+            let bytes = match segment {
+                chunk::Node::Buffer(buffer) => Some(buffer.as_slice()),
+                chunk::Node::One(owner) => Some(owner.as_ref().as_ref()),
+                chunk::Node::Segments(owners) => {
+                    // SAFETY: node changes clear and exact prefix retirement rebases this checkpoint;
+                    // the retained chain suffix owns skip < len and take <= len - skip.
+                    let mut cursor = if first {
+                        unsafe { self.segments.resume(owners.as_chain(), skip) }
+                    } else {
+                        owners.as_chain().chunks()
+                    };
+                    for bytes in scatter::Take::new(&mut cursor, take) {
+                        out.write_slice(bytes.bytes())?;
+                    }
+                    None
+                }
+            };
+            if let Some(bytes) = bytes {
+                let Some(bytes) = bytes.get(skip..skip + take) else {
+                    return Ok(None);
+                };
+                out.write_slice(bytes)?;
+            }
+            left -= take;
+            if left == 0 {
+                return Ok(Some(Appended(())));
+            }
+            skip = 0;
+            start += len as u64;
+        }
+        Ok(None)
+    }
+}
 
 /// A returned prefix and the original queue budget that still accounts for it.
 #[must_use]
@@ -123,8 +216,25 @@ impl<D: buffer::raw::Segment, P> Occupied<'_, D, P> {
         let id = self.id();
         let (handle, entry, chunks, _, _, _) = self.split();
         Ok(selected
-            .write(&entry.stream, out, limit, id, chunks.into())?
+            .write(out, limit, id, |range, out| {
+                entry.cursor.copy(&entry.stream, chunks.into(), range, out)
+            })?
             .map(|written| (handle, written)))
+    }
+
+    pub(in crate::conn) fn write_range(
+        &mut self,
+        range: outbound::Range,
+        out: &mut write::Append<'_>,
+        limit: usize,
+    ) -> Result<bool, alloc::Error> {
+        let id = self.id();
+        let (_, entry, chunks, _, _, _) = self.split();
+        Ok(range
+            .write(out, limit, id, |range, out| {
+                Cursor::default().copy(&entry.stream, chunks.into(), range, out)
+            })?
+            .is_some())
     }
 
     /// The occupied owner retains its contribution to the aggregate through draining.
@@ -143,6 +253,7 @@ impl<D: buffer::raw::Segment, P> Occupied<'_, D, P> {
         if let Some(group) = entry.delivery_group.take() {
             log.cancel(group);
         }
+        entry.cursor.clear();
         let (batch, result) = apply(entry, &mut chunks, buffers);
         *pending -= bytes;
         (
@@ -250,13 +361,29 @@ impl<'map, D: buffer::raw::Segment> Occupied<'map, D> {
     ) -> (Id, outbound::Acked<()>, Self) {
         let (mut sender, run) = ack.into_parts();
         let id = sender.id();
-        let (_, entry, chunks, _, budget, buffers) = sender.split();
+        let (_, entry, mut chunks, _, budget, buffers) = sender.split();
         let acked = outbound::Sender::ack::<E, D>(Reclaim {
             sender: &mut entry.stream,
-            chunks,
+            chunks: chunks.borrow_mut(),
             buffers,
             run,
         });
+        let start = entry.stream.head_offset();
+        if entry.cursor.index.is_some()
+            && let Some(removed) = NonZero::new(start.saturating_sub(entry.cursor.start) as usize)
+        {
+            match pool::View::from(&chunks).iter().next_with_index() {
+                Some((index, chunk::Node::Segments(_))) if entry.cursor.index == Some(index) => {
+                    // SAFETY: this uninterrupted lane loan allows only prefix removal before lookup.
+                    // The same live head retains this checkpoint's unchanged chain suffix.
+                    unsafe {
+                        entry.cursor.segments.rebase_prefix(removed);
+                    }
+                    entry.cursor.start = start;
+                }
+                _ => entry.cursor.clear(),
+            }
+        }
         let (batch, closed) = match acked {
             outbound::Acked::Live(batch) => (batch, false),
             outbound::Acked::Closed(batch) => (batch, true),
@@ -358,7 +485,6 @@ impl<D: buffer::raw::Segment> Occupied<'_, D> {
     ) -> Result<(), Error> {
         use crate::stream::outbound::{Charge, chunk::Node};
         use o3::depot::capacity::Shortage;
-        use std::num::NonZero;
         let (_, entry, mut chunks, pending, budget, buffers) = self.split();
         let open = entry.open().map_err(Error::Discarded)?;
         budget

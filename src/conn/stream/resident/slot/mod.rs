@@ -161,17 +161,12 @@ impl Capacity {
 }
 
 pub(in crate::conn) struct Resolved<'a, Side, Value, Auxiliary> {
-    id: stream::Id,
     value: &'a Value,
     auxiliary: &'a Auxiliary,
     side: marker::PhantomData<fn() -> Side>,
 }
 
 impl<'a, Side, Value, Auxiliary> Resolved<'a, Side, Value, Auxiliary> {
-    pub(in crate::conn) const fn id(&self) -> stream::Id {
-        self.id
-    }
-
     pub(in crate::conn) const fn value(&self) -> &'a Value {
         self.value
     }
