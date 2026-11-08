@@ -45,7 +45,7 @@ impl Codec for Decode {
     type Staging = Buffered;
 
     fn staging(&self) -> Result<staging::Plan, staging::Error> {
-        staging::Plan::new(2, 2)
+        staging::Plan::new(4, 4)
     }
 }
 
@@ -60,13 +60,14 @@ impl Stateless for Decode {
         let head = match input.first() {
             Some(&head) if input.as_slice() != b"P" => head,
             _ => {
-                return Ok(match input.need_more(None) {
+                return Ok(match input.need_to(2) {
                     Some(need) => codec::Parse::More(need),
                     None => codec::Parse::CapacityExhausted,
                 });
             }
         };
-        let consumed = input.try_consumed(NonZero::<usize>::MIN)?;
+        let count = NonZero::<usize>::MIN.saturating_add(usize::from(head == b'P'));
+        let consumed = input.try_consumed(count)?;
         Ok(codec::Parse::Item { head, consumed })
     }
 }

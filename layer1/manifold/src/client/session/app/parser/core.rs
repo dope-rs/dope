@@ -123,7 +123,7 @@ impl<'a, 'connection, 'e, 'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, 
                 return ControlFlow::Break(Run::Blocked);
             }
         };
-        match self.ingress.prepare(self.budget) {
+        match self.ingress.prepare(mode, self.budget) {
             Ok(true) => {}
             Ok(false) => {
                 state.record(eof, flow::Record::Done);

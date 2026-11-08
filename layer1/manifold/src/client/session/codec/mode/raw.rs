@@ -23,9 +23,12 @@ pub(super) enum Received<'d, P, C> {
     Staged {
         proof: P,
         pending: Option<C>,
+        target: Option<codec::Exact>,
     },
-    Pending(C),
-    Direct(C),
+    Chunk {
+        chunk: C,
+        active: bool,
+    },
 }
 
 pub(in crate::client::session) enum View<B, C> {
@@ -42,24 +45,9 @@ impl<'d, B: Buffer<'d>, C: buffer::Cursor + buffer::raw::Consume> Source<'d, B, 
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        match &self.received {
-            Received::Vacant(_) => true,
-            Received::Staged { proof, pending } => {
-                buffer::Source::remaining(self.stage.staged(proof)) == 0
-                    && pending
-                        .as_ref()
-                        .is_none_or(|chunk| buffer::Source::remaining(chunk) == 0)
-            }
-            Received::Pending(chunk) | Received::Direct(chunk) => {
-                buffer::Source::remaining(chunk) == 0
-            }
-        }
-    }
-
     /// Releases a fully consumed direct owner while preserving the empty stage.
     pub(super) fn direct(&mut self) {
-        if let Received::Direct(chunk) = &self.received
+        if let Received::Chunk { chunk, .. } = &self.received
             && buffer::Source::remaining(chunk) == 0
         {
             self.received = Received::Vacant(&[]);
@@ -67,53 +55,52 @@ impl<'d, B: Buffer<'d>, C: buffer::Cursor + buffer::raw::Consume> Source<'d, B, 
     }
 
     pub(super) fn prepare(&mut self, budget: &resident::Budget<'d>) -> Result<bool, Failure> {
-        if matches!(self.received, Received::Pending(_)) {
-            self.received = match mem::replace(&mut self.received, Received::Vacant(&[])) {
-                Received::Pending(chunk) => Received::Direct(chunk),
-                received => received,
-            };
-        } else if let Received::Staged { proof, pending } = &mut self.received {
-            let stage = self.stage.staged_mut(proof);
-            if stage.as_ref().is_empty()
-                && let Some(chunk) = pending.take()
-            {
-                self.received = Received::Direct(chunk);
-            } else {
-                let result = match pending.as_mut() {
-                    Some(chunk) => Self::append(stage, chunk, budget),
-                    None => Ok(()),
-                };
-                if pending
-                    .as_ref()
-                    .is_some_and(|chunk| buffer::Source::remaining(chunk) == 0)
+        match &mut self.received {
+            Received::Chunk { active, .. } => *active = true,
+            Received::Staged {
+                proof,
+                pending,
+                target,
+            } => {
+                let stage = self.stage.staged_mut(proof);
+                if stage.as_ref().is_empty()
+                    && let Some(chunk) = pending.take()
                 {
-                    *pending = None;
+                    self.received = Received::Chunk {
+                        chunk,
+                        active: true,
+                    };
+                } else if let Some(chunk) = pending {
+                    let limit = match target {
+                        Some(target) => target.count().get() as usize,
+                        None => usize::MAX,
+                    };
+                    while let Some(count) = NonZero::new(
+                        stage
+                            .spare()
+                            .min(limit - stage.len())
+                            .min(chunk.as_ref().len()),
+                    ) {
+                        codec::Input::consume(chunk, budget, stage.limit(), |input| {
+                            let (prefix, end) = match input.try_prefix(0, count) {
+                                Ok(value) => value,
+                                Err(error) => return (None, Err(Failure::Input(error))),
+                            };
+                            match stage.write_slice(prefix.as_slice()) {
+                                Ok(()) => (Some(end), Ok(())),
+                                Err(error) => (None, Err(Failure::Staging(error))),
+                            }
+                        })?;
+                    }
+                    if buffer::Source::remaining(chunk) == 0 {
+                        *pending = None;
+                    }
                 }
-                result?;
             }
+            Received::Vacant(_) => {}
         }
         self.direct();
         Ok(buffer::Source::remaining(self) != 0)
-    }
-
-    fn append(
-        stage: &mut Buf<'d>,
-        chunk: &mut C,
-        budget: &resident::Budget<'d>,
-    ) -> Result<(), Failure> {
-        while let Some(count) = NonZero::new(stage.spare().min(chunk.as_ref().len())) {
-            codec::Input::consume(chunk, budget, stage.limit(), |input| {
-                let (prefix, end) = match input.try_prefix(0, count) {
-                    Ok(value) => value,
-                    Err(error) => return (None, Err(Failure::Input(error))),
-                };
-                match stage.write_slice(prefix.as_slice()) {
-                    Ok(()) => (Some(end), Ok(())),
-                    Err(error) => (None, Err(Failure::Staging(error))),
-                }
-            })?;
-        }
-        Ok(())
     }
 
     pub(super) fn preserve(
@@ -129,12 +116,12 @@ impl<'d, B: Buffer<'d>, C: buffer::Cursor + buffer::raw::Consume> Source<'d, B, 
                     NonZero::<usize>::MIN.saturating_add(exact.count().get() as usize - 1)
                 }))
                 .map_err(Failure::Staging)?;
-            if let Received::Pending(chunk) | Received::Direct(chunk) = &mut self.received {
+            let result = if let Received::Chunk { chunk, .. } = &mut self.received {
                 let stage = self.stage.staged_mut(&proof);
                 stage
                     .write_slice(chunk.as_ref())
                     .map_err(Failure::Staging)?;
-                let result = match NonZero::new(len) {
+                match NonZero::new(len) {
                     None => Ok(()),
                     Some(count) => codec::Input::consume(chunk, budget, stage.limit(), |input| {
                         match input.try_consumed(count) {
@@ -142,29 +129,22 @@ impl<'d, B: Buffer<'d>, C: buffer::Cursor + buffer::raw::Consume> Source<'d, B, 
                             Err(error) => (None, Err(Failure::Input(error))),
                         }
                     }),
-                };
-                let pending = match mem::replace(
-                    &mut self.received,
-                    Received::Staged {
-                        proof,
-                        pending: None,
-                    },
-                ) {
-                    Received::Pending(chunk) | Received::Direct(chunk) => Some(chunk),
+                }
+            } else {
+                Ok(())
+            };
+            self.received = Received::Staged {
+                proof,
+                pending: match mem::replace(&mut self.received, Received::Vacant(&[])) {
+                    Received::Chunk { chunk, .. } => {
+                        (buffer::Source::remaining(&chunk) != 0).then_some(chunk)
+                    }
                     Received::Staged { pending, .. } => pending,
                     Received::Vacant(_) => None,
-                };
-                self.received = Received::Staged {
-                    proof,
-                    pending: pending.filter(|chunk| buffer::Source::remaining(chunk) != 0),
-                };
-                result?;
-            } else if matches!(self.received, Received::Vacant(_)) {
-                self.received = Received::Staged {
-                    proof,
-                    pending: None,
-                };
-            }
+                },
+                target,
+            };
+            result?;
         }
         Ok(matches!(
             &self.received,
@@ -186,7 +166,7 @@ impl<'d, B: Buffer<'d>, C: buffer::Source> buffer::Source for Source<'d, B, C> {
         match &self.received {
             Received::Vacant(bytes) => bytes.len(),
             Received::Staged { proof, .. } => self.stage.staged(proof).remaining(),
-            Received::Pending(chunk) | Received::Direct(chunk) => chunk.remaining(),
+            Received::Chunk { chunk, .. } => chunk.remaining(),
         }
     }
 }
@@ -196,7 +176,7 @@ impl<'d, B: Buffer<'d>, C: AsRef<[u8]>> AsRef<[u8]> for Source<'d, B, C> {
         match &self.received {
             Received::Vacant(_) => &[],
             Received::Staged { proof, .. } => self.stage.staged(proof).as_ref(),
-            Received::Pending(chunk) | Received::Direct(chunk) => chunk.as_ref(),
+            Received::Chunk { chunk, .. } => chunk.as_ref(),
         }
     }
 }
@@ -211,9 +191,7 @@ impl<'d, B: Buffer<'d>, C: buffer::Cursor> buffer::Cursor for Source<'d, B, C> {
                 <[u8] as buffer::Cursor>::try_get(bytes.as_slice(), range).map(|_| View::Vacant)
             }
             Received::Staged { proof, .. } => self.stage.try_view(proof, range).map(View::Staged),
-            Received::Pending(chunk) | Received::Direct(chunk) => {
-                chunk.try_get(range).map(View::Direct)
-            }
+            Received::Chunk { chunk, .. } => chunk.try_get(range).map(View::Direct),
         }
     }
 }
@@ -311,13 +289,14 @@ unsafe impl<'d, B: Buffer<'d>, C: buffer::raw::Consume> buffer::raw::Consume for
         let (source, end) = prefix.into_parts();
         match &mut source.received {
             Received::Vacant(_) => {}
-            Received::Staged { proof, .. } => {
+            Received::Staged { proof, target, .. } => {
                 // SAFETY: the staged variant exposes exactly the unchanged stage range.
                 Buf::consume(unsafe {
                     buffer::raw::Consumed::from_parts(source.stage.staged_mut(proof), end)
                 });
+                *target = None;
             }
-            Received::Pending(chunk) | Received::Direct(chunk) => {
+            Received::Chunk { chunk, .. } => {
                 // SAFETY: the direct variant exposes exactly this unchanged chunk range.
                 C::consume(unsafe { buffer::raw::Consumed::from_parts(chunk, end) });
             }

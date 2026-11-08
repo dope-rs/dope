@@ -1,11 +1,11 @@
 use codec::storage;
 use codec::{
-    mode::{self, Policy},
+    mode::{self, Policy, raw::Received},
     staging::{self, Buffer},
 };
 use dope_core::driver::route::Identity;
 use dope_net::wire::{self, receive::Chunk};
-use o3::buffer::resident;
+use o3::buffer::{self, resident};
 
 use crate::{
     app::receive::Failure,
@@ -42,6 +42,7 @@ pub(in crate::client::session) enum Read<T> {
 }
 
 /// The session admitted input before inspecting its retained source.
+#[derive(Clone, Copy)]
 pub(in crate::client::session) enum Active {
     Framed,
     Duplex,
@@ -64,7 +65,13 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
     }
 
     pub(in crate::client::session) fn is_empty(&self) -> bool {
-        N::Mode::source(self.slot.parts().0).is_empty()
+        let source = N::Mode::source(self.slot.parts().0);
+        buffer::Source::remaining(source) == 0
+            && !matches!(
+                &source.received,
+                Received::Staged { pending: Some(chunk), .. }
+                    if buffer::Source::remaining(chunk) != 0
+            )
     }
 
     pub(in crate::client::session) fn with<R>(
@@ -83,17 +90,18 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
         let (storage, _) = self.slot.parts_mut();
         let received = &mut N::Mode::edit(storage).0.received;
         match received {
-            mode::raw::Received::Vacant(_) => {
-                *received = mode::raw::Received::Pending(chunk);
+            Received::Vacant(_) => {
+                *received = Received::Chunk {
+                    chunk,
+                    active: false,
+                };
                 Ok(())
             }
-            mode::raw::Received::Staged { pending, .. } if pending.is_none() => {
+            Received::Staged { pending, .. } if pending.is_none() => {
                 *pending = Some(chunk);
                 Ok(())
             }
-            mode::raw::Received::Staged { .. }
-            | mode::raw::Received::Pending(_)
-            | mode::raw::Received::Direct(_) => Err(chunk),
+            Received::Staged { .. } | Received::Chunk { .. } => Err(chunk),
         }
     }
 
@@ -101,16 +109,16 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
         let (storage, state) = self.slot.parts_mut();
         let source = if matches!(
             N::Mode::source(storage).received,
-            mode::raw::Received::Direct(_)
+            Received::Chunk { active: true, .. }
         ) {
             N::Mode::restart(codec, storage, state)
         } else {
             N::Mode::edit(storage)
         };
         match &mut source.0.received {
-            mode::raw::Received::Staged { pending, .. } => *pending = None,
-            mode::raw::Received::Vacant(_) => {}
-            received => *received = mode::raw::Received::Vacant(&[]),
+            Received::Staged { pending, .. } => *pending = None,
+            Received::Vacant(_) => {}
+            received => *received = Received::Vacant(&[]),
         }
     }
 
@@ -120,7 +128,7 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
     ) {
         let (storage, state) = input.parts();
         let source = N::Mode::restart(codec, storage, state).0;
-        source.received = mode::raw::Received::Vacant(&[]);
+        source.received = Received::Vacant(&[]);
         if let Some(stage) = source.stage.buffered() {
             stage.clear();
         }
@@ -129,10 +137,17 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Parser<'d, ID>, W: wire::Spec + 'd>
     /// Activates only unconsumed owners; staged appends preserve the existing scanner.
     pub(in crate::client::session) fn prepare(
         &mut self,
+        mode: Active,
         budget: &resident::Budget<'d>,
     ) -> Result<bool, Failure> {
         let (storage, _) = self.slot.parts_mut();
-        N::Mode::edit(storage).0.prepare(budget)
+        let source = N::Mode::edit(storage).0;
+        if matches!(mode, Active::Duplex)
+            && let Received::Staged { target, .. } = &mut source.received
+        {
+            *target = None;
+        }
+        source.prepare(budget)
     }
 
     pub(in crate::client::session) fn preserve(

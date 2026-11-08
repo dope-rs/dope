@@ -176,7 +176,7 @@ fn plain_parse_preserves_partial_and_retry() {
                     &*events.values().expect("partial input events"),
                     [Event::Parse { len: 1, .. }]
                 ));
-                stream.write_all(b"H").expect("complete input");
+                stream.write_all(b"HH").expect("complete input");
                 assert!(matches!(case.try_wait(&parsed, 4), Ok(Wait::Reached)));
                 stream.shutdown(Shutdown::Write).expect("input EOF");
                 assert!(matches!(case.try_wait(&closed, 1), Ok(Wait::Reached)));
@@ -196,11 +196,11 @@ fn plain_parse_preserves_partial_and_retry() {
                 Event::Parse { pointer: first, len: 2 },
                 Event::Parse { pointer: retry, len: 2 },
                 Event::Head(b'P'),
-                Event::Parse { len: 1, .. },
+                Event::Parse { pointer: tail, len: 1 },
                 Event::Head(b'H'),
                 Event::Quarantined,
                 Event::Closed(close::Reason::Remote)
-            ] if first == retry
+            ] if first == retry && *tail != first.wrapping_add(2)
         ),
         "plain parse order: {events:?}"
     );
