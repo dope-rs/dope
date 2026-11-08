@@ -107,61 +107,28 @@ impl<'d> Command<'_, 'd> {
         self.clear(slot);
         self.resident(slot).clear();
     }
+
+    fn poll_alarm(
+        &mut self,
+        slot: &heap::Lease<'d, Tag>,
+        now: time::Instant,
+        target: &wake::Waker<'d>,
+    ) -> task::Poll<()> {
+        let state = self.state(slot);
+        let due = state == heap::State::Fired || self.priority(slot).is_some_and(|due| *due <= now);
+        if due {
+            self.clear_alarm(slot);
+            task::Poll::Ready(())
+        } else if state == heap::State::Armed {
+            self.set_target(slot, target);
+            task::Poll::Pending
+        } else {
+            task::Poll::Pending
+        }
+    }
 }
 
 impl<'d> Timer<'d> {
-    fn has_alarm(self, slot: &heap::Lease<'d, Tag>) -> bool {
-        self.command(|cmd| cmd.state(slot) != heap::State::Idle)
-    }
-
-    fn arm(self, slot: &heap::Lease<'d, Tag>, due: time::Instant, target: wake::Waker<'d>) {
-        self.command(|mut cmd| cmd.arm_alarm(slot, due, &target));
-    }
-
-    fn arm_and_poll(
-        self,
-        slot: &heap::Lease<'d, Tag>,
-        due: time::Instant,
-        now: time::Instant,
-        target: wake::Waker<'d>,
-    ) -> task::Poll<()> {
-        self.command(|mut cmd| {
-            if due <= now {
-                cmd.clear_alarm(slot);
-                task::Poll::Ready(())
-            } else {
-                cmd.arm_alarm(slot, due, &target);
-                task::Poll::Pending
-            }
-        })
-    }
-
-    fn poll(
-        self,
-        slot: &heap::Lease<'d, Tag>,
-        now: time::Instant,
-        target: wake::Waker<'d>,
-    ) -> task::Poll<()> {
-        self.command(|mut cmd| {
-            let state = cmd.state(slot);
-            let due =
-                state == heap::State::Fired || cmd.priority(slot).is_some_and(|due| *due <= now);
-            if due {
-                cmd.clear_alarm(slot);
-                task::Poll::Ready(())
-            } else if state == heap::State::Armed {
-                cmd.set_target(slot, &target);
-                task::Poll::Pending
-            } else {
-                task::Poll::Pending
-            }
-        })
-    }
-
-    fn clear(self, slot: &heap::Lease<'d, Tag>) {
-        self.command(|mut cmd| cmd.clear_alarm(slot));
-    }
-
     pub(in crate::driver) fn expire(self, ledger: &quota::Ledger<Tag>) {
         let now = self.driver.clock().now().into_raw();
         self.command(|mut cmd| {
@@ -191,11 +158,17 @@ impl<'d> Alarm<'d> {
     }
 
     pub fn is_armed(&self) -> bool {
-        self.lease.sink().0.has_alarm(self.slot())
+        self.lease
+            .sink()
+            .0
+            .command(|cmd| cmd.state(self.lease.item()) != heap::State::Idle)
     }
 
     pub fn arm(&self, due: clock::Deadline<'d>, target: wake::Waker<'d>) {
-        self.lease.sink().0.arm(self.slot(), due.into_raw(), target);
+        self.lease
+            .sink()
+            .0
+            .command(|mut cmd| cmd.arm_alarm(self.lease.item(), due.into_raw(), &target));
     }
 
     /// Replaces this deadline and polls it in one command, retaining the slot.
@@ -205,10 +178,33 @@ impl<'d> Alarm<'d> {
         now: clock::Moment<'d>,
         target: wake::Waker<'d>,
     ) -> task::Poll<()> {
-        self.lease
-            .sink()
-            .0
-            .arm_and_poll(self.slot(), due.into_raw(), now.into_raw(), target)
+        self.lease.sink().0.command(|mut cmd| {
+            if due <= now {
+                cmd.clear_alarm(self.lease.item());
+                task::Poll::Ready(())
+            } else {
+                cmd.arm_alarm(self.lease.item(), due.into_raw(), &target);
+                task::Poll::Pending
+            }
+        })
+    }
+
+    /// Arms an idle alarm; otherwise polls without replacing its deadline.
+    pub fn poll_or_arm(
+        &self,
+        due: clock::Deadline<'d>,
+        now: clock::Moment<'d>,
+        target: wake::Waker<'d>,
+    ) -> task::Poll<()> {
+        self.lease.sink().0.command(|mut cmd| {
+            let slot = self.lease.item();
+            if cmd.state(slot) == heap::State::Idle {
+                cmd.arm_alarm(slot, due.into_raw(), &target);
+                task::Poll::Pending
+            } else {
+                cmd.poll_alarm(slot, now.into_raw(), &target)
+            }
+        })
     }
 
     /// Replaces and polls this deadline, retaining exclusive proof while pending.
@@ -229,15 +225,14 @@ impl<'d> Alarm<'d> {
         self.lease
             .sink()
             .0
-            .poll(self.slot(), now.into_raw(), target)
+            .command(|mut cmd| cmd.poll_alarm(self.lease.item(), now.into_raw(), &target))
     }
 
     pub fn clear(&self) {
-        self.lease.sink().0.clear(self.slot());
-    }
-
-    fn slot(&self) -> &heap::Lease<'d, Tag> {
-        self.lease.item()
+        self.lease
+            .sink()
+            .0
+            .command(|mut cmd| cmd.clear_alarm(self.lease.item()));
     }
 }
 

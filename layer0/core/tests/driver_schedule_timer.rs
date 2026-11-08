@@ -294,8 +294,17 @@ fn rearm_replaces_delivery() {
             let late = moment.try_add(Duration::from_secs(2));
             assert!(late.is_ok(), "second deadline range");
             let late = late.expect("second deadline");
-            alarm.arm(early, Waker::from(first.target()));
-            alarm.arm(late, Waker::from(second.target()));
+            assert!(
+                alarm
+                    .poll_or_arm(early, moment, Waker::from(first.target()))
+                    .is_pending()
+            );
+            alarm.arm(late, Waker::from(first.target()));
+            assert!(
+                alarm
+                    .poll_or_arm(early, moment, Waker::from(second.target()))
+                    .is_pending()
+            );
 
             {
                 let mut active =
@@ -330,12 +339,15 @@ fn rearm_replaces_delivery() {
             }
 
             let mut active = turn.begin_at(clock::Sample::new(now + Duration::from_secs(4)));
-            let moment = active.turn().clock().now();
             active.expire();
             fired.clear();
             assert_eq!(active.ready_round(|token| fired.push(token)), 1);
             assert!(expected[0].matches(fired[0]));
-            assert!(alarm.poll(moment, Waker::from(first.target())).is_ready());
+            assert!(
+                alarm
+                    .poll_or_arm(next, moment, Waker::from(first.target()))
+                    .is_ready()
+            );
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,
