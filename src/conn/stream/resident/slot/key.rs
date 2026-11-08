@@ -25,10 +25,4 @@ unsafe impl<Side> depot::raw::Key for slot::Handle<Side> {
         let raw = unsafe { num::NonZero::<u64>::new_unchecked(raw) };
         slot::Handle::from_raw(raw)
     }
-
-    fn decode(raw: Self::Raw) -> Option<Self> {
-        num::NonZero::<u64>::new(raw)
-            .filter(|raw| raw.get() as u32 != 0)
-            .map(slot::Handle::from_raw)
-    }
 }

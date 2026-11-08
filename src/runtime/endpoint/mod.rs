@@ -213,7 +213,7 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
     /// Reserves the outer datagram extent selected by this socket's routing plan.
     pub fn routed(
         config: config::Config,
-        binding: &routing::Binding,
+        binding: &routing::Binding<'_>,
     ) -> Result<Self, config::Error> {
         Ok(Self::from_validated(config.validated(binding.framing())?))
     }

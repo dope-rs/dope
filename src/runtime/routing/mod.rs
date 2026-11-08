@@ -278,30 +278,24 @@ impl LocalRoute for Routed {
 }
 
 /// One affine socket paired with the only QUIC shard that its selector admits.
-pub struct Binding {
-    socket: datagram::Lease,
-    shard: Shard,
-    prefix: Option<PrefixPlan>,
-    address: net::SocketAddr,
+pub struct Binding<'g> {
+    socket: datagram::Lease<'g>,
+    route: Routed,
 }
 
-impl Binding {
+impl<'g> Binding<'g> {
     pub const fn shard(&self) -> Shard {
-        self.shard
+        self.route.shard
     }
 
     pub(crate) fn framing(&self) -> Option<(PrefixPlan, net::SocketAddr)> {
-        self.prefix.map(|prefix| (prefix, self.address))
+        self.route
+            .prefix
+            .map(|prefix| (prefix, self.socket.local_addr()))
     }
 
-    pub(crate) fn into_parts(self) -> (datagram::Lease, Routed) {
-        (
-            self.socket,
-            Routed {
-                shard: self.shard,
-                prefix: self.prefix,
-            },
-        )
+    pub(crate) fn into_parts(self) -> (datagram::Lease<'g>, Routed) {
+        (self.socket, self.route)
     }
 }
 
@@ -309,7 +303,6 @@ impl Binding {
 pub struct Group {
     native: datagram::Group,
     prefix: Option<PrefixPlan>,
-    address: net::SocketAddr,
 }
 
 impl Group {
@@ -333,19 +326,17 @@ impl Group {
         Ok(Self {
             native: datagram::Group::bind(addr, plan.with_bootstrap(BOOTSTRAP))?,
             prefix: plan.prefix(),
-            address: addr,
         })
     }
 
-    pub fn split(self) -> impl ExactSizeIterator<Item = Binding> {
-        self.native.into_entries().map(move |(index, socket)| {
-            let shard = Shard::from(index);
-            Binding {
-                socket,
-                shard,
-                prefix: self.prefix,
-                address: self.address,
-            }
+    pub fn split(&mut self) -> impl ExactSizeIterator<Item = Binding<'_>> {
+        let prefix = self.prefix;
+        self.native.entries().map(move |(index, socket)| Binding {
+            socket,
+            route: Routed {
+                shard: Shard::from(index),
+                prefix,
+            },
         })
     }
 }
@@ -362,7 +353,7 @@ const _: () = {
     assert!(mem::size_of::<Routed>() == mem::size_of::<(Shard, Option<PrefixPlan>)>());
     assert!(!mem::needs_drop::<Routed>());
     assert!(
-        mem::size_of::<Binding>()
-            == mem::size_of::<(datagram::Lease, Shard, Option<PrefixPlan>, net::SocketAddr)>()
+        mem::size_of::<Binding<'static>>()
+            == mem::size_of::<(datagram::Lease<'static>, Shard, Option<PrefixPlan>)>()
     );
 };

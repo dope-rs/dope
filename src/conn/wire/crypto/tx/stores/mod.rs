@@ -72,12 +72,6 @@ unsafe impl depot::raw::Key for Key {
         let raw = unsafe { NonZero::<u64>::new_unchecked(raw) };
         Self(raw)
     }
-
-    fn decode(raw: Self::Raw) -> Option<Self> {
-        NonZero::<u64>::new(raw)
-            .filter(|raw| raw.get() as u16 != 0 && raw.get() >> 48 == 0)
-            .map(Self)
-    }
 }
 
 pub(super) struct Acknowledged {
