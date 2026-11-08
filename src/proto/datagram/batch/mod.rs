@@ -42,22 +42,12 @@ pub enum Error {
     Crypto { index: usize, cause: crypto::Error },
 }
 
-impl<'pool, const N: usize> Source<'pool, N> {
+impl<'pool, const N: usize, const SUFFIX: usize> Source<'pool, N, SUFFIX> {
     pub fn try_new(arena: &'pool datagram::Arena, length: usize) -> Result<Self, borrowed::Error> {
         let source = borrowed::Source::try_new(&arena.pool, length, conn::TAG_LEN)?;
         Ok(Self { source })
     }
 
-    pub fn try_split<const SUFFIX: usize>(
-        self,
-    ) -> Result<Source<'pool, N, SUFFIX>, borrowed::Error> {
-        Ok(Source {
-            source: self.source.try_suffix::<SUFFIX>()?,
-        })
-    }
-}
-
-impl<'pool, const N: usize, const SUFFIX: usize> Source<'pool, N, SUFFIX> {
     pub fn try_acquire(&self) -> Result<Writable<'pool, N, SUFFIX>, datagram::Full> {
         let mut packets = mem::MaybeUninit::uninit();
         let mut guard = init::Guard::<_, N>::new(&mut packets);
