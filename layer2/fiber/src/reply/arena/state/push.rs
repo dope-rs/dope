@@ -38,7 +38,6 @@ impl Reject {
 pub struct Push<'a, 'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
     front: Option<(
         Front<'a, K>,
-        state::EntryKey,
         &'a mut state::Entry<'arena, 'credits, 'region, D, E>,
     )>,
     arena: &'a reply::Arena<'arena, 'credits, 'region, D, E, K>,
@@ -53,7 +52,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     ) -> Self {
         let state = token.borrow_mut(&lane.arena.state);
         let front = match state.order.route(lane.index).front() {
-            Some(mut front) => {
+            Some(front) => {
                 let key = front.value().key();
                 // SAFETY: Book inserts the entry before linking its order item;
                 // this retained front prevents that entry from being reclaimed.
@@ -64,7 +63,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
                     ))
                 };
                 let (entry, front) = slab::Occupied::from_live(live);
-                Some((front, key, entry.into_mut()))
+                Some((front, entry.into_mut()))
             }
             None => None,
         };
@@ -81,11 +80,11 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     pub fn is_cutoff(&self, cutoff: order::Cutoff<'arena>) -> bool {
         self.front
             .as_ref()
-            .is_some_and(|(_, key, _)| Some(*key) == cutoff.key())
+            .is_some_and(|(front, _)| Some(front.value().key()) == cutoff.key())
     }
 
     pub fn front(&self) -> order::Front {
-        let Some((_, _, entry)) = &self.front else {
+        let Some((_, entry)) = &self.front else {
             return order::Front::Empty;
         };
         match entry.body {
@@ -118,7 +117,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     }
 
     pub(super) fn head(self) -> state::Head<'a, 'arena, 'credits, 'region, D, E, K> {
-        let Some((front, _, entry)) = self.front else {
+        let Some((front, entry)) = self.front else {
             return state::Head::Empty(order::Depth::ZERO);
         };
         let state::Entry {
