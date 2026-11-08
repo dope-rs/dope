@@ -148,8 +148,7 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Current<'_, 'w, 'd> {
         match &plan.backing {
             Backing::Empty => Ok(storage::Owned::default()),
             Backing::Staged(plan) => {
-                storage::Owned::try_from_slice(budget, buffer::Read::as_slice(plan))
-                    .map_err(hold::Error::Resident)
+                <storage::Shared<_> as hold::raw::Retain<'d>>::try_copy(plan, budget)
             }
             Backing::Plain(plan) => {
                 <recv::Shared<'d> as hold::raw::Retain<'d>>::try_copy(plan, budget)
@@ -179,12 +178,9 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Current<'_, 'w, 'd> {
     {
         match &plan.backing {
             Backing::Empty => Ok(resident::Shared::new().into()),
-            Backing::Staged(plan) => plan
-                .try_own()
-                .map(resident::Shared::from)
-                .map(Into::into)
-                .map_err(resident::AllocError::Retain)
-                .map_err(hold::Error::Resident),
+            Backing::Staged(plan) => {
+                <storage::Shared<_> as hold::raw::Retain<'d>>::try_retain(plan, budget)
+            }
             Backing::Plain(plan) => {
                 <recv::Shared<'d> as hold::raw::Retain<'d>>::try_retain(plan, budget)
             }
