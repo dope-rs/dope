@@ -126,7 +126,7 @@ unsafe impl<K, const N: usize> depot::raw::Hooks for Hooks<'_, K, N> {
     }
 }
 
-// SAFETY: only Register::publish creates Ordered, after consuming a distinct
+// SAFETY: only Book::publish creates Ordered, after consuming a distinct
 // entry vacancy and its admission. Each order retains that occupied entry until
 // removal; equal entry and queue capacities therefore guarantee this slot.
 unsafe impl<'a, K: 'a> depot::raw::PoolInsert<'a, false> for Insert<'a, K> {

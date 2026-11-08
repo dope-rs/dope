@@ -12,7 +12,7 @@ use o3::{
 
 use crate::client::{conn, side, side::registry};
 
-type Table<'d, I, P, ID> = lanes::Table<pool::raw::Key<'d, ID>, State<'d, I, P>, 3>;
+type Table<'d, I, P, ID> = lanes::Table<pool::Key<'d, ID>, State<'d, I, P>, 3>;
 
 type Rejection<'d, I, P> = Option<(Source<I, P>, Option<wake::Waker<'d>>)>;
 
@@ -94,7 +94,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
     {
         let target = intent.target();
         self.table(|table| {
-            let vacant = match table.try_vacant(Self::key(target)) {
+            let vacant = match table.try_vacant(target.key()) {
                 Ok(vacant) => vacant,
                 Err(cause) => {
                     return Err(registry::Rejected {
@@ -120,7 +120,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
         waiter: wake::Waker<'d>,
     ) -> task::Poll<Result<(), side::Error>> {
         self.table(|table| {
-            let Some(mut entry) = table.entry(Self::key(target)) else {
+            let Some(mut entry) = table.entry(target.key()) else {
                 return task::Poll::Ready(Err(side::Error::Stale));
             };
             let result = match entry.get_mut() {
@@ -145,7 +145,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
     /// ends, so no user destructor runs while the table is borrowed.
     pub(super) fn abandon(&self, target: conn::Id<'d, ID>) {
         self.table(|table| {
-            let mut entry = table.entry(Self::key(target))?;
+            let mut entry = table.entry(target.key())?;
             match entry.get_mut() {
                 State::Queued(_) | State::Deferred(_) | State::Settled { .. } => {
                     return Some(entry.remove());
@@ -181,7 +181,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
             let key = front.key();
             let source = front.get_mut().take()?;
             front.unlink();
-            let target = conn::Id::from_key(key.into_key());
+            let target = conn::Id::from_key(key);
             Some((side::Ticket { target }, source))
         })
     }
@@ -192,7 +192,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
     pub(super) fn defer(&self, ticket: side::Ticket<'d, ID>, payload: P) {
         drop(self.table(move |table| {
             let target = ticket.target();
-            let Some(mut entry) = table.entry(Self::key(target)) else {
+            let Some(mut entry) = table.entry(target.key()) else {
                 return Some(payload);
             };
             match entry.get_mut() {
@@ -221,7 +221,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
     ) -> Option<wake::Waker<'d>> {
         self.table(|table| {
             let target = ticket.target();
-            let mut entry = table.entry(Self::key(target))?;
+            let mut entry = table.entry(target.key())?;
             match entry.get_mut() {
                 State::InFlight { waiter } => {
                     let waiter = waiter.take();
@@ -240,7 +240,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
     pub(super) fn take_cancel(&self) -> Option<side::Cancellation<'d, ID>> {
         self.table(|table| {
             let front = table.front(ABANDONED)?;
-            let target = conn::Id::from_key(front.key().into_key());
+            let target = conn::Id::from_key(front.key());
             front.unlink();
             Some(side::Cancellation { target })
         })
@@ -253,7 +253,7 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
     ) {
         self.table(|table| {
             let target = cancel.target();
-            let Some(mut entry) = table.entry(Self::key(target)) else {
+            let Some(mut entry) = table.entry(target.key()) else {
                 return;
             };
             if matches!(entry.get_mut(), State::Abandoned) {
@@ -280,10 +280,6 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
             Some(result)
         });
         result.map(|(_, waiter)| waiter)
-    }
-
-    fn key(target: conn::Id<'d, ID>) -> pool::raw::Key<'d, ID> {
-        pool::raw::Key::new(target.key())
     }
 
     fn table<R>(&self, run: impl for<'a> FnOnce(&'a mut Table<'d, I, P, ID>) -> R) -> R {

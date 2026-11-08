@@ -51,7 +51,7 @@ const _: () = {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Cause<'d, ID: Identity = KeyTag<0>> {
     Stale,
-    Slot(direct::Error<pool::raw::Key<'d, ID>>),
+    Slot(direct::Error<pool::Key<'d, ID>>),
 }
 
 /// Rejected reservation retaining its exact caller-owned values.

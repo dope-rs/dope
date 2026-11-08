@@ -13,7 +13,7 @@ use o3::{
 
 use crate::client::{conn, deadline};
 
-type Heap<'d, ID> = resident::Min<pool::raw::Key<'d, ID>, Entry<'d>, Lane<'d>>;
+type Heap<'d, ID> = resident::Min<pool::Key<'d, ID>, Entry<'d>, Lane<'d>>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Entry<'d> {
@@ -128,7 +128,7 @@ pub(in crate::client) struct Book<'d, ID: Identity> {
 /// A popped deadline borrowing its book until the caller resolves the expiry.
 #[must_use = "an expired deadline must be resolved"]
 pub(in crate::client) struct Expired<'a, 'd, ID: Identity> {
-    removed: resident::Removed<'a, pool::raw::Key<'d, ID>, Entry<'d>, Lane<'d>>,
+    removed: resident::Removed<'a, pool::Key<'d, ID>, Entry<'d>, Lane<'d>>,
 }
 
 #[repr(transparent)]
@@ -165,7 +165,7 @@ impl<'d, ID: Identity> Book<'d, ID> {
 
 impl<'a, 'd, ID: Identity> Expired<'a, 'd, ID> {
     pub(in crate::client) fn key(&self) -> pool::Key<'d, ID> {
-        self.removed.key().into_key()
+        self.removed.key()
     }
 
     pub(in crate::client) fn classify<R>(
@@ -244,7 +244,7 @@ const _: () = {
 };
 
 pub(in crate::client) struct Slot<'a, 'd, ID: Identity, C> {
-    entry: conn::Source<&'a mut Heap<'d, ID>, C, pool::raw::Key<'d, ID>>,
+    entry: conn::Source<&'a mut Heap<'d, ID>, C, pool::Key<'d, ID>>,
 }
 
 impl<'d, ID: Identity, C> Slot<'_, 'd, ID, C> {
@@ -377,7 +377,7 @@ impl<'a, 'd, ID: Identity, C> Slot<'a, 'd, ID, C> {
     ) -> Self {
         // SAFETY: projection preserves the exact source and its physical heap plane.
         let source =
-            unsafe { source.map(|((book, owner), key)| ((&mut book.entries, owner), key.into())) };
+            unsafe { source.map(|((book, owner), key)| ((&mut book.entries, owner), key)) };
         Slot { entry: source }
     }
 }

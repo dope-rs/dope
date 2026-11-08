@@ -40,13 +40,6 @@ unsafe impl<'a, 'd, ID: Identity, A: socket::Prepared>
     }
 }
 
-/// Sentinel-capable keyed-storage identity retaining complete connection authority.
-#[derive(Clone, Copy, Debug)]
-#[repr(transparent)]
-pub struct Key<'d, ID: Identity> {
-    key: pool::Key<'d, ID>,
-}
-
 /// Intrusive scheduler identity retaining its driver and route brands.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -54,14 +47,6 @@ pub struct Physical<'d, ID: Identity> {
     lane: indices::SlotIndex,
     brand: marker::PhantomData<route::Target<'d, ID>>,
 }
-
-impl<ID: Identity> PartialEq for Key<'_, ID> {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
-    }
-}
-
-impl<ID: Identity> Eq for Key<'_, ID> {}
 
 impl<ID: Identity> PartialEq for Physical<'_, ID> {
     fn eq(&self, other: &Self) -> bool {
@@ -71,46 +56,29 @@ impl<ID: Identity> PartialEq for Physical<'_, ID> {
 
 impl<ID: Identity> Eq for Physical<'_, ID> {}
 
-impl<'d, ID: Identity> Key<'d, ID> {
-    pub const fn new(key: pool::Key<'d, ID>) -> Self {
-        Self { key }
-    }
-
-    pub const fn into_key(self) -> pool::Key<'d, ID> {
-        self.key
-    }
-}
-
-impl<'d, ID: Identity> From<pool::Key<'d, ID>> for Key<'d, ID> {
-    fn from(key: pool::Key<'d, ID>) -> Self {
-        Self::new(key)
-    }
-}
-
 // SAFETY: the niche raw form preserves the complete route target identity.
-unsafe impl<'d, ID: Identity> depot::raw::Key for Key<'d, ID> {
+unsafe impl<'d, ID: Identity> depot::raw::Key for pool::Key<'d, ID> {
     type Raw = route::raw::Identity<'d, ID>;
 
     const VACANT: Self::Raw = Self::Raw::VACANT;
 
     fn index(self) -> usize {
-        self.key.lane().index().get() as usize
+        self.lane().index().get() as usize
     }
 
     fn into_raw(self) -> Self::Raw {
-        Self::Raw::from_target(self.key.target())
+        Self::Raw::from_target(self.target())
     }
 
     fn from_raw(raw: index::Stored<Self>) -> Self {
         let raw = raw.into_raw();
         // SAFETY: Stored proves this target was emitted by a live Key.
         let target = unsafe { raw.target() };
-        Self::new(pool::Key::from_target(target))
+        Self::from_target(target)
     }
 
     fn decode(raw: Self::Raw) -> Option<Self> {
-        raw.into_target()
-            .map(|target| Self::new(pool::Key::from_target(target)))
+        raw.into_target().map(Self::from_target)
     }
 }
 
@@ -154,14 +122,6 @@ unsafe impl<'d, ID: Identity> depot::raw::Count<Physical<'d, ID>> for table::Cap
 }
 
 const _: () = {
-    assert!(
-        mem::size_of::<Key<'static, KeyTag<0>>>()
-            == mem::size_of::<pool::Key<'static, KeyTag<0>>>()
-    );
-    assert!(
-        mem::align_of::<Key<'static, KeyTag<0>>>()
-            == mem::align_of::<pool::Key<'static, KeyTag<0>>>()
-    );
     assert!(mem::size_of::<Physical<'static, KeyTag<0>>>() == mem::size_of::<u32>());
     assert!(mem::align_of::<Physical<'static, KeyTag<0>>>() == mem::align_of::<u32>());
 };

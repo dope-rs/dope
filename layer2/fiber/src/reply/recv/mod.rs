@@ -226,16 +226,17 @@ impl<
 
     /// Consumes typed group input only after every response, slot, and credit is admitted.
     /// Any admission failure leaves every response and lane order unchanged.
-    pub fn try_group_by<I, Y, R, const N: usize>(
+    pub fn try_group_by<I, Y, V, F, R, const N: usize>(
         token: &mut region::Token<region::Identity<'region>>,
         lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
         commands: &mut [Self; N],
         terminal: &mut Response<'s, 'arena, 'credits, 'region, D, Y, E, K>,
         input: I,
-        make: impl FnOnce(I) -> ([K; N], K, R),
+        make: impl FnOnce(I) -> ([V; N], F, K, R),
     ) -> Result<(order::Depth, R), (attach::Error, I)>
     where
         Y: Extract<'s, 'arena, 'credits, 'region, D, E>,
+        F: FnMut(usize, V) -> K,
     {
         const { assert!(N > 0 && N < usize::MAX) };
         for command in commands.iter() {
@@ -246,11 +247,14 @@ impl<
         if let Err(cause) = terminal.handle.check(lane) {
             return Err((cause, input));
         }
-        let (keys, key, output) =
-            lane.group_with(token, X::ACCEPTANCE, Y::ACCEPTANCE, input, make)?;
-        for (command, key) in commands.iter_mut().zip(keys) {
-            command.handle.reg = Some(Registration { lane, key });
-        }
+        let (key, output) = lane.group_with(
+            token,
+            (X::ACCEPTANCE, Y::ACCEPTANCE),
+            commands,
+            input,
+            make,
+            |command, key| command.handle.reg = Some(Registration { lane, key }),
+        )?;
         terminal.handle.reg = Some(Registration { lane, key });
         Ok((lane.depth(token), output))
     }

@@ -21,7 +21,7 @@ use crate::reply::{
         control::Control,
         retire::Retired,
         state,
-        state::{Failure, Push, Register},
+        state::{Failure, Push},
     },
     layout::Domain,
     order, recv,
@@ -200,19 +200,9 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         accept: recv::Acceptance,
         tag: K,
     ) -> Result<state::EntryKey, attach::Error> {
-        Register::new(token.borrow_mut(&self.arena.state)).insert(self, accept, tag)
-    }
-
-    pub(in crate::reply) fn group_with<I, R, const N: usize>(
-        self,
-        token: &mut region::Token<region::Identity<'region>>,
-        accept: recv::Acceptance,
-        mode: recv::Acceptance,
-        input: I,
-        make: impl FnOnce(I) -> ([K; N], K, R),
-    ) -> Result<([state::EntryKey; N], state::EntryKey, R), (attach::Error, I)> {
-        Register::new(token.borrow_mut(&self.arena.state))
-            .group_with(self, accept, mode, input, make)
+        token
+            .borrow_mut(&self.arena.state)
+            .insert(self, accept, tag)
     }
 }
 

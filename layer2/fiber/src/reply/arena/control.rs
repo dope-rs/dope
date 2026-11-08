@@ -2,7 +2,7 @@
 
 use o3::base::cell::region;
 
-use crate::reply::{Lane, Registration, arena::state::Register, retain::pool, usage::Footprint};
+use crate::reply::{Lane, Registration, retain::pool, usage::Footprint};
 
 pub struct Control<'a, 'arena, 'credits, 'region: 'a, D: Footprint, E = D, K = ()> {
     lane: Lane<'a, 'arena, 'credits, 'region, D, E, K>,
@@ -59,6 +59,6 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         self,
         token: &mut region::Token<region::Identity<'region>>,
     ) -> Registration {
-        Register::new(token.borrow_mut(&self.lane.arena.state)).registration(self.lane)
+        token.borrow(&self.lane.arena.state).registration(self.lane)
     }
 }

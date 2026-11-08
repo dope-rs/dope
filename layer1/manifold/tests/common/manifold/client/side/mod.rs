@@ -268,7 +268,7 @@ impl<'d> session::Connected<'d> for Session<'_, '_, 'd> {
                     assert!(matches!(
                         rejected.cause(),
                         registry::Cause::Slot(direct::Error::Occupied { key, stored })
-                            if key == stored && key.into_key().index() == target.index()
+                            if key == stored && key.index() == target.index()
                     ));
                     let (intent, _) = rejected.into_parts();
                     assert!(intent.target == target, "returned reservation target");

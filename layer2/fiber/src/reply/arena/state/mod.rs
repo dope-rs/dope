@@ -31,7 +31,7 @@ mod terminal;
 
 pub(in crate::reply) use keys::{EntryKey, Index};
 pub use push::Push;
-pub(in crate::reply::arena) use register::{Ordered, Register};
+pub(in crate::reply::arena) use register::Ordered;
 pub(in crate::reply::arena) use retire::Advance;
 pub(in crate::reply::arena) use terminal::Failure;
 

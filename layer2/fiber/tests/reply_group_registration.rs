@@ -51,6 +51,7 @@ fn constructs_after_admission() {
 fn admission_is_atomic() {
     const COMMANDS: usize = 257;
     const CAPACITY: usize = COMMANDS + 4;
+    let tag = |index, ()| index + 11;
     let layout = layout::Layout::bounded(capacity(3, CAPACITY, CAPACITY, CAPACITY, CAPACITY))
         .expect("reply layout");
     region::Token::scope(|mut token| {
@@ -69,7 +70,7 @@ fn admission_is_atomic() {
                     first,
                     &mut full,
                     &mut terminal,
-                    ([0; COMMANDS + 2], 0, ()),
+                    ([(); COMMANDS + 2], tag, 0, ()),
                     convert::identity,
                 ),
                 Err((recv::attach::Error::Oversized { requested, capacity }, _))
@@ -91,7 +92,7 @@ fn admission_is_atomic() {
                     first,
                     &mut denied,
                     &mut terminal,
-                    ([0; COMMANDS + 1], 0, ()),
+                    ([(); COMMANDS + 1], tag, 0, ()),
                     convert::identity,
                 ),
                 Err((recv::attach::Error::Capacity { .. }, _))
@@ -109,9 +110,10 @@ fn admission_is_atomic() {
                 first,
                 &mut commands,
                 &mut terminal,
-                (std::array::from_fn(|index| index + 11), COMMANDS + 11, ()),
+                ([(); COMMANDS], tag, COMMANDS + 11, ()),
                 convert::identity,
             )
+            .ok()
             .expect("group attachment");
             assert_eq!(arena.inflight().get(), COMMANDS + 3);
             for _ in 0..2 {
@@ -161,9 +163,9 @@ fn rejection_returns_owners() {
                     Counted::data(&drops),
                     Counted::data(&drops),
                 ),
-                |input| {
+                |(values, tag, owner)| {
                     calls.set(calls.get() + 1);
-                    input
+                    (values, |_, value| value, tag, owner)
                 },
             )
             .err()
@@ -180,9 +182,9 @@ fn rejection_returns_owners() {
                 &mut command,
                 &mut terminal,
                 ([first], tag, owner),
-                |input| {
+                |(values, tag, owner)| {
                     calls.set(calls.get() + 1);
-                    input
+                    (values, |_, value| value, tag, owner)
                 },
             )
             .ok()

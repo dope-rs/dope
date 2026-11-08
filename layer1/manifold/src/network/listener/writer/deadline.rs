@@ -98,7 +98,7 @@ struct Policy {
 }
 
 pub(in crate::network::listener) struct Schedule<'d, ID: Identity> {
-    entries: resident::Min<pool::raw::Key<'d, ID>, Deadline<'d>, Lane<'d>>,
+    entries: resident::Min<pool::Key<'d, ID>, Deadline<'d>, Lane<'d>>,
     policy: Policy,
 }
 
@@ -151,12 +151,12 @@ impl<'d, ID: Identity> Schedule<'d, ID> {
             Some(next) => entry.set(next),
             None => entry.retire(),
         }
-        Some((key.into_key(), due.kind))
+        Some((key, due.kind))
     }
 }
 
 struct Entry<'a, 'd, ID: Identity> {
-    entry: resident::Entry<'a, pool::raw::Key<'d, ID>, Deadline<'d>, Lane<'d>>,
+    entry: resident::Entry<'a, pool::Key<'d, ID>, Deadline<'d>, Lane<'d>>,
     policy: &'a Policy,
 }
 
@@ -431,7 +431,7 @@ impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
         let Some(book) = &mut self.schedule else {
             return sealed;
         };
-        let key = self.source.key().into();
+        let key = self.source.key();
         // SAFETY: the indivisible slot retains its original native source and paired schedule.
         let slot = unsafe { depot::raw::Proof::new(((&mut book.entries, &mut *self.source), key)) };
         slot.with(|entry| {
