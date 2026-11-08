@@ -1,184 +1,97 @@
-use std::{io, mem, net, os::fd, time};
+use std::{mem, net, os::fd};
 
 use dope_core::io::datagram;
 use dope_sys::io::socket::route::{
     Plan, count,
     selector::{Bootstrap, PrefixPlan},
 };
+use dope_test::alloc::Tracker;
 
 pub mod common;
-use common::rt::route::{self, SELECTOR};
-use dope_test::alloc::Tracker;
+use common::rt::route::{self, Packet, SELECTOR};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
-fn selector_routes_packets() {
-    let count = { (count::Count::try_from(2)).expect("count rejected: {error:?}") };
-    let selector = SELECTOR;
-    let addr = { ("127.0.0.1:0".parse()).expect("loopback address rejected: {error}") };
-    let plan = Plan::new(count, selector);
-    let group = datagram::Group::bind(addr, plan);
-    if !route::is_available(&group, addr, plan) {
-        return;
-    }
-    let group = group.expect("required fixture outcome");
-    let mut entries = group.into_entries();
-    assert_eq!(entries.len(), count.indices().len());
-    let zero = {
-        let (index, lease) = (entries.next()).expect("route zero missing");
-        {
-            assert_eq!(index.into_raw(), 0);
-            net::UdpSocket::from(lease.into_fd())
-        }
-    };
-    let addr = zero.local_addr().expect("route zero address unavailable");
-    assert_ne!(addr.port(), 0);
-    let one = {
-        let (index, lease) = (entries.next()).expect("route one missing");
-        {
-            assert_eq!(index.into_raw(), 1);
-            net::UdpSocket::from(lease.into_fd())
-        }
-    };
-    assert!(entries.next().is_none());
-    let timeout = Some(time::Duration::from_millis(100));
-    {
-        (zero.set_read_timeout(timeout)).expect("route zero timeout rejected: {error}");
-    }
-    {
-        (one.set_read_timeout(timeout)).expect("route one timeout rejected: {error}");
-    }
-    let sender = { (net::UdpSocket::bind("127.0.0.1:0")).expect("sender unavailable: {error}") };
-
-    for (key, receiver) in [(0, &zero), (1, &one)] {
-        let mut clear = [0_u8; 10];
-        clear[1] = key;
-        {
-            (sender.send_to(&clear, addr)).expect("send clear failed: {error}");
-        }
-        let mut received = [0_u8; 32];
-        let len = {
-            let (len, _) =
-                (receiver.recv_from(&mut received)).expect("receive clear failed: {error}");
-            len
-        };
-        assert_eq!(&received[..len], &clear);
-
-        let mut set = [0_u8; 16];
-        set[0] = 0x80;
-        set[5] = 9;
-        set[6] = key;
-        {
-            (sender.send_to(&set, addr)).expect("send set failed: {error}");
-        }
-        let len = {
-            let (len, _) =
-                (receiver.recv_from(&mut received)).expect("receive set failed: {error}");
-            len
-        };
-        assert_eq!(&received[..len], &set);
-    }
-
-    let invalid = [0x80_u8; 15];
-    {
-        (sender.send_to(&invalid, addr)).expect("send invalid failed: {error}");
-    }
-    for receiver in [&zero, &one] {
-        let mut received = [0_u8; 32];
-        {
-            let result = receiver.recv_from(&mut received);
-            assert!(
-                matches!(result, Err(error) if matches!(
-                    error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                )),
-                "selector delivered invalid packet"
-            );
-        }
-    }
-}
-
-#[test]
-fn dual_framing_routes_packets() {
-    let count = count::Count::try_from(2).expect("valid route count");
+fn selector_routes_and_rejects_packets() {
+    let count = count::Count::try_from(2).expect("route count");
     let prefix = PrefixPlan::fixed::<31, 0xc0, 0x14, 0x16>();
-    let plan = Plan::new(count, SELECTOR).with_prefix(prefix);
-    let address = net::SocketAddr::from(([127, 0, 0, 1], 0));
-    let group = datagram::Group::bind(address, plan);
-    if !route::is_available(&group, address, plan) {
-        return;
-    }
-    let mut entries = group.expect("dual selector rejected").into_entries();
-    let receivers: [net::UdpSocket; 2] = std::array::from_fn(|_| {
-        net::UdpSocket::from(entries.next().expect("admitted route missing").1.into_fd())
-    });
-    let address = receivers[0]
-        .local_addr()
-        .expect("route address unavailable");
-    let sender = net::UdpSocket::bind("127.0.0.1:0").expect("sender unavailable");
-    for (key, receiver) in receivers.iter().enumerate() {
-        receiver
-            .set_read_timeout(Some(time::Duration::from_millis(100)))
-            .expect("route timeout rejected");
-        // A long header with its fixed bit clear includes version negotiation.
-        for (first, length, key_at) in [(0x40, 10, 1), (0x80, 16, 6)] {
-            let mut packet = [0; 47];
-            packet[31] = first;
-            packet[36] = 9;
-            packet[31 + key_at] = key as u8;
-            let mut received = [0; 47];
-            sender
-                .send_to(&packet[31..31 + length], address)
-                .expect("send direct failed");
-            let (len, _) = receiver
-                .recv_from(&mut received)
-                .expect("receive direct failed");
-            assert_eq!(&received[..len], &packet[31..31 + length]);
-            for tag in prefix.tags() {
-                packet[0] = tag;
-                sender
-                    .send_to(&packet[..31 + length], address)
-                    .expect("send prefixed failed");
-                let (len, _) = receiver
-                    .recv_from(&mut received)
-                    .expect("receive prefixed failed");
-                assert_eq!(&received[..len], &packet[..31 + length]);
+    for framing in [None, Some(prefix)] {
+        let mut plan = Plan::new(count, SELECTOR);
+        if let Some(prefix) = framing {
+            plan = plan.with_prefix(prefix);
+        }
+        let address = net::SocketAddr::from(([127, 0, 0, 1], 0));
+        let group = datagram::Group::bind(address, plan);
+        if !route::is_available(&group, address, plan) {
+            return;
+        }
+        let mut group = group.expect("routing group");
+        let mut packets = Vec::new();
+        for key in 0..2 {
+            for (first, length, key_at) in [(0x40, 10, 1), (0x80, 16, 6)] {
+                let mut packet = vec![0; length];
+                packet[0] = first;
+                packet[5] = 9;
+                packet[key_at] = key as u8;
+                packets.push(Packet {
+                    bytes: packet.clone(),
+                    worker: Some(key),
+                    broadcast: false,
+                });
+                if let Some(prefix) = framing {
+                    for tag in prefix.tags() {
+                        let mut bytes = vec![0; 31];
+                        bytes[0] = tag;
+                        bytes.extend_from_slice(&packet);
+                        packets.push(Packet {
+                            bytes,
+                            worker: Some(key),
+                            broadcast: false,
+                        });
+                    }
+                }
             }
         }
-    }
-    let mut invalid = [0; 47];
-    invalid[0] = 0x14;
-    for (inner, length, declared, key) in [
-        (0x40, 31, 9, 0),
-        (0x14, 47, 9, 0),
-        (0x16, 47, 9, 0),
-        (0x15, 47, 9, 0),
-        (0x80, 46, 9, 0),
-        (0x80, 47, 8, 0),
-        (0x40, 41, 9, 2),
-    ] {
-        invalid[31] = inner;
-        invalid[32] = key;
-        invalid[36] = declared;
-        invalid[37] = key;
-        sender
-            .send_to(&invalid[..length], address)
-            .expect("send invalid failed");
-    }
-    // The explicit dual format rejects unknown tags in the non-QUIC domain.
-    invalid[0] = 0x15;
-    invalid[31] = 0x40;
-    invalid[32] = 0;
-    sender
-        .send_to(&invalid, address)
-        .expect("send unknown failed");
-    for receiver in &receivers {
-        let mut received = [0; 47];
-        assert!(matches!(
-            receiver.recv_from(&mut received),
-            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
-        ));
+        packets.push(Packet {
+            bytes: vec![0x80; 15],
+            worker: None,
+            broadcast: false,
+        });
+        if framing.is_some() {
+            for (inner, length, declared, key) in [
+                (0x40, 31, 9, 0),
+                (0x14, 47, 9, 0),
+                (0x16, 47, 9, 0),
+                (0x15, 47, 9, 0),
+                (0x80, 46, 9, 0),
+                (0x80, 47, 8, 0),
+                (0x40, 41, 9, 2),
+            ] {
+                let mut bytes = vec![0; 47];
+                bytes[0] = 0x14;
+                bytes[31] = inner;
+                bytes[32] = key;
+                bytes[36] = declared;
+                bytes[37] = key;
+                bytes.truncate(length);
+                packets.push(Packet {
+                    bytes,
+                    worker: None,
+                    broadcast: false,
+                });
+            }
+            let mut bytes = vec![0; 47];
+            bytes[0] = 0x15;
+            bytes[31] = 0x40;
+            packets.push(Packet {
+                bytes,
+                worker: None,
+                broadcast: false,
+            });
+        }
+        route::run(&mut group, packets, false);
     }
 }
 
@@ -211,22 +124,8 @@ fn bootstrap_routes_variable_keys() {
             if !route::is_available(&group, address, plan) {
                 return;
             }
-            let receivers: Vec<_> = group
-                .expect("bootstrap group")
-                .into_entries()
-                .map(|(_, lease)| net::UdpSocket::from(lease.into_fd()))
-                .collect();
-            let address = receivers[0].local_addr().expect("bound address");
-            for receiver in &receivers {
-                receiver
-                    .set_read_timeout(Some(time::Duration::from_millis(100)))
-                    .expect("receive deadline");
-            }
-            let senders = [(); 2].map(|()| net::UdpSocket::bind("127.0.0.1:0").expect("sender"));
-            assert_ne!(
-                senders[0].local_addr().unwrap(),
-                senders[1].local_addr().unwrap()
-            );
+            let mut group = group.expect("bootstrap group");
+            let mut packets = Vec::new();
             for (first, version, key, expected, missing) in [
                 (0x40, 0_u32, issued.as_slice(), Some(1), 0),
                 (0x80, 0, issued.as_slice(), Some(1), 0),
@@ -270,75 +169,94 @@ fn bootstrap_routes_variable_keys() {
                 };
                 packet[start..start + key.len()].copy_from_slice(key);
                 let end = start + key.len() + usize::from(first & 0x80 != 0) - missing;
-                for sender in &senders {
-                    sender
-                        .send_to(&packet[..end], address)
-                        .expect("send packet");
-                    if let Some(index) = expected {
-                        let mut received = [0; 293];
-                        let (length, peer) = receivers[index]
-                            .recv_from(&mut received)
-                            .expect("selected worker");
-                        assert_eq!(&received[..length], &packet[..end]);
-                        assert_eq!(peer, sender.local_addr().expect("sender address"));
-                    }
-                }
+                packets.push(Packet {
+                    bytes: packet[..end].to_vec(),
+                    worker: expected,
+                    broadcast: false,
+                });
             }
-            for receiver in &receivers {
-                assert!(matches!(
-                    receiver.recv_from(&mut [0; 293]),
-                    Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
-                ));
+            route::run(&mut group, packets, false);
+        }
+    }
+}
+
+#[test]
+fn wildcard_filters_fanout_and_retains_retired_indices() {
+    let count = count::Count::try_from(3).expect("route count");
+    let plan = Plan::new(count, SELECTOR);
+    for address in [
+        net::SocketAddr::from(([0, 0, 0, 0], 0)),
+        net::SocketAddr::from((net::Ipv6Addr::UNSPECIFIED, 0)),
+    ] {
+        let group = datagram::Group::bind(address, plan);
+        if !route::is_available(&group, address, plan) {
+            return;
+        }
+        let mut group = group.expect("wildcard group");
+        let mut packets = Vec::new();
+        for broadcast in [false, true]
+            .into_iter()
+            .take(if address.is_ipv4() { 2 } else { 1 })
+        {
+            for key in [1, 2, 3] {
+                let mut bytes = vec![0; 10];
+                bytes[1] = key;
+                packets.push(Packet {
+                    bytes,
+                    worker: (key < 3).then_some(usize::from(key)),
+                    broadcast,
+                });
             }
         }
+        route::run(&mut group, packets, true);
+        let packets = [0, 2].map(|key| {
+            let mut bytes = vec![0; 10];
+            bytes[1] = key;
+            Packet {
+                bytes,
+                worker: Some(usize::from(key)),
+                broadcast: false,
+            }
+        });
+        route::run(&mut group, packets.into(), false);
     }
 }
 
 #[test]
 fn preserves_dense_routes() {
     for raw in [1, 3, 256] {
-        let count = (count::Count::try_from(raw)).expect("valid route count rejected");
+        let count = count::Count::try_from(raw).expect("route count");
         let address = net::SocketAddr::from(([127, 0, 0, 1], 0));
         let plan = Plan::new(count, SELECTOR);
         let (group, activity) = Tracker::measure(|| datagram::Group::bind(address, plan));
         if !route::is_available(&group, address, plan) {
             return;
         }
-        let group = group.expect("required fixture outcome");
+        let mut group = group.expect("routing group");
         let bytes = usize::from(raw) * mem::size_of::<fd::OwnedFd>();
         assert_eq!(activity, [1, bytes, 0, 0]);
+        assert_ne!(group.local_addr().port(), 0);
         let ((), activity) = Tracker::measure(|| {
-            let mut entries = group.into_entries();
+            let mut entries = group.entries();
             assert_eq!(entries.len(), usize::from(raw));
-            let (index, lease) = entries.next().expect("route zero missing its socket");
-            assert_eq!(index.into_raw(), 0);
-            assert_eq!(entries.len(), usize::from(raw) - 1);
-            let first = net::UdpSocket::from(lease.into_fd());
-            let address = first.local_addr().expect("route zero address unavailable");
-            assert_ne!(address.port(), 0);
-            for ordinal in 1..usize::from(raw) {
-                let (index, lease) = (entries.next()).expect("admitted route missing its socket");
+            for ordinal in 0..usize::from(raw) {
+                let (index, _lease) = entries.next().expect("admitted route");
                 assert_eq!(index.into_raw(), ordinal);
                 assert_eq!(entries.len(), usize::from(raw) - ordinal - 1);
-                let socket = net::UdpSocket::from(lease.into_fd());
-                assert_eq!(
-                    socket.local_addr().expect("route address unavailable"),
-                    address
-                );
             }
             assert!(entries.next().is_none());
         });
+        assert_eq!(activity, [0; 4]);
+        let ((), activity) = Tracker::measure(|| drop(group));
         assert_eq!(activity, [0, 0, 1, bytes]);
     }
 }
 
 #[test]
 fn rejects_bound_address() {
-    let occupied = {
-        (net::UdpSocket::bind("127.0.0.1:0")).expect("ephemeral UDP fixture unavailable: {error}")
-    };
-    let address = { (occupied.local_addr()).expect("fixture address unavailable: {error}") };
-    let count = count::Count::try_from(256).expect("valid dense route count");
+    let occupied = net::UdpSocket::bind("127.0.0.1:0").expect("occupied address");
+    let address = occupied.local_addr().expect("bound address");
+    let count = count::Count::try_from(256).expect("route count");
     let plan = Plan::new(count, SELECTOR);
     let (failed, activity) = Tracker::measure(|| datagram::Group::bind(address, plan));
     if !route::is_available(&failed, address, plan) {
@@ -346,14 +264,22 @@ fn rejects_bound_address() {
     }
     let error = failed.err().expect("occupied address admitted");
     assert!(
-        matches!(
-            error,
-            datagram::Error::Syscall {
-                operation: datagram::Operation::Bind,
-                errno,
-            } if errno.code().get() == libc::EADDRINUSE
-        ),
-        "expected address-in-use bind error: {error:?}"
+        matches!(error, datagram::Error::Syscall {
+        operation: datagram::Operation::Bind, errno,
+    } if errno.code().get() == libc::EADDRINUSE),
+        "{error:?}"
     );
-    assert_eq!(activity, [0, 0, 0, 0]);
+    assert_eq!(activity, [0; 4]);
+
+    let address = net::SocketAddr::from(([0, 0, 0, 0], 0));
+    let group = datagram::Group::bind(address, plan).expect("exclusive routed group");
+    let error = datagram::Group::bind(group.local_addr(), plan)
+        .err()
+        .expect("independent group rejected");
+    assert!(
+        matches!(error, datagram::Error::Syscall {
+        operation: datagram::Operation::Bind, errno,
+    } if errno.code().get() == libc::EADDRINUSE),
+        "{error:?}"
+    );
 }

@@ -25,22 +25,11 @@ pub enum Error {
     },
 }
 
-impl From<(socket::Reuse, Errno)> for Error {
-    fn from((reuse, errno): (socket::Reuse, Errno)) -> Self {
-        Self::Syscall {
-            operation: socket::reuse_step(reuse),
-            errno,
-        }
-    }
-}
-
 impl Error {
     pub(crate) fn install(error: install::Error) -> Self {
         let op = match error.operation {
-            install::Operation::MapCreate => datagram::Operation::MapCreate,
-            install::Operation::ProgramLoad => datagram::Operation::ProgramLoad,
             install::Operation::ProgramAttach => datagram::Operation::ProgramAttach,
-            install::Operation::MapInsert => datagram::Operation::MapInsert,
+            install::Operation::FilterAttach => datagram::Operation::FilterAttach,
         };
         Self::Syscall {
             operation: op,

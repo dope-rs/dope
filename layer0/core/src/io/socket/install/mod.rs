@@ -6,7 +6,11 @@ mod error;
 
 use std::{mem, net, os::fd};
 
-use dope_sys::io::socket::{Domain, Kind, Origin, Prepare};
+use dope_sys::{
+    engine,
+    io::socket::{Domain, Kind, Origin, Prepare},
+    kernel,
+};
 pub use error::Error;
 use fd::AsFd as _;
 
@@ -14,7 +18,7 @@ use crate::{
     driver,
     io::{
         datagram,
-        fd::handles::{Datagram, Descriptor},
+        fd::handles::{Datagram, Descriptor, OwnedSlot},
         socket,
     },
 };
@@ -115,14 +119,19 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
     fn finish(self, handle: socket::Handle) -> Result<(Descriptor<'d>, net::SocketAddr), Error> {
         let local = handle.local_addr().map_err(Error::LocalAddress)?;
         let local = local.into_std().map_err(Error::Address)?;
-        self.finish_at(handle, local)
+        self.finish_at(handle.into_inner(), local)
     }
 
-    fn finish_at(
+    fn finish_at<H>(
         self,
-        handle: socket::Handle,
+        handle: H,
         local: net::SocketAddr,
-    ) -> Result<(Descriptor<'d>, net::SocketAddr), Error> {
+    ) -> Result<(Descriptor<'d>, net::SocketAddr), Error>
+    where
+        crate::Engine: engine::Install<OwnedSlot, H>,
+        <crate::Engine as engine::Install<OwnedSlot, H>>::Error:
+            Into<<crate::Backend as kernel::Source>::Failure<driver::route::indices::SlotIndex>>,
+    {
         match self.driver.native().install(self.reservation, handle) {
             Ok(fd) => Ok((fd, local)),
             Err(cause) => Err(Error::kernel(Operation::FixedFile, cause)),
@@ -163,7 +172,7 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         let entry = reserve(&mut driver)?;
         let (fd, local) = listener.into_parts();
         let handle = socket::Handle::new(crate::Backend::adopt(fd).map_err(Error::setup)?);
-        entry.finish_at(handle, local)
+        entry.finish_at(handle.into_inner(), local)
     }
 
     pub fn adopt_udp(
@@ -176,12 +185,13 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
     }
 
     /// Installs a routed datagram lease with its established socket role.
-    pub fn adopt_routed(
+    pub fn adopt_routed<'g: 'd>(
         mut driver: driver::Context<'context, 'd>,
-        socket: datagram::Lease,
+        socket: datagram::Lease<'g>,
     ) -> Result<(Datagram<'d>, net::SocketAddr), Error> {
         let (entry, capacity) = reserve_datagram(&mut driver)?;
-        let (fd, addr) = entry.finish(socket.into_handle())?;
+        let (handle, local) = socket.into_parts();
+        let (fd, addr) = entry.finish_at(handle, local)?;
         Ok((Datagram::new(fd, capacity), addr))
     }
 

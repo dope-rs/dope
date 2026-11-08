@@ -103,15 +103,14 @@ impl<C: ring::Context> engine::Buffer for Engine<C> {
     type Selection = C::Selection;
 }
 
-impl<C, O> engine::Install<O> for Engine<C>
+impl<C, O, H: fd::AsFd> engine::Install<O, H> for Engine<C>
 where
     C: ring::Context + Context<Native = Uring>,
     O: Into<<C::Inputs as request::Context>::Target>,
 {
-    type Handle = fd::OwnedFd;
     type Error = <Ready<C::Token, C::Layout> as ready::Ready>::InstallError;
 
-    fn install(&mut self, slot: O, handle: Self::Handle) -> Result<(), Self::Error> {
+    fn install(&mut self, slot: O, handle: H) -> Result<(), Self::Error> {
         self.ring.install(
             <Uring as request::Source<C::Inputs>>::target(slot.into()),
             fd::AsFd::as_fd(&handle),

@@ -1,6 +1,6 @@
-use std::{cell, marker, mem, net, num, os::fd};
+use std::{cell, marker, mem, net, num};
 
-use dope_sys::io::socket::{Prepare as _, gso, msg::Flags};
+use dope_sys::io::socket::{gso, msg::Flags};
 use gso::{Mode, Source};
 use o3::{
     buffer::{
@@ -35,18 +35,10 @@ pub use group::Group;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Operation {
-    ReuseAddress,
     ReusePort,
-    MapCreate,
-    ProgramLoad,
     ProgramAttach,
+    FilterAttach,
     Bind,
-    MapInsert,
-}
-
-impl socket::ReuseStep for Operation {
-    const ADDRESS: Self = Self::ReuseAddress;
-    const PORT: Self = Self::ReusePort;
 }
 
 /// Exact reason a received datagram frame could not produce a packet.
@@ -406,25 +398,31 @@ const _: () = assert!(mem::size_of::<Option<GsoSegment>>() == mem::size_of::<u16
 const _: () = assert!(mem::align_of::<Option<GsoSegment>>() == mem::align_of::<u16>());
 
 /// One affine socket lease from an installed routed group.
-#[repr(transparent)]
-pub struct Lease {
-    socket: socket::Handle,
+pub struct Lease<'g> {
+    socket: <Backend as dope_sys::io::socket::route::Source>::Lease<'g>,
+    local: &'g net::SocketAddr,
     thread: marker::PhantomData<cell::Cell<()>>,
 }
 
-impl Lease {
-    pub fn into_fd(self) -> fd::OwnedFd {
-        Backend::into_fd(self.socket.into_inner())
+impl<'g> Lease<'g> {
+    pub const fn local_addr(&self) -> net::SocketAddr {
+        *self.local
     }
 
-    pub(crate) fn into_handle(self) -> socket::Handle {
-        self.socket
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        <Backend as dope_sys::io::socket::route::Source>::Lease<'g>,
+        net::SocketAddr,
+    ) {
+        let local = self.local_addr();
+        (self.socket, local)
     }
 }
 
 const _: () = {
-    assert!(mem::size_of::<Lease>() == mem::size_of::<fd::OwnedFd>());
-    assert!(mem::align_of::<Lease>() == mem::align_of::<fd::OwnedFd>());
+    assert!(mem::size_of::<Lease<'static>>() == 2 * mem::size_of::<usize>());
+    assert!(mem::align_of::<Lease<'static>>() == mem::align_of::<usize>());
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]

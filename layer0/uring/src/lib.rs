@@ -14,7 +14,6 @@ use dope_sys::{
             self, accept, gso, option,
             option::{fast, tuning, tuning::device::Source},
             record,
-            route::{self, install},
         },
     },
     kernel,
@@ -57,7 +56,7 @@ use crate::{
         sq::Borrowed,
         types,
     },
-    sockets::{Control, Installer, Operation},
+    sockets::{Control, Operation},
     system::{Cpus, Fifo, Timer},
 };
 

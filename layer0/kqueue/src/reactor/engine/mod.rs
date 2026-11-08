@@ -74,11 +74,17 @@ impl<C: ready::Driver> engine::Buffer for Engine<C> {
     type Selection = Infallible;
 }
 
-impl<C: ready::Driver> engine::Install<Owned<C>> for Engine<C> {
-    type Handle = <<C::Context as Context>::Files as table::Files<Slots<C>>>::Handle;
+impl<C: ready::Driver>
+    engine::Install<Owned<C>, <<C::Context as Context>::Files as table::Files<Slots<C>>>::Handle>
+    for Engine<C>
+{
     type Error = table::Install<<Slots<C> as change::raw::Slots>::Index>;
 
-    fn install(&mut self, slot: Owned<C>, handle: Self::Handle) -> Result<(), Self::Error> {
+    fn install(
+        &mut self,
+        slot: Owned<C>,
+        handle: <<C::Context as Context>::Files as table::Files<Slots<C>>>::Handle,
+    ) -> Result<(), Self::Error> {
         self.state.edit().files.install(slot, handle)
     }
 }

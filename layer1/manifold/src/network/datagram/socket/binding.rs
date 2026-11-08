@@ -41,8 +41,8 @@ impl<'d, ID: Identity> Binding<'d, ID> {
         })
     }
 
-    pub(in crate::network::datagram) fn adopt(
-        binding: Lease,
+    pub(in crate::network::datagram) fn adopt<'g: 'd>(
+        binding: Lease<'g>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<Installed<'d, ID>, creation::Error> {
         Self::install(driver, |driver| {

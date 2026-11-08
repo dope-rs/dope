@@ -31,7 +31,6 @@ use crate::{
     },
     io::{
         fd::handles,
-        socket,
         socket::{install::slot, option, pending},
     },
 };
@@ -158,14 +157,19 @@ impl<'a, 'd> Access<'a, 'd> {
         }
     }
 
-    pub(crate) fn install(
+    pub(crate) fn install<H>(
         self,
         hold: slot::Reserved<'d>,
-        handle: socket::Handle,
-    ) -> Result<handles::Descriptor<'d>, result::Kernel> {
+        handle: H,
+    ) -> Result<handles::Descriptor<'d>, result::Kernel>
+    where
+        Engine: engine::Install<handles::OwnedSlot, H>,
+        <Engine as engine::Install<handles::OwnedSlot, H>>::Error:
+            Into<<crate::Backend as kernel::Source>::Failure<indices::SlotIndex>>,
+    {
         let state = &mut *self.local.backend;
         let slot = handles::OwnedSlot::from(hold.slot());
-        if let Err(error) = engine::Install::install(state, slot, handle.into_inner()) {
+        if let Err(error) = engine::Install::install(state, slot, handle) {
             drop(hold);
             let cause: <crate::Backend as kernel::Source>::Failure<indices::SlotIndex> =
                 error.into();

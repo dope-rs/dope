@@ -59,9 +59,9 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         Ok(datagram::Endpoint { socket, handler })
     }
 
-    pub fn adopt<H>(
+    pub fn adopt<'g: 'd, H>(
         self,
-        lease: Lease,
+        lease: Lease<'g>,
         handler: H,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<datagram::Endpoint<'d, ID, H, B, M>, creation::Error>

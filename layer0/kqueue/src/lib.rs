@@ -27,7 +27,6 @@ use dope_sys::{
             accept, addr, gso, option,
             option::{fast, tuning::device},
             record, route,
-            route::install,
         },
     },
     kernel,
@@ -138,10 +137,22 @@ where
 }
 
 impl route::Source for Kqueue {
-    type Install = convert::Infallible;
+    type Storage = [u8; 0];
+    type Install<'a> = convert::Infallible;
+    type Ready = convert::Infallible;
+    type Lease<'a> = sockets::Handle;
 
-    fn try_prepare(plan: route::Plan) -> Result<Self::Install, install::Failure> {
-        Err(install::Failure::Unsupported(plan))
+    const STORAGE: Self::Storage = [];
+
+    fn try_prepare(
+        _: &mut Self::Storage,
+        plan: route::Plan,
+    ) -> Result<(Self::Install<'_>, Self::Ready), route::Plan> {
+        Err(plan)
+    }
+
+    fn lease<'a>(ready: &convert::Infallible, _: BorrowedFd<'a>) -> Self::Lease<'a> {
+        match *ready {}
     }
 }
 

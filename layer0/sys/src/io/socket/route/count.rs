@@ -48,6 +48,8 @@ impl Count {
 }
 
 impl Index {
+    pub const ZERO: Self = Self(0);
+
     /// Returns the dense routing index at an indexing leaf.
     pub const fn into_raw(self) -> usize {
         self.0 as usize
