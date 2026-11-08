@@ -10,7 +10,7 @@ pub(crate) mod turn;
 pub use error::Error;
 
 pub(crate) fn tick<C: clock::Source>(source: C) -> Result<Sample, Error> {
-    Ok(source.tick())
+    Ok(source.start())
 }
 
 pub(crate) fn timeout<C: clock::Expiring>(source: C) -> Result<Sample, Error> {

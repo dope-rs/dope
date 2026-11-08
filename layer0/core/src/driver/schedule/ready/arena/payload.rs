@@ -21,18 +21,18 @@ impl Link {
     };
 
     pub(in crate::driver::schedule::ready) fn from_word(word: u64) -> Self {
-        let next = word as u16;
-        let prev = (word >> 16) as u16;
+        let next = word as u32;
+        let prev = (word >> 32) as u32;
         Self {
-            next: num::NonZero::<u16>::new(next).map(ready::TaskIndex::from_code),
-            prev: num::NonZero::<u16>::new(prev).map(ready::TaskIndex::from_code),
+            next: num::NonZero::<u32>::new(next).map(ready::TaskIndex::from_code),
+            prev: num::NonZero::<u32>::new(prev).map(ready::TaskIndex::from_code),
         }
     }
 
     pub(in crate::driver::schedule::ready) fn word(self) -> u64 {
         let next = self.next.map_or(0, |index| index.code().get());
         let prev = self.prev.map_or(0, |index| index.code().get());
-        u64::from(next) | (u64::from(prev) << 16)
+        u64::from(next) | (u64::from(prev) << 32)
     }
 }
 
@@ -79,7 +79,7 @@ impl Payload {
     /// Restores the admitted nonzero successor from its bounded offset, including tail self-links.
     pub(in crate::driver::schedule::ready) fn reserve(&self) -> ready::FreeIndex {
         ready::FreeIndex::from_code(
-            num::NonZero::<u16>::MIN.saturating_add(self.words[0].get() as u16),
+            num::NonZero::<u32>::MIN.saturating_add(self.words[0].get() as u32),
         )
     }
 
@@ -151,11 +151,11 @@ impl<'a> Bound<'a> {
         // parent's exact Stored word without modification.
         let word = self.payload.word(0);
         // SAFETY: the stored payload retains a nonzero index in its low half.
-        let index = unsafe { num::NonZero::<u16>::new_unchecked(word as u16) };
+        let index = unsafe { num::NonZero::<u32>::new_unchecked(word as u32) };
         let epoch = ready::Generation::from_raw((word >> 32) as u32);
         let parent = ready::Stored::from_parts(index, epoch);
         // SAFETY: the stored payload retains a nonzero binding in its low half.
-        let topology = unsafe { num::NonZero::<u16>::new_unchecked(binding as u16) };
+        let topology = unsafe { num::NonZero::<u32>::new_unchecked(binding as u32) };
         ready::Record::new(
             parent,
             ready::RootIndex::from_code(topology),
@@ -176,5 +176,5 @@ const _: () = {
     assert!(mem::size_of::<Payload>() == 3 * mem::size_of::<u64>());
     assert!(mem::align_of::<Payload>() == mem::align_of::<u64>());
     assert!(mem::size_of::<Task<'static>>() == mem::size_of::<Payload>());
-    assert!(mem::size_of::<Link>() == mem::size_of::<u32>());
+    assert!(mem::size_of::<Link>() == mem::size_of::<u64>());
 };

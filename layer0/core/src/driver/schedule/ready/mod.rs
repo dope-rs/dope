@@ -115,7 +115,7 @@ impl PartialEq for Key<'_> {
 impl Eq for Key<'_> {}
 
 impl<'d> Key<'d> {
-    fn from_index(index: num::NonZero<u16>, epoch: Generation) -> Self {
+    fn from_index(index: num::NonZero<u32>, epoch: Generation) -> Self {
         Self {
             stored: Stored::from_parts(index, epoch),
             arena: driver::Invariant(marker::PhantomData),

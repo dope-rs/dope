@@ -121,7 +121,7 @@ impl Set {
     }
 }
 
-const _: () = assert!(std::mem::size_of::<Set>() == 2 * std::mem::size_of::<usize>());
+const _: () = assert!(std::mem::size_of::<Set>() == 4 * std::mem::size_of::<usize>());
 
 const WORD_BITS: usize = usize::BITS as usize;
 const ENTRIES_PER_WORD: usize = WORD_BITS / 2;
@@ -129,32 +129,26 @@ const LOW_MASK: usize = usize::MAX / 3;
 const SIDE_MASKS: [usize; 2] = [LOW_MASK, LOW_MASK << 1];
 
 struct Store {
-    cells: array::Block<cell::Cell<usize>, Extent, (state::State, [cell::Cell<u16>; 2])>,
+    cells: array::Block<cell::Cell<usize>, Extent, (state::State, [cell::Cell<u32>; 2])>,
 }
 
 #[derive(Clone, Copy)]
-struct Extent(settings::Ready);
+struct Extent {
+    capacity: settings::Ready,
+    shape: bitmap::Shape<num::NonZero<u32>>,
+}
 
 impl Extent {
     const fn capacity(self) -> usize {
-        self.0.raw() as usize
+        self.capacity.raw() as usize
     }
 
-    const fn base(self) -> usize {
-        self.words().get() as usize
-    }
-
-    const fn words(self) -> num::NonZero<u32> {
-        let count = self.0.into_nonzero().get() as u32;
-        num::NonZero::<u32>::MIN.saturating_add((count - 1) / ENTRIES_PER_WORD as u32)
-    }
-
-    fn shape(self) -> bitmap::Shape<num::NonZero<u32>> {
-        bitmap::Shape::<num::NonZero<u32>>::new(self.words())
+    fn base(self) -> usize {
+        self.shape.bits()
     }
 
     fn summary(self) -> usize {
-        self.shape().words()
+        self.shape.words()
     }
 }
 
@@ -167,28 +161,32 @@ unsafe impl alloc::raw::Extent for Extent {
 
 // SAFETY: the immutable ready extent bounds both initialized summary planes.
 // Only bitmap operations mutate them; base transitions maintain their exact occupancy.
-// The u16 ready capacity has at least one and at most 2048 packed words, hence two
-// summary levels in an extent whose bitmap domain is never empty.
+// The nonempty ready capacity admits every packed word and summary level.
 unsafe impl depot::raw::Words for Store {
     type Plane = Side;
     type Size = num::NonZero<u32>;
 
     fn shape(&self) -> bitmap::Shape<num::NonZero<u32>> {
-        self.cells.extent().shape()
+        self.cells.extent().shape
     }
 
     fn words(&self, side: Side) -> &[bitmap::Word] {
         let extent = self.cells.extent();
-        let start = extent.base() + side.index() * extent.summary();
+        let end = extent.base() + (side.index() + 1) * extent.summary();
         let cells: &[cell::Cell<usize>] = &self.cells;
         // SAFETY: Extent allocates the complete exact summary after the packed base.
-        bitmap::Word::from_cells(unsafe { cells.get_unchecked(start..start + extent.summary()) })
+        bitmap::Word::from_cells(unsafe { cells.get_unchecked(end - extent.summary()..end) })
     }
 }
 
 impl Store {
     fn try_new(capacity: settings::Ready) -> Result<Self, Error> {
-        let extent = Extent(capacity);
+        let words =
+            num::NonZero::<u32>::MIN.saturating_add((capacity.raw() - 1) / ENTRIES_PER_WORD as u32);
+        let extent = Extent {
+            capacity,
+            shape: bitmap::Shape::<num::NonZero<u32>>::new(words),
+        };
         let state = (state::State::new(), [const { cell::Cell::new(0) }; 2]);
         let cells = array::Block::try_new(extent, state)?.repeat_with(cell::Cell::default);
         Ok(Self { cells })
@@ -201,7 +199,7 @@ impl Store {
     fn at(&self, index: ready::DynamicIndex) -> entry::Row<&Store> {
         let row = (index.get() / ENTRIES_PER_WORD) as u32 + 1;
         // SAFETY: private callers supply this arena's admitted index.
-        // Its u16 bound keeps the one-based packed row nonzero.
+        // Packing keeps the one-based row inside the nonzero u32 domain.
         entry::Row::from_source(unsafe {
             depot::raw::Proof::new((self, num::NonZero::<u32>::new_unchecked(row)))
         })
@@ -262,7 +260,7 @@ impl Store {
     }
 
     fn next(&self, side: Side) -> Option<ready::DynamicIndex> {
-        let start = usize::from(self.cursor(side).get());
+        let start = self.cursor(side).get() as usize;
         match self.take(side, start) {
             None if start != 0 => self.take(side, 0),
             item => item,
@@ -274,7 +272,7 @@ impl Store {
         unsafe { cells.get_unchecked(..self.cells.extent().base()) }
     }
 
-    fn cursor(&self, side: Side) -> &cell::Cell<u16> {
+    fn cursor(&self, side: Side) -> &cell::Cell<u32> {
         &self.cells.state().1[side.index()]
     }
 
@@ -313,10 +311,10 @@ impl Store {
             .set(if index + 1 == self.cells.extent().capacity() {
                 0
             } else {
-                index as u16 + 1
+                index as u32 + 1
             });
         // SAFETY: the checked domain keeps the index below the extent capacity, so the increment cannot wrap.
-        let code = unsafe { num::NonZero::<u16>::new_unchecked(index as u16 + 1) };
+        let code = unsafe { num::NonZero::<u32>::new_unchecked(index as u32 + 1) };
         Some(ready::DynamicIndex(code))
     }
 }
@@ -324,5 +322,5 @@ impl Store {
 const _: () = {
     assert!(WORD_BITS == 64);
     assert!(!mem::needs_drop::<cell::Cell<usize>>());
-    assert!(mem::size_of::<Store>() == 2 * mem::size_of::<usize>());
+    assert!(mem::size_of::<Store>() == 4 * mem::size_of::<usize>());
 };

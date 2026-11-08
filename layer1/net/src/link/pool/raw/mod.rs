@@ -76,10 +76,6 @@ unsafe impl<'d, ID: Identity> depot::raw::Key for pool::Key<'d, ID> {
         let target = unsafe { raw.target() };
         Self::from_target(target)
     }
-
-    fn decode(raw: Self::Raw) -> Option<Self> {
-        raw.into_target().map(Self::from_target)
-    }
 }
 
 impl<'d, ID: Identity> Physical<'d, ID> {

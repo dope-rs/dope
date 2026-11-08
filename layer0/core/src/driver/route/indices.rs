@@ -75,7 +75,7 @@ impl SlotIndex {
     ///
     /// # Safety
     /// `raw` must not exceed `route::SLOT_MASK`.
-    const unsafe fn encode(raw: u32) -> Self {
+    pub(in crate::driver) const unsafe fn encode(raw: u32) -> Self {
         // SAFETY: the caller admits raw <= SLOT_MASK, so the one-based encoding stays in range.
         Self(unsafe { bounded::raw::nonzero_u32(num::NonZero::<u32>::MIN.saturating_add(raw)) })
     }

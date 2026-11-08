@@ -1,3 +1,5 @@
+use std::time;
+
 use dope_core::{
     driver,
     driver::{result::poll, schedule, schedule::clock},
@@ -30,7 +32,16 @@ where
         progress: schedule::Progress<'d>,
         source: impl Time,
     ) -> Result<(), poll::Error> {
-        let span = self.core.timeout(progress, source);
+        let span = if matches!(progress, schedule::Progress::Runnable) || !self.is_quiet() {
+            Some(time::Duration::ZERO)
+        } else {
+            match progress {
+                schedule::Progress::Waiting(wait) => wait
+                    .deadline()
+                    .map(|due| due.into_raw().saturating_duration_since(source.park())),
+                _ => None,
+            }
+        };
         let span = source.limit(span);
         driver::Context::wait(&mut self.core.driver, self.core.turn.reactor(), span)
     }

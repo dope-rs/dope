@@ -29,7 +29,7 @@ impl<'d, const N: usize> Pool<'d, N> {
 }
 
 const _: () =
-    assert!(core::mem::size_of::<Pool<'static, 1>>() == 4 * core::mem::size_of::<usize>());
+    assert!(core::mem::size_of::<Pool<'static, 1>>() == 5 * core::mem::size_of::<usize>());
 const _: () = assert!(
     core::mem::size_of::<Pool<'static, 4096>>() == core::mem::size_of::<Pool<'static, 1>>()
 );

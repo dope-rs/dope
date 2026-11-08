@@ -5,7 +5,6 @@ use state::State;
 
 use crate::driver::{
     route,
-    route::table,
     schedule::{
         ready,
         ready::{
@@ -20,19 +19,11 @@ use crate::driver::{
             state,
         },
     },
-    settings,
 };
 
 pub(in crate::driver::schedule::ready) enum Renewal<'d> {
     Reusable(ReservedKey<'d>),
     Retired,
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub(in crate::driver::schedule::ready) struct Header {
-    pub(in crate::driver::schedule::ready) descriptor_end: table::Capacity,
-    pub(in crate::driver::schedule::ready) capacity: settings::Ready,
 }
 
 #[repr(C, align(64))]
@@ -52,7 +43,7 @@ impl Tile {
             cells: array::from_fn(|lane| {
                 let offset = (tile * TILE_SLOTS + lane) as u32;
                 let index = layout.descriptors.raw() + offset;
-                let (payload, kind) = if index >= u32::from(layout.capacity.raw()) {
+                let (payload, kind) = if index >= layout.capacity.raw() {
                     (Payload::retired(), Kind::Retired)
                 } else {
                     (Payload::free(layout.next_free(index)), Kind::Free)
@@ -68,7 +59,7 @@ impl Tile {
 
 pub(in crate::driver::schedule::ready) struct Resident<'a, S = state::Any> {
     pub(in crate::driver::schedule::ready) cell: &'a Cell,
-    pub(in crate::driver::schedule::ready) index: num::NonZero<u16>,
+    pub(in crate::driver::schedule::ready) index: num::NonZero<u32>,
     pub(in crate::driver::schedule::ready) proof: marker::PhantomData<fn(S) -> S>,
 }
 
@@ -138,7 +129,7 @@ pub(in crate::driver::schedule::ready) enum Entry<'a> {
 
 #[repr(transparent)]
 pub(in crate::driver::schedule::ready) struct Slots {
-    pub(in crate::driver::schedule::ready) block: tail::Block<Header, Tile>,
+    pub(in crate::driver::schedule::ready) block: tail::Block<Layout, Tile>,
 }
 
 pub(in crate::driver::schedule::ready) struct Table {
@@ -150,12 +141,8 @@ impl Table {
     pub(in crate::driver::schedule::ready) fn try_new(
         layout: Layout,
     ) -> Result<Self, alloc::Error> {
-        let header = Header {
-            descriptor_end: layout.descriptors,
-            capacity: layout.capacity,
-        };
         let memory = tail::Plan::try_new(layout.tile_count())?.try_allocate()?;
-        let block = memory.fill(header, |_, index| Tile::new(layout, index));
+        let block = memory.fill(layout, |_, index| Tile::new(layout, index));
         let slots = Slots { block };
         let pool = ready::Pool::new(layout);
         Ok(Self { slots, pool })
@@ -163,7 +150,7 @@ impl Table {
 }
 
 impl Slots {
-    pub(in crate::driver::schedule::ready) fn header(&self) -> Header {
+    pub(in crate::driver::schedule::ready) fn header(&self) -> Layout {
         *tail::View::new(&self.block).header()
     }
 
@@ -172,8 +159,8 @@ impl Slots {
         index: I,
     ) -> Resident<'_, I::State> {
         let index = index.code();
-        let raw = u32::from(index.get() - 1);
-        let dynamic = (raw - self.header().descriptor_end.raw()) as usize;
+        let raw = index.get() - 1;
+        let dynamic = (raw - self.header().descriptors.raw()) as usize;
         let tile = dynamic / TILE_SLOTS;
         let lane = dynamic % TILE_SLOTS;
         // SAFETY: exact index capabilities name live ready slots. `Local` is
@@ -284,7 +271,7 @@ impl Slots {
 const _: () = {
     assert!(mem::size_of::<Lease<DispatchKey<'static>>>() == 2 * mem::size_of::<usize>());
     assert!(mem::align_of::<Lease<DispatchKey<'static>>>() == mem::align_of::<usize>());
-    assert!(mem::size_of::<FreeIndex>() == mem::size_of::<u16>());
+    assert!(mem::size_of::<FreeIndex>() == mem::size_of::<u32>());
     assert!(mem::size_of::<Tile>() == 64);
     assert!(mem::align_of::<Tile>() == 64);
     assert!(mem::size_of::<Resident<'static>>() == 2 * mem::size_of::<usize>());

@@ -64,14 +64,14 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
     }
 }
 
-impl<D: Footprint, E, K> Drop for Registration<'_, '_, '_, '_, D, E, K> {
-    fn drop(&mut self) {
-        self.lane.defer_retire(Retired::new(self.key.index()));
-    }
-}
-
 struct Handle<'s, 'arena, 'credits, 'region, D: Footprint, E, K> {
     reg: Option<Registration<'s, 'arena, 'credits, 'region, D, E, K>>,
+}
+
+impl<D: Footprint, E, K> Drop for Handle<'_, '_, '_, '_, D, E, K> {
+    fn drop(&mut self) {
+        self.retire();
+    }
 }
 
 impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
@@ -163,7 +163,14 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
         reply::Arena::slot(token, reg.live())
     }
 
+    fn retire(&self) {
+        if let Some(reg) = &self.reg {
+            reg.lane.defer_retire(Retired::new(reg.key.index()));
+        }
+    }
+
     fn detach(&mut self) {
+        self.retire();
         self.reg = None;
     }
 

@@ -144,22 +144,26 @@ fn admission_is_atomic() {
 fn rejection_returns_owners() {
     let drops = Drops::new();
     let calls = cell::Cell::new(0);
-    let layout = layout::Layout::bounded(capacity(1, 3, 3, 3, 3)).expect("reply layout");
+    let layout = layout::Layout::bounded(capacity(1, 4, 4, 4, 4)).expect("reply layout");
     region::Token::scope(|mut token| {
         Arena::<(), (), Counted<'_>>::try_with(layout, token.proof(), |arena| {
             let lane = arena.try_lane(LaneIndex::ZERO).expect("lane");
             let mut held = recv::Response::<_, Pending, (), _>::new();
             held.try_tagged(&mut token, lane, Counted::data(&drops))
                 .expect("held reply");
-            let mut commands = [const { recv::Response::<_, Pending, (), _>::new() }; 2];
+            let mut commands = [const { recv::Response::<_, Pending, (), _>::new() }; 3];
             let mut terminal = recv::Response::<_, Pending, (), _>::new();
-            let (cause, ([first, unused], tag, owner)) = recv::Response::try_group_by(
+            let (cause, ([first, second, unused], tag, owner)) = recv::Response::try_group_by(
                 &mut token,
                 lane,
                 &mut commands,
                 &mut terminal,
                 (
-                    [Counted::data(&drops), Counted::data(&drops)],
+                    [
+                        Counted::data(&drops),
+                        Counted::data(&drops),
+                        Counted::data(&drops),
+                    ],
                     Counted::data(&drops),
                     Counted::data(&drops),
                 ),
@@ -175,13 +179,13 @@ fn rejection_returns_owners() {
             assert_eq!(drops.count(), 0);
             assert_eq!(calls.get(), 0);
             drop(unused);
-            let mut command = [recv::Response::<_, Pending, (), _>::new()];
+            let mut commands = [const { recv::Response::<_, Pending, (), _>::new() }; 2];
             let (depth, owner) = recv::Response::try_group_by(
                 &mut token,
                 lane,
-                &mut command,
+                &mut commands,
                 &mut terminal,
-                ([first], tag, owner),
+                ([first, second], tag, owner),
                 |(values, tag, owner)| {
                     calls.set(calls.get() + 1);
                     (values, |_, value| value, tag, owner)
@@ -189,8 +193,8 @@ fn rejection_returns_owners() {
             )
             .ok()
             .expect("admitted group");
-            assert_eq!(depth.get(), 3);
-            assert_eq!(arena.inflight().get(), 3);
+            assert_eq!(depth.get(), 4);
+            assert_eq!(arena.inflight().get(), 4);
             assert_eq!(drops.count(), 1);
             assert_eq!(calls.get(), 1);
             drop(owner);
@@ -198,5 +202,5 @@ fn rejection_returns_owners() {
         })
         .expect("reply arena");
     });
-    assert_eq!(drops.count(), 5);
+    assert_eq!(drops.count(), 6);
 }

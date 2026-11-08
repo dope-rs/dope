@@ -60,12 +60,23 @@ fn drains_empty() {
 
 #[test]
 fn preserves_sparse_rounds() {
-    for count in [1, 30, 31, 32, 2046, 2047, 2048, 65_534] {
+    let single = settings::FileSlots::fixed::<0, 1>();
+    for (files, count) in [
+        (single, 1),
+        (single, 30),
+        (single, 31),
+        (single, 32),
+        (single, 2046),
+        (single, 2047),
+        (single, 2048),
+        (single, 131_072),
+        (settings::FileSlots::fixed::<0, 33_024>(), 40_964),
+    ] {
         let capacity = (slots::Slots::try_from(count)).expect("ready capacity");
         let config = Runtime::quic::<2, 8>()
             .config()
             .with_domains(settings::Domain::ONE)
-            .with_files(settings::FileSlots::fixed::<0, 1>());
+            .with_files(files);
         let config = config.set_schedule(
             settings::Schedule::fixed::<0, 0>()
                 .resolve(Schedule::new(capacity, config.schedule().timers())),
@@ -79,7 +90,10 @@ fn preserves_sparse_rounds() {
                 let targets: Vec<_> = (0..count)
                     .map(|index| {
                         site.targets::<KeyTag<0>>()
-                            .bind(SlotIndex::from(index as u16), Epoch::INITIAL)
+                            .bind(
+                                SlotIndex::try_from(index).expect("route slot"),
+                                Epoch::INITIAL,
+                            )
                             .dispatch()
                     })
                     .collect();
@@ -90,7 +104,7 @@ fn preserves_sparse_rounds() {
                     .collect::<Result<Vec<_>, _>>()
                     .map(Vec::into_boxed_slice))
                 .expect("complete ready capacity");
-                let mut indices: Vec<_> = [0, 30, 31, 2046, 2047, count - 1]
+                let mut indices: Vec<_> = [0, 30, 31, 2046, 2047, 65_535, 65_536, count - 1]
                     .into_iter()
                     .filter(|index| *index < count)
                     .collect();

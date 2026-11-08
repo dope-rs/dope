@@ -79,12 +79,12 @@ impl<'a> Topology<'a> {
     }
 
     /// Queued tasks retain attachments until unlinking; zero count proves empty lanes.
-    /// The shared u16 arena bounds the attachment count.
+    /// The shared u32 arena bounds the attachment count.
     pub(in crate::driver::schedule::ready) fn close(
         self,
         key: ready::TopologyKey<'a>,
     ) -> Option<ready::ReservedKey<'a>> {
-        if self.lanes.0.payload().word(2) as u16 == 0 {
+        if self.lanes.0.payload().word(2) as u32 == 0 {
             Some(self.lanes.0.unroot(key))
         } else {
             self.lanes.close();
@@ -211,12 +211,10 @@ impl Lanes<'_> {
         self.0.payload().set_word(2, state | DRAINING_MASK);
     }
 
-    /// The root and Staged own distinct slots in the Plan's u16-bounded arena,
-    /// so the prior count is at most u16::MAX - 2. Count updates retain zero
-    /// upper count bits.
+    /// The root and Staged own distinct slots, bounding the prior count below u32::MAX - 1.
     fn attach<'d>(self, staged: Staged<'d>) -> ready::TaskKey<'d> {
         let state = self.0.payload().word(2);
-        let next = u32::from(state as u16) + 1;
+        let next = (state as u32) + 1;
         self.0
             .payload()
             .set_word(2, (state & !u64::from(u32::MAX)) | u64::from(next));

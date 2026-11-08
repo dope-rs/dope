@@ -14,7 +14,7 @@ use crate::{
 pub struct Retained<'d>(pub(in crate::driver::schedule::ready) ready::Key<'d>);
 
 impl<'d> Retained<'d> {
-    pub const fn slot(&self) -> num::NonZero<u16> {
+    pub const fn slot(&self) -> num::NonZero<u32> {
         self.0.stored.index_code()
     }
 

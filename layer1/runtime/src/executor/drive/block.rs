@@ -108,7 +108,7 @@ where
         let (mut polled, output) = {
             let mut cause = boot::Cause::Start;
             loop {
-                let tick = self.source.tick();
+                let tick = self.source.start();
                 let ready = match self.state.next_root(&self.slot, tick, &mut shutdown) {
                     Ok(ready) => ready,
                     Err(source) => return Attempt::Cancel(root, source),
@@ -164,7 +164,7 @@ where
                     break Err(error.into());
                 }
             }
-            let tick = self.source.tick();
+            let tick = self.source.start();
             polled = match self.state.next_root(&self.slot, tick, &mut shutdown) {
                 Ok(ready) => ready.skip(),
                 Err(error) => break Err(error),

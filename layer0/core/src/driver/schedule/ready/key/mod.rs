@@ -39,29 +39,29 @@ pub(in crate::driver::schedule::ready) struct TopologyKey<'d>(ready::Key<'d>);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub(in crate::driver::schedule::ready) struct FreeIndex(num::NonZero<u16>);
+pub(in crate::driver::schedule::ready) struct FreeIndex(num::NonZero<u32>);
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(in crate::driver::schedule::ready) struct TaskIndex(num::NonZero<u16>);
+pub(in crate::driver::schedule::ready) struct TaskIndex(num::NonZero<u32>);
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(in crate::driver::schedule::ready) struct RootIndex(num::NonZero<u16>);
+pub(in crate::driver::schedule::ready) struct RootIndex(num::NonZero<u32>);
 
 /// Absolute index in the validated shared ready arena.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(crate) struct DynamicIndex(pub(in crate::driver::schedule::ready) num::NonZero<u16>);
+pub(crate) struct DynamicIndex(pub(in crate::driver::schedule::ready) num::NonZero<u32>);
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(super) struct Local(pub(super) num::NonZero<u16>);
+pub(super) struct Local(pub(super) num::NonZero<u32>);
 
 pub(super) trait Index {
     type State;
 
-    fn code(self) -> num::NonZero<u16>;
+    fn code(self) -> num::NonZero<u32>;
 }
 
 pub(crate) trait QueueIndex {
@@ -71,7 +71,7 @@ pub(crate) trait QueueIndex {
 impl Index for FreeIndex {
     type State = state::Free;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0
     }
 }
@@ -79,7 +79,7 @@ impl Index for FreeIndex {
 impl Index for RootIndex {
     type State = state::Topology;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0
     }
 }
@@ -87,7 +87,7 @@ impl Index for RootIndex {
 impl Index for TaskIndex {
     type State = state::Task;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0
     }
 }
@@ -95,7 +95,7 @@ impl Index for TaskIndex {
 impl Index for Local {
     type State = state::Any;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0
     }
 }
@@ -103,7 +103,7 @@ impl Index for Local {
 impl Index for &DispatchKey<'_> {
     type State = state::Dispatch;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0.raw().index_code()
     }
 }
@@ -111,7 +111,7 @@ impl Index for &DispatchKey<'_> {
 impl Index for &ReservedKey<'_> {
     type State = state::Reserved;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0.raw().index_code()
     }
 }
@@ -119,7 +119,7 @@ impl Index for &ReservedKey<'_> {
 impl Index for &TaskKey<'_> {
     type State = state::Task;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0.raw().index_code()
     }
 }
@@ -127,7 +127,7 @@ impl Index for &TaskKey<'_> {
 impl Index for &TopologyKey<'_> {
     type State = state::Topology;
 
-    fn code(self) -> num::NonZero<u16> {
+    fn code(self) -> num::NonZero<u32> {
         self.0.raw().index_code()
     }
 }
@@ -138,18 +138,16 @@ impl DynamicIndex {
     }
 
     pub(in crate::driver) fn raw(self) -> u32 {
-        u32::from(self.0.get() - 1)
+        self.0.get() - 1
     }
 
-    pub(in crate::driver) const fn from_code(code: num::NonZero<u16>) -> Self {
+    pub(in crate::driver) const fn from_code(code: num::NonZero<u32>) -> Self {
         Self(code)
     }
 }
 
 fn descriptor(index: indices::SlotIndex) -> DynamicIndex {
-    // SAFETY: QueueIndex is implemented only for capabilities issued by the
-    // descriptor domain bounded by Plan's u16 ready domain.
-    DynamicIndex(unsafe { num::NonZero::<u16>::new_unchecked(index.raw() as u16 + 1) })
+    DynamicIndex(index.stored())
 }
 
 impl QueueIndex for identity::Identity<'_> {
@@ -265,7 +263,7 @@ impl<'d> TopologyKey<'d> {
 }
 
 impl FreeIndex {
-    pub(super) const fn from_code(code: num::NonZero<u16>) -> Self {
+    pub(super) const fn from_code(code: num::NonZero<u32>) -> Self {
         Self(code)
     }
 
@@ -279,7 +277,7 @@ impl TaskIndex {
         Self(key.key().raw().index_code())
     }
 
-    pub(in crate::driver::schedule::ready) const fn from_code(code: num::NonZero<u16>) -> Self {
+    pub(in crate::driver::schedule::ready) const fn from_code(code: num::NonZero<u32>) -> Self {
         Self(code)
     }
 }
@@ -289,7 +287,7 @@ impl RootIndex {
         Self(key.key().raw().index_code())
     }
 
-    pub(super) const fn from_code(code: num::NonZero<u16>) -> Self {
+    pub(super) const fn from_code(code: num::NonZero<u32>) -> Self {
         Self(code)
     }
 }
@@ -305,9 +303,9 @@ const _: () = {
     assert!(mem::size_of::<TopologyKey<'static>>() == mem::size_of::<Stored>());
     assert!(mem::size_of::<Option<DispatchKey<'static>>>() == mem::size_of::<Stored>());
     assert!(mem::size_of::<Option<TopologyKey<'static>>>() == mem::size_of::<Stored>());
-    assert!(mem::size_of::<FreeIndex>() == mem::size_of::<u16>());
-    assert!(mem::size_of::<TaskIndex>() == mem::size_of::<u16>());
-    assert!(mem::size_of::<RootIndex>() == mem::size_of::<u16>());
-    assert!(mem::size_of::<Local>() == mem::size_of::<u16>());
-    assert!(mem::size_of::<Option<TaskIndex>>() == mem::size_of::<u16>());
+    assert!(mem::size_of::<FreeIndex>() == mem::size_of::<u32>());
+    assert!(mem::size_of::<TaskIndex>() == mem::size_of::<u32>());
+    assert!(mem::size_of::<RootIndex>() == mem::size_of::<u32>());
+    assert!(mem::size_of::<Local>() == mem::size_of::<u32>());
+    assert!(mem::size_of::<Option<TaskIndex>>() == mem::size_of::<u32>());
 };

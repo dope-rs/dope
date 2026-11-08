@@ -31,7 +31,9 @@ impl Range {
 }
 
 pub(crate) trait Time: Copy {
-    fn start(self) -> clock::Sample;
+    fn start(self) -> clock::Sample {
+        clock::Sample::new(self.park())
+    }
 
     fn park(self) -> time::Instant;
 
@@ -40,10 +42,6 @@ pub(crate) trait Time: Copy {
 
 pub(crate) trait Source: Time {
     fn sample(self) -> Reading;
-
-    fn tick(self) -> clock::Sample {
-        self.start()
-    }
 }
 
 pub(crate) trait Expiring: Time {
@@ -59,10 +57,6 @@ pub(crate) struct Reading {
 pub(crate) struct Wall;
 
 impl Time for Wall {
-    fn start(self) -> clock::Sample {
-        self.sample().tick
-    }
-
     fn park(self) -> time::Instant {
         self.sample().wall
     }
@@ -88,10 +82,6 @@ struct Fixed<'d> {
 }
 
 impl Time for Fixed<'_> {
-    fn start(self) -> clock::Sample {
-        clock::Sample::new(self.now.into_raw())
-    }
-
     fn park(self) -> time::Instant {
         self.now.into_raw()
     }
@@ -190,10 +180,6 @@ where
     S: Source,
     L: Limit,
 {
-    fn start(self) -> clock::Sample {
-        self.source.start()
-    }
-
     fn park(self) -> time::Instant {
         self.source.park()
     }

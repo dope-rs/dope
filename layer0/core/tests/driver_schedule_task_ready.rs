@@ -92,7 +92,7 @@ fn stale_wake() {
     let config = (Runtime::quic::<2, 8>()
         .config()
         .with_domains(settings::Domain::ONE))
-    .with_ready(3)
+    .with_ready(65_536 + 4)
     .expect("ready capacity");
     let mut reports = Vec::new();
 
@@ -102,6 +102,7 @@ fn stale_wake() {
             let slot = (dref.ready().make_slot(dref.target())).expect("root ready slot");
             let root = task::Parent::from(slot.target());
 
+            let _reserved = task::pool::Pool::<(), 65_536>::try_new(root).expect("reserved prefix");
             let stale = {
                 let ready = Box::pin(topology::Slot::new());
                 let admit = (root.try_admit()).expect("first task slot");
@@ -118,16 +119,16 @@ fn stale_wake() {
             };
 
             let set = Box::pin(topology::Slot::new());
-            let admit = (root.try_admit()).expect("generation-reused task slot");
-            // SAFETY: the matching endpoint stays pinned through root release.
-            let binding = unsafe {
-                task::raw::Root::bind(
-                    admit,
-                    set.try_attach(root, Index(0))
-                        .expect("task topology fixture"),
-                )
-            };
-            let wake = binding.poll().1;
+            let bindings = [Index(0), Index(1)].map(|index| {
+                let admit = root.try_admit().expect("generation-reused task slot");
+                // SAFETY: the matching endpoint stays pinned through root release.
+                unsafe {
+                    task::raw::Root::bind(
+                        admit,
+                        set.try_attach(root, index).expect("task topology fixture"),
+                    )
+                }
+            });
 
             stale.wake();
             scope.run_turn(|_context, turn| {
@@ -135,11 +136,14 @@ fn stale_wake() {
             });
             assert!(set.is_empty());
 
-            wake.wake();
+            for binding in &bindings {
+                binding.poll().1.wake();
+            }
             scope.run_turn(|_context, turn| {
                 assert_eq!(turn.ready_round(|_| {}), 1);
             });
             assert_eq!(set.pop(), Some(Index(0)));
+            assert_eq!(set.pop(), Some(Index(1)));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,

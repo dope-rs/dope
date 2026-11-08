@@ -101,7 +101,7 @@ impl<Tag, const N: usize> Drop for Pool<'_, Tag, N> {
     }
 }
 
-const _: () = assert!(mem::size_of::<Pool<'static, (), 0>>() == 2 * mem::size_of::<usize>());
+const _: () = assert!(mem::size_of::<Pool<'static, (), 0>>() == 3 * mem::size_of::<usize>());
 const _: () =
     assert!(mem::size_of::<Pool<'static, (), 4096>>() == mem::size_of::<Pool<'static, (), 0>>());
 const _: () = assert!(mem::size_of::<Root<'static>>() == mem::size_of::<usize>());

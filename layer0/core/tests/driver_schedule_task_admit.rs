@@ -61,7 +61,7 @@ fn domain_atomic() {
     let config = (Runtime::quic::<2, 8>()
         .config()
         .with_domains(settings::Domain::ONE))
-    .with_ready(3)
+    .with_ready(65_536 + 3)
     .expect("ready capacity");
     let mut reports = Vec::new();
 
@@ -71,6 +71,7 @@ fn domain_atomic() {
             let slot = (dref.ready().make_slot(dref.target())).expect("root ready slot");
             let root = task::Parent::from(slot.target());
 
+            let _reserved = task::pool::Pool::<(), 65_536>::try_new(root).expect("reserved prefix");
             assert!(matches!(
                 task::Domain::<(), 3>::try_new(root),
                 Err(task::Error::Capacity {

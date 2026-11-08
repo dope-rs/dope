@@ -15,7 +15,7 @@ struct State(Option<Available>);
 #[repr(C)]
 struct Available {
     head: ready::FreeIndex,
-    count: num::NonZero<u16>,
+    count: num::NonZero<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -23,7 +23,7 @@ struct Available {
 struct Detached {
     head: ready::FreeIndex,
     tail: ready::FreeIndex,
-    count: num::NonZero<u16>,
+    count: num::NonZero<u32>,
 }
 
 #[repr(C)]
@@ -32,7 +32,7 @@ pub(in crate::driver::schedule::ready) struct Chain {
 }
 
 impl Chain {
-    fn new(head: ready::FreeIndex, tail: ready::FreeIndex, count: num::NonZero<u16>) -> Self {
+    fn new(head: ready::FreeIndex, tail: ready::FreeIndex, count: num::NonZero<u32>) -> Self {
         Self {
             state: cell::Cell::new(Some(Detached { head, tail, count })),
         }
@@ -43,7 +43,7 @@ impl Chain {
         slots: &'d ready::Slots,
     ) -> Option<(ready::ReservedKey<'d>, &'a Chain)> {
         let state = self.state.get()?;
-        let rest = match num::NonZero::<u16>::new(state.count.get() - 1) {
+        let rest = match num::NonZero::<u32>::new(state.count.get() - 1) {
             None => None,
             Some(count) => {
                 let head = slots.next(state.head);
@@ -67,7 +67,7 @@ impl Chain {
         let index = ready::FreeIndex::from_key(key.key());
         let state = self.state.get();
         let count = match state {
-            None => num::NonZero::<u16>::MIN,
+            None => num::NonZero::<u32>::MIN,
             Some(state) => state.count.saturating_add(1),
         };
         let head = state.map_or(index, |state| state.head);
@@ -96,7 +96,7 @@ impl State {
         Self(None)
     }
 
-    const fn occupied(head: ready::FreeIndex, count: num::NonZero<u16>) -> Self {
+    const fn occupied(head: ready::FreeIndex, count: num::NonZero<u32>) -> Self {
         Self(Some(Available { head, count }))
     }
 
@@ -114,7 +114,7 @@ impl State {
         }
     }
 
-    fn prepend(self, head: ready::FreeIndex, count: num::NonZero<u16>) -> Self {
+    fn prepend(self, head: ready::FreeIndex, count: num::NonZero<u32>) -> Self {
         let count = match self.0 {
             None => count,
             Some(state) => state.count.saturating_add(count.get()),
@@ -137,7 +137,7 @@ impl Pool {
 
     fn claim<'d>(&self, slots: &'d ready::Slots) -> Option<ready::ReservedKey<'d>> {
         let state = self.state.get().0?;
-        let rest = match num::NonZero::<u16>::new(state.count.get() - 1) {
+        let rest = match num::NonZero::<u32>::new(state.count.get() - 1) {
             None => State::empty(),
             Some(count) => {
                 let head = slots.next(state.head);
@@ -184,21 +184,21 @@ impl Pool {
         let state = self.state.get();
         let Some(state) = state
             .0
-            .filter(|state| count.get() <= usize::from(state.count.get()))
+            .filter(|state| count.get() <= state.count.get() as usize)
         else {
             return Err(task::Error::Capacity {
                 requested: count,
                 available: state.available(),
             });
         };
-        // SAFETY: admission bounds the nonzero request by the u16 free count.
-        let wanted = unsafe { num::NonZero::<u16>::new_unchecked(count.get() as u16) };
+        // SAFETY: admission bounds the nonzero request by the free count.
+        let wanted = unsafe { num::NonZero::<u32>::new_unchecked(count.get() as u32) };
         let mut tail = state.head;
         for _ in 1..wanted.get() {
             tail = slots.next(tail);
         }
         let rest = state.count.get() - wanted.get();
-        let next = match num::NonZero::<u16>::new(rest) {
+        let next = match num::NonZero::<u32>::new(rest) {
             None => State::empty(),
             Some(left) => {
                 let head = slots.next(tail);
@@ -245,7 +245,7 @@ impl Pool {
         let state = self.state.get();
         slots.publish(key, state.link(index));
         self.state
-            .set(state.prepend(index, num::NonZero::<u16>::MIN));
+            .set(state.prepend(index, num::NonZero::<u32>::MIN));
     }
 
     pub(in crate::driver::schedule::ready) fn restore(&self, slots: &ready::Slots, chain: &Chain) {
@@ -259,9 +259,9 @@ impl Pool {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<Pool>() == 2 * std::mem::size_of::<u16>());
-    assert!(std::mem::size_of::<State>() == 2 * std::mem::size_of::<u16>());
-    assert!(std::mem::size_of::<Detached>() == 3 * std::mem::size_of::<u16>());
+    assert!(std::mem::size_of::<Pool>() == 2 * std::mem::size_of::<u32>());
+    assert!(std::mem::size_of::<State>() == 2 * std::mem::size_of::<u32>());
+    assert!(std::mem::size_of::<Detached>() == 3 * std::mem::size_of::<u32>());
     assert!(std::mem::size_of::<Option<Detached>>() == std::mem::size_of::<Detached>());
-    assert!(std::mem::size_of::<Chain>() == 3 * std::mem::size_of::<u16>());
+    assert!(std::mem::size_of::<Chain>() == 3 * std::mem::size_of::<u32>());
 };

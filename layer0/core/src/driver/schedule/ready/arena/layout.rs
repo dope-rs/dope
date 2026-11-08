@@ -5,9 +5,9 @@ use crate::driver::{route::table, schedule::ready, settings};
 pub(in crate::driver::schedule::ready) const TILE_SLOTS: usize = 2;
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub(in crate::driver::schedule::ready) struct Layout {
     pub(in crate::driver::schedule::ready) descriptors: table::Capacity,
-    dynamic: u16,
     pub(in crate::driver::schedule::ready) capacity: settings::Ready,
 }
 
@@ -16,25 +16,24 @@ impl Layout {
         let config = plan.config();
         Self {
             descriptors: config.file_slots().capacity(),
-            dynamic: plan.ready_slots(),
             capacity: plan.ready(),
         }
     }
 
     pub(in crate::driver::schedule::ready) fn tile_count(self) -> usize {
-        usize::from(self.dynamic).div_ceil(TILE_SLOTS)
+        ((self.capacity.raw() - self.descriptors.raw()) as usize).div_ceil(TILE_SLOTS)
     }
 
     pub(in crate::driver::schedule::ready) fn available(
         self,
-    ) -> Option<(ready::FreeIndex, num::NonZero<u16>)> {
-        let count = num::NonZero::<u16>::new(self.dynamic)?;
+    ) -> Option<(ready::FreeIndex, num::NonZero<u32>)> {
+        let count = num::NonZero::<u32>::new(self.capacity.raw() - self.descriptors.raw())?;
         Some((Self::free_index(self.descriptors.raw()), count))
     }
 
     pub(in crate::driver::schedule::ready) fn next_free(self, index: u32) -> ready::FreeIndex {
         let next = index + 1;
-        if next == u32::from(self.capacity.raw()) {
+        if next == self.capacity.raw() {
             Self::free_index(index)
         } else {
             Self::free_index(next)
@@ -42,9 +41,8 @@ impl Layout {
     }
 
     fn free_index(index: u32) -> ready::FreeIndex {
-        // SAFETY: Plan bounds the complete descriptor + dynamic arena below
-        // u16::MAX, and callers supply an index inside that arena.
-        let code = unsafe { num::NonZero::<u16>::new_unchecked(index as u16 + 1) };
+        // SAFETY: callers supply an index below the admitted capacity, at most u32::MAX.
+        let code = unsafe { num::NonZero::<u32>::new_unchecked(index + 1) };
         ready::FreeIndex::from_code(code)
     }
 }

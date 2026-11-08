@@ -5,23 +5,19 @@ use crate::driver::{settings, settings::errors};
 /// Proven capacity of the shared descriptor and dynamic-ready arena.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub(crate) struct Ready(num::NonZero<u16>);
+pub(crate) struct Ready(num::NonZero<u32>);
 
 const _: () = {
-    assert!(mem::size_of::<Ready>() == mem::size_of::<u16>());
-    assert!(mem::align_of::<Ready>() == mem::align_of::<u16>());
+    assert!(mem::size_of::<Ready>() == mem::size_of::<u32>());
+    assert!(mem::align_of::<Ready>() == mem::align_of::<u32>());
 };
 
 impl Ready {
-    const fn new(capacity: num::NonZero<u16>) -> Self {
+    const fn new(capacity: num::NonZero<u32>) -> Self {
         Self(capacity)
     }
 
-    pub(crate) const fn into_nonzero(self) -> num::NonZero<u16> {
-        self.0
-    }
-
-    pub(crate) const fn raw(self) -> u16 {
+    pub(crate) const fn raw(self) -> u32 {
         self.0.get()
     }
 }
@@ -31,7 +27,6 @@ impl Ready {
 pub(crate) struct Plan {
     config: settings::Config,
     ready: Ready,
-    ready_slots: u16,
 }
 
 impl Plan {
@@ -41,17 +36,16 @@ impl Plan {
         let files = files.capacity().raw();
         let ready = slots.raw();
         let count = files as u64 + ready as u64;
-        if count > u16::MAX as u64 {
+        if count > u32::MAX as u64 {
             Err(errors::Config::ReadyCapacity {
                 files,
                 ready,
-                maximum: u16::MAX as u32,
+                maximum: u32::MAX,
             })
         } else {
             Ok(Self {
                 config,
-                ready: Ready::new(num::NonZero::<u16>::MIN.saturating_add(count as u16 - 1)),
-                ready_slots: ready as u16,
+                ready: Ready::new(num::NonZero::<u32>::MIN.saturating_add(count as u32 - 1)),
             })
         }
     }
@@ -62,9 +56,5 @@ impl Plan {
 
     pub(crate) const fn ready(self) -> Ready {
         self.ready
-    }
-
-    pub(crate) const fn ready_slots(self) -> u16 {
-        self.ready_slots
     }
 }

@@ -13,19 +13,19 @@ pub struct Stored(Value, ThreadBound);
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C, align(8))]
 struct Value {
-    index: num::NonZero<u16>,
+    index: num::NonZero<u32>,
     epoch: ready::Generation,
 }
 
 impl Stored {
     pub(in crate::driver) const fn from_parts(
-        index: num::NonZero<u16>,
+        index: num::NonZero<u32>,
         epoch: ready::Generation,
     ) -> Self {
         Self(Value { index, epoch }, ThreadBound::NEW)
     }
 
-    pub(in crate::driver::schedule::ready) const fn index_code(self) -> num::NonZero<u16> {
+    pub(in crate::driver::schedule::ready) const fn index_code(self) -> num::NonZero<u32> {
         self.0.index
     }
 

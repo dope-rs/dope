@@ -1,4 +1,4 @@
-use std::{mem, time};
+use std::mem;
 
 use dope_core::{
     driver,
@@ -17,7 +17,7 @@ use turn::{
     routes,
 };
 
-use crate::executor::{self, drive, drive::clock::Time};
+use crate::executor::{self, drive};
 
 pub(crate) struct Scope<'run, 'driver, 'app, 'd: 'app, D: executor::raw::Layout<'d>, S> {
     driver: &'run mut driver::Context<'driver, 'd>,
@@ -178,22 +178,6 @@ where
 
     pub(super) fn maintenance(&self) -> schedule::Progress<'d> {
         self.driver.driver_ref().maintenance()
-    }
-
-    pub(super) fn timeout(
-        &self,
-        state: schedule::Progress<'d>,
-        source: impl Time,
-    ) -> Option<time::Duration> {
-        if matches!(state, schedule::Progress::Runnable) || !self.is_quiet() {
-            return Some(time::Duration::ZERO);
-        }
-        match state {
-            schedule::Progress::Waiting(wait) => wait
-                .deadline()
-                .map(|due| due.into_raw().saturating_duration_since(source.park())),
-            _ => None,
-        }
     }
 
     pub(super) fn is_quiet(&self) -> bool {

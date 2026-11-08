@@ -50,7 +50,7 @@ impl<'d, Tag, const N: usize> Domain<'d, Tag, N> {
     }
 }
 
-const _: () = assert!(mem::size_of::<Domain<'static, (), 0>>() == 3 * mem::size_of::<usize>());
+const _: () = assert!(mem::size_of::<Domain<'static, (), 0>>() == 4 * mem::size_of::<usize>());
 const _: () = assert!(
     mem::size_of::<Domain<'static, (), 4096>>() == mem::size_of::<Domain<'static, (), 0>>()
 );

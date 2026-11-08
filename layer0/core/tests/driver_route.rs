@@ -273,7 +273,7 @@ fn rejects_ready_overflow() {
     let expected = Config::ReadyCapacity {
         files: 16,
         ready: u32::MAX,
-        maximum: u32::from(u16::MAX),
+        maximum: u32::MAX,
     };
     let mut creation = creation::Attempt::new();
     assert!(matches!(

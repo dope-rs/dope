@@ -76,12 +76,13 @@ impl Arena {
     fn resolve(&self, key: ready::Stored) -> Option<ready::Entry<'_>> {
         let index = key.dense();
         let header = self.entries.slots.header();
-        if index.get() < header.descriptor_end.count().get() {
-            let slot = indices::SlotIndex::from(index.0.get() - 1);
+        if index.get() < header.descriptors.count().get() {
+            // SAFETY: this index is inside the admitted native descriptor prefix.
+            let slot = unsafe { indices::SlotIndex::encode(index.raw()) };
             self.descriptors.target_for(slot, key.epoch())?;
             return Some(ready::Entry::Dispatch(index));
         }
-        if index.get() >= usize::from(header.capacity.raw()) {
+        if index.get() >= header.capacity.raw() as usize {
             return None;
         }
         let resident = self.entries.slots.resident(ready::key::Local(index.0));
@@ -150,8 +151,9 @@ impl Arena {
         self.ready.drain(budget, |index| {
             let index = index.0;
             let header = self.entries.slots.header();
-            let target = if index.get() < header.descriptor_end.count().get() {
-                let slot = indices::SlotIndex::from(index.0.get() - 1);
+            let target = if index.get() < header.descriptors.count().get() {
+                // SAFETY: this index is inside the admitted native descriptor prefix.
+                let slot = unsafe { indices::SlotIndex::encode(index.raw()) };
                 let Some(target) = self.descriptors.target_at(slot) else {
                     return;
                 };

@@ -16,13 +16,14 @@ pub(in crate::driver::schedule::ready::arena::set) enum Phase {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(u8)]
+// The low bit selects the active side.
 enum Mode {
     IdleA,
     IdleB,
-    DrainingA,
     DrainingB,
-    PausedA,
+    DrainingA,
     PausedB,
+    PausedA,
 }
 
 pub(in crate::driver::schedule::ready::arena::set) struct State {
@@ -53,11 +54,10 @@ impl State {
     }
 
     pub(in crate::driver::schedule::ready::arena::set) fn active(&self) -> Side {
-        match self.mode.get() {
-            Mode::IdleA => Side::A,
-            Mode::IdleB => Side::B,
-            Mode::DrainingA | Mode::PausedA => Side::B,
-            Mode::DrainingB | Mode::PausedB => Side::A,
+        if self.mode.get() as u8 & 1 == 0 {
+            Side::A
+        } else {
+            Side::B
         }
     }
 
