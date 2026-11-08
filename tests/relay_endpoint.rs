@@ -12,6 +12,7 @@ use dope::core::driver::{
 use dope::core::io::datagram::payload;
 use dope::manifold::app::Host;
 use dope::runtime::executor::{Executor, session};
+use dope::runtime::topology::Worker;
 use dope_quic::{
     conn::life::{accept, options::Options, tls::servers},
     runtime::{
@@ -167,7 +168,7 @@ fn native_binding_rejects_mismatched_framing() {
 }
 
 #[test]
-#[ignore = "requires CAP_BPF for the native reuse-port selector"]
+#[ignore = "requires native reuse-port routing"]
 fn routed_binding_rejects_mismatched_framing() {
     let (identity, _) = common::peer::raw(0x37).expect("identity");
     let authority = accept::Authority::new(identity.server().expect("server"), Options::default())
@@ -175,16 +176,11 @@ fn routed_binding_rejects_mismatched_framing() {
     let pool = servers::Pool::<0>::new(authority, NonZero::<usize>::MIN);
     let address = ([127, 0, 0, 1], 0).into();
     let count = routing::Count::try_from(2).expect("two shards");
-    let relayed = routing::Group::bind_relay(address, count)
-        .expect("relay routing group")
-        .split()
-        .next()
-        .expect("relay shard binding");
-    let direct = routing::Group::bind(address, count)
-        .expect("direct routing group")
-        .split()
-        .next()
-        .expect("direct shard binding");
+    let mut relayed_group =
+        routing::Group::bind_relay(address, count).expect("relay routing group");
+    let relayed = relayed_group.split().next().expect("relay shard binding");
+    let mut direct_group = routing::Group::bind(address, count).expect("direct routing group");
+    let direct = direct_group.split().next().expect("direct shard binding");
     let direct_plan = endpoint::Plan::<0, receive::Copied>::new(CONFIG).expect("direct plan");
     let relay_plan =
         endpoint::Plan::<0, receive::Copied>::routed(CONFIG, &relayed).expect("routed relay plan");
@@ -194,45 +190,52 @@ fn routed_binding_rejects_mismatched_framing() {
             settings::Datagram::fixed::<2, 1200>(),
         ))
         .expect("driver configuration");
-    Driver::new(settings).with_driver(
-        |mut driver| {
-            assert!(matches!(
-                pool::Binding::new(&pool).bind_routed(
-                    relayed, capture(), direct_plan, &mut driver,
-                ),
-                Err(endpoint::BindError::Framing { plan: None, socket: Some((prefix, _)) })
-                    if usize::from(prefix.extent().get()) == Ticket::LEN,
-            ));
-            assert!(matches!(
-                pool::Binding::new(&pool).bind_routed(
-                    direct, capture(), relay_plan, &mut driver,
-                ),
-                Err(endpoint::BindError::Framing { plan: Some((prefix, _)), socket: None })
-                    if usize::from(prefix.extent().get()) == Ticket::LEN,
-            ));
-        },
-        Policy::new(
-            |_| {},
-            |failure: Recovery<'_, '_>| -> Infallible {
-                panic!("native recovery: {:?}", failure.cause())
-            },
-        ),
-        |result| {
-            if let Err(error) = result {
-                panic!("driver lifecycle: {:?}", error.cause());
-            }
-        },
-    );
+    let run =
+        |worker: Worker<'_, '_, '_, '_, (), (routing::Binding<'_>, routing::Binding<'_>), ()>| {
+            worker.lend(|(relayed, direct), stage| {
+                let mut driver = stage.driver();
+                assert!(matches!(
+                    pool::Binding::new(&pool).bind_routed(
+                        relayed, capture(), direct_plan, &mut driver,
+                    ),
+                    Err(endpoint::BindError::Framing { plan: None, socket: Some((prefix, _)) })
+                        if usize::from(prefix.extent().get()) == Ticket::LEN,
+                ));
+                assert!(matches!(
+                    pool::Binding::new(&pool).bind_routed(
+                        direct, capture(), relay_plan, &mut driver,
+                    ),
+                    Err(endpoint::BindError::Framing { plan: Some((prefix, _)), socket: None })
+                        if usize::from(prefix.extent().get()) == Ticket::LEN,
+                ));
+            });
+        };
+    let mut creation = Attempt::new();
+    Executor::new(&mut creation, settings)
+        .unwrap_or_else(|error| panic!("driver creation: {:?}", error.kind()))
+        .run(|executor| {
+            executor
+                .enter(
+                    ((relayed, direct), run),
+                    Policy::new(
+                        |_| {},
+                        |failure: Recovery<'_, '_>| -> Infallible {
+                            panic!("native recovery: {:?}", failure.cause())
+                        },
+                    ),
+                )
+                .unwrap_or_else(|error| panic!("driver retirement: {:?}", error.cause()));
+        });
 }
 
 #[test]
-#[ignore = "requires CAP_BPF for the native reuse-port selector"]
+#[ignore = "requires native reuse-port routing"]
 fn owned_routed_server_starts_application() {
     let address = ([127, 0, 0, 1], 0).into();
     let count = routing::Count::try_from(2).expect("two shards");
     let mut opened = [false; 2];
     for relay in [false, true] {
-        let group = if relay {
+        let mut group = if relay {
             routing::Group::bind_relay(address, count)
         } else {
             routing::Group::bind(address, count)
@@ -267,86 +270,88 @@ fn owned_routed_server_starts_application() {
                 settings::Datagram::fixed::<2, 1200>(),
             ))
             .expect("driver configuration");
-        let mut creation = Attempt::new();
-        let executor = Executor::new(&mut creation, settings);
-        executor
-            .as_ref()
-            .map_err(|error| error.kind())
-            .expect("driver creation");
-        executor.ok().expect("admitted driver").run(|executor| {
-            let result = executor.enter_with(
-                |mut session| {
-                    let (first, second) = {
-                        let mut driver = session.driver();
-                        let events = capture();
-                        let first = first
-                            .bind_with::<app::Silent, _, _, _, Infallible>(&mut driver, move |_| {
-                                Ok((events, Idle))
-                            })
-                            .expect("owned routed application");
-                        let second = second
-                            .bind(capture(), &mut driver)
-                            .expect("owned routed idle");
-                        (first, second)
-                    };
-                    assert_eq!(first.local_addr(), second.local_addr());
-                    let sender = Socket::bind(address).expect("external peer");
-                    let ticket = relay.then(|| {
-                        Key::try_new()
-                            .expect("ticket key")
-                            .issue(0, sender.local_addr().expect("peer address"))
-                    });
-                    let initial = common::peer::Initial::new(
-                        &[0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa4],
-                        &[0x42; 8],
-                        0,
-                    )
-                    .seal(&[0])
-                    .expect("external Initial");
-                    let wire =
-                        common::runtime::relay::frame(ticket, &initial).expect("Initial framing");
-                    assert_eq!(
-                        sender
-                            .send_to(&wire, first.local_addr())
-                            .expect("send external Initial"),
-                        wire.len(),
-                    );
-                    let mut finish = session::Completion::new();
-                    let received = session
-                        .with_quiesce(&mut finish, Host::new(first), TIMEOUT, |mut app| {
-                            let deadline = Instant::now() + TIMEOUT;
-                            while app.inspect(Host::manifold, |endpoint| endpoint.is_empty()) {
-                                if Instant::now() >= deadline {
-                                    return false;
-                                }
-                                fibers::TEST
-                                    .try_run(&mut app, fibers::Yield::new())
-                                    .expect("native receive progress");
-                            }
-                            app.inspect(Host::manifold, |endpoint| {
-                                endpoint
-                                    .inspect(endpoint.sole().expect("one opening"), |_, _, conn| {
-                                        conn.lifecycle().is_opening()
-                                    })
-                                    .expect("live opening")
-                            })
+        type Plans<'g> = (
+            server::Plan<'g, 0, receive::Copied, routing::Routed>,
+            server::Plan<'g, 1, receive::Copied, routing::Routed>,
+        );
+        let run = |worker: Worker<'_, '_, '_, '_, (), Plans<'_>, ()>| {
+            worker.lend(|(first, second), session| {
+                let (first, second) = {
+                    let mut driver = session.driver();
+                    let events = capture();
+                    let first = first
+                        .bind_with::<app::Silent, _, _, _, Infallible>(&mut driver, move |_| {
+                            Ok((events, Idle))
                         })
-                        .expect("owned endpoint retirement");
-                    drop(second);
-                    received
-                },
-                Policy::new(
-                    |_| {},
-                    |failure: Recovery<'_, '_>| -> Infallible {
-                        panic!("native recovery: {:?}", failure.cause())
-                    },
-                ),
-            );
-            opened[usize::from(relay)] = match result {
-                Ok(received) => received,
-                Err(error) => panic!("driver retirement: {:?}", error.cause()),
-            };
-        });
+                        .expect("owned routed application");
+                    let second = second
+                        .bind(capture(), &mut driver)
+                        .expect("owned routed idle");
+                    (first, second)
+                };
+                assert_eq!(first.local_addr(), second.local_addr());
+                let sender = Socket::bind(address).expect("external peer");
+                let ticket = relay.then(|| {
+                    Key::try_new()
+                        .expect("ticket key")
+                        .issue(0, sender.local_addr().expect("peer address"))
+                });
+                let initial = common::peer::Initial::new(
+                    &[0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa4],
+                    &[0x42; 8],
+                    0,
+                )
+                .seal(&[0])
+                .expect("external Initial");
+                let wire =
+                    common::runtime::relay::frame(ticket, &initial).expect("Initial framing");
+                assert_eq!(
+                    sender
+                        .send_to(&wire, first.local_addr())
+                        .expect("send external Initial"),
+                    wire.len(),
+                );
+                let mut finish = session::Completion::new();
+                let received = session
+                    .with_quiesce(&mut finish, Host::new(first), TIMEOUT, |mut app| {
+                        let deadline = Instant::now() + TIMEOUT;
+                        while app.inspect(Host::manifold, |endpoint| endpoint.is_empty()) {
+                            if Instant::now() >= deadline {
+                                return false;
+                            }
+                            fibers::TEST
+                                .try_run(&mut app, fibers::Yield::new())
+                                .expect("native receive progress");
+                        }
+                        app.inspect(Host::manifold, |endpoint| {
+                            endpoint
+                                .inspect(endpoint.sole().expect("one opening"), |_, _, conn| {
+                                    conn.lifecycle().is_opening()
+                                })
+                                .expect("live opening")
+                        })
+                    })
+                    .expect("owned endpoint retirement");
+                drop(second);
+                received
+            })
+        };
+        let mut creation = Attempt::new();
+        Executor::new(&mut creation, settings)
+            .unwrap_or_else(|error| panic!("driver creation: {:?}", error.kind()))
+            .run(|executor| {
+                opened[usize::from(relay)] = executor
+                    .enter(
+                        ((first, second), run),
+                        Policy::new(
+                            |_| {},
+                            |failure: Recovery<'_, '_>| -> Infallible {
+                                panic!("native recovery: {:?}", failure.cause())
+                            },
+                        ),
+                    )
+                    .unwrap_or_else(|error| panic!("driver retirement: {:?}", error.cause()));
+            });
     }
     assert_eq!(opened, [true, true], "direct and relayed Initial admission");
 }

@@ -57,9 +57,9 @@ impl<'tls, const ID: u8> Binding<'tls, ID> {
         ep.bind(bind, mux, endpoint::Idle::new(), driver)
     }
 
-    pub fn bind_routed<'pool, 'd, H, R>(
+    pub fn bind_routed<'pool, 'd, 'g: 'd, H, R>(
         self,
-        bind: routing::Binding,
+        bind: routing::Binding<'g>,
         events: H,
         plan: endpoint::Plan<ID, R>,
         driver: &mut driver::Context<'_, 'd>,

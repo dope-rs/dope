@@ -97,9 +97,9 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
         })
     }
 
-    pub(super) fn adopt<H, A, M>(
+    pub(super) fn adopt<'g: 'd, H, A, M>(
         self,
-        lease: Lease,
+        lease: Lease<'g>,
         mux: router::Router<H, ID, R::Buffer<'d>, M::Mode>,
         app: A,
         driver: &mut driver::Context<'_, 'd>,

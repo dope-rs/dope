@@ -24,11 +24,12 @@ use handler::hook::{
 /// Single-use server auth and receive resource plan.
 #[must_use = "a server plan must be consumed by one endpoint binding"]
 pub struct Plan<
+    'g,
     const ID: u8,
     R: receive::Policy = receive::Retained,
     L: routing::LocalRoute = routing::Plain,
 > {
-    bind: Socket,
+    bind: Socket<'g>,
     route: L,
     source: rustls::ServerConfig,
     connection: options::Options,
@@ -36,12 +37,12 @@ pub struct Plan<
     endpoint: endpoint::Plan<ID, R>,
 }
 
-enum Socket {
+enum Socket<'g> {
     Bind(net::SocketAddr),
-    Adopt(Lease),
+    Adopt(Lease<'g>),
 }
 
-impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
+impl<const ID: u8, R: receive::Policy> Plan<'static, ID, R> {
     pub fn new(
         bind: net::SocketAddr,
         source: rustls::ServerConfig,
@@ -87,7 +88,7 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         source: rustls::ServerConfig,
         opts: options::Options,
         config: config::Config,
-    ) -> Result<Plan<ID, R, routing::SingleRoute>, endpoint::PlanError> {
+    ) -> Result<Plan<'static, ID, R, routing::SingleRoute>, endpoint::PlanError> {
         let ep = endpoint::Plan::single(config, &bind).map_err(endpoint::PlanError::Config)?;
         let (address, route) = bind.into_parts();
         Ok(Plan::prepare(
@@ -100,21 +101,21 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
     }
 
     /// Consumes one routed socket and owns its TLS authority through endpoint retirement.
-    pub fn routed(
-        bind: routing::Binding,
+    pub fn routed<'g>(
+        bind: routing::Binding<'g>,
         source: rustls::ServerConfig,
         opts: options::Options,
         config: config::Config,
-    ) -> Result<Plan<ID, R, routing::Routed>, endpoint::PlanError> {
+    ) -> Result<Plan<'g, ID, R, routing::Routed>, endpoint::PlanError> {
         let ep = endpoint::Plan::routed(config, &bind).map_err(endpoint::PlanError::Config)?;
         let (lease, route) = bind.into_parts();
         Ok(Plan::prepare(Socket::Adopt(lease), route, source, opts, ep))
     }
 }
 
-impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
+impl<'g, const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<'g, ID, R, L> {
     fn prepare(
-        bind: Socket,
+        bind: Socket<'g>,
         route: L,
         source: rustls::ServerConfig,
         mut opts: options::Options,
@@ -130,23 +131,14 @@ impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
             endpoint: ep,
         }
     }
-}
 
-impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> AsRef<endpoint::Plan<ID, R>>
-    for Plan<ID, R, L>
-{
-    fn as_ref(&self) -> &endpoint::Plan<ID, R> {
-        &self.endpoint
-    }
-}
-
-impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
     pub fn bind<'pool, 'd, H>(
         self,
         events: H,
         driver: &mut driver::Context<'_, 'd>,
     ) -> endpoint::Bound<'d, ID, H, R, endpoint::Idle, owner::Owned<L>, datagram::Sealed<'pool>>
     where
+        'g: 'd,
         H: handler::Handler<ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>,
         H: cert::Sink<ID, id::Driver<'d>>,
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
@@ -162,6 +154,7 @@ impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
         driver: &mut driver::Context<'_, 'd>,
     ) -> endpoint::Bound<'d, ID, H, R, A, owner::Owned<L>, datagram::Sealed<'pool>>
     where
+        'g: 'd,
         H: handler::Handler<ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>,
         H: cert::Sink<ID, id::Driver<'d>>,
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
@@ -194,6 +187,7 @@ impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
         endpoint::BindFailure<E>,
     >
     where
+        'g: 'd,
         H: handler::Handler<ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>,
         H: cert::Sink<ID, id::Driver<'d>>,
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
@@ -206,6 +200,14 @@ impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<ID, R, L> {
         let (events, app) = bind(binding).map_err(endpoint::BindFailure::Application)?;
         self.bind_runtime(events, endpoint::Run::<A, Q>::new(app), driver)
             .map_err(endpoint::BindFailure::Endpoint)
+    }
+}
+
+impl<const ID: u8, R: receive::Policy, L: routing::LocalRoute> AsRef<endpoint::Plan<ID, R>>
+    for Plan<'_, ID, R, L>
+{
+    fn as_ref(&self) -> &endpoint::Plan<ID, R> {
+        &self.endpoint
     }
 }
 
