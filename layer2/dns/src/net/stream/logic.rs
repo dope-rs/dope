@@ -76,7 +76,8 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
 
     fn retire(&self, bind: Bind<'life, 's, 'd, ID, LANES, N>, error: Option<error::Kind>) {
         self.link.set(Some(Link::Retiring(Retiring {
-            bind,
+            token: bind.token,
+            peer: bind.peer,
             branches: index::Retirement::new(),
             error,
         })));
@@ -384,7 +385,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
         let Some(Link::Retiring(retiring)) = logic.link.get() else {
             return egress::Cleared::Done;
         };
-        if retiring.bind.token != conn {
+        if retiring.token != conn {
             return egress::Cleared::Done;
         }
         let (retiring, progress) = retiring.clear(reason, ctx);

@@ -233,7 +233,7 @@ const _: () = {
     );
     assert!(
         mem::size_of::<Open<'static, 'static, 'static, 'static, (), ()>>()
-            == 7 * mem::size_of::<usize>()
+            == 6 * mem::size_of::<usize>()
     );
 };
 
@@ -299,6 +299,6 @@ impl<'a, 'arena, 'credits, 'region, C: Footprint, K> Push<'a, 'arena, 'credits, 
 const _: () = {
     assert!(
         mem::size_of::<Push<'static, 'static, 'static, 'static, ()>>()
-            == 10 * mem::size_of::<usize>()
+            == 9 * mem::size_of::<usize>()
     );
 };

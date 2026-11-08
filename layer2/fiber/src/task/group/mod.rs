@@ -10,7 +10,7 @@ use crate::{
     task::{
         group::ready::Ready,
         storage::{
-            caps, slots,
+            slots,
             slots::{Action, Bindings, Index, Phase, Table},
         },
     },
@@ -46,7 +46,6 @@ pub struct Group<'d, F, const N: usize> {
     #[pin]
     ready: Ready<'d, N>,
     domain: task::Domain<'d, DomainTag, N>,
-    width: caps::Inline<N>,
 }
 
 /// Exclusive proof that one group slot remains vacant.
@@ -86,7 +85,7 @@ impl<'d, F, const N: usize> Group<'d, F, N> {
         table: impl FnOnce() -> Table<'d, F, (), N>,
         live: bits::Set<Index<N>, N>,
     ) -> Result<Self, Error> {
-        let width = caps::Inline::<N>::new();
+        const { assert!(N > 0 && N <= 16) };
         let parent: wake::Waker<'d> = parent.into();
         let ready = Ready::try_new(parent.0, live).map_err(Error)?;
         let domain = task::Domain::try_new(parent.0).map_err(Error)?;
@@ -94,7 +93,6 @@ impl<'d, F, const N: usize> Group<'d, F, N> {
             table: table(),
             ready,
             domain,
-            width,
         })
     }
 

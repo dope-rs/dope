@@ -1,11 +1,8 @@
 use std::mem;
 
-use dope_core::driver::route::{Identity, KeyTag};
+use dope_core::driver::route::{Identity, KeyTag, indices::SlotIndex};
 
-use crate::{
-    client::attempt,
-    service::pool::{self, dials},
-};
+use crate::service::pool::{self, dials};
 
 /// Dropping admission leaves the submitted dial owned by its transport finalizer.
 pub(in crate::service::pool) struct Connect<'a, 'q, 'h, 'd, ID: Identity> {
@@ -33,6 +30,6 @@ const _: () = {
     );
     assert!(
         mem::size_of::<Connect<'static, 'static, 'static, 'static, KeyTag<0>>>()
-            <= mem::size_of::<(&mut (), attempt::Slot, pool::Target<'static>)>()
+            <= mem::size_of::<(&mut (), SlotIndex, pool::Target<'static>)>()
     );
 };

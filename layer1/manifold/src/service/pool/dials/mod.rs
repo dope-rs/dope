@@ -40,7 +40,7 @@ struct Dial<'q, 'h, 'd, ID: Identity> {
     generation: Cell<key::Generation>,
     next: Cell<Option<Ready<'q, 'h, 'd, ID>>>,
     state: Cell<State<'h>>,
-    slot: attempt::Slot,
+    slot: indices::SlotIndex,
     brand: marker::PhantomData<attempt::Id<'d, ID>>,
 }
 
@@ -82,7 +82,7 @@ impl<ID: Identity> Default for Dial<'_, '_, '_, ID> {
             generation: Cell::new(key::Generation::MIN),
             next: Cell::new(None),
             state: Cell::new(State::Ready),
-            slot: attempt::Slot::new(indices::SlotIndex::ZERO),
+            slot: indices::SlotIndex::ZERO,
             brand: marker::PhantomData,
         }
     }
@@ -162,7 +162,7 @@ impl<'q, 'h, 'd, ID: Identity, T: dope_net::Transport> Dials<'q, 'h, 'd, ID, T> 
         let mut records: Box<[Dial<'_, 'h, 'd, ID>]> =
             alloc::BoxSliceExt::try_default(cap.entries().get())?;
         for (record, index) in records.iter_mut().zip(table::Capacity::from(cap)) {
-            record.slot = attempt::Slot::new(index);
+            record.slot = index;
         }
         let mut ready = None;
         for record in &records {

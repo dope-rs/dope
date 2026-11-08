@@ -1,9 +1,6 @@
 use dope_core::driver::{receive::credit, route::Identity};
 
-use crate::{
-    link::pool::Key,
-    wire::{self, receive::reserve},
-};
+use crate::wire::{self, receive::reserve};
 
 pub(in crate::link) struct Blocked<
     'a,
@@ -18,6 +15,5 @@ pub(in crate::link) struct Blocked<
 {
     pub(in crate::link) block: R::Block<'a, 'w, 'd, ID>,
     pub(in crate::link) credit: credit::Pending<'d, ID>,
-    pub(in crate::link) key: &'a Key<'d, ID>,
     pub(in crate::link) needs_cancel: bool,
 }

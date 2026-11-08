@@ -129,21 +129,6 @@ unsafe impl mem::raw::Exact<2, u32, credit::Amount> for Parts {
     }
 }
 
-#[must_use = "bound credit must be published or returned to its queue"]
-pub(in crate::link::egress) struct Bound<
-    'queue,
-    'p,
-    'd,
-    T,
-    M = metadata::Local,
-    D: demand::Mode = demand::Fallible,
-> where
-    M: credit::Access<'p, 'd>,
-{
-    queue: metadata::Queue<'queue, 'p, 'd, T, M, D>,
-    stored: Stored<'p>,
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(C)]
 struct Amount {
@@ -232,21 +217,17 @@ impl<'p> Stored<'p> {
     }
 }
 
-impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> Bound<'queue, 'p, 'd, T, M, D> {
-    pub(in crate::link::egress) fn new(
+impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
+    credit::Claim<'queue, 'p, 'd, T, M, D>
+{
+    pub(in crate::link::egress) fn bind(
+        self,
         bytes: transfer::NonZero,
-        claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
-    ) -> Self {
-        let (queue, grant) = claim.into_parts();
+    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D>, Stored<'p>) {
+        let (queue, grant) = self.into_parts();
         // SAFETY: Claim is constructed only from an exact one-entry acquisition.
         let stored = Stored(unsafe { grant.bind(Hold { bytes }) }.map());
-        Self { queue, stored }
-    }
-
-    pub(in crate::link::egress) fn into_parts(
-        self,
-    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D>, Stored<'p>) {
-        (self.queue, self.stored)
+        (queue, stored)
     }
 }
 
@@ -256,7 +237,6 @@ const _: () = {
             == 7 * size_of::<usize>()
     );
     assert!(size_of::<Stored>() == 3 * size_of::<u64>());
-    assert!(size_of::<Bound<'static, 'static, 'static, ()>>() == 5 * size_of::<u64>());
     assert!(
         size_of::<Split<'static, 'static, ()>>()
             == size_of::<&mut credit::Grant<'static>>()

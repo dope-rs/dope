@@ -128,7 +128,11 @@ impl Name {
                         offset: offset + label.len() - 1,
                     });
                 }
-                for (relative, &value) in label.iter().enumerate() {
+                let end = offset + label.len();
+                let Some(dst) = output.get_mut(offset..end) else {
+                    unreachable!("name");
+                };
+                for (relative, (dst, &value)) in dst.iter_mut().zip(label).enumerate() {
                     if !(value.is_ascii_alphanumeric() || value == b'-' || value == b'_') {
                         return Err(Error::LabelCharacter {
                             index,
@@ -136,12 +140,6 @@ impl Name {
                             value,
                         });
                     }
-                }
-                let end = offset + label.len();
-                let Some(dst) = output.get_mut(offset..end) else {
-                    unreachable!("name");
-                };
-                for (dst, &value) in dst.iter_mut().zip(label) {
                     *dst = value.to_ascii_lowercase();
                 }
                 offset = end;

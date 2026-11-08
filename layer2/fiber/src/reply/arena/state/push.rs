@@ -118,7 +118,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     }
 
     pub(super) fn head(self) -> state::Head<'a, 'arena, 'credits, 'region, D, E, K> {
-        let Some((front, key, entry)) = self.front else {
+        let Some((front, _, entry)) = self.front else {
             return state::Head::Empty(order::Depth::ZERO);
         };
         let state::Entry {
@@ -126,7 +126,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             owners,
             signal,
         } = entry;
-        let order = Slot::new(front, key, owners);
+        let order = Slot::new(front, owners);
         match body {
             state::EntryBody::Attached(state) => {
                 state::Head::Attached(reply::Open::new(order, state.state(), signal))

@@ -10,7 +10,7 @@ use dope_core::{
 use o3::{base::cell::region, mem, mem::raw::Source as _};
 pub(in crate::link::egress) use ready::Ready;
 pub(in crate::link::egress) use reserve::Reserve;
-pub(in crate::link::egress) use stored::{Bound, Part, Prefix, Split, Stored};
+pub(in crate::link::egress) use stored::{Part, Prefix, Split, Stored};
 
 use crate::link::{
     egress,

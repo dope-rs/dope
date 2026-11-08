@@ -16,20 +16,23 @@ mod program;
 
 pub struct Installer<'a> {
     plan: Plan,
-    filter: &'a mut [libc::sock_filter; program::MAX],
-    length: usize,
+    filter: &'a mut [libc::sock_filter],
 }
 
 impl Attach for Installer<'_> {
     fn try_attach(&self, socket: BorrowedFd<'_>) -> Result<(), Error> {
         let mut code = [program::EMPTY; program::MAX];
-        let length = program::build(&mut code, self.plan, None);
-        attach(socket, &code[..length], Operation::ProgramAttach)
+        attach(
+            socket,
+            program::build(&mut code, self.plan, None),
+            Operation::ProgramAttach,
+        )
     }
 
     fn try_filter(&mut self, key: Index, socket: BorrowedFd<'_>) -> Result<(), Error> {
-        self.filter[self.length - 3].k = key.into_raw() as u32;
-        attach(socket, &self.filter[..self.length], Operation::FilterAttach)
+        let index = self.filter.len() - 3;
+        self.filter[index].k = key.into_raw() as u32;
+        attach(socket, self.filter, Operation::FilterAttach)
     }
 }
 
@@ -46,11 +49,9 @@ impl Source for Uring {
         filter: &mut Self::Storage,
         plan: Plan,
     ) -> Result<(Self::Install<'_>, Self::Ready), Plan> {
-        let length = program::build(filter, plan, Some(Index::ZERO));
         let installer = Installer {
             plan,
-            filter,
-            length,
+            filter: program::build(filter, plan, Some(Index::ZERO)),
         };
         Ok((installer, ()))
     }

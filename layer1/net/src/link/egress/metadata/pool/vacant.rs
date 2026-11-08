@@ -163,7 +163,7 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
             value,
         } = self;
         let len = value.geometry().wire();
-        let (queue, stored) = credit::Bound::new(len, claim).into_parts();
+        let (queue, stored) = claim.bind(len);
         commit(queue, token, index, value, stored);
     }
 }

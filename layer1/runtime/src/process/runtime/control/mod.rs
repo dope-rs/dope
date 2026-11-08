@@ -97,19 +97,18 @@ impl<'process> Control<'process> {
     }
 
     fn drive<'signal, 'id, S, I, E, W, H>(
-        clock: Clock<H>,
+        clock: &mut Clock<H>,
         running: &bound::Bound<'id, I, E, W>,
         poll: set::Set<'id, 'signal, set::Both<'signal, 'process>>,
-    ) -> Result<Clock<H>, execute::Cause<S>>
+    ) -> Result<(), execute::Cause<S>>
     where
         H: watch::Heartbeat<S>,
     {
-        let (next, _poll, ready) = clock.wait(poll, |ready| (ready, false))?;
-        let clock = next;
+        let (_poll, ready) = clock.wait(poll, |ready| (ready, false))?;
         let index = match ready {
             set::Ready::Signal(source) => {
                 source.wait().map_err(execute::Cause::TerminationWait)?;
-                return Ok(clock);
+                return Ok(());
             }
             set::Ready::Worker(index) => index,
         };
@@ -153,8 +152,9 @@ impl<'process> Control<'process> {
                 return Ok(None);
             };
             let beat = notify.ready().map_err(execute::Cause::WatchReady)?;
-            let clock = Clock::new(beat)?;
-            Self::drive(clock, &running, poll).map(Some)
+            let mut clock = Clock::new(beat)?;
+            Self::drive(&mut clock, &running, poll)?;
+            Ok(Some(clock))
         })
     }
 }
@@ -220,24 +220,22 @@ impl<'a, 'run, I, E, W> Finish<'a, 'run, I, E, W> {
                 let mut poll = set::Set::bus(&running)?;
                 let mut count = Counts::default();
                 while E::GATED && count.drained != workers {
-                    let (next, polled, (index, event)) = clock.wait(poll, |index| {
+                    let (polled, (index, event)) = clock.wait(poll, |index| {
                         let event = running.main(index).recv();
                         let retire = matches!(event, Ok(Event::Done));
                         ((index, event), retire)
                     })?;
-                    clock = next;
                     poll = polled;
                     let cpu = running.cpu(index);
                     count.record(execute::Cause::<S>::received(event, cpu)?, cpu, workers)?;
                 }
-                clock = clock.draining()?;
+                clock.draining()?;
                 while count.done != workers {
-                    let (next, polled, (index, event)) = clock.wait(poll, |index| {
+                    let (polled, (index, event)) = clock.wait(poll, |index| {
                         let event = running.main(index).recv();
                         let retire = matches!(event, Ok(Event::Done));
                         ((index, event), retire)
                     })?;
-                    clock = next;
                     poll = polled;
                     match execute::Cause::<S>::received(event, running.cpu(index))? {
                         Event::Done => count.done += 1,

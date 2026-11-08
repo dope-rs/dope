@@ -1,4 +1,4 @@
-use std::{marker, mem, num, ptr};
+use std::{marker, mem, ptr};
 
 pub(crate) use contract::Contract;
 use dope_core::{
@@ -57,9 +57,9 @@ pub struct Id<'d, ID: Identity = KeyTag<0>> {
 }
 
 impl<ID: Identity> Id<'_, ID> {
-    pub(crate) fn from_epoch(slot: Slot, epoch: key::Generation) -> Self {
+    pub(crate) fn from_epoch(slot: indices::SlotIndex, epoch: key::Generation) -> Self {
         Self {
-            handle: storage::Key::new(bounded::U32::from_one(slot.position()), epoch),
+            handle: storage::Key::new(bounded::U32::from_one(slot.into()), epoch),
         }
     }
 
@@ -207,8 +207,6 @@ pub(crate) trait Peer<'d, T: dope_net::Transport, ID: Identity = KeyTag<0>>:
 }
 
 const _: () = {
-    assert!(mem::size_of::<Slot>() == mem::size_of::<u32>());
-    assert!(mem::size_of::<Option<Slot>>() == mem::size_of::<Slot>());
     assert!(mem::size_of::<Id<'static>>() == mem::size_of::<key::Parts>());
     assert!(mem::align_of::<Id<'static>>() == mem::align_of::<key::Parts>());
     assert!(mem::size_of::<Option<Id<'static>>>() == mem::size_of::<Id<'static>>());
@@ -264,19 +262,5 @@ impl<'source, 'd, ID: Identity> Completion<'source, 'd, ID> {
 
     fn belongs_to<T: dope_net::Transport>(&self, source: &table::Table<'d, T, ID>) -> bool {
         self.source == Some(ptr::NonNull::from(source).cast())
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-pub(crate) struct Slot(num::NonZero<u32>);
-
-impl Slot {
-    pub(crate) fn new(index: indices::SlotIndex) -> Self {
-        Self(index.into())
-    }
-
-    pub(crate) const fn position(self) -> num::NonZero<u32> {
-        self.0
     }
 }

@@ -27,17 +27,15 @@ pub(in crate::reply) use lease::Lease;
 
 pub(in crate::reply) struct Slot<'a, 'arena, 'credits, 'region, K = ()> {
     front: Front<'a, K>,
-    pub(super) key: state::EntryKey,
     pub(super) owner: &'a mut Owner<'arena, 'credits, 'region>,
 }
 
 impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
     pub(super) const fn new(
         front: Front<'a, K>,
-        key: state::EntryKey,
         owner: &'a mut Owner<'arena, 'credits, 'region>,
     ) -> Self {
-        Self { front, key, owner }
+        Self { front, owner }
     }
 
     pub(in crate::reply) fn try_lease<A>(
@@ -68,8 +66,8 @@ impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
     }
 
     /// Pops the order before admitting its sole retirement owner.
-    pub(super) fn retire(self) -> (order::Depth, Option<Retired>) {
-        let key = self.key;
+    pub(super) fn retire(mut self) -> (order::Depth, Option<Retired>) {
+        let key = self.front.value().key();
         let (count, owner) = self.take();
         let retired = owner.is_empty().then(|| Retired::new(key.index()));
         (order::Depth::from_order(count), retired)

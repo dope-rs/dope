@@ -221,6 +221,10 @@ impl<'s, const LANES: usize, const N: usize> Ledger<'s, LANES, N> {
     pub(in crate::storage::queries) fn retire_lane(lane: Lane<&mut Self>) {
         let (slot, reg) = Self::write(lane);
         slot.retire(reg);
+        *slot = Slot::Idle {
+            entries: slot.entries(),
+            completion: None,
+        };
     }
 
     pub(in crate::storage::queries) fn start(lane: Lane<&mut Self>, seed: state::Seed<'_, 's>) {

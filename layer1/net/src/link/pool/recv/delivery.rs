@@ -156,7 +156,7 @@ where
 
     pub(super) fn park(mut self) -> event::ParkRecv<'d, ID> {
         let wait = self.wait;
-        let key = *wait.key;
+        let key = self.rearm.key();
         let reg = match reserve::Wait::register(wait.block, wait.credit) {
             Ok(reg) => reg,
             Err(cause) => {

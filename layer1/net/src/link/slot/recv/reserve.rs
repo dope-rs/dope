@@ -76,7 +76,6 @@ where
                 return Reserve::Blocked(Blocked {
                     block,
                     credit,
-                    key,
                     needs_cancel: conn.engine.operations.recv.has_cancel(),
                 });
             }

@@ -31,7 +31,7 @@ pub(super) fn build(
     code: &mut [libc::sock_filter; MAX],
     plan: Plan,
     worker: Option<Index>,
-) -> usize {
+) -> &mut [libc::sock_filter] {
     let base = if worker.is_some() { 8 } else { 0 };
     code[0] = step(LDX_IMM, base);
     let shape = if let Some(prefix) = plan.prefix() {
@@ -181,7 +181,7 @@ pub(super) fn build(
         }
     }
     code[drop] = step(RET, 0);
-    drop + 1
+    &mut code[..drop + 1]
 }
 
 const fn step(code: u16, k: u32) -> libc::sock_filter {

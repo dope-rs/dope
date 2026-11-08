@@ -21,7 +21,8 @@ pub(super) struct Bind<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, c
 
 #[derive(Clone, Copy)]
 pub(super) struct Retiring<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize> {
-    pub(super) bind: Bind<'life, 's, 'd, ID, LANES, N>,
+    pub(super) token: conn::Id<'d, ID>,
+    pub(super) peer: peer::Peer<'life, 's, 'd, LANES, N>,
     pub(super) branches: index::Retirement<LANES>,
     pub(super) error: Option<error::Kind>,
 }
@@ -38,7 +39,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     pub(super) const fn token(self) -> conn::Id<'d, ID> {
         match self {
             Self::Open(bind) => bind.token,
-            Self::Retiring(retiring) => retiring.bind.token,
+            Self::Retiring(retiring) => retiring.token,
         }
     }
 }
@@ -58,7 +59,6 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
         let now = ctx.now();
         let work = ctx.work();
         match self
-            .bind
             .peer
             .retire(ctx.state_token(), mode, now, work, &mut self.branches)
         {

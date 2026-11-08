@@ -40,7 +40,7 @@ impl<'s, const N: usize> Slot<'s, N> {
         })
     }
 
-    fn entries(&self) -> [Entry<'s>; 2] {
+    pub(in crate::storage::queries::ledger) fn entries(&self) -> [Entry<'s>; 2] {
         match self {
             Self::Idle { entries, .. } => *entries,
             Self::Query(query) => query.entries(),
@@ -150,10 +150,6 @@ impl<'s, const N: usize> Slot<'s, N> {
                 reg.retire(query.branch_mut(family));
             }
         }
-        *self = Self::Idle {
-            entries: self.entries(),
-            completion: None,
-        };
     }
 }
 
