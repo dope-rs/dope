@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "dope"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "dope-core"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-kqueue",
  "dope-sys",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "dope-dns"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "dope-fiber"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope",
  "dope-core",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "dope-gen"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "dope-kqueue"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-sys",
  "libc",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "dope-manifold"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "dope-net"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-core",
  "dope-test",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "dope-runtime"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "dope-sys"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "libc",
  "o3",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "dope-test"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "dope-uring"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "dope-sys",
  "libc",
@@ -148,9 +148,9 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "o3"
-version = "0.43.2"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62f2b4a32212a60a1ef8fd85fb4f608e18f2eda9ef8594f8aa7381c432593b92"
+checksum = "6fa8468c333f01923d3c7a69a9680d50e5b38be59ecacd11b1869bf7ab767c3c"
 
 [[package]]
 name = "pin-project"

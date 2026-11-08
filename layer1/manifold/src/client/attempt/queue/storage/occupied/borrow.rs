@@ -25,11 +25,12 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Borrow<Occupied<'a, 'd, T, ID
         if first {
             deferred.set(Some(self.0.key));
         }
-        let slot = tagged::Vacant::detach(self.0).select(array::Index::at::<0>());
+        let slot = tagged::Vacant::detach(self.0);
+        let lane = array::Index::at::<0>();
         if first {
-            slot.push::<true>();
+            slot.push_at::<true, _>(lane);
         } else {
-            slot.push::<false>();
+            slot.push_at::<false, _>(lane);
         }
     }
 

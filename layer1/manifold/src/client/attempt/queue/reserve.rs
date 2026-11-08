@@ -47,9 +47,7 @@ impl<'source, 'd, T: dope_net::Transport, ID: Identity> Reserve<'source, 'd, T, 
         );
         let entry = Occupied::new(self.table, self.free.occupy(node), key);
         // SAFETY: this consumed reservation initialized a detached node exactly once.
-        unsafe { depot::raw::TagEntry::vacant(entry) }
-            .select(array::Index::at::<0>())
-            .push::<false>();
+        unsafe { depot::raw::TagEntry::vacant(entry) }.push_at::<false, _>(array::Index::at::<0>());
         // SAFETY: publication creates the sole lease for this initialized Queued
         // generation. Borrowed transitions retain a Pending phase until consumption.
         queue::Lease::new(unsafe { Held::new((self.table, key)) })

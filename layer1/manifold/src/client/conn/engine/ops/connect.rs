@@ -164,12 +164,8 @@ where
                 refresh::run(self.as_mut(), conn, now, driver);
             }
             phase::Disposition::Closing => {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(
-                    self.as_mut(),
-                    conn,
-                    turn.reborrow(),
-                    driver,
-                );
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(self, conn, turn, driver);
+                return Ok(());
             }
             phase::Disposition::Discarded => {}
             phase::Disposition::Stale => return Ok(()),
