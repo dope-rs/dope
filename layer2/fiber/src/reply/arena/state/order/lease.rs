@@ -46,7 +46,7 @@ where
         *self.inner.item()
     }
 
-    pub(in crate::reply::arena::state) fn discard(self) -> Depth {
+    pub(in crate::reply) fn discard(self) -> Depth {
         let (refund, _) = self.inner.into_parts();
         refund.slot.cancel_pop()
     }

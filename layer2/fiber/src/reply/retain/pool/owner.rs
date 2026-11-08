@@ -7,7 +7,7 @@ use o3::mem::{self, raw::Source as _, rc};
 use crate::reply::{
     LaneIndex,
     arena::state::Index,
-    layout, order, recv,
+    order, recv,
     retain::{
         self,
         grant::{entries, payload},
@@ -119,10 +119,11 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
     >(
         &mut self,
         amount: A,
-        limit: layout::Limit,
         acceptance: recv::Acceptance,
     ) -> Result<(), Acquire> {
-        let lanes = &self.key.parts().core.lanes;
+        let core = self.key.parts().core;
+        let lanes = &core.lanes;
+        let limit = core.limit;
         let key = self.key.state().index();
         let [items, values, bytes] = amount.get();
         let current = self.sum.usage();

@@ -32,7 +32,8 @@ pub(in crate::reply) use lane::{Lane, Release};
 pub(in crate::reply) use lanes::{Registration, Slots};
 pub(in crate::reply) use owner::{Owner, Payload, Removal};
 
-pub(in crate::reply) enum Acquire {
+#[derive(Debug)]
+pub enum Acquire {
     Capacity(usage::Capacity),
     Backpressure(usage::Backpressure),
 }
@@ -87,6 +88,7 @@ impl<'credits, 'region> Pool<'credits, 'region> {
             Core {
                 lanes: Lanes::new(slots),
                 released: Queue::new(),
+                limit: layout.limit(),
             },
             |_, index| {
                 // SAFETY: the exact initialized tail index belongs to this arena layout.
@@ -141,6 +143,7 @@ impl<'credits, 'region> Pool<'credits, 'region> {
 struct Core<'credits, 'region> {
     lanes: Lanes<'credits, 'region>,
     released: Queue,
+    limit: layout::Limit,
 }
 
 struct Parts<'arena, 'credits, 'region> {

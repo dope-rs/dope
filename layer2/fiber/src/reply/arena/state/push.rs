@@ -4,13 +4,13 @@ use o3::{
     base::cell::region,
     depot::{self, arena::slab, index::Initialized},
 };
-use state::order::{Front, Lease, Slot};
+use state::order::{Front, Slot};
 
 use crate::reply::{
     self,
     arena::state,
     order, recv,
-    retain::{grant::payload, pool},
+    retain::pool,
     slot,
     usage::{self, Footprint, amount::Amount as _},
 };
@@ -148,7 +148,6 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         self,
         usage: D::Amount,
     ) -> Result<Option<slot::Push<'a, 'arena, 'credits, 'region, D, K>>, Reject> {
-        let limit = self.arena.limit;
         let open = self.attached().map_err(Reject::Front)?;
         let Some(accept) = open.acceptance() else {
             return Ok(None);
@@ -156,26 +155,14 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         if let recv::Acceptance::Unit = accept {
             return Err(Reject::Front(order::Front::Denied));
         }
-        open.try_data(limit, usage)
-            .map(Some)
-            .map_err(Reject::Acquire)
+        open.try_data(usage).map(Some).map_err(Reject::Acquire)
     }
 
-    fn try_failure(
+    /// Retains the attached front before constructing its terminal error.
+    pub fn try_failure(
         self,
-        usage: usage::Usage,
-    ) -> Result<Failure<'a, 'arena, 'credits, 'region, E, K>, Reject> {
-        let limit = self.arena.limit;
-        let open = self.attached().map_err(Reject::Front)?;
-        let (order, slot, signal) = open.failure();
-        let lease = order
-            .try_lease(payload::Failure::new(usage), limit)
-            .map_err(Reject::Acquire)?;
-        Ok(Failure {
-            slot,
-            lease,
-            signal,
-        })
+    ) -> Result<reply::Failure<'a, 'arena, 'credits, 'region, E, K>, order::Front> {
+        Ok(self.attached()?.failure())
     }
 
     pub fn try_push(self, item: D) -> Result<(), usage::InsertError<D>> {
@@ -231,31 +218,12 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         E: Footprint,
     {
         let usage = item.footprint().usage();
-        let held = match self.try_failure(usage) {
-            Ok(held) => held,
-            Err(reject) => return Err(reject.into_error(item)),
+        let failure = match self.try_failure() {
+            Ok(failure) => failure,
+            Err(front) => return Err(Reject::Front(front).into_error(item)),
         };
-        Ok(held.commit(item))
-    }
-}
-
-struct Failure<'a, 'arena, 'credits, 'region, E, K> {
-    slot: reply::Failure<'a, E>,
-    lease: Lease<'a, 'arena, 'credits, 'region, payload::Failure, K>,
-    signal: &'a mut state::Signal<'region>,
-}
-
-impl<E, K> Failure<'_, '_, '_, '_, E, K> {
-    fn commit(self, value: E) -> order::Depth {
-        let Self {
-            slot,
-            lease,
-            signal,
-        } = self;
-        let amount = lease.amount();
-        slot.commit(reply::Failed { value, amount });
-        let depth = lease.discard();
-        signal.notify();
-        depth
+        failure
+            .try_insert(item, usage)
+            .map_err(|(value, cause)| Reject::Acquire(cause).into_error(value))
     }
 }

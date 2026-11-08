@@ -85,9 +85,11 @@ fn wakes_after_same_reply_consumption() {
                 assert!(lane.select(driver.region_token()).try_push(value).is_ok());
                 let failure = match lane
                     .select(driver.region_token())
+                    .try_failure()
+                    .expect("attached front")
                     .try_fail(Counted::data(&drops))
                 {
-                    Err(usage::InsertError::Backpressure { value, cause }) => {
+                    Err((value, usage::Acquire::Backpressure(cause))) => {
                         assert_eq!(
                             cause.into_parts(),
                             (

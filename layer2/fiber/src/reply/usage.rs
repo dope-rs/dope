@@ -4,6 +4,8 @@ use std::mem;
 
 use crate::reply::order;
 
+pub use crate::reply::retain::pool::Acquire;
+
 /// Logical bytes and parsed values retained by one reply value.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Usage {

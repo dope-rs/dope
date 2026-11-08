@@ -9,7 +9,6 @@ use o3::{
 
 use crate::reply::{
     arena::state::{self, order, order::Lease},
-    layout,
     order::Depth,
     recv::{self, outcome},
     retain::{
@@ -17,7 +16,7 @@ use crate::reply::{
         grant::payload,
         pool::{Acquire, Owner},
     },
-    usage::{self, Footprint},
+    usage::{self, Footprint, amount::Amount as _},
 };
 
 mod end;
@@ -41,8 +40,11 @@ pub(crate) struct State<'arena, D: Footprint, E> {
     pub(in crate::reply) data: fifo::Fifo<'arena, Item<D>, false>,
 }
 
-pub(in crate::reply) struct Failure<'a, E> {
+/// An exclusively retained front for terminal error insertion.
+pub struct Failure<'a, 'arena, 'credits, 'region, E, K = ()> {
+    order: order::Slot<'a, 'arena, 'credits, 'region, K>,
     end: &'a mut End<E>,
+    signal: &'a mut state::Signal<'region>,
 }
 
 /// The exact front order entry and its attached open reply slot.
@@ -99,10 +101,9 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
 
     pub(in crate::reply) fn try_data(
         self,
-        limit: layout::Limit,
         added: D::Amount,
     ) -> Result<Push<'a, 'arena, 'credits, 'region, D, K>, Acquire> {
-        let lease = self.order.try_lease(payload::Value::new(added), limit)?;
+        let lease = self.order.try_lease(payload::Value::new(added))?;
         Ok(fifo::Fifo::reserve(Reserve {
             queue: &mut self.state.data,
             lease,
@@ -110,20 +111,12 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         }))
     }
 
-    pub(in crate::reply) fn failure(
-        self,
-    ) -> (
-        order::Slot<'a, 'arena, 'credits, 'region, K>,
-        Failure<'a, E>,
-        &'a mut state::Signal<'region>,
-    ) {
-        (
-            self.order,
-            Failure {
-                end: &mut self.state.end,
-            },
-            self.signal,
-        )
+    pub(in crate::reply) fn failure(self) -> Failure<'a, 'arena, 'credits, 'region, E, K> {
+        Failure {
+            order: self.order,
+            end: &mut self.state.end,
+            signal: self.signal,
+        }
     }
 
     pub(in crate::reply) fn complete(self) -> Depth {
@@ -147,9 +140,26 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     }
 }
 
-impl<E> Failure<'_, E> {
-    pub(in crate::reply) fn commit(self, item: Failed<E>) {
-        self.end.fail(item);
+impl<E: Footprint, K> Failure<'_, '_, '_, '_, E, K> {
+    pub fn try_fail(self, value: E) -> Result<Depth, (E, usage::Acquire)> {
+        let usage = value.footprint().usage();
+        self.try_insert(value, usage)
+    }
+
+    pub(in crate::reply) fn try_insert(
+        self,
+        value: E,
+        usage: usage::Usage,
+    ) -> Result<Depth, (E, usage::Acquire)> {
+        let amount = payload::Failure::new(usage);
+        let lease = match self.order.try_lease(amount) {
+            Ok(lease) => lease,
+            Err(cause) => return Err((value, cause)),
+        };
+        self.end.fail(Failed { value, amount });
+        let depth = lease.discard();
+        self.signal.notify();
+        Ok(depth)
     }
 }
 

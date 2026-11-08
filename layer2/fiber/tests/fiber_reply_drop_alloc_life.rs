@@ -248,9 +248,11 @@ fn terminal_follows_values() {
                     failure.bytes = 2;
                     let (mut failure, cause) = match lane
                         .select(session.driver().region_token())
+                        .try_failure()
+                        .expect("attached front")
                         .try_fail(failure)
                     {
-                        Err(usage::InsertError::Capacity { value, cause }) => Some((value, cause)),
+                        Err((value, usage::Acquire::Capacity(cause))) => Some((value, cause)),
                         _ => None,
                     }
                     .expect("terminal limit");

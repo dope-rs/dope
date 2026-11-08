@@ -32,9 +32,9 @@ pub use arena::{
     progress::{Progress, Work},
     state::Push,
 };
-pub use slot::Slot;
 pub(crate) use slot::State;
-pub(in crate::reply) use slot::{Drain, Failed, Failure, Item, Open};
+pub(in crate::reply) use slot::{Drain, Failed, Item, Open};
+pub use slot::{Failure, Slot};
 
 /// Exact capacity state for registering one reply entry.
 #[must_use = "registration state must be consumed"]

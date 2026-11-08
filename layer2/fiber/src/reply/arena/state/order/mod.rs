@@ -41,13 +41,12 @@ impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
     pub(in crate::reply) fn try_lease<A>(
         self,
         amount: A,
-        limit: layout::Limit,
     ) -> Result<Lease<'a, 'arena, 'credits, 'region, A, K>, Acquire>
     where
         A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     {
         let acceptance = self.owner.acceptance.unwrap_or(recv::Acceptance::Collected);
-        self.owner.payload.try_acquire(amount, limit, acceptance)?;
+        self.owner.payload.try_acquire(amount, acceptance)?;
         Ok(Lease::new(self, amount))
     }
 
