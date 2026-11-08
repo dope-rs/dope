@@ -56,9 +56,6 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
                     unreachable!("draining")
                 };
                 entry.owners.cancel_entry();
-                let lane = entry.owners.lane();
-                let route = self.order.route(lane).into_state();
-                route.live = route.live.wrapping_sub(1);
                 state
             }
         };

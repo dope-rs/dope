@@ -14,7 +14,7 @@ use o3::{
 use crate::{
     reply,
     reply::{
-        Attachment, LaneIndex, layout,
+        LaneIndex, layout,
         order::Depth,
         retain::{pool, pool::Pool},
         usage::Footprint,
@@ -73,21 +73,6 @@ pub(super) enum EntryBody<'arena, D: Footprint, E> {
 #[repr(transparent)]
 pub(super) struct Attached<S>(S);
 
-#[derive(Default)]
-pub(super) struct Lane {
-    live: usize,
-}
-
-impl Lane {
-    pub(in crate::reply::arena) const fn attachment(&self) -> Attachment {
-        if self.live == 0 {
-            Attachment::Detached
-        } else {
-            Attachment::Attached
-        }
-    }
-}
-
 impl<S> Attached<S> {
     pub(in crate::reply::arena) fn state(&mut self) -> &mut S {
         &mut self.0
@@ -96,7 +81,6 @@ impl<S> Attached<S> {
 
 const _: () = {
     assert!(mem::size_of::<Attached<[u8; 3]>>() == 3);
-    assert!(mem::size_of::<Lane>() == mem::size_of::<usize>());
 };
 
 #[repr(transparent)]

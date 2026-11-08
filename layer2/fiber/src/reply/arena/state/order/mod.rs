@@ -83,10 +83,7 @@ impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
     }
 }
 
-struct Lane {
-    state: state::Lane,
-    links: [links::Hook; 2],
-}
+type Lane = [links::Hook; 2];
 
 pub(in crate::reply::arena) struct Queues<K = ()> {
     lanes: pool::Lanes<state::Ordered<K>, Lane, false>,
@@ -118,9 +115,7 @@ unsafe impl<K, const N: usize> depot::raw::Hooks for Hooks<'_, K, N> {
     unsafe fn hook_raw(&self, index: links::Index) -> &links::Hook {
         const { assert!(N < 2) };
         // SAFETY: the caller retains this exact initialized lane index.
-        &unsafe { depot::raw::Project::project(self.0, index.get()) }
-            .state()
-            .links[N]
+        &unsafe { depot::raw::Project::project(self.0, index.get()) }.state()[N]
     }
 }
 
@@ -144,10 +139,8 @@ impl<K> Queues<K> {
             capacity::Count::new(layout.entries().get()),
             capacity::Count::new(layout.lane_count().get()),
         );
-        let lanes = pool::Lanes::try_from_fn(plan, |index| Lane {
-            state: state::Lane::default(),
-            links: array::from_fn(|_| links::Hook::new(index)),
-        })?;
+        let lanes =
+            pool::Lanes::try_from_fn(plan, |index| array::from_fn(|_| links::Hook::new(index)))?;
         Ok(Self {
             lanes,
             heads: array::from_fn(|_| links::Cycle::new()),
@@ -195,9 +188,7 @@ impl<K> Queues<K> {
     fn link<const N: usize>(&self, member: links::Index) -> &links::Hook {
         const { assert!(N < 2) };
         // SAFETY: every member belongs to this immutable initialized lane domain.
-        &unsafe { depot::raw::Project::project(&self.lanes, member.get()) }
-            .state()
-            .links[N]
+        &unsafe { depot::raw::Project::project(&self.lanes, member.get()) }.state()[N]
     }
 
     pub(in crate::reply::arena) fn insert<const N: usize>(&self, member: links::Index) -> bool {
@@ -226,10 +217,6 @@ impl<'a, K> View<'a, K> {
         self.0.count()
     }
 
-    pub(in crate::reply::arena) fn state(&self) -> &'a state::Lane {
-        &self.0.state().state
-    }
-
     pub(in crate::reply::arena) fn front(&self) -> Option<&'a state::Ordered<K>> {
         self.0.front()
     }
@@ -240,10 +227,6 @@ impl<'a, K> View<'a, K> {
 }
 
 impl<'a, K> Route<'a, K> {
-    pub(in crate::reply::arena) fn into_state(self) -> &'a mut state::Lane {
-        &mut self.0.into_state().state
-    }
-
     pub(in crate::reply::arena) fn front(self) -> Option<Front<'a, K>> {
         self.0.front_entry().map(Front)
     }
@@ -266,6 +249,6 @@ impl<K> Front<'_, K> {
 
 const _: () = {
     assert!(size_of::<Queues>() == 6 * size_of::<usize>());
-    assert!(size_of::<Lane>() == 3 * size_of::<usize>());
+    assert!(size_of::<Lane>() == 2 * size_of::<usize>());
     assert!(size_of::<Front<'static>>() == 3 * size_of::<usize>());
 };

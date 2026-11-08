@@ -154,17 +154,14 @@ fn check_reply_position<'d>(
                     response
                         .try_attach(token, arena.lane(position))
                         .expect("reply attachment");
-                    assert!(
-                        arena.lane(position).control().attachment(token)
-                            == reply::Attachment::Attached
-                    );
-                    assert!(
+                    assert_eq!(arena.lane(position).depth(token).get(), 1);
+                    assert_eq!(
                         arena
                             .try_lane(reply::LaneIndex::ZERO)
                             .expect("first lane")
-                            .control()
-                            .attachment(token)
-                            == reply::Attachment::Detached
+                            .depth(token)
+                            .get(),
+                        0
                     );
                 }
             },

@@ -35,18 +35,6 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             .deactivate(self.lane.index);
     }
 
-    pub fn attachment(
-        self,
-        token: &mut region::Token<region::Identity<'region>>,
-    ) -> crate::reply::Attachment {
-        token
-            .borrow(&self.lane.arena.state)
-            .order
-            .view(self.lane.index)
-            .state()
-            .attachment()
-    }
-
     /// Borrows the ordered tag while its region remains borrowed.
     pub fn front_tag<'p>(self, token: &'p region::Token<region::Identity<'region>>) -> Option<&'p K>
     where

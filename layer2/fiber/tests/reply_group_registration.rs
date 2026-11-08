@@ -99,10 +99,6 @@ fn admission_is_atomic() {
             ));
             assert_eq!(arena.inflight().get(), 2);
             assert_eq!(first.select(&mut token).front(), order::Front::Empty);
-            assert!(matches!(
-                first.control().attachment(&mut token),
-                reply::Attachment::Detached
-            ));
 
             let mut commands = [const { recv::Response::<_, Pending, (), usize>::new() }; COMMANDS];
             recv::Response::try_group_by(

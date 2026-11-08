@@ -9,7 +9,7 @@ use common::recover;
 use dope_core::io::Reclaimed;
 use dope_fiber::{
     reply::{
-        Attachment, LaneIndex,
+        LaneIndex,
         order::{Depth, Front},
         recv,
         recv::attach::Attach as _,
@@ -312,10 +312,6 @@ fn partial_stays_live() {
                         assert!(
                             (lane.select(session.driver().region_token()).front())
                                 == (Front::Detached)
-                        );
-                        assert!(
-                            lane.control().attachment(session.driver().region_token())
-                                == Attachment::Detached
                         );
                         assert_eq!(lane.depth(session.driver().region_token()).get(), 1);
                         assert_eq!(drops.count(), values);

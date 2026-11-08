@@ -99,8 +99,6 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
         tag: K,
     ) -> state::EntryKey {
         let raw = vacant.insert_with(|raw| {
-            let route = queues.route(lane.index).into_state();
-            route.live = route.live.wrapping_add(1);
             // SAFETY: the vacancy retains Entries' validated physical domain.
             let key = unsafe { state::EntryKey::from_raw(raw) };
             state::Entry {

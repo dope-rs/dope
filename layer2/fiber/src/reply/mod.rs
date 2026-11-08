@@ -36,17 +36,6 @@ pub use slot::Slot;
 pub(crate) use slot::State;
 pub(in crate::reply) use slot::{Drain, Failed, Failure, Item, Open};
 
-/// Exact attachment state of one reply lane.
-#[must_use = "attachment state must be consumed"]
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Attachment {
-    Detached,
-    Attached,
-}
-
-const _: () = assert!(std::mem::size_of::<Attachment>() == std::mem::size_of::<u8>());
-
 /// Exact capacity state for registering one reply entry.
 #[must_use = "registration state must be consumed"]
 #[derive(Clone, Copy, Eq, PartialEq)]
