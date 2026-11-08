@@ -14,9 +14,6 @@ unsafe impl<'d, T: dope_net::Transport, ID: Identity> depot::raw::TagStore for T
     fn heads(&self) -> &Self::Heads {
         &self.heads
     }
-    fn capacity(&self) -> usize {
-        self.nodes.capacity()
-    }
     unsafe fn hook(&self, index: links::Index) -> &tagged::Hook {
         // SAFETY: the private link retains initialization; hook is disjoint from payload access.
         unsafe {
