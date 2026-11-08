@@ -81,13 +81,7 @@ where
                 driver,
             );
         }
-        <A::Requests as Policy<'w, 'd, ID, A>>::submit(
-            engine.as_mut(),
-            key,
-            turn.reborrow(),
-            driver,
-        );
-        engine.as_mut().maybe_close(key, turn, driver);
+        <A::Requests as Policy<'w, 'd, ID, A>>::submit(engine, key, turn, driver);
     }
 }
 

@@ -90,9 +90,7 @@ impl<'d, T: dope_net::Transport, ID: Identity> Table<'d, T, ID> {
                 table.clear(key);
             }
             entry::Change::Queue => {
-                tagged::Vacant::detach(slot)
-                    .select(array::Index::at::<1>())
-                    .push::<false>();
+                tagged::Vacant::detach(slot).push_at::<false, _>(array::Index::at::<1>());
             }
         }
     }
