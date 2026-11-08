@@ -21,7 +21,7 @@ mod writable;
 
 /// Reusable, size-validated acquisition plan tied to one packet arena.
 pub struct Source<'pool, const N: usize, const SUFFIX: usize = 0> {
-    source: borrowed::Split<'pool>,
+    source: borrowed::Source<'pool, SUFFIX>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -45,16 +45,14 @@ pub enum Error {
 impl<'pool, const N: usize> Source<'pool, N> {
     pub fn try_new(arena: &'pool datagram::Arena, length: usize) -> Result<Self, borrowed::Error> {
         let source = borrowed::Source::try_new(&arena.pool, length, conn::TAG_LEN)?;
-        Ok(Self {
-            source: source.into_split(),
-        })
+        Ok(Self { source })
     }
 
     pub fn try_split<const SUFFIX: usize>(
         self,
     ) -> Result<Source<'pool, N, SUFFIX>, borrowed::Error> {
         Ok(Source {
-            source: self.source.try_suffix(SUFFIX)?,
+            source: self.source.try_suffix::<SUFFIX>()?,
         })
     }
 }
@@ -68,7 +66,7 @@ impl<'pool, const N: usize, const SUFFIX: usize> Source<'pool, N, SUFFIX> {
                 ops::ControlFlow::Break(packets) => break packets.into_array(),
                 ops::ControlFlow::Continue(vacant) => vacant,
             };
-            let Some(lease) = self.source.acquire() else {
+            let Some(lease) = self.source.acquire_frame() else {
                 return Err(datagram::Full);
             };
             guard = vacant.insert(lease);
@@ -78,7 +76,7 @@ impl<'pool, const N: usize, const SUFFIX: usize> Source<'pool, N, SUFFIX> {
 }
 
 const _: () = assert!(
-    mem::size_of::<Source<'static, 1>>() == 3 * mem::size_of::<usize>()
+    mem::size_of::<Source<'static, 1>>() == 2 * mem::size_of::<usize>()
         && mem::size_of::<Result<Writable<'static, 1>, datagram::Full>>()
             == mem::size_of::<Option<Writable<'static, 1>>>()
 );
