@@ -41,8 +41,4 @@ unsafe impl depot::raw::Key for Key {
             Self(<key::Handle<control::Tag, { owner::MAX }> as depot::raw::Key>::rebuild(raw))
         }
     }
-
-    fn decode(raw: Self::Raw) -> Option<Self> {
-        <key::Handle<control::Tag, { owner::MAX }> as depot::raw::Key>::decode(raw).map(Self)
-    }
 }

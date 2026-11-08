@@ -61,10 +61,6 @@ unsafe impl<Tag> depot::raw::Key for Key<Tag> {
         // the rebuilt Handle restores the exact original Key identity.
         unsafe { Self(<key::Handle<Tag> as depot::raw::Key>::rebuild(raw)) }
     }
-
-    fn decode(raw: Self::Raw) -> Option<Self> {
-        <key::Handle<Tag> as depot::raw::Key>::decode(raw).map(Self)
-    }
 }
 
 const _: () = {
