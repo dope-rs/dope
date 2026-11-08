@@ -295,7 +295,7 @@ unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena, K>
 
 impl<'a, 'arena, 'credits, 'region, C: Footprint, K> Push<'a, 'arena, 'credits, 'region, C, K> {
     pub(in crate::reply) fn usage(&self) -> usage::Usage {
-        self.lease.usage()
+        self.lease.amount().usage()
     }
 
     pub(in crate::reply) fn commit(self, value: C) {

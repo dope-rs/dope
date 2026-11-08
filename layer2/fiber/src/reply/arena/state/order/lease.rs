@@ -7,7 +7,7 @@ use crate::reply::{
     order::Depth,
     recv::Acceptance,
     retain::{self, grant::payload},
-    usage::{self, amount::Amount},
+    usage::amount::Amount,
 };
 
 pub(in crate::reply) struct Lease<
@@ -70,10 +70,6 @@ impl<A: Amount, K> Lease<'_, '_, '_, '_, payload::Value<A>, K> {
         if refund.slot.owner.acceptance == Some(Acceptance::First) {
             refund.slot.owner.acceptance = None;
         }
-    }
-
-    pub(in crate::reply) fn usage(&self) -> usage::Usage {
-        self.amount().usage()
     }
 }
 

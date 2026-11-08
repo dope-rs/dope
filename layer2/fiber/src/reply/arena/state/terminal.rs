@@ -13,7 +13,7 @@ pub(in crate::reply::arena) enum Failure {
 }
 
 impl<D: Footprint, E, K> state::Push<'_, '_, '_, '_, D, E, K> {
-    pub(in crate::reply::arena) fn fail_one<C>(self, cause: C) -> Option<order::Depth>
+    pub fn fail_one<C>(self, cause: C) -> Option<order::Depth>
     where
         E: for<'cause> From<&'cause C>,
     {

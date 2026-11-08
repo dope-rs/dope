@@ -65,7 +65,7 @@ impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
     }
 
     /// Pops the order before admitting its sole retirement owner.
-    pub(super) fn retire(mut self) -> (order::Depth, Option<Retired>) {
+    pub(super) fn retire(self) -> (order::Depth, Option<Retired>) {
         let key = self.front.value().key();
         let (count, owner) = self.take();
         let retired = owner.is_empty().then(|| Retired::new(key.index()));
@@ -236,8 +236,8 @@ impl<'a, K> Route<'a, K> {
 }
 
 impl<K> Front<'_, K> {
-    pub(in crate::reply::arena) fn value(&mut self) -> &state::Ordered<K> {
-        self.0.get_mut()
+    pub(in crate::reply::arena) fn value(&self) -> &state::Ordered<K> {
+        self.0.get()
     }
 
     pub(in crate::reply::arena) fn pop(self) -> (state::Ordered<K>, capacity::Count) {
