@@ -9,7 +9,7 @@ use crate::{
                 close::{Approval, Commit, Decision, Failed, Owner, Resume},
                 drain::{Branch, Plan, plan::Step},
             },
-            recv::{input, storage, storage::queue::Ops as _},
+            recv::{self, input, storage, storage::queue::Ops as _, storage::tail},
         },
         slot::recv::Capture,
     },
@@ -20,8 +20,14 @@ use crate::{
 };
 
 pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
-    storage::raw::Mode
+    Sized + storage::raw::Mode
 {
+    fn credits<'a, 'd, ID: Identity, T, S, R>(
+        _: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self, R>>,
+    ) -> Option<&'a credit::Storage<'d>> {
+        None
+    }
+
     fn returned<'w, 'd: 'w, ID: Identity + 'w>(_: credit::Wake, _: &mut W::Runtime<'w, 'd, ID>)
     where
         W: 'w + 'd,
@@ -119,15 +125,31 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
     }
 }
 
-impl<W: wire::Spec> Strategy<W> for mode::Disabled {}
+impl<W> Strategy<W> for mode::Disabled
+where
+    W: wire::Spec,
+    <W::Receive as Policy<W>>::Reserve: reserve::Immediate<W>,
+{
+}
 
-impl<W: wire::Spec> Strategy<W> for mode::Parking {}
+impl<W> Strategy<W> for mode::Parking
+where
+    W: wire::Spec,
+    <W::Receive as Policy<W>>::Reserve: reserve::Immediate<W>,
+{
+}
 
 impl<W> Strategy<W> for mode::Enabled
 where
     W: wire::Spec,
     <W::Receive as Policy<W>>::Reserve: reserve::Immediate<W>,
 {
+    fn credits<'a, 'd, ID: Identity, T, S, R>(
+        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self, R>>,
+    ) -> Option<&'a credit::Storage<'d>> {
+        Some(slab.credit())
+    }
+
     fn credit<'s, 'a, 'd: 'a, R: 'a>(
         storage: &'s Self::Bound<'a, 'd, R>,
     ) -> Option<credit::Slot<'s, 'd>> {
@@ -141,6 +163,12 @@ where
     R: reserve::Try<W>,
     W::Receive: Policy<W, Reserve = reserve::Waiting<R>>,
 {
+    fn credits<'a, 'd, ID: Identity, T, S, C>(
+        slab: &'a tail::Table<T, ID, S, recv::State<'d, ID, Self, C>>,
+    ) -> Option<&'a credit::Storage<'d>> {
+        Some(slab.credit())
+    }
+
     fn cancel<'w, 'd: 'w, ID: Identity + 'w, C>(
         storage: &Self::Bound<'_, 'd, C>,
         runtime: &mut W::Runtime<'w, 'd, ID>,

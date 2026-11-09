@@ -12,7 +12,6 @@ use crate::{
                     Approval, Commit, Decision, Failed, Handler, Outcome, Owner, Resume, Start,
                 },
                 drain::{Branch, Call, Plan, Storage, Strategy, Turn},
-                quiesce,
             },
             recv::{
                 input,
@@ -88,7 +87,7 @@ pub trait Policy<W: wire::Spec>: Sized {
 impl<W, I> Policy<W> for I
 where
     W: wire::Spec,
-    I: Strategy<W> + quiesce::Strategy<W>,
+    I: Strategy<W>,
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
 {
     fn close<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, R, C, X, F>(

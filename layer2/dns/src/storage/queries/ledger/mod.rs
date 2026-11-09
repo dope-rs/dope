@@ -228,8 +228,8 @@ impl<'s, const LANES: usize, const N: usize> Ledger<'s, LANES, N> {
     }
 
     pub(in crate::storage::queries) fn start(lane: Lane<&mut Self>, seed: state::Seed<'_, 's>) {
-        let (slot, reg) = Self::write(lane);
-        slot.start(seed, reg);
+        let (slot, _) = Self::write(lane);
+        *slot = Slot::Query(seed.into_query(slot.entries()));
     }
 }
 

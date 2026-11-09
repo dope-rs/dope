@@ -135,15 +135,6 @@ impl<'s, const N: usize> Slot<'s, N> {
         }
     }
 
-    pub(in crate::storage::queries::ledger) fn start(
-        &mut self,
-        seed: state::Seed<'_, 's>,
-        reg: &mut ledger::Registry<'s>,
-    ) {
-        self.retire(reg);
-        *self = Self::Query(seed.into_query(self.entries()));
-    }
-
     pub(in crate::storage::queries::ledger) fn retire(&mut self, reg: &mut ledger::Registry<'s>) {
         if let Self::Query(query) = self {
             for family in family::Version::ALL {

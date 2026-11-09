@@ -12,7 +12,7 @@ use crate::{
         event,
         pool::{
             Key, Released,
-            change::{self, drain, quiesce::Strategy},
+            change::{self, drain::Strategy},
             recv::{
                 input,
                 storage::{queue::Ops as _, tail, tail::Slot},
@@ -82,7 +82,7 @@ where
                     handle.wait_send(false);
                 }
                 let target = credit::Id::new(entry.get().key.target().dispatch());
-                <M::Ingress as drain::Strategy<W>>::cancel::<ID, input::Receipt<W, M>>(
+                <M::Ingress as Strategy<W>>::cancel::<ID, input::Receipt<W, M>>(
                     &recv.storage,
                     &mut self.runtime,
                     target,
