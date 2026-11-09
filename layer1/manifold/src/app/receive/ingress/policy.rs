@@ -77,10 +77,6 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         driver: &mut driver::Context<'_, 'd>,
     );
 
-    /// Schedules the bounded protocol-control finalizer. Marking is
-    /// idempotent and does not close the transport.
-    fn latch(self: pin::Pin<&mut Self>, key: pool::Key<'d, ID>);
-
     fn terminal(
         self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,

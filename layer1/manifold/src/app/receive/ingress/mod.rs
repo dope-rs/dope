@@ -84,14 +84,16 @@ pub(crate) enum Terminal {
 const _: () = assert!(mem::size_of::<Progress<convert::Infallible>>() == mem::size_of::<Outcome>());
 
 fn prepare_terminal<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>(
-    mut policy: pin::Pin<&mut P>,
+    policy: pin::Pin<&mut P>,
     key: pool::Key<'d, ID>,
 ) {
-    let send = P::storage(policy.as_mut())
+    let storage = P::storage(policy);
+    if storage
         .get_mut(key)
-        .is_some_and(|slot| slot.terminal.has_send());
-    if send {
-        P::latch(policy, key);
+        .is_some_and(|slot| slot.terminal.has_send())
+        && let Some(handle) = pool::pending::Pending::of(storage).at(key)
+    {
+        handle.wake();
     }
 }
 

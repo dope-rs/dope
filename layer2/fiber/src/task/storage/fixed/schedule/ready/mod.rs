@@ -1,5 +1,7 @@
 use std::{marker, num::NonZero, pin};
 
+use o3::depot::queue::links;
+
 use crate::{
     abi,
     context::wake,
@@ -16,7 +18,7 @@ pub(in crate::task::storage::fixed::schedule) mod raw;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct Global(NonZero<u32>);
+pub struct Global(links::Index);
 
 #[repr(transparent)]
 pub struct TreeIndex<R> {
@@ -130,16 +132,12 @@ where
 }
 
 impl Global {
-    pub(in crate::task::storage) const fn new(position: NonZero<u32>) -> Self {
-        Self(position.cast_signed().wrapping_neg().cast_unsigned())
-    }
-
-    pub(in crate::task::storage) const fn position(self) -> NonZero<u32> {
-        self.0.cast_signed().wrapping_neg().cast_unsigned()
+    pub(in crate::task::storage) fn new(position: NonZero<u32>) -> Self {
+        Self(position.into())
     }
 
     pub(in crate::task::storage) const fn get(self) -> usize {
-        (!self.0.get()) as usize
+        self.0.get()
     }
 }
 

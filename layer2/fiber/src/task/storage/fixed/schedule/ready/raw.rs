@@ -1,4 +1,6 @@
-use std::{marker, num::NonZero};
+use std::marker;
+
+use o3::depot::raw::Compact;
 
 use crate::{
     core::driver::schedule::ready::task::topology,
@@ -25,11 +27,11 @@ where
 
 unsafe impl topology::raw::Index for Global {
     fn raw(self) -> u32 {
-        !self.0.get()
+        self.0.raw()
     }
 
     unsafe fn from_raw(raw: u32) -> Self {
         // SAFETY: the offset contract excludes the compact sentinel.
-        Self(unsafe { NonZero::new_unchecked(!raw) })
+        Self(unsafe { Compact::from_raw(raw) })
     }
 }

@@ -69,7 +69,7 @@ impl<'a, 'd, Source> Prepared<'a, 'd, Source> {
             index: prepared.0.index,
             lane: prepared.0.lane,
         };
-        let raw = key(entry.index).raw();
+        let raw = entry.index.0.raw();
         let cell = entry.queue.store.cell(entry.index);
         // The exclusive task vacancy excludes prior node and hook loans.
         cell.set(mem::MaybeUninit::new(store::Node {
@@ -130,7 +130,7 @@ impl<Source> Dequeued<'_, '_, Source> {
         let node = self.0.queue.store.node(self.0.index);
         // SAFETY: Dequeued owns this exact parked resident outside the topology.
         links::Detached::from_source(unsafe {
-            depot::raw::Proof::new((&node.hook, key(self.0.index)))
+            depot::raw::Proof::new((&node.hook, self.0.index.0))
         })
         .idle();
     }
@@ -157,7 +157,7 @@ impl<'a, 'd, Source> Entry<'a, 'd, Source> {
         // SAFETY: Front retains this FIFO's head through callback-free admission
         // and append-only ingress synchronization before this consuming transition.
         Join::head::<true>(unsafe {
-            depot::raw::Proof::new((state.join(&hooks, &owners, self.lane), key(self.index)))
+            depot::raw::Proof::new((state.join(&hooks, &owners, self.lane), self.index.0))
         })
         .park();
         Dequeued(self)
@@ -292,7 +292,7 @@ impl<'d, Source> Queue<'d, Source> {
             index,
             lane: node.lane,
         };
-        if key(index).is_linked(&node.hook) {
+        if index.0.is_linked(&node.hook) {
             Resident::Linked(entry)
         } else {
             Resident::Idle(Dequeued(entry))
@@ -408,20 +408,9 @@ impl<'d, Source> Queue<'d, Source> {
             return Some(Front::Ready(Entry {
                 queue: self,
                 lane,
-                index: global(index),
+                index: Global(index),
             }));
         }
         (!self.slot.is_empty()).then_some(Front::Pending)
     }
-}
-
-fn key(index: Global) -> links::Index {
-    index.position().into()
-}
-
-fn global(index: links::Index) -> Global {
-    use crate::core::driver::schedule::ready::task::topology;
-
-    // SAFETY: both representations retain the same non-sentinel task index.
-    unsafe { <Global as topology::raw::Index>::from_raw(index.raw()) }
 }

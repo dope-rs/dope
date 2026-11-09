@@ -6,7 +6,7 @@ use dope_net::{
         egress::reserve::demand,
         event::{self, ParkError},
         pool::{
-            self, pending,
+            self,
             recv::{
                 arrival, input,
                 reserve::{Choice, Reservation},
@@ -122,13 +122,6 @@ where
             ingress::Finish::Chunk | ingress::Finish::CloseAfter => {
                 self.maybe_close(key, turn, driver);
             }
-        }
-    }
-
-    fn latch(mut self: pin::Pin<&mut Self>, key: pool::Key<'d, ID>) {
-        let this = self.as_mut().project();
-        if let Some(handle) = pending::Pending::of(this.links.pool()).at(key) {
-            handle.wake();
         }
     }
 

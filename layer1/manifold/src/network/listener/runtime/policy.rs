@@ -6,7 +6,7 @@ use dope_net::{
         egress::data::{self, compose, exec},
         event::{self, ParkError},
         pool::{
-            self, pending,
+            self,
             recv::{
                 arrival, input,
                 reserve::{Choice, Reservation},
@@ -120,13 +120,6 @@ where
             ingress::Finish::CloseAfter => return phase::close_ready(self, key, turn, driver),
         };
         phase::commit_chunk(self, key, wake, turn, driver);
-    }
-
-    fn latch(mut self: pin::Pin<&mut Self>, key: pool::Key<'d, ID>) {
-        let this = self.as_mut().project();
-        if let Some(handle) = pending::Pending::of(this.owner.pool()).at(key) {
-            handle.wake();
-        }
     }
 
     fn terminal(

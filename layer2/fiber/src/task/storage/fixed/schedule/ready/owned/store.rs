@@ -9,10 +9,7 @@ use o3::{
 
 use crate::{
     core::driver::schedule::ready::task::owner,
-    task::storage::fixed::schedule::ready::{
-        Global,
-        owned::{extent::Extent, global, key},
-    },
+    task::storage::fixed::schedule::ready::{Global, owned::extent::Extent},
 };
 
 pub(super) struct Node {
@@ -33,7 +30,7 @@ pub(super) struct OwnerHooks<'a, S>(pub(super) &'a Store<S>);
 // SAFETY: each admitted task index names one stable hook in the exact task plane.
 unsafe impl<S> depot::raw::Hooks for Hooks<'_, S> {
     unsafe fn hook_raw(&self, index: links::Index) -> &links::Hook {
-        &self.0.node(global(index)).hook
+        &self.0.node(Global(index)).hook
     }
 }
 
@@ -50,7 +47,7 @@ impl Node {
     pub(super) fn detach(&self, owner: &Owner, index: Global) {
         // SAFETY: the caller detached this exact resident from its owner chain
         // and retains the sole resident transition, whether parked or idle.
-        links::Detached::from_source(unsafe { depot::raw::Proof::new((&self.hook, key(index))) })
+        links::Detached::from_source(unsafe { depot::raw::Proof::new((&self.hook, index.0)) })
             .idle();
         owner.bound.set(owner.bound.get() - 1);
     }
@@ -78,7 +75,7 @@ impl Owner {
         // SAFETY: the resident transition owns this detached hook in the exact
         // stable task plane; this owner's endpoints retain reciprocal links.
         Join::insert(unsafe {
-            depot::raw::Proof::new((self.join(&hooks, &owners, lane), key(index)))
+            depot::raw::Proof::new((self.join(&hooks, &owners, lane), index.0))
         });
     }
 
@@ -87,7 +84,7 @@ impl Owner {
         let owners = OwnerHooks(store);
         // SAFETY: the caller retains membership in this exact owner's task chain.
         Join::remove(unsafe {
-            depot::raw::Proof::new((self.join(&hooks, &owners, lane), key(index)))
+            depot::raw::Proof::new((self.join(&hooks, &owners, lane), index.0))
         })
         .park();
     }
