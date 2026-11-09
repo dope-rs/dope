@@ -30,7 +30,7 @@ mod state;
 
 pub(in crate::reply) use lane::{Lane, Release};
 pub(in crate::reply) use lanes::{Registration, Slots};
-pub(in crate::reply) use owner::{Owner, Payload, Removal};
+pub(in crate::reply) use owner::{Owner, Payload};
 
 #[derive(Debug)]
 pub enum Acquire {

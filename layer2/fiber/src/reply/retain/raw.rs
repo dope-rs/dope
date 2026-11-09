@@ -6,10 +6,7 @@ use o3::{
     mem::{Rejected, credit::fair},
 };
 
-use crate::reply::retain::{
-    grant::{self, entries, payload},
-    pool,
-};
+use crate::reply::retain::grant::{self, entries, payload};
 
 pub(in crate::reply) struct Pools(Pool<1, entries::Tag>, Pool<3, payload::Tag>);
 
@@ -33,20 +30,6 @@ pub(in crate::reply) struct Lane<'credits, const N: usize, Tag> {
 
 type Grant<'credits, const N: usize, Tag, A = [usize; N]> =
     mem::raw::Grant<Lane<'credits, N, Tag>, N, A>;
-
-/// Removing a grant requires ownership of one still-accounted original member.
-///
-/// # Safety
-/// Remove only this member's amount, preserving other members and the issuing lane.
-pub(in crate::reply) unsafe trait Remove<'arena, 'credits, 'region> {
-    /// # Safety
-    /// The amount must belong to one original member of this exact owner, and
-    /// that member must not have been removed from this sum before.
-    unsafe fn remove<A: mem::raw::Amount<3, usize>>(
-        &mut self,
-        amount: A,
-    ) -> pool::Removal<'_, 'arena, 'credits, 'region, A>;
-}
 
 impl Pools {
     pub(in crate::reply) fn shared(&self) -> [usize; 1] {

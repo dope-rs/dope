@@ -218,17 +218,14 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
             sum: self.sum.drain(),
         })
     }
-}
 
-// SAFETY: the implementation preserves the caller's original-member obligation
-// and captures the exact exclusive owner in every resulting Removal.
-unsafe impl<'arena, 'credits, 'region> retain::raw::Remove<'arena, 'credits, 'region>
-    for Payload<'arena, 'credits, 'region>
-{
     /// # Safety
     /// The caller must own the exact original slot member represented by amount.
     /// That member must not have been removed from this sum before.
-    unsafe fn remove<A>(&mut self, amount: A) -> Removal<'_, 'arena, 'credits, 'region, A>
+    pub(in crate::reply) unsafe fn remove<A>(
+        &mut self,
+        amount: A,
+    ) -> Removal<'_, 'arena, 'credits, 'region, A>
     where
         A: mem::raw::Amount<3, usize>,
     {

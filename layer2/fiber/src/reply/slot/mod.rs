@@ -192,22 +192,21 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E> Slot<'_, 's, 'arena, 'credi
         // SAFETY: this front and owner were loaned from the same occupied slot;
         // its immutable original amount remains a live member until front.pop.
         let amount = payload::Value::new(front.get().amount.usage());
-        let claim =
-            unsafe { retain::raw::Remove::remove(&mut self.owners.payload, amount) }.try_value()?;
+        let claim = unsafe { self.owners.payload.remove(amount) }.try_value()?;
         Ok(Some(retain::Lease::new(front.pop().value, claim)))
     }
 
     pub fn pop_error(&mut self) -> Option<E> {
         let item = self.state.take_failure()?;
         // SAFETY: the removed member and payload come from this exact owned slot.
-        unsafe { retain::raw::Remove::remove(&mut self.owners.payload, item.amount) }.release();
+        unsafe { self.owners.payload.remove(item.amount) }.release();
         Some(item.value)
     }
 
     pub fn pop(&mut self) -> Option<D> {
         let item = self.state.take_data()?;
         // SAFETY: the removed member and payload come from this exact owned slot.
-        unsafe { retain::raw::Remove::remove(&mut self.owners.payload, item.amount) }.release();
+        unsafe { self.owners.payload.remove(item.amount) }.release();
         Some(item.value)
     }
 }
@@ -222,9 +221,7 @@ impl<'arena, 'credits, 'region, D: Footprint<Amount = usage::Bytes>, E>
             return Ok(None);
         };
         // SAFETY: this front and owner belong to the same occupied slot.
-        let claim =
-            unsafe { retain::raw::Remove::remove(&mut self.owners.payload, front.get().amount) }
-                .try_value()?;
+        let claim = unsafe { self.owners.payload.remove(front.get().amount) }.try_value()?;
         Ok(Some(retain::Node {
             value: front.detach(),
             _claim: claim,

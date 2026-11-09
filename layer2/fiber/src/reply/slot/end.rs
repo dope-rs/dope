@@ -2,12 +2,7 @@
 
 use std::mem;
 
-use crate::reply::{
-    Failed, Slot,
-    recv::outcome,
-    retain::{self, grant::payload},
-    usage::Footprint,
-};
+use crate::reply::{Failed, Slot, recv::outcome, retain::grant::payload, usage::Footprint};
 
 pub(super) enum End<E> {
     Open,
@@ -77,8 +72,7 @@ impl<'a, 's, 'arena, 'credits, 'region, D: Footprint, E>
 impl<D: Footprint, E> Drop for Credit<'_, '_, '_, '_, '_, D, E> {
     fn drop(&mut self) {
         // SAFETY: the removed member and payload come from this exact owned slot.
-        unsafe { retain::raw::Remove::remove(&mut self.slot.owners.payload, self.amount) }
-            .release();
+        unsafe { self.slot.owners.payload.remove(self.amount) }.release();
     }
 }
 

@@ -5,7 +5,6 @@ use o3::mem::{self, lease};
 use crate::reply::{
     recv::Acceptance,
     retain::{
-        self,
         grant::payload,
         pool::{Acquire, Owner},
     },
@@ -66,7 +65,7 @@ impl<A: mem::raw::Amount<3, usize> + Into<payload::Requested>> mem::Return
     fn return_item(self, amount: A) {
         // SAFETY: the receipt retains the original exclusive slot loan and the
         // exact new admission; neither commit nor another removal has consumed it.
-        unsafe { retain::raw::Remove::remove(&mut self.owner.payload, amount) }.release();
+        unsafe { self.owner.payload.remove(amount) }.release();
     }
 }
 

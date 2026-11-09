@@ -51,8 +51,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E>
         // SAFETY: Completion retains this exact slot owner and its unchanged
         // first member; failure restores the member before its front can pop.
         let amount = payload::Value::new(front.get().amount.usage());
-        let held =
-            unsafe { retain::raw::Remove::remove(&mut owners.payload, amount) }.try_retain()?;
+        let held = unsafe { owners.payload.remove(amount) }.try_retain()?;
         Ok(Some(retain::Retained::new(front.pop().value, held)))
     }
 }
