@@ -1,6 +1,6 @@
 [package]
 name = "dope-quic"
-version = "0.57.0"
+version = "0.58.0"
 edition = "2024"
 rust-version.workspace = true
 description = "QUIC x dope"
@@ -27,12 +27,12 @@ panic = "abort"
 o3 = "0.52"
 rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs"] }
 aws-lc-rs = { version = "=1.19.0", default-features = false, features = ["aws-lc-sys"] }
-dope = "0.66"
-dope-tls = "0.56"
-dope-sys = "0.66"
+dope = "0.67"
+dope-tls = "0.57"
+dope-sys = "0.67"
 subtle = "2.6"
 pin-project = "1"
 zeroize = { version = "1.9.1", default-features = false }
 
 [dev-dependencies]
-dope-test = "0.66"
+dope-test = "0.67"
