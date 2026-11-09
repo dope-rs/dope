@@ -437,7 +437,8 @@ where
             .prepared
             .runtime
             .open(item, |item, wire, send| {
-                let state = match build(lease.key()) {
+                let key = lease.key();
+                let state = match build(key) {
                     Ok(state) => state,
                     Err(reason) => {
                         item.into_fd().close(driver);
@@ -448,21 +449,18 @@ where
                         );
                     }
                 };
-                let result = lease.commit_with(|key| {
-                    let (engine, tuning) = item.tune(flights, driver, opts, key.target());
-                    let done = match tuning {
-                        duplex::Tuned::Ready => accept::Outcome::Ready(key),
-                        duplex::Tuned::Pending => accept::Outcome::Pending,
-                        duplex::Tuned::Failed(cause) => accept::Outcome::Failed(key, cause),
-                    };
-                    (
-                        types::Connection {
-                            control: types::Control::new(engine, wire, send, key),
-                            state,
-                        },
-                        done,
-                    )
-                });
+                let (engine, tuning) = item.tune(flights, driver, opts, key.target());
+                let result = match tuning {
+                    duplex::Tuned::Ready => accept::Outcome::Ready(key),
+                    duplex::Tuned::Pending => accept::Outcome::Pending,
+                    duplex::Tuned::Failed(cause) => accept::Outcome::Failed(key, cause),
+                };
+                lease
+                    .stage(types::Connection {
+                        control: types::Control::new(engine, wire, send, key),
+                        state,
+                    })
+                    .publish();
                 open::Disposition::Commit(result)
             });
         match opened {

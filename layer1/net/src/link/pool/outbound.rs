@@ -183,14 +183,12 @@ where
             let stored = address.commit(target);
             let engine = duplex::Duplex::targeted(open, stored);
             engine.ready_handle().set_target(key.target().dispatch());
-            let output = lease.commit_with(|key| {
-                let slot = types::Connection::<ID, W, S> {
-                    control: types::Control::new(engine, wire, send, key),
-                    state,
-                };
-                let output = complete(&slot);
-                (slot, output)
+            let mut slot = lease.stage(types::Connection::<ID, W, S> {
+                control: types::Control::new(engine, wire, send, key),
+                state,
             });
+            let output = complete(slot.get_mut());
+            slot.publish();
             open::Disposition::Commit(opening::Attempt::Submitted { key, output })
         });
         match opened {

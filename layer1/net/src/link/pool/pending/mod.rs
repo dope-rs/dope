@@ -303,17 +303,8 @@ impl<'a, 'd, ID: Identity, T> Vacancy<'a, 'd, ID, T> {
         self.key
     }
 
-    pub(in crate::link::pool) fn commit_with<R>(
-        self,
-        build: impl FnOnce(pool::Key<'d, ID>) -> (T, R),
-    ) -> R {
-        let Self {
-            reservation: entry,
-            key,
-        } = self;
-        let (value, result) = build(key);
-        entry.insert(value);
-        result
+    pub(in crate::link::pool) fn stage(self, value: T) -> vacant::Staged<'a, T, ID> {
+        self.reservation.stage(value)
     }
 }
 
