@@ -53,18 +53,6 @@ where
         E::Transport: dope_net::Transport,
         X: Mode<'d, ID>
             + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>;
-    fn follow<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
-        engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        follow: flow::Follow,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut driver::Context<'context, 'd>,
-    ) where
-        S: attempt::Control<'d, E::Transport, ID>,
-        E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
-        X: Mode<'d, ID>
-            + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>;
 
     fn finish<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
@@ -126,6 +114,7 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
     ) where
+        A::Continuation: liveness::Inspection<'d, ID, A>,
         S: attempt::Control<'d, E::Transport, ID>,
         E: env::Spec<Wire = A::Wire>,
         E::Transport: dope_net::Transport,
@@ -241,13 +230,6 @@ where
                         (advance, Deadline::None)
                     }
                 };
-                let follow = match (bound, advance) {
-                    (false, reclaim::Advance::Idle | reclaim::Advance::Ready) => {
-                        flow::Follow::Unbound
-                    }
-                    (true, reclaim::Advance::Ready) => flow::Follow::Released,
-                    (true, reclaim::Advance::Idle) => flow::Follow::Bound,
-                };
                 // SAFETY: the native sender retains this key's slot from the paired pool.
                 let source = unsafe { engine::raw::reunite(liveness, slot, key) };
                 update.apply(
@@ -255,9 +237,20 @@ where
                     driver.driver_ref().clock().now(),
                     <E::Timing as timing::Policy>::SEND_DEADLINE,
                 );
-                follow
+                bound.then_some(advance)
             };
-            Self::follow::<S, E, X>(engine.as_mut(), key, follow, turn.reborrow(), driver);
+            if let Some(advance) = follow {
+                if <<<A::Wire as wire::Spec>::Send as send::Policy<
+                    A::Wire,
+                >>::Reclaim as reclaim::Policy>::direct()
+                    == reclaim::Direct::Independent
+                    && matches!(advance, reclaim::Advance::Ready)
+                {
+                    Self::drain(engine.as_mut(), key, turn.reborrow(), driver);
+                }
+                let now = driver.driver_ref().clock().now();
+                refresh::run(engine.as_mut(), key, now, driver);
+            }
         }
         engine.maybe_close(key, turn, driver);
     }
@@ -367,35 +360,6 @@ where
             <E::Timing as timing::Policy>::SEND_DEADLINE,
         );
     }
-
-    fn follow<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
-        mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        follow: flow::Follow,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut driver::Context<'context, 'd>,
-    ) where
-        S: attempt::Control<'d, E::Transport, ID>,
-        E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
-        X: Mode<'d, ID>
-            + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    {
-        let drain = match <<<A::Wire as wire::Spec>::Send as send::Policy<
-            A::Wire,
-        >>::Reclaim as reclaim::Policy>::direct()
-        {
-            reclaim::Direct::Independent => matches!(follow, flow::Follow::Released),
-            reclaim::Direct::Retained => false,
-        };
-        if drain {
-            <Self as Policy<'w, 'd, ID, A>>::drain(engine.as_mut(), key, turn, driver);
-        }
-        if matches!(follow, flow::Follow::Bound | flow::Follow::Released) {
-            let now = driver.driver_ref().clock().now();
-            refresh::run(engine.as_mut(), key, now, driver);
-        }
-    }
 }
 
 impl<'w, 'd: 'w, ID: Identity + 'd, A> Policy<'w, 'd, ID, A> for request::Disabled
@@ -416,24 +380,5 @@ where
         X: Mode<'d, ID>
             + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
     {
-    }
-
-    fn follow<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
-        mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        follow: flow::Follow,
-        _: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut driver::Context<'context, 'd>,
-    ) where
-        S: attempt::Control<'d, E::Transport, ID>,
-        E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
-        X: Mode<'d, ID>
-            + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    {
-        if matches!(follow, flow::Follow::Bound | flow::Follow::Released) {
-            let now = driver.driver_ref().clock().now();
-            refresh::run(engine.as_mut(), key, now, driver);
-        }
     }
 }

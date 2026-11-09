@@ -70,6 +70,7 @@ where
         driver: &'driver mut driver::Context<'context, 'd>,
         drain: bool,
     ) where
+        Self: liveness::Inspection<'d, ID, A>,
         engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
         X: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
     {
@@ -384,6 +385,7 @@ fn apply<'p, 'w, 'd, 'machine, 'turn, 'driver, 'context, ID: Identity + 'd, A, S
 ) where
     'd: 'w,
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
+    A::Continuation: liveness::Inspection<'d, ID, A>,
     A::Requests: Policy<'w, 'd, ID, A>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,

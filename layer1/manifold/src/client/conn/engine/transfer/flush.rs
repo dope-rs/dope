@@ -31,7 +31,7 @@ use crate::{
 };
 
 pub(in crate::client) trait Flush<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>:
-    Sized
+    Sized + liveness::Inspection<'d, ID, A>
 where
     A: app::Receive<'d, ID, Continuation = Self> + app::Lifecycle<'w, 'd, ID>,
     A::Requests: send::Policy<'w, 'd, ID, A>,

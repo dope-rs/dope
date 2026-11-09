@@ -40,6 +40,7 @@ where
 impl<'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Effect<'w, 'd, ID, A, S, E, X> for app::ChunkOutcome
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
+    A::Continuation: liveness::Inspection<'d, ID, A>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
@@ -116,6 +117,7 @@ where
 impl<'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Effect<'w, 'd, ID, A, S, E, X> for app::Pause
 where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID>,
+    A::Continuation: liveness::Inspection<'d, ID, A>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,

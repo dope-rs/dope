@@ -2,99 +2,84 @@ use dope_core::driver::route::{indices, table};
 
 use crate::network::listener::runtime;
 
-enum Shutdown {
+enum Sweep {
     Open,
-    Closing(Cursor),
+    Active(usize),
     Done,
 }
 
-enum Admission {
-    Open,
-    Sealing(Cursor),
-    Sealed,
-}
+impl Sweep {
+    fn start(&mut self) {
+        if matches!(self, Self::Open) {
+            *self = Self::Active(0);
+        }
+    }
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-struct Cursor(usize);
-
-impl Cursor {
     fn take(&mut self, cap: table::Capacity) -> Option<indices::SlotIndex> {
-        let slot = cap.into_iter().nth(self.0)?;
-        self.0 += 1;
-        Some(slot)
+        let Self::Active(index) = self else {
+            return None;
+        };
+        let next = cap.into_iter().nth(*index);
+        if next.is_some() {
+            *index += 1;
+        } else {
+            *self = Self::Done;
+        }
+        next
     }
 }
 
 pub(in crate::network::listener) struct Schedule {
-    shutdown: Shutdown,
-    admission: Admission,
+    shutdown: Sweep,
+    admission: Sweep,
     pub(in crate::network::listener) phase: runtime::Phase,
 }
 
 impl Schedule {
     pub(in crate::network::listener) const fn new() -> Self {
         Self {
-            shutdown: Shutdown::Open,
-            admission: Admission::Open,
+            shutdown: Sweep::Open,
+            admission: Sweep::Open,
             phase: runtime::Phase::Accept,
         }
     }
 
     pub(in crate::network::listener) fn shutdown(&mut self) {
-        if matches!(self.shutdown, Shutdown::Open) {
-            self.shutdown = Shutdown::Closing(Cursor(0));
-        }
+        self.shutdown.start();
     }
 
     pub(in crate::network::listener) fn seal(&mut self) {
-        if matches!(self.admission, Admission::Open) {
-            self.admission = Admission::Sealing(Cursor(0));
-        }
+        self.admission.start();
     }
 
     pub(in crate::network::listener) fn take_seal(
         &mut self,
         cap: table::Capacity,
     ) -> Option<indices::SlotIndex> {
-        let Admission::Sealing(cursor) = &mut self.admission else {
-            return None;
-        };
-        let next = cursor.take(cap);
-        if next.is_none() {
-            self.admission = Admission::Sealed;
-        }
-        next
+        self.admission.take(cap)
     }
 
     pub(in crate::network::listener) fn is_open(&self) -> bool {
-        matches!(self.admission, Admission::Open)
+        matches!(self.admission, Sweep::Open)
     }
 
     pub(in crate::network::listener) fn is_sealing(&self) -> bool {
-        matches!(self.admission, Admission::Sealing(_))
+        matches!(self.admission, Sweep::Active(_))
     }
 
     pub(in crate::network::listener) fn take_close(
         &mut self,
         cap: table::Capacity,
     ) -> Option<indices::SlotIndex> {
-        let Shutdown::Closing(cursor) = &mut self.shutdown else {
-            return None;
-        };
-        let next = cursor.take(cap);
-        if next.is_none() {
-            self.shutdown = Shutdown::Done;
-        }
-        next
+        self.shutdown.take(cap)
     }
 
     pub(in crate::network::listener) fn is_closing(&self) -> bool {
-        matches!(self.shutdown, Shutdown::Closing(_))
+        matches!(self.shutdown, Sweep::Active(_))
     }
 
     pub(in crate::network::listener) fn is_done(&self) -> bool {
-        matches!(self.shutdown, Shutdown::Done)
+        matches!(self.shutdown, Sweep::Done)
     }
 
     pub(in crate::network::listener) fn next_phase(&mut self) -> runtime::Phase {

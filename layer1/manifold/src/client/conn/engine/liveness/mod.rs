@@ -46,7 +46,7 @@ pub(super) struct Deadlines<'d, ID: Identity> {
     alarm: timer::Alarm<'d>,
 }
 
-pub(super) enum Observation<'d> {
+pub(in crate::client) enum Observation<'d> {
     Quiescent,
     Awaiting {
         window: Positive,
@@ -54,7 +54,7 @@ pub(super) enum Observation<'d> {
     },
 }
 
-pub(super) trait Inspection<'d, ID: Identity, A>
+pub(in crate::client) trait Inspection<'d, ID: Identity, A>
 where
     A: app::Application<'d, ID>,
 {

@@ -31,13 +31,6 @@ pub(in crate::client) enum Apply {
     Sealed,
 }
 
-#[derive(Clone, Copy)]
-pub(in crate::client) enum Follow {
-    Unbound,
-    Bound,
-    Released,
-}
-
 impl<T> Flow<T> {
     pub(in crate::client) fn into_parts(self) -> (T, Flow<()>) {
         match self {
