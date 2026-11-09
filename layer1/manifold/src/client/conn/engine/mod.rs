@@ -72,6 +72,18 @@ type Slot<'w, 'd, ID, A> = conn::Slot<
     side::Primary<'d, ID>,
 >;
 
+type Sender<'a, 'p, 'w, 'd, ID, A> = dope_net::link::slot::transmit::Sender<
+    'a,
+    'p,
+    'w,
+    'd,
+    ID,
+    <A as app::Application<'d, ID>>::Wire,
+    Record<'d, ID, A>,
+    <A as app::Application<'d, ID>>::Send,
+    { client::IOV_CAP },
+>;
+
 /// A connection change retains the environment's exact prepared transport authority.
 type Transition<'a, 'd, ID, E, X, S> = liveness::Change<
     'a,

@@ -17,7 +17,7 @@ pub(in crate::client) enum Deadline {
 }
 
 impl Deadline {
-    pub(super) fn apply<'d, ID: Identity, P, X, C>(
+    pub(in crate::client::conn::engine::transfer) fn apply<'d, ID: Identity, P, X, C>(
         self,
         source: liveness::Change<'_, 'd, ID, P, X, C>,
         now: clock::Moment<'d>,

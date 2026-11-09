@@ -3,7 +3,7 @@ use std::pin;
 use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{
-        pool,
+        egress, pool,
         slot::transmit::{self, outcome},
     },
     wire::{
@@ -42,17 +42,16 @@ where
         + app::Lifecycle<'w, 'd, ID>
         + app::Application<'d, ID, Requests = Self>,
 {
-    fn drain<'p, S, E, X>(
-        engine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        turn: schedule::Turn<'_, 'd>,
-        driver: &mut driver::Context<'_, 'd>,
-    ) where
-        S: attempt::Control<'d, E::Transport, ID>,
-        E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
-        X: Mode<'d, ID>
-            + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>;
+    const ENABLED: bool = false;
+
+    fn drain<'p>(
+        _: &mut A,
+        _: &mut engine::Sender<'_, 'p, 'w, 'd, ID, A>,
+        _: schedule::Turn<'_, 'd>,
+        _: &mut driver::Context<'_, 'd>,
+    ) -> Deadline {
+        Deadline::None
+    }
 
     fn finish<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
@@ -108,7 +107,18 @@ where
         engine.maybe_close(key, turn, driver);
     }
 
-    fn submit<'p, 'machine, 'turn, 'driver, 'context, S, E, X>(
+    fn submit<
+        'p,
+        'machine,
+        'turn,
+        'driver,
+        'context,
+        const SENT: bool,
+        const DRAIN: bool,
+        S,
+        E,
+        X,
+    >(
         mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'turn, 'd>,
@@ -127,18 +137,67 @@ where
             let follow = {
                 let this = engine.as_mut().project();
                 let (pool, liveness) = this.links.parts();
-                let Some((mut sender, queued)) = pool.send_slot(key) else {
+                let Some((mut sender, queued)) = pool.sender_with_recv(key) else {
                     if let Some(slot) = pool.get_mut(key) {
                         let _ = State::poll_close(slot, this.app);
                     }
                     break 'submit;
                 };
+                {
+                    let pool::EgressMut {
+                        connection: slot,
+                        pending: handle,
+                        queue,
+                        ..
+                    } = sender.view();
+                    let drain = if SENT {
+                        if slot.state.is_attached() {
+                            let pending = if queue.is_empty() && !slot.send_status().is_closing() {
+                                egress::Pending::Absent
+                            } else {
+                                egress::Pending::Present
+                            };
+                            this.app
+                                .sent(conn::Id::from_key(key), pending, driver.state_token());
+                            if slot.state.conn_mut().is_some_and(|conn| {
+                                <A::Continuation as liveness::Inspection<'d, ID, A>>::wake(
+                                    this.app, conn,
+                                )
+                            }) {
+                                if !slot.is_closing() {
+                                    slot.state.work.request_next();
+                                }
+                                handle.wake();
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        DRAIN
+                    };
+                    if drain && Self::ENABLED {
+                        let update = Self::drain(this.app, &mut sender, turn.reborrow(), driver);
+                        let slot = sender.view().connection;
+                        // SAFETY: the sender retains this pool's exact slot and paired book.
+                        let source = unsafe { engine::raw::reunite(liveness, slot, key) };
+                        update.apply(
+                            liveness::Change::new(source, target),
+                            driver.driver_ref().clock().now(),
+                            <E::Timing as timing::Policy>::SEND_DEADLINE,
+                        );
+                    }
+                }
                 let pool::EgressMut {
                     connection: slot,
                     pending: handle,
                     queue: egress,
                     ..
                 } = sender.view();
+                if slot.is_closing() {
+                    let _ = State::poll_close(slot, this.app);
+                    break 'submit;
+                }
                 if !slot.is_connected() {
                     break 'submit;
                 }
@@ -237,17 +296,24 @@ where
                     driver.driver_ref().clock().now(),
                     <E::Timing as timing::Policy>::SEND_DEADLINE,
                 );
-                bound.then_some(advance)
-            };
-            if let Some(advance) = follow {
-                if <<<A::Wire as wire::Spec>::Send as send::Policy<
-                    A::Wire,
-                >>::Reclaim as reclaim::Policy>::direct()
-                    == reclaim::Direct::Independent
+                if bound && Self::ENABLED
+                    && <<<A::Wire as wire::Spec>::Send as send::Policy<A::Wire>>::Reclaim as reclaim::Policy>::direct()
+                        == reclaim::Direct::Independent
                     && matches!(advance, reclaim::Advance::Ready)
                 {
-                    Self::drain(engine.as_mut(), key, turn.reborrow(), driver);
+                    let update = Self::drain(this.app, &mut sender, turn.reborrow(), driver);
+                    let slot = sender.view().connection;
+                    // SAFETY: submission preserves this borrowed slot and its paired book.
+                    let source = unsafe { engine::raw::reunite(liveness, slot, key) };
+                    update.apply(
+                        liveness::Change::new(source, target),
+                        driver.driver_ref().clock().now(),
+                        <E::Timing as timing::Policy>::SEND_DEADLINE,
+                    );
                 }
+                bound
+            };
+            if follow {
                 let now = driver.driver_ref().clock().now();
                 refresh::run(engine.as_mut(), key, now, driver);
             }
@@ -260,105 +326,90 @@ where
     A: app::Receive<'d, ID> + app::Lifecycle<'w, 'd, ID> + app::Requests<'d, ID>,
     A::Continuation: liveness::Inspection<'d, ID, A>,
 {
-    fn drain<'p, S, E, X>(
-        mut engine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
+    const ENABLED: bool = true;
+
+    fn drain<'p>(
+        app: &mut A,
+        sender: &mut engine::Sender<'_, 'p, 'w, 'd, ID, A>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) where
-        S: attempt::Control<'d, E::Transport, ID>,
-        E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
-        X: Mode<'d, ID>
-            + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    {
-        let target = engine.as_ref().backoff();
-        let this = engine.as_mut().project();
-        let Some(liveness::Egress {
-            connection: mut slot,
+    ) -> Deadline {
+        let pool::EgressMut {
+            connection: slot,
             pending: handle,
             queue,
             ..
-        }) = this.links.egress(key, target)
-        else {
-            return;
-        };
-        let update = (|| {
-            match slot.state.closing.status() {
-                conn::CloseStatus::Closing(
-                    conn::ClosePhase::Finalized | conn::ClosePhase::Claimed,
-                    _,
-                ) => {
-                    return Deadline::None;
-                }
-                conn::CloseStatus::Open | conn::CloseStatus::Closing(..) => {}
-            }
-            let wake = slot.io().wake_target();
-            let Some(conn) = slot.state.conn_mut() else {
+        } = sender.view();
+        let key = slot.key();
+        match slot.state.closing.status() {
+            conn::CloseStatus::Closing(
+                conn::ClosePhase::Finalized | conn::ClosePhase::Claimed,
+                _,
+            ) => {
                 return Deadline::None;
-            };
-            let mut reqs = request::Turn::new(
-                conn::Id::from_key(key),
-                conn,
-                queue.reborrow(),
-                turn.reborrow().app(),
-                wake,
-                driver.reborrow(),
-            );
-            this.app.drain(&mut reqs);
-            let done = reqs.finish();
-            let close = done.close();
-            let flow = match close {
-                None => flow::Flow::Continue(()),
-                Some(rule) => match State::apply(&mut slot, rule) {
-                    flow::Apply::Applied(flow) => flow,
-                    flow::Apply::Sealed => {
-                        handle.wake();
-                        return Deadline::Cancel;
-                    }
-                },
-            };
-            if done.contains(request::Flag::WriteShutdown) {
-                slot.shutdown();
-                handle.wake();
             }
-            if done.contains(request::Flag::Exhausted) {
-                slot.state.work.drain();
-                handle.wake();
-            }
-            if close.is_some() {
-                handle.wake();
-            }
-            let cut = match flow {
-                flow::Flow::Continue(()) => false,
-                flow::Flow::Discarded(()) => true,
-            };
-
-            if cut {
-                Deadline::Cancel
-            } else {
-                if done.contains(request::Flag::Queued) {
-                    handle.wake();
-                }
-                let status = slot.send_status();
-                if done.contains(request::Flag::Waiting)
-                    || done.contains(request::Flag::Exhausted)
-                    || done.contains(request::Flag::Queued)
-                    || status.is_inflight()
-                    || status.retention() == outcome::Retention::Held
-                    || status.is_closing()
-                {
-                    Deadline::Ensure
-                } else {
-                    Deadline::Cancel
-                }
-            }
-        })();
-        update.apply(
-            slot,
-            driver.driver_ref().clock().now(),
-            <E::Timing as timing::Policy>::SEND_DEADLINE,
+            conn::CloseStatus::Open | conn::CloseStatus::Closing(..) => {}
+        }
+        let wake = slot.io().wake_target();
+        let Some(conn) = slot.state.conn_mut() else {
+            return Deadline::None;
+        };
+        let mut reqs = request::Turn::new(
+            conn::Id::from_key(key),
+            conn,
+            queue.reborrow(),
+            turn.reborrow().app(),
+            wake,
+            driver.reborrow(),
         );
+        app.drain(&mut reqs);
+        let done = reqs.finish();
+        let close = done.close();
+        let flow = match close {
+            None => flow::Flow::Continue(()),
+            Some(rule) => match State::apply(slot, rule) {
+                flow::Apply::Applied(flow) => flow,
+                flow::Apply::Sealed => {
+                    handle.wake();
+                    return Deadline::Cancel;
+                }
+            },
+        };
+        if done.contains(request::Flag::WriteShutdown) {
+            slot.shutdown();
+            handle.wake();
+        }
+        if done.contains(request::Flag::Exhausted) {
+            slot.state.work.drain();
+            handle.wake();
+        }
+        if close.is_some() {
+            handle.wake();
+        }
+        let cut = match flow {
+            flow::Flow::Continue(()) => false,
+            flow::Flow::Discarded(()) => true,
+        };
+
+        if cut {
+            Deadline::Cancel
+        } else {
+            if done.contains(request::Flag::Queued) {
+                handle.wake();
+            }
+            let status = slot.send_status();
+            if done.contains(request::Flag::Waiting)
+                || done.contains(request::Flag::Exhausted)
+                || done.contains(request::Flag::Queued)
+                || status.is_inflight()
+                || status.retention() == outcome::Retention::Held
+                || status.is_closing()
+            {
+                Deadline::Ensure
+            } else {
+                Deadline::Cancel
+            }
+        }
     }
 }
 
@@ -368,17 +419,4 @@ where
     A: app::Application<'d, ID, Requests = request::Disabled>,
     A::Continuation: liveness::Inspection<'d, ID, A>,
 {
-    fn drain<'p, S, E, X>(
-        _: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        _: pool::Key<'d, ID>,
-        _: schedule::Turn<'_, 'd>,
-        _: &mut driver::Context<'_, 'd>,
-    ) where
-        S: attempt::Control<'d, E::Transport, ID>,
-        E: env::Spec<Wire = A::Wire>,
-        E::Transport: dope_net::Transport,
-        X: Mode<'d, ID>
-            + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    {
-    }
 }

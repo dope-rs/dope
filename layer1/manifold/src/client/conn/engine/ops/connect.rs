@@ -140,13 +140,7 @@ where
         );
         match disp {
             phase::Disposition::Active => {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::drain(
-                    self.as_mut(),
-                    conn,
-                    turn.reborrow(),
-                    driver,
-                );
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, true, _, _, _>(
                     self.as_mut(),
                     conn,
                     turn.reborrow(),
@@ -155,7 +149,7 @@ where
                 refresh::run(self.as_mut(), conn, now, driver);
             }
             phase::Disposition::Missing => {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, false, _, _, _>(
                     self.as_mut(),
                     conn,
                     turn.reborrow(),
@@ -164,7 +158,9 @@ where
                 refresh::run(self.as_mut(), conn, now, driver);
             }
             phase::Disposition::Closing => {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(self, conn, turn, driver);
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, false, _, _, _>(
+                    self, conn, turn, driver,
+                );
                 return Ok(());
             }
             phase::Disposition::Discarded => {}

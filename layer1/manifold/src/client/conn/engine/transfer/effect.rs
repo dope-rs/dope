@@ -70,12 +70,13 @@ where
             }
         };
         match flow {
-            flow::Flow::Continue(()) => <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(
-                engine.as_mut(),
-                key,
-                turn.reborrow(),
-                driver,
-            ),
+            flow::Flow::Continue(()) => <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<
+                false,
+                false,
+                _,
+                _,
+                _,
+            >(engine.as_mut(), key, turn.reborrow(), driver),
             flow::Flow::Discarded(()) => {}
         }
         if close {
@@ -160,7 +161,9 @@ where
         };
         match flow {
             flow::Flow::Continue(()) => {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(engine, key, turn, driver)
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, false, _, _, _>(
+                    engine, key, turn, driver,
+                )
             }
             flow::Flow::Discarded(()) => {}
         }

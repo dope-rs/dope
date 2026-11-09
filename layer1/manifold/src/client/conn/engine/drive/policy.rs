@@ -115,7 +115,9 @@ where
                 if let Some(slot) = self.as_mut().project().links.pool_mut().get_mut(key) {
                     slot.state.record_recv(driver.driver_ref().clock().now());
                 }
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(self, key, turn, driver);
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, false, _, _, _>(
+                    self, key, turn, driver,
+                );
             }
             ingress::Finish::Chunk | ingress::Finish::CloseAfter => {
                 self.maybe_close(key, turn, driver);
@@ -216,7 +218,7 @@ where
         };
         match eof {
             flow::Flow::Continue(app::Eof::Retain) => {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, false, _, _, _>(
                     self.as_mut(),
                     key,
                     turn.reborrow(),

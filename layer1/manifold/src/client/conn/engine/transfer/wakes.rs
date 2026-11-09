@@ -5,7 +5,6 @@ use dope_core::{
     io::event::net::send,
 };
 use dope_net::link::{
-    egress,
     event::SendOutcome,
     pool::{
         self, pending,
@@ -44,48 +43,6 @@ pub(in crate::client::conn::engine) trait Activation<'d, ID: Identity + 'd, C> {
     );
 }
 
-pub(in crate::client) trait Settlement<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>:
-    Sized
-where
-    A: app::Receive<'d, ID, Continuation = Self> + app::Lifecycle<'w, 'd, ID>,
-    A::Requests: Policy<'w, 'd, ID, A>,
-    S: attempt::Control<'d, E::Transport, ID>,
-    E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
-    X: Mode<'d, ID>,
-{
-    fn sent<'machine, 'turn, 'driver, 'context>(
-        engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut driver::Context<'context, 'd>,
-    ) where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>;
-
-    /// Re-submits this key's request policy and re-checks the close condition.
-    fn settle<'machine, 'turn, 'driver, 'context>(
-        mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut driver::Context<'context, 'd>,
-        drain: bool,
-    ) where
-        Self: liveness::Inspection<'d, ID, A>,
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
-        X: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    {
-        if drain {
-            <A::Requests as Policy<'w, 'd, ID, A>>::drain(
-                engine.as_mut(),
-                key,
-                turn.reborrow(),
-                driver,
-            );
-        }
-        <A::Requests as Policy<'w, 'd, ID, A>>::submit(engine, key, turn, driver);
-    }
-}
-
 pub(in crate::client) trait Completion<'d> {
     fn complete<'machine, 'turn, 'driver, 'context>(
         self: pin::Pin<&'machine mut Self>,
@@ -104,7 +61,7 @@ where
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    A::Continuation: Settlement<'p, 'w, 'd, ID, A, S, E, X>,
+    A::Continuation: liveness::Inspection<'d, ID, A>,
     Self: close::ClosePhase<'d, ID, A, S, E>,
 {
     fn complete<'machine, 'turn, 'driver, 'context>(
@@ -195,7 +152,7 @@ where
             }
             SendOutcome::Drop => return,
         };
-        <A::Continuation as Settlement<'p, 'w, 'd, ID, A, S, E, X>>::sent(
+        <A::Requests as Policy<'w, 'd, ID, A>>::submit::<true, true, _, _, _>(
             engine, key, turn, driver,
         );
     }
@@ -281,102 +238,6 @@ where
     }
 }
 
-impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Settlement<'p, 'w, 'd, ID, A, S, E, X>
-    for resume::Complete
-where
-    A: app::Receive<'d, ID, Continuation = resume::Complete> + app::Lifecycle<'w, 'd, ID>,
-    A::Requests: Policy<'w, 'd, ID, A>,
-    S: attempt::Control<'d, E::Transport, ID>,
-    E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
-    X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-{
-    fn sent<'machine, 'turn, 'driver, 'context>(
-        mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut driver::Context<'context, 'd>,
-    ) where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
-    {
-        let mut drain = false;
-        {
-            let this = engine.as_mut().project();
-            if let Some(pool::EgressMut {
-                flights: _,
-                connection: slot,
-                pending: _,
-                queue,
-            }) = this.links.pool_mut().egress_mut(key)
-                && slot.state.is_attached()
-            {
-                let pending = match (queue.is_empty(), slot.send_status().is_closing()) {
-                    (true, false) => egress::Pending::Absent,
-                    (false, false | true) | (true, true) => egress::Pending::Present,
-                };
-                this.app
-                    .sent(conn::Id::from_key(key), pending, driver.state_token());
-                drain = true;
-            }
-        }
-        Self::settle(engine, key, turn, driver, drain);
-    }
-}
-
-impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> Settlement<'p, 'w, 'd, ID, A, S, E, X>
-    for resume::Retained
-where
-    A: app::Resumable<'d, ID, Continuation = resume::Retained> + app::Lifecycle<'w, 'd, ID>,
-    A::Requests: Policy<'w, 'd, ID, A>,
-    S: attempt::Control<'d, E::Transport, ID>,
-    E: env::Spec<Wire = A::Wire>,
-    E::Transport: dope_net::Transport,
-    X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-{
-    fn sent<'machine, 'turn, 'driver, 'context>(
-        mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
-        turn: schedule::Turn<'turn, 'd>,
-        driver: &'driver mut driver::Context<'context, 'd>,
-    ) where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
-    {
-        let mut drain = false;
-        {
-            let this = engine.as_mut().project();
-            if let Some(pool::EgressMut {
-                flights: _,
-                connection: slot,
-                pending: handle,
-                queue,
-            }) = this.links.pool_mut().egress_mut(key)
-                && slot.state.is_attached()
-            {
-                let pending = match (queue.is_empty(), slot.send_status().is_closing()) {
-                    (true, false) => egress::Pending::Absent,
-                    (false, false | true) | (true, true) => egress::Pending::Present,
-                };
-                this.app
-                    .sent(conn::Id::from_key(key), pending, driver.state_token());
-                let wake = match slot.state.conn_mut() {
-                    Some(conn) => {
-                        matches!(app::Resumable::wake(this.app, conn), app::Wake::Ready)
-                    }
-                    None => false,
-                };
-                if wake {
-                    if !slot.is_closing() {
-                        slot.state.work.request_next();
-                    }
-                    handle.wake();
-                }
-                drain = true;
-            }
-        }
-        Self::settle(engine, key, turn, driver, drain);
-    }
-}
-
 fn apply<'p, 'w, 'd, 'machine, 'turn, 'driver, 'context, ID: Identity + 'd, A, S, E, X>(
     mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
     key: Option<pool::Key<'d, ID>>,
@@ -403,7 +264,11 @@ fn apply<'p, 'w, 'd, 'machine, 'turn, 'driver, 'context, ID: Identity + 'd, A, S
             handle.wake();
         }
     }
-    <A::Requests as Policy<'w, 'd, ID, A>>::drain(engine.as_mut(), key, turn.reborrow(), driver);
-    <A::Requests as Policy<'w, 'd, ID, A>>::submit(engine.as_mut(), key, turn.reborrow(), driver);
+    <A::Requests as Policy<'w, 'd, ID, A>>::submit::<false, true, _, _, _>(
+        engine.as_mut(),
+        key,
+        turn.reborrow(),
+        driver,
+    );
     drive::Run::run(engine, turn, driver, true);
 }

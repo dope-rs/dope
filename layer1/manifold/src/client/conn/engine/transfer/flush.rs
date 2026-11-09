@@ -79,13 +79,23 @@ where
                     .get_mut(key)
                     .is_some_and(|slot| slot.state.work.take_drain())
             };
-            if drain {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::drain(
-                    engine.as_mut(),
-                    key,
-                    turn.reborrow(),
-                    driver,
-                );
+            if drain && <A::Requests as send::Policy<'w, 'd, ID, A>>::ENABLED {
+                let target = engine.as_ref().backoff();
+                let this = engine.as_mut().project();
+                let (pool, liveness) = this.links.parts();
+                if let Some(mut sender) = pool.sender(key) {
+                    let update = <A::Requests as send::Policy<'w, 'd, ID, A>>::drain(
+                        this.app, &mut sender, turn.reborrow(), driver,
+                    );
+                    let slot = sender.view().connection;
+                    // SAFETY: the sender retains the slot from this pool's paired book.
+                    let source = unsafe { engine::raw::reunite(liveness, slot, key) };
+                    update.apply(
+                        liveness::Change::new(source, target),
+                        driver.driver_ref().clock().now(),
+                        <E::Timing as crate::timing::Policy>::SEND_DEADLINE,
+                    );
+                }
             }
             let Some((ctrl, reason)) = Self::admit(engine.as_mut(), key, turn.reborrow(), driver)
             else {
@@ -148,7 +158,7 @@ where
                     }
                 };
                 match demand {
-                    Demand::Egress => <A::Requests as send::Policy<'w, 'd, ID, A>>::submit(
+                    Demand::Egress => <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, false, _, _, _>(
                         engine.as_mut(),
                         key,
                         turn.reborrow(),
