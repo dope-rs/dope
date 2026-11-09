@@ -62,7 +62,6 @@ pub(in crate::client) struct Drain<'turn, 'e, 'd, B: data::raw::Payload<'d>> {
 pub(in crate::client) enum Flag {
     Exhausted = 1 << 1,
     Waiting = 1 << 2,
-    Queued = 1 << 3,
     WriteShutdown = 1 << 4,
 }
 
@@ -263,15 +262,11 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>> Drain<'turn, 'e, 'd, B> {
     }
 
     fn finish(self) -> Outcome {
-        let mut state = self.state;
-        if !state.contains(Flag::Waiting) {
+        if !self.state.contains(Flag::Waiting) {
             self.queue.cancel_wait(self.region);
         }
-        if !self.queue.is_empty() {
-            state.insert(Flag::Queued);
-        }
         Outcome {
-            state,
+            state: self.state,
             close: self.close,
         }
     }

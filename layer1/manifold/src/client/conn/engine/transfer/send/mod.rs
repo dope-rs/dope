@@ -364,6 +364,7 @@ where
         );
         app.drain(&mut reqs);
         let done = reqs.finish();
+        let queued = !queue.is_empty();
         let close = done.close();
         let flow = match close {
             None => flow::Flow::Continue(()),
@@ -377,38 +378,31 @@ where
         };
         if done.contains(request::Flag::WriteShutdown) {
             slot.shutdown();
-            handle.wake();
         }
         if done.contains(request::Flag::Exhausted) {
             slot.state.work.drain();
+        }
+        if close.is_some()
+            || done.contains(request::Flag::WriteShutdown)
+            || done.contains(request::Flag::Exhausted)
+            || queued
+        {
             handle.wake();
         }
-        if close.is_some() {
-            handle.wake();
+        if let flow::Flow::Discarded(()) = flow {
+            return Deadline::Cancel;
         }
-        let cut = match flow {
-            flow::Flow::Continue(()) => false,
-            flow::Flow::Discarded(()) => true,
-        };
-
-        if cut {
-            Deadline::Cancel
+        let status = slot.send_status();
+        if done.contains(request::Flag::Waiting)
+            || done.contains(request::Flag::Exhausted)
+            || queued
+            || status.is_inflight()
+            || status.retention() == outcome::Retention::Held
+            || status.is_closing()
+        {
+            Deadline::Ensure
         } else {
-            if done.contains(request::Flag::Queued) {
-                handle.wake();
-            }
-            let status = slot.send_status();
-            if done.contains(request::Flag::Waiting)
-                || done.contains(request::Flag::Exhausted)
-                || done.contains(request::Flag::Queued)
-                || status.is_inflight()
-                || status.retention() == outcome::Retention::Held
-                || status.is_closing()
-            {
-                Deadline::Ensure
-            } else {
-                Deadline::Cancel
-            }
+            Deadline::Cancel
         }
     }
 }
