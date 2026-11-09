@@ -118,27 +118,3 @@ impl<'d, Tag> Brand<'d, Tag> {
         }
     }
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(transparent)]
-pub(crate) struct OutboundKey(u8);
-
-impl OutboundKey {
-    pub(crate) const fn raw(self) -> u32 {
-        self.0 as u32
-    }
-
-    pub(crate) const fn from_raw(raw: u32) -> Option<Self> {
-        if raw < route::FRAMEWORK as u32 {
-            Some(Self(raw as u8))
-        } else {
-            None
-        }
-    }
-
-    /// Type-branded outbound key for callers that carry an application route tag.
-    pub(crate) const fn for_tag<Tag: route::Tag>() -> Self {
-        const { assert!(Tag::ROUTE.raw() != route::FRAMEWORK) };
-        Self(Tag::ROUTE.raw())
-    }
-}

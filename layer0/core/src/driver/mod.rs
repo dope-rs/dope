@@ -30,7 +30,7 @@ use crate::{
             batch,
             net::{accept, recv},
         },
-        fd::{access::Access, outbound},
+        fd::access::Access,
     },
     random,
 };
@@ -161,10 +161,6 @@ impl<'d> Reference<'d> {
 
     pub(crate) const fn descriptors(self) -> Access<'d> {
         Access::new(self)
-    }
-
-    pub(crate) const fn outbound(self) -> outbound::Context<'d> {
-        outbound::Context::new(self)
     }
 
     #[doc(hidden)]

@@ -14,7 +14,7 @@ impl SlotState {
     pub(super) const FREE: Self = Self(0);
     pub(super) const STANDALONE: Self = Self((Phase::STANDALONE.raw() as u16) << u8::BITS);
 
-    pub(super) const fn route(phase: Phase, owner: route::OutboundKey) -> Self {
+    pub(super) const fn route(phase: Phase, owner: route::Id) -> Self {
         Self(((phase.raw() as u16) << u8::BITS) | owner.raw() as u16)
     }
 
@@ -30,16 +30,16 @@ impl SlotState {
         Phase((self.0 >> u8::BITS) as u8)
     }
 
-    pub(super) fn owner(self) -> Option<route::OutboundKey> {
+    pub(super) fn owner(self) -> Option<route::Id> {
         let phase = self.phase();
         if matches!(phase, Phase::FREE | Phase::STANDALONE) {
             None
         } else {
-            route::OutboundKey::from_raw(u32::from(self.0 as u8))
+            route::Route::from_bits(self.0 as u8).app()
         }
     }
 
-    pub(super) fn is_state(self, phase: Phase, owner: route::OutboundKey) -> bool {
+    pub(super) fn is_state(self, phase: Phase, owner: route::Id) -> bool {
         self.phase() == phase && self.owner() == Some(owner)
     }
 }

@@ -38,7 +38,7 @@ pub struct OwnedSlot(PhysicalSlot);
 #[repr(C, align(4))]
 pub struct OutboundSlot {
     index: [u8; 3],
-    owner: route::OutboundKey,
+    owner: route::Id,
 }
 
 #[must_use = "accepted descriptor authority must be delivered or reclaimed"]
@@ -76,7 +76,7 @@ impl From<OwnedSlot> for PhysicalSlot {
 }
 
 impl OutboundSlot {
-    pub(in crate::io::fd) fn new(index: indices::SlotIndex, owner: route::OutboundKey) -> Self {
+    pub(in crate::io::fd) fn new(index: indices::SlotIndex, owner: route::Id) -> Self {
         Self {
             index: index.into_le24(),
             owner,
@@ -85,7 +85,7 @@ impl OutboundSlot {
 
     pub(crate) fn physical(self) -> PhysicalSlot {
         PhysicalSlot(
-            (self.owner.raw() << OWNER_SHIFT)
+            (u32::from(self.owner.raw()) << OWNER_SHIFT)
                 | u32::from_le_bytes([self.index[0], self.index[1], self.index[2], 0]),
         )
     }
@@ -94,7 +94,7 @@ impl OutboundSlot {
         self.physical().0 == other.0
     }
 
-    pub(in crate::io::fd) const fn owner(self) -> route::OutboundKey {
+    pub(in crate::io::fd) const fn owner(self) -> route::Id {
         self.owner
     }
 }
@@ -124,7 +124,7 @@ impl<'d> Created<'d> {
         driver: driver::Reference<'d>,
     ) -> Admission<Self> {
         let slot = *creation.as_ref();
-        match driver.outbound().complete(creation) {
+        match driver.descriptors().complete(creation) {
             domain::Create::Deliver => Admission::Ready(Self {
                 slot,
                 driver: marker::PhantomData,
@@ -229,7 +229,7 @@ impl<'d, State> Join<'d, State> {
         let Self { made, creating } = self;
         let (discard, made) = made.inner.into_parts();
         let Discard { driver } = discard;
-        driver.outbound().activate(made);
+        driver.descriptors().activate(made);
         let lease = creating.lease.activate();
         Descriptor { lease }
     }
@@ -388,8 +388,8 @@ impl PhysicalSlot {
         Self(((UNOWNED as u32) << OWNER_SHIFT) | index.raw())
     }
 
-    pub(crate) fn owner(self) -> Option<route::OutboundKey> {
-        route::OutboundKey::from_raw(self.0 >> OWNER_SHIFT)
+    pub(crate) fn owner(self) -> Option<route::Id> {
+        self.route().app()
     }
 
     pub fn route(self) -> route::Route {

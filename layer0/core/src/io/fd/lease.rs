@@ -105,7 +105,7 @@ impl<'d> Lease<'d, Unopened> {
 
     pub(super) fn begin(self) -> Lease<'d, Creating> {
         let (sink, id) = self.inner.into_parts();
-        sink.driver.outbound().begin_create(id.slot());
+        sink.driver.descriptors().begin_create(id.slot());
         Lease::new(sink.driver, id)
     }
 

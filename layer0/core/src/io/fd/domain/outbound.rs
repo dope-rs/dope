@@ -89,8 +89,7 @@ impl<'a> Outbound<'a> {
         driver: driver::Reference<'a>,
         count: Capacity,
     ) -> Result<outbound::Reserved<'a, B>, outbound::Error> {
-        Self::from(driver.descriptors().domain())
-            .try_assign(route::OutboundKey::for_tag::<B>(), count)?;
+        Self::from(driver.descriptors().domain()).try_assign(route::Id::for_tag::<B>(), count)?;
         Ok(outbound::Reserved::new(driver))
     }
 }
@@ -98,7 +97,7 @@ impl<'a> Outbound<'a> {
 impl<'a> Outbound<'a> {
     pub(crate) fn slot(
         &self,
-        owner: route::OutboundKey,
+        owner: route::Id,
         local: indices::SlotIndex,
     ) -> Option<handles::OutboundSlot> {
         let table = &self.0.outbound;
@@ -107,11 +106,7 @@ impl<'a> Outbound<'a> {
         Some(handles::OutboundSlot::new(index.0, owner))
     }
 
-    pub(crate) fn creation(
-        &self,
-        owner: route::OutboundKey,
-        local: indices::SlotIndex,
-    ) -> Option<Creation> {
+    pub(crate) fn creation(&self, owner: route::Id, local: indices::SlotIndex) -> Option<Creation> {
         self.slot(owner, local).map(Creation)
     }
 
@@ -195,11 +190,7 @@ impl Closures<'_> {
         Self::close(state, phase, owner)
     }
 
-    fn close(
-        state: resident::Lifecycle<'_>,
-        phase: states::Phase,
-        owner: route::OutboundKey,
-    ) -> Close {
+    fn close(state: resident::Lifecycle<'_>, phase: states::Phase, owner: route::Id) -> Close {
         if phase == states::Phase::OPEN_TWO {
             state.set(states::SlotState::route(states::Phase::CLOSING_ONE, owner));
             return Close::Submit;
@@ -275,7 +266,7 @@ impl<'a> Outbound<'a> {
     }
 
     /// Admits a disjoint nonempty interval and both bounded prefix successors.
-    fn try_assign(self, owner: route::OutboundKey, count: Capacity) -> Result<(), Error> {
+    fn try_assign(self, owner: route::Id, count: Capacity) -> Result<(), Error> {
         let Some(len) = count.span() else {
             return Err(Error::Empty);
         };
@@ -331,7 +322,7 @@ impl<'a> Outbound<'a> {
 
     pub(crate) fn acquire(
         &self,
-        owner: route::OutboundKey,
+        owner: route::Id,
         local: indices::SlotIndex,
     ) -> Result<identity::Identity<'a, handles::OutboundSlot>, Vacancy> {
         let table = &self.0.outbound;
@@ -359,7 +350,7 @@ impl<'a> Outbound<'a> {
         ))
     }
 
-    pub(crate) fn retire(&self, owner: route::OutboundKey) {
+    pub(crate) fn retire(&self, owner: route::Id) {
         let table = &self.0.outbound;
         let cell = &table.routes[owner.raw() as usize];
         let Some(mut lease) = cell.get() else {
@@ -394,7 +385,7 @@ impl<'a> Outbound<'a> {
 
     /// Removes a retired interval; backward compaction preserves unread entries.
     /// Exhausted slots retain anonymous allocations; only reusable slots enter the free suffix.
-    pub(super) fn reclaim(&self, owner: route::OutboundKey, removed: Lease) {
+    pub(super) fn reclaim(&self, owner: route::Id, removed: Lease) {
         let table = &self.0.outbound;
         let cell = &table.routes[owner.raw() as usize];
         let slots = removed.range();

@@ -3,8 +3,8 @@ use core::{hash, marker, mem, num};
 
 use indices::SlotIndex;
 pub use o3::base::num::Epoch;
+pub(crate) use token::Brand;
 pub use token::Token;
-pub(crate) use token::{Brand, OutboundKey};
 
 use crate::driver::route;
 
@@ -38,6 +38,11 @@ pub struct Id(u8);
 pub struct Route(u8);
 
 impl Id {
+    pub(crate) const fn for_tag<Tag: route::Tag>() -> Self {
+        const { assert!(Tag::ROUTE.raw() != FRAMEWORK) };
+        Self(Tag::ROUTE.raw())
+    }
+
     pub const fn fixed<const ID: u8>() -> Self {
         const { assert!(ID != FRAMEWORK, "framework route is reserved") };
         Self(ID)

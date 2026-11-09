@@ -62,7 +62,7 @@ impl<'q, 'd> Binding<'q, 'd> {
                         handles::Admission::Retired(()) => outputs::socket_gone(target),
                     },
                     Err(errno) => {
-                        driver.outbound().fail_create(creation);
+                        driver.descriptors().fail_create(creation);
                         outputs::socket_error(
                             target,
                             Create::from_native(socket::Create::socket(errno)),
@@ -218,7 +218,7 @@ impl<'q, 'd> Binding<'q, 'd> {
         let creation = self
             .flight
             .driver()
-            .outbound()
+            .descriptors()
             .creation(route::Erased::from(&self.flight).bind(proof));
         match creation {
             Some(creation) => Ok((self, creation)),
@@ -308,14 +308,14 @@ impl<'q, 'd> Binding<'q, 'd> {
         let slot = *creation.as_ref();
         let result = match outcome {
             Ok(()) => {
-                match driver.outbound().complete(creation) {
+                match driver.descriptors().complete(creation) {
                     domain::Create::Deliver => driver.descriptors().discard(slot),
                     domain::Create::Retired => {}
                 }
                 Ok(())
             }
             Err(errno) => {
-                driver.outbound().fail_create(creation);
+                driver.descriptors().fail_create(creation);
                 Err(socket::Create::socket(errno))
             }
         };

@@ -273,7 +273,7 @@ where
         + Into<<crate::Engine as complete::Observe>::Observation>,
 {
     fn creation(driver: Self::Driver, target: Self::Target) -> Option<Self::Creation> {
-        driver.outbound().creation(target)
+        driver.descriptors().creation(target)
     }
 
     fn reject(
@@ -323,12 +323,12 @@ where
         creation: Self::Creation,
         error: socket::Create,
     ) -> Self::Output {
-        driver.outbound().fail_create(creation);
+        driver.descriptors().fail_create(creation);
         outputs::socket_error(target, Create::from_native(error))
     }
 
     fn fail_create(driver: Self::Driver, creation: Self::Creation) {
-        driver.outbound().fail_create(creation);
+        driver.descriptors().fail_create(creation);
     }
 }
 
