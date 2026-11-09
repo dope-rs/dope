@@ -96,14 +96,14 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     }
 
     pub(in crate::reply) const fn acceptance(&self) -> Option<recv::Acceptance> {
-        self.order.acceptance()
+        self.order.owner.acceptance
     }
 
     pub(in crate::reply) fn try_data(
         self,
         added: D::Amount,
-    ) -> Result<Push<'a, 'arena, 'credits, 'region, D, K>, Acquire> {
-        let lease = self.order.try_lease(payload::Value::new(added))?;
+    ) -> Result<Push<'a, 'arena, 'credits, 'region, D>, Acquire> {
+        let lease = Lease::try_new(self.order.owner, payload::Value::new(added))?;
         Ok(fifo::Fifo::reserve(Reserve {
             queue: &mut self.state.data,
             lease,
@@ -152,12 +152,13 @@ impl<E: Footprint, K> Failure<'_, '_, '_, '_, E, K> {
         usage: usage::Usage,
     ) -> Result<Depth, (E, usage::Acquire)> {
         let amount = payload::Failure::new(usage);
-        let lease = match self.order.try_lease(amount) {
+        let lease = match Lease::try_new(&mut *self.order.owner, amount) {
             Ok(lease) => lease,
             Err(cause) => return Err((value, cause)),
         };
         self.end.fail(Failed { value, amount });
-        let depth = lease.discard();
+        lease.into_owner();
+        let depth = self.order.cancel_pop();
         self.signal.notify();
         Ok(depth)
     }
@@ -248,15 +249,15 @@ const _: () = {
 };
 
 #[must_use]
-pub(in crate::reply) struct Push<'a, 'arena, 'credits, 'region, C: Footprint, K = ()> {
+pub(in crate::reply) struct Push<'a, 'arena, 'credits, 'region, C: Footprint> {
     entry: slots::Vacant<Item<C>, &'a mut fifo::Fifo<'arena, Item<C>, false>>,
-    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>, K>,
+    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
     signal: &'a mut state::Signal<'region>,
 }
 
-struct Reserve<'a, 'arena, 'credits, 'region, C: Footprint, K> {
+struct Reserve<'a, 'arena, 'credits, 'region, C: Footprint> {
     queue: &'a mut fifo::Fifo<'arena, Item<C>, false>,
-    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>, K>,
+    lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
     signal: &'a mut state::Signal<'region>,
 }
 
@@ -264,15 +265,15 @@ struct Reserve<'a, 'arena, 'credits, 'region, C: Footprint, K> {
 // arena's selected physical axis. The affine lease stays paired with its reserved entry
 // until both are committed or returned, including an abandoned Push. The signal
 // remains borrowed from that same reply entry through publication.
-unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena, K>
-    depot::raw::Reserve<'a, 'arena, false> for Reserve<'a, 'arena, 'credits, 'region, C, K>
+unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena>
+    depot::raw::Reserve<'a, 'arena, false> for Reserve<'a, 'arena, 'credits, 'region, C>
 {
     type Item = Item<C>;
     type Credit = (
-        Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>, K>,
+        Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
         &'a mut state::Signal<'region>,
     );
-    type Reserved = Push<'a, 'arena, 'credits, 'region, C, K>;
+    type Reserved = Push<'a, 'arena, 'credits, 'region, C>;
 
     /// # Safety
     /// The caller retains the reservation these exact parts were built from.
@@ -293,7 +294,7 @@ unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena, K>
     }
 }
 
-impl<'a, 'arena, 'credits, 'region, C: Footprint, K> Push<'a, 'arena, 'credits, 'region, C, K> {
+impl<'a, 'arena, 'credits, 'region, C: Footprint> Push<'a, 'arena, 'credits, 'region, C> {
     pub(in crate::reply) fn usage(&self) -> usage::Usage {
         self.lease.amount().usage()
     }
@@ -309,6 +310,6 @@ impl<'a, 'arena, 'credits, 'region, C: Footprint, K> Push<'a, 'arena, 'credits, 
 const _: () = {
     assert!(
         mem::size_of::<Push<'static, 'static, 'static, 'static, ()>>()
-            == 9 * mem::size_of::<usize>()
+            == 6 * mem::size_of::<usize>()
     );
 };

@@ -146,7 +146,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     fn try_data(
         self,
         usage: D::Amount,
-    ) -> Result<Option<slot::Push<'a, 'arena, 'credits, 'region, D, K>>, Reject> {
+    ) -> Result<Option<slot::Push<'a, 'arena, 'credits, 'region, D>>, Reject> {
         let open = self.attached().map_err(Reject::Front)?;
         let Some(accept) = open.acceptance() else {
             return Ok(None);

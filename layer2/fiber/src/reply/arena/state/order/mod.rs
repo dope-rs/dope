@@ -8,17 +8,13 @@ use o3::{
         capacity,
         queue::{links, pool},
     },
-    mem,
 };
 
 use crate::reply::{
     LaneIndex,
     arena::{retire::Retired, state},
-    layout, order, recv,
-    retain::{
-        grant::payload,
-        pool::{Acquire, Owner},
-    },
+    layout, order,
+    retain::pool::Owner,
 };
 
 mod lease;
@@ -27,7 +23,7 @@ pub(in crate::reply) use lease::Lease;
 
 pub(in crate::reply) struct Slot<'a, 'arena, 'credits, 'region, K = ()> {
     front: Front<'a, K>,
-    pub(super) owner: &'a mut Owner<'arena, 'credits, 'region>,
+    pub(in crate::reply) owner: &'a mut Owner<'arena, 'credits, 'region>,
 }
 
 impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
@@ -36,22 +32,6 @@ impl<'a, 'arena, 'credits, 'region, K> Slot<'a, 'arena, 'credits, 'region, K> {
         owner: &'a mut Owner<'arena, 'credits, 'region>,
     ) -> Self {
         Self { front, owner }
-    }
-
-    pub(in crate::reply) fn try_lease<A>(
-        self,
-        amount: A,
-    ) -> Result<Lease<'a, 'arena, 'credits, 'region, A, K>, Acquire>
-    where
-        A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
-    {
-        let acceptance = self.owner.acceptance.unwrap_or(recv::Acceptance::Collected);
-        self.owner.payload.try_acquire(amount, acceptance)?;
-        Ok(Lease::new(self, amount))
-    }
-
-    pub(in crate::reply) const fn acceptance(&self) -> Option<recv::Acceptance> {
-        self.owner.acceptance
     }
 
     pub(in crate::reply) fn cancel_pop(self) -> order::Depth {
