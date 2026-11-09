@@ -58,7 +58,7 @@ impl Arena {
     }
 
     pub fn try_acquire(&self, payload: usize) -> Result<Packet<'_>, Error> {
-        let source = borrowed::Source::try_new(&self.pool, payload, conn::TAG_LEN)
+        let source = borrowed::Source::<0>::try_new(&self.pool, payload, conn::TAG_LEN)
             .map_err(Error::Storage)?;
         let lease = source.acquire().ok_or(Error::Full(Full))?;
         Ok(Packet { lease })

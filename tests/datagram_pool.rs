@@ -33,14 +33,6 @@ fn validates_size() {
             length: 1200, suffix: 16, capacity,
         }) if capacity.get() == 1200
     );
-    let short = batch::Source::<1>::try_new(&arena, 64).expect("batch source");
-    std::assert_matches!(
-        short.try_split::<65>().map(drop),
-        Err(borrowed::Error::Partition {
-            length: 64,
-            suffix: 65
-        })
-    );
     let source = batch::Source::<1>::try_new(&arena, 64).expect("batch source");
     {
         let mut held = source.try_acquire().expect("packet batch");
@@ -50,7 +42,7 @@ fn validates_size() {
         assert!(source.try_acquire().is_err());
     }
     assert!(source.try_acquire().is_ok());
-    let source = source.try_split::<64>().expect("complete suffix");
+    let source = batch::Source::<1, 64>::try_new(&arena, 64).expect("complete suffix");
     let mut held = source.try_acquire().expect("packet batch");
     let [suffix]: [&mut [u8; 64]; 1] = held.suffixes_mut();
     *suffix = [7; 64];

@@ -185,8 +185,8 @@ unsafe impl<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T> de
         self.cids.heads()
     }
 
-    fn capacity(&self) -> usize {
-        mux::MAX_CONNECTIONS * 16
+    fn is_node(&self, word: u32) -> bool {
+        (word as usize) < mux::MAX_CONNECTIONS * 16
     }
 
     unsafe fn hook(&self, index: links::Index) -> &tagged::Hook {
