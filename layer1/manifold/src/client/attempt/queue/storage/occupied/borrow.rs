@@ -33,9 +33,4 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Borrow<Occupied<'a, 'd, T, ID
             slot.push_at::<false, _>(lane);
         }
     }
-
-    pub(in crate::client::attempt::queue) fn free(mut self) {
-        self.0.state().done();
-        tagged::Vacant::detach(self.0);
-    }
 }

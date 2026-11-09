@@ -12,7 +12,7 @@ use crate::client::attempt::{
     self,
     queue::{
         self, Held, entry,
-        storage::{self, Access, Borrow, Linked, Occupied},
+        storage::{self, Borrow, Linked, Occupied},
     },
 };
 
@@ -40,10 +40,7 @@ impl<'d, T: dope_net::Transport, ID: Identity> Table<'d, T, ID> {
     }
 
     pub(super) fn free(&self, key: attempt::Id<'d, ID>) -> Result<(), queue::Lookup<'d, ID>> {
-        match self.try_slot(key)?.access() {
-            Access::Owned(slot) => slot.remove(),
-            Access::Borrowed(slot) => slot.free(),
-        }
+        self.try_slot(key)?.free();
         self.clear(key);
         Ok(())
     }

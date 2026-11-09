@@ -1,6 +1,5 @@
 mod options;
 
-use options::Options;
 use syn::ext::IdentExt as _;
 
 use crate::{
@@ -19,7 +18,7 @@ pub(super) fn parse(mut input: syn::DeriveInput) -> Result<Spec, Failure> {
     let source = quote::ToTokens::to_token_stream(&input);
     crate::receiver::Receiver::apply(&mut input);
     attr::check(&input.attrs)?;
-    let (paths, driver, coord) = Options::parse(&input.attrs)?.into_parts();
+    let (paths, driver, coord) = options::parse(&input.attrs)?;
     let data = match &input.data {
         Data::Struct(data) => data,
         Data::Enum(data) => {

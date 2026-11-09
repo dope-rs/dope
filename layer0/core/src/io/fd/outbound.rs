@@ -1,10 +1,7 @@
 use core::marker::PhantomData;
 use std::mem;
 
-use o3::{
-    depot::arena::slab::Vacancy,
-    mem::{Lease, Return},
-};
+use o3::depot::arena::slab::Vacancy;
 
 use crate::{
     driver,
@@ -23,18 +20,12 @@ pub enum Error {
 
 /// Linear authority over one route's driver-local descriptor range.
 pub struct Reserved<'d, B: route::Tag> {
-    inner: Lease<Release<'d, B>>,
-}
-
-struct Release<'d, B: route::Tag> {
     brand: PhantomData<B>,
     driver: driver::Reference<'d>,
 }
 
-impl<B: route::Tag> Return for Release<'_, B> {
-    type Item = ();
-
-    fn return_item(self, (): Self::Item) {
+impl<B: route::Tag> Drop for Reserved<'_, B> {
+    fn drop(&mut self) {
         self.driver
             .descriptors()
             .retire_route(route::Id::for_tag::<B>());
@@ -52,13 +43,8 @@ impl<'d, B: route::Tag> Reserved<'d, B> {
 
     pub(crate) fn new(driver: driver::Reference<'d>) -> Self {
         Self {
-            inner: Lease::new(
-                Release {
-                    driver,
-                    brand: PhantomData,
-                },
-                (),
-            ),
+            driver,
+            brand: PhantomData,
         }
     }
 
@@ -71,9 +57,8 @@ impl<'d, B: route::Tag> Reserved<'d, B> {
         &self,
         target: route::Target<'d, B>,
     ) -> Result<route::Bound<'d, B, handles::SocketSlot<'d>>, Vacancy> {
-        let release = self.inner.sink();
         let key = route::Id::for_tag::<B>();
-        let slot = release.driver.descriptors().acquire(key, target.slot())?;
+        let slot = self.driver.descriptors().acquire(key, target.slot())?;
         Ok(target.bind(slot))
     }
 }

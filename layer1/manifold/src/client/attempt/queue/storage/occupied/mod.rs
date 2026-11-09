@@ -7,12 +7,11 @@ use crate::client::attempt::{
     queue::{
         Held,
         entry::{Change, Entry, Fail},
-        storage::{self, Access, Borrow},
+        storage,
         table::Table,
     },
 };
 
-pub(super) mod access;
 pub(super) mod borrow;
 pub(super) mod linked;
 
@@ -63,11 +62,12 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Occupied<'a, 'd, T, ID> {
         (slot, change)
     }
 
-    pub(in crate::client::attempt::queue) fn access(mut self) -> Access<Self> {
+    pub(in crate::client::attempt::queue) fn free(mut self) {
         if self.state().is_owned() {
-            Access::Owned(self)
+            self.remove();
         } else {
-            Access::Borrowed(Borrow::new(self))
+            self.state().done();
+            tagged::Vacant::detach(self);
         }
     }
 
