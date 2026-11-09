@@ -13,7 +13,7 @@ use dope_sys::{
     table::token::{Codec, host::Context},
 };
 pub(crate) use enter::Enter;
-use map::setups::{Mapped, Setup};
+use map::setups::Mapped;
 pub(crate) use map::{
     cleanup::Cleanup,
     closing::Closing,
@@ -245,20 +245,6 @@ impl<T> Ring<T> {
         }
     }
 
-    pub(crate) fn new(setup: Setup) -> Self {
-        let Setup {
-            fd,
-            mapped,
-            parameters: params,
-        } = setup;
-        Self {
-            fd,
-            mapped,
-            features: params.features,
-            local: marker::PhantomData,
-        }
-    }
-
     /// Publishes the current SQ tail, refreshes the kernel-consumed head, and
     /// returns a one-shot snapshot for exactly one enter operation.
     pub(crate) fn enter_for<'a>(&'a mut self, auth: &'a register::Authority) -> Enter<'a, T> {
@@ -280,7 +266,7 @@ impl<T: complete::raw::Token> create::Create for Ring<T> {
         const { assert!(MIN != 0) };
         let submit = num::NonZero::<u32>::MIN.saturating_add(submit.get() - 1);
         let complete = num::NonZero::<u32>::MIN.saturating_add(complete.get() - 1);
-        Ok(Self::new(Setup::new(submit, complete, defer)?))
+        Self::try_new(submit, complete, defer)
     }
 }
 

@@ -3,10 +3,7 @@ use std::{mem, ptr};
 use o3::alloc;
 
 use crate::driver::schedule::clock::timer::heap::{
-    FIRED, FREE, IDLE, State,
-    capacity::Capacity,
-    order,
-    tokens::{Live, Slot},
+    FIRED, FREE, IDLE, State, capacity::Capacity, order, tokens::Slot,
 };
 
 type Storage<P, R> =
@@ -61,26 +58,26 @@ impl<P: Ord, R> Core<P, R> {
         (self.storage.state.free != FREE).then_some(Free(()))
     }
 
-    pub(super) fn lease(&mut self, item: R, free: Free) -> Live {
+    pub(super) fn lease(&mut self, item: R, free: Free) -> Slot {
         let () = free.0;
-        let slot = Slot::from_stored(self.storage.state.free);
+        let raw = self.storage.state.free;
         // SAFETY: Vacancy retains the exclusive heap loan from free(), so this
         // unchanged free-list head is in capacity and contains its next link.
-        let entry = unsafe { self.storage.extra_mut().1.get_unchecked_mut(slot.offset()) };
+        let entry = unsafe { self.storage.extra_mut().1.get_unchecked_mut(raw as usize) };
         // SAFETY: the free-list head has not yet been changed to a live value.
         let next = unsafe { entry.next };
         entry.value = mem::ManuallyDrop::new(item);
         self.storage.state.free = next;
+        let slot = Slot::from_stored(raw);
         self.write_state(slot, IDLE);
-        Live::from_slot(slot)
+        slot
     }
 
-    pub(super) fn release(&mut self, live: Live) -> R {
-        let priority = match self.phase(live) {
+    pub(super) fn release(&mut self, slot: Slot) -> R {
+        let priority = match self.phase(slot) {
             Phase::Armed(position) => Some(self.remove_at(position)),
             Phase::Idle | Phase::Fired => None,
         };
-        let slot = live.slot();
         let free = self.storage.state.free;
         // SAFETY: the consumed branded lease names this live in-capacity slot.
         let entry = unsafe { self.storage.extra_mut().1.get_unchecked_mut(slot.offset()) };
@@ -93,56 +90,49 @@ impl<P: Ord, R> Core<P, R> {
         item
     }
 
-    pub(super) fn state(&self, live: Live) -> State {
-        match self.phase(live) {
+    pub(super) fn state(&self, slot: Slot) -> State {
+        match self.phase(slot) {
             Phase::Armed(_) => State::Armed,
             Phase::Idle => State::Idle,
             Phase::Fired => State::Fired,
         }
     }
 
-    pub(super) fn priority(&self, live: Live) -> Option<&P> {
-        match self.phase(live) {
+    pub(super) fn priority(&self, slot: Slot) -> Option<&P> {
+        match self.phase(slot) {
             Phase::Armed(position) => Some(self.priority_at(position)),
             Phase::Idle | Phase::Fired => None,
         }
     }
 
-    pub(super) fn resident(&self, live: Live) -> &R {
+    pub(super) fn resident(&self, slot: Slot) -> &R {
         // SAFETY: the branded lease proves this in-capacity slot contains a value;
         // the shared heap loan prevents release for the returned borrow.
-        unsafe {
-            &self
-                .storage
-                .extra()
-                .1
-                .get_unchecked(live.slot().offset())
-                .value
+        unsafe { &self.storage.extra().1.get_unchecked(slot.offset()).value }
+    }
+
+    pub(super) fn set(&mut self, slot: Slot, prio: P) {
+        match self.phase(slot) {
+            Phase::Armed(position) => self.set_at(position, slot, prio),
+            Phase::Idle | Phase::Fired => order::insert(self, slot, prio),
         }
     }
 
-    pub(super) fn set(&mut self, live: Live, prio: P) {
-        match self.phase(live) {
-            Phase::Armed(position) => self.set_at(position, live.slot(), prio),
-            Phase::Idle | Phase::Fired => order::insert(self, live.slot(), prio),
-        }
-    }
-
-    pub(super) fn clear(&mut self, live: Live) {
-        let priority = match self.phase(live) {
+    pub(super) fn clear(&mut self, slot: Slot) {
+        let priority = match self.phase(slot) {
             Phase::Armed(position) => Some(self.remove_at(position)),
             Phase::Idle | Phase::Fired => None,
         };
-        self.write_state(live.slot(), IDLE);
+        self.write_state(slot, IDLE);
         drop(priority);
     }
 
-    pub(super) fn fire(&mut self, root: order::Root) -> Live {
+    pub(super) fn fire(&mut self, root: order::Root) -> Slot {
         let slot = self.min_slot(root);
         let priority = self.remove_at(order::Position::ROOT);
         self.write_state(slot, FIRED);
         drop(priority);
-        Live::from_slot(slot)
+        slot
     }
 
     pub(super) fn write_state(&mut self, slot: Slot, state: u32) {
@@ -151,9 +141,9 @@ impl<P: Ord, R> Core<P, R> {
         unsafe { *self.storage.extra_mut().0.get_unchecked_mut(slot.offset()) = state };
     }
 
-    fn phase(&self, live: Live) -> Phase {
+    fn phase(&self, slot: Slot) -> Phase {
         // SAFETY: the branded live slot is within this heap's initialized plane.
-        match unsafe { *self.storage.extra().0.get_unchecked(live.slot().offset()) } {
+        match unsafe { *self.storage.extra().0.get_unchecked(slot.offset()) } {
             IDLE => Phase::Idle,
             FIRED => Phase::Fired,
             state => Phase::Armed(order::Position::from_state(state)),

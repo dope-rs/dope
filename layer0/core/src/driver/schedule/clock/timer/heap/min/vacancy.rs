@@ -14,8 +14,8 @@ pub struct Vacancy<'a, 'store, 'id, P: Ord, R, Tag = ()> {
 impl<'a, 'store, 'id, P: Ord, R, Tag> Vacancy<'a, 'store, 'id, P, R, Tag> {
     /// Leases the proved vacant resident slot in constant time.
     pub fn lease(self, item: R) -> Lease<'id, Tag> {
-        let live = self.heap.core.lease(item, self.free);
-        Lease::from_live(live)
+        let slot = self.heap.core.lease(item, self.free);
+        Lease::from_slot(slot)
     }
 }
 

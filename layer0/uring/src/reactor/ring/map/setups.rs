@@ -11,12 +11,6 @@ use crate::reactor::{
 
 type Parameters = ring::ffi::Parameters;
 
-pub(crate) struct Setup {
-    pub(crate) fd: ring::ffi::Fd,
-    pub(crate) mapped: Mapped,
-    pub(crate) parameters: Parameters,
-}
-
 #[derive(Debug)]
 pub(crate) struct Mapped {
     sq: sq::raw::State,
@@ -281,8 +275,8 @@ impl Geometry {
     }
 }
 
-impl Setup {
-    pub(crate) fn new(
+impl<T> ring::Ring<T> {
+    pub(crate) fn try_new(
         entries: num::NonZero<u32>,
         cqes: num::NonZero<u32>,
         taskrun: bool,
@@ -332,7 +326,8 @@ impl Setup {
         Ok(Self {
             fd,
             mapped,
-            parameters: params,
+            features: params.features,
+            local: marker::PhantomData,
         })
     }
 }
@@ -364,7 +359,7 @@ impl Mapped {
     }
 }
 
-impl Setup {
+impl<T> ring::Ring<T> {
     fn open(open: map::Open, previous: Option<ring::ffi::Map>) -> Error {
         match open {
             map::Open::Failure(failure) => Self::finish(

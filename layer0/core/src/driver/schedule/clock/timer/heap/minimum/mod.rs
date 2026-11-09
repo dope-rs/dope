@@ -36,12 +36,12 @@ impl<'a, 'id, P: Ord, R, Tag> Minimum<'a, 'id, P, R, Tag> {
     /// Removes the proven minimum and marks its resident as fired.
     pub fn fire(self) -> Fired<'a, 'id, P, R, Tag> {
         let core = self.core;
-        let live = core.fire(self.root);
+        let slot = core.fire(self.root);
         Fired {
             core,
             brand: self.brand,
             thread: self.thread,
-            live,
+            slot,
         }
     }
 }

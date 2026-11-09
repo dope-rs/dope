@@ -34,29 +34,29 @@ impl<'a, 'id, P: Ord, R, Tag> Min<'a, 'id, P, R, Tag> {
 
     /// Releases one resident and any armed priority in constant or logarithmic time.
     pub fn release(&mut self, lease: Lease<'id, Tag>) -> R {
-        self.core.release(lease.live())
+        self.core.release(lease.slot())
     }
 
     pub fn state(&self, lease: &Lease<'id, Tag>) -> State {
-        self.core.state(lease.live())
+        self.core.state(lease.slot())
     }
 
     pub fn priority(&self, lease: &Lease<'id, Tag>) -> Option<&P> {
-        self.core.priority(lease.live())
+        self.core.priority(lease.slot())
     }
 
     pub fn resident(&self, lease: &Lease<'id, Tag>) -> &R {
-        self.core.resident(lease.live())
+        self.core.resident(lease.slot())
     }
 
     /// Arms or reprioritizes while destroying the replaced priority.
     pub fn set(&mut self, lease: &Lease<'id, Tag>, prio: P) {
-        self.core.set(lease.live(), prio);
+        self.core.set(lease.slot(), prio);
     }
 
     /// Disarms while destroying the removed priority.
     pub fn clear(&mut self, lease: &Lease<'id, Tag>) {
-        self.core.clear(lease.live());
+        self.core.clear(lease.slot());
     }
 
     pub fn minimum(&mut self) -> Option<Minimum<'_, 'id, P, R, Tag>> {
