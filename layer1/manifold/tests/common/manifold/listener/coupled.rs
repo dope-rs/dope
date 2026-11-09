@@ -140,7 +140,7 @@ pub struct DynamicState {
     pub(crate) prefix_completions: usize,
 }
 
-pub struct DynamicApp {
+pub struct DynamicApp<const DRAIN: bool = true> {
     pub(crate) gated: bool,
     pub(crate) first: Gate,
     pub(crate) prefix: Gate,
@@ -150,7 +150,7 @@ pub struct DynamicApp {
     pub(crate) seen: Rc<Trace<Vec<u8>, 16>>,
 }
 
-impl<'d, ID: route::Identity> Application<'d, ID> for DynamicApp {
+impl<'d, ID: route::Identity, const DRAIN: bool> Application<'d, ID> for DynamicApp<DRAIN> {
     type Build = convert::Infallible;
     type Conn = (DynamicState, bool);
     type Wire = Identity;
@@ -196,7 +196,7 @@ impl<'d, ID: route::Identity> Application<'d, ID> for DynamicApp {
     }
 }
 
-impl DynamicApp {
+impl<const DRAIN: bool> DynamicApp<DRAIN> {
     fn drained(&mut self, state: &mut DynamicState) {
         assert_eq!(state.phase, 1);
         state.phase = 2;
@@ -204,14 +204,14 @@ impl DynamicApp {
     }
 }
 
-impl<'d, ID: route::Identity> retire::Policy<'d, DynamicApp, ID> for () {
+impl<'d, ID: route::Identity, const DRAIN: bool> retire::Policy<'d, DynamicApp<DRAIN>, ID> for () {
     fn select() -> Option<Self> {
         Some(())
     }
 
     fn retire(
         self,
-        app: Pin<&mut DynamicApp>,
+        app: Pin<&mut DynamicApp<DRAIN>>,
         conn: conn::Retired<'_, '_, 'd, ID, Identity, (DynamicState, bool)>,
     ) {
         let id = conn.id();
@@ -224,7 +224,7 @@ impl<'d, ID: route::Identity> retire::Policy<'d, DynamicApp, ID> for () {
     }
 }
 
-impl<'d, ID: route::Identity> send::Notify<'d, ID> for DynamicApp {
+impl<'d, ID: route::Identity, const DRAIN: bool> send::Notify<'d, ID> for DynamicApp<DRAIN> {
     fn send(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
@@ -234,15 +234,21 @@ impl<'d, ID: route::Identity> send::Notify<'d, ID> for DynamicApp {
         conn.state_mut().prefix_completions += 1;
         this.prefix.hit();
         if matches!(conn.write().pending(), egress::Pending::Absent) {
-            assert!(!this.gated);
+            assert!(!this.gated || !DRAIN);
             this.drained(conn.state_mut());
-            conn.state_mut().phase = 4;
-            conn.close_after();
+            if !this.gated {
+                conn.state_mut().phase = 4;
+                conn.close_after();
+            }
         }
     }
 }
 
-impl<'d, ID: route::Identity> handler::Gated<'d, ID> for DynamicApp {
+impl<'d, ID: route::Identity, const DRAIN: bool> handler::Gated<'d, ID> for DynamicApp<DRAIN> {
+    fn drains(_: &Self::Conn) -> bool {
+        DRAIN
+    }
+
     fn send_drained(
         self: Pin<&mut Self>,
         mut conn: conn::Drained<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
@@ -257,7 +263,9 @@ impl<'d, ID: route::Identity> handler::Gated<'d, ID> for DynamicApp {
     }
 }
 
-impl<'w, 'd: 'w, ID: route::Identity> handler::Scoped<'w, 'd, ID> for DynamicApp {
+impl<'w, 'd: 'w, ID: route::Identity, const DRAIN: bool> handler::Scoped<'w, 'd, ID>
+    for DynamicApp<DRAIN>
+{
     fn retention(&self) -> Budget {
         Budget::new(limits::Bound::new(0), 4096)
     }

@@ -106,13 +106,9 @@ where
                     session::ReceiveMode::Framed
                 );
             if remote {
-                let next = parser::Parser::new(
-                    &mut app.session,
-                    &mut conn.ingress,
-                    app.ingress.budget(),
-                    &mut ctx,
-                )
-                .finish(&mut conn.continuation, work);
+                let next =
+                    parser::Parser::new(&mut app.session, &mut conn.ingress, &app.budget, &mut ctx)
+                        .finish(&mut conn.continuation, work);
                 match next {
                     Run::Complete => {}
                     Run::Yield => return CloseOutcome::Yield,

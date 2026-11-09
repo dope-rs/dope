@@ -169,6 +169,11 @@ pub enum Drain {
 /// The prepared deferred lane preserves completions racing the transition;
 /// live egress remains an independent built-in receive fence.
 pub trait Gated<'d, ID: Identity>: Application<'d, ID> {
+    /// Selects the full-drain callback for this connection.
+    fn drains(_conn: &Self::Conn) -> bool {
+        true
+    }
+
     /// Runs after every send owner for this generation retires.
     /// The capability cannot submit another write.
     fn send_drained<'e>(

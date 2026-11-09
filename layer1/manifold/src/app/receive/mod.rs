@@ -47,7 +47,8 @@ pub struct Gated;
 /// A cursor owned by the receive transaction but borrowed by the application
 /// for exactly one callback. Exact ranges may be retained into the driver
 /// domain; the wire cursor itself cannot escape the callback.
-pub struct Scoped;
+/// `GATED` enables application and egress gates with ordinary send callbacks.
+pub struct Scoped<const GATED: bool = false>;
 /// Callback-scoped cursor retention joined to a receive gate and egress fence.
 /// Exact retained ranges charge the driver-domain budget while the cursor
 /// borrow cannot escape, preserving a causal zero-copy handoff.
@@ -90,7 +91,7 @@ impl<I: Plain> Resources for I {
     }
 }
 
-impl Resources for Scoped {
+impl<const GATED: bool> Resources for Scoped<GATED> {
     const RESIDENT_DOMAINS: Domain = Domain::ONE;
     type Authority<'d> = resident::Budget<'d>;
 
@@ -113,7 +114,7 @@ impl Resources for GatedScoped {
         cap: domain::Resident,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<resident::Budget<'d>, creation::Error> {
-        Scoped::provision(cap, driver)
+        Scoped::<false>::provision(cap, driver)
     }
 }
 
@@ -127,7 +128,10 @@ impl Policy for Gated {
     const EGRESS_COUPLED: bool = true;
     const APPLICATION_GATED: bool = true;
 }
-impl Policy for Scoped {}
+impl<const GATED: bool> Policy for Scoped<GATED> {
+    const EGRESS_COUPLED: bool = GATED;
+    const APPLICATION_GATED: bool = GATED;
+}
 impl Policy for GatedScoped {
     const EGRESS_COUPLED: bool = true;
     const APPLICATION_GATED: bool = true;
@@ -167,7 +171,7 @@ where
     type Reserve = <W::Receive as receive::Policy<W>>::Reserve;
 }
 
-impl<W> input::Mode<W> for Scoped
+impl<W, const GATED: bool> input::Mode<W> for Scoped<GATED>
 where
     W: wire::Spec,
     input::Scoped: input::Kind<W>,
@@ -206,11 +210,11 @@ where
 {
 }
 
-impl<W> Mode<W> for Scoped
+impl<W, const GATED: bool> Mode<W> for Scoped<GATED>
 where
     W: wire::Spec,
-    Scoped: input::Mode<W>,
-    <Scoped as input::Mode<W>>::Kind: input::Replay<W>,
+    Scoped<GATED>: input::Mode<W>,
+    <Scoped<GATED> as input::Mode<W>>::Kind: input::Replay<W>,
 {
 }
 

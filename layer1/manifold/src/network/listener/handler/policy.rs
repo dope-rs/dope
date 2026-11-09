@@ -212,12 +212,13 @@ where
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, A> Policy<'w, 'd, ID, A> for Scoped
+impl<'w, 'd: 'w, ID: Identity, A, const GATED: bool> Policy<'w, 'd, ID, A> for Scoped<GATED>
 where
-    A: handler::Scoped<'w, 'd, ID> + handler::Application<'d, ID, Input = Scoped>,
-    Scoped:
-        input::Mode<A::Wire, Kind = input::Scoped> + Dispatch<A::Wire, Strategy = ingress::Scope>,
-    <Scoped as input::Mode<A::Wire>>::Kind: input::Replay<A::Wire>,
+    A: handler::Scoped<'w, 'd, ID> + handler::Application<'d, ID, Input = Scoped<GATED>>,
+    Scoped<GATED>: input::Mode<A::Wire, Kind = input::Scoped>
+        + Dispatch<A::Wire, Strategy = ingress::Scope>
+        + Resources<Authority<'d> = resident::Budget<'d>>,
+    <Scoped<GATED> as input::Mode<A::Wire>>::Kind: input::Replay<A::Wire>,
 {
     fn resident(app: &A, count: Capacity) -> Result<domain::Resident, crate::ConfigError> {
         app.retention().capacity(count)

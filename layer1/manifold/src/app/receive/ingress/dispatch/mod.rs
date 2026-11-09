@@ -24,11 +24,11 @@ where
     type Strategy = ingress::Batched;
 }
 
-impl<W> Dispatch<W> for Scoped
+impl<W, const GATED: bool> Dispatch<W> for Scoped<GATED>
 where
     W: wire::Spec,
-    Scoped: input::Mode<W>,
-    <Scoped as input::Mode<W>>::Kind: delivery::ScopedData + input::Replay<W>,
+    Scoped<GATED>: input::Mode<W>,
+    <Scoped<GATED> as input::Mode<W>>::Kind: delivery::ScopedData + input::Replay<W>,
 {
     type Strategy = ingress::Scope;
 }

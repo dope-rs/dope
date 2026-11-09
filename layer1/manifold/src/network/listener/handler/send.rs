@@ -114,7 +114,7 @@ pub(in crate::network::listener) fn gated<'w, 'd: 'w, ID: Identity, A>(
 ) where
     A: handler::Gated<'d, ID>,
 {
-    let scope = if A::is_gated(scope.state()) {
+    let scope = if A::is_gated(scope.state()) && A::drains(scope.state()) {
         let wake = scope.wake_target();
         match scope.try_drain() {
             Ok(done) => {

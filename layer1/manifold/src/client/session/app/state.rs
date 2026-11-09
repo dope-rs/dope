@@ -19,6 +19,7 @@ use dope_net::{
 use drain::Mode as _;
 use o3::{
     base::{Call, cell::region, time::Positive},
+    buffer::resident,
     mem::rc,
 };
 
@@ -33,9 +34,12 @@ use crate::{
         attempt, close, conn,
         session::{
             self,
-            app::{drain, ingress, parser, request, retire},
-            codec::Codec,
-            ingress::Source,
+            app::{drain, parser, request, retire},
+            codec::{
+                Codec,
+                staging::{Policy as _, Seal},
+            },
+            ingress::{self, Source},
             policy::{Compatible, end, start},
             response::flow::Policy as _,
             turns,
@@ -43,10 +47,12 @@ use crate::{
     },
 };
 
+type Staging<C> = <C as Codec>::Staging;
+
 pub struct State<'w, 'd: 'w, ID: Identity, N: session::Session<'d, ID>, W: 'd> {
     pub(super) session: N,
-    pub(super) ingress:
-        ingress::Ingress<'d, <<N as session::Session<'d, ID>>::Codec as Codec>::Staging>,
+    pub(super) budget: resident::Budget<'d>,
+    pool: <Staging<N::Codec> as Seal>::Pool<'d>,
     wire: marker::PhantomData<(&'w (), *const W)>,
 }
 
@@ -62,11 +68,29 @@ impl<'w, 'd: 'w, ID: Identity, N: session::Session<'d, ID>, W: wire::Spec + 'd>
         S: Source<'d>,
     {
         let (inner, limits) = setup.into_parts();
-        let plan = Codec::staging(inner.codec());
-        let ingress = ingress::Ingress::try_new(limits, limit, plan, driver)?;
+        let spec = Codec::staging(inner.codec());
+        let plan = Staging::<N::Codec>::plan(spec).map_err(creation::Error::Ingress)?;
+        let warm = Staging::<N::Codec>::warm(plan);
+        let shared = warm.map_or(ingress::Buffers::EMPTY, |warm| limits.shared(warm));
+        let reserve = limits.reserve();
+        let layout = Staging::<N::Codec>::layout(plan, limit, shared, reserve)
+            .map_err(creation::Error::Ingress)?;
+        let budget = limits
+            .acquire(reserve, driver)
+            .map_err(creation::Error::Resident)?;
+        let stage = match Staging::<N::Codec>::resident(layout) {
+            Some(resident) => driver
+                .storage
+                .budget(resident)
+                .map_err(creation::Error::Resident)?,
+            None => budget,
+        };
+        let pool = Staging::<N::Codec>::pool(&stage, layout, limits.is_accounted())
+            .map_err(creation::Error::IngressStorage)?;
         Ok(Self {
             session: inner,
-            ingress,
+            budget,
+            pool,
             wire: marker::PhantomData,
         })
     }
@@ -94,7 +118,7 @@ where
     type Requests = N::Requests;
 
     fn try_conn(&self) -> Result<Self::Conn, rc::Error> {
-        session::Connection::try_new(&self.session, self.ingress.pool(), *self.ingress.budget())
+        session::Connection::try_new(&self.session, &self.pool, self.budget)
     }
 }
 
@@ -166,7 +190,7 @@ where
     W: input::Execution + 'd,
 {
     fn resident(&self) -> domain::Resident {
-        self.ingress.budget().available().into()
+        self.budget.available().into()
     }
 
     fn wake(&mut self, conn: &mut Self::Conn) -> app::Wake {
@@ -202,7 +226,7 @@ where
             ..
         } = conn;
         let mut ctx = turns::Context::new(id, state, egress, ready, driver.reborrow(), close);
-        let parser = parser::Parser::new(&mut self.session, input, self.ingress.budget(), &mut ctx);
+        let parser = parser::Parser::new(&mut self.session, input, &self.budget, &mut ctx);
         let next = parser.run_admitted(flow, work, permit);
         next.finish(&mut ctx)
     }
@@ -236,7 +260,7 @@ where
         }
         let mut ctx = turns::Context::new(id, state, egress, ready, driver.reborrow(), close);
         self.session.received(receipt, has_prefix, &mut ctx);
-        let next = parser::Parser::new(&mut self.session, input, self.ingress.budget(), &mut ctx)
+        let next = parser::Parser::new(&mut self.session, input, &self.budget, &mut ctx)
             .run_retained(flow, work);
         next.finish(&mut ctx)
     }

@@ -2,7 +2,6 @@
 
 pub mod admit;
 pub mod drain;
-mod ingress;
 mod parser;
 pub mod request;
 mod retire;
