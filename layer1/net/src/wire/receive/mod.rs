@@ -184,11 +184,13 @@ unsafe impl<'w, 'd: 'w, W: wire::Spec + 'w, C: mode::Credit> hold::raw::Retain<'
 where
     <W::Receive as receive::Policy<W>>::Cursor<'w, 'd>: hold::raw::Retain<'d>,
 {
-    fn charge<'a>(plan: &Self::View<'a>) -> hold::Charge
+    fn resident<'a>(plan: &Self::View<'a>) -> usize
     where
         Self: 'a,
     {
-        <<W::Receive as receive::Policy<W>>::Cursor<'w, 'd> as hold::raw::Retain<'d>>::charge(plan)
+        <<W::Receive as receive::Policy<W>>::Cursor<'w, 'd> as hold::raw::Retain<'d>>::resident(
+            plan,
+        )
     }
 
     fn try_copy<'a>(

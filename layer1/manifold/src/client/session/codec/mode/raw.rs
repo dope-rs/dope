@@ -243,14 +243,14 @@ const _: () = {
 unsafe impl<'d, B: Buffer<'d>, C: hold::raw::Retain<'d>> hold::raw::Retain<'d>
     for Source<'d, B, C>
 {
-    fn charge<'a>(plan: &Self::View<'a>) -> hold::Charge
+    fn resident<'a>(plan: &Self::View<'a>) -> usize
     where
         Self: 'a,
     {
         match plan {
-            View::Vacant => hold::Charge::from_commit(0, 0, 0),
-            View::Staged(view) => Buf::charge(B::staged_view(view)),
-            View::Direct(view) => C::charge(view),
+            View::Vacant => 0,
+            View::Staged(view) => Buf::resident(B::staged_view(view)),
+            View::Direct(view) => C::resident(view),
         }
     }
 

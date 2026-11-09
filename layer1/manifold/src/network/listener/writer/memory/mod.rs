@@ -81,15 +81,12 @@ pub(in crate::network::listener) struct Header {
     bytes: [u8; WRITE_BUF_CAP],
 }
 
-impl Default for Header {
-    fn default() -> Self {
-        Self {
-            bytes: [0; WRITE_BUF_CAP],
-        }
-    }
-}
-
 impl Header {
+    fn init(slot: &mut mem::MaybeUninit<Self>) {
+        // SAFETY: the exclusive slot's only field is this byte array.
+        unsafe { (&raw mut (*slot.as_mut_ptr()).bytes).write_bytes(0, 1) };
+    }
+
     pub(in crate::network::listener) fn as_slice(self: pin::Pin<&Self>) -> &[u8] {
         &self.get_ref().bytes
     }
@@ -110,14 +107,16 @@ pub(in crate::network::listener) struct Flight<B> {
     pub(super) message: msg::Header,
 }
 
-impl<B> Default for Flight<B> {
-    fn default() -> Self {
-        Self {
-            header: Header::default(),
-            source: None,
-            position: scatter::raw::Position::new(),
-            iovecs: [msg::Iovec::empty(); listener::IOV_CAP],
-            message: msg::Header::new(),
+impl<B> Flight<B> {
+    fn init(slot: &mut mem::MaybeUninit<Self>) {
+        let slot = slot.as_mut_ptr();
+        // SAFETY: disjoint field writes initialize the complete exclusive slot.
+        unsafe {
+            Header::init(&mut *(&raw mut (*slot).header).cast());
+            (&raw mut (*slot).source).write(None);
+            (&raw mut (*slot).position).write(scatter::raw::Position::new());
+            (&raw mut (*slot).iovecs).write([msg::Iovec::empty(); listener::IOV_CAP]);
+            (&raw mut (*slot).message).write(msg::Header::new());
         }
     }
 }
@@ -146,8 +145,17 @@ impl<'d, ID: Identity, B: data::raw::Payload<'d>> Arena<'_, 'd, ID, B> {
             Some(count) => (count.get(), Some(lanes)),
             None => (0, None),
         };
-        let direct = recycle::Store::try_new(capacity::Count::new(direct))?;
-        let headers = recycle::Store::try_new(capacity::Count::new(headers))?;
+        // SAFETY: both factories initialize every field before returning.
+        let (direct, headers) = unsafe {
+            (
+                recycle::Store::try_init(capacity::Count::new(direct), |_, slot| {
+                    Flight::init(slot);
+                })?,
+                recycle::Store::try_init(capacity::Count::new(headers), |_, slot| {
+                    Header::init(slot);
+                })?,
+            )
+        };
         let arena = Arena {
             direct: release::Gate::try_new(&direct, driver, d_lanes)?,
             headers: release::Gate::try_new(&headers, driver, h_lanes)?,
