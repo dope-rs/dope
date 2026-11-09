@@ -177,19 +177,6 @@ pub(in crate::link) struct Vacancy<'a, 'd, ID: Identity, T> {
     key: pool::Key<'d, ID>,
 }
 
-pub(super) enum Admission<'q, 'a, 'd, ID: Identity, T> {
-    Ready(Grant<'q, 'a, 'd, ID, T>),
-    Busy,
-    Full,
-    Exhausted,
-}
-
-pub(super) struct Grant<'q, 'a, 'd, ID: Identity, T> {
-    queue: &'q Queue<'d, ID>,
-    keys: pool::Keyspace<'d, ID>,
-    grant: borrows::Grant<'a, T, ID>,
-}
-
 #[derive(Debug)]
 pub struct Busy;
 
@@ -219,12 +206,12 @@ impl<'d, ID: Identity> Queue<'d, ID> {
         (node.epoch.get() == key.epoch()).then_some(Handle { queue: self, key })
     }
 
-    pub(in crate::link::pool) fn admit<'q, 'a, T, S, R>(
-        &'q self,
+    pub(in crate::link::pool) fn admit<'a, T, S, R>(
+        &self,
         slab: &'a mut tail::Table<T, ID, S, R>,
         keys: pool::Keyspace<'d, ID>,
         capacity: conn::Capacity,
-    ) -> Admission<'q, 'a, 'd, ID, T> {
+    ) -> Result<Vacancy<'a, 'd, ID, T>, slab::Vacancy> {
         let slots = table::Capacity::from(capacity);
         let grant = match self.claimed.get() {
             Lock::Held(claimed) => {
@@ -232,23 +219,20 @@ impl<'d, ID: Identity> Queue<'d, ID> {
                 if !slots.contains(claimed) || slab.key_at(claimed).is_some() {
                     slab.access().try_head(capacity)
                 } else {
-                    match slab.access().try_except(capacity, claimed) {
-                        Err(slab::Vacancy::Full) => return Admission::Busy,
-                        grant => grant,
-                    }
+                    slab.access().try_except(capacity, claimed)
                 }
             }
             Lock::Free => slab.access().try_head(capacity),
-        };
-        match grant {
-            Ok(grant) => Admission::Ready(Grant {
-                queue: self,
-                keys,
-                grant,
-            }),
-            Err(slab::Vacancy::Full) => Admission::Full,
-            Err(slab::Vacancy::IdentityExhausted) => Admission::Exhausted,
-        }
+        }?;
+        let entry = grant.reserve();
+        let key = keys.bind_table(entry.key());
+        let node = self.node(pool::raw::Physical::bind(key));
+        self.clear_wait(pool::raw::Physical::bind(key));
+        node.epoch.set(key.epoch());
+        Ok(Vacancy {
+            reservation: entry,
+            key,
+        })
     }
 
     pub(in crate::link::pool) fn is_empty(&self) -> bool {
@@ -311,20 +295,6 @@ impl<'d, ID: Identity> Queue<'d, ID> {
             }
         };
         self.topology.set(Topology::Occupied(chain));
-    }
-}
-
-impl<'a, 'd, ID: Identity, T> Grant<'_, 'a, 'd, ID, T> {
-    pub(in crate::link::pool) fn reserve(self) -> Vacancy<'a, 'd, ID, T> {
-        let entry = self.grant.reserve();
-        let key = self.keys.bind_table(entry.key());
-        let node = self.queue.node(pool::raw::Physical::bind(key));
-        self.queue.clear_wait(pool::raw::Physical::bind(key));
-        node.epoch.set(key.epoch());
-        Vacancy {
-            reservation: entry,
-            key,
-        }
     }
 }
 

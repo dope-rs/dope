@@ -100,15 +100,15 @@ impl<'d> Envelope<'d> {
             .parts()
             .token
             .closed()
-            .map_or(retire::Bind::Missing, |returned| retire.bind(returned))
+            .map_or(host::Closed::Missing, |returned| retire.bind(returned))
         {
-            retire::Bind::Ready(echo) => self.reject_close(echo, Violation::Raw(cause)),
-            retire::Bind::Class {
+            host::Closed::Ready(echo) => self.reject_close(echo, Violation::Raw(cause)),
+            host::Closed::Class {
                 echo,
                 expected,
                 observed,
             } => self.reject_both(echo, cause, expected, observed),
-            retire::Bind::Missing => self.reject(fault::Subject::Unbound, Violation::Raw(cause)),
+            host::Closed::Missing => self.reject(fault::Subject::Unbound, Violation::Raw(cause)),
         }
     }
 }

@@ -128,28 +128,25 @@ where
         complete: impl FnOnce(&types::Connection<'w, 'd, ID, W, S>) -> R,
         driver: &mut driver::Context<'_, 'd>,
     ) -> opening::Attempt<'d, ID, P, R, open::Error<'w, W>> {
-        use pool::pending::{Admission, Grant};
-
         let keys = *self.storage.keys;
-        let grant = match self.storage.prepared.pending.admit(
+        let lease = match self.storage.prepared.pending.admit(
             &mut self.storage.prepared.slab,
             keys,
             capacity,
         ) {
-            Admission::Ready(grant) => grant,
-            Admission::Busy | Admission::Full => {
+            Ok(lease) => lease,
+            Err(slab::Vacancy::Full) => {
                 return opening::Attempt::Deferred {
                     cause: opening::Deferred::Capacity,
                     input,
                 };
             }
-            Admission::Exhausted => {
+            Err(slab::Vacancy::IdentityExhausted) => {
                 return opening::Attempt::Failed {
                     error: opening::Failure::IdentityExhausted,
                 };
             }
         };
-        let lease = Grant::reserve(grant);
         let key = lease.key();
         let fd = match self.outbound.bind(lease.key().target()) {
             Ok(fd) => fd,

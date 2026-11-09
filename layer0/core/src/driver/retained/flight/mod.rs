@@ -340,20 +340,7 @@ impl<'q, 'd> host::Drain for Drain<'q, 'd> {
     }
 
     fn retired(&self, returned: Self::Returned) -> host::Closed<Self::Echo, Self::Class> {
-        use host::Closed;
-        match self.driver.descriptors().retirement().bind(returned) {
-            retire::Bind::Ready(echo) => Closed::Ready(echo),
-            retire::Bind::Class {
-                echo,
-                expected,
-                observed,
-            } => Closed::Class {
-                echo,
-                expected,
-                observed,
-            },
-            retire::Bind::Missing => Closed::Missing,
-        }
+        self.driver.descriptors().retirement().bind(returned)
     }
 }
 

@@ -40,17 +40,6 @@ impl Completed {
     }
 }
 
-#[must_use = "a matched descriptor echo owns its retirement until consumed or retried"]
-pub(crate) enum Bind<'d> {
-    Ready(Echo<'d>),
-    Missing,
-    Class {
-        echo: Echo<'d>,
-        expected: handles::Retirement,
-        observed: handles::Retirement,
-    },
-}
-
 #[must_use = "a decoded descriptor return must be bound to its owning domain"]
 #[repr(transparent)]
 pub(crate) struct Returned(u64);
@@ -148,13 +137,13 @@ impl<'a> View<'a> {
         self.domain.closed.get()
     }
 
-    pub(crate) fn bind(self, returned: Returned) -> Bind<'a> {
+    pub(crate) fn bind(self, returned: Returned) -> host::Closed<Echo<'a>, handles::Retirement> {
         let raw = returned.0;
         if raw & !(ITEM_MASK | RETIRE_BIT) != 0 {
-            return Bind::Missing;
+            return host::Closed::Missing;
         }
         let Some(inner) = self.domain.resident.retire().bind(unpack(raw & ITEM_MASK)) else {
-            return Bind::Missing;
+            return host::Closed::Missing;
         };
         let observed = if raw & RETIRE_BIT == 0 {
             handles::Retirement::Close
@@ -171,9 +160,9 @@ impl<'a> View<'a> {
             inner: Lease::open(Retry(self), Bound(pack(&inner) | class)),
         };
         if expected == observed {
-            Bind::Ready(echo)
+            host::Closed::Ready(echo)
         } else {
-            Bind::Class {
+            host::Closed::Class {
                 echo,
                 expected,
                 observed,

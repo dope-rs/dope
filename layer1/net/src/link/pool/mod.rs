@@ -412,7 +412,7 @@ where
     where
         F: FnOnce(Key<'d, ID>) -> Result<S, R>,
     {
-        use pending::{Admission, Grant};
+        use o3::depot::arena::slab;
 
         let item = duplex::Accepted::new(fd);
         let keys = *self.storage.keys;
@@ -422,12 +422,12 @@ where
             keys,
             capacity,
         ) {
-            Admission::Ready(grant) => Grant::reserve(grant),
-            Admission::Busy | Admission::Full => {
+            Ok(lease) => lease,
+            Err(slab::Vacancy::Full) => {
                 item.into_fd().close(driver);
                 return Ok(accept::Outcome::Unavailable);
             }
-            Admission::Exhausted => {
+            Err(slab::Vacancy::IdentityExhausted) => {
                 item.into_fd().close(driver);
                 return Ok(accept::Outcome::IdentityExhausted);
             }
