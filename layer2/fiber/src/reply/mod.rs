@@ -33,7 +33,7 @@ pub use arena::{
     state::Push,
 };
 pub(crate) use slot::State;
-pub(in crate::reply) use slot::{Drain, Failed, Item, Open};
+pub(in crate::reply) use slot::{Failed, Item, Open};
 pub use slot::{Failure, Slot};
 
 /// Exact capacity state for registering one reply entry.

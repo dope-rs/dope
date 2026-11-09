@@ -54,11 +54,6 @@ pub(in crate::reply) struct Open<'a, 'arena, 'credits, 'region, D: Footprint, E,
     signal: &'a mut state::Signal<'region>,
 }
 
-pub(in crate::reply) enum Drain {
-    Empty,
-    Dropped,
-}
-
 impl<'arena, D: Footprint, E> State<'arena, D, E> {
     pub(in crate::reply) fn new(data: fifo::Fifo<'arena, Item<D>, false>) -> Self {
         Self {
@@ -172,6 +167,10 @@ pub struct Slot<'a, 's, 'arena, 'credits, 'region, D: Footprint, E = D> {
 }
 
 impl<'s, 'arena, 'credits, 'region, D: Footprint, E> Slot<'_, 's, 'arena, 'credits, 'region, D, E> {
+    pub(in crate::reply) fn drop_next(&mut self) -> bool {
+        self.pop().is_some() || self.pop_error().is_some()
+    }
+
     pub fn terminal(
         &mut self,
     ) -> Option<outcome::Terminal<'_, 's, 'arena, 'credits, 'region, D, E>> {

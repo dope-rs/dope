@@ -227,10 +227,12 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Book<'arena, 'credits, 'regi
                 EntryBody::Drained => None,
             };
             if let Some(mut state) = state {
-                // SAFETY: both values were removed together from this exact
-                // occupied entry and stay paired until every member is returned.
-                let mut retire = unsafe { reply::raw::Retire::new(&mut state, &mut owners) };
-                while let reply::Drain::Dropped = retire.advance() {}
+                let mut slot = reply::Slot {
+                    state: &mut state,
+                    owners: &mut owners,
+                    owner: marker::PhantomData,
+                };
+                while slot.drop_next() {}
             }
             owners.cancel_entry();
             owners.retire();

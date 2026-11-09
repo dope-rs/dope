@@ -1,10 +1,6 @@
 use o3::{alloc, alloc::array, base::num::bounded, depot};
 
-use crate::reply::{
-    Batch, Drain, LaneIndex, State,
-    retain::{self, pool::Owner},
-    usage::Footprint,
-};
+use crate::reply::{Batch, LaneIndex, usage::Footprint};
 
 impl<C: Footprint> Batch<'_, '_, '_, '_, C> {
     /// Maps this retained batch into one exactly sized allocation. Each slot's
@@ -47,38 +43,5 @@ unsafe impl depot::raw::Compact for LaneIndex {
     unsafe fn from_raw(raw: u32) -> Self {
         // SAFETY: Compact requires raw within this exact inclusive bound.
         Self::from(unsafe { bounded::raw::u32(raw) })
-    }
-}
-
-/// Exclusive retirement of one slot and its original resource owner.
-pub(in crate::reply) struct Retire<'a, 'arena, 'credits, 'region, D: Footprint, E> {
-    state: &'a mut State<'arena, D, E>,
-    owner: &'a mut Owner<'arena, 'credits, 'region>,
-}
-
-impl<'a, 'arena, 'credits, 'region, D: Footprint, E> Retire<'a, 'arena, 'credits, 'region, D, E> {
-    /// # Safety
-    /// Both arguments must be the slot and owner from the same original entry.
-    pub(in crate::reply) unsafe fn new(
-        state: &'a mut State<'arena, D, E>,
-        owner: &'a mut Owner<'arena, 'credits, 'region>,
-    ) -> Self {
-        Self { state, owner }
-    }
-}
-
-impl<D: Footprint, E> Retire<'_, '_, '_, '_, D, E> {
-    pub(in crate::reply) fn advance(&mut self) -> Drain {
-        if let Some(item) = self.state.take_data() {
-            // SAFETY: the removed member and payload come from this exact owned slot.
-            unsafe { retain::raw::Remove::remove(&mut self.owner.payload, item.amount) }.release();
-            return Drain::Dropped;
-        }
-        let Some(item) = self.state.take_failure() else {
-            return Drain::Empty;
-        };
-        // SAFETY: the removed member and payload come from this exact owned slot.
-        unsafe { retain::raw::Remove::remove(&mut self.owner.payload, item.amount) }.release();
-        Drain::Dropped
     }
 }

@@ -1,6 +1,6 @@
 //! Incremental reply-entry retirement.
 
-use std::mem;
+use std::{marker::PhantomData, mem};
 
 use o3::{
     depot,
@@ -59,11 +59,12 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
                 state
             }
         };
-        // SAFETY: both fields remain exclusively borrowed from this
-        // original occupied entry throughout its retirement step.
-        if let reply::Drain::Dropped =
-            unsafe { reply::raw::Retire::new(state, &mut entry.owners) }.advance()
-        {
+        let mut slot = reply::Slot {
+            state,
+            owners: &mut entry.owners,
+            owner: PhantomData,
+        };
+        if slot.drop_next() {
             return Advance::Draining(retired);
         }
         entry.body = state::EntryBody::Drained;
