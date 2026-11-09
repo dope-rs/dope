@@ -59,22 +59,6 @@ pub enum Reuse {
     Port,
 }
 
-/// One bootstrap error vocabulary that can name a reuse step.
-pub(crate) trait ReuseStep: Sized {
-    /// Step attributed when `SO_REUSEADDR` fails.
-    const ADDRESS: Self;
-    /// Step attributed when `SO_REUSEPORT` fails.
-    const PORT: Self;
-}
-
-/// Exact bootstrap step this admitted reuse option performs.
-pub(crate) const fn reuse_step<S: ReuseStep>(reuse: Reuse) -> S {
-    match reuse {
-        Reuse::Address => S::ADDRESS,
-        Reuse::Port => S::PORT,
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct Config {
     pub reuse: Option<Reuse>,

@@ -1,5 +1,5 @@
 mod entry;
-use std::{mem, ops};
+use std::{marker, mem, ops};
 
 use dope_core::io::{socket::msg, transfer, transfer::progress};
 use entry::Buffer;
@@ -11,106 +11,90 @@ use crate::{
         self, data,
         load::credit,
         metadata,
-        metadata::{arena, front},
-        queue::{self, flight, prepared},
+        metadata::{arena, front, lane},
+        queue,
         reserve::demand,
     },
     wire::send,
 };
 
-pub(in crate::link::egress) struct Flight<'a, 'p, 'd, const IOV: usize> {
-    lease: &'a mut Option<Lease<'p, 'd, IOV>>,
-    flights: &'p recycle::Store<Entry<IOV>>,
+pub(in crate::link) enum Preparation<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode>
+{
+    Empty,
+    Ready(Plan<'flight, 'queue, 'p, 'd, IOV, B, D>),
 }
 
-pub(in crate::link::egress) enum Completion<'a, 'p, 'd, const IOV: usize> {
-    Stale,
-    Invalid(egress::Invalid),
-    Ready(Released<'a, 'p, 'd, IOV>),
-}
-
-impl<'a, 'p, 'd, const IOV: usize> Flight<'a, 'p, 'd, IOV> {
-    pub(in crate::link::egress) fn new(
-        lease: &'a mut Option<Lease<'p, 'd, IOV>>,
-        flights: &'p recycle::Store<Entry<IOV>>,
-    ) -> Self {
-        Self { lease, flights }
-    }
-
-    pub(in crate::link::egress) fn reborrow(&mut self) -> Flight<'_, 'p, 'd, IOV> {
-        Flight::new(self.lease, self.flights)
-    }
-
-    pub(in crate::link::egress) fn take(self) -> Option<Active<'a, 'p, 'd, IOV>> {
-        let lease = self.lease.take()?;
-        Some(Active {
-            slot: self.lease,
-            lease,
-        })
-    }
-
-    pub(in crate::link::egress) fn complete(
-        &mut self,
-        bytes: transfer::Len,
-    ) -> Completion<'_, 'p, 'd, IOV> {
-        let Some(active) = self.reborrow().take() else {
-            return Completion::Stale;
-        };
-        let maximum = active.lease.get().len();
-        if bytes > maximum {
-            active.restore();
-            return Completion::Invalid(egress::Invalid::Excess {
-                actual: bytes,
-                maximum,
-            });
-        }
-        Completion::Ready(Released { active, bytes })
-    }
+pub(in crate::link) enum Reservation<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode>
+{
+    Ready(Prepared<'flight, 'queue, 'p, 'd, IOV, B, D>),
+    Active,
+    Unavailable,
 }
 
 #[must_use]
-pub(in crate::link::egress) struct Prepared<'a, 'p, 'd, const IOV: usize> {
-    lease: &'a mut Option<Lease<'p, 'd, IOV>>,
-    pub(super) reservation: Lease<'p, 'd, IOV>,
+pub(in crate::link) struct Prepared<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode> {
+    lease: &'flight mut Option<Lease<'p, 'd, IOV>>,
+    reservation: Lease<'p, 'd, IOV>,
+    entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
 }
 
-pub(in crate::link::egress) struct Active<'a, 'p, 'd, const IOV: usize> {
+struct Active<'a, 'p, 'd, const IOV: usize> {
     slot: &'a mut Option<Lease<'p, 'd, IOV>>,
     lease: Lease<'p, 'd, IOV>,
 }
 
-impl<'a, 'p, 'd, const IOV: usize> Prepared<'a, 'p, 'd, IOV> {
-    pub(in crate::link::egress) fn retain(self) {
+impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
+    Prepared<'flight, 'queue, 'p, 'd, IOV, B, D>
+{
+    pub(in crate::link) fn retain(self) {
         *self.lease = Some(self.reservation);
     }
 
-    pub(in crate::link::egress) fn vectored(&mut self) -> send::Vectored<'_, IOV> {
+    pub(in crate::link) fn vectored(&mut self) -> send::Vectored<'_, IOV> {
         self.reservation.get_mut().vectored()
     }
 
-    pub(in crate::link::egress) fn release(
+    pub(in crate::link) fn release(
         self,
         bytes: transfer::Len,
-    ) -> Result<Released<'a, 'p, 'd, IOV>, egress::Invalid> {
-        let maximum = self.reservation.get().len();
-        if bytes > maximum {
-            return Err(egress::Invalid::Excess {
-                actual: bytes,
-                maximum,
-            });
-        }
-        Ok(Released {
-            active: Active {
-                slot: self.lease,
-                lease: self.reservation,
-            },
-            bytes,
-        })
+        token: &mut region::Token<region::Identity<'d>>,
+    ) -> Result<(), egress::Invalid> {
+        let active = Active {
+            slot: self.lease,
+            lease: self.reservation,
+        };
+        let released = match active.release(bytes) {
+            Ok(released) => released,
+            Err((_, error)) => return Err(error),
+        };
+        released.consume(self.entries, token, &mut drop);
+        Ok(())
     }
 }
 
 impl<'a, 'p, 'd, const IOV: usize> Active<'a, 'p, 'd, IOV> {
-    pub(in crate::link::egress) fn restore(self) {
+    fn release(
+        self,
+        bytes: transfer::Len,
+    ) -> Result<Released<'a, 'p, 'd, IOV>, (Self, egress::Invalid)> {
+        let maximum = self.lease.get().len();
+        if bytes > maximum {
+            return Err((
+                self,
+                egress::Invalid::Excess {
+                    actual: bytes,
+                    maximum,
+                },
+            ));
+        }
+        Ok(Released {
+            prefix: self.lease.into_prefix(),
+            bytes,
+            loan: marker::PhantomData,
+        })
+    }
+
+    fn restore(self) {
         *self.slot = Some(self.lease);
     }
 }
@@ -119,8 +103,7 @@ const _: () = {
     let word = mem::size_of::<usize>();
     assert!(mem::size_of::<Lease<'static, 'static, 32>>() == 3 * word);
     assert!(mem::size_of::<Option<Lease<'static, 'static, 32>>>() == 3 * word);
-    assert!(mem::size_of::<Flight<'static, 'static, 'static, 32>>() == 2 * word);
-    assert!(mem::size_of::<Released<'static, 'static, 'static, 32>>() == 5 * word);
+    assert!(mem::size_of::<Released<'static, 'static, 'static, 32>>() == 3 * word);
     assert!(mem::size_of::<Entry<32>>() <= 768);
     assert!(
         mem::size_of::<
@@ -137,7 +120,7 @@ const _: () = {
     );
     assert!(
         mem::size_of::<
-            prepared::Preparation<
+            Preparation<
                 'static,
                 'static,
                 'static,
@@ -160,7 +143,8 @@ pub(in crate::link) struct Output<
     D: demand::Mode = demand::Fallible,
 > {
     queue: egress::Queue<'a, 'p, 'd, IOV, B, D>,
-    flight: Flight<'a, 'p, 'd, IOV>,
+    lease: &'a mut Option<Lease<'p, 'd, IOV>>,
+    flights: &'p recycle::Store<Entry<IOV>>,
 }
 
 impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> Output<'a, 'p, 'd, IOV, B, D> {
@@ -179,15 +163,16 @@ impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> Output<'a, 'p, 'd, IOV, B
         let (lane, entries) = slot.into_parts();
         Self {
             queue: egress::Queue { entries },
-            flight: Flight::new(lane, flights),
+            lease: lane,
+            flights,
         }
     }
 
     pub(in crate::link) fn is_active(&self) -> bool {
-        self.flight.lease.is_some()
+        self.lease.is_some()
     }
     pub(in crate::link) fn abort(&mut self) {
-        drop(self.flight.lease.take());
+        drop(self.lease.take());
     }
 }
 
@@ -205,11 +190,11 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
 {
     pub(in crate::link) fn prepare<'flight>(
         &'flight mut self,
-    ) -> prepared::Preparation<'flight, 'a, 'p, 'd, IOV, B, D> {
+    ) -> Preparation<'flight, 'a, 'p, 'd, IOV, B, D> {
         let Some(plan) = Plan::new(self) else {
-            return prepared::Preparation::Empty;
+            return Preparation::Empty;
         };
-        prepared::Preparation::Ready(plan)
+        Preparation::Ready(plan)
     }
 
     pub(in crate::link) fn complete(
@@ -218,10 +203,19 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
         bytes: transfer::Len,
         mut release: impl FnMut(B),
     ) -> queue::Change {
-        let released = match self.flight.complete(bytes) {
-            Completion::Stale => return queue::Change::Stale,
-            Completion::Invalid(error) => return queue::Change::Invalid(error),
-            Completion::Ready(released) => released,
+        let Some(lease) = self.lease.take() else {
+            return queue::Change::Stale;
+        };
+        let active = Active {
+            slot: self.lease,
+            lease,
+        };
+        let released = match active.release(bytes) {
+            Ok(released) => released,
+            Err((active, error)) => {
+                active.restore();
+                return queue::Change::Invalid(error);
+            }
         };
         released.consume(self.queue.entries, token, &mut release);
         queue::Change::Applied
@@ -234,20 +228,21 @@ const _: () = assert!(
 
 /// One retained nonempty source prefix before descriptor reservation.
 pub(in crate::link) struct Plan<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode> {
-    active: &'flight mut flight::Flight<'queue, 'p, 'd, IOV>,
+    output: &'flight mut Output<'queue, 'p, 'd, IOV, B, D>,
     source: metadata::Prefix<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
 }
 
 /// Prepared retains this queue's immutable suffixes and exact descriptor sum.
 /// Released checks that sum once; Output and Prepared preserve the original queue.
 /// Each whole front transfers its exact successor; a partial front stays linked.
-pub(in crate::link::egress) struct Released<'a, 'p, 'd, const IOV: usize> {
-    active: flight::Active<'a, 'p, 'd, IOV>,
+struct Released<'a, 'p, 'd, const IOV: usize> {
+    prefix: lane::Prefix<'p, 'd>,
     bytes: transfer::Len,
+    loan: marker::PhantomData<&'a mut Option<Lease<'p, 'd, IOV>>>,
 }
 
 impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
-    pub(in crate::link::egress::queue) fn consume<'queue, B, D: demand::Mode>(
+    fn consume<'queue, B, D: demand::Mode>(
         self,
         entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
         token: &mut region::Token<region::Identity<'d>>,
@@ -256,7 +251,7 @@ impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
         let Some(mut bytes) = self.bytes.nonzero() else {
             return;
         };
-        let mut prefix = self.active.lease.into_prefix();
+        let mut prefix = self.prefix;
         loop {
             let (front, next) = front::advance(entries, prefix, token, bytes);
             match front.complete(release) {
@@ -279,24 +274,21 @@ impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
 impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
     Plan<'flight, 'queue, 'p, 'd, IOV, B, D>
 {
-    fn new(output: &'flight mut flight::Output<'queue, 'p, 'd, IOV, B, D>) -> Option<Self> {
+    fn new(output: &'flight mut Output<'queue, 'p, 'd, IOV, B, D>) -> Option<Self> {
         const { assert!(IOV != 0 && IOV <= msg::MAX_IOVECS) };
         let source = output.queue.entries.prefix()?;
-        Some(Self {
-            active: &mut output.flight,
-            source,
-        })
+        Some(Self { output, source })
     }
 
     pub(in crate::link) fn reserve(
         self,
         token: &region::Token<region::Identity<'d>>,
-    ) -> prepared::Reservation<'flight, 'queue, 'p, 'd, IOV, B, D> {
-        if self.active.lease.is_some() {
-            return prepared::Reservation::Active;
+    ) -> Reservation<'flight, 'queue, 'p, 'd, IOV, B, D> {
+        if self.output.lease.is_some() {
+            return Reservation::Active;
         }
-        let Some(buffer) = self.active.flights.take() else {
-            return prepared::Reservation::Unavailable;
+        let Some(buffer) = self.output.flights.take() else {
+            return Reservation::Unavailable;
         };
         let mut buffer = Buffer(buffer);
         // SAFETY: this vacant pinned entry is exclusively held before submission.
@@ -319,10 +311,10 @@ impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: de
             ops::ControlFlow::Break(())
         });
         flight.bytes = bytes.len();
-        let reserved = flight::Prepared {
-            lease: self.active.lease,
+        Reservation::Ready(Prepared {
+            lease: self.output.lease,
             reservation: Lease { buffer, prefix },
-        };
-        prepared::Reservation::Ready(prepared::Prepared::new(reserved, entries))
+            entries,
+        })
     }
 }

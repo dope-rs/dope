@@ -42,7 +42,11 @@ pub enum Error {
 
 impl Error {
     pub(crate) fn reuse((reuse, errno): (socket::Reuse, dope_sys::Errno)) -> Self {
-        Self::syscall(socket::reuse_step(reuse), errno)
+        let operation = match reuse {
+            socket::Reuse::Address => Operation::ReuseAddress,
+            socket::Reuse::Port => Operation::ReusePort,
+        };
+        Self::syscall(operation, errno)
     }
 
     pub(crate) fn setup(error: Setup) -> Self {

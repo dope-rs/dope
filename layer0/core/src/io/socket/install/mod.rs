@@ -37,11 +37,6 @@ pub enum Operation {
     FixedFile,
 }
 
-impl socket::ReuseStep for Operation {
-    const ADDRESS: Self = Self::ReuseAddress;
-    const PORT: Self = Self::ReusePort;
-}
-
 pub struct Install<'borrow, 'context, 'd> {
     driver: &'borrow mut driver::Context<'context, 'd>,
     reservation: slot::Reserved<'d>,

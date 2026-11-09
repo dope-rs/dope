@@ -18,9 +18,7 @@ use crate::link::egress::{
 pub(super) mod batch;
 pub(in crate::link) mod flight;
 pub(super) mod load;
-mod prepared;
-
-pub(in crate::link) use prepared::{Preparation, Reservation};
+pub(in crate::link) use flight::{Preparation, Reservation};
 pub(in crate::link) enum Change {
     Applied,
     Stale,
