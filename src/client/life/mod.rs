@@ -328,12 +328,7 @@ fn close<
     B: client::Backoff,
     F: resident::Phase<endpoint::Types<'d, DOMAIN>>,
 >(
-    mut endpoint: resident::Slot<
-        '_,
-        endpoint::Types<'d, DOMAIN>,
-        indexed::Vacant<'_, time::Instant, Capacity>,
-        F,
-    >,
+    mut endpoint: resident::Vacant<'_, time::Instant, endpoint::Types<'d, DOMAIN>, F, Capacity>,
     reverse: &mut Option<client::SlotId>,
     backoff: &B,
     again: bool,
