@@ -18,13 +18,6 @@ const RECV: usize = 0;
 const HANDSHAKE_EGRESS: usize = 1;
 const LANES: usize = 2;
 
-enum Proof<'a, 'd, ID: route::Identity> {
-    Recv(lanes::Rollback<'a, credit::Held<'d, ID>, LANES, RECV, conn::Capacity>),
-    HandshakeEgress(
-        lanes::Rollback<'a, credit::Held<'d, ID>, LANES, HANDSHAKE_EGRESS, conn::Capacity>,
-    ),
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(in crate::tls) enum Resource {
     Recv,
@@ -32,7 +25,7 @@ pub(in crate::tls) enum Resource {
 }
 
 pub struct Registration<'a, 'd, ID: route::Identity> {
-    proof: Option<Proof<'a, 'd, ID>>,
+    proof: Option<lanes::Rollback<'a, credit::Held<'d, ID>, LANES, conn::Capacity>>,
 }
 
 pub(crate) struct Queue<'d, ID: route::Identity> {
@@ -58,14 +51,14 @@ impl<'d, ID: route::Identity> Queue<'d, ID> {
                     .waiters
                     .vacant::<RECV>(target.slot().index().into_usize())?;
                 let guard = credit.claim();
-                Proof::Recv(vacant.insert::<false>(guard))
+                vacant.insert::<false>(guard)
             }
             Resource::HandshakeEgress => {
                 let vacant = self
                     .waiters
                     .vacant::<HANDSHAKE_EGRESS>(target.slot().index().into_usize())?;
                 let guard = credit.claim();
-                Proof::HandshakeEgress(vacant.insert::<false>(guard))
+                vacant.insert::<false>(guard)
             }
         };
         Ok(Registration { proof: Some(proof) })
@@ -118,30 +111,13 @@ impl<ID: route::Identity> Drop for Registration<'_, '_, ID> {
     }
 }
 
-impl<'a, 'd, ID: route::Identity> Proof<'a, 'd, ID> {
-    fn commit(self) {
-        match self {
-            Self::Recv(proof) => proof.commit(),
-            Self::HandshakeEgress(proof) => proof.commit(),
-        }
-    }
-
-    fn remove(self) -> credit::Held<'d, ID> {
-        match self {
-            Self::Recv(proof) => proof.remove(),
-            Self::HandshakeEgress(proof) => proof.remove(),
-        }
-    }
-}
-
 const _: () = {
     assert!(
         mem::size_of::<Queue<'_, route::KeyTag<0>>>()
             == 2 * mem::size_of::<usize>() + LANES * 2 * mem::size_of::<u32>()
     );
-    assert!(mem::size_of::<Proof<'_, '_, route::KeyTag<0>>>() == 3 * mem::size_of::<usize>());
     assert!(
         mem::size_of::<Registration<'_, '_, route::KeyTag<0>>>()
-            == mem::size_of::<Proof<'_, '_, route::KeyTag<0>>>()
+            == 2 * mem::size_of::<usize>()
     );
 };
