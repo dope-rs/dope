@@ -22,6 +22,17 @@ pub trait Flags: From<Failure> + Sized {
 
 /// Native descriptor operations using the calling thread's exact error slot.
 pub trait Fd: errno::Source {
+    fn try_limit() -> Result<(u64, u64), Errno> {
+        let mut limit = std::mem::MaybeUninit::uninit();
+        // SAFETY: the output holds one complete resource limit.
+        let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
+        // SAFETY: getrlimit returns zero or -1 with this thread's errno.
+        unsafe { kernel::raw::Status::new(result).try_zero::<Self, Errno>() }?;
+        // SAFETY: the successful query initialized both limit fields.
+        let limit = unsafe { limit.assume_init() };
+        Ok((limit.rlim_cur.into(), limit.rlim_max.into()))
+    }
+
     /// Adds a descriptor flag, retrying only each interrupted native attempt.
     fn update<E: Flags>(file: BorrowedFd<'_>) -> Result<(), E> {
         update::<Self, E, true, true>(file)

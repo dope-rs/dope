@@ -347,17 +347,6 @@ pub fn try_terminate() -> Result<(), Errno> {
     unsafe { kernel::raw::Status::new(result).try_zero::<Backend, Errno>() }
 }
 
-pub fn try_limit() -> Result<(libc::rlim_t, libc::rlim_t), Errno> {
-    let mut limit = mem::MaybeUninit::uninit();
-    // SAFETY: the output points to storage for one complete resource limit.
-    let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
-    // SAFETY: getrlimit returns zero or -1 with this thread's errno.
-    unsafe { kernel::raw::Status::new(result).try_zero::<Backend, Errno>() }?;
-    // SAFETY: the successful query initialized both limit fields.
-    let limit = unsafe { limit.assume_init() };
-    Ok((limit.rlim_cur, limit.rlim_max))
-}
-
 pub trait Cpus: Sized {
     fn try_current() -> Result<Self, Error>;
 }

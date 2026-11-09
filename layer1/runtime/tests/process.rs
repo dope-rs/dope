@@ -3,6 +3,7 @@ use std::{cell, convert::Infallible, iter, mem, rc::Rc, time};
 
 use dope_core::{
     driver::life::{creation::Attempt, domain, recovery},
+    io::fd::try_limit,
     platform::affinity::Cpu,
 };
 use dope_runtime::{
@@ -13,7 +14,7 @@ use dope_test::alloc::Tracker;
 use o3::{alloc, depot::capacity};
 use process::failure::{config, create};
 
-use crate::common::process::{Cpus as _, Input, Resources, try_limit};
+use crate::common::process::{Cpus as _, Input, Resources};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
