@@ -54,9 +54,9 @@ dependencies = [
 
 [[package]]
 name = "dope"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3855ec67ea599d0c9c6b82e41e990b647cd6073a438a6d6a0f0ceebb8c8cb660"
+checksum = "e832443959dddc14a44e9fe99a3b336601133557e7ae55c01d80f50f909ece33"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -67,9 +67,9 @@ dependencies = [
 
 [[package]]
 name = "dope-core"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fd569df3fb036881ab30fef119fb7bc1dd7b4682178bf80f105ff0179e1b2ec"
+checksum = "c7ef91b86a9f0c91bf4d6243883c37ba04d4a9f2692d7cafecb7ee25265b5966"
 dependencies = [
  "dope-kqueue",
  "dope-sys",
@@ -80,9 +80,9 @@ dependencies = [
 
 [[package]]
 name = "dope-fiber"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67acca30aaaeba30a1e9cc381cd40831ca25642ba014c02bf2463123922f8909"
+checksum = "043d8d0dfdb9ba27e20e37f1b4abe89e471d3d696ed5020d6c80149f64c2458a"
 dependencies = [
  "dope",
  "dope-gen",
@@ -92,9 +92,9 @@ dependencies = [
 
 [[package]]
 name = "dope-gen"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b00c0f4257a5b44aff92e586a1be65624bc0209d834b5e60a8b72fdda8c6e302"
+checksum = "59a61407e639143031e0b257555d46c76b1e1554d4c0a0f2d629f33a69148d94"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -103,9 +103,9 @@ dependencies = [
 
 [[package]]
 name = "dope-kqueue"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ee5a627969f65c88d947c6e28f6601f93837e47481f51198d015bed2cca1407"
+checksum = "3103aaafd8cd3843a33136bc3ba3ee7d142883ba929fa837b1c482d354f38eaf"
 dependencies = [
  "dope-sys",
  "libc",
@@ -114,9 +114,9 @@ dependencies = [
 
 [[package]]
 name = "dope-manifold"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27362e64ebe5c453549e71f9d755676fac90e60d7db47a37dd4f5a6c18321e8a"
+checksum = "3dd92c035956aa68d1793ff9027496af71196c66f2dd729f0b7ab34089924505"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -128,9 +128,9 @@ dependencies = [
 
 [[package]]
 name = "dope-net"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc6d8fc29900256644f7d8467b753ed7dad990d3e56aca31734ba24b19357834"
+checksum = "a90cde1a0208134edf10208c54bc466d49a526d70cb13a7a9c92fc6e5d618acf"
 dependencies = [
  "dope-core",
  "o3",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "dope-quic"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "aws-lc-rs",
  "dope",
@@ -154,9 +154,9 @@ dependencies = [
 
 [[package]]
 name = "dope-runtime"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8891ad381cb6967693ce70e274b9066e57867ad8ba9600a96c77baa426a4383e"
+checksum = "5def3450d8efa2b59b0c395e09999baa600f494d53c3b76f29891d8ea8c56be3"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -166,9 +166,9 @@ dependencies = [
 
 [[package]]
 name = "dope-sys"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76bcc9210d9b45b0f71c70bd240e7a191b3b8a0afc710be6aaaef33bdebc8595"
+checksum = "f580c8fb88f88c9378f64f1a4ded84785feff500fa37019dbc0fd3c11ae9782a"
 dependencies = [
  "libc",
  "o3",
@@ -176,9 +176,9 @@ dependencies = [
 
 [[package]]
 name = "dope-test"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "046daad5626fa455a31f3c84f6053d182c44578357d8d309846d0077ffdc7406"
+checksum = "2686ac20c7c84a52a9b264e255d3a689eb043a7668eea81283ec9595d5efbd0f"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "dope-tls"
-version = "0.52.0"
+version = "0.53.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4961b446c6bc89f55e5275ae4b2ff3bf0e71b9ade39a92eaf7ac6985308951c"
+checksum = "242f2e491b3a5c4aee3626246eea19ec05d196b75e884b550824dfda38ae08cb"
 dependencies = [
  "dope",
  "o3",
@@ -201,9 +201,9 @@ dependencies = [
 
 [[package]]
 name = "dope-uring"
-version = "0.62.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5def38797f756d1534ae4b3736243268f0b65e12842d42c47e01704467ef35ef"
+checksum = "6c1148e2f6c1c9f65fa80f85e7bfcefa68abf904f1bbc9be4647ade3f51e7eb0"
 dependencies = [
  "dope-sys",
  "libc",
