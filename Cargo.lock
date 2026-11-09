@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "dope-sys"
-version = "0.48.0"
+version = "0.48.1"
 dependencies = [
  "libc",
  "o3",

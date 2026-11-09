@@ -2,6 +2,7 @@ use dope_core::driver::{
     life::{creation, recovery},
     route::KeyTag,
 };
+use dope_core::{Backend, dope_sys::io::fd::Fd as _};
 
 use crate::common::{driver::support::Targets as _, wake::Ready as _};
 pub mod common;
@@ -23,22 +24,9 @@ use crate::common::{
     rt::{Runtime, finish, recover},
 };
 
-fn nofile_soft_limit() -> libc::rlim_t {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: `limit` names writable storage for one resource limit.
-    assert_eq!(
-        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
-        0
-    );
-    limit.rlim_cur
-}
-
 #[test]
 fn preserves_nofile_limit() {
-    let before = nofile_soft_limit();
+    let before = Backend::try_limit().expect("query open-file limit");
     let mut creation = creation::Attempt::new();
     let driver = creation.try_driver(
         Runtime::quic::<2, 8>()
@@ -46,7 +34,7 @@ fn preserves_nofile_limit() {
             .with_domains(settings::Domain::ONE),
     );
     assert!(driver.is_ok(), "driver creation");
-    let after = nofile_soft_limit();
+    let after = Backend::try_limit().expect("query open-file limit");
     assert_eq!(after, before);
 }
 

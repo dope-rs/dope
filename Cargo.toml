@@ -46,7 +46,7 @@ dope-runtime = { path = "layer1/runtime", version = "0.48.0" }
 dope-manifold = { path = "layer1/manifold", version = "0.48.0" }
 dope-fiber = { path = "layer2/fiber", version = "0.48.0" }
 dope-uring = { path = "layer0/uring", version = "0.48.0" }
-dope-sys = { path = "layer0/sys", version = "0.48.0" }
+dope-sys = { path = "layer0/sys", version = "0.48.1" }
 dope-kqueue = { path = "layer0/kqueue", version = "0.48.0" }
 dope-gen = { path = "layer1/gen", version = "0.48.0" }
 engine = { package = "dope", path = "layer1/dope" }

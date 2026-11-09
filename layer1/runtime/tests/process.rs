@@ -2,6 +2,8 @@ pub mod common;
 use std::{cell, convert::Infallible, iter, mem, rc::Rc, time};
 
 use dope_core::{
+    Backend,
+    dope_sys::io::fd::Fd as _,
     driver::life::{creation::Attempt, domain, recovery},
     platform::affinity::Cpu,
 };
@@ -13,7 +15,7 @@ use dope_test::alloc::Tracker;
 use o3::{alloc, depot::capacity};
 use process::failure::{config, create};
 
-use crate::common::process::{Cpus as _, Input, Resources, try_limit};
+use crate::common::process::{Cpus as _, Input, Resources};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -149,13 +151,13 @@ fn reports_startup_failure() {
 
 fn preserves_nofile_limit() {
     let [cpu] = <[Cpu; 1]>::try_current().expect("required available CPU");
-    let before = try_limit().expect("query open-file limit");
+    let before = Backend::try_limit().expect("query open-file limit");
     assert!(
         process::Layout::pinned([cpu])
             .and_then(|layout| layout.try_assign([()]))
             .is_ok()
     );
-    assert_eq!(try_limit().expect("query open-file limit"), before);
+    assert_eq!(Backend::try_limit().expect("query open-file limit"), before);
 }
 
 fn rejects_invalid_iterator() {
