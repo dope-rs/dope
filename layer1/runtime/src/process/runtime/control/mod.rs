@@ -1,4 +1,4 @@
-use std::{convert, mem};
+use std::convert;
 
 use dope_core::{
     dope_sys::thread::signal::Signal as _,
@@ -26,11 +26,6 @@ type Observation<N> = Result<
 
 pub(super) struct Control<'process> {
     source: signal::Source<'process>,
-}
-
-#[repr(transparent)]
-pub(super) struct Finish<'a, 'run, I, E, W> {
-    running: &'a worker::Stopping<'run, I, E, W>,
 }
 
 impl<'process> Control<'process> {
@@ -196,72 +191,50 @@ impl Counts {
     }
 }
 
-impl<'a, 'run, I, E, W> Finish<'a, 'run, I, E, W> {
-    pub(super) const fn new(running: &'a worker::Stopping<'run, I, E, W>) -> Option<Self> {
-        if running.can_observe() {
-            Some(Self { running })
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn drain<S, H>(
-        self,
-        workers: usize,
-        mut clock: Clock<H>,
-    ) -> Result<(), execute::Cause<S>>
-    where
-        H: watch::Heartbeat<S>,
-        E: worker::Entry<I, W>,
-    {
-        // SAFETY: construction retains every live Main throughout this loan.
-        unsafe {
-            self.running.scope(|running| {
-                let mut poll = set::Set::bus(&running)?;
-                let mut count = Counts::default();
-                while E::GATED && count.drained != workers {
-                    let (polled, (index, event)) = clock.wait(poll, |index| {
-                        let event = running.main(index).recv();
-                        let retire = matches!(event, Ok(Event::Done));
-                        ((index, event), retire)
-                    })?;
-                    poll = polled;
-                    let cpu = running.cpu(index);
-                    count.record(execute::Cause::<S>::received(event, cpu)?, cpu, workers)?;
-                }
-                clock.draining()?;
-                while count.done != workers {
-                    let (polled, (index, event)) = clock.wait(poll, |index| {
-                        let event = running.main(index).recv();
-                        let retire = matches!(event, Ok(Event::Done));
-                        ((index, event), retire)
-                    })?;
-                    poll = polled;
-                    match execute::Cause::<S>::received(event, running.cpu(index))? {
-                        Event::Done => count.done += 1,
-                        event => {
-                            return Err(execute::Cause::BusState(State::ShutdownEvent(Shutdown {
-                                cpu: running.cpu(index),
-                                event,
-                                workers,
-                                done: count.done,
-                            })));
-                        }
+pub(super) fn drain<S, H, I, E, W>(
+    running: &worker::Stopping<'_, I, E, W>,
+    workers: usize,
+    mut clock: Clock<H>,
+) -> Result<(), execute::Cause<S>>
+where
+    H: watch::Heartbeat<S>,
+    E: worker::Entry<I, W>,
+{
+    running
+        .try_scope(|running| {
+            let mut poll = set::Set::bus(&running)?;
+            let mut count = Counts::default();
+            while E::GATED && count.drained != workers {
+                let (polled, (index, event)) = clock.wait(poll, |index| {
+                    let event = running.main(index).recv();
+                    let retire = matches!(event, Ok(Event::Done));
+                    ((index, event), retire)
+                })?;
+                poll = polled;
+                let cpu = running.cpu(index);
+                count.record(execute::Cause::<S>::received(event, cpu)?, cpu, workers)?;
+            }
+            clock.draining()?;
+            while count.done != workers {
+                let (polled, (index, event)) = clock.wait(poll, |index| {
+                    let event = running.main(index).recv();
+                    let retire = matches!(event, Ok(Event::Done));
+                    ((index, event), retire)
+                })?;
+                poll = polled;
+                match execute::Cause::<S>::received(event, running.cpu(index))? {
+                    Event::Done => count.done += 1,
+                    event => {
+                        return Err(execute::Cause::BusState(State::ShutdownEvent(Shutdown {
+                            cpu: running.cpu(index),
+                            event,
+                            workers,
+                            done: count.done,
+                        })));
                     }
                 }
-                Ok(())
-            })
-        }
-    }
+            }
+            Ok(())
+        })
+        .unwrap_or(Ok(()))
 }
-
-const _: () = {
-    assert!(
-        mem::size_of::<Finish<'static, 'static, (), (), ()>>()
-            == mem::size_of::<&worker::Running<'static, (), (), ()>>()
-    );
-    assert!(
-        mem::align_of::<Finish<'static, 'static, (), (), ()>>()
-            == mem::align_of::<&worker::Running<'static, (), (), ()>>()
-    );
-};

@@ -150,9 +150,9 @@ where
         let outcome = control.watch(count, notify, &running);
         let stopped = running.stop();
         let outcome = outcome.and_then(|clock| match clock {
-            Some(clock) => control::Finish::new(&stopped)
-                .map_or(Ok(()), |finish| finish.drain(count, clock))
-                .map(|()| bus::Readiness::Required),
+            Some(clock) => {
+                control::drain(&stopped, count, clock).map(|()| bus::Readiness::Required)
+            }
             None => Ok(bus::Readiness::Cancelled),
         });
         match outcome {

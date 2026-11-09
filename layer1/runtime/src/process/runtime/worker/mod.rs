@@ -101,18 +101,17 @@ impl<'run, I, E, X> Running<'run, I, E, X> {
 }
 
 impl<'run, I, E, X> Stopping<'run, I, E, X> {
-    pub(in crate::process::runtime) const fn can_observe(&self) -> bool {
-        self.stop.is_none()
-    }
-
-    /// # Safety
-    /// Every parent still owns its Main; Finish retains this admission.
-    pub(in crate::process::runtime) unsafe fn scope<R>(
+    pub(in crate::process::runtime) fn try_scope<R>(
         &self,
         apply: impl for<'id> FnOnce(bound::Bound<'id, I, E, X>) -> R,
-    ) -> R {
-        // SAFETY: the caller retains Finish admission for all live Main owners.
-        apply(unsafe { bound::Bound::new(self.slots.values.entries()) })
+    ) -> Option<R> {
+        if self.stop.is_some() {
+            return None;
+        }
+        // SAFETY: every successful stop restored its Main, retained by this loan.
+        Some(apply(unsafe {
+            bound::Bound::new(self.slots.values.entries())
+        }))
     }
 
     pub(in crate::process::runtime) fn clean<'r, S>(
