@@ -101,11 +101,11 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Retained<'w, 'd> {
         <Current<'a, 'w, 'd> as hold::raw::Retain<'d>>::try_copy(plan, budget)
     }
 
-    fn charge<'a>(plan: &Self::View<'a>) -> hold::Charge
+    fn resident<'a>(plan: &Self::View<'a>) -> usize
     where
         Self: 'a,
     {
-        <Current<'a, 'w, 'd> as hold::raw::Retain<'d>>::charge(plan)
+        <Current<'a, 'w, 'd> as hold::raw::Retain<'d>>::resident(plan)
     }
 
     fn try_retain<'a>(
@@ -156,16 +156,16 @@ unsafe impl<'w, 'd> hold::raw::Retain<'d> for Current<'_, 'w, 'd> {
         }
     }
 
-    fn charge<'a>(plan: &Self::View<'a>) -> hold::Charge
+    fn resident<'a>(plan: &Self::View<'a>) -> usize
     where
         Self: 'a,
     {
         match &plan.backing {
-            Backing::Empty => hold::Charge::from_commit(0, 0, 0),
+            Backing::Empty => 0,
             Backing::Staged(plan) => <storage::Shared<
                 owners::Edge<owners::Plain, pool::Borrowed<'w>>,
-            > as hold::raw::Retain<'w>>::charge(plan),
-            Backing::Plain(plan) => <recv::Shared<'d> as hold::raw::Retain<'d>>::charge(plan),
+            > as hold::raw::Retain<'w>>::resident(plan),
+            Backing::Plain(plan) => <recv::Shared<'d> as hold::raw::Retain<'d>>::resident(plan),
         }
     }
 

@@ -92,11 +92,11 @@ unsafe impl<'d> hold::raw::Retain<'d> for Head<'_, 'd> {
         <recv::Shared<'d> as hold::raw::Retain<'d>>::try_copy(plan, budget)
     }
 
-    fn charge<'a>(plan: &Self::View<'a>) -> hold::Charge
+    fn resident<'a>(plan: &Self::View<'a>) -> usize
     where
         Self: 'a,
     {
-        <recv::Shared<'d> as hold::raw::Retain<'d>>::charge(plan)
+        <recv::Shared<'d> as hold::raw::Retain<'d>>::resident(plan)
     }
 
     fn try_retain<'a>(
