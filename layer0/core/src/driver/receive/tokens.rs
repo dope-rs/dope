@@ -47,7 +47,7 @@ impl<'d> Token<'d, <Engine as Complete>::Pending> {
         unsafe { buffer::raw::Release::release(&mut *local.backend, self.native) };
         if let Ok(permit) = crate::Permits::try_acquire() {
             let driver = local.driver;
-            super::Proof::release(&permit, driver.receive().exhausted(), driver);
+            super::Proof::release(&permit, driver.exhausted(), driver);
         }
     }
 }

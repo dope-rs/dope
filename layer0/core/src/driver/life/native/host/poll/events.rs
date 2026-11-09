@@ -180,7 +180,7 @@ where
                 ));
             }
         };
-        let vacant = match driver.receive().owners().try_vacant() {
+        let vacant = match driver.owners().try_vacant() {
             Ok(vacant) => vacant,
             Err(full) => {
                 let len = buffer.len();

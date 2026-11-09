@@ -89,8 +89,7 @@ impl<'p, 'd, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'p, 'd,
         work: maint::Work<'turn, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> egress::Clear<B> {
-        let slot = self.lanes.bind_mut(key);
-        let (lane, queue) = slot.into_parts();
+        let (lane, queue) = self.lanes.bind_mut(key);
         credit::Lane::new(queue).cancel(driver.region_token());
         if lane.is_some() {
             return egress::Clear::Waiting;
@@ -124,8 +123,7 @@ impl<'p, 'd, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'p, 'd,
         finish: &mut finish::Finish<'_, 'd>,
         mut free: impl FnMut(B, &mut region::Token<region::Identity<'d, 1>>),
     ) {
-        let slot = self.lanes.bind_mut(key);
-        let (lane, queue) = slot.into_parts();
+        let (lane, queue) = self.lanes.bind_mut(key);
         credit::Lane::new(queue).cancel(finish.region_token());
         *lane = None;
         while let Some(value) = front::take(queue, finish.region_token()) {

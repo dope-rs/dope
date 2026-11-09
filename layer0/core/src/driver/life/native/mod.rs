@@ -139,7 +139,7 @@ impl<'a, 'd> Access<'a, 'd> {
 
     pub(crate) fn reclaim(&mut self, limit: usize) {
         let driver = self.local.driver;
-        let owners = driver.receive().owners();
+        let owners = driver.owners();
         let mut count = 0;
         while count < limit {
             let Some(token) = owners.pop_returned() else {
@@ -153,7 +153,7 @@ impl<'a, 'd> Access<'a, 'd> {
         if count != 0
             && let Ok(permit) = crate::Permits::try_acquire()
         {
-            receive::Proof::release(&permit, driver.receive().exhausted(), driver);
+            receive::Proof::release(&permit, driver.exhausted(), driver);
         }
     }
 

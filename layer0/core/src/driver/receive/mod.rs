@@ -15,7 +15,6 @@ use crate::{
     driver::{schedule::ready, settings},
 };
 
-pub(crate) mod access;
 mod attempt;
 pub mod credit;
 mod raw;
@@ -152,7 +151,7 @@ where
         if !Self::is_live(driver, key) {
             return Err((proof, Stale));
         }
-        let store = driver.receive().exhausted();
+        let store = driver.exhausted();
         match store.try_arm(&permit, Index::from_key(key), key) {
             Ok(()) => Ok(Poll::Ready(Attempt::new(permit, driver))),
             Err(key) => Self::take(permit, store, driver, key).map_err(|stale| (proof, stale)),
@@ -164,7 +163,7 @@ where
     pub fn resume(self) -> Result<Poll<Attempt<'d>>, Stale> {
         let Self { target, permit } = self;
         let (driver, key) = target.receive();
-        let store = driver.receive().exhausted();
+        let store = driver.exhausted();
         if !Self::is_live(driver, key) {
             return match Self::cancel_inner(&permit, store, key) {
                 Ok(()) | Err(Stale) => Err(Stale),
@@ -177,7 +176,7 @@ where
     pub fn cancel(self) -> Result<(), Stale> {
         let Self { target, permit } = self;
         let (driver, key) = target.receive();
-        Self::cancel_inner(&permit, driver.receive().exhausted(), key)
+        Self::cancel_inner(&permit, driver.exhausted(), key)
     }
 
     /// Retires this registration, discarding a matching unconsumed grant.

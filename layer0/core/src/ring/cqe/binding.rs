@@ -263,7 +263,7 @@ impl<'q, 'd> Binding<'q, 'd> {
         let flow = self.packet.flow();
         let outcome = match self.packet.0.parts().outcome.decode() {
             Decode::Value(value) if value.get() != 0 => {
-                let vacant = match self.flight.driver().receive().owners().try_vacant() {
+                let vacant = match self.flight.driver().owners().try_vacant() {
                     Ok(vacant) => vacant,
                     Err(cause) => return Err(self.reject(Violation::Provided(cause))),
                 };

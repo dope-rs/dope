@@ -11,7 +11,7 @@ use crate::{
         self, data,
         load::credit,
         metadata,
-        metadata::{arena, front, lane},
+        metadata::{front, lane},
         queue,
         reserve::demand,
     },
@@ -149,21 +149,15 @@ pub(in crate::link) struct Output<
 
 impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> Output<'a, 'p, 'd, IOV, B, D> {
     pub(in crate::link::egress) fn new(
-        slot: arena::MutableSlot<
-            'a,
-            'p,
-            'd,
-            B,
-            Option<Lease<'p, 'd, IOV>>,
-            credit::Ready<'p, 'd>,
-            D,
-        >,
+        (lease, entries): (
+            &'a mut Option<Lease<'p, 'd, IOV>>,
+            metadata::Queue<'a, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+        ),
         flights: &'p recycle::Store<Entry<IOV>>,
     ) -> Self {
-        let (lane, entries) = slot.into_parts();
         Self {
             queue: egress::Queue { entries },
-            lease: lane,
+            lease,
             flights,
         }
     }

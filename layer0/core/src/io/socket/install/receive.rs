@@ -16,7 +16,7 @@ impl<'d> Capacity<'d> {
     pub(in crate::io::socket::install) fn try_new(
         driver: driver::Reference<'d>,
     ) -> Result<Self, Error> {
-        let actual = driver.receive().layout().buffer_len();
+        let actual = driver.layout().buffer_len();
         let required = settings::Receive::MIN_DATAGRAM_SLOT;
         if actual.into_nonzero() < required.into_nonzero() {
             return Err(Error { actual, required });

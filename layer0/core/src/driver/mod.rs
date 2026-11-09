@@ -1,6 +1,6 @@
 use std::{cell::Cell, marker, mem, num, ops::ControlFlow, ptr, task, time};
 
-use dope_sys::{engine, io::reactor::ready::delivery::Quota as _, kernel};
+use dope_sys::{engine, io::reactor::ready::delivery::Quota as _, kernel, memory::Context as _};
 use o3::{
     base::cell::region,
     buffer::{self, storage::provided},
@@ -11,7 +11,6 @@ use crate::{
     Backend, Engine, driver,
     driver::{
         life::{domain::runtime::Runtime, native, native::host::Host},
-        receive::access,
         result::poll,
         retained::{flight, flight::cancel},
         route::{kind, queues},
@@ -149,12 +148,20 @@ impl<'d> Reference<'d> {
         }
     }
 
-    pub(crate) const fn receive(self) -> access::Access<'d> {
-        access::Access::new(self)
+    pub(crate) fn owners(self) -> provided::Root<'d, Buffer, Shared, ()> {
+        self.shared
+    }
+
+    pub(crate) fn exhausted(self) -> &'d crate::Permits {
+        &self.shared.context().receive
+    }
+
+    pub(crate) fn layout(self) -> settings::Receive {
+        self.owners().context().buffer().layout().0
     }
 
     pub(crate) fn has_deferred(self) -> bool {
-        self.receive().owners().has_returned()
+        self.owners().has_returned()
             || self.descriptors().retirement().has_pending()
             || self.shared.context().retire.has_pending()
     }

@@ -130,7 +130,7 @@ impl<'a, 'd> Context<'a, 'd> {
 
     /// Exact receive-pool geometry of this driver generation.
     pub fn receive(&self) -> settings::Receive {
-        self.0.driver.receive().layout()
+        self.0.driver.layout()
     }
 
     pub fn region(&self) -> &region::Token<region::Identity<'d>> {

@@ -35,12 +35,6 @@ pub struct Slot<'a, 'p, 'd, T, S, M = metadata::Local, D: demand::Mode = demand:
     lane: metadata::Lane,
 }
 
-pub(in crate::link::egress) struct MutableSlot<'a, 'p, 'd, T, S, M, D: demand::Mode> {
-    pool: &'a Pool<'p, 'd, T, M, D>,
-    state: &'a mut S,
-    lane: metadata::Lane,
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[must_use]
 #[repr(u8)]
@@ -141,17 +135,19 @@ impl<'p, 'd, T, S, M, D: demand::Mode, ID: Identity> Arena<'p, 'd, T, S, M, ID, 
     pub(in crate::link::egress) fn bind_mut(
         &mut self,
         key: pool::Key<'d, ID>,
-    ) -> MutableSlot<'_, 'p, 'd, T, S, M, D> {
+    ) -> (&mut S, metadata::Queue<'_, 'p, 'd, T, M, D>) {
         let lane = metadata::Lane::from_slot(key.lane());
         // SAFETY: the tagged arena and route slab are allocated together from
         // one connection capacity. `Key` is minted only by a successful slab
         // reservation and retains the affine route-owner brand.
         let state = unsafe { self.slots.get_unchecked_mut(key.index().into_usize()) };
-        MutableSlot {
-            pool: &self.pool,
+        (
             state,
-            lane,
-        }
+            metadata::Queue {
+                pool: &self.pool,
+                lane,
+            },
+        )
     }
 }
 
@@ -197,20 +193,6 @@ impl<'a, 'p, 'd, T, S> Slot<'a, 'p, 'd, T, S, metadata::Local, demand::Fallible>
         } else {
             Progress::Retry
         }
-    }
-}
-
-impl<'a, 'p, 'd, T, S, M, D: demand::Mode> MutableSlot<'a, 'p, 'd, T, S, M, D> {
-    pub(in crate::link::egress) fn into_parts(
-        self,
-    ) -> (&'a mut S, metadata::Queue<'a, 'p, 'd, T, M, D>) {
-        (
-            self.state,
-            metadata::Queue {
-                pool: self.pool,
-                lane: self.lane,
-            },
-        )
     }
 }
 

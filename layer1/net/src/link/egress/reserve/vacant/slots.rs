@@ -23,63 +23,48 @@ pub(super) enum Slots<'queue, 'p, 'd, B, D: demand::Mode> {
     ),
 }
 
-struct Inputs<B> {
+fn validate<B>(
+    bounds: Bounds,
     first: Option<Value<B>>,
     second: Option<Value<B>>,
-}
-
-struct Validated<B> {
-    first: Option<NonEmpty<B>>,
-    second: Option<NonEmpty<B>>,
-}
-
-impl<B> Inputs<B> {
-    fn new(bounds: Bounds, first: Option<Value<B>>, second: Option<Value<B>>) -> Self {
-        if first.is_none() && second.is_some() && !bounds.has_second() {
-            Self {
-                first: second,
-                second: None,
-            }
-        } else {
-            Self { first, second }
+) -> Result<(Option<NonEmpty<B>>, Option<NonEmpty<B>>), Error<B>> {
+    let (first, second) = if first.is_none() && second.is_some() && !bounds.has_second() {
+        (second, None)
+    } else {
+        (first, second)
+    };
+    let check = |input| match input {
+        None => Ok(None),
+        Some(Value::Checked(load)) => Ok(Some(load)),
+        Some(Value::Unchecked(load)) => load.try_nonempty().map(Some),
+    };
+    let first = match check(first) {
+        Ok(first) => first,
+        Err(error) => {
+            let (load, reason) = error.into_parts();
+            return Err(Error::invalid(
+                error::Part::First,
+                reason,
+                bounds,
+                Some(Value::Unchecked(load)),
+                second,
+            ));
         }
-    }
-
-    fn validate(self, bounds: Bounds) -> Result<Validated<B>, Error<B>> {
-        let check = |input| match input {
-            None => Ok(None),
-            Some(Value::Checked(load)) => Ok(Some(load)),
-            Some(Value::Unchecked(load)) => load.try_nonempty().map(Some),
-        };
-        let Self { first, second } = self;
-        let first = match check(first) {
-            Ok(first) => first,
-            Err(error) => {
-                let (load, reason) = error.into_parts();
-                return Err(Error::invalid(
-                    error::Part::First,
-                    reason,
-                    bounds,
-                    Some(Value::Unchecked(load)),
-                    second,
-                ));
-            }
-        };
-        let second = match check(second) {
-            Ok(second) => second,
-            Err(error) => {
-                let (load, reason) = error.into_parts();
-                return Err(Error::invalid(
-                    error::Part::Second,
-                    reason,
-                    bounds,
-                    first.map(Value::Checked),
-                    Some(Value::Unchecked(load)),
-                ));
-            }
-        };
-        Ok(Validated { first, second })
-    }
+    };
+    let second = match check(second) {
+        Ok(second) => second,
+        Err(error) => {
+            let (load, reason) = error.into_parts();
+            return Err(Error::invalid(
+                error::Part::Second,
+                reason,
+                bounds,
+                first.map(Value::Checked),
+                Some(Value::Unchecked(load)),
+            ));
+        }
+    };
+    Ok((first, second))
 }
 
 impl<'queue, 'p, 'd, B, D: demand::Mode> Slots<'queue, 'p, 'd, B, D> {
@@ -90,14 +75,13 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Slots<'queue, 'p, 'd, B, D> {
         second: Option<Value<B>>,
         token: &mut region::Token<region::Identity<'d>>,
     ) -> Result<Publish, Error<B>> {
-        let valid = match Inputs::new(bounds, first, second).validate(bounds) {
+        let (first, second) = match validate(bounds, first, second) {
             Ok(valid) => valid,
             Err(error) => {
                 self.rollback(token);
                 return Err(error);
             }
         };
-        let Validated { first, second } = valid;
         let (node, spare, load, is_second) = match (self, first, second) {
             (slots, None, None) => {
                 slots.rollback(token);
