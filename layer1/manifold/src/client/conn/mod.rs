@@ -209,7 +209,7 @@ pub struct CloseRequest<'a, 'd, ID: Identity> {
 
 enum CloseTarget<'a> {
     Open(&'a mut Closing),
-    Retiring(closing::RetireRef<'a>),
+    Retiring(&'a mut closing::Packed),
 }
 
 /// Exact progress of one connection's close machine.
@@ -253,7 +253,7 @@ impl<'a, 'd, ID: Identity> CloseRequest<'a, 'd, ID> {
         match &mut self.target {
             CloseTarget::Open(closing) => CloseRequest::new(closing),
             CloseTarget::Retiring(state) => CloseRequest {
-                target: CloseTarget::Retiring(state.reborrow()),
+                target: CloseTarget::Retiring(state),
                 brand: marker::PhantomData,
             },
         }
@@ -264,7 +264,9 @@ impl<'a, 'd, ID: Identity> CloseRequest<'a, 'd, ID> {
             CloseTarget::Open(closing) => {
                 closing.apply(rule);
             }
-            CloseTarget::Retiring(state) => state.request(rule),
+            CloseTarget::Retiring(state) => {
+                state.apply(rule);
+            }
         }
     }
 

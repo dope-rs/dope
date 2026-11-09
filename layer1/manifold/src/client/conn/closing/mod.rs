@@ -2,9 +2,7 @@ use std::mem;
 
 use dope_core::driver::{route::Identity, schedule::ready};
 
-mod accesses;
 pub(in crate::client) mod retire;
-pub(super) use accesses::RetireRef;
 use retire::{Retiring, Settled, Stage, Starting};
 
 use crate::client::{
@@ -120,7 +118,7 @@ impl Packed {
         (self.issue(), urgency)
     }
 
-    fn apply(&mut self, rule: close::Directive) -> &mut Self {
+    pub(super) fn apply(&mut self, rule: close::Directive) -> &mut Self {
         match self.phase {
             ClosePhase::Withdrawing => *self = self.with(rule).with_phase(ClosePhase::Requested),
             ClosePhase::Requested
@@ -271,7 +269,7 @@ impl Closing {
             Some(state) if matches!(state.phase, ClosePhase::Claimed) => None,
             Some(state) if matches!(state.phase, ClosePhase::Finalized) => {
                 state.issue();
-                let output = callback(CloseTarget::Retiring(RetireRef(state)));
+                let output = callback(CloseTarget::Retiring(state));
                 let urgency = match output {
                     Some(_) => state.take_urgency(),
                     None => claim::Urgency::Deferred,

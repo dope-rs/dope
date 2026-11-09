@@ -73,22 +73,13 @@ pub(in crate::client) enum Application<'d, ID: Identity, C> {
     },
 }
 
-pub(in crate::client) trait BindOwner<'d, ID: Identity> {
-    type Bound;
-
-    fn bind(self, owner: attempt::Id<'d, ID>) -> Self::Bound;
-}
-
 impl<'d, ID: Identity> OwnedDrain<'d, ID> {
     pub(super) const fn new(owner: attempt::Id<'d, ID>, drain: Drain<'d, ID>) -> Self {
         Self { owner, drain }
     }
 
-    pub(in crate::client) fn run<R: BindOwner<'d, ID>>(
-        self,
-        retire: impl FnOnce(Drain<'d, ID>) -> R,
-    ) -> R::Bound {
-        retire(self.drain).bind(self.owner)
+    pub(super) fn into_parts(self) -> (attempt::Id<'d, ID>, Drain<'d, ID>) {
+        (self.owner, self.drain)
     }
 }
 

@@ -78,7 +78,7 @@ where
         let ((state, source), key) = self.source.into_inner();
         let before = X::earliest(state);
         // SAFETY: the complete incoming source is retained while projecting its primary book.
-        let source = unsafe { engine::raw::reunite(&mut state.deadlines.book, source, key) };
+        let source = unsafe { engine::raw::reunite(&mut state.book, source, key) };
         let source = edit(book::Slot::new(source));
         state.sync(before, self.target);
         source

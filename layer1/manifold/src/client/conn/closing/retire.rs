@@ -6,7 +6,7 @@ use crate::client::{
     close,
     conn::{
         self, ClosePhase,
-        closing::{Closing, Packed, RetireRef},
+        closing::{Closing, Packed},
         state,
     },
 };
@@ -88,7 +88,7 @@ impl<'a, 'd, ID: Identity> Retiring<'a, 'd, ID> {
 
     pub(in crate::client) fn reborrow(&mut self) -> conn::CloseRequest<'_, 'd, ID> {
         conn::CloseRequest {
-            target: conn::CloseTarget::Retiring(RetireRef(&mut *self.state)),
+            target: conn::CloseTarget::Retiring(&mut *self.state),
             brand: marker::PhantomData,
         }
     }

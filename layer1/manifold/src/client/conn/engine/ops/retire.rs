@@ -34,47 +34,6 @@ pub(super) enum Outcome<'d, ID: Identity, V> {
     Obsolete(drain::Obsolete<'d, ID>),
 }
 
-pub(in crate::client) enum OwnedOutcome<'d, ID: Identity, V> {
-    Retired(Retired<'d, ID, V>),
-    Pending,
-    Obsolete(Obsolete<'d, ID>),
-}
-
-pub(in crate::client) struct Obsolete<'d, ID: Identity> {
-    owner: attempt::Id<'d, ID>,
-    proof: drain::Obsolete<'d, ID>,
-}
-
-impl<'d, ID: Identity> Obsolete<'d, ID> {
-    pub(super) fn resolve<T>(self, resolve: impl FnOnce(attempt::Id<'d, ID>) -> T) -> T {
-        self.proof.resolve();
-        resolve(self.owner)
-    }
-}
-
-pub(in crate::client) struct Retired<'d, ID: Identity, V> {
-    owner: attempt::Id<'d, ID>,
-    value: V,
-}
-
-impl<'d, ID: Identity, V> Retired<'d, ID, V> {
-    pub(super) fn resolve<T>(self, resolve: impl FnOnce(attempt::Id<'d, ID>, V) -> T) -> T {
-        resolve(self.owner, self.value)
-    }
-}
-
-impl<'d, ID: Identity, V> drain::BindOwner<'d, ID> for Outcome<'d, ID, V> {
-    type Bound = OwnedOutcome<'d, ID, V>;
-
-    fn bind(self, owner: attempt::Id<'d, ID>) -> Self::Bound {
-        match self {
-            Self::Retired(value) => OwnedOutcome::Retired(Retired { owner, value }),
-            Self::Pending => OwnedOutcome::Pending,
-            Self::Obsolete(proof) => OwnedOutcome::Obsolete(Obsolete { owner, proof }),
-        }
-    }
-}
-
 pub(super) trait RetirePhase<'w, 'd: 'w, ID: Identity, A, S, E>
 where
     A: app::Application<'d, ID>,

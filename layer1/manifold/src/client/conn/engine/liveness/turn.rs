@@ -74,7 +74,7 @@ where
             .project()
             .links
             .liveness_mut()
-            .deadlines
+            .alarm
             .poll(now, wake)
             .map(|()| (now, target))
     }
@@ -89,7 +89,7 @@ where
             let step = turn.reborrow().maint().run(|| {
                 let this = self.machine.as_mut().project();
                 let (pool, liveness) = this.links.parts();
-                let item = liveness.deadlines.book.pop_expired(now)?;
+                let item = liveness.book.pop_expired(now)?;
                 let key = item.key();
                 let view = pool.inspect();
                 let done = if let Some(slot) = view.get(key) {

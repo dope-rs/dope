@@ -38,42 +38,39 @@ fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>(
     X: Mode<'d, ID>,
     engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: retire::RetirePhase<'w, 'd, ID, A, S, E>,
 {
-    let outcome = close.run(|drain| {
-        retire::RetirePhase::drain_close(
-            machine.as_mut(),
-            drain,
-            turn,
-            driver,
-            std::convert::identity,
-        )
-    });
+    let (owner, drain) = close.into_parts();
+    let outcome = retire::RetirePhase::drain_close(
+        machine.as_mut(),
+        drain,
+        turn,
+        driver,
+        std::convert::identity,
+    );
     let this = machine.project();
-    let (owner, result) = match outcome {
-        retire::OwnedOutcome::Retired(retired) => retired.resolve(|owner, rule| {
-            let result = match rule.policy() {
-                close::Policy::Permanent | close::Policy::ImmediatePermanent => {
-                    let cause = match rule.reason() {
-                        close::Reason::Capacity(close::Capacity::IdentityExhausted) => {
-                            Some(opening::Exhaustion::Identity)
-                        }
-                        close::Reason::Receive(event::ParkError::Submit(error))
-                            if error.cause() == result::SubmitCause::IdentityExhausted =>
-                        {
-                            Some(opening::Exhaustion::Submission(error))
-                        }
-                        _ => None,
-                    };
-                    this.controller.kill(owner, cause)
-                }
-                close::Policy::Reconnect | close::Policy::ImmediateReconnect => {
-                    retry(this.controller, owner, rule.reason())
-                }
-            };
-            (owner, result)
-        }),
-        retire::OwnedOutcome::Pending => return,
-        retire::OwnedOutcome::Obsolete(proof) => {
-            proof.resolve(|owner| (owner, this.controller.kill(owner, None)))
+    let result = match outcome {
+        retire::Outcome::Retired(rule) => match rule.policy() {
+            close::Policy::Permanent | close::Policy::ImmediatePermanent => {
+                let cause = match rule.reason() {
+                    close::Reason::Capacity(close::Capacity::IdentityExhausted) => {
+                        Some(opening::Exhaustion::Identity)
+                    }
+                    close::Reason::Receive(event::ParkError::Submit(error))
+                        if error.cause() == result::SubmitCause::IdentityExhausted =>
+                    {
+                        Some(opening::Exhaustion::Submission(error))
+                    }
+                    _ => None,
+                };
+                this.controller.kill(owner, cause)
+            }
+            close::Policy::Reconnect | close::Policy::ImmediateReconnect => {
+                retry(this.controller, owner, rule.reason())
+            }
+        },
+        retire::Outcome::Pending => return,
+        retire::Outcome::Obsolete(proof) => {
+            proof.resolve();
+            this.controller.kill(owner, None)
         }
     };
     if let Err(cause) = result {

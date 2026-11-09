@@ -37,13 +37,9 @@ where
     P: socket::Prepared,
     X: Mode<'d, ID>,
 {
-    deadlines: Deadlines<'d, ID>,
-    io: X::Transport<P>,
-}
-
-pub(super) struct Deadlines<'d, ID: Identity> {
     book: book::Book<'d, ID>,
     alarm: timer::Alarm<'d>,
+    io: X::Transport<P>,
 }
 
 pub(in crate::client) enum Observation<'d> {
@@ -129,7 +125,8 @@ where
         timer: timer::Timer<'d>,
     ) -> Result<Self, creation::Error> {
         Ok(Self {
-            deadlines: Deadlines::try_new(capacity, timer)?,
+            book: book::Book::try_new(capacity).map_err(creation::Error::Heap)?,
+            alarm: timer.try_alarm().map_err(creation::Error::Timer)?,
             io,
         })
     }
@@ -142,40 +139,11 @@ where
 {
     pub(in crate::client) fn rearm(&mut self, target: ready::Target<'d>) {
         let deadline = X::earliest(self);
-        self.deadlines.set(deadline, target);
+        self.set(deadline, target);
     }
 
     pub(super) fn sync(&mut self, before: Option<clock::Deadline<'d>>, target: ready::Target<'d>) {
         let after = X::earliest(self);
-        self.deadlines.sync(before, after, target);
-    }
-}
-
-impl<'d, ID: Identity> Deadlines<'d, ID> {
-    fn try_new(
-        capacity: table::Capacity,
-        timer: timer::Timer<'d>,
-    ) -> Result<Self, creation::Error> {
-        Ok(Self {
-            book: book::Book::try_new(capacity).map_err(creation::Error::Heap)?,
-            alarm: timer.try_alarm().map_err(creation::Error::Timer)?,
-        })
-    }
-
-    pub(in crate::client) fn poll(
-        &mut self,
-        now: clock::Moment<'d>,
-        wake: wake::Waker<'d>,
-    ) -> task::Poll<()> {
-        self.alarm.poll(now, wake)
-    }
-
-    fn sync(
-        &mut self,
-        before: Option<clock::Deadline<'d>>,
-        after: Option<clock::Deadline<'d>>,
-        target: ready::Target<'d>,
-    ) {
         if before != after {
             self.set(after, target);
         }
@@ -197,7 +165,7 @@ where
     P: socket::Prepared,
 {
     fn earliest(state: &State<'d, ID, P, side::Disabled>) -> Option<clock::Deadline<'d>> {
-        state.deadlines.book.earliest()
+        state.book.earliest()
     }
 
     fn is_runnable(&self, _: &State<'d, ID, P, Self>) -> bool {
@@ -219,7 +187,6 @@ where
         state: &State<'d, ID, P, side::Enabled<&'r registry::Registry<'d, I, ID>>>,
     ) -> Option<clock::Deadline<'d>> {
         state
-            .deadlines
             .book
             .earliest()
             .into_iter()
