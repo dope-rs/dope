@@ -102,7 +102,6 @@ pub enum Fault<'r, S, W> {
 #[derive(Debug)]
 pub struct Error<'r, S, W> {
     control: Option<Cause<S>>,
-    missing: Option<affinity::Cpu>,
     stop: Option<dope_core::Errno>,
     release: Option<signal::Release<'r>>,
     workers: Vec<Worker<W>>,
@@ -111,13 +110,11 @@ pub struct Error<'r, S, W> {
 impl<'r, S, W> Error<'r, S, W> {
     pub(in crate::process) fn failed(
         control: Cause<S>,
-        missing: Option<affinity::Cpu>,
         stop: Option<dope_core::Errno>,
         workers: Vec<Worker<W>>,
     ) -> Self {
         Self {
             control: Some(control),
-            missing,
             stop,
             release: None,
             workers,
@@ -125,16 +122,14 @@ impl<'r, S, W> Error<'r, S, W> {
     }
 
     pub(in crate::process) fn finish(
-        missing: Option<affinity::Cpu>,
         stop: Option<dope_core::Errno>,
         workers: Vec<Worker<W>>,
     ) -> Result<(), Self> {
-        if missing.is_none() && stop.is_none() && workers.is_empty() {
+        if stop.is_none() && workers.is_empty() {
             return Ok(());
         }
         Err(Self {
             control: None,
-            missing,
             stop,
             release: None,
             workers,
@@ -144,9 +139,6 @@ impl<'r, S, W> Error<'r, S, W> {
     pub fn fold<R>(self, mut state: R, mut apply: impl FnMut(R, Fault<'r, S, W>) -> R) -> R {
         if let Some(cause) = self.control {
             state = apply(state, Fault::Control(cause));
-        }
-        if let Some(cpu) = self.missing {
-            state = apply(state, Fault::Control(Cause::WorkerMissing { cpu }));
         }
         if let Some(source) = self.stop {
             state = apply(state, Fault::Stop(source));
@@ -164,7 +156,7 @@ impl<'r, S, W> Error<'r, S, W> {
 
 impl<'r, S, W> From<Cause<S>> for Error<'r, S, W> {
     fn from(cause: Cause<S>) -> Self {
-        Self::failed(cause, None, None, Vec::new())
+        Self::failed(cause, None, Vec::new())
     }
 }
 
@@ -177,14 +169,11 @@ impl<S> From<alloc::Error> for Cause<S> {
 impl<'r, S, W> From<signal::Error<'r, Error<'r, S, W>>> for Error<'r, S, W> {
     fn from(error: signal::Error<'r, Error<'r, S, W>>) -> Self {
         match error {
-            signal::Error::Acquire(error) => {
-                Self::failed(Cause::Signal(error), None, None, Vec::new())
-            }
+            signal::Error::Acquire(error) => Self::failed(Cause::Signal(error), None, Vec::new()),
             signal::Error::Run(error) => error,
             signal::Error::Release { run, cause } => {
                 let mut error = run.unwrap_or(Self {
                     control: None,
-                    missing: None,
                     stop: None,
                     release: None,
                     workers: Vec::new(),

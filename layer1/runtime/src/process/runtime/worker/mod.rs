@@ -1,18 +1,12 @@
 //! Worker assignment, execution, and return state.
 use std::iter;
 
-use dope_core::{
-    platform::{affinity, thread},
-    random,
-};
+use dope_core::{platform::thread, random};
 use o3::alloc::VecExt as _;
 
 use crate::process::{
     STACK,
-    failure::{
-        bus::{Read, Report},
-        execute,
-    },
+    failure::{bus::Report, execute},
     layout,
     runtime::{bus, worker},
 };
@@ -122,8 +116,8 @@ impl<'run, I, E, X> Stopping<'run, I, E, X> {
         E: worker::Entry<I, X>,
     {
         let Self { slots, stop } = self;
-        let (workers, missing) = slots.finish(None, readiness);
-        execute::Error::finish(missing, stop, workers)
+        let workers = slots.finish(readiness);
+        execute::Error::finish(stop, workers)
     }
 
     pub(in crate::process::runtime) fn fail<'r, S>(
@@ -133,26 +127,14 @@ impl<'run, I, E, X> Stopping<'run, I, E, X> {
     where
         E: worker::Entry<I, X>,
     {
-        let target = match &control {
-            execute::Cause::WorkerFailed { cpu }
-            | execute::Cause::BusRead {
-                cpu,
-                source: Read::Closed,
-            } => Some(*cpu),
-            _ => None,
-        };
         let Self { slots, stop } = self;
-        let (workers, missing) = slots.finish(target, bus::Readiness::Cancelled);
-        execute::Error::failed(control, missing, stop, workers)
+        let workers = slots.finish(bus::Readiness::Cancelled);
+        execute::Error::failed(control, stop, workers)
     }
 }
 
 impl<'run, I, E, X> Slots<'run, I, E, X> {
-    fn finish(
-        self,
-        target: Option<affinity::Cpu>,
-        readiness: bus::Readiness,
-    ) -> (Vec<execute::Worker<X>>, Option<affinity::Cpu>)
+    fn finish(self, readiness: bus::Readiness) -> Vec<execute::Worker<X>>
     where
         E: worker::Entry<I, X>,
     {
@@ -160,7 +142,6 @@ impl<'run, I, E, X> Slots<'run, I, E, X> {
             values: mut slots,
             mut failures,
         } = self;
-        let mut missing = target;
         for parent in slots.parents_mut() {
             parent.handoff::<E>(readiness);
         }
@@ -205,13 +186,10 @@ impl<'run, I, E, X> Slots<'run, I, E, X> {
                     source: execute::Bus::Write { source, handoff },
                 },
             };
-            if target == Some(cpu) {
-                missing = None;
-            }
             // SAFETY: scope reserves one slot for each registered worker.
             // finish yields each started worker once, with at most one failure.
             (unsafe { o3::alloc::raw::VecExt::vacancy(&mut failures) })(failure);
         }
-        (failures, missing)
+        failures
     }
 }
