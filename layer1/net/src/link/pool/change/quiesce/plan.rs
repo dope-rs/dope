@@ -4,7 +4,7 @@ use dope_core::driver::{
     receive::{Absent, Registration, credit},
     route::Identity,
 };
-use o3::base::{Call as _, cell::region};
+use o3::base::cell::region;
 
 use crate::{
     link::{
@@ -82,13 +82,11 @@ where
                     handle.wait_send(false);
                 }
                 let target = credit::Id::new(entry.get().key.target().dispatch());
-                if let Some(cancel) = <M::Ingress as drain::Strategy<W>>::cancel::<
-                    ID,
-                    input::Receipt<W, M>,
-                >(&recv.storage)
-                {
-                    cancel.call((&mut self.runtime, target));
-                }
+                <M::Ingress as drain::Strategy<W>>::cancel::<ID, input::Receipt<W, M>>(
+                    &recv.storage,
+                    &mut self.runtime,
+                    target,
+                );
                 while let Some(front) = recv.storage.prepare_pop() {
                     match front.pop().classify() {
                         event::Kind::Data(..) => {}

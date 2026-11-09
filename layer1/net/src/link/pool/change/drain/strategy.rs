@@ -1,7 +1,4 @@
-use std::convert::Infallible;
-
 use dope_core::driver::{receive::credit, route::Identity};
-use o3::base::Call;
 
 use crate::{
     link::{
@@ -25,13 +22,10 @@ use crate::{
 pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
     storage::raw::Mode
 {
-    fn returned<'w, 'd: 'w, ID: Identity + 'w>(
-        _: credit::Wake,
-    ) -> Option<impl for<'a> Call<&'a mut W::Runtime<'w, 'd, ID>>>
+    fn returned<'w, 'd: 'w, ID: Identity + 'w>(_: credit::Wake, _: &mut W::Runtime<'w, 'd, ID>)
     where
         W: 'w + 'd,
     {
-        None::<Infallible>
     }
 
     fn credit<'s, 'a, 'd: 'a, R: 'a>(
@@ -42,11 +36,11 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
 
     fn cancel<'w, 'd: 'w, ID: Identity + 'w, C>(
         _: &Self::Bound<'_, 'd, C>,
-    ) -> Option<impl for<'a> Call<(&'a mut W::Runtime<'w, 'd, ID>, credit::Id<'d, ID>)>>
-    where
+        _: &mut W::Runtime<'w, 'd, ID>,
+        _: credit::Id<'d, ID>,
+    ) where
         W: 'w + 'd,
     {
-        None::<Infallible>
     }
 
     fn close<
@@ -99,9 +93,7 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
                     .recv
                     .resume(true)
                     .is_some_and(duplex::Rearm::is_needed);
-                if let Some(returned) = Self::returned(wake) {
-                    returned.call(plan.storage.runtime);
-                }
+                Self::returned(wake, plan.storage.runtime);
                 if rearm {
                     plan.storage.recv.rearm.queue();
                 }
@@ -151,26 +143,24 @@ where
 {
     fn cancel<'w, 'd: 'w, ID: Identity + 'w, C>(
         storage: &Self::Bound<'_, 'd, C>,
-    ) -> Option<impl for<'a> Call<(&'a mut W::Runtime<'w, 'd, ID>, credit::Id<'d, ID>)>>
-    where
+        runtime: &mut W::Runtime<'w, 'd, ID>,
+        target: credit::Id<'d, ID>,
+    ) where
         W: 'w + 'd,
     {
-        storage.get().is_held().then_some(
-            |(runtime, target): (&mut W::Runtime<'w, 'd, ID>, credit::Id<'d, ID>)| {
-                R::cancel(runtime, target);
-            },
-        )
+        if storage.get().is_held() {
+            R::cancel(runtime, target);
+        }
     }
 
     fn returned<'w, 'd: 'w, ID: Identity + 'w>(
         wake: credit::Wake,
-    ) -> Option<impl for<'a> Call<&'a mut W::Runtime<'w, 'd, ID>>>
-    where
+        runtime: &mut W::Runtime<'w, 'd, ID>,
+    ) where
         W: 'w + 'd,
     {
-        match wake {
-            credit::Wake::Returned => Some(R::release_recv::<ID>),
-            credit::Wake::Retry => None,
+        if matches!(wake, credit::Wake::Returned) {
+            R::release_recv(runtime);
         }
     }
 

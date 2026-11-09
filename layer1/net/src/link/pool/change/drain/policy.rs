@@ -1,5 +1,5 @@
 use dope_core::driver::{self, life::finish, receive::credit, route::Identity, schedule::maint};
-use o3::base::{Call as _, cell::region};
+use o3::base::cell::region;
 
 use crate::{
     link::{
@@ -143,11 +143,11 @@ where
             };
             let target = resident.get().key.target();
             let id = credit::Id::new(target.dispatch());
-            if let Some(cancel) =
-                <Self as Strategy<W>>::cancel::<ID, input::Receipt<W, M>>(&storage.storage)
-            {
-                cancel.call((&mut pool.prepared.runtime, id));
-            }
+            <Self as Strategy<W>>::cancel::<ID, input::Receipt<W, M>>(
+                &storage.storage,
+                &mut pool.prepared.runtime,
+                id,
+            );
             let mut entry = tail::Store::clear(resident);
             let stop = entry.get_mut().control.engine.cancel(driver);
             match stop {
