@@ -7,8 +7,8 @@ mod error;
 use std::{mem, net, os::fd};
 
 use dope_sys::{
-    engine,
-    io::socket::{Domain, Kind, Origin, Prepare},
+    Errno, engine,
+    io::socket::{Domain, Kind, Origin, Prepare, Socket as _},
     kernel,
 };
 pub use error::Error;
@@ -103,11 +103,26 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         kind: Kind,
     ) -> Result<(Descriptor<'d>, net::SocketAddr), Error> {
         let handle = socket::Handle::new(crate::Backend::adopt(file).map_err(Error::setup)?);
+        let fault = |errno| Error::syscall(Operation::Validate, errno);
+        let actual = crate::Backend::kind::<Errno>(handle.owned().as_fd()).map_err(fault)?;
         match kind {
-            Kind::Stream => handle.check_stream(),
-            Kind::Dgram => handle.check_dgram(),
+            Kind::Stream => {
+                if !actual.is_stream() {
+                    return Err(Error::Adopt(adopt::Error::ListenerKind {
+                        actual: actual.raw(),
+                    }));
+                }
+                if !crate::Backend::is_listening::<Errno>(handle.owned().as_fd()).map_err(fault)? {
+                    return Err(Error::Adopt(adopt::Error::ListenerState { actual: 0 }));
+                }
+            }
+            Kind::Dgram if !actual.is_datagram() => {
+                return Err(Error::Adopt(adopt::Error::DatagramKind {
+                    actual: actual.raw(),
+                }));
+            }
+            Kind::Dgram => {}
         }
-        .map_err(Error::validation)?;
         self.finish(handle)
     }
 

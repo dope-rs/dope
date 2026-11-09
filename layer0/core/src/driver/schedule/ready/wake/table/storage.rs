@@ -143,12 +143,7 @@ pub(super) struct Key(pub(super) links::Index);
 /// A linear registration in a [`storage::Registry`].
 #[repr(transparent)]
 pub struct Registration<'target, W> {
-    active: Option<Occupied<'target, W>>,
-}
-
-/// A retained registration owning a linked value or a parked, empty slot.
-struct Occupied<'a, W> {
-    slot: Slot<'a, W>,
+    active: Option<Slot<'target, W>>,
 }
 
 impl<'a, W> Default for Registration<'a, W> {
@@ -167,8 +162,42 @@ impl<'a, W> Registration<'a, W> {
         W: Copy,
     {
         match &mut self.active {
-            Some(active) => active.try_keep(slot, value)?,
-            None => self.active = Some(slot.try_insert(value)?),
+            Some(active) => {
+                if !ptr::eq(active.table, slot.table) || active.key != slot.key {
+                    return Err(storage::Reject::Active {
+                        index: slot.key.index(),
+                    });
+                }
+                let view = active.view();
+                view.initialize(value);
+                if let Some(vacant) = view.unpark() {
+                    // SAFETY: this registration retains the exact table owning both
+                    // the detached hook and the active chain's reciprocal endpoints.
+                    unsafe {
+                        depot::raw::Hooks::push(
+                            active.table.entries.as_ref(),
+                            vacant,
+                            &active.table.links,
+                        )
+                    };
+                }
+            }
+            None => {
+                let view = slot.view();
+                if !view.hook().is_vacant(slot.key.index()) {
+                    return Err(storage::Reject::Occupied {
+                        index: slot.key.index(),
+                    });
+                }
+                view.initialize(value);
+                let table = slot.table;
+                // SAFETY: the checked slot is vacant and initialized above. Only this
+                // table mutates its stable hooks, preserving the chain's reciprocal ends.
+                unsafe {
+                    depot::raw::Hooks::chain_push(table.entries.as_ref(), &table.links, slot.key.0)
+                };
+                self.active = Some(slot);
+            }
         }
         Ok(())
     }
@@ -187,67 +216,25 @@ impl<'a, W> Slot<'a, W> {
         unsafe { resident::raw::View::new(&self.table.entries, self.key.0) }
     }
 
-    fn try_insert(self, value: W) -> Result<Occupied<'a, W>, storage::Reject>
-    where
-        W: Copy,
-    {
-        let view = self.view();
-        if !view.hook().is_vacant(self.key.index()) {
-            return Err(storage::Reject::Occupied {
-                index: self.key.index(),
-            });
-        }
-        view.initialize(value);
-        let table = self.table;
-        // SAFETY: the checked slot is vacant and initialized above. Only this
-        // table mutates its stable hooks, preserving the chain's reciprocal ends.
-        unsafe { depot::raw::Hooks::chain_push(table.entries.as_ref(), &table.links, self.key.0) };
-        Ok(Occupied { slot: self })
-    }
-
     fn unlink(&self) -> links::Detached<'a> {
         let table = self.table;
-        // SAFETY: take_one proves this slot linked; Occupied's exclusive
+        // SAFETY: take_one proves this slot linked; the exclusive
         // registration otherwise owns either this linked slot or its parked
         // marker. Its drop calls here only after excluding that parked state.
         unsafe { depot::raw::Hooks::chain_unlink(table.entries.as_ref(), &table.links, self.key.0) }
     }
 }
 
-impl<W> Occupied<'_, W> {
-    fn try_keep(&mut self, slot: Slot<'_, W>, value: W) -> Result<(), storage::Reject>
-    where
-        W: Copy,
-    {
-        if !ptr::eq(self.slot.table, slot.table) || self.slot.key != slot.key {
-            return Err(storage::Reject::Active {
-                index: slot.key.index(),
-            });
-        }
-        let view = self.slot.view();
-        view.initialize(value);
-        if let Some(vacant) = view.unpark() {
-            // SAFETY: this registration retains the exact table owning both
-            // the detached hook and the active chain's reciprocal endpoints.
-            unsafe {
-                depot::raw::Hooks::push(
-                    self.slot.table.entries.as_ref(),
-                    vacant,
-                    &self.slot.table.links,
-                )
-            };
-        }
-        Ok(())
-    }
-}
-
-impl<W> Drop for Occupied<'_, W> {
+impl<W> Drop for Registration<'_, W> {
     fn drop(&mut self) {
-        let view = self.slot.view();
+        let Some(slot) = &self.active else {
+            return;
+        };
+        let view = slot.view();
         if let Some(vacant) = view.unpark() {
             vacant.idle();
         } else {
-            self.slot.unlink().idle();
+            slot.unlink().idle();
             // SAFETY: this registration removed its linked initialized payload exactly once.
             unsafe { view.retire() };
         }
@@ -255,5 +242,4 @@ impl<W> Drop for Occupied<'_, W> {
 }
 
 const _: () = assert!(mem::size_of::<Registry<u64>>() == 4 * mem::size_of::<usize>());
-const _: () =
-    assert!(mem::size_of::<Option<Occupied<'static, u64>>>() == 2 * mem::size_of::<usize>());
+const _: () = assert!(mem::size_of::<Option<Slot<'static, u64>>>() == 2 * mem::size_of::<usize>());

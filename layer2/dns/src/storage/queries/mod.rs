@@ -434,8 +434,7 @@ impl<'queries, 's, 'd, const LANES: usize, const N: usize> Lane<'queries, 's, 'd
         let lane = self.write(token);
         let config = self.queries.config;
         let hard = now.try_add(config.query.total_timeout)?;
-        let seed = state::Seed::new(reason, unix, now, hard, name, config);
-        ledger::Ledger::start(lane, seed);
+        ledger::Ledger::start(lane, reason, unix, now, hard, name, config);
         Ok(())
     }
 

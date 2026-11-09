@@ -1,4 +1,4 @@
-use std::{mem, time::Instant};
+use std::time::Instant;
 
 use dope::core::driver::schedule::clock;
 use o3::base::time::{Nanos, Unix};
@@ -18,65 +18,33 @@ pub(in crate::storage::queries) struct Query<'s, const N: usize> {
     branches: [state::Row<'s, N>; family::Version::COUNT],
 }
 
-pub(in crate::storage::queries) struct Seed<'name, 's> {
-    reason: lookup::Reason,
-    started_unix_ns: Unix<Nanos>,
-    started_at: Instant,
-    hard_deadline: Instant,
-    end: Instant,
-    name: &'name host::Name,
-    server: config::Selected<'s>,
-}
-
-impl<'name, 's> Seed<'name, 's> {
+impl<'s, const N: usize> Query<'s, N> {
     /// Uses the deadline admitted from this observation and configuration.
     pub(in crate::storage::queries) fn new<'d>(
         reason: lookup::Reason,
         unix: Unix<Nanos>,
         start: clock::Moment<'d>,
         hard: clock::Deadline<'d>,
-        name: &'name host::Name,
+        name: &host::Name,
         config: &'s config::Validated,
+        entries: [Entry<'s>; 2],
     ) -> Self {
         let hard = hard.into_raw();
         let end = state::Retry::from_config(config).deadline(start.into_raw(), hard);
         let server = config.servers.first();
+        let [four, six] = entries;
         Self {
             reason,
             started_unix_ns: unix,
             started_at: start.into_raw(),
             hard_deadline: hard,
-            end,
-            name,
-            server,
-        }
-    }
-
-    pub(in crate::storage::queries) fn into_query<const N: usize>(
-        self,
-        entries: [Entry<'s>; 2],
-    ) -> Query<'s, N> {
-        let [four, six] = entries;
-        Query {
-            reason: self.reason,
-            started_unix_ns: self.started_unix_ns,
-            started_at: self.started_at,
-            hard_deadline: self.hard_deadline,
             branches: [
-                state::Row::new(
-                    four,
-                    state::Attempt::initial(self.name.clone(), self.end, self.server),
-                ),
-                state::Row::new(
-                    six,
-                    state::Attempt::initial(self.name.clone(), self.end, self.server),
-                ),
+                state::Row::new(four, state::Attempt::initial(name.clone(), end, server)),
+                state::Row::new(six, state::Attempt::initial(name.clone(), end, server)),
             ],
         }
     }
-}
 
-impl<'s, const N: usize> Query<'s, N> {
     pub(in crate::storage::queries) fn entries(&self) -> [Entry<'s>; 2] {
         self.branches.each_ref().map(state::Row::entry)
     }
@@ -160,7 +128,3 @@ impl<'s, const N: usize> Query<'s, N> {
         self.branches.iter().any(|row| row.value.is_stream())
     }
 }
-
-const _: () = {
-    assert!(mem::size_of::<Seed<'static, 'static>>() == 88);
-};

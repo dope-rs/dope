@@ -15,7 +15,6 @@ use dope_sys::{
     },
 };
 pub use error::Error;
-use install::adopt;
 
 use crate::{
     Backend, driver,
@@ -33,7 +32,6 @@ use crate::{
 };
 
 mod addr;
-pub(crate) mod adoption;
 mod backlog;
 mod error;
 
@@ -123,31 +121,6 @@ impl Handle {
 
     pub(crate) fn into_inner(self) -> <Backend as socket::Prepare>::Handle {
         self.fd
-    }
-
-    pub(crate) fn check_stream(&self) -> Result<(), adoption::Error> {
-        let kind = Backend::kind::<Errno>(self.fd.as_fd()).map_err(adoption::Error::Syscall)?;
-        if !kind.is_stream() {
-            return Err(adoption::Error::Role(adopt::Error::ListenerKind {
-                actual: kind.raw(),
-            }));
-        }
-        if !Backend::is_listening::<Errno>(self.fd.as_fd()).map_err(adoption::Error::Syscall)? {
-            return Err(adoption::Error::Role(adopt::Error::ListenerState {
-                actual: 0,
-            }));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn check_dgram(&self) -> Result<(), adoption::Error> {
-        let kind = Backend::kind::<Errno>(self.fd.as_fd()).map_err(adoption::Error::Syscall)?;
-        if !kind.is_datagram() {
-            return Err(adoption::Error::Role(adopt::Error::DatagramKind {
-                actual: kind.raw(),
-            }));
-        }
-        Ok(())
     }
 
     pub(crate) fn bind(&self, addr: &Inet) -> Result<(), Errno> {

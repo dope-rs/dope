@@ -9,10 +9,7 @@ use crate::{
     driver::result,
     io::{
         socket,
-        socket::{
-            adoption,
-            install::{Operation, adopt, receive, slot},
-        },
+        socket::install::{Operation, adopt, receive, slot},
     },
 };
 
@@ -70,13 +67,6 @@ impl Error {
         Self::Kernel {
             operation: op,
             cause,
-        }
-    }
-
-    pub(crate) fn validation(error: adoption::Error) -> Self {
-        match error {
-            adoption::Error::Syscall(errno) => Self::syscall(Operation::Validate, errno),
-            adoption::Error::Role(error) => Self::Adopt(error),
         }
     }
 }

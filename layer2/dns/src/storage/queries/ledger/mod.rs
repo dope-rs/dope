@@ -1,7 +1,9 @@
 use std::{mem, net, ops, time};
 
+use dope::core::driver::schedule::clock;
 use o3::{
     alloc::VecExt as _,
+    base::time::{Nanos, Unix},
     depot::{
         self,
         index::{Initialized, set},
@@ -227,9 +229,25 @@ impl<'s, const LANES: usize, const N: usize> Ledger<'s, LANES, N> {
         };
     }
 
-    pub(in crate::storage::queries) fn start(lane: Lane<&mut Self>, seed: state::Seed<'_, 's>) {
+    pub(in crate::storage::queries) fn start<'d>(
+        lane: Lane<&mut Self>,
+        reason: crate::lookup::Reason,
+        unix: Unix<Nanos>,
+        now: clock::Moment<'d>,
+        hard: clock::Deadline<'d>,
+        name: &crate::host::Name,
+        config: &'s config::Validated,
+    ) {
         let (slot, _) = Self::write(lane);
-        *slot = Slot::Query(seed.into_query(slot.entries()));
+        *slot = Slot::Query(state::Query::new(
+            reason,
+            unix,
+            now,
+            hard,
+            name,
+            config,
+            slot.entries(),
+        ));
     }
 }
 
