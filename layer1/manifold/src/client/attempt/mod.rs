@@ -256,10 +256,6 @@ impl<'source, 'd, ID: Identity> Completion<'source, 'd, ID> {
         self.key
     }
 
-    pub(in crate::client) fn with_id(self, key: Id<'d, ID>) -> Self {
-        Self { key, ..self }
-    }
-
     fn belongs_to<T: dope_net::Transport>(&self, source: &table::Table<'d, T, ID>) -> bool {
         self.source == Some(ptr::NonNull::from(source).cast())
     }

@@ -50,7 +50,7 @@ impl<'d, ID: Identity, A: app::Failed<'d, ID>> Report<'d, ID, A> for queue::Look
         driver: &mut driver::Context<'_, 'd>,
     ) {
         let (id, cause) = self.into_event();
-        let key = key.with_id(id);
+        let key = attempt::Completion { key: id, ..key };
         app.failed(key, attempt::ConnectFault::Attempt(cause), driver);
     }
 
