@@ -1,6 +1,13 @@
 use std::num::NonZero;
 
+use dope::core::io::datagram::GsoLimits;
+
 use crate::conn::{id, wire::packet};
+
+const ENTRY: usize = 16;
+const _: () = assert!(
+    1 + ENTRY * crate::conn::MAX_BATCH_PACKETS < crate::proto::datagram::Size::MIN.get() as usize
+);
 
 pub(super) struct Gso<'a> {
     batch: &'a mut packet::Gso,
@@ -9,6 +16,17 @@ pub(super) struct Gso<'a> {
 }
 
 impl<'a> Gso<'a> {
+    pub(super) fn capacity<const SHARED: bool>(
+        limits: GsoLimits,
+        bytes: usize,
+        outer: NonZero<usize>,
+        packets: usize,
+    ) -> usize {
+        let wire = (packets * outer.get()).min(limits.max_bytes().into_raw());
+        let participants = if SHARED { packets } else { 1 };
+        packets.saturating_sub(usize::from(wire + 1 + ENTRY * participants > bytes))
+    }
+
     pub(super) fn try_new(
         batch: &'a mut packet::Gso,
         packets: usize,
@@ -16,7 +34,7 @@ impl<'a> Gso<'a> {
         participants: usize,
     ) -> Result<Self, crate::conn::output::transmit::Admission> {
         let wire = (packets * outer).min(batch.limits().max_bytes().into_raw());
-        let bytes = batch.try_prepare(wire + 1 + 16 * participants)?;
+        let bytes = batch.try_prepare(wire + 1 + ENTRY * participants)?;
         let tail = bytes.as_mut_ptr().wrapping_add(bytes.capacity() - 1);
         Ok(Self {
             batch,
@@ -38,7 +56,7 @@ impl<'a> Gso<'a> {
             // SAFETY: first reservation covers all selected contributors beyond
             // every temporary wire write; emission cannot move this allocation.
             unsafe {
-                let entry = self.tail.sub(16 * usize::from(self.participants));
+                let entry = self.tail.sub(ENTRY * usize::from(self.participants));
                 entry.cast::<u32>().write_unaligned(handle.position().get());
                 entry
                     .add(4)
@@ -65,7 +83,7 @@ pub(super) fn participants(
     // native settlement returns that unchanged allocation and initialized footer.
     let count = unsafe { end.read() };
     (1..=count).map(move |index| unsafe {
-        let entry = end.sub(16 * usize::from(index));
+        let entry = end.sub(ENTRY * usize::from(index));
         (
             NonZero::new_unchecked(entry.cast::<u32>().read_unaligned()),
             entry.add(4).cast::<u32>().read_unaligned(),

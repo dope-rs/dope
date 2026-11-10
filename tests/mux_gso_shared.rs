@@ -15,6 +15,7 @@ use std::{
 #[test]
 fn same_destination_shares() {
     const CONNECTIONS: usize = 4;
+    const BYTES: usize = CONNECTIONS * (1200 + 16) + 1;
 
     let (signing, key) = peer::raw(0x47).expect("raw identity");
     let options = || gso::options().expect("fixture connection options must be valid");
@@ -24,7 +25,7 @@ fn same_destination_shares() {
         .expect("fixture server must initialize");
     let capture = gso::Capture::default();
     let local = capture.events.clone();
-    let limits = Plan::try_new(CONNECTIONS, 64, 1 << 20).expect("route fixture limits are valid");
+    let limits = Plan::try_new(CONNECTIONS, 64, BYTES).expect("route fixture limits are valid");
     let mut client = Builder::client(capture)
         .limits(limits)
         .build()
@@ -106,6 +107,10 @@ fn same_destination_shares() {
         assert_eq!(burst[0].packet_count().get(), CONNECTIONS);
         assert!(burst[0].is_segmented());
         let storage = (burst[0].payload().as_ptr(), burst[0].resident());
+        assert!(
+            storage.1 <= BYTES,
+            "the original allocation fits its byte limit"
+        );
         if let Some(previous) = reused {
             assert_eq!(storage, previous, "eligible original allocation is reused");
         }

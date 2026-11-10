@@ -58,7 +58,7 @@ fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
         slot.peer_addr.overhead()
     };
     let outer = max.saturating_add(overhead);
-    let gso = path
+    let mut gso = path
         .gso()
         .filter(|_| {
             slot.conn
@@ -89,19 +89,28 @@ fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
     };
     let bytes = space.min(chunk.max(outer.get()));
     let mut count = room.min(bytes / outer).min(conn::MAX_BATCH_PACKETS);
-    if let Some((limits, _)) = gso {
-        count = count.min(limits.capacity().count());
-    }
     if count == 0 {
         return Ok(router::Flush::Backpressure);
     }
-
-    let (sent, result) = if let Some((_, path)) = gso {
-        let count = if slot.conn.view().path().has_output() {
+    if let Some((limits, _)) = gso {
+        count = if slot.conn.view().path().has_output() {
             1
         } else {
-            count
+            count.min(limits.capacity().count())
         };
+        count = crate::runtime::raw::Gso::capacity::<false>(
+            limits,
+            output.bytes_capacity,
+            outer,
+            count,
+        );
+        if count == 0 {
+            gso = None;
+            count = 1;
+        }
+    }
+
+    let (sent, result) = if let Some((_, path)) = gso {
         output.emit_gso(count, bytes, outer.get(), 1, *slot.peer_addr, |flight| {
             let (target, result) = flight.append(handle, path, |batch| {
                 slot.conn

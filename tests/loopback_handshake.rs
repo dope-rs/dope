@@ -39,7 +39,12 @@ use common::runtime::loopback::{
 
 #[test]
 fn saturated_progress() {
-    for lane in [Lane::Plain, Lane::Gso] {
+    for (lane, bytes) in [(Lane::Plain, 3600), (Lane::Gso, 3600), (Lane::Gso, 1200)] {
+        let endpoint = Config {
+            outgoing_bytes_capacity: bytes,
+            packet_buffer_bytes: 1200,
+            ..ENDPOINT
+        };
         let (active, [server, client]) = {
             let want_gso = lane.is_gso();
             let (signing, key) = peer::raw(0x39).expect("raw identity");
@@ -64,7 +69,7 @@ fn saturated_progress() {
                     .expect("loopback wildcard server address must parse"),
                 identity,
                 options,
-                ENDPOINT,
+                endpoint,
             )
             .expect("loopback server resources must form an endpoint plan");
             let srv_plan = if want_gso && dope::manifold::network::datagram::GSO_LIMITS.is_some() {
@@ -76,7 +81,7 @@ fn saturated_progress() {
                 "127.0.0.1:0"
                     .parse::<SocketAddr>()
                     .expect("loopback wildcard client address must parse"),
-                ENDPOINT,
+                endpoint,
             )
             .expect("loopback client resources must form an endpoint plan");
             let claims = (srv_plan.as_ref(), cli_plan.as_ref());
@@ -270,7 +275,7 @@ fn saturated_progress() {
             assert_eq!(net.shutdowns(), 0);
         }
         let saved = server.saved_ops();
-        if active {
+        if active && bytes > 1200 {
             assert!(server.gso_ops() != 0);
             assert!(saved != 0);
             assert!(server.max_batch() > 1);

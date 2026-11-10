@@ -196,13 +196,14 @@ impl Storage {
         let Some(batch) = self.cache.batch.as_ref() else {
             return 0;
         };
-        batch
+        let count = batch
             .limits()
             .capacity()
             .count()
             .min(conn::MAX_BATCH_PACKETS)
             .min(self.pending.capacity() - self.pending.len())
-            .min(self.bytes_capacity.saturating_sub(self.pending.bytes()) / max)
+            .min(self.bytes_capacity.saturating_sub(self.pending.bytes()) / max);
+        crate::runtime::raw::Gso::capacity::<true>(batch.limits(), self.bytes_capacity, max, count)
     }
 
     pub(super) fn emit_gso<E>(
