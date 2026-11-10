@@ -54,10 +54,11 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Send
         if !entry.get().matches(done.token()) {
             return Err(done);
         }
-        let result = done.outcome().into();
-        let send = entry.remove();
         let owner = owners::Flight::new(target);
-        let (addr, hold) = send.finish();
+        let (addr, hold, result) = match done.outcome() {
+            Ok(bytes) => entry.remove().finish(Outcome::Sent(bytes)),
+            Err(error) => entry.remove().finish(Outcome::Failed(error)),
+        };
         hold.retire(Owner::Flight(owner), addr, result, at, sink, token);
         Ok(())
     }
@@ -164,11 +165,11 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Send
             let send = entry.remove();
             let owner =
                 owners::Flight::new(space.bind(key.slot(), key.epoch()).operation::<Send>());
-            let (addr, hold) = send.finish();
+            let (addr, hold, outcome) = send.finish(Outcome::Shutdown);
             hold.retire(
                 Owner::Flight(owner),
                 addr,
-                Outcome::Shutdown,
+                outcome,
                 at,
                 sink.as_mut(),
                 token,

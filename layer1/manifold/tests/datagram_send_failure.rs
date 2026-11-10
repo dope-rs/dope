@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{cell::Cell, net, rc::Rc, time::Duration};
+use std::{cell::Cell, net, num::NonZero, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
@@ -42,7 +42,7 @@ fn settles_exact_owner() {
     let addr = net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 9));
     let expected = vec![
         b"send-correlation-owner-1".to_vec(),
-        b"send-correlation-owner-2".to_vec(),
+        vec![2; 2000],
     ];
     let source = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("shutdown socket");
     let error = source
@@ -148,11 +148,12 @@ fn settles_exact_owner() {
     let events = events.take();
     assert_eq!(received.hits(), 0, "send failure fixture received a packet");
     assert_eq!(events.len(), expected.len());
-    for (event, expected) in events.iter().zip(&expected) {
+    for (index, (event, expected)) in events.iter().zip(&expected).enumerate() {
         assert_eq!(event.addr, addr);
         assert_eq!(event.payload.as_ref(), expected);
-        let Outcome::Failed(errno) = event.outcome else {
-            panic!("native send failure");
+        let errno = match (&event.outcome, index == 1 && datagram::GSO_LIMITS.is_some()) {
+            (Outcome::Failed(errno), false) | (Outcome::GsoFailed(errno), true) => *errno,
+            _ => panic!("native send failure"),
         };
         assert_eq!(errno, error);
     }
@@ -198,18 +199,17 @@ fn check_failingsend<'d>(this: &mut FailingSend<'d>, event: handler::Event<'_, '
             let Some(payload) = this.pending.pop_front() else {
                 return;
             };
-            match socket.as_mut().queue_vec(payload, this.addr) {
-                Ok(owner) => {
-                    assert!(this.accepted.replace(now).is_none());
-                    assert!(this.active.queued.replace(owner).is_none());
-                    assert!(this.prior.queued.replace(owner) != Some(owner));
-                }
-                Err(rejected) => {
-                    let (payload, cause) = rejected.into_parts();
-                    assert!(matches!(cause, datagram::RejectCause::QueueFull));
-                    this.pending.push_front(payload);
-                }
+            let owner = if datagram::GSO_LIMITS.is_some() && this.prior.flight.is_some() {
+                socket
+                    .as_mut()
+                    .queue_gso(payload, NonZero::new(1000).expect("segment size"), this.addr)
+            } else {
+                socket.as_mut().queue_vec(payload, this.addr)
             }
+            .unwrap_or_else(|_| panic!("empty send queue"));
+            assert!(this.accepted.replace(now).is_none());
+            assert!(this.active.queued.replace(owner).is_none());
+            assert!(this.prior.queued.replace(owner) != Some(owner));
         }
         handler::Event::Transfer(transfer) => {
             assert!(this.active.queued.take() == Some(transfer.queued()));

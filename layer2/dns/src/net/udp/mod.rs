@@ -233,7 +233,9 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const ADDRESSES: us
                 send::Outcome::Sent(sent) => {
                     error::Kind::Datagram(error::Datagram::Partial { sent, expected })
                 }
-                send::Outcome::Failed(errno) => error::Kind::Transport { errno },
+                send::Outcome::Failed(errno) | send::Outcome::GsoFailed(errno) => {
+                    error::Kind::Transport { errno }
+                }
                 send::Outcome::Submit(error) => {
                     error::Kind::Datagram(error::Datagram::Submit(error))
                 }

@@ -22,6 +22,8 @@ pub(super) use sealed::Sealed;
 pub enum Outcome {
     Sent(transfer::Len),
     Failed(dope_core::Errno),
+    /// A native failure of a segmented send.
+    GsoFailed(dope_core::Errno),
     Submit(result::SubmitError),
     Shutdown,
 }
@@ -176,19 +178,6 @@ pub(super) struct Queued<'d, B = pool::Cursor, M: Mode = Plain> {
     pub(super) control: M::Queued,
 }
 
-impl<'d, B, M: Mode> Queued<'d, B, M> {
-    pub(super) fn new(
-        retained: retained::Retained<'d, B>,
-        addr: net::SocketAddr,
-        control: M::Queued,
-    ) -> Self {
-        Self {
-            addr,
-            retained,
-            control,
-        }
-    }
-}
 const _: () = assert!(mem::size_of::<bounded::Value<Vec<u8>>>() == mem::size_of::<Vec<u8>>());
 const _: () =
     assert!(mem::size_of::<bounded::Value<pool::Cursor>>() == mem::size_of::<pool::Cursor>());
@@ -196,6 +185,7 @@ const _: () =
     assert!(mem::size_of::<bounded::Value<recv::Lease<'_>>>() == mem::size_of::<recv::Lease<'_>>());
 
 const _: () = {
+    assert!(mem::size_of::<Outcome>() == 8);
     assert!(mem::size_of::<kernel::Payload<'static>>() == 4 * mem::size_of::<usize>());
     assert!(mem::size_of::<Payload<'static, 'static>>() == 4 * mem::size_of::<usize>());
 };
@@ -211,6 +201,10 @@ pub trait Mode: Sealed {
     fn prepare(control: Self::Queued) -> Self::Flight;
     fn restore(control: Self::Flight) -> Self::Queued;
     fn attach<'a>(control: &'a mut Self::Flight, message: msg::Builder<'a>) -> msg::Builder<'a>;
+
+    fn is_gso(_: Self::Flight) -> bool {
+        false
+    }
 }
 
 /// Destinations that preserve optional segmentation through queue admission.
@@ -231,6 +225,10 @@ impl Mode for Plain {
 
     fn restore(control: Self::Flight) -> Self::Queued {
         control.map(datagram::GsoControl::into_segment)
+    }
+
+    fn is_gso(control: Self::Flight) -> bool {
+        control.is_some()
     }
 
     fn attach<'a>(
@@ -292,6 +290,10 @@ impl Mode for Sourced<datagram::Gso> {
 
     fn restore(control: Self::Flight) -> Self::Queued {
         control.into_parts()
+    }
+
+    fn is_gso(control: Self::Flight) -> bool {
+        control.into_parts().1.is_some()
     }
 
     fn attach<'a>(

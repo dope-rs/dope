@@ -162,8 +162,11 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
             Err(error) => return Err(Rejected::new(value, error)),
         };
         let (value, control) = build(value)?;
-        let hold = retained::Retained::new(value, charge);
-        Ok(entry.push(send::Queued::new(hold, addr, control)))
+        Ok(entry.push(send::Queued {
+            addr,
+            retained: retained::Retained::new(value, charge),
+            control,
+        }))
     }
 
     pub(in crate::network::datagram) fn try_receive(
@@ -228,23 +231,14 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
     ) -> Sender<'d, ID, B, M> {
         self.pending.advance_to(floor);
         self.in_flight.access().advance_to(floor);
-        let Self {
-            pending,
-            in_flight: active,
-            budget,
-            receive_slot: bytes,
-            flights: (),
-            space,
-            phase,
-        } = self;
         Sender {
-            pending,
-            in_flight: active,
-            budget,
-            receive_slot: bytes,
+            pending: self.pending,
+            in_flight: self.in_flight,
+            budget: self.budget,
+            receive_slot: self.receive_slot,
             flights,
-            space,
-            phase,
+            space: self.space,
+            phase: self.phase,
         }
     }
 }

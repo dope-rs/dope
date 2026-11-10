@@ -32,6 +32,8 @@ impl Errno {
     pub const SYMLINK_LOOP: Self = Self::fixed::<{ libc::ELOOP }>();
     pub const NAME_TOO_LONG: Self = Self::fixed::<{ libc::ENAMETOOLONG }>();
     pub const INVALID_ARGUMENT: Self = Self::fixed::<{ libc::EINVAL }>();
+    pub const IO: Self = Self::fixed::<{ libc::EIO }>();
+    pub const MESSAGE_TOO_LONG: Self = Self::fixed::<{ libc::EMSGSIZE }>();
 
     const fn fixed<const CODE: i32>() -> Self {
         const { assert!(CODE > 0) };

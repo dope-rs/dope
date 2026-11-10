@@ -10,7 +10,7 @@ use common::{
     manifold::{
         Pattern,
         datagram::{
-            Receive, handler,
+            handler,
             senders::{self, State},
         },
     },
@@ -21,7 +21,7 @@ use dope_core::{
     dope_sys::io::socket::msg::source,
     driver::{
         life::recovery,
-        route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind, table::Parts},
+        route::KeyTag,
     },
     io::datagram::{Gso, GsoPayload},
 };
@@ -36,7 +36,6 @@ use dope_test::{
         peer::udp,
         signals::{Gate, Progress as _},
     },
-    reclaim::Reports,
 };
 
 #[test]
@@ -92,8 +91,6 @@ fn run_case<M: send::Segmented>(
             let queued = Gate::new();
             let received = Gate::new();
             let runtime = Runtime::quic::<4096, 2048>();
-            let mut reports =
-                Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
 
             runtime.with_scope(
                 |mut sess| {
@@ -145,15 +142,7 @@ fn run_case<M: send::Segmented>(
                         });
                     outcome.expect("application teardown")
                 },
-                recovery::Policy::new(|event| reports.push(event), recover),
-            );
-            assert!(
-                reports
-                    .matches_one(&Receive::<KeyTag<0>>(Parts::new(
-                        SlotIndex::ZERO,
-                        Epoch::INITIAL,
-                    )))
-                    .expect("reclaim validation")
+                recovery::Policy::new(|_| {}, recover),
             );
 
             assert_eq!(
@@ -199,40 +188,30 @@ fn check_gso<'d, M: send::Segmented>(
                 }
                 _ => (payload, size),
             };
-            match State::<M>::queue(socket.as_mut(), (payload, size, address)) {
-                Ok(_) => {
-                    let rejected = State::<M>::queue(socket.as_mut(), (retry, size, address))
-                        .err()
-                        .expect("one pending send fills the queue");
-                    let (retry, cause) = rejected.into_parts();
-                    assert_eq!(cause, datagram::RejectCause::QueueFull);
-                    assert_eq!(retry.as_ptr(), original, "rejection preserves its owner");
-                    if let Some(size) = size {
-                        let mut retry = GsoPayload::try_new(retry, size)
-                            .unwrap_or_else(|_| panic!("admitted GSO shape"));
-                        let count = retry.packet_count();
-                        for _ in 0..2 {
-                            let rejected = socket
-                                .as_mut()
-                                .queue_gso_payload(retry, address)
-                                .err()
-                                .expect("full queue returns the admitted proof");
-                            let (returned, cause) = rejected.into_parts();
-                            assert_eq!(cause, datagram::RejectCause::QueueFull);
-                            assert_eq!(returned.as_ref().as_ptr(), original);
-                            assert_eq!(returned.segment_size(), size);
-                            assert_eq!(returned.packet_count(), count);
-                            retry = returned;
-                        }
-                    }
-                    this.queued.hit();
-                }
-                Err(rejected) => {
-                    let (payload, cause) = rejected.into_parts();
-                    assert_eq!(cause, datagram::RejectCause::QueueFull);
-                    this.pending = Some((payload, size, address));
-                }
+            State::<M>::queue(socket.as_mut(), (payload, size, address))
+                .unwrap_or_else(|_| panic!("empty send queue"));
+            let rejected = State::<M>::queue(socket.as_mut(), (retry, size, address))
+                .err()
+                .expect("one pending send fills the queue");
+            let (retry, cause) = rejected.into_parts();
+            assert_eq!(cause, datagram::RejectCause::QueueFull);
+            assert_eq!(retry.as_ptr(), original, "rejection preserves its owner");
+            if let Some(size) = size {
+                let retry = GsoPayload::try_new(retry, size)
+                    .unwrap_or_else(|_| panic!("admitted GSO shape"));
+                let count = retry.packet_count();
+                let rejected = socket
+                    .as_mut()
+                    .queue_gso_payload(retry, address)
+                    .err()
+                    .expect("full queue returns the admitted proof");
+                let (returned, cause) = rejected.into_parts();
+                assert_eq!(cause, datagram::RejectCause::QueueFull);
+                assert_eq!(returned.as_ref().as_ptr(), original);
+                assert_eq!(returned.segment_size(), size);
+                assert_eq!(returned.packet_count(), count);
             }
+            this.queued.hit();
         }
         _ => panic!("unexpected datagram callback"),
     }

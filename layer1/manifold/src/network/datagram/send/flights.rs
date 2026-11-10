@@ -73,7 +73,14 @@ impl<'d, B: AsRef<[u8]>, M: send::Mode> Backing<'d, B, M> {
 
     pub(in crate::network::datagram) fn finish(
         self,
-    ) -> (net::SocketAddr, retained::Retained<'d, B>) {
-        (self.target, self.retained)
+        outcome: send::Outcome,
+    ) -> (net::SocketAddr, retained::Retained<'d, B>, send::Outcome) {
+        let outcome = match outcome {
+            send::Outcome::Failed(error) if M::is_gso(self.control) => {
+                send::Outcome::GsoFailed(error)
+            }
+            outcome => outcome,
+        };
+        (self.target, self.retained, outcome)
     }
 }
