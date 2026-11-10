@@ -46,8 +46,7 @@ impl<'pool, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         run: impl for<'a> FnOnce(scope::Access<'a, DOMAIN, B, false, D>) -> R,
     ) -> R {
         let result = self.core.with_scope(run);
-        let core = self.core.machine();
-        if core.egress.lifecycle.state != conn::State::Handshaking || !core.handshake.is_pending() {
+        if !self.core.view().lifecycle().is_opening() {
             self.permit.take();
         }
         result

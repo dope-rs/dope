@@ -97,10 +97,6 @@ impl<const DOMAIN: u8, A> Handshake<DOMAIN, A> {
         })
     }
 
-    pub(in crate::conn) fn is_pending(&self) -> bool {
-        !matches!(self.progress.state, State::Complete)
-    }
-
     pub(in crate::conn) fn read<'a>(
         &'a mut self,
         epoch: conn::Epoch,

@@ -44,8 +44,6 @@ struct Reservation<'storage> {
     vacant: ring::Vacant<'storage, ring::Fifo<Flight>>,
     packets: &'storage mut usize,
     bytes: &'storage mut usize,
-    packet: NonZero<usize>,
-    byte: NonZero<usize>,
 }
 
 pub(in crate::runtime) enum Submit<'quota, R, E> {
@@ -95,8 +93,6 @@ impl Pending {
             vacant,
             packets: &mut self.packets,
             bytes: &mut self.bytes,
-            packet,
-            byte,
         })
     }
 
@@ -141,18 +137,16 @@ impl Pending {
 }
 
 impl Reservation<'_> {
-    fn commit(self, outgoing: Flight) -> Result<NonZero<usize>, Flight> {
+    // Private producers construct flights within their admitted packet and byte extents.
+    fn commit(self, outgoing: Flight) -> NonZero<usize> {
         let count = outgoing.packet_count();
         let len = outgoing.byte_len();
-        if count > self.packet || len > self.byte.get() {
-            return Err(outgoing);
-        }
         let packets = *self.packets + count.get();
         let bytes = *self.bytes + len;
         self.vacant.push_back(outgoing);
         *self.packets = packets;
         *self.bytes = bytes;
-        Ok(count)
+        count
     }
 }
 
@@ -237,7 +231,7 @@ impl Storage {
         } else {
             Flight::batch(addr, ready.payload, ready.segment_size, ready.packets)
         };
-        Ok((slot.commit(outgoing).map_or(0, NonZero::get), result))
+        Ok((slot.commit(outgoing).get(), result))
     }
 
     pub(super) fn emit_owned(
@@ -263,13 +257,10 @@ impl Storage {
             };
         }
         match build(packet) {
-            Ok(outgoing) => match slot.commit(outgoing) {
-                Ok(_) => Emission::Sent,
-                Err(outgoing) => {
-                    cache.recycle(outgoing.into_storage());
-                    Emission::Skipped
-                }
-            },
+            Ok(outgoing) => {
+                slot.commit(outgoing);
+                Emission::Sent
+            }
             Err((packet, error)) => {
                 cache.recycle(packet);
                 match error {
@@ -304,9 +295,7 @@ impl Storage {
             let (addr, result) = emit(&mut packet);
             let addr = addr.unwrap_or(fallback);
             let count = match storage::NonEmpty::try_new(packet) {
-                Ok(packet) => slot
-                    .commit(Flight::plain(addr, packet))
-                    .map_or(0, NonZero::get),
+                Ok(packet) => slot.commit(Flight::plain(addr, packet)).get(),
                 Err(empty) => {
                     cache.recycle(empty.into_parts().0);
                     0
