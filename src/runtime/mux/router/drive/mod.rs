@@ -58,21 +58,16 @@ fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
         slot.peer_addr.overhead()
     };
     let outer = max.saturating_add(overhead);
-    let mut gso = path
-        .gso()
-        .filter(|_| {
-            slot.conn
-                .view()
-                .permit()
-                .is_gso_ready(size, MIN_GSO_PACKETS)
-        })
-        .and_then(|path| {
-            output
-                .cache
-                .batch
-                .as_ref()
-                .map(|batch| (batch.limits(), path))
-        });
+    let mut gso = output.cache.batch.as_ref().and_then(|batch| {
+        path.gso()
+            .filter(|_| {
+                slot.conn
+                    .view()
+                    .permit()
+                    .is_gso_ready(size, MIN_GSO_PACKETS)
+            })
+            .map(|path| (batch.limits(), path))
+    });
     let quota = flush_packet_quantum(gso.map(|(limits, _)| limits), peers);
     let room = output
         .pending
