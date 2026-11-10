@@ -103,7 +103,7 @@ where
 {
     type Output = Result<
         shutdown::Requested<Q>,
-        topology::Failure<'report, I::Error, shutdown::Requested<Q>>,
+        topology::Failure<'report, I::Error, shutdown::Requested<Q>, I::Execution>,
     >;
 
     fn run(self, worker: Worker<'scope, 'life, 'p, 'd, S, I, Q>) -> Self::Output

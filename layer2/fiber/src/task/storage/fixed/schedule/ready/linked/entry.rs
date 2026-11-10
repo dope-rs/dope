@@ -16,10 +16,6 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub(in crate::task::storage::fixed::schedule) fn index(&self) -> Global {
-        self.raw.value().index()
-    }
-
     pub(in crate::task::storage::fixed::schedule) const fn new(index: Global) -> Self {
         Self {
             raw: depot::raw::Entry::new(Value::new(index)),

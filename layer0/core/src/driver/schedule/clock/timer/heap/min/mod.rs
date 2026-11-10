@@ -34,10 +34,17 @@ impl<'a, 'id, P: Ord, R, Tag> Min<'a, 'id, P, R, Tag> {
 
     /// Releases one resident and any armed priority in constant or logarithmic time.
     pub fn release(&mut self, lease: Lease<'id, Tag>) -> R {
+        self.remove(lease).0
+    }
+
+    pub(in crate::driver::schedule::clock::timer) fn remove(
+        &mut self,
+        lease: Lease<'id, Tag>,
+    ) -> (R, State<P>) {
         self.core.release(lease.slot())
     }
 
-    pub fn state(&self, lease: &Lease<'id, Tag>) -> State {
+    pub fn state(&self, lease: &Lease<'id, Tag>) -> State<&P> {
         self.core.state(lease.slot())
     }
 

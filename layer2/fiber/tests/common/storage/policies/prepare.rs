@@ -1,3 +1,4 @@
+use o3::depot::capacity::Count;
 use std::{num, pin};
 
 use dope::core::{
@@ -15,19 +16,14 @@ use dope_fiber::{
     abi,
     context::wake::{self, RootWaker},
     task::storage::{
-        fixed::{
-            quota::Physical,
-            schedule::{
-                Plane, Pool,
-                queue::{self, Owned},
-            },
-            tree::Leaf,
+        fixed::schedule::{
+            Pool,
+            queue::{self, Owned},
         },
         scope::Scope,
     },
 };
 use dope_test::scope;
-use o3::alloc;
 
 use crate::common::{
     runtime::{Setup, profile::Tasks},
@@ -37,23 +33,12 @@ use crate::common::{
 #[derive(Debug)]
 pub enum Error {
     Ready(ready::Capacity),
-    Pool(alloc::Error),
     Queue(queue::PrepareError),
 }
 
 pub fn with_plane(
     run: impl for<'s, 'd> FnOnce(
-        Scope<
-            's,
-            pin::Pin<
-                &'s mut Plane<
-                    'd,
-                    Leaf<Pool<'d, abi::Ready<()>, 1, (), u8>>,
-                    Physical,
-                    Owned<'d, owner::Tasks>,
-                >,
-            >,
-        >,
+        Scope<'s, pin::Pin<&'s mut Pool<'d, abi::Ready<()>, (), u8, Owned<'d, owner::Tasks>>>>,
         wake::RootWaker<'d>,
         Owner<owner::Tasks>,
     ),
@@ -70,9 +55,8 @@ pub fn with_plane(
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch())
                 .map_err(Error::Ready)?;
             let parent = RootWaker::from(ready.target());
-            let pool = Pool::<'_, abi::Ready<()>, 1, (), u8>::try_new().map_err(Error::Pool)?;
-            let plane = Plane::<'_, _, Physical, Owned<'_, owner::Tasks>>::try_owned(
-                Leaf::new(pool),
+            let plane = Pool::<'_, abi::Ready<()>, (), u8, Owned<'_, owner::Tasks>>::try_owned(
+                Count::new(1),
                 Capacity::new(num::NonZero::<u32>::MIN),
             )
             .map_err(Error::Queue)?;

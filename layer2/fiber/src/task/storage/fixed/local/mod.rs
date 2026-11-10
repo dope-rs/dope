@@ -1,96 +1,83 @@
-use std::{pin, task};
+use std::{ops::ControlFlow, pin, task};
 
-use crate::{
-    abi, context,
-    task::storage::{
-        Id,
-        fixed::{self, Capacity, local},
-        scope::{Domain, Scope, Scoped},
-    },
-};
+use o3::depot::arena::slab::key;
 
-/// Terminal state of a task identity consumed by its owning store.
+use crate::{abi, context, task::storage::fixed::Id};
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Removal {
     Removed,
     Absent,
 }
 
-/// Task operations whose identities retain their original storage scope.
-pub trait Store<'d, D> {
+pub trait Member {
     type Fiber;
 
-    fn capacity(&self) -> Capacity;
-    fn insert(self: pin::Pin<&mut Self>, fiber: Self::Fiber) -> Option<Id<'d, D>>;
-    /// Removes by identity, reporting absence instead of returning the identity.
-    fn remove(self: pin::Pin<&mut Self>, id: Id<'d, D>) -> Removal {
-        match self.try_remove(id) {
-            Ok(()) => Removal::Removed,
-            Err(_) => Removal::Absent,
-        }
-    }
-    fn try_remove(self: pin::Pin<&mut Self>, id: Id<'d, D>) -> Result<(), Id<'d, D>>;
+    fn value(&mut self) -> pin::Pin<&mut Self::Fiber>;
+    fn discard(self);
 }
 
-mod core;
-pub(in crate::task::storage) use crate::task::storage::fixed::local::core::Core;
+/// A terminal identity carries no polling or mutable access authority.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Ended(pub(in crate::task::storage::fixed) key::Parts);
 
-pub trait Stream<'d, D>: Store<'d, D, Fiber: abi::Stream<'d>> {
-    fn get_mut(self: pin::Pin<&mut Self>, id: &Id<'d, D>) -> Option<pin::Pin<&mut Self::Fiber>>;
+impl From<Ended> for key::Parts {
+    fn from(ended: Ended) -> Self {
+        ended.0
+    }
+}
 
-    fn poll_next(
-        self: pin::Pin<&mut Self>,
-        id: &Id<'d, D>,
+pub struct Entry<M, I> {
+    pub(in crate::task::storage::fixed) member: M,
+    pub(in crate::task::storage::fixed) id: I,
+}
+
+impl<M: Member, I> Entry<M, I> {
+    pub fn get(&mut self) -> &M::Fiber {
+        self.member.value().into_ref().get_ref()
+    }
+
+    pub fn into_id(self) -> I {
+        self.id
+    }
+
+    pub fn remove(self) {
+        self.member.discard();
+    }
+}
+
+impl<'s, 'd, D, M: Member> Entry<M, Id<'s, 'd, D>> {
+    pub fn into_parts(self) -> (Id<'s, 'd, D>, M) {
+        (self.id, self.member)
+    }
+
+    #[inline(always)]
+    pub fn poll_next(
+        mut self,
         context: pin::Pin<&mut context::Context<'_, 'd>>,
-    ) -> Option<task::Poll<Option<<Self::Fiber as abi::Stream<'d>>::Item>>> {
-        let slot = Self::get_mut(self, id)?;
-        Some(
-            match context::PollCall::try_poll(
-                slot,
-                context,
-                <Self::Fiber as abi::Stream<'d>>::poll_next,
-            ) {
-                context::PollResult::Polled(poll) => poll,
-                context::PollResult::Exhausted => task::Poll::Pending,
-            },
-        )
-    }
-}
-
-impl<'s, 'd, D, F, S: local::Core<'d, D, Fiber = F> + Unpin> local::Store<'d, Domain<'s, D>>
-    for Scope<'s, S>
-{
-    type Fiber = F;
-
-    fn capacity(&self) -> fixed::Capacity {
-        self.source.capacity()
-    }
-
-    fn insert(self: pin::Pin<&mut Self>, fiber: Self::Fiber) -> Option<Scoped<'s, 'd, D>> {
-        let this = self.get_mut();
-        pin::Pin::new(&mut this.source)
-            .insert(fiber)
-            .map(|id| id.bind(this.proof))
-    }
-
-    fn try_remove(
-        self: pin::Pin<&mut Self>,
-        id: Scoped<'s, 'd, D>,
-    ) -> Result<(), Scoped<'s, 'd, D>> {
-        let this = self.get_mut();
-        pin::Pin::new(&mut this.source)
-            .try_remove(id.original())
-            .map_err(|id| id.bind(this.proof))
-    }
-}
-
-impl<'s, 'd, D, S: local::Core<'d, D, Fiber: abi::Stream<'d>> + Unpin> Stream<'d, Domain<'s, D>>
-    for Scope<'s, S>
-{
-    fn get_mut(
-        self: pin::Pin<&mut Self>,
-        id: &Scoped<'s, 'd, D>,
-    ) -> Option<pin::Pin<&mut Self::Fiber>> {
-        local::Core::get_mut(pin::Pin::new(&mut self.get_mut().source), &id.original())
+    ) -> ControlFlow<
+        Entry<M, Id<'s, 'd, D, Ended>>,
+        (Self, task::Poll<<M::Fiber as abi::Stream<'d>>::Item>),
+    >
+    where
+        M::Fiber: abi::Stream<'d>,
+    {
+        match context::PollCall::try_poll(
+            self.member.value(),
+            context,
+            <M::Fiber as abi::Stream<'d>>::poll_next,
+        ) {
+            context::PollResult::Polled(task::Poll::Ready(None)) => ControlFlow::Break(Entry {
+                member: self.member,
+                id: self.id.ended(),
+            }),
+            context::PollResult::Polled(task::Poll::Ready(Some(item))) => {
+                ControlFlow::Continue((self, task::Poll::Ready(item)))
+            }
+            context::PollResult::Polled(task::Poll::Pending) | context::PollResult::Exhausted => {
+                ControlFlow::Continue((self, task::Poll::Pending))
+            }
+        }
     }
 }

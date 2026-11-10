@@ -55,12 +55,7 @@ impl<'q, 'd> Binding<'q, 'd> {
                 let driver = this.flight.driver();
                 let target = this.flight.complete().bind(proof);
                 Ok(match outcome {
-                    Ok(()) => match handles::Created::complete(creation, driver) {
-                        handles::Admission::Ready(created) => {
-                            outputs::socket(target, created, driver)
-                        }
-                        handles::Admission::Retired(()) => outputs::socket_gone(target),
-                    },
+                    Ok(()) => outputs::socket(target, creation, driver),
                     Err(errno) => {
                         driver.descriptors().fail_create(creation);
                         outputs::socket_error(

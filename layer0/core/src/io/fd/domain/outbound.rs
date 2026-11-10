@@ -126,11 +126,11 @@ impl<'a> Outbound<'a> {
         let physical = slot.physical();
         let state = self.0.resident.lifecycle(physical);
         if state.get().phase() == states::Phase::CREATING_ONE {
-            state.set(states::SlotState::route(states::Phase::OPEN_TWO, owner));
+            state.set(states::SlotState::route(states::Phase::OPEN, owner));
             Create::Deliver
         } else {
             state.set(states::SlotState::route(states::Phase::CLOSING_ZERO, owner));
-            self.0.resident.retire().enqueue(physical);
+            self.0.resident.enqueue(physical);
             Create::Retired
         }
     }
@@ -144,16 +144,6 @@ impl<'a> Outbound<'a> {
         } else {
             self.0.release_slot(slot);
         }
-    }
-
-    pub(crate) fn activate(&self, slot: handles::OutboundSlot) {
-        self.0
-            .resident
-            .lifecycle(slot.physical())
-            .set(states::SlotState::route(
-                states::Phase::OPEN_ONE,
-                slot.owner(),
-            ));
     }
 }
 
@@ -191,7 +181,7 @@ impl Closures<'_> {
     }
 
     fn close(state: resident::Lifecycle<'_>, phase: states::Phase, owner: route::Id) -> Close {
-        if phase == states::Phase::OPEN_TWO {
+        if phase == states::Phase::OPEN {
             state.set(states::SlotState::route(states::Phase::CLOSING_ONE, owner));
             return Close::Submit;
         }

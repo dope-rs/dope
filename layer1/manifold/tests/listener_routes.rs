@@ -181,121 +181,144 @@ fn installed_control_retains_accept_failure() {
         Backend, Errno,
         dope_sys::io::socket::{How, Socket as _},
     };
-    use dope_manifold::network::listener::AcceptError;
+    use dope_manifold::network::listener::{AcceptError, ExecutionError};
+    use dope_runtime::{
+        executor::drive,
+        topology::{self, Failure, lending},
+    };
     use dope_test::harness::GUARD;
 
-    for (per_ip, retiring) in [
-        (None, false),
-        (None, true),
-        (Some(PerIp::fixed::<1>()), true),
+    let expected = AcceptError::Completion(accept::Failure::Syscall(Errno::INVALID_ARGUMENT));
+    for (per_ip, retiring, timeout) in [
+        (None, false, false),
+        (None, true, false),
+        (Some(PerIp::fixed::<1>()), true, false),
+        (None, false, true),
     ] {
         let fault =
             TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("listener address");
         let bound = fault.try_clone().expect("listener fault descriptor");
-        let settings = One::driver().expect("listener resources");
-        let mut creation = Attempt::new();
-        let executor = Executor::new(&mut creation, settings);
-        executor
-            .as_ref()
-            .map_err(|error| error.kind())
-            .expect("executor");
-        executor.ok().expect("executor").run(|executor| {
-            executor
-                .enter_with(
-                    |mut session| {
-                        let hash = session.hash_state(listener::Domain::DEFAULT);
-                        listener::Install::<KeyTag<0>, fixture::Env, _>::new(
-                            listener::config::Prepared {
-                                connections: Capacity::fixed::<1>(),
-                                direct_flights: listener::config::Flights::Minimum,
-                                bind: fault.local_addr().expect("bound address"),
-                                backlog: Backlog::fixed::<1>(),
-                                stream: Default::default(),
-                                per_ip,
-                                transport: Default::default(),
-                                egress: Default::default(),
-                            },
-                            domain::Local::new(Identity),
-                        )
-                        .with_bound(Some(bound))
-                        .prepare(
-                            hash,
-                            &mut session,
-                            session::Scope::driver,
-                            |prepared, wait, session| {
-                                let watch = wait.watch();
-                                let listener = prepared
-                                    .build(
-                                        App {
-                                            trace: Rc::new(trace::Trace::default()),
-                                            gate: Gate::new(),
-                                            observe: trace::check,
-                                        },
-                                        &mut session.driver(),
-                                    )
-                                    .expect("build listener");
-                                let mut finish = Completion::new();
-                                session
-                                    .with_quiesce(
-                                        &mut finish,
-                                        dope_manifold::app::Host::new(listener),
-                                        GUARD,
-                                        |mut app| {
-                                            let shutdown = Backend::shutdown::<Errno>(
-                                                fault.as_fd(),
-                                                How::READ,
-                                            );
-                                            if std::env::consts::OS == "macos" {
-                                                assert_eq!(
-                                                    shutdown,
-                                                    Err(Errno::try_from(libc::ENOTCONN)
-                                                        .expect("not connected errno"))
-                                                );
-                                                assert_eq!(watch.error(), None);
-                                                return;
-                                            }
-                                            shutdown.expect("stop native listener");
-                                            if retiring {
-                                                app.drive_for(
-                                                    GUARD,
-                                                    dope_fiber::task::done::Once::new(
-                                                        dope_fiber::abi::Ready::new(()),
-                                                    ),
-                                                )
-                                                .expect("arm accept before shutdown");
-                                                assert_eq!(watch.error(), None);
-                                            } else {
-                                                assert_eq!(
-                                                    app.drive_for(GUARD, wait)
-                                                        .expect("observe terminal accept"),
-                                                    AcceptError::Completion(
-                                                        accept::Failure::Syscall(
-                                                            Errno::INVALID_ARGUMENT
-                                                        )
-                                                    )
-                                                );
-                                            }
-                                        },
-                                    )
-                                    .expect("listener retirement");
-                                if std::env::consts::OS != "macos" {
-                                    assert_eq!(
-                                        watch.error(),
-                                        Some(AcceptError::Completion(accept::Failure::Syscall(
-                                            Errno::INVALID_ARGUMENT
-                                        )))
-                                    );
+        let direct = listener::topology::Direct::<KeyTag<0>, fixture::Env, _>::new(
+            listener::config::Prepared {
+                connections: Capacity::fixed::<1>(),
+                direct_flights: listener::config::Flights::Minimum,
+                bind: fault.local_addr().expect("bound address"),
+                backlog: Backlog::fixed::<1>(),
+                stream: Default::default(),
+                per_ip,
+                transport: Default::default(),
+                egress: Default::default(),
+            },
+            common::scenario::case::Value::<_, Borrowed>::new((
+                App {
+                    trace: Rc::new(trace::Trace::default()),
+                    gate: Gate::new(),
+                    observe: trace::check,
+                },
+                Identity,
+            )),
+        )
+        .with_bound(Some(bound));
+        topology::Plan::new((), direct)
+            .with_install(dope_core::driver::settings::Config::for_profile::<Throughput>())
+            .expect("listener resources")
+            .with_local(
+                |worker| {
+                    worker.lend(|direct, stage| {
+                        direct.install(stage, |installed, stage| {
+                            let shutdown = Backend::shutdown::<Errno>(fault.as_fd(), How::READ);
+                            if std::env::consts::OS == "macos" {
+                                assert_eq!(
+                                    shutdown,
+                                    Err(Errno::try_from(libc::ENOTCONN)
+                                        .expect("not connected errno"))
+                                );
+                            } else {
+                                shutdown.expect("stop native listener");
+                            }
+                            let mut finish = Completion::new();
+                            if !retiring && !timeout && std::env::consts::OS != "macos" {
+                                let result =
+                                    lending::Next::run(lending::Run(&mut finish), installed, stage);
+                                assert!(
+                                    matches!(result, Err(Failure::Execute(ExecutionError::Accept {
+                            cause, drive: None,
+                        })) if cause == expected)
+                                );
+                                return;
+                            }
+                            let (host, wait) = installed.into_parts();
+                            let watch = wait.watch();
+                            let result = stage.with_quiesce(
+                                &mut finish,
+                                host,
+                                if timeout && std::env::consts::OS != "macos" {
+                                    Duration::ZERO
+                                } else {
+                                    GUARD
+                                },
+                                |mut app| {
+                                    if std::env::consts::OS == "macos" {
+                                        assert_eq!(watch.error(), None);
+                                        return Ok(());
+                                    }
+                                    if retiring {
+                                        app.drive_for(
+                                            GUARD,
+                                            dope_fiber::task::done::Once::new(
+                                                dope_fiber::abi::Ready::new(()),
+                                            ),
+                                        )
+                                        .expect("arm accept before shutdown");
+                                        assert_eq!(watch.error(), None);
+                                        Ok(())
+                                    } else {
+                                        assert_eq!(
+                                            app.drive_for(GUARD, wait).expect("terminal accept"),
+                                            expected
+                                        );
+                                        app.drive_for(
+                                            Duration::ZERO,
+                                            dope_fiber::task::done::Once::new(
+                                                dope_fiber::abi::Ready::new(()),
+                                            ),
+                                        )
+                                        .map_err(ExecutionError::Drive)
+                                    }
+                                },
+                            );
+                            match watch.finish::<Infallible, _>(result) {
+                                Err(Failure::Execute(ExecutionError::Accept {
+                                    cause,
+                                    drive: None,
+                                })) if !timeout => {
+                                    assert_eq!(cause, expected);
                                 }
-                            },
-                        )
-                        .expect("install listener");
-                    },
-                    recovery::Policy::new(|_| {}, common::recover),
-                )
-                .as_ref()
-                .map_err(|error| error.cause())
-                .expect("finish executor");
-        });
+                                Err(Failure::Run(session::Error::Quiesce {
+                                    output:
+                                        Err(ExecutionError::Accept {
+                                            cause,
+                                            drive: Some(drive::Error::Timeout),
+                                        }),
+                                    drive: drive::Error::QuiescenceTimeout,
+                                    disarm: None,
+                                })) if timeout => assert_eq!(cause, expected),
+                                Ok(()) if std::env::consts::OS == "macos" => {}
+                                result => panic!("listener outcome: {result:?}"),
+                            }
+                        })
+                    })
+                },
+                recovery::Policy::new(|_| {}, common::recover),
+                |result| {
+                    result
+                        .as_ref()
+                        .map_err(|error| error.cause())
+                        .expect("executor")
+                        .as_ref()
+                        .expect("listener");
+                },
+            );
     }
 }
 

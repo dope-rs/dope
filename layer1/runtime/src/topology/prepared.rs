@@ -123,6 +123,7 @@ where
                 (I, ops::Run<'report>),
                 shutdown::Requested<C::Shutdown>,
                 C::Shutdown,
+                I::Execution,
             >,
         ) -> Result<shutdown::Requested<C::Shutdown>, F>,
     ) -> Result<shutdown::Requested<C::Shutdown>, F>

@@ -4,12 +4,10 @@ use dope::{
 };
 use dope_fiber::{
     context::wake::{RootWaker, Waker},
-    task::storage::{
-        fixed::{schedule, tree::Branch},
-        scope::Scope,
-    },
+    task::storage::{fixed::schedule, scope::Scope},
 };
 use dope_test::harness::scenario;
+use o3::depot::capacity::Count;
 
 use crate::common::runtime::{self, Empty, profile::Tasks};
 pub mod common;
@@ -27,14 +25,7 @@ use dope_fiber::{
     task::{
         batch,
         batch::{Join, Pool},
-        storage::fixed::{
-            schedule::{
-                Plane,
-                result::{Outcome, Selection},
-            },
-            tree,
-            tree::Leaf,
-        },
+        storage::fixed::schedule::result::{Outcome, Selection},
     },
 };
 
@@ -117,48 +108,47 @@ fn admits_one_task() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch()))
             .expect("ready slot");
             let parent = RootWaker::from(ready.target());
-            let pool = (schedule::Pool::<'_, Ready<()>, 3, (), usize>::try_new())
-                .expect("schedule task pool allocation");
-            let mut slab = pin::pin!(Plane::from_routes(Leaf::new(pool),));
-            Scope::with(slab.as_mut(), |mut slab| {
-                {
-                    let route = slab.as_mut().route::<tree::Here>();
-                    let insert = route.try_spawn(parent);
-                    assert!(insert.is_ok(), "reserve task without an id");
-                }
-                for target in 0..3 {
-                    slab.as_mut()
-                        .route::<tree::Here>()
-                        .try_spawn(parent)
-                        .expect("fixed task slot")((Ready::new(()), target));
-                }
-                let full = slab
-                    .as_mut()
-                    .route::<tree::Here>()
-                    .try_spawn(parent)
-                    .err()
-                    .expect("every fixed slot is occupied");
-                std::assert_matches!(
-                    full,
-                    Error::Capacity { requested, available: 0 }
-                        if requested == num::NonZero::<usize>::MIN,
-                );
-                for expected in 0..3 {
-                    let admitted = match slab.as_mut().select(turn.turn().app()) {
-                        Selection::Ready(admitted) => Some(admitted),
-                        Selection::Idle | Selection::Yielded => None,
+            for count in [0, 3, 16385] {
+                let pool = schedule::Pool::<'_, Ready<()>, (), usize>::try_new(Count::new(count))
+                    .expect("schedule task pool allocation");
+                let mut slab = pin::pin!(pool);
+                Scope::with(slab.as_mut(), |mut slab| {
+                    assert_eq!(slab.try_admit((), parent).is_ok(), count != 0);
+                    let admitted = count.min(3) as usize;
+                    for target in 0..admitted {
+                        let _id = slab
+                            .try_admit((), parent)
+                            .expect("fixed task slot")
+                            .insert((Ready::new(()), target));
                     }
-                    .expect("task must be ready");
+                    if count <= 3 {
+                        let full = slab
+                            .try_admit((), parent)
+                            .err()
+                            .expect("every fixed slot is occupied");
+                        std::assert_matches!(
+                            full,
+                            Error::Capacity { requested, available: 0 }
+                                if requested == num::NonZero::<usize>::MIN,
+                        );
+                    }
+                    for expected in 0..admitted {
+                        let admitted = match slab.as_mut().select(turn.turn().app()) {
+                            Selection::Ready(admitted) => Some(admitted),
+                            Selection::Idle | Selection::Yielded => None,
+                        }
+                        .expect("task must be ready");
+                        assert!(matches!(
+                            admitted.drive(&mut driver),
+                            Outcome::Complete { target, output: () } if target == expected
+                        ));
+                    }
                     assert!(matches!(
-                        admitted.only().drive(&mut driver),
-                        Outcome::Complete { target, output: () } if target == expected
+                        slab.as_mut().select(turn.turn().app()),
+                        Selection::Idle
                     ));
-                }
-                assert!(matches!(
-                    slab.as_mut().select(turn.turn().app()),
-                    Selection::Idle
-                ));
-            });
+                });
+            }
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
@@ -181,27 +171,17 @@ fn revokes_plane_bindings() {
             .expect("ready slot");
             let parent = RootWaker::from(ready.target());
 
-            let first = (schedule::Pool::<'_, Ready<()>, 2, u8, usize>::try_new())
-                .expect("first schedule task pool allocation");
-            let second = (schedule::Pool::<'_, Ready<()>, 1, u16, usize>::try_new())
-                .expect("second schedule task pool allocation");
-            let mut plane = pin::pin!(Plane::from_routes(Branch::new(
-                Leaf::new(first),
-                Leaf::new(second)
-            ),));
+            let mut plane = pin::pin!(
+                schedule::Pool::<'_, Ready<()>, (), usize>::try_new(Count::new(3))
+                    .expect("task slots")
+            );
             Scope::with(plane.as_mut(), |mut plane| {
-                for target in 0..2 {
-                    plane
-                        .as_mut()
-                        .route::<tree::Left<tree::Here>>()
-                        .try_spawn(parent)
-                        .expect("first route task")((Ready::new(()), target));
+                for target in 0..3 {
+                    let _id = plane
+                        .try_admit((), parent)
+                        .expect("task reservation")
+                        .insert((Ready::new(()), target));
                 }
-                plane
-                    .as_mut()
-                    .route::<tree::Right<tree::Here>>()
-                    .try_spawn(parent)
-                    .expect("second route task")((Ready::new(()), 2));
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),

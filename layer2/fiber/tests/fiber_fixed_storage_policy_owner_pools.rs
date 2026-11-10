@@ -1,190 +1,36 @@
-use dope::core::driver::life::recovery;
-use dope_fiber::{abi::Ready, context::wake::RootWaker, task::storage::scope::Scope};
-use dope_test::alloc;
-
-use crate::common::runtime::profile;
-pub mod common;
-use common::recover;
-
-use std::{num::NonZero, pin};
+use std::{cell::Cell, num::NonZero, pin, rc::Rc};
 
 use dope::core::driver::{
+    life::recovery,
     route::{Epoch, KeyTag, indices::SlotIndex},
-    schedule::{
-        app::step::Flow,
-        ready::task::{self, owner},
-    },
+    schedule::{self, app::step::Flow, ready::task::owner},
 };
-use dope_fiber::task::storage::fixed::{
-    local::Removal,
-    quota::Limit,
-    schedule::{
-        Plan, Plane, Pool, queue,
-        result::{Outcome, Selection},
-        selected::route::{Entry, Routes},
+use dope_fiber::{
+    context::wake::RootWaker,
+    task::storage::{
+        fixed::{
+            local::Removal,
+            schedule::{Pool, queue::Owned, result::Selection},
+        },
+        scope::Scope,
     },
-    tree::{Branch, Here, Leaf, Left, Right},
 };
 use dope_test::alloc::Tracker;
 use o3::depot::capacity::Count;
 
-use crate::common::{
-    runtime::{self, Setup},
+pub mod common;
+use common::{
+    recover,
+    runtime::{self, Setup, profile},
+    schedule::tasks::fixtures::{Rounds as _, WakeProbe},
     storage::policies::owner::{Stamp, Tasks},
 };
 
 #[global_allocator]
-static ALLOCATOR: alloc::Tracker = Tracker::new();
-
-#[test]
-fn rejects_another_pool() {
-    type TaskRoutes<'d> =
-        Branch<Leaf<Pool<'d, Ready<u8>, 16384, (), u8>>, Leaf<Pool<'d, Ready<u8>, 2, (), u8>>>;
-    type PhysicalRoutes<'d> =
-        Branch<Leaf<Pool<'d, Ready<u8>, 1, (), u8>>, Leaf<Pool<'d, Ready<u8>, 1, (), u8>>>;
-    let mut reports = Vec::new();
-
-    Setup::for_profile::<profile::Tasks>().with_turn(
-        |turn, mut driver| {
-            let view = driver.driver_ref();
-            let ready = view
-                .ready()
-                .make_slot(
-                    view.targets::<KeyTag<0>>()
-                        .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                        .dispatch(),
-                )
-                .expect("ready slot");
-            let parent = RootWaker::from(ready.target());
-            let owners = owner::Capacity::new(NonZero::<u32>::MIN);
-            let (full, full_memory) = Tracker::usage(|| {
-                Plan::<'_, PhysicalRoutes<'_>>::new(Limit::new(2)).try_prepare::<Tasks>(owners)
-            });
-            drop(full.expect("physical reference"));
-            let (empty, memory) = Tracker::usage(|| {
-                Plan::<'_, TaskRoutes<'_>>::new(Limit::new(0)).try_prepare::<Tasks>(owners)
-            });
-            assert_eq!(memory.0, 1);
-            let mut empty = pin::pin!(empty.expect("empty task extents"));
-            Scope::with(empty.as_mut(), |mut plane| {
-                assert!(matches!(
-                    plane.as_mut().select(owner::Scope::Any, turn.turn().app()),
-                    Selection::Idle
-                ));
-            });
-            let (plane, memory) = Tracker::usage(|| {
-                Plan::<'_, TaskRoutes<'_>>::new(Limit::new(2))
-                    .try_prepare_with_capacity::<Tasks>(owners, Count::new(1))
-            });
-            assert_eq!(memory, full_memory);
-            let mut plane = pin::pin!(plane.expect("physical task extents"));
-            Scope::with(plane.as_mut(), |mut plane| {
-                let owner = owner::Owner::from(Stamp::try_new(0, 0).expect("owner"));
-                assert!(plane.as_ref().owners().register(owner).is_ok());
-                let ((), allocs) = Tracker::usage(|| {
-                    let id = plane
-                        .as_mut()
-                        .route::<Left<Here>>()
-                        .try_admit(owner, parent)
-                        .ok()
-                        .expect("left admission")((Ready::new(7), 7));
-                    assert!(matches!(
-                        plane
-                            .as_mut()
-                            .route::<Left<Here>>()
-                            .try_admit(owner, parent),
-                        Err(queue::Error::Task(task::Error::Capacity { requested, available: 0 }))
-                        if requested == NonZero::<usize>::MIN
-                    ));
-                    let other = plane
-                        .as_mut()
-                        .route::<Right<Here>>()
-                        .try_admit(owner, parent)
-                        .ok()
-                        .expect("right admission")((
-                        Ready::new(11),
-                        11,
-                    ));
-                    assert!(
-                        (plane.as_mut().route::<Right<Here>>().remove(id)) == (Removal::Absent)
-                    );
-                    for expected in [7, 11] {
-                        let selected = match plane
-                            .as_mut()
-                            .select(owner::Scope::Exact(owner), turn.turn().app())
-                        {
-                            Selection::Ready(selected) => Some(selected),
-                            Selection::Idle | Selection::Yielded => None,
-                        }
-                        .expect("task remains queued");
-                        let (outcome, receipt) = Routes::run(
-                            Branch::new(
-                                Leaf::new(|driver, entry| {
-                                    Entry::<_, Left<Here>, _, _>::step(entry, driver)
-                                }),
-                                Leaf::new(|driver, entry| {
-                                    Entry::<_, Right<Here>, _, _>::step(entry, driver)
-                                }),
-                            ),
-                            &mut driver,
-                            selected,
-                        );
-                        assert!(matches!(
-                            outcome,
-                            Outcome::Complete { target, output }
-                            if (target, output) == (expected, expected)
-                        ));
-                        receipt.settle(Flow::Batch);
-                    }
-                    let current = plane
-                        .as_mut()
-                        .route::<Right<Here>>()
-                        .try_admit(owner, parent)
-                        .ok()
-                        .expect("reused physical slot")((
-                        Ready::new(13),
-                        13,
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Right<Here>>().remove(other),
-                        Removal::Absent
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Right<Here>>().remove(current),
-                        Removal::Removed
-                    ));
-                    assert!(matches!(
-                        plane
-                            .as_mut()
-                            .select(owner::Scope::Exact(owner), turn.turn().app()),
-                        Selection::Idle
-                    ));
-                    assert!(plane.as_ref().owners().try_retire(owner).is_ok());
-                });
-                assert_eq!(allocs, (0, 0));
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
+static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
 fn transfer_rearms_parent() {
-    use std::{cell::Cell, num::NonZero, rc::Rc};
-
-    use dope::core::driver::schedule::{self, app::step::Flow, ready::task::owner};
-    use dope_fiber::task::storage::fixed::{quota::Physical, schedule::queue::Owned};
-
-    use crate::common::{
-        schedule::tasks::fixtures::{Rounds as _, WakeProbe},
-        storage::policies::owner::{Stamp, Tasks},
-    };
-
     let mut reports = Vec::new();
     Setup::for_profile::<profile::Tasks>().with_scope(
         |scope| {
@@ -199,9 +45,8 @@ fn transfer_rearms_parent() {
             let roots = routes.map(|route| view.ready().make_slot(route).expect("parent slot"));
             let owners =
                 [0, 1].map(|lane| owner::Owner::from(Stamp::try_new(lane, 0).expect("owner")));
-            let pool = Pool::<'_, WakeProbe<'_>, 4, (), usize>::try_new().expect("task pool");
-            let plane = Plane::<'_, _, Physical, Owned<'_, Tasks>>::try_owned(
-                Leaf::new(pool),
+            let plane = Pool::<'_, WakeProbe<'_>, (), usize, Owned<'_, Tasks>>::try_owned(
+                Count::new(4),
                 owner::Capacity::new(NonZero::new(2).expect("owners")),
             )
             .expect("owner queue");
@@ -219,17 +64,16 @@ fn transfer_rearms_parent() {
                 let ids = [0, 1, 2, 3].map(|index| {
                     let owner = usize::from(index != 2);
                     plane
-                        .as_mut()
-                        .route::<Here>()
                         .try_admit(owners[owner], RootWaker::from(roots[owner].target()))
                         .ok()
-                        .expect("task admission")((
-                        WakeProbe {
-                            polls: polls[index].clone(),
-                            wake: wakes[index].clone(),
-                        },
-                        index,
-                    ))
+                        .expect("task admission")
+                        .insert((
+                            WakeProbe {
+                                polls: polls[index].clone(),
+                                wake: wakes[index].clone(),
+                            },
+                            index,
+                        ))
                 });
                 {
                     let turn = control.begin();
@@ -242,7 +86,7 @@ fn transfer_rearms_parent() {
                             Selection::Idle | Selection::Yielded => None,
                         }
                         .expect("initial task");
-                        item.only().step(&mut driver).1.settle(Flow::Yield);
+                        item.step(&mut driver).1.settle(Flow::Yield);
                     }
                     turn.ready_round(|_| {});
                 }
@@ -271,7 +115,7 @@ fn transfer_rearms_parent() {
                                 if let Selection::Ready(item) =
                                     plane.as_mut().select(owner, share.work())
                                 {
-                                    item.only().step(&mut driver).1.settle(Flow::Yield);
+                                    item.step(&mut driver).1.settle(Flow::Yield);
                                 }
                             });
                             plane.as_mut().wake(owner);
@@ -285,10 +129,7 @@ fn transfer_rearms_parent() {
                     "foreign parent must dispatch after its ingress moved"
                 );
                 for id in ids {
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().remove(id),
-                        Removal::Removed
-                    ));
+                    assert!(matches!(plane.remove(id), Removal::Removed));
                 }
                 for owner in owners {
                     assert!(

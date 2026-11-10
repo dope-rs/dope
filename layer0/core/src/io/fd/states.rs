@@ -51,8 +51,7 @@ impl Phase {
     pub(super) const UNOPENED_ONE: Self = Self(3);
     pub(super) const CREATING_ONE: Self = Self(4);
     pub(super) const CREATING_ZERO: Self = Self(5);
-    pub(super) const OPEN_ONE: Self = Self(6);
-    pub(super) const OPEN_TWO: Self = Self(7);
+    pub(super) const OPEN: Self = Self(7);
     pub(super) const FAILED_ONE: Self = Self(8);
     pub(super) const CLOSING_ZERO: Self = Self(9);
     pub(super) const CLOSING_ONE: Self = Self(10);

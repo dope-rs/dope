@@ -16,10 +16,7 @@ use dope_manifold::{
         listener::{handler, topology::factory},
     },
 };
-use dope_net::{
-    tcp,
-    wire::{self, domain},
-};
+use dope_net::wire::{self, domain};
 use session::{
     app::request::Source,
     codec::{self, staging},
@@ -54,7 +51,8 @@ impl<T, I: receive::Resources> factory::ReceiveSpec for Value<T, I> {
 
 impl<ID: Identity, T, B, I, E> factory::Direct<ID, E> for Value<(T, B), I>
 where
-    E: env::Spec<Transport = tcp::Tcp>,
+    E: env::Spec,
+    E::Transport: dope_net::Listen,
     <E::Wire as wire::Spec>::Bootstrap: domain::Init<E::Wire>,
     for<'d> <E::Wire as wire::Spec>::Binding<'d, ID>: From<B>,
     I: receive::Mode<E::Wire> + receive::Resources,

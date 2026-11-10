@@ -4,10 +4,13 @@ use std::mem;
 
 use crate::reply::{Failed, Slot, recv::outcome, retain::grant::payload, usage::Footprint};
 
-pub(super) enum End<E> {
+pub(in crate::reply) enum End<E> {
     Open,
     Complete,
     Failed(Failed<E>),
+    Draining,
+    DrainingFailed(Failed<E>),
+    Drained,
 }
 
 /// Exclusive slot capability whose terminal payload is proven failed.
@@ -30,6 +33,10 @@ impl<E> End<E> {
     pub(super) fn take_failure(&mut self) -> Option<Failed<E>> {
         match mem::replace(self, Self::Complete) {
             Self::Failed(item) => Some(item),
+            Self::DrainingFailed(item) => {
+                *self = Self::Draining;
+                Some(item)
+            }
             end => {
                 *self = end;
                 None
@@ -45,10 +52,6 @@ impl<'a, 's, 'arena, 'credits, 'region, D: Footprint, E>
         slot: Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
     ) -> Option<outcome::Terminal<'a, 's, 'arena, 'credits, 'region, D, E>> {
         match mem::replace(&mut slot.state.end, End::Complete) {
-            End::Open => {
-                slot.state.end = End::Open;
-                None
-            }
             End::Complete => Some(outcome::Terminal::Complete(outcome::Completion { slot })),
             End::Failed(failure) => Some(outcome::Terminal::Failed(Self {
                 credit: Credit {
@@ -57,6 +60,10 @@ impl<'a, 's, 'arena, 'credits, 'region, D: Footprint, E>
                 },
                 failure: failure.value,
             })),
+            end => {
+                slot.state.end = end;
+                None
+            }
         }
     }
 

@@ -84,7 +84,7 @@ pub(crate) struct View<'a> {
 
 impl<'a> View<'a> {
     pub(crate) fn retire(&self, id: identity::Identity<'_>) {
-        let release = self.domain.resident.retire().release(id);
+        let release = self.domain.resident.release(id);
         let slot = id.slot();
         if !self.domain.accept.contains(SlotIndex::from(slot))
             && let Some(owner) = slot.owner()
@@ -96,13 +96,13 @@ impl<'a> View<'a> {
     }
 
     pub(crate) fn unopened(&self, id: identity::Identity<'_, handles::OutboundSlot>) {
-        let release = self.domain.resident.retire().release(id.physical());
+        let release = self.domain.resident.release(id.physical());
         release.release();
         self.domain.release_slot(id.slot());
     }
 
     pub(crate) fn creating(&self, id: identity::Identity<'_, handles::OutboundSlot>) {
-        let release = self.domain.resident.retire().release(id.physical());
+        let release = self.domain.resident.release(id.physical());
         match domain::Closures::from(self.domain).creating(id) {
             domain::Close::Submit => release.enqueue(),
             domain::Close::Settled => release.release(),
@@ -114,23 +114,23 @@ impl<'a> View<'a> {
     }
 
     pub(crate) fn abandon(&self, accepted: handles::Accepted) -> handles::Reclaimed {
-        self.domain.resident.retire().abandon(accepted)
+        self.domain.resident.abandon(accepted)
     }
 
     pub(crate) fn discard(&self, slot: handles::OutboundSlot) {
         match domain::Closures::from(self.domain).created(slot) {
-            domain::Close::Submit => self.domain.resident.retire().enqueue(slot.physical()),
+            domain::Close::Submit => self.domain.resident.enqueue(slot.physical()),
             domain::Close::Settled => {}
             domain::Close::Released => self.domain.release_slot(slot),
         }
     }
 
     pub(crate) fn has_pending(&self) -> bool {
-        self.domain.resident.retire().pending().is_some()
+        self.domain.resident.pending().is_some()
     }
 
     pub(crate) fn has_inflight(&self) -> bool {
-        self.domain.resident.retire().has_inflight()
+        self.domain.resident.has_inflight()
     }
 
     pub(crate) fn completed(&self) -> Completed {
@@ -142,7 +142,7 @@ impl<'a> View<'a> {
         if raw & !(ITEM_MASK | RETIRE_BIT) != 0 {
             return host::Closed::Missing;
         }
-        let Some(inner) = self.domain.resident.retire().bind(unpack(raw & ITEM_MASK)) else {
+        let Some(inner) = self.domain.resident.bind(unpack(raw & ITEM_MASK)) else {
             return host::Closed::Missing;
         };
         let observed = if raw & RETIRE_BIT == 0 {
@@ -171,7 +171,7 @@ impl<'a> View<'a> {
     }
 
     pub(crate) fn pending(self) -> Option<Pending<'a>> {
-        let inner = self.domain.resident.retire().pending()?;
+        let inner = self.domain.resident.pending()?;
         let class = self.class(&inner);
         Some(Pending::new(inner, class))
     }
@@ -218,7 +218,7 @@ impl<'d> reclaim::View for View<'d> {
     type Retire = Retire<'d>;
 
     fn submitted(&self, flight: Self::Flight) {
-        self.domain.resident.retire().submitted(flight.into_inner());
+        self.domain.resident.submitted(flight.into_inner());
     }
 
     fn commit(self, item: Kind<Self::Close, Self::Retire>) {
@@ -227,14 +227,14 @@ impl<'d> reclaim::View for View<'d> {
             Kind::Close(close) => {
                 let inner = unpack(close.0);
                 let slot = handles::PhysicalSlot::from_index(inner.index());
-                view.domain.resident.retire().commit(inner);
+                view.domain.resident.commit(inner);
                 if !view.domain.accept.contains(SlotIndex::from(slot)) {
                     domain::Closures::from(view.domain).complete(slot);
                 }
             }
             Kind::Retire(retire) => {
                 let (inner, solo) = retire.into_parts();
-                if let Reuse::Reusable = view.domain.resident.retire().recycle(inner) {
+                if let Reuse::Reusable = view.domain.resident.recycle(inner) {
                     domain::Outbound::from(view.domain).release_one(solo);
                 }
             }
@@ -300,7 +300,7 @@ impl host::Echo for Echo<'_> {
         let inner = unpack(raw & ITEM_MASK);
         let slot = handles::PhysicalSlot::from_index(inner.index());
         if raw & RETIRE_BIT != 0 {
-            let reuse = view.domain.resident.retire().finish_reuse(inner);
+            let reuse = view.domain.resident.finish_reuse(inner);
             if let Reuse::Reusable = reuse {
                 domain::Outbound::from(view.domain).release_one(domain::Solo(slot));
             }
@@ -310,7 +310,7 @@ impl host::Echo for Echo<'_> {
         if accepted {
             view.domain.closed.set(Completed::new(&inner));
         }
-        view.domain.resident.retire().finish(inner);
+        view.domain.resident.finish(inner);
         if accepted {
             return;
         }
@@ -327,7 +327,7 @@ impl Return for Retry<'_> {
 
     fn return_item(self, bound: Self::Item) {
         let inner = unpack(bound.0 & ITEM_MASK);
-        self.0.domain.resident.retire().retry(inner);
+        self.0.domain.resident.retry(inner);
     }
 }
 

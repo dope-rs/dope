@@ -2,7 +2,7 @@ use std::{cell::Cell, pin::Pin, ptr, ptr::NonNull, rc::Rc, task::Poll};
 
 use dope_fiber::{
     abi::{Fiber, Stream},
-    context::PollCall,
+    context::{PollCall, raw::Live},
 };
 
 pub struct Domain;
@@ -79,6 +79,31 @@ impl Fiber<'_> for Complete {
             Poll::Pending
         } else {
             Poll::Ready(this.output.take().expect("one completion"))
+        }
+    }
+}
+
+#[pin_project::pin_project(project = DeferredProjection)]
+pub enum Deferred {
+    Live(#[pin] Complete),
+    Head(Option<DropOutput>),
+}
+
+impl Stream<'_> for Deferred {
+    type Item = ();
+
+    fn poll_next(call: PollCall<'_, '_, '_, Self>) -> Poll<Option<()>> {
+        let (mut this, admit) = call.into_admit();
+        let DeferredProjection::Live(fiber) = this.as_mut().project() else {
+            panic!("retained head repolled");
+        };
+        // SAFETY: the Live arm retains the pinned child and replaces it on completion.
+        match unsafe { Live::new(fiber) }.admitted(admit) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(output) => {
+                this.set(Self::Head(Some(output)));
+                Poll::Ready(Some(()))
+            }
         }
     }
 }

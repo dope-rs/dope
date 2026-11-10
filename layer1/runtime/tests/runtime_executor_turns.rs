@@ -68,9 +68,10 @@ fn bounds_ready_cascade() {
 }
 
 #[test]
-fn preserves_root_admission() {
+fn preserves_root_and_park_admission() {
     let mut finish = Completion::new();
     let activated = Cell::new(None);
+    let parked = Cell::new(None);
     let config = Configured::quic::<2, 8>()
         .config()
         .with_domains(settings::Domain::ONE);
@@ -85,7 +86,11 @@ fn preserves_root_admission() {
         let result = session
             .with_quiesce(
                 &mut finish,
-                dispatch::Builder::new(Saturate(&activated)).ready::<KeyTag<254>>(ready),
+                dispatch::Builder::new(Saturate {
+                    activated: &activated,
+                    parked: &parked,
+                })
+                .ready::<KeyTag<254>>(ready),
                 TIMEOUT,
                 |app| {
                     matches!(
@@ -98,8 +103,9 @@ fn preserves_root_admission() {
         assert!(result);
         assert_eq!(
             activated.get(),
-            Some(dope_core::driver::schedule::LIMIT - 1)
+            Some(dope_core::driver::schedule::LIMIT - 2)
         );
+        assert_eq!(parked.get(), Some(0));
     });
 }
 

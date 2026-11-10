@@ -11,6 +11,7 @@ use crate::reply::{
     self, LaneIndex,
     arena::{retire::Retired, state},
     retain::pool::{self, Release},
+    slot::End,
     usage::Footprint,
 };
 
@@ -35,39 +36,30 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
         };
         let (mut occupied, retired) = slab::Occupied::from_live(live);
         let entry = occupied.get_mut();
-        let state = match &mut entry.body {
-            state::EntryBody::Drained => {
+        match &mut entry.state.end {
+            End::Drained => {
                 entry.owners.cancel_entry();
                 let (lane, release) = occupied.remove().owners.unbind();
                 self.release(lane, release);
                 return Advance::Complete(Some(lane));
             }
-            state::EntryBody::Draining(state) => state,
-            body @ state::EntryBody::Attached(_) => {
-                let slot = match mem::replace(body, state::EntryBody::Drained) {
-                    state::EntryBody::Attached(state::Attached(slot)) => slot,
-                    _ => unreachable!("attached"),
-                };
-                match mem::replace(body, state::EntryBody::Draining(slot)) {
-                    state::EntryBody::Drained => {}
-                    _ => unreachable!("drained"),
+            End::Draining | End::DrainingFailed(_) => {}
+            end => {
+                if let End::Failed(failure) = mem::replace(end, End::Draining) {
+                    *end = End::DrainingFailed(failure);
                 }
-                let state::EntryBody::Draining(state) = body else {
-                    unreachable!("draining")
-                };
                 entry.owners.cancel_entry();
-                state
             }
-        };
+        }
         let mut slot = reply::Slot {
-            state,
+            state: &mut entry.state,
             owners: &mut entry.owners,
             owner: PhantomData,
         };
         if slot.drop_next() {
             return Advance::Draining(retired);
         }
-        entry.body = state::EntryBody::Drained;
+        entry.state.end = End::Drained;
         entry.owners.retire();
         if !entry.owners.is_empty() {
             return Advance::Complete(None);
@@ -91,7 +83,7 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
             };
             let (occupied, _held) = slab::Occupied::from_live(live);
             let entry = occupied.get();
-            if !matches!(entry.body, state::EntryBody::Drained) || !entry.owners.is_empty() {
+            if !matches!(entry.state.end, End::Drained) || !entry.owners.is_empty() {
                 return None;
             }
             occupied.remove().owners.unbind()

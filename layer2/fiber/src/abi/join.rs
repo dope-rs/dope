@@ -38,20 +38,18 @@ where
     where
         F: abi::Fiber<'d>,
     {
-        child
-            .poll(|fiber| {
-                // SAFETY: poll admits only the live slot and retains its completed
-                // output proof before another child can run.
-                if mem::replace(first, false) {
-                    // SAFETY: this is the join's first live child descent for its
-                    // admitted PollCall; the slot owns the terminal transition.
-                    unsafe { context::raw::Live::new(fiber).delegate(context.as_mut()) }
-                } else {
-                    // SAFETY: the live slot owns completion and pays a new credit.
-                    unsafe { context::raw::Live::new(fiber).poll(context.as_mut()) }
-                }
-            })
-            .map(|(done, _)| done)
+        child.poll(|fiber| {
+            // SAFETY: poll admits only the live slot and retains its completed
+            // output proof before another child can run.
+            if mem::replace(first, false) {
+                // SAFETY: this is the join's first live child descent for its
+                // admitted PollCall; the slot owns the terminal transition.
+                unsafe { context::raw::Live::new(fiber).delegate(context.as_mut()) }
+            } else {
+                // SAFETY: the live slot owns completion and pays a new credit.
+                unsafe { context::raw::Live::new(fiber).poll(context.as_mut()) }
+            }
+        })
     }
 }
 

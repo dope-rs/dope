@@ -17,11 +17,9 @@ use dope_fiber::{
     task::storage::fixed::{
         local::Removal,
         schedule::{
-            Plane, Pool,
+            Pool,
             result::{Outcome, Selection},
-            selected::route::{Entry, Routes},
         },
-        tree::{Branch, Build, Here, Leaf, Left, Right},
     },
 };
 use dope_test::alloc::Tracker;
@@ -29,7 +27,7 @@ use o3::depot::capacity::Count;
 
 use crate::common::{
     runtime::{self, Setup},
-    schedule::tasks::fixtures::{CaptureReady, WakeProbe},
+    schedule::tasks::fixtures::CaptureReady,
     storage::policies::Rearm,
 };
 
@@ -49,25 +47,22 @@ fn drop_requeues_task() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
             let ready = ready.expect("ready slot allocation failed");
             let parent = RootWaker::from(ready.target());
-            let pool = Pool::<'_, abi::Ready<()>, 1, (), u8>::try_new();
+            let pool = Pool::<'_, abi::Ready<()>, (), u8>::try_new(Count::new(1));
             let pool = pool.expect("task pool allocation failed");
-            let mut plane = pin::pin!(Plane::<'_, _>::from_routes(Leaf::new(pool,)));
+            let mut plane = pin::pin!(pool);
             Scope::with(plane.as_mut(), |mut plane| {
-                let task =
-                    plane
-                        .as_mut()
-                        .route::<Here>()
-                        .try_admit((), parent)
-                        .expect("task insertion failed")((Ready::new(()), 7));
+                let task = plane
+                    .try_admit((), parent)
+                    .expect("task insertion failed")
+                    .insert((Ready::new(()), 7));
 
                 let alloc = Tracker::during(|| {
                     assert!(match plane.as_mut().select(turn.turn().app()) {
-                        Selection::Ready(admitted) => admitted.only().target() == 7,
+                        Selection::Ready(admitted) => admitted.target() == 7,
                         Selection::Idle | Selection::Yielded => false,
                     });
                     assert!(match plane.as_mut().select(turn.turn().app()) {
                         Selection::Ready(admitted) => {
-                            let admitted = admitted.only();
                             assert_eq!(admitted.target(), 7);
                             matches!(
                                 admitted.drive(&mut driver),
@@ -79,10 +74,7 @@ fn drop_requeues_task() {
                         }
                         Selection::Idle | Selection::Yielded => false,
                     });
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().remove(task),
-                        Removal::Absent
-                    ));
+                    assert!(matches!(plane.remove(task), Removal::Absent));
                 });
 
                 assert_eq!(alloc, (0, 0));
@@ -109,185 +101,40 @@ fn forgotten_keeps_order() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch())
                 .expect("ready slot");
             let parent = RootWaker::from(ready.target());
-            let pool = Pool::<'_, abi::Ready<()>, 3, (), u8>::try_new().expect("task pool");
-            let mut plane = pin::pin!(Plane::from_routes(Leaf::new(pool)));
+            let pool =
+                Pool::<'_, abi::Ready<()>, (), u8>::try_new(Count::new(3)).expect("task pool");
+            let mut plane = pin::pin!(pool);
             Scope::with(plane.as_mut(), |mut plane| {
                 let alloc = Tracker::during(|| {
                     let [first, second, _third] = [1, 2, 3].map(|target| {
                         plane
-                            .as_mut()
-                            .route::<Here>()
                             .try_admit((), parent)
-                            .expect("task admission")((
-                            Ready::new(()),
-                            target,
-                        ))
+                            .expect("task admission")
+                            .insert((Ready::new(()), target))
                     });
                     assert!(match plane.as_mut().select(turn.turn().app()) {
                         Selection::Ready(selected) => {
-                            let selected = selected.only();
                             assert_eq!(selected.target(), 1);
                             mem::forget(selected);
                             true
                         }
                         Selection::Idle | Selection::Yielded => false,
                     });
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().remove(second),
-                        Removal::Removed
-                    ));
+                    assert!(matches!(plane.remove(second), Removal::Removed));
                     let _reused = plane
-                        .as_mut()
-                        .route::<Here>()
                         .try_admit((), parent)
-                        .expect("replacement admission")((
-                        Ready::new(()),
-                        4,
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().remove(first),
-                        Removal::Removed
-                    ));
+                        .expect("replacement admission")
+                        .insert((Ready::new(()), 4));
+                    assert!(matches!(plane.remove(first), Removal::Removed));
                     for expected in [3, 4] {
                         assert!(match plane.as_mut().select(turn.turn().app()) {
                             Selection::Ready(selected) => {
-                                let selected = selected.only();
                                 assert_eq!(selected.target(), expected);
                                 matches!(selected.drive(&mut driver), Outcome::Complete { .. })
                             }
                             Selection::Idle | Selection::Yielded => false,
                         });
                     }
-                });
-                assert_eq!(alloc, (0, 0));
-            });
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        runtime::check_scope,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn drop_preserves_routes() {
-    let mut reports = Vec::new();
-
-    Setup::for_profile::<Tasks>().with_turn(
-        |turn, mut driver| {
-            let view = driver.driver_ref();
-            let targets = view.targets::<KeyTag<0>>();
-            let ready = (view
-                .ready()
-                .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch()))
-            .expect("ready slot allocation failed");
-            let parent = RootWaker::from(ready.target());
-            let first =
-                Leaf::<Pool<'_, abi::Ready<()>, 2, (), u8>>::try_build_with_capacity(Count::new(1))
-                    .expect("first task pool");
-            let middle =
-                Leaf::<Pool<'_, abi::Ready<()>, 3, (), u8>>::try_build_with_capacity(Count::EMPTY)
-                    .expect("empty task pool");
-            let last =
-                Leaf::<Pool<'_, abi::Ready<()>, 4, (), u8>>::try_build_with_capacity(Count::new(2))
-                    .expect("last task pool");
-            let mut plane = pin::pin!(Plane::from_routes(Branch::new(
-                first,
-                Branch::new(middle, last),
-            )));
-            Scope::with(plane.as_mut(), |mut plane| {
-                let first = plane
-                    .as_mut()
-                    .route::<Left<Here>>()
-                    .try_admit((), parent)
-                    .expect("task admission")((Ready::new(()), 10));
-                let middle = plane
-                    .as_mut()
-                    .route::<Right<Right<Here>>>()
-                    .try_admit((), parent)
-                    .expect("task admission")((Ready::new(()), 20));
-                let last = plane
-                    .as_mut()
-                    .route::<Right<Right<Here>>>()
-                    .try_admit((), parent)
-                    .expect("task admission")((Ready::new(()), 30));
-
-                let alloc = Tracker::during(|| {
-                    for _ in 0..3 {
-                        let admitted = plane.as_mut().select(turn.turn().app());
-                        assert!(
-                            matches!(admitted, Selection::Ready(_)),
-                            "root selection was not ready"
-                        );
-                    }
-                    for expected in [10, 20, 30] {
-                        let admitted = match plane.as_mut().select(turn.turn().app()) {
-                            Selection::Ready(admitted) => Some(admitted),
-                            Selection::Idle | Selection::Yielded => None,
-                        }
-                        .expect("restored root was not ready");
-                        let observed = Routes::run(
-                            Branch::new(
-                                Leaf::new(|(), entry| Entry::<_, Left<Here>>::target(&entry)),
-                                Branch::new(
-                                    Leaf::new(|(), entry| {
-                                        Entry::<_, Right<Left<Here>>>::target(&entry)
-                                    }),
-                                    Leaf::new(|(), entry| {
-                                        Entry::<_, Right<Right<Here>>>::target(&entry)
-                                    }),
-                                ),
-                            ),
-                            (),
-                            admitted,
-                        );
-                        assert_eq!(observed, expected);
-                    }
-                    for expected in [10, 20, 30] {
-                        let admitted = match plane.as_mut().select(turn.turn().app()) {
-                            Selection::Ready(admitted) => Some(admitted),
-                            Selection::Idle | Selection::Yielded => None,
-                        }
-                        .expect("restored route was not ready");
-                        let outcome = Routes::run(
-                            Branch::new(
-                                Leaf::new(|driver, entry| {
-                                    Entry::<_, Left<Here>>::drive(entry, driver)
-                                }),
-                                Branch::new(
-                                    Leaf::new(|driver, entry| {
-                                        Entry::<_, Right<Left<Here>>>::drive(entry, driver)
-                                    }),
-                                    Leaf::new(|driver, entry| {
-                                        Entry::<_, Right<Right<Here>>>::drive(entry, driver)
-                                    }),
-                                ),
-                            ),
-                            &mut driver,
-                            admitted,
-                        );
-                        assert!(matches!(
-                            outcome,
-                            Outcome::Complete {
-                                target,
-                                output: ()
-                            } if target == expected
-                        ));
-                    }
-                    assert!(matches!(
-                        plane.as_mut().route::<Left<Here>>().remove(first),
-                        Removal::Absent,
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Right<Right<Here>>>().remove(middle),
-                        Removal::Absent,
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Right<Right<Here>>>().remove(last),
-                        Removal::Absent,
-                    ));
                 });
                 assert_eq!(alloc, (0, 0));
             });
@@ -314,26 +161,21 @@ fn yield_preserves_ready() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch());
             let ready = (ready).expect("ready slot allocation failed");
             let parent = RootWaker::from(ready.target());
-            let pool = Pool::<'_, abi::Ready<()>, 1, (), u8>::try_new();
+            let pool = Pool::<'_, abi::Ready<()>, (), u8>::try_new(Count::new(1));
             let pool = (pool).expect("task pool allocation failed");
-            let mut plane = pin::pin!(Plane::<'_, _>::from_routes(Leaf::new(pool,)));
+            let mut plane = pin::pin!(pool);
             Scope::with(plane.as_mut(), |mut plane| {
-                let task =
-                    plane
-                        .as_mut()
-                        .route::<Here>()
-                        .try_admit((), parent)
-                        .expect("task insertion failed")((Ready::new(()), 9));
+                let task = plane
+                    .try_admit((), parent)
+                    .expect("task insertion failed")
+                    .insert((Ready::new(()), 9));
                 while turn.turn().app().permit().is_some() {}
 
                 assert!(matches!(
                     plane.as_mut().select(turn.turn().app()),
                     Selection::Yielded
                 ));
-                assert!(matches!(
-                    plane.as_mut().route::<Here>().remove(task),
-                    Removal::Removed
-                ));
+                assert!(matches!(plane.remove(task), Removal::Removed));
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
@@ -360,31 +202,20 @@ fn external_wake_survives_requeue() {
                 )
                 .expect("ready slot");
             let parent = RootWaker::from(root.target());
-            let pending = Pool::<'_, WakeProbe<'_>, 1, (), u8>::try_new().expect("pending pool");
-            let rearming = Pool::<'_, Rearm, 1, (), u8>::try_new().expect("rearming pool");
-            let mut plane = pin::pin!(Plane::from_routes(Branch::new(
-                Leaf::new(pending),
-                Leaf::new(rearming),
-            )));
-            let polls = Rc::new(Cell::new(0));
-            let wake = Rc::new(Cell::new(None));
+            let polls = Cell::new(0);
+            let wake = Cell::new(None);
+            let mut plane = pin::pin!(
+                Pool::<'_, Rearm<'_, '_>, (), u8>::try_new(Count::new(2)).expect("task pool")
+            );
             Scope::with(plane.as_mut(), |mut plane| {
                 let pending = plane
-                    .as_mut()
-                    .route::<Left<Here>>()
                     .try_admit((), parent)
-                    .expect("pending admission")((
-                    WakeProbe {
-                        polls: polls.clone(),
-                        wake: wake.clone(),
-                    },
-                    0,
-                ));
+                    .expect("pending admission")
+                    .insert((Rearm(Some((&polls, &wake))), 0));
                 let rearming = plane
-                    .as_mut()
-                    .route::<Right<Here>>()
                     .try_admit((), parent)
-                    .expect("rearming admission")((Rearm, 1));
+                    .expect("rearming admission")
+                    .insert((Rearm(None), 1));
 
                 let allocated = Tracker::during(|| {
                     for expected in [0, 1, 0, 1, 0] {
@@ -393,18 +224,7 @@ fn external_wake_survives_requeue() {
                             else {
                                 panic!("ready task");
                             };
-                            let outcome = Routes::run(
-                                Branch::new(
-                                    Leaf::new(|driver, entry| {
-                                        Entry::<_, Left<Here>>::drive(entry, driver)
-                                    }),
-                                    Leaf::new(|driver, entry| {
-                                        Entry::<_, Right<Here>>::drive(entry, driver)
-                                    }),
-                                ),
-                                &mut driver,
-                                selected,
-                            );
+                            let outcome = selected.drive(&mut driver);
                             assert!(matches!(
                                 (expected, outcome),
                                 (0, Outcome::Pending { target: 0 })
@@ -419,14 +239,8 @@ fn external_wake_survives_requeue() {
                 });
                 assert_eq!(allocated, (0, 0));
                 assert_eq!(polls.get(), 3);
-                assert!(matches!(
-                    plane.as_mut().route::<Left<Here>>().remove(pending),
-                    Removal::Removed
-                ));
-                assert!(matches!(
-                    plane.as_mut().route::<Right<Here>>().remove(rearming),
-                    Removal::Removed
-                ));
+                assert!(matches!(plane.remove(pending), Removal::Removed));
+                assert!(matches!(plane.remove(rearming), Removal::Removed));
             });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
@@ -450,8 +264,9 @@ fn external_wake_survives_admissions() {
                 )
                 .expect("ready slot");
             let parent = RootWaker::from(root.target());
-            let pool = Pool::<'_, CaptureReady<'_>, 2, (), u8>::try_new().expect("task pool");
-            let mut plane = pin::pin!(Plane::from_routes(Leaf::new(pool)));
+            let pool =
+                Pool::<'_, CaptureReady<'_>, (), u8>::try_new(Count::new(2)).expect("task pool");
+            let mut plane = pin::pin!(pool);
             let polls = Rc::new(Cell::new(0));
             let drops = Rc::new(Cell::new(0));
             let allowed = Rc::new(Cell::new(false));
@@ -460,28 +275,27 @@ fn external_wake_survives_admissions() {
             Scope::with(plane.as_mut(), |mut plane| {
                 let mut ids = [0, 1].map(|target| {
                     plane
-                        .as_mut()
-                        .route::<Here>()
                         .try_admit((), parent)
-                        .expect("task admission")((
-                        CaptureReady {
-                            wake: if target == 0 {
-                                wake.clone()
-                            } else {
-                                other_wake.clone()
+                        .expect("task admission")
+                        .insert((
+                            CaptureReady {
+                                wake: if target == 0 {
+                                    wake.clone()
+                                } else {
+                                    other_wake.clone()
+                                },
+                                drops: drops.clone(),
+                                polls: polls.clone(),
+                                ready: allowed.clone(),
+                                output: target,
                             },
-                            drops: drops.clone(),
-                            polls: polls.clone(),
-                            ready: allowed.clone(),
-                            output: target,
-                        },
-                        target,
-                    ))
+                            target,
+                        ))
                 });
                 let Selection::Ready(selected) = plane.as_mut().select(turn.turn().app()) else {
                     panic!("pending task");
                 };
-                let (outcome, receipt) = selected.only().step(&mut driver);
+                let (outcome, receipt) = selected.step(&mut driver);
                 assert!(matches!(outcome, Outcome::Pending { target: 0 }));
                 receipt.settle(Flow::Batch);
                 allowed.set(true);
@@ -494,7 +308,7 @@ fn external_wake_survives_admissions() {
                         else {
                             panic!("ready task");
                         };
-                        let (outcome, receipt) = selected.only().step(&mut driver);
+                        let (outcome, receipt) = selected.step(&mut driver);
                         assert!(matches!(
                             outcome,
                             Outcome::Complete { target, output }
@@ -505,12 +319,10 @@ fn external_wake_survives_admissions() {
                             assert!(root.take() == Readiness::Ready);
                         }
                         let target = next as u8 + 2;
-                        let replacement =
-                            plane
-                                .as_mut()
-                                .route::<Here>()
-                                .try_admit((), parent)
-                                .expect("replacement admission")((
+                        let replacement = plane
+                            .try_admit((), parent)
+                            .expect("replacement admission")
+                            .insert((
                                 CaptureReady {
                                     wake: other_wake.clone(),
                                     drops: drops.clone(),
@@ -521,10 +333,7 @@ fn external_wake_survives_admissions() {
                                 target,
                             ));
                         let completed = mem::replace(&mut ids[(next + 1) % 2], replacement);
-                        assert!(matches!(
-                            plane.as_mut().route::<Here>().remove(completed),
-                            Removal::Absent
-                        ));
+                        assert!(matches!(plane.remove(completed), Removal::Absent));
                         if expected == 0 {
                             wake.take().expect("completed task wake").wake();
                         }
@@ -532,10 +341,7 @@ fn external_wake_survives_admissions() {
                 });
                 assert_eq!(allocated, (0, 0));
                 for id in ids {
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().remove(id),
-                        Removal::Removed
-                    ));
+                    assert!(matches!(plane.remove(id), Removal::Removed));
                 }
             });
         },

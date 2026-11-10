@@ -11,7 +11,7 @@ use crate::reply::{
     arena::state,
     order, recv,
     retain::pool,
-    slot,
+    slot::{self, End},
     usage::{self, Footprint, amount::Amount as _},
 };
 
@@ -87,12 +87,12 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         let Some((_, entry)) = &self.front else {
             return order::Front::Empty;
         };
-        match entry.body {
-            state::EntryBody::Attached(_) => match entry.owners.acceptance {
+        match entry.state.end {
+            End::Open => match entry.owners.acceptance {
                 Some(recv::Acceptance::Unit) => order::Front::Denied,
                 _ => order::Front::Open,
             },
-            state::EntryBody::Draining(_) | state::EntryBody::Drained => order::Front::Detached,
+            _ => order::Front::Detached,
         }
     }
 
@@ -121,17 +121,15 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             return state::Head::Empty(order::Depth::ZERO);
         };
         let state::Entry {
-            body,
+            state,
             owners,
             signal,
         } = entry;
         let order = Slot::new(front, owners);
-        match body {
-            state::EntryBody::Attached(state) => {
-                state::Head::Attached(reply::Open::new(order, state.state(), signal))
-            }
-            state::EntryBody::Draining(_) => state::Head::Draining(order),
-            state::EntryBody::Drained => state::Head::Drained(order),
+        match state.end {
+            End::Open => state::Head::Attached(reply::Open::new(order, state, signal)),
+            End::Drained => state::Head::Drained(order),
+            _ => state::Head::Draining(order),
         }
     }
 

@@ -153,8 +153,8 @@ fn matches_schedule_model() {
                 assert_eq!(heap.peek().copied(), want.map(|(_, prio)| prio));
                 if step & 255 == 0 {
                     for index in 0..CAPACITY {
-                        let state = if prios[index].is_some() {
-                            State::Armed
+                        let state = if let Some(priority) = &prios[index] {
+                            State::Armed(priority)
                         } else if fired[index] {
                             State::Fired
                         } else {

@@ -63,10 +63,6 @@ impl<'d, D> Id<'d, D> {
         Self::new(key.parts(), owner)
     }
 
-    pub(crate) const fn from_raw(raw: key::Handle<D>, owner: Owner<D>) -> Self {
-        Self::new(raw.parts(), owner)
-    }
-
     pub(crate) fn key_for(&self, owner: Owner<D>) -> Option<Handle<'d, D>> {
         self.raw_for(owner).map(Handle::from_parts)
     }

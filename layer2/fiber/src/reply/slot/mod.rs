@@ -21,7 +21,7 @@ use crate::reply::{
 
 mod end;
 
-use end::End;
+pub(in crate::reply) use end::End;
 pub use end::Fault;
 
 pub(in crate::reply) struct Item<C: Footprint> {
@@ -36,7 +36,7 @@ pub(in crate::reply) struct Failed<C> {
 
 #[repr(C)]
 pub(crate) struct State<'arena, D: Footprint, E> {
-    end: End<E>,
+    pub(in crate::reply) end: End<E>,
     pub(in crate::reply) data: fifo::Fifo<'arena, Item<D>, false>,
 }
 

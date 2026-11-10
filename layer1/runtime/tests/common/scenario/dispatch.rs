@@ -57,7 +57,7 @@ pub trait Hooks<'d, R>: Unpin {
 }
 
 pub trait Park<'d, R>: Hooks<'d, R> {
-    fn pre_park(&mut self, ready: &mut R, driver: &mut driver::Context<'_, 'd>);
+    fn pre_park(&mut self, ready: &mut R, park: executor::raw::Park<'_, '_, 'd>);
 }
 
 pub struct On;
@@ -173,9 +173,8 @@ where
     ) where
         'd: 'driver + 'turn,
     {
-        let mut driver = park.into_driver();
         let this = app.as_mut().get_mut();
-        this.hooks.pre_park(&mut this.ready, &mut driver);
+        this.hooks.pre_park(&mut this.ready, park);
     }
 }
 

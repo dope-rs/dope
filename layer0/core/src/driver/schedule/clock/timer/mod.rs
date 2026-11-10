@@ -1,6 +1,6 @@
 use std::{mem, task, time};
 
-use o3::mem::{Lease, Return, quota};
+use o3::mem::{Lease, Return, lease, quota};
 
 use crate::{
     driver,
@@ -63,7 +63,7 @@ type Command<'turn, 'd> = heap::Min<'turn, 'd, time::Instant, slot::Slot, Tag>;
 /// A resident alarm tied to one exact driver generation.
 ///
 pub struct Alarm<'d> {
-    lease: Lease<Access<'d>>,
+    lease: Lease<Access<'d>, lease::Open>,
 }
 
 /// Exclusive proof that one alarm remains armed or fired.
@@ -114,16 +114,16 @@ impl<'d> Command<'_, 'd> {
         now: time::Instant,
         target: &wake::Waker<'d>,
     ) -> task::Poll<()> {
-        let state = self.state(slot);
-        let due = state == heap::State::Fired || self.priority(slot).is_some_and(|due| *due <= now);
-        if due {
-            self.clear_alarm(slot);
-            task::Poll::Ready(())
-        } else if state == heap::State::Armed {
-            self.set_target(slot, target);
-            task::Poll::Pending
-        } else {
-            task::Poll::Pending
+        match self.state(slot) {
+            heap::State::Armed(due) if *due > now => {
+                self.set_target(slot, target);
+                task::Poll::Pending
+            }
+            heap::State::Idle => task::Poll::Pending,
+            heap::State::Armed(_) | heap::State::Fired => {
+                self.clear_alarm(slot);
+                task::Poll::Ready(())
+            }
         }
     }
 }
@@ -153,8 +153,20 @@ impl<'d> Timer<'d> {
 impl<'d> Alarm<'d> {
     const fn new(access: Access<'d>, slot: heap::Lease<'d, Tag>) -> Self {
         Self {
-            lease: Lease::new(access, slot),
+            lease: Lease::open(access, slot),
         }
+    }
+
+    /// Returns the timer and deadline state, releasing this resident slot.
+    pub fn into_parts(self) -> (Timer<'d>, heap::State<clock::Deadline<'d>>) {
+        let (Access(timer), slot) = self.lease.into_parts();
+        let state = timer.command(|mut cmd| cmd.remove(slot).1);
+        let state = match state {
+            heap::State::Idle => heap::State::Idle,
+            heap::State::Armed(due) => heap::State::Armed(timer.driver.clock().deadline_at(due)),
+            heap::State::Fired => heap::State::Fired,
+        };
+        (timer, state)
     }
 
     pub fn is_armed(&self) -> bool {

@@ -5,8 +5,8 @@ use dope_core::driver::{
     schedule::{app::batch::Bound, ready},
 };
 use o3::mem;
-use receive::{batch, mode, reserve};
-use slot::recv::{Blocked, Prepared};
+use receive::{batch, mode};
+use slot::recv::Prepared;
 use storage::queue::Write;
 
 use crate::{
@@ -53,26 +53,6 @@ impl<'d, ID: Identity> Resumed<'d, ID> {
     pub const fn ready(&self) -> ready::Key<'d> {
         self.ready
     }
-}
-
-pub(super) struct Park<
-    'a,
-    'w,
-    'd,
-    ID: Identity + 'w,
-    W: wire::Spec + 'w + 'd,
-    P: storage::raw::Mode,
-    R: reserve::Try<W>,
-    C: 'a,
-> where
-    'd: 'w,
-    'w: 'a,
-    P::Bound<'a, 'd, C>: Write<'d, C>,
-{
-    store: P::Bound<'a, 'd, C>,
-    rearm: recv::Rearm<'a, 'd, ID>,
-    wait: Blocked<'a, 'w, 'd, ID, W, R>,
-    event: event::Data<'d, C>,
 }
 
 pub trait BorrowedData {}
@@ -128,62 +108,6 @@ where
         let (bytes, receipt) = data.event.into_lease();
         let next = data.prepared.retained(target, bytes);
         Data::<ID, W, input::Retained, R>::finish_owned(data.rearm, next, receipt)
-    }
-}
-
-impl<'a, 'w, 'd, ID: Identity + 'w, W, P, R, C: 'a> Park<'a, 'w, 'd, ID, W, P, R, C>
-where
-    'd: 'w,
-    'w: 'a,
-    W: wire::Spec + 'w + 'd,
-    P: storage::raw::Mode,
-    R: reserve::Try<W>,
-    P::Bound<'a, 'd, C>: Write<'d, C>,
-{
-    pub(super) fn new(
-        store: P::Bound<'a, 'd, C>,
-        rearm: recv::Rearm<'a, 'd, ID>,
-        wait: Blocked<'a, 'w, 'd, ID, W, R>,
-        event: event::Data<'d, C>,
-    ) -> Self {
-        Self {
-            store,
-            rearm,
-            wait,
-            event,
-        }
-    }
-
-    pub(super) fn park(mut self) -> event::ParkRecv<'d, ID> {
-        let wait = self.wait;
-        let key = self.rearm.key();
-        let reg = match reserve::Wait::register(wait.block, wait.credit) {
-            Ok(reg) => reg,
-            Err(cause) => {
-                return event::ParkRecv::Failed {
-                    key,
-                    error: event::ParkError::Register(cause),
-                };
-            }
-        };
-        let done = self.event;
-        match self.store.prepare_push() {
-            Some(vacant) => {
-                vacant.append(done.complete());
-                reserve::Registration::commit(reg);
-                if wait.needs_cancel {
-                    self.rearm.queue();
-                }
-                event::ParkRecv::Deferred
-            }
-            None => {
-                drop(done);
-                event::ParkRecv::Failed {
-                    key,
-                    error: event::ParkError::Full,
-                }
-            }
-        }
     }
 }
 

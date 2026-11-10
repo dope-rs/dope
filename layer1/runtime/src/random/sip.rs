@@ -6,15 +6,17 @@ use std::{
 use o3::base::marker::ThreadBound;
 
 #[derive(Clone, Copy)]
-pub struct Sip<const C: usize, const D: usize> {
+pub struct Sip<const C: usize, const D: usize, P = ()> {
     length: usize,
     state: [u64; 4],
     tail: u64,
-    _thread: ThreadBound,
+    _proof: (ThreadBound, P),
 }
 
-impl<const C: usize, const D: usize> Sip<C, D> {
-    pub(super) fn new(k0: u64, k1: u64) -> Self {
+pub struct Branded<'d>(pub(super) super::Invariant<'d>);
+
+impl<const C: usize, const D: usize, P> Sip<C, D, P> {
+    pub(super) fn new(k0: u64, k1: u64, proof: P) -> Self {
         Self {
             length: 0,
             state: [
@@ -24,7 +26,7 @@ impl<const C: usize, const D: usize> Sip<C, D> {
                 k1 ^ 0x7465_6462_7974_6573,
             ],
             tail: 0,
-            _thread: ThreadBound::NEW,
+            _proof: (ThreadBound::NEW, proof),
         }
     }
 
@@ -100,7 +102,7 @@ impl<const C: usize, const D: usize> Sip<C, D> {
     }
 }
 
-impl<const C: usize, const D: usize> hash::Hasher for Sip<C, D> {
+impl<const C: usize, const D: usize, P> hash::Hasher for Sip<C, D, P> {
     fn finish(&self) -> u64 {
         let mut state = self.state;
         let end = (((self.length as u64) & 0xff) << 56) | self.tail;

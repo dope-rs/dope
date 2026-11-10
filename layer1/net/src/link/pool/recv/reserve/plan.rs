@@ -208,7 +208,7 @@ where
     R: reserve::Try<W>,
     W::Receive: receive::Policy<W, Reserve = reserve::Waiting<R>>,
 {
-    pub(super) fn try_reserve(self) -> super::Reservation<'a, 'w, 'd, ID, W, M> {
+    pub(super) fn try_reserve(mut self) -> super::Reservation<'a, 'w, 'd, ID, W, M> {
         let key = self.connection.key;
         match Reserve::<ID, W, mode::Waiting<R>, R>::try_new(
             &mut self.connection.control,
@@ -226,10 +226,33 @@ where
                 ))
             }
             Reserve::Blocked(wait) => {
-                let parked = delivery::Park::<ID, W, mode::Waiting<R>, R, _>::new(
-                    self.store, self.rearm, wait, self.event,
-                )
-                .park();
+                let reg = match reserve::Wait::register(wait.block, wait.credit) {
+                    Ok(reg) => reg,
+                    Err(cause) => {
+                        return event::Reservation::Parked(event::ParkRecv::Failed {
+                            key,
+                            error: event::ParkError::Register(cause),
+                        });
+                    }
+                };
+                let done = self.event;
+                let parked = match self.store.prepare_push() {
+                    Some(vacant) => {
+                        vacant.append(done.complete());
+                        reserve::Registration::commit(reg);
+                        if wait.needs_cancel {
+                            self.rearm.queue();
+                        }
+                        event::ParkRecv::Deferred
+                    }
+                    None => {
+                        drop(done);
+                        event::ParkRecv::Failed {
+                            key,
+                            error: event::ParkError::Full,
+                        }
+                    }
+                };
                 event::Reservation::Parked(parked)
             }
             Reserve::Credit(cause) => event::Reservation::Parked(event::ParkRecv::Failed {

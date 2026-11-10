@@ -9,16 +9,59 @@ use std::{
 use dope::{
     core::{
         Backend, Errno,
-        driver::{schedule, settings},
+        driver::{route::KeyTag, schedule, schedule::ready::wake::Waker, settings},
         io,
     },
     manifold::{
         app::{dispatch, dispatch::event},
         file::read,
     },
-    runtime::executor,
+    runtime::{control, executor},
 };
-use o3::buffer::{resident, storage::Owned};
+use o3::buffer::{resident, storage::Owned, write::SpareExt as _};
+
+#[pin_project::pin_project]
+#[derive(dope::Application)]
+#[dispatcher(driver = 'd)]
+#[coordinate]
+pub struct Coordinate<'a, 'p, 'd> {
+    #[pin]
+    #[manifold(control)]
+    pub reader: read::Reader<'p, 'd, KeyTag<41>>,
+    #[dispatcher(state)]
+    pub ticket: Option<read::Ticket<'p, 'd>>,
+    #[dispatcher(state)]
+    pub input: &'a Cell<Option<read::Request<read::Release<'d>>>>,
+    #[dispatcher(state)]
+    pub output: &'a Cell<Option<read::Completion<read::Release<'d>>>>,
+    #[dispatcher(state)]
+    pub waker: &'a Cell<Option<Waker<'d>>>,
+}
+
+impl<'a, 'p, 'd> Coordinate<'a, 'p, 'd> {
+    fn coordinate(this: coordinate_coord::Fields<'_, 'a, 'p, 'd>) -> control::Flow {
+        let ticket = match this.ticket.take() {
+            Some(ticket) => ticket,
+            None => {
+                let Some(request) = this.input.take() else {
+                    return control::Flow::Idle;
+                };
+                this.reader
+                    .try_request(request)
+                    .ok()
+                    .expect("admitted request")
+            }
+        };
+        match ticket.poll(None) {
+            read::Poll::Pending(ticket) => *this.ticket = Some(ticket),
+            read::Poll::Ready(output) => {
+                this.output.set(Some(output));
+                this.waker.take().expect("waiting root").wake();
+            }
+        }
+        control::Flow::Idle
+    }
+}
 
 pub fn fixture(
     name: &str,
@@ -51,7 +94,11 @@ pub struct Capture<'a, 'd>(pub &'a Cell<Option<read::Buffer<'d>>>);
 impl<'d> o3::mem::Return for Capture<'_, 'd> {
     type Item = read::Buffer<'d>;
 
-    fn return_item(self, item: Self::Item) {
+    fn return_item(self, mut item: Self::Item) {
+        item.truncate(0);
+        let mut spare = item.spare();
+        spare.fill(0);
+        spare.commit();
         self.0.set(Some(item));
     }
 }

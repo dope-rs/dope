@@ -29,7 +29,7 @@ use dope_test::{fibers, harness::scenario};
 use o3::mem::Lease;
 
 use common::{
-    file::{Capture, Observed, Profile, buffer, fixture, open},
+    file::{Capture, Coordinate, Observed, Profile, buffer, fixture, open},
     recover,
     runtime::{self, Setup},
 };
@@ -57,101 +57,98 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                     .expect("resident budget");
                 let output = Lease::open(read::Release::default(), buffer(&budget));
                 let address = output.item().as_ref().as_ptr();
+                let input = Cell::new(None);
+                let completed = Cell::new(None);
+                let waker = Cell::new(None);
                 let done = session.with_quiesce(
                     &mut finish,
-                    Host::new(reader),
+                    Coordinate {
+                        reader,
+                        ticket: None,
+                        input: &input,
+                        output: &completed,
+                        waker: &waker,
+                    },
                     scenario::TIMEOUT,
                     |mut app| {
-                        let opened = fibers::TEST
-                            .try_run(
-                                &mut app,
-                                Operation::new(&port, read::Request::Open(request)),
-                            )
-                            .expect("open fiber")
-                            .ok()
-                            .expect("open admission");
-                        let read::Completion::Open { request, result } = opened else {
-                            panic!("open completion")
-                        };
-                        drop(request);
-                        let file = result.expect("open succeeds");
-                        let descriptor = file.as_fd().as_raw_fd();
-                        let completed = fibers::TEST
-                            .try_run(
-                                &mut app,
-                                Operation::new(
-                                    &port,
-                                    read::Request::Metadata(read::Metadata::new(file)),
-                                ),
-                            )
-                            .expect("metadata fiber")
-                            .ok()
-                            .expect("metadata admission");
-                        let read::Completion::Metadata { file, result } = completed else {
-                            panic!("metadata completion")
-                        };
-                        let (kind, length, identity) = result.expect("metadata succeeds");
-                        assert_eq!(file.as_fd().as_raw_fd(), descriptor);
-                        assert!(kind.is_regular());
-                        assert_eq!(length, file::Len::fixed::<3>());
-                        assert!(identity.is_some());
-                        let mut request =
-                            read::Read::try_new(file, output, file::Offset::fixed::<0>())
-                                .ok()
-                                .expect("nonempty output");
-                        for (offset, expected) in [
-                            (file::Offset::fixed::<2>(), b"c".as_slice()),
-                            (file::Offset::fixed::<3>(), b"".as_slice()),
-                            (file::Offset::fixed::<0>(), b"abc".as_slice()),
-                        ] {
-                            let completed = fibers::TEST
-                                .try_run(
-                                    &mut app,
-                                    Operation::new(&port, read::Request::Read(request.at(offset))),
-                                )
-                                .expect("read fiber")
-                                .ok()
-                                .expect("read admission");
-                            let read::Completion::Read {
-                                request: returned,
-                                result,
-                            } = completed
+                        let (port, directory, input, completed, waker) =
+                            (&port, &directory, &input, &completed, &waker);
+                        fibers::TEST.try_run(&mut app, dope_fiber::fiber!('_ => async move {
+                            let read::Completion::Open { request, result } =
+                                Operation::new(&port, read::Request::Open(request))
+                                    .await.ok().expect("open admission")
                             else {
-                                panic!("read completion")
+                                panic!("open completion")
                             };
-                            assert_eq!(result.map(transfer::Len::into_raw), Ok(expected.len()));
-                            assert_eq!(returned.output().as_ref(), expected);
-                            request = returned;
-                        }
-
-                        let missing = open(&directory, "absent");
-                        let completed = fibers::TEST
-                            .try_run(
-                                &mut app,
-                                Operation::new(&port, read::Request::Open(missing)),
-                            )
-                            .expect("error fiber")
-                            .ok()
-                            .expect("error admission");
-                        let read::Completion::Open { result, .. } = completed else {
-                            panic!("open error completion")
-                        };
-                        assert!(matches!(result, Err(read::Error::System(Errno::NOT_FOUND))));
-                        let occupied = port
-                            .try_request(read::Request::Open(open(&directory, "data")))
-                            .ok()
-                            .expect("occupy the only slot");
-                        let rejected = port
-                            .try_request(read::Request::Read(request))
-                            .err()
-                            .expect("full read admission");
-                        let (read::Request::Read(request), cause) = rejected.into_parts() else {
-                            panic!("returned read")
-                        };
-                        assert_eq!(cause, read::Admission::Full);
-                        assert_eq!(request.output().as_ref(), b"abc");
-                        drop(occupied);
-                        (request, descriptor)
+                            drop(request);
+                            let file = result.expect("open succeeds");
+                            let descriptor = file.as_fd().as_raw_fd();
+                            let read::Completion::Metadata { file, result } = Operation::new(
+                                &port, read::Request::Metadata(read::Metadata::new(file)),
+                            ).await.ok().expect("metadata admission") else {
+                                panic!("metadata completion")
+                            };
+                            let (kind, length, identity) = result.expect("metadata succeeds");
+                            assert_eq!(file.as_fd().as_raw_fd(), descriptor);
+                            assert!(kind.is_regular());
+                            assert_eq!(length, file::Len::fixed::<3>());
+                            assert!(identity.is_some());
+                            let mut request =
+                                read::Read::try_new(file, output, file::Offset::fixed::<0>())
+                                    .ok().expect("nonempty output");
+                            for (offset, append, count, expected) in [
+                                (file::Offset::fixed::<2>(), false, 1, b"c".as_slice()),
+                                (file::Offset::fixed::<3>(), false, 0, b"".as_slice()),
+                                (file::Offset::fixed::<0>(), false, 3, b"abc".as_slice()),
+                                (file::Offset::fixed::<3>(), true, 0, b"abc".as_slice()),
+                                (file::Offset::fixed::<0>(), true, 3, b"abcabc".as_slice()),
+                                (file::Offset::fixed::<0>(), true, 2, b"abcabcab".as_slice()),
+                            ] {
+                                request = if append {
+                                    request.try_append_at(offset).ok().expect("remaining output")
+                                } else {
+                                    request.at(offset)
+                                };
+                                input.set(Some(read::Request::Read(request)));
+                                let completion = dope_fiber::abi::poll_fn(|context| {
+                                    match completed.take() {
+                                        Some(output) => std::task::Poll::Ready(output),
+                                        None => {
+                                            waker.set(Some(context.as_ref().completion()));
+                                            std::task::Poll::Pending
+                                        }
+                                    }
+                                }).await;
+                                let read::Completion::Read { request: returned, result } = completion
+                                else {
+                                    panic!("read completion")
+                                };
+                                assert_eq!(result.map(transfer::Len::into_raw), Ok(count));
+                                assert_eq!(returned.output().as_ref(), expected);
+                                request = returned;
+                            }
+                            let (request, cause) = request.try_append_at(file::Offset::fixed::<0>())
+                                .err().expect("full suffix").into_parts();
+                            assert_eq!(cause, read::SizeError::Empty);
+                            let read::Completion::Open { result, .. } = Operation::new(
+                                &port, read::Request::Open(open(&directory, "absent")),
+                            ).await.ok().expect("error admission") else {
+                                panic!("open error completion")
+                            };
+                            assert!(matches!(result, Err(read::Error::System(Errno::NOT_FOUND))));
+                            let occupied = port
+                                .try_request(read::Request::Open(open(&directory, "data")))
+                                .ok().expect("occupy the only slot");
+                            let rejected = port.try_request(read::Request::Read(request))
+                                .err().expect("full read admission");
+                            let (read::Request::Read(request), cause) = rejected.into_parts() else {
+                                panic!("returned read")
+                            };
+                            assert_eq!(cause, read::Admission::Full);
+                            assert_eq!(request.output().as_ref(), b"abcabcab");
+                            drop(occupied);
+                            (request, descriptor)
+                        })).expect("file operations")
                     },
                 );
                 let Ok((request, descriptor)) = done else {
@@ -166,7 +163,7 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                 };
                 assert_eq!(cause, read::Admission::Closed);
                 let (file, output, _) = request.into_parts();
-                assert_eq!(output.item().as_ref(), b"abc");
+                assert_eq!(output.item().as_ref(), b"abcabcab");
                 assert_eq!(file.as_fd().as_raw_fd(), descriptor);
                 assert_eq!(output.item().as_ref().as_ptr(), address);
                 assert_eq!(budget.resident(), 8);
@@ -180,172 +177,145 @@ fn opens_reads_and_returns_the_original_charged_owner() {
 }
 
 #[test]
-fn queued_cancellation_and_uncollected_completion_preserve_owners() {
-    let dir = fixture("fiber_file_queued");
+fn cancellation_and_uncollected_completion_preserve_owners() {
+    let dir = fixture("fiber_file_cancel");
     let path = dir.path().join("data");
     let layout = read::Layout::<KeyTag<42>>::try_new(NonZero::<u32>::MIN).expect("one request");
-    let mut finish = session::Completion::new();
-    let mut reports = Vec::new();
-    Setup::try_for_plan::<Profile, _>(&layout)
-        .expect("file layout")
-        .with_session(
-            |mut session| {
-                let returned = Cell::new(None);
-                let port = layout.try_port().expect("request slots");
-                let reader = read::Reader::<KeyTag<42>, _>::try_new(&port, &mut session.driver())
-                    .expect("reader");
-                let budget = session
-                    .driver()
-                    .storage
-                    .budget(Resident::bytes(8))
-                    .expect("resident budget");
-                let output = Lease::open(Capture(&returned), buffer(&budget));
-                let request = read::Read::try_new(
-                    fs::File::open(&path).expect("file").into(),
-                    output,
-                    file::Offset::fixed::<0>(),
-                )
-                .ok()
-                .expect("nonempty read");
-                let submitted = Cell::new(false);
-                let completed = Cell::new(false);
-                let observe = || {
-                    completed.set(true);
-                    false
-                };
-                let observed = Observed {
-                    reader,
-                    submitted: &submitted,
-                    on_completion: Some(&observe),
-                };
-                let done = session.with_quiesce(
-                    &mut finish,
-                    Host::new(observed),
-                    scenario::TIMEOUT,
-                    |mut app| {
-                        let ticket = port
-                            .try_request(read::Request::Read(request))
-                            .ok()
-                            .expect("first request");
-                        drop(ticket);
-                        assert!(returned.take().is_none());
-                        fibers::TEST
-                            .try_run(&mut app, fibers::Yield::new())
-                            .expect("bounded cleanup turn");
-                        assert!(
-                            !submitted.get(),
-                            "cancelled queued read never entered native submission"
-                        );
-                        drop(returned.take().expect("queued owner returned"));
-                        let request = read::Read::try_new(
-                            fs::File::open(&path).expect("file").into(),
-                            Lease::open(Capture(&returned), buffer(&budget)),
-                            file::Offset::fixed::<0>(),
-                        )
-                        .ok()
-                        .expect("nonempty read");
-                        let ticket = port
-                            .try_request(read::Request::Read(request))
-                            .ok()
-                            .expect("reused read slot");
-                        fibers::TEST
-                            .try_run(
-                                &mut app,
-                                dope_fiber::abi::poll_fn(|context| {
-                                    if completed.get() {
-                                        std::task::Poll::Ready(())
-                                    } else {
-                                        context.wake();
-                                        std::task::Poll::Pending
-                                    }
-                                }),
-                            )
-                            .expect("read completes without polling its ticket");
-                        ticket
-                    },
-                );
-                let Ok(ticket) = done else {
-                    panic!("uncollected completion permits normal finish")
-                };
-                assert!(returned.take().is_none());
-                drop(ticket);
-                let output = returned.take().expect("completed owner returned");
-                assert_eq!(output.as_ref(), b"abc");
-                drop(output);
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            runtime::check_scope,
-        );
-    runtime::check_reports(&reports);
-}
-
-#[test]
-fn dropped_submitted_fiber_retains_output_through_forced_finish() {
-    let dir = fixture("fiber_file_finish");
-    let path = dir.path().join("data");
-    let layout = read::Layout::<KeyTag<43>>::try_new(NonZero::<u32>::MIN).expect("one request");
-    let mut finish = session::Completion::new();
-    let mut reports = Vec::new();
-    Setup::try_for_plan::<Profile, _>(&layout)
-        .expect("file layout")
-        .with_session(
-            |mut session| {
-                let returned = Cell::new(None);
-                let port = layout.try_port().expect("request slots");
-                let reader = read::Reader::<KeyTag<43>, _>::try_new(&port, &mut session.driver())
-                    .expect("reader");
-                let budget = session
-                    .driver()
-                    .storage
-                    .budget(Resident::bytes(8))
-                    .expect("resident budget");
-                let output = Lease::open(Capture(&returned), buffer(&budget));
-                let request = read::Read::try_new(
-                    fs::File::open(&path).expect("file").into(),
-                    output,
-                    file::Offset::fixed::<0>(),
-                )
-                .ok()
-                .expect("nonempty read");
-                let submitted = Cell::new(false);
-                let observed = Observed {
-                    reader,
-                    submitted: &submitted,
-                    on_completion: None,
-                };
-                let done = session.with_quiesce(
-                    &mut finish,
-                    Host::new(observed),
-                    Duration::ZERO,
-                    |mut app| {
-                        let mut operation =
-                            Task::new(Operation::new(&port, read::Request::Read(request)));
-                        assert!(
+    for active in [false, true] {
+        let mut finish = session::Completion::new();
+        let mut reports = Vec::new();
+        Setup::try_for_plan::<Profile, _>(&layout)
+            .expect("file layout")
+            .with_session(
+                |mut session| {
+                    let returned = Cell::new(None);
+                    let port = layout.try_port().expect("request slots");
+                    let reader =
+                        read::Reader::<KeyTag<42>, _>::try_new(&port, &mut session.driver())
+                            .expect("reader");
+                    let budget = session
+                        .driver()
+                        .storage
+                        .budget(Resident::bytes(8))
+                        .expect("resident budget");
+                    let request = read::Read::try_new(
+                        fs::File::open(&path).expect("file").into(),
+                        Lease::open(Capture(&returned), buffer(&budget)),
+                        file::Offset::fixed::<0>(),
+                    )
+                    .ok()
+                    .expect("nonempty read");
+                    let submitted = Cell::new(false);
+                    let completed = Cell::new(false);
+                    let observe = || {
+                        completed.set(true);
+                        false
+                    };
+                    let observed = Observed {
+                        reader,
+                        submitted: &submitted,
+                        on_completion: Some(&observe),
+                    };
+                    let timeout = if active {
+                        Duration::ZERO
+                    } else {
+                        scenario::TIMEOUT
+                    };
+                    let done = session.with_quiesce(
+                        &mut finish,
+                        Host::new(observed),
+                        timeout,
+                        |mut app| {
+                            if active {
+                                let mut operation =
+                                    Task::new(Operation::new(&port, read::Request::Read(request)));
+                                assert!(
+                                    fibers::TEST
+                                        .try_run(
+                                            &mut app,
+                                            fibers::TEST.poll_once(Pin::new(&mut operation))
+                                        )
+                                        .expect("first poll")
+                                        .is_none()
+                                );
+                                assert!(
+                                    submitted.get(),
+                                    "the original native read owns the buffer"
+                                );
+                                drop(operation);
+                                assert!(returned.take().is_none());
+                                return None;
+                            }
+                            drop(
+                                port.try_request(read::Request::Read(request))
+                                    .ok()
+                                    .expect("first request"),
+                            );
+                            assert!(returned.take().is_none());
                             fibers::TEST
-                                .try_run(&mut app, fibers::TEST.poll_once(Pin::new(&mut operation)))
-                                .expect("first poll")
-                                .is_none()
-                        );
-                        assert!(submitted.get(), "the original native read owns the buffer");
-                        drop(operation);
+                                .try_run(&mut app, fibers::Yield::new())
+                                .expect("bounded cleanup turn");
+                            assert!(
+                                !submitted.get(),
+                                "queued cancellation never entered native submission"
+                            );
+                            let output = returned.take().expect("queued owner returned");
+                            assert_eq!(output.as_ref(), &[0; 8]);
+                            let request = read::Read::try_new(
+                                fs::File::open(&path).expect("file").into(),
+                                Lease::open(Capture(&returned), output),
+                                file::Offset::fixed::<0>(),
+                            )
+                            .ok()
+                            .expect("reused output");
+                            let ticket = port
+                                .try_request(read::Request::Read(request))
+                                .ok()
+                                .expect("reused read slot");
+                            fibers::TEST
+                                .try_run(
+                                    &mut app,
+                                    dope_fiber::abi::poll_fn(|context| {
+                                        if completed.get() {
+                                            std::task::Poll::Ready(())
+                                        } else {
+                                            context.wake();
+                                            std::task::Poll::Pending
+                                        }
+                                    }),
+                                )
+                                .expect("read completes without polling its ticket");
+                            Some(ticket)
+                        },
+                    );
+                    if active {
+                        assert!(done.is_err(), "zero quiesce window forces native finish");
+                    } else {
+                        let Ok(ticket) = done else {
+                            panic!("uncollected completion permits normal finish")
+                        };
                         assert!(returned.take().is_none());
-                    },
-                );
-                assert!(
-                    done.is_err(),
-                    "zero quiesce window exercises forced native finish"
-                );
-                drop(returned.take().expect("quiescent owner returned"));
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            runtime::check_scope,
-        );
-    assert!(
-        reports
-            .iter()
-            .all(|event| matches!(event, dope::core::io::Reclaimed::Read { .. })),
-        "forced cleanup reports only the original read: {reports:?}"
-    );
+                        drop(ticket);
+                    }
+                    let output = returned.take().expect("quiescent owner returned");
+                    assert_eq!(output.as_ref(), &[0; 8]);
+                    drop(output);
+                    assert_eq!(budget.resident(), 0);
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                runtime::check_scope,
+            );
+        if active {
+            assert!(
+                reports
+                    .iter()
+                    .all(|event| matches!(event, dope::core::io::Reclaimed::Read { .. })),
+                "forced cleanup reports only the original read: {reports:?}"
+            );
+        } else {
+            runtime::check_reports(&reports);
+        }
+    }
 }
 
 #[test]
@@ -417,19 +387,11 @@ fn cancelled_open_reclaims_an_already_opened_descriptor() {
                             );
                         }
 
-                        let request = open(&directory, "data");
-                        let completion = fibers::TEST
-                            .try_run(
-                                &mut app,
-                                Operation::new(&port, read::Request::Open(request)),
-                            )
-                            .expect("reused open slot")
-                            .ok()
-                            .expect("reused admission");
-                        assert!(matches!(
-                            completion,
-                            read::Completion::Open { result: Ok(_), .. }
-                        ));
+                        drop(
+                            port.try_request(read::Request::Open(open(&directory, "data")))
+                                .ok()
+                                .expect("reused admission"),
+                        );
                     },
                 );
                 assert!(done.is_ok(), "late open cancellation drains");

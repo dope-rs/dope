@@ -40,7 +40,7 @@ use runtime::{
     accept::{Accept, phase},
     control::receive_failed,
 };
-pub use watch::{Wait, Watch};
+pub use watch::{ExecutionError, Wait, Watch};
 use wire::domain;
 use writer::phase::flush_dirty;
 

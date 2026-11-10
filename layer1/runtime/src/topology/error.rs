@@ -26,22 +26,23 @@ impl<'a, S> Cause<'a, S> {
 
 /// Exact application failures without formatting retained successful output.
 #[derive(Debug)]
-pub enum Failure<'a, I> {
+pub enum Failure<'a, I, E = drive::Error> {
     Run {
         cause: session::Cause<'a>,
-        output: Option<&'a drive::Error>,
+        output: Option<&'a E>,
     },
+    Execute(&'a E),
     Install(&'a I),
 }
 
 /// Exact execution and teardown failures while their original owners remain retained.
 #[derive(Debug)]
-pub enum Run<'a, S, I> {
+pub enum Run<'a, S, I, E = drive::Error> {
     Runtime(create::Kind<'a>),
     Storage(&'a S),
-    Failure(Failure<'a, I>),
+    Failure(Failure<'a, I, E>),
     Close {
-        result: Result<Result<(), Failure<'a, I>>, &'a S>,
+        result: Result<Result<(), Failure<'a, I, E>>, &'a S>,
         failure: domain::Unmap,
     },
 }

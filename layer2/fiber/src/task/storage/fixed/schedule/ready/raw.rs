@@ -1,28 +1,30 @@
-use std::marker;
+use std::pin::Pin;
 
-use o3::depot::raw::Compact;
+use o3::{
+    base::num::Epoch,
+    depot::{self, arena::slab::external, index::Initialized, raw::Compact},
+};
 
 use crate::{
-    core::driver::schedule::ready::task::topology,
-    task::storage::fixed::{
-        schedule::ready::{Global, TreeIndex},
-        tree,
-    },
+    core::driver::schedule::ready::task::topology, task::storage::fixed::schedule::ready::Global,
 };
 
 /// # Safety
-/// `global` must come from a live admission in the queue paired with this
-/// exact R owner. Layout and admission prove its physical index.
-pub(in crate::task::storage::fixed::schedule) unsafe fn admitted<'d, R>(
-    global: Global,
-) -> TreeIndex<R>
-where
-    R: tree::Tree<'d>,
-{
-    TreeIndex {
-        index: global,
-        tree: marker::PhantomData,
-    }
+/// The index must retain an occupied admission to this exact storage's queue.
+pub(in crate::task::storage::fixed::schedule) unsafe fn entry<T>(
+    slots: Pin<&mut external::Pinned<T, Epoch>>,
+    index: Global,
+) -> external::Anchored<'_, T, Epoch> {
+    unsafe { depot::raw::Proof::<_, Initialized<()>>::new((slots, index.get() as u32)) }.into()
+}
+
+/// # Safety
+/// The index must retain an occupied admission to this exact storage's queue.
+pub(in crate::task::storage::fixed::schedule) unsafe fn get<T>(
+    slots: &external::Pinned<T, Epoch>,
+    index: Global,
+) -> &T {
+    unsafe { depot::raw::Proof::<_, Initialized<()>>::new((slots, index.get() as u32)) }.into()
 }
 
 unsafe impl topology::raw::Index for Global {
@@ -31,7 +33,6 @@ unsafe impl topology::raw::Index for Global {
     }
 
     unsafe fn from_raw(raw: u32) -> Self {
-        // SAFETY: the offset contract excludes the compact sentinel.
         Self(unsafe { Compact::from_raw(raw) })
     }
 }

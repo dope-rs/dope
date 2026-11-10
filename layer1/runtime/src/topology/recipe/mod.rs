@@ -15,6 +15,7 @@ pub use build::Build;
 /// Executes an installer only inside the driver lifetime its owner supports.
 pub trait Execute<S: storage::Plan>: Sized {
     type Error;
+    type Execution;
 
     fn execute<'report, 'scope, 'life, 'p, 'd, Q>(
         self,
@@ -22,7 +23,7 @@ pub trait Execute<S: storage::Plan>: Sized {
         report: &'report mut session::Completion,
     ) -> Result<
         shutdown::Requested<Q>,
-        topology::Failure<'report, Self::Error, shutdown::Requested<Q>>,
+        topology::Failure<'report, Self::Error, shutdown::Requested<Q>, Self::Execution>,
     >
     where
         'd: 'p,

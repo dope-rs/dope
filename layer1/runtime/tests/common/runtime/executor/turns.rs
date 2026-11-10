@@ -8,7 +8,10 @@ use dope_core::{
     },
     io::{self},
 };
-use dope_runtime::{executor::root, shutdown};
+use dope_runtime::{
+    executor::{raw, root},
+    shutdown,
+};
 
 use crate::common::scenario::dispatch;
 
@@ -39,7 +42,7 @@ impl<'d> dispatch::Hooks<'d, Slot<'d, KeyTag<254>>> for Cascade {
 }
 
 impl<'d> dispatch::Park<'d, Slot<'d, KeyTag<254>>> for Cascade {
-    fn pre_park(&mut self, _: &mut Slot<'d, KeyTag<254>>, _: &mut driver::Context<'_, 'd>) {
+    fn pre_park(&mut self, _: &mut Slot<'d, KeyTag<254>>, _: raw::Park<'_, '_, 'd>) {
         if self.first.get().is_none() {
             self.first.set(self.polls.get());
         }
@@ -139,28 +142,46 @@ impl<'d> dispatch::Hooks<'d, Box<[Slot<'d, KeyTag<254>>]>> for Storm {
 }
 
 impl<'d> dispatch::Park<'d, Box<[Slot<'d, KeyTag<254>>]>> for Storm {
-    fn pre_park(&mut self, _: &mut Box<[Slot<'d, KeyTag<254>>]>, _: &mut driver::Context<'_, 'd>) {
+    fn pre_park(&mut self, _: &mut Box<[Slot<'d, KeyTag<254>>]>, _: raw::Park<'_, '_, 'd>) {
         if self.first.get().is_none() {
             self.first.set(self.polls.get());
         }
     }
 }
 
-pub struct Saturate<'a>(pub &'a Cell<Option<usize>>);
+pub struct Saturate<'a> {
+    pub activated: &'a Cell<Option<usize>>,
+    pub parked: &'a Cell<Option<usize>>,
+}
 
 impl<'d> dispatch::Hooks<'d, Slot<'d, KeyTag<254>>> for Saturate<'_> {
-    type Park = dispatch::Off;
+    type Park = dispatch::On;
     const WAKE: bool = true;
 
     fn activate(
         &mut self,
-        _: &mut Slot<'d, KeyTag<254>>,
+        ready: &mut Slot<'d, KeyTag<254>>,
         _: Erased<'d, kind::Any>,
         turn: schedule::Turn<'_, 'd>,
         _: &mut driver::Context<'_, 'd>,
     ) {
-        self.0.set(Some(turn.app().remaining()));
-        while turn.app().permit().is_some() {}
+        if self.parked.get().is_none() {
+            if self.activated.get().is_none() {
+                self.activated.set(Some(turn.app().remaining()));
+            }
+            while turn.app().permit().is_some() {}
+            ready.activate();
+        }
+    }
+}
+
+impl<'d> dispatch::Park<'d, Slot<'d, KeyTag<254>>> for Saturate<'_> {
+    fn pre_park(&mut self, _: &mut Slot<'d, KeyTag<254>>, park: raw::Park<'_, '_, 'd>) {
+        if self.parked.get().is_none() {
+            let work = park.into_parts().0.app();
+            self.parked
+                .set(work.permit().map(|permit| permit.run(|| work.remaining())));
+        }
     }
 }
 

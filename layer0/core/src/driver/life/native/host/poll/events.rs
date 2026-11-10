@@ -29,7 +29,7 @@ use crate::{
         },
         fd::{
             domain,
-            handles::{Accepted, Admission, Created, OutboundSlot, PhysicalSlot, Reclaimed},
+            handles::{Accepted, OutboundSlot, PhysicalSlot, Reclaimed},
         },
         outputs, recv,
         socket::Create,
@@ -311,10 +311,7 @@ where
         target: Self::Target,
         creation: Self::Creation,
     ) -> Self::Output {
-        match Created::complete(creation, driver) {
-            Admission::Ready(created) => outputs::socket(target, created, driver),
-            Admission::Retired(()) => outputs::socket_gone(target),
-        }
+        outputs::socket(target, creation, driver)
     }
 
     fn failed(

@@ -248,7 +248,7 @@ impl<ID: Identity, R: Return> Unpin for Reader<'_, '_, ID, R> {}
 /// An affine reply registration; dropping it requests cancellation, not reclamation.
 #[must_use = "poll the operation or drop its ticket to cancel it"]
 pub struct Ticket<'p, 'd, R: Return = Release<'d>> {
-    slot: Option<Slot<'p, 'd, R>>,
+    slot: Slot<'p, 'd, R>,
 }
 
 #[must_use = "a pending operation retains its reply registration"]
@@ -313,7 +313,7 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
             return Err(Rejected::new(request, Admission::Full));
         };
         if let Request::Read(read) = &mut request {
-            read.output.item_mut().truncate(0);
+            read.prepare();
         }
         let entry = slot.state();
         entry.insert(request);
@@ -321,10 +321,10 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
         entry.phase.set(Some(Phase::Queued));
         self.pending.set(self.pending.get() + 1);
         slot.push::<WORK>(());
-        Ok(Ticket { slot: Some(slot) })
+        Ok(Ticket { slot })
     }
 
-    fn settle(&self, slot: &Slot<'_, 'd, R>, outcome: Outcome) {
+    fn settle(&self, slot: &Slot<'_, 'd, R>, outcome: Outcome) -> bool {
         slot.clear::<WORK>();
         self.pending.set(self.pending.get() - 1);
         let entry = slot.state();
@@ -332,25 +332,28 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
             let request = entry.take();
             slot.push::<FREE>(());
             drop((request, outcome));
+            false
         } else {
             entry.phase.set(Some(Phase::Done(outcome)));
             if let Some(waiter) = entry.waiter.take() {
                 waiter.wake();
+                false
+            } else {
+                true
             }
         }
     }
 }
 
 impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
-    pub fn poll(mut self, waiter: wake::Waker<'d>) -> Poll<'p, 'd, R> {
-        let Some(slot) = self.slot.take() else {
-            unreachable!("ticket")
-        };
+    pub fn poll(self, waiter: Option<wake::Waker<'d>>) -> Poll<'p, 'd, R> {
+        let slot = &self.slot;
         let entry = slot.state();
         match entry.phase.take() {
             Some(Phase::Done(outcome)) => {
                 let request = entry.take();
                 slot.push::<FREE>(());
+                std::mem::forget(self);
                 Poll::Ready(match (request, outcome) {
                     (Request::Open(request), Outcome::Open(result)) => {
                         Completion::Open { request, result }
@@ -385,9 +388,9 @@ impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
                 })
             }
             phase @ Some(Phase::Queued | Phase::Active { .. }) => {
-                entry.waiter.set(Some(waiter));
+                entry.waiter.set(waiter);
                 entry.phase.set(phase);
-                Poll::Pending(Self { slot: Some(slot) })
+                Poll::Pending(self)
             }
             None => unreachable!("ticket"),
         }
@@ -396,7 +399,7 @@ impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
 
 impl<R: Return> Drop for Ticket<'_, '_, R> {
     fn drop(&mut self) {
-        let Some(slot) = self.slot.take() else { return };
+        let slot = &self.slot;
         let entry = slot.state();
         entry.waiter.take();
         entry.detached.set(true);
@@ -443,7 +446,7 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
         })
     }
 
-    fn fail(&mut self, slot: &Slot<'_, 'd, R>, cause: Error) {
+    fn fail(&mut self, slot: &Slot<'_, 'd, R>, cause: Error) -> bool {
         let outcome = slot.state().with_request(|request| match request {
             Request::Open(_) => Outcome::Open(Err(cause)),
             Request::Rename { .. } => Outcome::Rename(Err(cause)),
@@ -461,7 +464,7 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
                 Outcome::Prepare
             }
         });
-        self.port.settle(slot, outcome);
+        self.port.settle(slot, outcome)
     }
 
     fn prepare(&self, slot: &Slot<'_, 'd, R>, preparation: Preparation) {
@@ -501,70 +504,66 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
                 quota::Admission::Item(slot) => slot,
                 quota::Admission::Empty | quota::Admission::Exhausted => return,
             };
-            if !self.process(&slot, driver) {
-                return;
-            }
-        }
-    }
-
-    fn process(
-        &mut self,
-        slot: &Slot<'_, 'd, R>,
-        driver: &mut dispatch::raw::Context<'_, 'd, dispatch::raw::Retained>,
-    ) -> bool {
-        let entry = slot.state();
-        let stop = entry.detached.get() || !self.port.accepting.get();
-        match entry.phase.take() {
-            Some(Phase::Queued) => {
-                if stop {
-                    self.fail(slot, Error::Shutdown);
-                    return true;
-                }
-                match raw::submit(entry, &self.flights, &mut self.free, driver) {
-                    Ok(flight) => entry.phase.set(Some(Phase::Active {
-                        flight,
-                        stopping: false,
-                    })),
-                    Err(Error::Submission(cause)) if matches!(cause.cause(), SubmitCause::Full) => {
-                        entry.phase.set(Some(Phase::Queued));
-                        slot.push::<WORK>(());
-                        return false;
-                    }
-                    Err(cause) => self.fail(slot, cause),
-                }
-            }
-            Some(Phase::Active {
-                mut flight,
-                mut stopping,
-            }) => {
-                let mut retry = false;
-                let mut rejected = None;
-                if stop && !stopping {
-                    match flight.stop(driver) {
-                        Ok(flight::cancel::Outcome::Deferred) => retry = true,
-                        Ok(
-                            flight::cancel::Outcome::Submitted
-                            | flight::cancel::Outcome::Queued
-                            | flight::cancel::Outcome::Completed,
-                        ) => stopping = true,
+            let entry = slot.state();
+            let stop = entry.detached.get() || !port.accepting.get();
+            match entry.phase.take() {
+                Some(Phase::Queued) => {
+                    let submitted = if stop {
+                        Err(Error::Shutdown)
+                    } else {
+                        raw::submit(entry, &self.flights, &mut self.free, driver)
+                    };
+                    match submitted {
+                        Ok(flight) => entry.phase.set(Some(Phase::Active {
+                            flight,
+                            stopping: false,
+                        })),
+                        Err(Error::Submission(cause))
+                            if matches!(cause.cause(), SubmitCause::Full) =>
+                        {
+                            entry.phase.set(Some(Phase::Queued));
+                            slot.push::<WORK>(());
+                            return;
+                        }
                         Err(cause) => {
-                            stopping = true;
-                            rejected = Some(cause);
+                            if self.fail(&slot, cause) {
+                                turn.app().defer();
+                            }
                         }
                     }
                 }
-                entry.phase.set(Some(Phase::Active { flight, stopping }));
-                if let Some(cause) = rejected {
-                    driver.rejected(cause);
+                Some(Phase::Active {
+                    mut flight,
+                    mut stopping,
+                }) => {
+                    let mut retry = false;
+                    let mut rejected = None;
+                    if stop && !stopping {
+                        match flight.stop(driver) {
+                            Ok(flight::cancel::Outcome::Deferred) => retry = true,
+                            Ok(
+                                flight::cancel::Outcome::Submitted
+                                | flight::cancel::Outcome::Queued
+                                | flight::cancel::Outcome::Completed,
+                            ) => stopping = true,
+                            Err(cause) => {
+                                stopping = true;
+                                rejected = Some(cause);
+                            }
+                        }
+                    }
+                    entry.phase.set(Some(Phase::Active { flight, stopping }));
+                    if let Some(cause) = rejected {
+                        driver.rejected(cause);
+                    }
+                    if retry {
+                        slot.push::<WORK>(());
+                        return;
+                    }
                 }
-                if retry {
-                    slot.push::<WORK>(());
-                    return false;
-                }
+                phase @ (Some(Phase::Done(_)) | None) => entry.phase.set(phase),
             }
-            phase @ (Some(Phase::Done(_)) | None) => entry.phase.set(phase),
         }
-        true
     }
 }
 
@@ -611,7 +610,9 @@ impl<'d, ID: Identity, R: Return<Item = Buffer<'d>>> executor::raw::Finishes<'d,
         let port = this.port;
         for slot in port.slots.iter() {
             match slot.state().phase.take() {
-                Some(Phase::Queued | Phase::Active { .. }) => this.fail(&slot, Error::Shutdown),
+                Some(Phase::Queued | Phase::Active { .. }) => {
+                    this.fail(&slot, Error::Shutdown);
+                }
                 phase => slot.state().phase.set(phase),
             }
         }

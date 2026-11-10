@@ -38,11 +38,6 @@ pub(in crate::link) struct Prepared<'flight, 'queue, 'p, 'd, const IOV: usize, B
     entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
 }
 
-struct Active<'a, 'p, 'd, const IOV: usize> {
-    slot: &'a mut Option<Lease<'p, 'd, IOV>>,
-    lease: Lease<'p, 'd, IOV>,
-}
-
 impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
     Prepared<'flight, 'queue, 'p, 'd, IOV, B, D>
 {
@@ -59,43 +54,9 @@ impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: de
         bytes: transfer::Len,
         token: &mut region::Token<region::Identity<'d>>,
     ) -> Result<(), egress::Invalid> {
-        let active = Active {
-            slot: self.lease,
-            lease: self.reservation,
-        };
-        let released = match active.release(bytes) {
-            Ok(released) => released,
-            Err((_, error)) => return Err(error),
-        };
+        let released = Released::try_new(self.lease, self.reservation, bytes)?;
         released.consume(self.entries, token, &mut drop);
         Ok(())
-    }
-}
-
-impl<'a, 'p, 'd, const IOV: usize> Active<'a, 'p, 'd, IOV> {
-    fn release(
-        self,
-        bytes: transfer::Len,
-    ) -> Result<Released<'a, 'p, 'd, IOV>, (Self, egress::Invalid)> {
-        let maximum = self.lease.get().len();
-        if bytes > maximum {
-            return Err((
-                self,
-                egress::Invalid::Excess {
-                    actual: bytes,
-                    maximum,
-                },
-            ));
-        }
-        Ok(Released {
-            prefix: self.lease.into_prefix(),
-            bytes,
-            loan: marker::PhantomData,
-        })
-    }
-
-    fn restore(self) {
-        *self.slot = Some(self.lease);
     }
 }
 
@@ -200,16 +161,9 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
         let Some(lease) = self.lease.take() else {
             return queue::Change::Stale;
         };
-        let active = Active {
-            slot: self.lease,
-            lease,
-        };
-        let released = match active.release(bytes) {
+        let released = match Released::try_new(self.lease, lease, bytes) {
             Ok(released) => released,
-            Err((active, error)) => {
-                active.restore();
-                return queue::Change::Invalid(error);
-            }
+            Err(error) => return queue::Change::Invalid(error),
         };
         released.consume(self.queue.entries, token, &mut release);
         queue::Change::Applied
@@ -236,6 +190,25 @@ struct Released<'a, 'p, 'd, const IOV: usize> {
 }
 
 impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
+    fn try_new(
+        _: &'a mut Option<Lease<'p, 'd, IOV>>,
+        lease: Lease<'p, 'd, IOV>,
+        bytes: transfer::Len,
+    ) -> Result<Self, egress::Invalid> {
+        let maximum = lease.get().len();
+        if bytes > maximum {
+            return Err(egress::Invalid::Excess {
+                actual: bytes,
+                maximum,
+            });
+        }
+        Ok(Self {
+            prefix: lease.into_prefix(),
+            bytes,
+            loan: marker::PhantomData,
+        })
+    }
+
     fn consume<'queue, B, D: demand::Mode>(
         self,
         entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,

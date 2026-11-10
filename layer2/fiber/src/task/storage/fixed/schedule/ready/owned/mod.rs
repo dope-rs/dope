@@ -20,7 +20,7 @@ use crate::{
     task::storage::fixed::schedule::{
         queue,
         queue::{OwnerError, RetireError},
-        ready::{Global, linked},
+        ready::Global,
     },
 };
 
@@ -55,8 +55,8 @@ enum Resident<'a, 'd, Source> {
 pub struct Prepared<'a, 'd, Source, I = Global>(Entry<'a, 'd, Source, I>);
 
 #[must_use = "enqueue, idle, or detach the resident"]
-pub struct Dequeued<'a, 'd, Source, I = Global>(
-    pub(in crate::task::storage::fixed::schedule) Entry<'a, 'd, Source, I>,
+pub struct Dequeued<'a, 'd, Source>(
+    pub(in crate::task::storage::fixed::schedule) Entry<'a, 'd, Source>,
 );
 
 impl<'a, 'd, Source> Prepared<'a, 'd, Source> {
@@ -204,9 +204,9 @@ impl<'d, Source> Queue<'d, Source> {
     }
 
     /// The occupied entry's exclusive route loan retains its admission to this queue.
-    pub(in crate::task::storage) fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>) {
+    pub(in crate::task::storage) fn detach(self: pin::Pin<&Self>, index: Global) {
         // SAFETY: the occupied entry's exclusive route retains attachment to this queue.
-        unsafe { raw::detach(self, entry.index()) };
+        unsafe { raw::detach(self, index) };
     }
 
     /// Registers `owner`'s lane for its generation, classifying the exact reasons an

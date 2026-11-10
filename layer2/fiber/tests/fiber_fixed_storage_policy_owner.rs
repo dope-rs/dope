@@ -1,3 +1,4 @@
+use o3::depot::capacity::Count;
 use std::{cell::Cell, num, pin, rc::Rc};
 
 use dope::core::driver::{
@@ -17,13 +18,11 @@ use dope_fiber::{
     task::storage::{
         fixed::{
             local::Removal,
-            quota::Physical,
             schedule::{
-                Plane, Pool,
+                Pool,
                 queue::{Owned, Wake},
                 result::{Outcome, Selection},
             },
-            tree::{Here, Leaf},
         },
         scope::Scope,
     },
@@ -53,15 +52,10 @@ fn scope_keeps_foreign() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch())
                 .expect("ready slot allocation failed");
             let parent = RootWaker::from(ready.target());
-            let pool = Pool::<'_, abi::Ready<u8>, 4, (), u8>::try_new()
-                .expect("task pool allocation failed");
-            let (plane, cold) = Tracker::measure(|| {
-                Plane::<'_, _, Physical, Owned<'_, Tasks>>::try_owned(
-                    Leaf::new(pool),
-                    Capacity::new(num::NonZero::<u32>::MIN.saturating_add(1)),
-                )
-            });
-            assert_eq!(cold, [1, 112, 0, 0]);
+            let plane = Pool::<'_, abi::Ready<u8>, (), u8, Owned<'_, Tasks>>::try_owned(
+                Count::new(4),
+                Capacity::new(num::NonZero::<u32>::MIN.saturating_add(1)),
+            );
             let plane = plane.expect("owner queue allocation failed");
             let mut plane = pin::pin!(plane);
             Scope::with(plane.as_mut(), |mut plane| {
@@ -75,13 +69,16 @@ fn scope_keeps_foreign() {
                 }
 
                 let alloc = Tracker::during(|| {
-                    let mut route = plane.as_mut().route::<Here>();
-                    let foreign = route.try_admit(second, parent);
-                    let foreign =
-                        foreign.ok().expect("foreign task insertion failed")((Ready::new(20), 20));
-                    let exact = route.try_admit(first, parent);
-                    let exact =
-                        exact.ok().expect("exact task insertion failed")((Ready::new(10), 10));
+                    let foreign = plane.try_admit(second, parent);
+                    let foreign = foreign
+                        .ok()
+                        .expect("foreign task insertion failed")
+                        .insert((Ready::new(20), 20));
+                    let exact = plane.try_admit(first, parent);
+                    let exact = exact
+                        .ok()
+                        .expect("exact task insertion failed")
+                        .insert((Ready::new(10), 10));
 
                     for (scope, target) in [(Exact(first), 10), (Any, 20)] {
                         let admitted = match plane.as_mut().select(scope, turn.turn().app()) {
@@ -89,7 +86,7 @@ fn scope_keeps_foreign() {
                             Selection::Idle | Selection::Yielded => None,
                         }
                         .expect("expected ready task");
-                        let (observed, receipt) = admitted.only().step(&mut driver);
+                        let (observed, receipt) = admitted.step(&mut driver);
                         assert!(
                             matches!(observed, Outcome::Complete { target: actual, output }
                             if (actual, output) == (target, target))
@@ -111,12 +108,14 @@ fn scope_keeps_foreign() {
                         plane.as_ref().owners().register(next).is_ok(),
                         "registration"
                     );
-                    let mut route = plane.as_mut().route::<Here>();
-                    let current = route.try_admit(next, parent);
-                    let current =
-                        current.ok().expect("reused owner insertion failed")((Ready::new(30), 30));
+
+                    let current = plane.try_admit(next, parent);
+                    let current = current
+                        .ok()
+                        .expect("reused owner insertion failed")
+                        .insert((Ready::new(30), 30));
                     for stale in [foreign, exact] {
-                        assert!(plane.as_mut().route::<Here>().remove(stale) == Removal::Absent);
+                        assert!(plane.remove(stale) == Removal::Absent);
                     }
                     assert!(
                         plane.as_ref().owners().readiness(Exact(first)) == Wake::Idle,
@@ -131,7 +130,7 @@ fn scope_keeps_foreign() {
                         Selection::Idle | Selection::Yielded => None,
                     }
                     .expect("expected ready task");
-                    let (observed, receipt) = admitted.only().step(&mut driver);
+                    let (observed, receipt) = admitted.step(&mut driver);
                     assert!(matches!(
                         observed,
                         Outcome::Complete {
@@ -140,7 +139,7 @@ fn scope_keeps_foreign() {
                         }
                     ));
                     assert!((receipt.settle(Flow::Batch)) == (Flow::Batch));
-                    assert!(plane.as_mut().route::<Here>().remove(current) == Removal::Absent);
+                    assert!(plane.remove(current) == Removal::Absent);
                     for owner in [next, second] {
                         assert!(
                             plane.as_ref().owners().try_retire(owner).is_ok(),
@@ -170,10 +169,8 @@ fn phase_defers_self_wakes() {
                 .make_slot(targets.bind(SlotIndex::ZERO, Epoch::INITIAL).dispatch())
                 .expect("ready slot allocation failed");
             let parent = RootWaker::from(ready.target());
-            let pool =
-                Pool::<'_, SelfWake, 2, (), u8>::try_new().expect("task pool allocation failed");
-            let plane = Plane::<'_, _, Physical, Owned<'_, Tasks>>::try_owned(
-                Leaf::new(pool),
+            let plane = Pool::<'_, SelfWake, (), u8, Owned<'_, Tasks>>::try_owned(
+                Count::new(2),
                 Capacity::new(num::NonZero::<u32>::MIN),
             )
             .expect("owner queue allocation failed");
@@ -184,9 +181,9 @@ fn phase_defers_self_wakes() {
 
                 let polls = Rc::new(Cell::new(0));
                 let alloc = Tracker::during(|| {
-                    let mut route = plane.as_mut().route::<Here>();
+
                     let [first, second] = [1, 2].map(|target| {
-                        route.try_admit(owner, parent).ok().expect("task insertion")((
+                        plane.try_admit(owner, parent).ok().expect("task insertion").insert((
                             SelfWake(polls.clone()),
                             target,
                         ))
@@ -198,14 +195,14 @@ fn phase_defers_self_wakes() {
                             Selection::Idle | Selection::Yielded => None,
                         }
                         .expect("expected ready task");
-                        let (observed, receipt) = admitted.only().step(&mut driver);
+                        let (observed, receipt) = admitted.step(&mut driver);
                         assert!(matches!(observed, Outcome::Pending { target: actual } if actual == target),
                             "self-wakes must enter the next phase");
                         assert!((receipt.settle(Flow::Yield)) == (Flow::Yield));
                     }
 
-                    assert!((plane.as_mut().route::<Here>().remove(first)) == (Removal::Removed));
-                    assert!((plane.as_mut().route::<Here>().remove(second)) == (Removal::Removed));
+                    assert!((plane.remove(first)) == (Removal::Removed));
+                    assert!((plane.remove(second)) == (Removal::Removed));
                     assert!(plane.as_ref().owners().try_retire(owner).is_ok(), "retirement");
                 });
 
@@ -234,9 +231,8 @@ fn ingress_uses_work() {
                         .dispatch(),
                 )
                 .expect("ready slot");
-            let pool = Pool::<'_, WakeProbe<'_>, 3, (), usize>::try_new().expect("task pool");
-            let plane = Plane::<'_, _, Physical, Owned<'_, Tasks>>::try_owned(
-                Leaf::new(pool),
+            let plane = Pool::<'_, WakeProbe<'_>, (), usize, Owned<'_, Tasks>>::try_owned(
+                Count::new(3),
                 Capacity::new(num::NonZero::new(3).expect("owner count")),
             )
             .expect("owner queue");
@@ -252,17 +248,16 @@ fn ingress_uses_work() {
                         "registration"
                     );
                     plane
-                        .as_mut()
-                        .route::<Here>()
                         .try_admit(owners[index], RootWaker::from(root.target()))
                         .ok()
-                        .expect("task admission")((
-                        WakeProbe {
-                            polls: polls[index].clone(),
-                            wake: wakes[index].clone(),
-                        },
-                        index,
-                    ))
+                        .expect("task admission")
+                        .insert((
+                            WakeProbe {
+                                polls: polls[index].clone(),
+                                wake: wakes[index].clone(),
+                            },
+                            index,
+                        ))
                 });
                 for _ in 0..3 {
                     let item = match plane.as_mut().select(Any, turn.turn().app()) {
@@ -270,7 +265,7 @@ fn ingress_uses_work() {
                         Selection::Idle | Selection::Yielded => None,
                     }
                     .expect("expected ready task");
-                    item.only().step(&mut driver).1.settle(Flow::Yield);
+                    item.step(&mut driver).1.settle(Flow::Yield);
                 }
                 for wake in &wakes {
                     wake.take().expect("task wake").wake();
@@ -305,7 +300,7 @@ fn ingress_uses_work() {
                                     Selection::Idle | Selection::Yielded => None,
                                 }
                                 .expect("expected ready task");
-                            item.only().step(&mut driver).1.settle(Flow::Yield);
+                            item.step(&mut driver).1.settle(Flow::Yield);
                             assert_eq!(share.work().remaining(), 0);
                             if index == 0 {
                                 assert!(
@@ -324,7 +319,7 @@ fn ingress_uses_work() {
                 });
                 assert_eq!(alloc, (0, 0));
                 for (id, owner) in ids.into_iter().zip(owners) {
-                    assert!(plane.as_mut().route::<Here>().remove(id) == Removal::Removed);
+                    assert!(plane.remove(id) == Removal::Removed);
                     assert!(
                         plane.as_ref().owners().try_retire(owner).is_ok(),
                         "retirement"

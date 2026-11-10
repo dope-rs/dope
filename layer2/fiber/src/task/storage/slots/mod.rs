@@ -35,15 +35,9 @@ enum State {
 }
 
 /// One pinned task that retains its completed output until consumption.
-pub struct Task<F, O> {
+pub(crate) struct Task<F, O> {
     state: State,
     value: raw::Value<F, O>,
-}
-
-impl<F, O> Task<F, O> {
-    pub(in crate::task::storage) fn is_staged(&self) -> bool {
-        self.state == State::Staged
-    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

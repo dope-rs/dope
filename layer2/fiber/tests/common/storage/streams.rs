@@ -1,8 +1,9 @@
-use std::{cell::Cell, pin::Pin, ptr::NonNull, task::Poll};
+use std::{cell::Cell, ops::ControlFlow, pin::Pin, ptr::NonNull, task::Poll};
 
 use dope_fiber::{
     abi,
-    context::{Continue, PollCall, wake::Waker},
+    context::{Continue, PollCall, raw::Live, wake::Waker},
+    task::storage::fixed::schedule::{self, result::Error},
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -80,5 +81,65 @@ impl PinnedDrop for Producer<'_, '_> {
     fn drop(self: Pin<&mut Self>) {
         self.as_ref().observe();
         self.state.drops.set(self.state.drops.get() + 1);
+    }
+}
+
+#[pin_project::pin_project(project = MixedProjection)]
+pub enum Mixed<'a, 'd> {
+    Fixed(#[pin] abi::Ready<()>),
+    Stream {
+        #[pin]
+        producer: Producer<'a, 'd>,
+        held: bool,
+    },
+    End,
+}
+
+pub struct Mode;
+
+// SAFETY: each terminal arm drops its child before returning Break; held gates stream polls.
+unsafe impl<'d> schedule::Mode<'d, Mixed<'_, 'd>> for Mode {
+    type Output = Option<()>;
+    type Item = Result<u8, Failure>;
+    const INITIAL: Self = Self;
+
+    fn poll(
+        &mut self,
+        call: PollCall<'_, '_, 'd, Mixed<'_, 'd>>,
+    ) -> Poll<ControlFlow<Self::Output, Self::Item>> {
+        let (mut this, admit) = call.into_admit();
+        let output = match this.as_mut().project() {
+            MixedProjection::Fixed(fiber) => {
+                // SAFETY: this arm owns the child until it is replaced below.
+                let Poll::Ready(()) = unsafe { Live::new(fiber) }.admitted(admit) else {
+                    return Poll::Pending;
+                };
+                Some(())
+            }
+            MixedProjection::Stream { producer, held } => {
+                if *held {
+                    return Poll::Pending;
+                }
+                // SAFETY: EOF replaces this pinned producer before the next call.
+                match unsafe { Live::new(producer) }.admitted_next(admit) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Some(item)) => {
+                        *held = true;
+                        return Poll::Ready(ControlFlow::Continue(item));
+                    }
+                    Poll::Ready(None) => None,
+                }
+            }
+            MixedProjection::End => None,
+        };
+        this.set(Mixed::End);
+        Poll::Ready(ControlFlow::Break(output))
+    }
+
+    fn held<'a>(&'a mut self, fiber: Pin<&'a mut Mixed<'_, 'd>>) -> Result<&'a mut bool, Error> {
+        match fiber.project() {
+            MixedProjection::Stream { held, .. } => Ok(held),
+            MixedProjection::Fixed(_) | MixedProjection::End => Err(Error::Absent),
+        }
     }
 }

@@ -306,6 +306,15 @@ where
         wake.wake::<D>(token.pin_mut(self.stored).project().app);
     }
 
+    pub(crate) fn reserve_park<'turn>(
+        self,
+        token: &brand::Token<brand::Identity<'d>>,
+        work: schedule::app::Work<'turn, 'd>,
+    ) -> Option<schedule::app::Lease<'turn, 'd>> {
+        token.borrow_pin(self.stored).project_ref().park.as_ref()?;
+        work.lease()
+    }
+
     pub(crate) fn pre_park<'turn>(
         self,
         token: &mut brand::Token<brand::Identity<'d>>,

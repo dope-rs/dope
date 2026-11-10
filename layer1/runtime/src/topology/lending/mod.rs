@@ -11,7 +11,7 @@ use crate::{
     client,
     executor::{self, drive, session},
     shutdown,
-    topology::{self, lending},
+    topology::lending,
 };
 
 mod build;
@@ -281,31 +281,4 @@ where
         owner: O,
         stage: &mut lending::Stage<'_, 'scope, 'life, 'p, 'd, S, Q>,
     ) -> Self::Output;
-}
-
-impl<'report> Run<'report> {
-    /// Runs the installer within its exact established staging lifetime.
-    pub fn install<'stage, 'scope, 'life, 'p, 'd, S, I, Q, E>(
-        self,
-        source: I,
-        stage: &mut Stage<'stage, 'scope, 'life, 'p, 'd, S, Q>,
-    ) -> StdResult<shutdown::Requested<Q>, topology::Failure<'report, E, shutdown::Requested<Q>>>
-    where
-        S: storage::Plan,
-        Q: executor::Startup,
-        I: Installer<
-                Stage<'stage, 'scope, 'life, 'p, 'd, S, Q>,
-                Self,
-                Output = StdResult<
-                    shutdown::Requested<Q>,
-                    session::Error<'report, StdResult<shutdown::Requested<Q>, drive::Error>>,
-                >,
-                Error = E,
-            >,
-    {
-        source
-            .install(stage, self)
-            .map_err(topology::Failure::Install)?
-            .map_err(topology::Failure::Run)
-    }
 }

@@ -39,7 +39,7 @@ pub(in crate::reply) type Registered<'s, A, P> =
     depot::raw::Proof<(&'s A, EntryKey), Initialized<P>>;
 
 pub(super) struct Entry<'arena, 'credits, 'region, D: Footprint, E> {
-    pub(super) body: EntryBody<'arena, D, E>,
+    pub(super) state: reply::State<'arena, D, E>,
     pub(super) owners: pool::Owner<'arena, 'credits, 'region>,
     pub(super) signal: Signal<'region>,
 }
@@ -64,25 +64,6 @@ impl<'region> Signal<'region> {
     }
 }
 
-pub(super) enum EntryBody<'arena, D: Footprint, E> {
-    Attached(Attached<reply::State<'arena, D, E>>),
-    Draining(reply::State<'arena, D, E>),
-    Drained,
-}
-
-#[repr(transparent)]
-pub(super) struct Attached<S>(S);
-
-impl<S> Attached<S> {
-    pub(in crate::reply::arena) fn state(&mut self) -> &mut S {
-        &mut self.0
-    }
-}
-
-const _: () = {
-    assert!(mem::size_of::<Attached<[u8; 3]>>() == 3);
-};
-
 #[repr(transparent)]
 pub(in crate::reply::arena) struct Entries<'arena, 'credits, 'region, D: Footprint, E>(
     slab::Store<Entry<'arena, 'credits, 'region, D, E>, EntryTag>,
@@ -99,11 +80,11 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
     pub(in crate::reply) fn slot<'a, 's: 'a, P: 'a>(
         token: &'a mut region::Token<region::Identity<'region>>,
         registered: Registered<'s, Self, P>,
-    ) -> Option<(
+    ) -> (
         reply::Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
         &'a mut Signal<'region>,
-    )> {
-        // SAFETY: the registration and region loan retain the exact occupied slot.
+    ) {
+        // SAFETY: the live registration and region loan retain this attached slot.
         let live = unsafe {
             registered.map(|(arena, key)| {
                 (
@@ -114,17 +95,14 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
         };
         let (entry, ()) = slab::Occupied::from_live(live);
         let entry = entry.into_mut();
-        let EntryBody::Attached(slot) = &mut entry.body else {
-            return None;
-        };
-        Some((
+        (
             reply::Slot {
-                state: slot.state(),
+                state: &mut entry.state,
                 owners: &mut entry.owners,
                 owner: marker::PhantomData,
             },
             &mut entry.signal,
-        ))
+        )
     }
 
     pub(in crate::reply) fn registered_order<P>(
@@ -218,15 +196,12 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Book<'arena, 'credits, 'regi
                 continue;
             };
             let Entry {
-                body, mut owners, ..
+                mut state,
+                mut owners,
+                ..
             } = entry.remove();
             owners.clear_order();
-            let state = match body {
-                EntryBody::Attached(attached) => Some(attached.0),
-                EntryBody::Draining(state) => Some(state),
-                EntryBody::Drained => None,
-            };
-            if let Some(mut state) = state {
+            if !matches!(state.end, reply::slot::End::Drained) {
                 let mut slot = reply::Slot {
                     state: &mut state,
                     owners: &mut owners,

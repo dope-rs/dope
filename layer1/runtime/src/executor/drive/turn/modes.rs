@@ -1,5 +1,6 @@
 use std::mem;
 
+use dope_core::driver::schedule::app;
 use drive::turn::scope::Core;
 use o3::base::cell::brand;
 
@@ -12,6 +13,7 @@ pub(crate) trait Mode<'d>: Sized {
 pub(crate) struct App<'turn, 'app, 'd: 'app, D: executor::raw::Layout<'d>, S> {
     pub(super) view: executor::raw::View<'app, 'd, D, S, D::ParkPlan>,
     pub(super) token: &'turn mut brand::Token<brand::Identity<'d>>,
+    pub(super) park: Option<app::Lease<'turn, 'd>>,
 }
 
 #[derive(Clone, Copy)]
@@ -23,6 +25,7 @@ where
 {
     fn park(core: &mut Core<'_, 'd, Self>) {
         core.turn.expire();
+        drop(core.mode.park.take());
         core.mode
             .view
             .pre_park(core.mode.token, core.turn.turn(), &mut core.driver);

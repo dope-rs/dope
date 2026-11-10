@@ -26,12 +26,6 @@ pub(super) struct Counts {
 #[derive(Clone, Copy)]
 pub(super) struct Free(());
 
-enum Phase {
-    Armed(order::Position),
-    Idle,
-    Fired,
-}
-
 impl<P: Ord, R> Core<P, R> {
     pub(in crate::driver::schedule::clock::timer::heap) fn try_new(
         cap: usize,
@@ -73,10 +67,11 @@ impl<P: Ord, R> Core<P, R> {
         slot
     }
 
-    pub(super) fn release(&mut self, slot: Slot) -> R {
+    pub(super) fn release(&mut self, slot: Slot) -> (R, State<P>) {
         let priority = match self.phase(slot) {
-            Phase::Armed(position) => Some(self.remove_at(position)),
-            Phase::Idle | Phase::Fired => None,
+            State::Armed(position) => State::Armed(self.remove_at(position)),
+            State::Idle => State::Idle,
+            State::Fired => State::Fired,
         };
         let free = self.storage.state.free;
         // SAFETY: the consumed branded lease names this live in-capacity slot.
@@ -86,22 +81,21 @@ impl<P: Ord, R> Core<P, R> {
         entry.next = free;
         self.storage.state.free = slot.raw();
         self.write_state(slot, FREE);
-        drop(priority);
-        item
+        (item, priority)
     }
 
-    pub(super) fn state(&self, slot: Slot) -> State {
+    pub(super) fn state(&self, slot: Slot) -> State<&P> {
         match self.phase(slot) {
-            Phase::Armed(_) => State::Armed,
-            Phase::Idle => State::Idle,
-            Phase::Fired => State::Fired,
+            State::Armed(position) => State::Armed(self.priority_at(position)),
+            State::Idle => State::Idle,
+            State::Fired => State::Fired,
         }
     }
 
     pub(super) fn priority(&self, slot: Slot) -> Option<&P> {
-        match self.phase(slot) {
-            Phase::Armed(position) => Some(self.priority_at(position)),
-            Phase::Idle | Phase::Fired => None,
+        match self.state(slot) {
+            State::Armed(priority) => Some(priority),
+            State::Idle | State::Fired => None,
         }
     }
 
@@ -113,15 +107,15 @@ impl<P: Ord, R> Core<P, R> {
 
     pub(super) fn set(&mut self, slot: Slot, prio: P) {
         match self.phase(slot) {
-            Phase::Armed(position) => self.set_at(position, slot, prio),
-            Phase::Idle | Phase::Fired => order::insert(self, slot, prio),
+            State::Armed(position) => self.set_at(position, slot, prio),
+            State::Idle | State::Fired => order::insert(self, slot, prio),
         }
     }
 
     pub(super) fn clear(&mut self, slot: Slot) {
         let priority = match self.phase(slot) {
-            Phase::Armed(position) => Some(self.remove_at(position)),
-            Phase::Idle | Phase::Fired => None,
+            State::Armed(position) => Some(self.remove_at(position)),
+            State::Idle | State::Fired => None,
         };
         self.write_state(slot, IDLE);
         drop(priority);
@@ -141,12 +135,12 @@ impl<P: Ord, R> Core<P, R> {
         unsafe { *self.storage.extra_mut().0.get_unchecked_mut(slot.offset()) = state };
     }
 
-    fn phase(&self, slot: Slot) -> Phase {
+    fn phase(&self, slot: Slot) -> State<order::Position> {
         // SAFETY: the branded live slot is within this heap's initialized plane.
         match unsafe { *self.storage.extra().0.get_unchecked(slot.offset()) } {
-            IDLE => Phase::Idle,
-            FIRED => Phase::Fired,
-            state => Phase::Armed(order::Position::from_state(state)),
+            IDLE => State::Idle,
+            FIRED => State::Fired,
+            state => State::Armed(order::Position::from_state(state)),
         }
     }
 }

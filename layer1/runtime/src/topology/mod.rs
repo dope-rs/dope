@@ -153,14 +153,23 @@ pub enum InstallError<E> {
 }
 
 #[derive(Debug)]
-pub enum Failure<'report, I, T> {
-    Run(session::Error<'report, Result<T, drive::Error>>),
+pub enum Failure<'report, I, T, E = drive::Error> {
+    Run(session::Error<'report, Result<T, E>>),
+    Execute(E),
     Install(I),
 }
 
-impl<I, T> Failure<'_, I, T> {
+impl<'report, I, T, E> Failure<'report, I, T, E> {
+    pub fn map_install<J>(self, map: impl FnOnce(I) -> J) -> Failure<'report, J, T, E> {
+        match self {
+            Self::Run(error) => Failure::Run(error),
+            Self::Execute(error) => Failure::Execute(error),
+            Self::Install(error) => Failure::Install(map(error)),
+        }
+    }
+
     /// Borrows every failure without moving or formatting successful output.
-    pub fn cause(&self) -> error::Failure<'_, I> {
+    pub fn cause(&self) -> error::Failure<'_, I, E> {
         match self {
             Self::Run(error) => error::Failure::Run {
                 cause: error.cause(),
@@ -169,21 +178,22 @@ impl<I, T> Failure<'_, I, T> {
                     Some(Ok(_)) | None => None,
                 },
             },
+            Self::Execute(error) => error::Failure::Execute(error),
             Self::Install(error) => error::Failure::Install(error),
         }
     }
 }
 
-pub enum RunError<'owner, S, I, O, T, Q = ()> {
+pub enum RunError<'owner, S, I, O, T, Q = (), E = drive::Error> {
     Create(Rejected<create::Error<'owner>, O>),
     Storage(Rejected<S, O>),
-    Failure(Failure<'owner, I, T>),
-    Close(ClosingRun<'owner, S, I, O, T, Q>),
+    Failure(Failure<'owner, I, T, E>),
+    Close(ClosingRun<'owner, S, I, O, T, Q, E>),
 }
 
-impl<'owner, S, I, O, T, Q> RunError<'owner, S, I, O, T, Q> {
+impl<'owner, S, I, O, T, Q, E> RunError<'owner, S, I, O, T, Q, E> {
     /// Borrows every failure while preserving output, operation, and retry ownership.
-    pub fn cause(&self) -> error::Run<'_, S, I> {
+    pub fn cause(&self) -> error::Run<'_, S, I, E> {
         match self {
             Self::Create(error) => error::Run::Runtime(error.cause.kind()),
             Self::Storage(error) => error::Run::Storage(&error.cause),
@@ -199,7 +209,7 @@ impl<'owner, S, I, O, T, Q> RunError<'owner, S, I, O, T, Q> {
         }
     }
 
-    pub fn kind(&self) -> RunKind<'_, 'owner, S, I, T> {
+    pub fn kind(&self) -> RunKind<'_, 'owner, S, I, T, E> {
         match self {
             Self::Create(error) => error::Kind::Runtime(error.cause.kind()),
             Self::Storage(error) => error::Kind::Storage(&error.cause),
@@ -220,10 +230,11 @@ impl<'owner, S, O, T, Q> From<Error<'owner, Rejected<S, O>, T, Q>>
     }
 }
 
-impl<'owner, S, I, O, T, Q> From<EnterError<'owner, S, O, Result<T, Failure<'owner, I, T>>, Q>>
-    for RunError<'owner, S, I, O, T, Q>
+impl<'owner, S, I, O, T, Q, E>
+    From<EnterError<'owner, S, O, Result<T, Failure<'owner, I, T, E>>, Q>>
+    for RunError<'owner, S, I, O, T, Q, E>
 {
-    fn from(error: EnterError<'owner, S, O, Result<T, Failure<'owner, I, T>>, Q>) -> Self {
+    fn from(error: EnterError<'owner, S, O, Result<T, Failure<'owner, I, T, E>>, Q>) -> Self {
         match error {
             EnterError::Runtime(source) => Self::Create(source),
             EnterError::Storage(source) => Self::Storage(source),
@@ -330,7 +341,7 @@ const _: () = {
     assert!(mem::needs_drop::<Plan<String, ()>>() == mem::needs_drop::<String>());
 };
 
-type ClosingRun<'owner, S, I, O, T, Q> =
-    Closing<'owner, Rejected<S, O>, Result<T, Failure<'owner, I, T>>, Q>;
-type RunKind<'a, 'owner, S, I, T> =
-    error::Kind<'a, S, &'a Result<T, Failure<'owner, I, T>>, Failure<'owner, I, T>>;
+type ClosingRun<'owner, S, I, O, T, Q, E> =
+    Closing<'owner, Rejected<S, O>, Result<T, Failure<'owner, I, T, E>>, Q>;
+type RunKind<'a, 'owner, S, I, T, E> =
+    error::Kind<'a, S, &'a Result<T, Failure<'owner, I, T, E>>, Failure<'owner, I, T, E>>;

@@ -23,10 +23,6 @@ pub(in crate::io::fd::domain) enum Reuse {
     Exhausted,
 }
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(in crate::io::fd::domain) struct View<'a>(&'a resident::Store);
-
 #[must_use = "a validated descriptor release must settle or enqueue its registry entry"]
 pub(in crate::io::fd::domain) struct Release<'a> {
     store: &'a resident::Store,
@@ -35,53 +31,49 @@ pub(in crate::io::fd::domain) struct Release<'a> {
     phase: resident::Phase,
 }
 
-impl<'a> View<'a> {
-    pub(in crate::io::fd::domain) const fn new(store: &'a resident::Store) -> Self {
-        Self(store)
-    }
-
+impl resident::Store {
     /// An exhausted slot stays occupied in the native file table until reactor
     /// teardown; its quiescent, unleased entry cannot admit another owner or close.
     pub(in crate::io::fd::domain) fn abandon(
-        self,
+        &self,
         accepted: handles::Accepted,
     ) -> handles::Reclaimed {
         let slot = handles::PhysicalSlot::from(accepted);
         let index = SlotIndex::from(slot);
-        let entry = self.0.bind(resident::Bound::slot(slot));
+        let entry = self.at(resident::Bound::slot(slot));
         if entry.is_exhausted() {
             entry.set_status(resident::Phase::QUARANTINED, false);
             return handles::Reclaimed::Quarantined(slot);
         }
         entry.advance();
         entry.set_status(resident::Phase::Pending, false);
-        queue(self.0, index, &entry);
+        queue(self, index, &entry);
         handles::Reclaimed::Queued(slot)
     }
 
-    pub(in crate::io::fd::domain) fn release(self, id: identity::Identity<'_>) -> Release<'a> {
+    pub(in crate::io::fd::domain) fn release(&self, id: identity::Identity<'_>) -> Release<'_> {
         let slot = id.slot();
         let index = SlotIndex::from(slot);
-        let entry = self.0.bind(resident::Bound::slot(slot));
+        let entry = self.at(resident::Bound::slot(slot));
         let phase = entry.phase();
         Release {
-            store: self.0,
+            store: self,
             index,
             phase,
             entry,
         }
     }
 
-    pub(in crate::io::fd::domain) fn enqueue(self, slot: handles::PhysicalSlot) {
+    pub(in crate::io::fd::domain) fn enqueue(&self, slot: handles::PhysicalSlot) {
         let index = SlotIndex::from(slot);
-        let entry = self.0.bind(resident::Bound::slot(slot));
+        let entry = self.at(resident::Bound::slot(slot));
         entry.set_phase(resident::Phase::Pending);
-        queue(self.0, index, &entry);
+        queue(self, index, &entry);
     }
 
-    pub(in crate::io::fd::domain) fn pending(self) -> Option<Retirement> {
-        let (index, side) = self.0.pending.front()?;
-        let entry = self.0.entry(index)?;
+    pub(in crate::io::fd::domain) fn pending(&self) -> Option<Retirement> {
+        let (index, side) = self.pending.front()?;
+        let entry = self.entry(index)?;
         if entry.phase() != resident::Phase::Pending {
             return None;
         }
@@ -93,12 +85,12 @@ impl<'a> View<'a> {
         Some(Retirement::new(index, epoch, side))
     }
 
-    pub(in crate::io::fd::domain) fn has_inflight(self) -> bool {
-        !self.0.inflight.get().is_empty()
+    pub(in crate::io::fd::domain) fn has_inflight(&self) -> bool {
+        !self.inflight.get().is_empty()
     }
 
-    pub(in crate::io::fd::domain) fn bind(self, token: Retirement) -> Option<Retirement> {
-        let entry = self.0.entry(token.index())?;
+    pub(in crate::io::fd::domain) fn bind(&self, token: Retirement) -> Option<Retirement> {
+        let entry = self.entry(token.index())?;
         let meta = entry.words.meta().get();
         let expected = resident::INFLIGHT_MASK | side(token.side());
         if meta & resident::RETIREMENT_MASK != expected
@@ -110,11 +102,11 @@ impl<'a> View<'a> {
         Some(token)
     }
 
-    pub(in crate::io::fd::domain) fn submitted(self, token: Retirement) {
-        let entry = self.0.bind(resident::Bound::retirement(&token));
+    pub(in crate::io::fd::domain) fn submitted(&self, token: Retirement) {
+        let entry = self.at(resident::Bound::retirement(&token));
         let link = (entry.words.identity().get() & resident::LINK_MASK) as u32;
-        self.0.pending.commit(token.side(), link);
-        self.0.inflight.set(self.0.inflight.get().submit());
+        self.pending.commit(token.side(), link);
+        self.inflight.set(self.inflight.get().submit());
         entry.generation.submit(token.generation);
         let meta = entry.words.meta().get() & !resident::RETIREMENT_MASK;
         entry
@@ -124,22 +116,22 @@ impl<'a> View<'a> {
         entry.set_phase(resident::Phase::InFlight);
     }
 
-    pub(in crate::io::fd::domain) fn commit(self, token: Retirement) {
-        let entry = self.0.bind(resident::Bound::retirement(&token));
+    pub(in crate::io::fd::domain) fn commit(&self, token: Retirement) {
+        let entry = self.at(resident::Bound::retirement(&token));
         let link = (entry.words.identity().get() & resident::LINK_MASK) as u32;
-        self.0.pending.commit(token.side(), link);
+        self.pending.commit(token.side(), link);
         settle(&entry);
     }
 
-    pub(in crate::io::fd::domain) fn recycle(self, token: Retirement) -> Reuse {
-        let entry = self.0.bind(resident::Bound::retirement(&token));
+    pub(in crate::io::fd::domain) fn recycle(&self, token: Retirement) -> Reuse {
+        let entry = self.at(resident::Bound::retirement(&token));
         let link = (entry.words.identity().get() & resident::LINK_MASK) as u32;
-        self.0.pending.commit(token.side(), link);
+        self.pending.commit(token.side(), link);
         settle(&entry);
         reuse(&entry)
     }
 
-    pub(in crate::io::fd::domain) fn retry(self, token: Retirement) {
+    pub(in crate::io::fd::domain) fn retry(&self, token: Retirement) {
         let entry = self.consume(&token);
         if is_current(&entry, token.generation) {
             entry.set_phase(resident::Phase::Pending);
@@ -147,7 +139,7 @@ impl<'a> View<'a> {
         self.promote(&token, &entry);
     }
 
-    pub(in crate::io::fd::domain) fn finish(self, token: Retirement) {
+    pub(in crate::io::fd::domain) fn finish(&self, token: Retirement) {
         let entry = self.consume(&token);
         if is_current(&entry, token.generation) {
             settle(&entry);
@@ -155,24 +147,24 @@ impl<'a> View<'a> {
         self.promote(&token, &entry);
     }
 
-    pub(in crate::io::fd::domain) fn finish_reuse(self, token: Retirement) -> Reuse {
+    pub(in crate::io::fd::domain) fn finish_reuse(&self, token: Retirement) -> Reuse {
         let entry = self.consume(&token);
         settle(&entry);
         reuse(&entry)
     }
 
     /// Consumes the bound retirement independently of the current descriptor owner.
-    fn consume(self, token: &Retirement) -> resident::Entry<'a> {
-        let entry = self.0.bind(resident::Bound::retirement(token));
+    fn consume(&self, token: &Retirement) -> resident::Entry<'_> {
+        let entry = self.at(resident::Bound::retirement(token));
         let meta = entry.words.meta().get() & !resident::RETIREMENT_MASK;
         entry.words.meta().set(meta);
-        self.0.inflight.set(self.0.inflight.get().finish());
+        self.inflight.set(self.inflight.get().finish());
         entry
     }
 
-    fn promote(self, token: &Retirement, entry: &resident::Entry<'_>) {
+    fn promote(&self, token: &Retirement, entry: &resident::Entry<'_>) {
         if entry.phase() == resident::Phase::Pending {
-            queue(self.0, token.index(), entry);
+            queue(self, token.index(), entry);
         }
     }
 }

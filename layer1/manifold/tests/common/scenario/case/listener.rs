@@ -49,7 +49,11 @@ impl<
 >
     lending::Next<
         lending::Stage<'stage, 'scope, 'life, 'p, 'd, (), ()>,
-        app::Host<listener::Listener<'n, 'a, 's, 'd, 'd, ID, A, E>>,
+        listener::topology::Installed<
+            'a,
+            'd,
+            app::Host<listener::Listener<'n, 'a, 's, 'd, 'd, ID, A, E>>,
+        >,
     > for Listen<'report, F>
 where
     E: env::Spec<Wire = A::Wire>,
@@ -63,9 +67,14 @@ where
 
     fn run(
         self,
-        host: app::Host<listener::Listener<'n, 'a, 's, 'd, 'd, ID, A, E>>,
+        installed: listener::topology::Installed<
+            'a,
+            'd,
+            app::Host<listener::Listener<'n, 'a, 's, 'd, 'd, ID, A, E>>,
+        >,
         stage: &mut lending::Stage<'stage, 'scope, 'life, 'p, 'd, (), ()>,
     ) -> Self::Output {
+        let (host, _wait) = installed.into_parts();
         stage.with_quiesce(self.1, host, Duration::from_secs(2), |mut app| {
             let addr = app.inspect(|host| host.manifold(), |server| server.local_addr());
             let mut case = TcpCase::new(app, addr);

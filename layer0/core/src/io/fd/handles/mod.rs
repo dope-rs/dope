@@ -26,7 +26,6 @@ use crate::{
 
 const OWNER_SHIFT: u32 = route::SLOT_BITS;
 const UNOWNED: u8 = route::FRAMEWORK;
-type Invariant<'d> = marker::PhantomData<*mut &'d ()>;
 
 /// A physical slot whose outbound owner is established by construction.
 /// It preserves the ownership proof without decoding packed owner bits again.
@@ -48,13 +47,6 @@ pub struct Accepted(PhysicalSlot);
 pub(crate) enum Admission<T, R = ()> {
     Ready(T),
     Retired(R),
-}
-
-#[must_use = "created descriptor authority must be delivered or reclaimed"]
-#[repr(transparent)]
-pub(crate) struct Created<'d> {
-    slot: OutboundSlot,
-    driver: Invariant<'d>,
 }
 
 impl From<OutboundSlot> for OwnedSlot {
@@ -115,28 +107,6 @@ impl Accepted {
 
     pub(crate) fn physical(&self) -> PhysicalSlot {
         self.0
-    }
-}
-
-impl<'d> Created<'d> {
-    pub(crate) fn complete(
-        creation: domain::Creation,
-        driver: driver::Reference<'d>,
-    ) -> Admission<Self> {
-        let slot = *creation.as_ref();
-        match driver.descriptors().complete(creation) {
-            domain::Create::Deliver => Admission::Ready(Self {
-                slot,
-                driver: marker::PhantomData,
-            }),
-            domain::Create::Retired => Admission::Retired(()),
-        }
-    }
-
-    pub(in crate::io) fn bind(self, driver: driver::Reference<'d>) -> CreatedSlot<'d> {
-        CreatedSlot {
-            inner: Lease::open(Discard { driver }, self.slot),
-        }
     }
 }
 
@@ -210,6 +180,20 @@ impl<'d> AcceptedSlot<'d> {
 }
 
 impl<'d> CreatedSlot<'d> {
+    #[inline(always)]
+    pub(in crate::io) fn complete(
+        creation: domain::Creation,
+        driver: driver::Reference<'d>,
+    ) -> Admission<Self> {
+        let slot = *creation.as_ref();
+        match driver.descriptors().complete(creation) {
+            domain::Create::Deliver => Admission::Ready(Self {
+                inner: Lease::open(Discard { driver }, slot),
+            }),
+            domain::Create::Retired => Admission::Retired(()),
+        }
+    }
+
     pub fn try_join<State>(
         self,
         creating: Creation<'d, State>,
@@ -227,11 +211,10 @@ impl<'d> CreatedSlot<'d> {
 impl<'d, State> Join<'d, State> {
     pub fn activate(self) -> Descriptor<'d> {
         let Self { made, creating } = self;
-        let (discard, made) = made.inner.into_parts();
-        let Discard { driver } = discard;
-        driver.descriptors().activate(made);
-        let lease = creating.lease.activate();
-        Descriptor { lease }
+        let _ = made.inner.into_parts();
+        Descriptor {
+            lease: creating.lease.activate(),
+        }
     }
 }
 
@@ -315,12 +298,6 @@ const _: () = {
 };
 const _: () = assert!(mem::size_of::<Retirement>() == mem::size_of::<u8>());
 const _: () = assert!(mem::size_of::<Accepted>() == mem::size_of::<PhysicalSlot>());
-const _: () = {
-    assert!(mem::size_of::<Invariant<'static>>() == 0);
-    assert!(mem::align_of::<Invariant<'static>>() == 1);
-    assert!(mem::size_of::<Created<'static>>() == mem::size_of::<OutboundSlot>());
-    assert!(mem::align_of::<Created<'static>>() == mem::align_of::<OutboundSlot>());
-};
 const _: () = {
     assert!(
         mem::size_of::<Admission<AcceptedSlot<'_>>>() == mem::size_of::<Option<AcceptedSlot<'_>>>()

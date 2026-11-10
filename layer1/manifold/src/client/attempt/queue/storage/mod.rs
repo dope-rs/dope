@@ -10,7 +10,7 @@ use o3::depot::{
     index::Unborrowed,
     queue::{links, tagged},
 };
-pub(super) use occupied::{Occupied, borrow::Borrow, linked::Linked};
+pub(super) use occupied::{Occupied, linked::Linked};
 
 use crate::client::attempt::{
     self,

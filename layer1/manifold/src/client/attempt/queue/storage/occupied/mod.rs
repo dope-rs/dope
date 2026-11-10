@@ -1,6 +1,8 @@
+use std::cell::Cell;
+
 use dope_core::driver::route::Identity;
 use dope_net::link::pool;
-use o3::depot::queue::tagged;
+use o3::depot::{array, queue::tagged};
 
 use crate::client::attempt::{
     self,
@@ -12,7 +14,6 @@ use crate::client::attempt::{
     },
 };
 
-pub(super) mod borrow;
 pub(super) mod linked;
 
 /// One admitted resident; only an owned capability may remove it.
@@ -46,6 +47,16 @@ impl<'a, 'd, T: dope_net::Transport, ID: Identity> Occupied<'a, 'd, T, ID> {
 
     pub(in crate::client::attempt::queue) fn bind(mut self, link: pool::Key<'d, ID>) {
         self.state().bind(link);
+    }
+
+    pub(in crate::client::attempt::queue) fn defer(
+        mut self,
+        plan: attempt::Plan<T>,
+        deferred: &Cell<Option<attempt::Id<'d, ID>>>,
+    ) {
+        self.state().defer(plan);
+        deferred.set(Some(self.key));
+        tagged::Vacant::detach(self).push_at::<true, _>(array::Index::at::<0>());
     }
 
     pub(in crate::client::attempt::queue) fn finish(

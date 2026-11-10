@@ -9,7 +9,6 @@ mod sip;
 
 pub(crate) use sip::Sip;
 
-type SipHasher13 = Sip<1, 3>;
 type SipHasher24 = Sip<2, 4>;
 
 /// Owned hashing state that remains confined to its creating thread.
@@ -40,14 +39,14 @@ impl HashSeed {
     }
 
     pub fn hash<T: hash::Hash + ?Sized>(&self, input: &T) -> u64 {
-        let mut state = self.state.0.hasher();
+        let mut state = self.state.0.hasher(());
         input.hash(&mut state);
         hash::Hasher::finish(&state)
     }
 
     /// Hashes one complete byte string without `Hash` framing.
     pub fn hash_bytes(&self, input: &[u8]) -> u64 {
-        self.state.0.hasher().hash(input)
+        self.state.0.hasher(()).hash(input)
     }
 }
 
@@ -55,7 +54,7 @@ impl hash::BuildHasher for HashSeed {
     type Hasher = OwnedHasher;
 
     fn build_hasher(&self) -> Self::Hasher {
-        self.state.0.hasher()
+        self.state.0.hasher(())
     }
 }
 
@@ -82,52 +81,12 @@ impl<'d> hash::BuildHasher for HashState<'d> {
     type Hasher = Hasher<'d>;
 
     fn build_hasher(&self) -> Self::Hasher {
-        Hasher::new(self.state.0.hasher(), self.state.1)
+        self.state.0.hasher(sip::Branded(self.state.1))
     }
 }
 
 /// Hashing state retaining the exact driver brand of its key source.
-pub struct Hasher<'d> {
-    state: (SipHasher13, Invariant<'d>),
-}
-
-impl<'d> Hasher<'d> {
-    const fn new(inner: SipHasher13, proof: Invariant<'d>) -> Self {
-        Self {
-            state: (inner, proof),
-        }
-    }
-}
-
-impl hash::Hasher for Hasher<'_> {
-    fn finish(&self) -> u64 {
-        self.state.0.finish()
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        self.state.0.write(bytes);
-    }
-
-    fn write_u8(&mut self, value: u8) {
-        self.state.0.write_u8(value);
-    }
-
-    fn write_u16(&mut self, value: u16) {
-        self.state.0.write_u16(value);
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.state.0.write_u32(value);
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.state.0.write_u64(value);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.state.0.write_usize(value);
-    }
-}
+pub type Hasher<'d> = Sip<1, 3, sip::Branded<'d>>;
 
 /// Compile-time purpose separating random roots without runtime state.
 /// Implementations use a stable, globally distinct domain.
@@ -228,7 +187,7 @@ impl<'d, P: Purpose> Root<'d, P> {
 const _: () = assert!(mem::size_of::<HashState<'static>>() == 2 * mem::size_of::<u64>());
 const _: () = assert!(mem::size_of::<HashSeed>() == 2 * mem::size_of::<u64>());
 const _: () = assert!(mem::size_of::<OwnedHasher>() == mem::size_of::<(usize, [u64; 5])>());
-const _: () = assert!(mem::size_of::<Hasher<'static>>() == mem::size_of::<SipHasher13>());
+const _: () = assert!(mem::size_of::<Hasher<'static>>() == mem::size_of::<OwnedHasher>());
 
 /// Secret key retained by one runtime authority.
 #[repr(transparent)]
@@ -258,8 +217,8 @@ impl Key {
         }))
     }
 
-    fn hasher(&self) -> SipHasher13 {
-        SipHasher13::new(self.0[0], self.0[1])
+    fn hasher<P>(&self, proof: P) -> Sip<1, 3, P> {
+        Sip::new(self.0[0], self.0[1], proof)
     }
 
     fn hash_seed<const LANE: u64>(&self) -> HashSeed {
@@ -292,14 +251,14 @@ impl Key {
     }
 
     fn lane<const LANE: u64>(&self, kind: u8) -> SipHasher24 {
-        let mut state = SipHasher24::new(self.0[0], self.0[1]);
+        let mut state = SipHasher24::new(self.0[0], self.0[1], ());
         hash::Hasher::write_u64(&mut state, LANE);
         hash::Hasher::write_u8(&mut state, kind);
         state
     }
 
     fn prefix(&self, domain: Domain) -> SipHasher24 {
-        let mut state = SipHasher24::new(self.0[0], self.0[1]);
+        let mut state = SipHasher24::new(self.0[0], self.0[1], ());
         hash::Hasher::write(&mut state, &domain.namespace);
         hash::Hasher::write_u64(&mut state, domain.instance);
         state

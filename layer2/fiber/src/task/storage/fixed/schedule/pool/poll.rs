@@ -1,8 +1,11 @@
-use std::{convert::Infallible, ops::ControlFlow, task::Poll};
+use std::{convert::Infallible, ops::ControlFlow, pin::Pin, task::Poll};
 
-use crate::{abi, context::PollCall};
+use crate::{abi, context::PollCall, task::storage::fixed::schedule::result::Error};
 
-pub trait Mode<'d, F> {
+/// # Safety
+/// A nonterminal poll must leave `F` valid for another call without repolling completed children.
+/// `held` must lend the exact flag that prevents polling while an item is retained.
+pub unsafe trait Mode<'d, F> {
     type Output;
     type Item;
     const INITIAL: Self;
@@ -11,9 +14,14 @@ pub trait Mode<'d, F> {
         &mut self,
         call: PollCall<'_, '_, 'd, F>,
     ) -> Poll<ControlFlow<Self::Output, Self::Item>>;
+
+    fn held<'a>(&'a mut self, _fiber: Pin<&'a mut F>) -> Result<&'a mut bool, Error> {
+        Err(Error::Absent)
+    }
 }
 
-impl<'d, F: abi::Fiber<'d>> Mode<'d, F> for () {
+// SAFETY: completion terminates the owning slot; fixed fibers never lend a held item.
+unsafe impl<'d, F: abi::Fiber<'d>> Mode<'d, F> for () {
     type Output = F::Output;
     type Item = Infallible;
     const INITIAL: Self = ();
@@ -24,10 +32,11 @@ impl<'d, F: abi::Fiber<'d>> Mode<'d, F> for () {
 }
 
 pub struct Stream {
-    pub(super) held: bool,
+    held: bool,
 }
 
-impl<'d, F: abi::Stream<'d>> Mode<'d, F> for Stream {
+// SAFETY: EOF terminates the slot, and the held flag gates every subsequent item poll.
+unsafe impl<'d, F: abi::Stream<'d>> Mode<'d, F> for Stream {
     type Output = ();
     type Item = F::Item;
     const INITIAL: Self = Self { held: false };
@@ -43,5 +52,9 @@ impl<'d, F: abi::Stream<'d>> Mode<'d, F> for Stream {
             }
             None => ControlFlow::Break(()),
         })
+    }
+
+    fn held<'a>(&'a mut self, _fiber: Pin<&'a mut F>) -> Result<&'a mut bool, Error> {
+        Ok(&mut self.held)
     }
 }

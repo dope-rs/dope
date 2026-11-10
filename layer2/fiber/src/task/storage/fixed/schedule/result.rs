@@ -1,11 +1,6 @@
 use std::convert::Infallible;
 
-use schedule::selected;
-
-use crate::task::storage::fixed::{
-    quota::{self, State},
-    schedule::{self, queue},
-};
+use crate::task::storage::fixed::schedule::{Mode, queue, selected};
 
 pub enum Outcome<T, O, I = Infallible> {
     Pending { target: T },
@@ -21,13 +16,16 @@ pub enum Error {
 }
 
 #[must_use = "a selection must be handled before the application turn ends"]
-pub enum Selection<'plane, 'turn, 'd, R, Q = quota::Physical, S = queue::Flat<'d>>
-where
-    R: schedule::PlaneTree<'d>,
-    Q: State,
-    S: queue::Backend<'d> + 'plane,
-{
+pub enum Selection<
+    'plane,
+    'turn,
+    'd,
+    F,
+    T: Copy,
+    M: Mode<'d, F>,
+    S: queue::Backend<'d> + 'plane = queue::Flat<'d>,
+> {
     Idle,
     Yielded,
-    Ready(selected::Item<'plane, 'turn, 'd, R, Q, S>),
+    Ready(selected::Item<'plane, 'turn, 'd, F, T, M, S>),
 }

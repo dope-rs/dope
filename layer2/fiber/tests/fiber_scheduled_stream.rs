@@ -1,3 +1,4 @@
+use o3::depot::capacity::Count;
 use std::{num::NonZero, pin};
 
 use dope::core::driver::{
@@ -14,13 +15,11 @@ use dope_fiber::{
     task::storage::{
         fixed::{
             local::Removal,
-            quota::{Limit, Physical},
             schedule::{
-                Plane, Stream,
+                Storage, Stream,
                 queue::{Owned, RetireError},
                 result::{Error, Outcome, Selection},
             },
-            tree::{Here, Leaf},
         },
         scope::Scope,
     },
@@ -33,7 +32,7 @@ use common::{
     runtime::{self, Setup, profile},
     storage::{
         policies::{Domain, owner},
-        streams::{Failure, Producer, State},
+        streams::{Failure, Mixed, MixedProjection, Mode, Producer, State},
     },
 };
 
@@ -57,29 +56,60 @@ fn holds_items_until_resumed() {
             let parent = RootWaker::from(root.target());
             let state = State::default();
             let replacement = State::default();
-            let pool =
-                Stream::<'_, Producer<'_, '_>, 1, Domain, u8>::try_new().expect("stream storage");
-            let mut plane = pin::pin!(Plane::bounded(Leaf::new(pool), Limit::new(1)));
+            let pool = Storage::<'_, Mixed<'_, '_>, Domain, u8, Mode>::try_new(Count::new(1))
+                .expect("mixed storage");
+            let mut plane = pin::pin!(pool);
             Scope::with(plane.as_mut(), |mut plane| {
                 let allocations = Tracker::during(|| {
+                    for cancel in [true, false] {
+                        let fixed = plane
+                            .try_admit((), parent)
+                            .expect("fixed admission")
+                            .insert((Mixed::Fixed(dope_fiber::abi::Ready::new(())), 0));
+
+                        let mut entry = plane.entry(fixed).ok().expect("fixed member");
+                        assert!(matches!(entry.get(), Mixed::Fixed(_)));
+                        if cancel {
+                            entry.remove();
+                            assert!(plane.try_admit((), parent).is_ok());
+                            assert!(matches!(
+                                plane.as_mut().select(turn.turn().app()),
+                                Selection::Idle
+                            ));
+                            continue;
+                        }
+                        let fixed = entry.into_id();
+                        assert!(matches!(plane.get_mut(&fixed), Err(Error::Absent)));
+                        assert!(plane.try_admit((), parent).is_err());
+                        let Selection::Ready(selected) = plane.as_mut().select(turn.turn().app())
+                        else {
+                            panic!("fixed work");
+                        };
+                        assert!(matches!(
+                            selected.drive(&mut driver),
+                            Outcome::Complete {
+                                target: 0,
+                                output: Some(())
+                            }
+                        ));
+                    }
                     let id = plane
-                        .as_mut()
-                        .route::<Here>()
                         .try_admit((), parent)
-                        .expect("stream admission")((
-                        Producer::new(&state, true, 7),
-                        41,
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().get_mut(&id),
-                        Err(Error::Active)
-                    ));
+                        .expect("stream admission")
+                        .insert((
+                            Mixed::Stream {
+                                producer: Producer::new(&state, true, 7),
+                                held: false,
+                            },
+                            41,
+                        ));
+                    assert!(matches!(plane.get_mut(&id), Err(Error::Active)));
                     let Selection::Ready(selected) = plane.as_mut().select(turn.turn().app())
                     else {
                         panic!("initial stream work");
                     };
                     assert!(matches!(
-                        selected.only().drive(&mut driver),
+                        selected.drive(&mut driver),
                         Outcome::Pending { target: 41 }
                     ));
                     assert_eq!(state.polls.get(), 1);
@@ -93,7 +123,7 @@ fn holds_items_until_resumed() {
                             panic!("woken stream work");
                         };
                         assert!(matches!(
-                            selected.only().drive(&mut driver),
+                            selected.drive(&mut driver),
                             Outcome::Yielded {
                                 target: 41,
                                 output: Ok(7),
@@ -103,13 +133,13 @@ fn holds_items_until_resumed() {
                     });
                     assert_eq!(state.polls.get(), 2);
                     assert_eq!(state.drops.get(), 0);
-                    assert_eq!(plane.available().get(), 0);
+                    assert!(plane.try_admit((), parent).is_err());
 
                     state.wake.get().expect("held stream wake").wake();
                     turn.turn().app().share::<{ schedule::LIMIT }, _>(|share| {
                         match plane.as_mut().select(share.work()) {
                             Selection::Ready(selected) => assert!(matches!(
-                                selected.only().drive(&mut driver),
+                                selected.drive(&mut driver),
                                 Outcome::Pending { target: 41 }
                             )),
                             Selection::Idle | Selection::Yielded => {}
@@ -121,70 +151,61 @@ fn holds_items_until_resumed() {
                         plane.as_mut().select(turn.turn().app()),
                         Selection::Idle
                     ));
-                    plane
-                        .as_mut()
-                        .route::<Here>()
-                        .get_mut(&id)
-                        .expect("held stream")
-                        .update(Err(Failure(9)));
+
+                    let MixedProjection::Stream { producer, .. } =
+                        plane.get_mut(&id).expect("held stream").project()
+                    else {
+                        panic!("stream phase");
+                    };
+                    producer.update(Err(Failure(9)));
                     assert!(matches!(
                         plane.as_mut().select(turn.turn().app()),
                         Selection::Idle
                     ));
-                    assert!(matches!(plane.as_mut().route::<Here>().resume(&id), Ok(())));
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().resume(&id),
-                        Err(Error::Active)
-                    ));
+                    assert!(matches!(plane.resume(&id), Ok(())));
+                    assert!(matches!(plane.resume(&id), Err(Error::Active)));
                     let Selection::Ready(selected) = plane.as_mut().select(turn.turn().app())
                     else {
                         panic!("resumed stream work");
                     };
                     assert!(matches!(
-                        selected.only().drive(&mut driver),
+                        selected.drive(&mut driver),
                         Outcome::Yielded {
                             target: 41,
                             output: Err(Failure(9)),
                         }
                     ));
                     assert_eq!(state.polls.get(), 3);
-                    assert_eq!(plane.available().get(), 0, "error item retains admission");
-                    assert!(matches!(plane.as_mut().route::<Here>().resume(&id), Ok(())));
+                    assert!(plane.try_admit((), parent).is_err());
+                    assert!(matches!(plane.resume(&id), Ok(())));
                     let Selection::Ready(selected) = plane.as_mut().select(turn.turn().app())
                     else {
                         panic!("stream EOF work");
                     };
                     assert!(matches!(
-                        selected.only().drive(&mut driver),
+                        selected.drive(&mut driver),
                         Outcome::Complete {
                             target: 41,
-                            output: ()
+                            output: None
                         }
                     ));
                     assert_eq!(state.polls.get(), 4);
                     assert_eq!(state.drops.get(), 1);
-                    assert_eq!(plane.available().get(), 1);
+                    assert!(plane.try_admit((), parent).is_ok());
 
                     let current = plane
-                        .as_mut()
-                        .route::<Here>()
                         .try_admit((), parent)
-                        .expect("reused stream slot")((
-                        Producer::new(&replacement, false, 8),
-                        42,
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().resume(&id),
-                        Err(Error::Absent)
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().get_mut(&id),
-                        Err(Error::Absent)
-                    ));
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().remove(current),
-                        Removal::Removed
-                    ));
+                        .expect("reused stream slot")
+                        .insert((
+                            Mixed::Stream {
+                                producer: Producer::new(&replacement, false, 8),
+                                held: false,
+                            },
+                            42,
+                        ));
+                    assert!(matches!(plane.resume(&id), Err(Error::Absent)));
+                    assert!(matches!(plane.get_mut(&id), Err(Error::Absent)));
+                    assert!(matches!(plane.remove(current), Removal::Removed));
                     assert_eq!(replacement.polls.get(), 0);
                     assert_eq!(replacement.drops.get(), 1);
                 });
@@ -214,13 +235,12 @@ fn held_stream_keeps_its_owner() {
                 .expect("ready slot");
             let parent = RootWaker::from(root.target());
             let states = [State::default(), State::default()];
-            let pool =
-                Stream::<'_, Producer<'_, '_>, 2, Domain, u8>::try_new().expect("stream storage");
-            let plane = Plane::<'_, _, Physical, Owned<'_, owner::Tasks>>::try_owned(
-                Leaf::new(pool),
-                Capacity::new(NonZero::new(2).expect("owner capacity")),
-            )
-            .expect("owner storage");
+            let plane =
+                Stream::<'_, Producer<'_, '_>, Domain, u8, Owned<'_, owner::Tasks>>::try_owned(
+                    Count::new(2),
+                    Capacity::new(NonZero::new(2).expect("owner capacity")),
+                )
+                .expect("owner storage");
             let mut plane = pin::pin!(plane);
             let owners = [0, 1]
                 .map(|lane| Owner::from(owner::Stamp::try_new(lane, 0).expect("owner identity")));
@@ -229,14 +249,13 @@ fn held_stream_keeps_its_owner() {
                     let [first, second] = [0, 1].map(|index| {
                         assert!(plane.as_ref().owners().register(owners[index]).is_ok());
                         plane
-                            .as_mut()
-                            .route::<Here>()
                             .try_admit(owners[index], parent)
                             .ok()
-                            .expect("owned stream admission")((
-                            Producer::new(&states[index], false, index as u8),
-                            index as u8,
-                        ))
+                            .expect("owned stream admission")
+                            .insert((
+                                Producer::new(&states[index], false, index as u8),
+                                index as u8,
+                            ))
                     });
                     for index in [0, 1] {
                         let Selection::Ready(selected) = plane
@@ -245,7 +264,7 @@ fn held_stream_keeps_its_owner() {
                         else {
                             panic!("owned stream work");
                         };
-                        let (outcome, receipt) = selected.only().step(&mut driver);
+                        let (outcome, receipt) = selected.step(&mut driver);
                         assert!(matches!(outcome,
                             Outcome::Yielded { target, output: Ok(value) }
                                 if target == index as u8 && value == target));
@@ -261,10 +280,7 @@ fn held_stream_keeps_its_owner() {
                         1,
                         "other owner made progress while held"
                     );
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().resume(&first),
-                        Ok(())
-                    ));
+                    assert!(matches!(plane.resume(&first), Ok(())));
                     assert!(matches!(
                         plane.as_mut().select(Exact(owners[1]), turn.turn().app()),
                         Selection::Idle
@@ -274,7 +290,7 @@ fn held_stream_keeps_its_owner() {
                     else {
                         panic!("original owner resumed");
                     };
-                    let (outcome, receipt) = selected.only().step(&mut driver);
+                    let (outcome, receipt) = selected.step(&mut driver);
                     assert!(matches!(
                         outcome,
                         Outcome::Complete {
@@ -285,10 +301,7 @@ fn held_stream_keeps_its_owner() {
                     receipt.settle(Flow::Batch);
                     assert_eq!(states[0].drops.get(), 1);
                     assert!(plane.as_ref().owners().try_retire(owners[0]).is_ok());
-                    assert!(matches!(
-                        plane.as_mut().route::<Here>().remove(second),
-                        Removal::Removed
-                    ));
+                    assert!(matches!(plane.remove(second), Removal::Removed));
                     assert_eq!(states[1].polls.get(), 1);
                     assert_eq!(states[1].drops.get(), 1);
                     assert!(plane.as_ref().owners().try_retire(owners[1]).is_ok());

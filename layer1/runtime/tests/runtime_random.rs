@@ -80,6 +80,13 @@ fn separates_roots() {
     executor.run(|executor| {
         let result = executor.enter_with(
             |mut session| {
+                let domain = HASH_DOMAIN.instance(0);
+                let hash = session.hash_state(domain);
+                let seed = random::HashSeed::from_seed(
+                    session.driver().driver_ref().random_seed(),
+                    domain,
+                );
+                assert_eq!(hash.hash_one(HASH_INPUT), seed.hash_one(HASH_INPUT));
                 let driver =
                     random::Root::<Purpose>::try_acquire(&session.driver()).expect("root identity");
                 let root = session.try_root::<Purpose>().expect("root identity");

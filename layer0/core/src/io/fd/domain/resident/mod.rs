@@ -126,7 +126,7 @@ impl Store {
     }
 
     pub(super) fn claim(&self, index: Index, state: states::SlotState) -> num::Generation {
-        let entry = self.bind(Bound::mapped(index));
+        let entry = self.at(Bound::mapped(index));
         entry.claim();
         Lifecycle {
             meta: entry.words.meta(),
@@ -145,10 +145,6 @@ impl Store {
         }
         entry.claim();
         Some(entry.generation.get())
-    }
-
-    pub(super) const fn retire(&self) -> retire::View<'_> {
-        retire::View::new(self)
     }
 
     pub(super) fn set_target(
@@ -180,14 +176,14 @@ impl Store {
     }
 
     pub(super) fn lifecycle(&self, slot: handles::PhysicalSlot) -> Lifecycle<'_> {
-        let entry = self.bind(Bound::slot(slot));
+        let entry = self.at(Bound::slot(slot));
         Lifecycle {
             meta: entry.words.meta(),
         }
     }
 
     pub(super) fn mapped(&self, index: Index) -> Lifecycle<'_> {
-        let entry = self.bind(Bound::mapped(index));
+        let entry = self.at(Bound::mapped(index));
         Lifecycle {
             meta: entry.words.meta(),
         }
@@ -215,10 +211,10 @@ impl Store {
 
     fn entry(&self, index: indices::SlotIndex) -> Option<Entry<'_>> {
         let bound = Bound::try_new(index, self.capacity())?;
-        Some(self.bind(bound))
+        Some(self.at(bound))
     }
 
-    fn bind(&self, bound: Bound) -> Entry<'_> {
+    fn at(&self, bound: Bound) -> Entry<'_> {
         let capacity = self.capacity();
         let [meta, data, word] = bound.cells(&self.storage, capacity);
         Entry {

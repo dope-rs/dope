@@ -195,102 +195,61 @@ impl<'d, Source> Owned<'d, Source> {
 pub trait Backend<'d>: Proof {
     type Error: From<task::Error>;
     type Input;
+    type Entry;
     type Prepared<'a>
     where
         Self: 'a;
-    type Dequeued<'a, I>
+    type Dequeued<'a>
     where
         Self: 'a;
 
-    fn index<'a, I>(dequeued: &'a Self::Dequeued<'_, I>) -> &'a I;
-
-    fn map<'a, I, J>(
-        dequeued: Self::Dequeued<'a, I>,
-        map: impl FnOnce(I) -> J,
-    ) -> Self::Dequeued<'a, J>;
-
-    fn branch<'a, I, L, R>(
-        dequeued: Self::Dequeued<'a, I>,
-        split: impl FnOnce(I) -> Result<L, R>,
-    ) -> Result<Self::Dequeued<'a, L>, Self::Dequeued<'a, R>>;
-
+    fn index(dequeued: &Self::Dequeued<'_>) -> ready::Global;
+    fn entry(prepared: &Self::Prepared<'_>) -> Self::Entry;
     fn try_prepare<'a>(
         self: pin::Pin<&'a Self>,
-        global: ready::Global,
+        index: ready::Global,
         input: Self::Input,
         parent: wake::RootWaker<'d>,
     ) -> Result<(task::raw::Root<'d>, Self::Prepared<'a>), Self::Error>;
-
-    fn admit<'a>(prepared: Self::Prepared<'a>, entry: pin::Pin<&'a linked::Entry>);
-
-    fn commit(
-        dequeued: Self::Dequeued<'_, ready::Global>,
-        entry: pin::Pin<&linked::Entry>,
-        next: Disposition,
-    );
-
-    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>);
+    fn admit<'a>(prepared: Self::Prepared<'a>, entry: pin::Pin<&'a Self::Entry>);
+    fn commit(dequeued: Self::Dequeued<'_>, entry: pin::Pin<&Self::Entry>, next: Disposition);
+    fn detach(self: pin::Pin<&Self>, index: ready::Global, entry: pin::Pin<&Self::Entry>);
 }
 
 impl<'d, Source> Backend<'d> for Owned<'d, Source> {
     type Error = Error<Source>;
     type Input = owner::Owner<Source>;
+    type Entry = ();
     type Prepared<'a>
         = owned::Prepared<'a, 'd, Source>
     where
         Self: 'a;
-    type Dequeued<'a, I>
-        = owned::Dequeued<'a, 'd, Source, I>
+    type Dequeued<'a>
+        = owned::Dequeued<'a, 'd, Source>
     where
         Self: 'a;
 
-    fn index<'a, I>(dequeued: &'a Self::Dequeued<'_, I>) -> &'a I {
-        &dequeued.0.index
+    fn index(dequeued: &Self::Dequeued<'_>) -> ready::Global {
+        dequeued.index()
     }
-
-    fn map<'a, I, J>(
-        dequeued: Self::Dequeued<'a, I>,
-        map: impl FnOnce(I) -> J,
-    ) -> Self::Dequeued<'a, J> {
-        let owned::Entry { queue, index, lane } = dequeued.0;
-        owned::Dequeued(owned::Entry {
-            queue,
-            index: map(index),
-            lane,
-        })
-    }
-
-    fn branch<'a, I, L, R>(
-        dequeued: Self::Dequeued<'a, I>,
-        split: impl FnOnce(I) -> Result<L, R>,
-    ) -> Result<Self::Dequeued<'a, L>, Self::Dequeued<'a, R>> {
-        let owned::Entry { queue, index, lane } = dequeued.0;
-        match split(index) {
-            Ok(index) => Ok(owned::Dequeued(owned::Entry { queue, index, lane })),
-            Err(index) => Err(owned::Dequeued(owned::Entry { queue, index, lane })),
-        }
-    }
+    fn entry(_: &Self::Prepared<'_>) {}
 
     fn try_prepare<'a>(
         self: pin::Pin<&'a Self>,
-        global: ready::Global,
+        index: ready::Global,
         owner: Self::Input,
         parent: wake::RootWaker<'d>,
     ) -> Result<(task::raw::Root<'d>, Self::Prepared<'a>), Self::Error> {
         ready::try_bind(parent, |parent| {
-            self.queue().try_prepare(global, owner, parent)
+            self.queue().try_prepare(index, owner, parent)
         })
     }
 
-    fn admit<'a>(prepared: Self::Prepared<'a>, _: pin::Pin<&'a linked::Entry>) {
+    fn admit<'a>(prepared: Self::Prepared<'a>, _: pin::Pin<&'a ()>) {
         prepared.attach().enqueue();
     }
 
-    fn commit(
-        dequeued: Self::Dequeued<'_, ready::Global>,
-        _: pin::Pin<&linked::Entry>,
-        next: Disposition,
-    ) {
+    fn commit(dequeued: Self::Dequeued<'_>, _: pin::Pin<&()>, next: Disposition) {
         match next {
             Disposition::Ready => dequeued.enqueue(),
             Disposition::Idle => dequeued.idle(),
@@ -298,7 +257,52 @@ impl<'d, Source> Backend<'d> for Owned<'d, Source> {
         }
     }
 
-    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>) {
+    fn detach(self: pin::Pin<&Self>, index: ready::Global, _: pin::Pin<&()>) {
+        self.queue().detach(index);
+    }
+}
+
+impl<'d> Backend<'d> for Flat<'d> {
+    type Error = task::Error;
+    type Input = ();
+    type Entry = linked::Entry;
+    type Prepared<'a>
+        = Prepared<'a, 'd>
+    where
+        Self: 'a;
+    type Dequeued<'a>
+        = linked::Dequeued<'a, 'd>
+    where
+        Self: 'a;
+
+    fn index(dequeued: &Self::Dequeued<'_>) -> ready::Global {
+        dequeued.index
+    }
+    fn entry(prepared: &Self::Prepared<'_>) -> linked::Entry {
+        linked::Entry::new(prepared.index)
+    }
+
+    fn try_prepare<'a>(
+        self: pin::Pin<&'a Self>,
+        index: ready::Global,
+        (): Self::Input,
+        parent: wake::RootWaker<'d>,
+    ) -> Result<(task::raw::Root<'d>, Self::Prepared<'a>), task::Error> {
+        ready::try_bind(parent, |parent| self.queue().try_prepare(index, parent))
+    }
+
+    fn admit<'a>(prepared: Self::Prepared<'a>, entry: pin::Pin<&'a linked::Entry>) {
+        prepared.queue.state().enqueue(entry);
+    }
+
+    fn commit(dequeued: Self::Dequeued<'_>, entry: pin::Pin<&linked::Entry>, next: Disposition) {
+        match next {
+            Disposition::Ready => dequeued.enqueue(entry),
+            Disposition::Idle | Disposition::Complete => {}
+        }
+    }
+
+    fn detach(self: pin::Pin<&Self>, _: ready::Global, entry: pin::Pin<&linked::Entry>) {
         self.queue().detach(entry);
     }
 }
@@ -314,70 +318,3 @@ const _: () = assert!(
     mem::size_of::<Result<Owned<'static, ()>, PrepareError>>()
         == mem::size_of::<Owned<'static, ()>>()
 );
-
-impl<'d> Backend<'d> for Flat<'d> {
-    type Error = task::Error;
-    type Input = ();
-    type Prepared<'a>
-        = Prepared<'a, 'd>
-    where
-        Self: 'a;
-    type Dequeued<'a, I>
-        = linked::Dequeued<'a, 'd, I>
-    where
-        Self: 'a;
-
-    fn index<'a, I>(dequeued: &'a Self::Dequeued<'_, I>) -> &'a I {
-        &dequeued.index
-    }
-
-    fn map<'a, I, J>(
-        dequeued: Self::Dequeued<'a, I>,
-        map: impl FnOnce(I) -> J,
-    ) -> Self::Dequeued<'a, J> {
-        linked::Dequeued {
-            owner: dequeued.owner,
-            index: map(dequeued.index),
-        }
-    }
-
-    fn branch<'a, I, L, R>(
-        dequeued: Self::Dequeued<'a, I>,
-        split: impl FnOnce(I) -> Result<L, R>,
-    ) -> Result<Self::Dequeued<'a, L>, Self::Dequeued<'a, R>> {
-        let linked::Dequeued { owner, index } = dequeued;
-        match split(index) {
-            Ok(index) => Ok(linked::Dequeued { owner, index }),
-            Err(index) => Err(linked::Dequeued { owner, index }),
-        }
-    }
-
-    fn try_prepare<'a>(
-        self: pin::Pin<&'a Self>,
-        global: ready::Global,
-        (): Self::Input,
-        parent: wake::RootWaker<'d>,
-    ) -> Result<(task::raw::Root<'d>, Self::Prepared<'a>), task::Error> {
-        ready::try_bind(parent, |parent| self.queue().try_prepare(global, parent))
-    }
-
-    fn admit<'a>(prepared: Self::Prepared<'a>, entry: pin::Pin<&'a linked::Entry>) {
-        let Prepared { queue } = prepared;
-        queue.state().enqueue(entry);
-    }
-
-    fn commit(
-        dequeued: Self::Dequeued<'_, ready::Global>,
-        entry: pin::Pin<&linked::Entry>,
-        next: Disposition,
-    ) {
-        match next {
-            Disposition::Ready => dequeued.enqueue(entry),
-            Disposition::Idle | Disposition::Complete => {}
-        }
-    }
-
-    fn detach(self: pin::Pin<&Self>, entry: pin::Pin<&linked::Entry>) {
-        self.queue().detach(entry);
-    }
-}

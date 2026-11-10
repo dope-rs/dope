@@ -6,9 +6,9 @@ use crate::task::storage::fixed::schedule::ready::{
 };
 
 #[must_use = "a dequeued attachment must be committed"]
-pub struct Dequeued<'queue, 'd, I = Global> {
+pub struct Dequeued<'queue, 'd> {
     pub(in crate::task::storage::fixed::schedule) owner: pin::Pin<&'queue Queue<'d>>,
-    pub(in crate::task::storage::fixed::schedule) index: I,
+    pub(in crate::task::storage::fixed::schedule) index: Global,
 }
 
 impl<'queue, 'd> Dequeued<'queue, 'd> {
@@ -24,7 +24,7 @@ impl<'queue, 'd> Dequeued<'queue, 'd> {
     }
 }
 
-impl<'queue, 'd, I> Dequeued<'queue, 'd, I> {
+impl<'queue, 'd> Dequeued<'queue, 'd> {
     pub(in crate::task::storage::fixed::schedule) const fn owner(
         &self,
     ) -> pin::Pin<&'queue Queue<'d>> {

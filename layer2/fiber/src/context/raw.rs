@@ -2,7 +2,7 @@ use core::{pin::Pin, task::Poll};
 
 use crate::{
     abi,
-    context::{Context, PollCall, PollResult, wake},
+    context::{Admission, Context, PollCall, PollResult, wake},
     core::driver::schedule::app,
 };
 
@@ -14,10 +14,28 @@ pub struct Live<'a, F> {
 
 impl<'a, F> Live<'a, F> {
     /// # Safety
-    /// The owner must retain this unfinished pinned fiber; Ready must end its
-    /// polling authority before another Live can be constructed for it.
+    /// The owner must retain this unfinished pinned value and end polling
+    /// authority on fiber completion or stream EOF.
     pub unsafe fn new(fiber: Pin<&'a mut F>) -> Self {
         Self { fiber }
+    }
+
+    pub fn admitted<'turn, 'd: 'turn>(self, admit: Admission<'_, 'turn, 'd>) -> Poll<F::Output>
+    where
+        F: abi::Fiber<'d>,
+    {
+        // SAFETY: consuming Admission transfers its existing credit exactly once.
+        unsafe { self.delegate(admit.into_context()) }
+    }
+
+    pub fn admitted_next<'turn, 'd: 'turn>(
+        self,
+        admit: Admission<'_, 'turn, 'd>,
+    ) -> Poll<Option<F::Item>>
+    where
+        F: abi::Stream<'d>,
+    {
+        admit.delegate_next(self.fiber)
     }
 
     pub fn poll<'turn, 'd: 'turn>(self, context: Pin<&mut Context<'turn, 'd>>) -> Poll<F::Output>

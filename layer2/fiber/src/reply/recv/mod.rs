@@ -59,7 +59,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
     fn live(
         &self,
     ) -> state::Registered<'s, reply::Arena<'arena, 'credits, 'region, D, E, K>, &Self> {
-        // SAFETY: this registration retains its exact occupied entry until retirement.
+        // SAFETY: this borrow precedes the owner's detach/drop retirement.
         unsafe { depot::raw::Proof::new((self.lane.arena, self.key)) }
     }
 }
@@ -160,7 +160,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
         's: 'a,
     {
         let reg = self.reg.as_ref()?;
-        reply::Arena::slot(token, reg.live())
+        Some(reply::Arena::slot(token, reg.live()))
     }
 
     fn retire(&self) {

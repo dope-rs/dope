@@ -33,7 +33,7 @@ impl<'d> Queue<'d> {
         parent: task::Parent<'d>,
     ) -> Result<(topology::Edge<'a, 'd, Global>, Prepared<'a, 'd>), task::Error> {
         let edge = self.get_ref().slot.try_attach(parent, index)?;
-        Ok((edge, Prepared::new(self)))
+        Ok((edge, Prepared::new(self, index)))
     }
 
     pub(in crate::task::storage::fixed::schedule) fn detach(

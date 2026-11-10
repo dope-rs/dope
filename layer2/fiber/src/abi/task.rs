@@ -40,10 +40,10 @@ impl<F> Task<F> {
 impl<'d, F: abi::Fiber<'d>> abi::Fiber<'d> for Task<F> {
     type Output = F::Output;
     fn poll(call: PollCall<'_, '_, 'd, Self>) -> Poll<Self::Output> {
-        let (this, context) = call.into_parts();
+        let (this, admit) = call.into_admit();
         match this.poll_with(|fiber| {
-            // SAFETY: this call owns the sole initial descent into its live slot.
-            PollResult::Polled(unsafe { context::raw::Live::new(fiber).delegate(context) })
+            // SAFETY: Task owns the live slot and vacates it on completion.
+            PollResult::Polled(unsafe { context::raw::Live::new(fiber) }.admitted(admit))
         }) {
             PollResult::Polled(poll) => poll,
             PollResult::Exhausted => Poll::Pending,
@@ -60,7 +60,8 @@ impl<'d, S: abi::Stream<'d>> abi::Stream<'d> for Task<S> {
         let Some(stream) = state.as_mut().as_pin_mut() else {
             return Poll::Ready(None);
         };
-        let result = admit.delegate_next(stream);
+        // SAFETY: Task owns the live stream and drops it on EOF.
+        let result = unsafe { context::raw::Live::new(stream) }.admitted_next(admit);
         if matches!(result, Poll::Ready(None)) {
             state.set(None);
         }

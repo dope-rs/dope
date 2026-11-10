@@ -53,10 +53,6 @@ impl<'d> Access<'d> {
         domain::Outbound::from(self.domain()).failed(creation);
     }
 
-    pub(crate) fn activate(self, slot: handles::OutboundSlot) {
-        domain::Outbound::from(self.domain()).activate(slot);
-    }
-
     pub(crate) fn retire_route(self, key: route::Id) {
         domain::Outbound::from(self.domain()).retire(key);
     }

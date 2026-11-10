@@ -1,4 +1,5 @@
 use dope::core::driver::life::recovery;
+use o3::depot::capacity::Count;
 pub mod common;
 use common::recover;
 
@@ -19,11 +20,7 @@ use dope_fiber::{
     abi::Ready,
     context::wake::RootWaker,
     task::storage::{
-        fixed::{
-            quota::Physical,
-            schedule::{Plane, Pool, queue::Owned, result::Selection},
-            tree::{Here, Leaf},
-        },
+        fixed::schedule::{Pool, queue::Owned, result::Selection},
         scope,
     },
 };
@@ -42,9 +39,8 @@ fn exact_moves_to_back() {
                         .dispatch(),
                 )
                 .expect("ready slot");
-            let pool = Pool::<'_, Ready<()>, 4, (), u8>::try_new().expect("task pool");
-            let plane = Plane::<'_, _, Physical, Owned<'_, Tasks>>::try_owned(
-                Leaf::new(pool),
+            let plane = Pool::<'_, Ready<()>, (), u8, Owned<'_, Tasks>>::try_owned(
+                Count::new(4),
                 Capacity::new(NonZero::new(3).expect("owner count")),
             )
             .expect("owner queue");
@@ -62,14 +58,10 @@ fn exact_moves_to_back() {
                 }
                 for lane in [0, 1, 2, 1] {
                     let _id = plane
-                        .as_mut()
-                        .route::<Here>()
                         .try_admit(owners[lane], RootWaker::from(root.target()))
                         .ok()
-                        .expect("task admission")((
-                        Ready::new(()),
-                        lane as u8,
-                    ));
+                        .expect("task admission")
+                        .insert((Ready::new(()), lane as u8));
                 }
                 for (scope, target) in [
                     (Scope::Exact(owners[1]), 1),
@@ -82,7 +74,7 @@ fn exact_moves_to_back() {
                         _ => None,
                     }
                     .expect("ready task");
-                    let entry = item.only();
+                    let entry = item;
                     assert_eq!(entry.target(), target);
                     entry.step(&mut driver).1.settle(Flow::Batch);
                 }

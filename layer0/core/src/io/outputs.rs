@@ -12,7 +12,10 @@ use crate::{
             file::{open, read, sync, write},
             net::{accept, connect, recv, send, socket},
         },
-        fd::handles::{self, Accepted, Created},
+        fd::{
+            domain,
+            handles::{self, Accepted, CreatedSlot},
+        },
         recv::Lease,
         socket::Create,
         transfer,
@@ -64,22 +67,17 @@ pub(crate) fn open_failed<'d>(token: route::Erased<'d, kind::Open>, errno: Errno
     )))
 }
 
+#[inline(always)]
 pub(crate) fn socket<'d>(
     token: route::Erased<'d, kind::Socket>,
-    created: Created<'d>,
+    creation: domain::Creation,
     driver: driver::Reference<'d>,
 ) -> Event<'d> {
-    Event(event::Kind::Socket(socket::Completion::new(
-        token,
-        socket::Outcome::Created(created.bind(driver)),
-    )))
-}
-
-pub(crate) fn socket_gone<'d>(token: route::Erased<'d, kind::Socket>) -> Event<'d> {
-    Event(event::Kind::Socket(socket::Completion::new(
-        token,
-        socket::Outcome::Failed(socket::Failure::Retired),
-    )))
+    let outcome = match CreatedSlot::complete(creation, driver) {
+        handles::Admission::Ready(created) => socket::Outcome::Created(created),
+        handles::Admission::Retired(()) => socket::Outcome::Failed(socket::Failure::Retired),
+    };
+    Event(event::Kind::Socket(socket::Completion::new(token, outcome)))
 }
 
 pub(crate) fn socket_error<'d>(token: route::Erased<'d, kind::Socket>, error: Create) -> Event<'d> {

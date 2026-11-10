@@ -49,7 +49,7 @@ impl<'d, R: Return<Item = read::Buffer<'d>>> abi::Fiber<'d> for Operation<'_, 'd
                     Err(cause) => return ControlFlow::Break(Err(cause)),
                 },
             };
-            match ticket.poll(waiter) {
+            match ticket.poll(Some(waiter)) {
                 read::Poll::Pending(ticket) => ControlFlow::Continue(Stage::Ticket(ticket)),
                 read::Poll::Ready(completion) => ControlFlow::Break(Ok(completion)),
             }

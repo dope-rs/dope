@@ -12,7 +12,7 @@ use crate::client::attempt::{
     self,
     queue::{
         self, Held, entry,
-        storage::{self, Borrow, Linked, Occupied},
+        storage::{self, Linked, Occupied},
     },
 };
 
@@ -130,7 +130,8 @@ impl<'d, T: dope_net::Transport, ID: Identity> Table<'d, T, ID> {
         // The sole opening caller retains the polled key with its returned plan.
         // Callback cancellation removes that generation, so a successful lookup
         // still proves Opening while its sole lease retains removal authority.
-        Borrow::new(slot).defer(plan, &self.deferred);
+        // Poll consumed the only deferred head before this opening turn.
+        slot.defer(plan, &self.deferred);
         Ok(())
     }
 

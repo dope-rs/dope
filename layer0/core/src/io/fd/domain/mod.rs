@@ -59,7 +59,7 @@ impl Domain {
     }
 
     pub(crate) fn release(&self, id: identity::Identity<'_>) {
-        self.resident.retire().release(id).cancel();
+        self.resident.release(id).cancel();
     }
 
     pub(crate) fn set_target(&self, id: identity::Identity<'_>, target: route::Token) {

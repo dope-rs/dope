@@ -168,14 +168,18 @@ fn drops_one_per_step() {
                     let lane = arena.try_lane(LaneIndex::ZERO).expect("lane exists");
                     let mut reply = recv::Response::<_, Never>::new();
                     assert!((reply.try_attach(session.driver().region_token(), lane)) == (Ok(())));
-                    for _ in 0..4 {
+                    for _ in 0..3 {
                         assert!(
                             lane.select(session.driver().region_token())
                                 .try_push(Counted::data(&drops))
                                 .is_ok()
                         );
                     }
-                    lane.complete(session.driver().region_token());
+                    assert!(
+                        lane.select(session.driver().region_token())
+                            .try_fail(Counted::mixed(&drops))
+                            .is_ok()
+                    );
                     reply.detach();
 
                     assert_eq!(arena.inflight().get(), 1);

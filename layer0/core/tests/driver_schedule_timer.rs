@@ -198,13 +198,16 @@ fn lease_gates_slot_reuse() {
                 sampled.turn().clock().now()
             };
 
-            {
+            let timer = {
                 let idle = (timer.try_alarm()).expect("idle timer slot");
                 assert!(!idle.is_armed());
                 assert!(matches!(timer.try_alarm(), Err(timer::Exhausted::Slots)));
-            }
+                let (timer, state) = idle.into_parts();
+                assert!(matches!(state, timer::heap::State::Idle));
+                timer
+            };
 
-            {
+            let timer = {
                 let armed = (timer.try_alarm()).expect("armed timer slot");
                 let due = moment.try_add(Duration::from_secs(1));
                 assert!(due.is_ok(), "armed deadline range");
@@ -219,9 +222,14 @@ fn lease_gates_slot_reuse() {
                 );
                 assert!(!armed.is_armed());
                 assert!(matches!(timer.try_alarm(), Err(timer::Exhausted::Slots)));
-            }
+                armed.arm(due, Waker::from(ready.target()));
+                let (timer, state) = armed.into_parts();
+                assert!(matches!(state, timer::heap::State::Armed(at) if at == due));
+                assert!(timer.earliest().is_none());
+                timer
+            };
 
-            {
+            let timer = {
                 let fired = (timer.try_alarm()).expect("fired timer slot");
                 fired.arm(moment.into(), Waker::from(ready.target()));
                 {
@@ -232,10 +240,14 @@ fn lease_gates_slot_reuse() {
                 }
                 assert!(matches!(timer.try_alarm(), Err(timer::Exhausted::Slots)));
                 assert!(fired.is_armed());
-            }
+                let (timer, state) = fired.into_parts();
+                assert!(matches!(state, timer::heap::State::Fired));
+                timer
+            };
 
             let reused = (timer.try_alarm()).expect("released timer slot");
             assert!(!reused.is_armed());
+            assert!(matches!(timer.try_alarm(), Err(timer::Exhausted::Slots)));
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         finish,

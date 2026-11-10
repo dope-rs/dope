@@ -1,4 +1,4 @@
-use std::marker;
+use std::{convert::Infallible, marker};
 
 use dope_core::driver::{
     route::Identity,
@@ -35,6 +35,33 @@ where
     env: marker::PhantomData<(ID, E, E::Wire, F::Input)>,
 }
 
+pub struct Installed<'a, 'd, A> {
+    app: A,
+    wait: listener::Wait<'a, 'd>,
+}
+
+impl<'a, 'd, A> Installed<'a, 'd, A> {
+    pub fn into_parts(self) -> (A, listener::Wait<'a, 'd>) {
+        (self.app, self.wait)
+    }
+
+    fn run<'report, 'stage, 'scope, 'life, 'p, S, Q, T>(
+        self,
+        stage: &mut lending::Stage<'stage, 'scope, 'life, 'p, 'd, S, Q>,
+        report: &'report mut session::Completion,
+        output: impl FnOnce(shutdown::Requested<Q>) -> T,
+    ) -> Result<T, topology::Failure<'report, Infallible, T, listener::ExecutionError>>
+    where
+        S: storage::Plan,
+        Q: executor::Startup,
+        A: executor::raw::App<'d>,
+    {
+        let (app, wait) = self.into_parts();
+        let watch = wait.watch();
+        watch.finish(stage.with_app(report, app, |app| wait.run(app).map(output)))
+    }
+}
+
 impl<ID: Identity, E, F> Direct<ID, E, F>
 where
     E: env::Spec,
@@ -67,7 +94,11 @@ where
         F: factory::Direct<ID, E>,
         F::Input: receive::Mode<E::Wire>,
         N: for<'n, 'p, 's> FnOnce(
-            app::Host<listener::Listener<'n, 'p, 's, 'd, 'd, ID, F::Application<'d>, E>>,
+            Installed<
+                'p,
+                'd,
+                app::Host<listener::Listener<'n, 'p, 's, 'd, 'd, ID, F::Application<'d>, E>>,
+            >,
             &mut lending::Stage<'stage, 'scope, 'life, 'e, 'd, S, Q>,
         ) -> O,
     {
@@ -78,8 +109,14 @@ where
             None => install,
         };
         install
-            .in_stage(stage, app, |listener, _wait, stage| {
-                next(app::Host::new(listener), stage)
+            .in_stage(stage, app, |listener, wait, stage| {
+                next(
+                    Installed {
+                        app: app::Host::new(listener),
+                        wait,
+                    },
+                    stage,
+                )
             })
             .map_err(crate::BuildError::Create)
     }
@@ -121,6 +158,7 @@ where
     F::Input: receive::Mode<E::Wire>,
 {
     type Error = crate::BuildError<F::Error>;
+    type Execution = listener::ExecutionError;
 
     fn execute<'report, 'scope, 'life, 'p, 'd, Q>(
         self,
@@ -128,7 +166,7 @@ where
         report: &'report mut session::Completion,
     ) -> Result<
         shutdown::Requested<Q>,
-        topology::Failure<'report, Self::Error, shutdown::Requested<Q>>,
+        topology::Failure<'report, Self::Error, shutdown::Requested<Q>, Self::Execution>,
     >
     where
         'd: 'p,
@@ -138,7 +176,9 @@ where
         S: 'd,
         Q: executor::Startup,
     {
-        lending::Run(report).install(self, stage)
+        lending::Installer::install(self, stage, lending::Run(report))
+            .map_err(topology::Failure::Install)?
+            .map_err(|error| error.map_install(|never| match never {}))
     }
 }
 
@@ -154,7 +194,11 @@ where
     F::Input: receive::Mode<E::Wire>,
     N: for<'n, 'p, 's> lending::Next<
             lending::Stage<'stage, 'scope, 'life, 'e, 'd, S, Q>,
-            app::Host<listener::Listener<'n, 'p, 's, 'd, 'd, ID, F::Application<'d>, E>>,
+            Installed<
+                'p,
+                'd,
+                app::Host<listener::Listener<'n, 'p, 's, 'd, 'd, ID, F::Application<'d>, E>>,
+            >,
             Output = O,
         >,
 {
@@ -167,5 +211,46 @@ where
         next: N,
     ) -> Result<O, Self::Error> {
         self.install(stage, |app, stage| next.run(app, stage))
+    }
+}
+
+impl<'report, 'a, 'stage, 'scope, 'life, 'p, 'd, S, Q, A>
+    lending::Next<lending::Stage<'stage, 'scope, 'life, 'p, 'd, S, Q>, Installed<'a, 'd, A>>
+    for lending::Run<'report>
+where
+    S: storage::Plan,
+    Q: executor::Startup,
+    A: executor::raw::App<'d>,
+{
+    type Output = Result<
+        shutdown::Requested<Q>,
+        topology::Failure<'report, Infallible, shutdown::Requested<Q>, listener::ExecutionError>,
+    >;
+
+    fn run(
+        self,
+        app: Installed<'a, 'd, A>,
+        stage: &mut lending::Stage<'stage, 'scope, 'life, 'p, 'd, S, Q>,
+    ) -> Self::Output {
+        app.run(stage, self.0, std::convert::identity)
+    }
+}
+
+impl<'report, 'a, 'stage, 'scope, 'life, 'p, 'd, S, Q, A>
+    lending::Next<lending::Stage<'stage, 'scope, 'life, 'p, 'd, S, Q>, Installed<'a, 'd, A>>
+    for lending::Clean<'report>
+where
+    S: storage::Plan,
+    Q: executor::Startup,
+    A: executor::raw::App<'d>,
+{
+    type Output = Result<(), topology::Failure<'report, Infallible, (), listener::ExecutionError>>;
+
+    fn run(
+        self,
+        app: Installed<'a, 'd, A>,
+        stage: &mut lending::Stage<'stage, 'scope, 'life, 'p, 'd, S, Q>,
+    ) -> Self::Output {
+        app.run(stage, self.0, |_| ())
     }
 }

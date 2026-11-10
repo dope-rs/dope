@@ -47,18 +47,17 @@ impl<F, O> Task<F, O> {
     pub(crate) fn poll(
         mut self: pin::Pin<&mut Self>,
         run: impl FnOnce(pin::Pin<&mut F>) -> Poll<O>,
-    ) -> Option<(Done<'_, F, O>, bool)> {
-        let fresh = match self.as_mut().visit((), |fiber, ()| match run(fiber) {
+    ) -> Option<Done<'_, F, O>> {
+        match self.as_mut().visit((), |fiber, ()| match run(fiber) {
             Poll::Pending => Action::Keep(false),
             Poll::Ready(output) => Action::Complete(output, true),
         }) {
             Phase::Vacant(()) | Phase::Live(false) => return None,
-            Phase::Live(true) => true,
-            Phase::Done(()) => false,
+            Phase::Live(true) | Phase::Done(()) => {}
         };
         // SAFETY: the retained exclusive slot either just completed or was
         // already Done; no mutation intervenes before this capability is issued.
-        Some((unsafe { Done::exact(self) }, fresh))
+        Some(unsafe { Done::exact(self) })
     }
 
     pub(crate) const fn vacant() -> Self {
@@ -68,7 +67,7 @@ impl<F, O> Task<F, O> {
         }
     }
 
-    pub const fn new(fiber: F) -> Self {
+    pub(crate) const fn new(fiber: F) -> Self {
         Self {
             state: State::Live,
             value: Value {

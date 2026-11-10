@@ -1,338 +1,66 @@
-use std::{marker, pin, task};
+use std::{marker, pin};
 
-use o3::{alloc, depot::capacity};
-
-use crate::{
-    context,
-    task::storage::{
-        Id,
-        fixed::{
-            direct, local,
-            quota::{self, State},
-            staged, tree,
-        },
-        scope::{Domain, Scope, Scoped},
-    },
+use o3::{
+    base::cell::region,
+    depot::arena::slab::{key, storage},
 };
 
-/// Allocation-free description of a bounded direct task plane.
-pub struct Plan<'d, R: tree::Tree<'d>> {
-    quota: quota::Bounded,
-    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
-    tree: marker::PhantomData<fn() -> R>,
-}
-
-impl<'d, R: tree::Tree<'d>> Plan<'d, R> {
-    pub fn new(limit: quota::Limit) -> Self {
-        Self {
-            quota: quota::Bounded::new(limit, R::TASKS),
-            driver: marker::PhantomData,
-            tree: marker::PhantomData,
-        }
-    }
-}
-
-impl<'d, R: tree::Build<'d>> Plan<'d, R> {
-    pub fn try_prepare(self) -> Result<Plane<'d, R, quota::Bounded>, alloc::Error> {
-        let physical = capacity::Count::new(self.quota.available().get() as u32);
-        self.try_prepare_with_capacity(physical)
-    }
-
-    /// Caps each route's physical slots independently of the global admission limit.
-    /// Retired slots are not replaced from the unallocated declared suffix.
-    pub fn try_prepare_with_capacity(
-        self,
-        physical: capacity::Count,
-    ) -> Result<Plane<'d, R, quota::Bounded>, alloc::Error> {
-        Ok(Plane::with_quota(
-            R::try_build_with_capacity(physical)?,
-            self.quota,
-        ))
-    }
-}
-
-#[pin_project::pin_project(!Unpin)]
-pub struct Plane<'d, R, Q = quota::Physical>
-where
-    R: tree::Tree<'d>,
-{
-    #[pin]
-    routes: R,
-    quota: Q,
-    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
-}
-
-impl<'d, R> Plane<'d, R, quota::Physical>
-where
-    R: tree::Tree<'d>,
-{
-    pub fn new(routes: R) -> Self {
-        Self::with_quota(routes, quota::Physical)
-    }
-}
-
-impl<'d, R> Plane<'d, R, quota::Bounded>
-where
-    R: tree::Tree<'d>,
-{
-    pub fn bounded(routes: R, limit: quota::Limit) -> Self {
-        let tasks = R::TASKS;
-        Self::with_quota(routes, quota::Bounded::new(limit, tasks))
-    }
-
-    /// Returns the remaining global admission quota.
-    pub const fn available(&self) -> quota::Remaining {
-        self.quota.available()
-    }
-}
-
-impl<'d, R, Q> Plane<'d, R, Q>
-where
-    R: tree::Tree<'d>,
-    Q: State,
-{
-    fn with_quota(routes: R, quota: Q) -> Self {
-        Self {
-            routes,
-            quota,
-            driver: marker::PhantomData,
-        }
-    }
-
-    pub(crate) fn route<P>(self: pin::Pin<&mut Self>) -> Route<'_, 'd, R, P, Q>
-    where
-        R: tree::At<'d, P>,
-    {
-        Route {
-            plane: self,
-            path: marker::PhantomData,
-        }
-    }
-}
-
-impl<'d, R> Default for Plane<'d, R, quota::Physical>
-where
-    R: tree::Tree<'d> + Default,
-{
-    fn default() -> Self {
-        Self::new(R::default())
-    }
-}
-
-pub struct Route<'a, 'd, R, P, Q = quota::Physical>
-where
-    R: tree::At<'d, P>,
-{
-    plane: pin::Pin<&'a mut Plane<'d, R, Q>>,
-    path: marker::PhantomData<fn() -> P>,
-}
+use crate::task::storage::{
+    fixed::{Id, Slab, local, store},
+    scope::Scope,
+};
 
 #[must_use = "an admission must be consumed by insertion"]
-struct Admission<'a, A, Q> {
-    slot: A,
-    quota: &'a mut Q,
-    vacancy: quota::Vacancy<Q>,
+pub struct Admit<'a, 's, 'd, F, D, S: storage::Storage> {
+    slot: store::Anchor<'a, F, D, S>,
+    proof: region::Identity<'s>,
+    driver: marker::PhantomData<fn(&'d ()) -> &'d ()>,
 }
 
-pub trait Insert<'d, D> {
-    type Fiber;
-
-    fn insert(self, fiber: Self::Fiber) -> Id<'d, D>;
+impl<'s, 'd, F, D, S: storage::Storage> Admit<'_, 's, 'd, F, D, S> {
+    pub fn insert(self, fiber: F) -> Id<'s, 'd, D> {
+        Id::new(self.slot.insert(fiber).parts(), self.proof)
+    }
 }
 
-/// In-place admission retaining its original storage scope.
-pub trait Source<'d, D>: local::Store<'d, D> {
-    fn admit(self: pin::Pin<&mut Self>) -> Option<impl Insert<'d, D, Fiber = Self::Fiber>>;
-}
-
-mod core;
-pub(in crate::task::storage) use crate::task::storage::fixed::direct::core::Core;
-
-impl<'d, D, A, Q> Insert<'d, D> for Admission<'_, A, Q>
-where
-    A: Insert<'d, D>,
-    Q: State,
+impl<'s, 'd, F, const N: usize, D, S: storage::Storage>
+    Scope<'s, pin::Pin<&mut Slab<'d, F, N, D, S>>>
 {
-    type Fiber = A::Fiber;
-
-    fn insert(self, fiber: Self::Fiber) -> Id<'d, D> {
-        let id = self.slot.insert(fiber);
-        *self.quota = State::consume(*self.quota, self.vacancy);
-        id
-    }
-}
-
-impl<'a, 'd, R, P, Q> local::Core<'d, <R::Member as tree::Member<'d>>::Domain>
-    for Route<'a, 'd, R, P, Q>
-where
-    R: tree::At<'d, P>,
-    R::Member: Core<
-            'd,
-            <R::Member as tree::Member<'d>>::Domain,
-            Fiber = <R::Member as tree::Member<'d>>::Fiber,
-        >,
-    Q: State,
-    'd: 'a,
-{
-    type Fiber = <R::Member as tree::Member<'d>>::Fiber;
-
-    fn capacity(&self) -> super::Capacity {
-        let plane = self.plane.as_ref().get_ref();
-        let member = R::project_ref(&plane.routes);
-        if matches!(Q::capacity(plane.quota), super::Capacity::Full)
-            || matches!(local::Core::capacity(member), super::Capacity::Full)
-        {
-            super::Capacity::Full
-        } else {
-            super::Capacity::Available
-        }
-    }
-
-    fn insert(
-        self: pin::Pin<&mut Self>,
-        fiber: Self::Fiber,
-    ) -> Option<Id<'d, <R::Member as tree::Member<'d>>::Domain>> {
-        Some(Core::admit(self)?.insert(fiber))
-    }
-
-    fn try_remove(
-        self: pin::Pin<&mut Self>,
-        id: Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-    ) -> Result<(), Id<'d, <R::Member as tree::Member<'d>>::Domain>> {
-        let route = self.get_mut();
-        let plane = route.plane.as_mut().project();
-        let member = R::project(plane.routes);
-        local::Core::try_remove(member, id)?;
-        *plane.quota = State::retire(*plane.quota, quota::Retired::new());
-        Ok(())
-    }
-
-    fn get_mut(
-        self: pin::Pin<&mut Self>,
-        id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-    ) -> Option<pin::Pin<&mut Self::Fiber>> {
-        let plane = self.get_mut().plane.as_mut().project();
-        local::Core::get_mut(R::project(plane.routes), id)
-    }
-}
-
-impl<'a, 'd, R, P, Q> Core<'d, <R::Member as tree::Member<'d>>::Domain> for Route<'a, 'd, R, P, Q>
-where
-    R: tree::At<'d, P>,
-    R::Member: Core<
-            'd,
-            <R::Member as tree::Member<'d>>::Domain,
-            Fiber = <R::Member as tree::Member<'d>>::Fiber,
-        >,
-    Q: State,
-    'd: 'a,
-{
-    fn admit(
-        self: pin::Pin<&mut Self>,
-    ) -> Option<impl Insert<'d, <R::Member as tree::Member<'d>>::Domain, Fiber = Self::Fiber>> {
-        let plane = self.get_mut().plane.as_mut().project();
-        let vacancy = Q::vacancy(*plane.quota)?;
-        let slot = Core::admit(R::project(plane.routes))?;
-        Some(Admission {
-            slot,
-            quota: plane.quota,
-            vacancy,
+    pub fn admit(&mut self) -> Option<Admit<'_, 's, 'd, F, D, S>> {
+        Some(Admit {
+            slot: self.source.as_mut().project().inner.vacant()?,
+            proof: self.proof,
+            driver: marker::PhantomData,
         })
     }
-}
 
-impl<'a, 'd, R, P, Q> staged::Core<'d, <R::Member as tree::Member<'d>>::Domain>
-    for Route<'a, 'd, R, P, Q>
-where
-    R: tree::At<'d, P>,
-    R::Member: staged::Core<
-            'd,
-            <R::Member as tree::Member<'d>>::Domain,
-            Fiber = <R::Member as tree::Member<'d>>::Fiber,
-        > + Core<'d, <R::Member as tree::Member<'d>>::Domain>,
-    Q: State,
-    'd: 'a,
-{
-    type Output = <R::Member as staged::Core<'d, <R::Member as tree::Member<'d>>::Domain>>::Output;
-    type Ready<'b>
-        = Completed<
-        'b,
-        <R::Member as staged::Core<'d, <R::Member as tree::Member<'d>>::Domain>>::Ready<'b>,
-        Q,
-    >
-    where
-        Self: 'b;
-
-    fn poll_ready<'b>(
-        self: pin::Pin<&'b mut Self>,
-        id: &Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-        context: pin::Pin<&mut context::Context<'_, 'd>>,
-    ) -> Option<task::Poll<(Self::Ready<'b>, bool)>> {
-        let plane = self.get_mut().plane.as_mut().project();
-        let polled = staged::Core::poll_ready(R::project(plane.routes), id, context)?;
-        Some(polled.map(|(ready, fresh)| {
-            (
-                Completed {
-                    ready,
-                    quota: plane.quota,
-                },
-                fresh,
-            )
-        }))
+    pub fn insert(&mut self, fiber: F) -> Option<Id<'s, 'd, D>> {
+        Some(self.admit()?.insert(fiber))
     }
 
-    fn remove_state(
-        self: pin::Pin<&mut Self>,
-        id: Id<'d, <R::Member as tree::Member<'d>>::Domain>,
-    ) -> staged::Removal {
-        let plane = self.get_mut().plane.as_mut().project();
-        let removed = staged::Core::remove_state(R::project(plane.routes), id);
-        match removed {
-            staged::Removal::Absent => {}
-            staged::Removal::Live | staged::Removal::Staged => {
-                *plane.quota = State::retire(*plane.quota, quota::Retired::new());
-            }
+    pub fn entry<K: Copy + Into<key::Parts>>(
+        &mut self,
+        id: Id<'s, 'd, D, K>,
+    ) -> Result<local::Entry<impl local::Member<Fiber = F>, Id<'s, 'd, D, K>>, Id<'s, 'd, D, K>>
+    {
+        let Some(member) = self.source.as_mut().project().inner.anchor(id.key.into()) else {
+            return Err(id);
+        };
+        Ok(local::Entry { member, id })
+    }
+
+    pub fn remove<K: Copy + Into<key::Parts>>(&mut self, id: Id<'s, 'd, D, K>) -> local::Removal {
+        match self.try_remove(id) {
+            Ok(()) => local::Removal::Removed,
+            Err(_) => local::Removal::Absent,
         }
-        removed
-    }
-}
-
-pub struct Completed<'a, C, Q> {
-    ready: C,
-    quota: &'a mut Q,
-}
-
-impl<C: staged::Completion, Q: State> staged::Completion for Completed<'_, C, Q> {
-    type Output = C::Output;
-
-    fn finish(self) -> Self::Output {
-        let output = self.ready.finish();
-        *self.quota = self.quota.retire(quota::Retired::new());
-        output
     }
 
-    fn discard(self) {
-        self.ready.discard();
-        *self.quota = self.quota.retire(quota::Retired::new());
-    }
-}
-
-struct Bound<'s, A>(Scope<'s, A>);
-
-impl<'s, 'd, D, A: direct::Insert<'d, D>> direct::Insert<'d, Domain<'s, D>> for Bound<'s, A> {
-    type Fiber = A::Fiber;
-
-    fn insert(self, fiber: Self::Fiber) -> Scoped<'s, 'd, D> {
-        self.0.source.insert(fiber).bind(self.0.proof)
-    }
-}
-
-impl<'s, 'd, D, S: direct::Core<'d, D> + Unpin> direct::Source<'d, Domain<'s, D>> for Scope<'s, S> {
-    fn admit(
-        self: pin::Pin<&mut Self>,
-    ) -> Option<impl direct::Insert<'d, Domain<'s, D>, Fiber = Self::Fiber>> {
-        let this = self.get_mut();
-        let permit = pin::Pin::new(&mut this.source).admit()?;
-        Some(Bound(Scope::new(permit, this.proof)))
+    pub fn try_remove<K: Copy + Into<key::Parts>>(
+        &mut self,
+        id: Id<'s, 'd, D, K>,
+    ) -> Result<(), Id<'s, 'd, D, K>> {
+        self.entry(id)?.remove();
+        Ok(())
     }
 }

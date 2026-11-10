@@ -102,9 +102,7 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
             // SAFETY: the vacancy retains Entries' validated physical domain.
             let key = unsafe { state::EntryKey::from_raw(raw) };
             state::Entry {
-                body: state::EntryBody::Attached(state::Attached(reply::State::new(
-                    lane.arena.backing.items.fifo(),
-                ))),
+                state: reply::State::new(lane.arena.backing.items.fifo()),
                 owners: pool::Owner::new(plan, key.index(), accept),
                 signal: state::Signal::new(),
             }

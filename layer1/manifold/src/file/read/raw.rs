@@ -9,7 +9,11 @@ use dope_core::{
     io::{self, event::Kind, fs, transfer},
 };
 use dope_runtime::executor;
-use o3::{alloc, buffer::bytes::bounded, mem::Return};
+use o3::{
+    alloc,
+    buffer::bytes::bounded,
+    mem::{Rejected, Return},
+};
 
 use crate::{
     app::{dispatch, dispatch::event},
@@ -73,6 +77,30 @@ impl Metadata {
 }
 
 impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
+    /// Selects the remaining allocation without copying its initialized prefix.
+    pub fn try_append_at(
+        mut self,
+        offset: fs::Offset,
+    ) -> Result<Self, Rejected<Self, read::SizeError>> {
+        let remaining = self.output.item().capacity() - self.output.item().len();
+        // SAFETY: the private owner retains try_new's admitted capacity and prefix.
+        let remaining =
+            transfer::Len::from(unsafe { o3::base::num::bounded::raw::u32(remaining as u32) });
+        let Some(length) = remaining.nonzero() else {
+            return Err(Rejected::new(self, read::SizeError::Empty));
+        };
+        self.length = length;
+        self.offset = offset;
+        Ok(self)
+    }
+
+    pub(super) fn prepare(&mut self) {
+        let prefix = self.output.item().capacity() - self.length.widen().get();
+        // SAFETY: new windows begin at zero or the owned initialized length;
+        // completion can only extend that prefix, and rejection cannot change it.
+        unsafe { self.output.item_mut().set_len(prefix) };
+    }
+
     pub fn output<'a>(&'a self) -> bounded::Value<&'a [u8]>
     where
         'd: 'a,
@@ -162,11 +190,13 @@ pub(super) fn submit<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>>(
                 unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Sync)
             }
             Request::Read(request) => {
-                // SAFETY: try_new admits capacity once; admission resets length.
-                // The private owner cannot grow or move its heap while submitted.
+                let output = request.output.item_mut();
+                let prefix = output.len();
+                // SAFETY: admission retains an initialized prefix followed by this
+                // positive window. The private owner cannot move or grow its heap.
                 let output = bounded::Value::from_raw(unsafe {
                     bounded::raw::Input::new(std::slice::from_raw_parts_mut(
-                        request.output.item_mut().as_mut_ptr().cast(),
+                        output.as_mut_ptr().add(prefix).cast(),
                         request.length.widen().get(),
                     ))
                 });
@@ -270,11 +300,11 @@ unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw:
 
 // SAFETY: the view only borrows this installed owner's request port. Admission
 // cannot access a submitted buffer or release its descriptor.
-unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Control<'d>
-    for Reader<'_, 'd, ID, R>
+unsafe impl<'p, 'd, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Control<'d>
+    for Reader<'p, 'd, ID, R>
 {
     type View<'step>
-        = &'step read::Port<'d, R>
+        = &'p read::Port<'d, R>
     where
         Self: 'step,
         'd: 'step;
@@ -324,9 +354,10 @@ impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> event::Drive<'d>
                             };
                             match done.outcome() {
                                 Ok(amount) => {
+                                    let output = request.output.item_mut();
                                     // SAFETY: the matching terminal CQ ended native access
-                                    // and initialized this prefix within the admitted capacity.
-                                    unsafe { request.output.item_mut().set_len(amount.into_raw()) };
+                                    // and initialized this suffix within the admitted window.
+                                    unsafe { output.set_len(output.len() + amount.into_raw()) };
                                     Ok(amount)
                                 }
                                 Err(cause) => Err(Error::System(cause)),

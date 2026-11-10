@@ -77,6 +77,7 @@ where
 
     fn begin(&mut self, tick: clock::Sample) -> Core<'_, 'd, modes::App<'_, 'app, 'd, D, S>> {
         let turn = self.schedule.begin_at(tick);
+        let park = self.view.reserve_park(self.token, turn.turn().app());
         Core {
             driver: self.driver.reborrow(),
             turn,
@@ -84,6 +85,7 @@ where
             mode: modes::App {
                 view: self.view,
                 token: &mut *self.token,
+                park,
             },
         }
     }
