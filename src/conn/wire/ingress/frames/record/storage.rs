@@ -15,7 +15,7 @@ use crate::wire::{
 };
 
 use crate::conn::wire::ingress::frames::record::{
-    Admission, FrameRecord, Kind, Receive, Stored, View,
+    FrameRecord, Kind, Receive, Stored, View,
 };
 
 type Rows<'a, 'slots, 'id> =
@@ -182,12 +182,7 @@ impl<'id> SendGroup<'_, '_, '_, 'id, '_> {
             .iter()
             .map(|index| self.frames.get(*index))
             .take_while(|record| record.id == self.id)
-            .find(|record| {
-                matches!(
-                    record.admission(),
-                    Admission::Stream | Admission::StreamTransient,
-                )
-            })
+            .find(|record| record.is_receive_stream())
     }
 }
 

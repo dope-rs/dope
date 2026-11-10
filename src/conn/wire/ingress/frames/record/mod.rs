@@ -19,16 +19,6 @@ mod storage;
 pub(super) use storage::{Control, Records, Vacant};
 pub(in crate::conn) use storage::{Group, Index, Storage};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::conn) enum Admission {
-    Drop,
-    Datagram,
-    Stream,
-    StreamTransient,
-    Reset,
-    Stop,
-}
-
 #[derive(Clone, Copy, Default)]
 #[repr(transparent)]
 struct PayloadPlan(u64);
@@ -376,18 +366,12 @@ impl<'id> FrameRecord<'id> {
         kind.is_probing()
     }
 
-    pub(in crate::conn) fn admission(&self) -> Admission {
-        match &self.kind {
-            Kind::Datagram(record) if record.payload.is_some() => Admission::Datagram,
-            Kind::Stream(record) => match record.admission {
-                Status::Drop => Admission::Drop,
-                Status::Stream => Admission::Stream,
-                Status::Transient => Admission::StreamTransient,
-            },
-            Kind::Reset(record) if record.free.is_some() => Admission::Reset,
-            Kind::Stop(record) if record.admitted => Admission::Stop,
-            _ => Admission::Drop,
-        }
+    pub(super) fn is_datagram(&self) -> bool {
+        matches!(&self.kind, Kind::Datagram(record) if record.payload.is_some())
+    }
+
+    fn is_receive_stream(&self) -> bool {
+        matches!(&self.kind, Kind::Stream(record) if record.admission != Status::Drop)
     }
 
     pub(super) fn datagram_mut(&mut self) -> Option<&mut Datagram> {

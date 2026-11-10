@@ -237,7 +237,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
     pub(super) fn try_datagram(&self) -> Result<(Option<B>, Vec<B>), detail::Unavailable> {
         let mut entries = self
             .entries()
-            .filter(|entry| entry.record.admission() == record::Admission::Datagram);
+            .filter(|entry| entry.record.is_datagram());
         let Some(count) = NonZero::new(entries.clone().count()) else {
             return Ok((None, Vec::new()));
         };

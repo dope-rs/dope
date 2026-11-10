@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "dope-quic"
-version = "0.59.2"
+version = "0.59.3"
 dependencies = [
  "aws-lc-rs",
  "dope",

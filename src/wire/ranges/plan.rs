@@ -327,63 +327,16 @@ impl Plan<'_> {
         offset: varint::VarInt,
         record: Record,
     ) -> Result<Added, detail::Ranges> {
-        let extent = inserts::Input::new(offset, record);
-        if extent.len() == 0 || extent.end() <= self.next {
-            return Ok(Added {
-                record: record.with_bytes(0),
-            });
-        }
-
-        let prefix = extent.start() <= self.next;
-        if prefix && !self.has_overlap(extent.end()) {
-            let bytes = extent.part(self.next..extent.end(), 0).len();
-            self.next = extent.end();
-            Self::drain(&mut self.next, self.segments);
-            return Ok(Added {
-                record: record.with_bytes(bytes),
-            });
-        }
-
-        let cap = if prefix {
-            ranges::MAX
-        } else {
-            ranges::MAX - self.segments.len()
-        };
-        inserts::try_collect(
-            self.parts,
-            self.segments.iter().cloned(),
-            extent,
-            self.next,
-            cap,
+        let bytes = self.try_update::<true, _>(
+            offset,
+            record,
             |current, capacity| detail::Ranges::Ranges {
                 current,
                 additional: 1,
                 capacity,
             },
+            |_, _| {},
         )?;
-        if self.parts.is_empty() {
-            return Ok(Added {
-                record: record.with_bytes(0),
-            });
-        }
-
-        let bytes = self.parts.iter().map(|part| part.len()).sum();
-        if prefix {
-            self.parts.clear();
-            self.next = extent.end();
-            Self::drain(&mut self.next, self.segments);
-        } else {
-            for added in self.parts.drain(..) {
-                let part = added.start()..added.end();
-                alloc::Gap::partition(self.segments, |seg| seg.start < part.start)
-                    .try_insert(part)
-                    .map_err(|_| detail::Ranges::Ranges {
-                        current: self.segments.len(),
-                        additional: 1,
-                        capacity: self.segments.capacity(),
-                    })?;
-            }
-        }
         Ok(Added {
             record: record.with_bytes(bytes),
         })
@@ -393,36 +346,66 @@ impl Plan<'_> {
         &mut self,
         offset: varint::VarInt,
         record: Record,
-        mut copy: impl FnMut(inserts::Part, Placement),
+        copy: impl FnMut(inserts::Part, Placement),
     ) -> Result<(), stream::Capacity> {
+        self.try_update::<false, _>(
+            offset,
+            record,
+            |current, available| stream::Capacity::Limit {
+                required: current + 1,
+                available,
+            },
+            copy,
+        )?;
+        Ok(())
+    }
+
+    fn try_update<const ADMIT: bool, E>(
+        &mut self,
+        offset: varint::VarInt,
+        record: Record,
+        full: impl Fn(usize, usize) -> E,
+        mut copy: impl FnMut(inserts::Part, Placement),
+    ) -> Result<usize, E> {
         let extent = inserts::Input::new(offset, record);
         if extent.len() == 0 || extent.end() <= self.next {
-            return Ok(());
+            return Ok(0);
         }
 
         let prefix = extent.start() <= self.next;
         if prefix && !self.has_overlap(extent.end()) {
-            copy(extent.part(self.next..extent.end(), 0), Placement::Ready);
+            let part = extent.part(self.next..extent.end(), 0);
+            copy(part, Placement::Ready);
             self.next = extent.end();
             Self::drain(&mut self.next, self.segments);
-            return Ok(());
+            return Ok(if ADMIT { part.len() } else { 0 });
         }
 
-        let cap = self.parts.capacity();
+        let cap = if ADMIT {
+            if prefix {
+                ranges::MAX
+            } else {
+                ranges::MAX - self.segments.len()
+            }
+        } else {
+            self.parts.capacity()
+        };
         inserts::try_collect(
             self.parts,
             self.segments.iter().cloned(),
             extent,
             self.next,
             cap,
-            |current, bound| stream::Capacity::Limit {
-                required: current + 1,
-                available: bound,
-            },
+            &full,
         )?;
-        if self.parts.is_empty() {
-            return Ok(());
-        }
+        let Some(last) = self.parts.last() else {
+            return Ok(0);
+        };
+        let bytes = if ADMIT {
+            last.compact_end() as usize
+        } else {
+            0
+        };
 
         if prefix {
             for part in self.parts.drain(..) {
@@ -436,13 +419,10 @@ impl Plan<'_> {
                 let part = part.start()..part.end();
                 alloc::Gap::partition(self.segments, |seg| seg.start < part.start)
                     .try_insert(part)
-                    .map_err(|_| stream::Capacity::Limit {
-                        required: self.segments.len() + 1,
-                        available: self.segments.capacity(),
-                    })?;
+                    .map_err(|_| full(self.segments.len(), self.segments.capacity()))?;
             }
         }
-        Ok(())
+        Ok(bytes)
     }
 
     fn drain(next: &mut u64, segments: &mut Vec<ops::Range<u64>>) {

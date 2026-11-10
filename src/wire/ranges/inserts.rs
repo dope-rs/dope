@@ -92,7 +92,7 @@ impl Part {
         stream::Extent::new(from, from + self.width())
     }
 
-    const fn compact_end(self) -> u32 {
+    pub(super) const fn compact_end(self) -> u32 {
         self.compact + self.width()
     }
 
