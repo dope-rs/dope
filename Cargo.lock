@@ -408,9 +408,9 @@ dependencies = [
 
 [[package]]
 name = "o3"
-version = "0.52.1"
+version = "0.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfea4a65aad4455e4cfc697070ea795ccea4a083031e5ee28b17ffcbf994ad22"
+checksum = "d5b8d341f01ed22e26b21502a0aaad1056e17021ee1b956441795d4030e494e0"
 
 [[package]]
 name = "oid-registry"
