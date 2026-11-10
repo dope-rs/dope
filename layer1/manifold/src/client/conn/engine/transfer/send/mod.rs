@@ -363,9 +363,8 @@ where
             driver.reborrow(),
         );
         app.drain(&mut reqs);
-        let done = reqs.finish();
+        let (done, close) = reqs.finish();
         let queued = !queue.is_empty();
-        let close = done.close();
         let flow = match close {
             None => flow::Flow::Continue(()),
             Some(rule) => match State::apply(slot, rule) {

@@ -170,13 +170,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
         let Some(mut sender) = this.owner.sender(key) else {
             return;
         };
-        let writer::Egress {
-            flights: slots,
-            connection: mut slot,
-            pending: handle,
-            queue: egress,
-            ..
-        } = sender.view();
+        let (slots, mut slot, handle, egress) = sender.view();
         match wake {
             Wake::Progress => {
                 slot.progress(driver.driver_ref().clock().now());
@@ -231,9 +225,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
                 }
                 flow::Flow::Deferred => {
                     let done = sender.submit(driver);
-                    let writer::Egress {
-                        connection: slot, ..
-                    } = sender.view();
+                    let (_, slot, _, _) = sender.view();
                     match done {
                         transmit::Attempt::Runnable(
                             reclaim::Advance::Idle | reclaim::Advance::Ready,
@@ -260,9 +252,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
         let result = match result {
             Ok(result) => result,
             Err(failure) => {
-                let writer::Egress {
-                    connection: slot, ..
-                } = sender.view();
+                let (_, slot, _, _) = sender.view();
                 if let Some(egress) = slot.state.send.fail(failure) {
                     writer::release_egress(
                         this.app.as_mut(),
@@ -276,10 +266,7 @@ pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>
         };
         if matches!(result, flow::Handoff::Armed) && !matches!(wake, Wake::Pending | Wake::Capacity)
         {
-            let writer::Egress {
-                connection: mut slot,
-                ..
-            } = sender.view();
+            let (_, mut slot, _, _) = sender.view();
             slot.ensure_send(driver.driver_ref().clock().now());
         }
         result

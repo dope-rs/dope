@@ -1,5 +1,5 @@
 use dope_core::driver::{self, route::Identity};
-use dope_net::link::{pool, slot::transmit};
+use dope_net::link::{egress, pool, pool::pending::Handle, slot::transmit};
 use o3::{depot, depot::index::Initialized};
 
 use crate::network::listener::{
@@ -7,7 +7,6 @@ use crate::network::listener::{
     writer::{
         self,
         deadline::{self, Slot},
-        memory,
     },
 };
 
@@ -29,7 +28,6 @@ type Admitted<'a, 'n, 'p, 's, 'w, 'd, ID, A> = depot::raw::Proof<
         (
             Source<'a, 'n, 'p, 's, 'w, 'd, ID, A>,
             &'a mut deadline::Schedule<'d, ID>,
-            &'p memory::Arena<'s, 'd, ID, <A as handler::Application<'d, ID>>::Egress>,
         ),
         pool::Key<'d, ID>,
     ),
@@ -48,7 +46,6 @@ pub(in crate::network::listener::writer) struct Sender<
 > {
     source: Source<'a, 'n, 'p, 's, 'w, 'd, ID, A>,
     schedule: &'a mut deadline::Schedule<'d, ID>,
-    writes: &'p memory::Arena<'s, 'd, ID, A::Egress>,
 }
 
 impl<'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A> Sender<'a, 'n, 'p, 's, 'w, 'd, ID, A>
@@ -57,7 +54,19 @@ where
 {
     pub(in crate::network::listener::writer) fn view(
         &mut self,
-    ) -> writer::Egress<'n, '_, 'p, 's, 'w, 'd, ID, A> {
+    ) -> (
+        &crate::Flights<'d, ID>,
+        Slot<'_, 'p, 's, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+        Handle<'_, 'd, ID>,
+        egress::Queue<
+            '_,
+            'n,
+            'd,
+            { listener::IOV_CAP },
+            writer::Payload<'p, 's, 'd, ID, A::Egress>,
+            writer::Reserve<'d, A::Egress>,
+        >,
+    ) {
         let pool::EgressMut {
             flights,
             connection: conn,
@@ -65,18 +74,14 @@ where
             queue,
         } = self.source.view();
         let key = conn.key();
-        let lane = pool::raw::Physical::bind(key);
-        writer::Egress {
+        (
             flights,
             // SAFETY: `view` lent the initialized transmit sender for this exact
-            // key, and the writer's schedule and arena are keyed by that lane.
-            connection: Slot::from(unsafe {
-                depot::raw::Proof::new(((conn, &mut *self.schedule), key))
-            }),
+            // key, and the writer's schedule is keyed by that lane.
+            Slot::from(unsafe { depot::raw::Proof::new(((conn, &mut *self.schedule), key)) }),
             pending,
             queue,
-            retention: memory::Retention::new(self.writes, lane),
-        }
+        )
     }
 
     pub(in crate::network::listener::writer) fn submit(
@@ -93,11 +98,7 @@ where
     A: handler::Application<'d, ID>,
 {
     fn from(proof: Admitted<'a, 'n, 'p, 's, 'w, 'd, ID, A>) -> Self {
-        let ((source, schedule, writes), _) = proof.into_inner();
-        Self {
-            source,
-            schedule,
-            writes,
-        }
+        let ((source, schedule), _) = proof.into_inner();
+        Self { source, schedule }
     }
 }

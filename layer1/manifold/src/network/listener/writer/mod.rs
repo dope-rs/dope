@@ -210,9 +210,9 @@ where
     fn sender(&mut self, key: pool::Key<'d, ID>) -> Option<Sender<'_, 'n, 'p, 's, 'w, 'd, ID, A>> {
         let source = self.pool.sender(key)?;
         // SAFETY: `sender` lent the initialized transmit record for this exact
-        // key, and the retained schedule and write arena cover that same lane.
+        // key, and the retained schedule covers that same lane.
         Some(Sender::from(unsafe {
-            depot::raw::Proof::new(((source, &mut self.deadlines, self.writes), key))
+            depot::raw::Proof::new(((source, &mut self.deadlines), key))
         }))
     }
 

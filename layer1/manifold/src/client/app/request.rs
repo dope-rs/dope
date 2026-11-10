@@ -67,12 +67,12 @@ pub(in crate::client) enum Flag {
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-struct State(u8);
+pub(in crate::client) struct State(u8);
 
 impl State {
     const EMPTY: Self = Self(0);
 
-    const fn contains(self, flag: Flag) -> bool {
+    pub(in crate::client) const fn contains(self, flag: Flag) -> bool {
         self.0 & flag as u8 != 0
     }
 
@@ -183,7 +183,7 @@ impl<'turn, 'e, 'd, C, B: data::raw::Payload<'d>, ID: Identity> Turn<'turn, 'e, 
         )
     }
 
-    pub(in crate::client) fn finish(self) -> Outcome {
+    pub(in crate::client) fn finish(self) -> (State, Option<close::Directive>) {
         self.drain.finish()
     }
 }
@@ -261,14 +261,11 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>> Drain<'turn, 'e, 'd, B> {
         }
     }
 
-    fn finish(self) -> Outcome {
+    fn finish(self) -> (State, Option<close::Directive>) {
         if !self.state.contains(Flag::Waiting) {
             self.queue.cancel_wait(self.region);
         }
-        Outcome {
-            state: self.state,
-            close: self.close,
-        }
+        (self.state, self.close)
     }
 
     fn close(&mut self, close: close::Directive) {
@@ -286,21 +283,6 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>> Drain<'turn, 'e, 'd, B> {
 pub(in crate::client) enum Capacity {
     Waiting,
     Rejected(exact::Failure),
-}
-
-pub(in crate::client) struct Outcome {
-    state: State,
-    close: Option<close::Directive>,
-}
-
-impl Outcome {
-    pub(in crate::client) const fn contains(&self, flag: Flag) -> bool {
-        self.state.contains(flag)
-    }
-
-    pub(in crate::client) const fn close(&self) -> Option<close::Directive> {
-        self.close
-    }
 }
 
 impl<'e, 'd, B: data::raw::Payload<'d>> Ready<'_, '_, 'e, 'd, B> {
@@ -394,7 +376,6 @@ impl<'permit, 'turn, 'e, 'd, B: data::raw::Payload<'d>> Work<'permit, 'turn, 'e,
 
 const _: () = {
     assert!(mem::size_of::<State>() == mem::size_of::<u8>());
-    assert!(mem::size_of::<Outcome>() == 8 * mem::size_of::<usize>());
     assert!(
         mem::size_of::<Work<'static, 'static, 'static, 'static, &'static [u8]>>()
             == mem::size_of::<usize>()
