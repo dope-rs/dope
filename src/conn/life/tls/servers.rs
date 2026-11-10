@@ -4,7 +4,7 @@ use o3::mem::quota;
 use rustls::ServerConfig;
 
 use crate::{conn::life, errors};
-use life::{accept, initial};
+use life::accept;
 
 /// Native server policy with an exact borrowed active-handshake limit.
 pub struct Pool<const DOMAIN: u8 = 0> {
@@ -28,8 +28,8 @@ impl<const DOMAIN: u8> Pool<DOMAIN> {
         &self,
         ids: accept::Ids,
     ) -> Result<life::Connection<'_, DOMAIN>, errors::Connect> {
-        let (core, permit) =
-            initial::Acceptor::new(ids, self.auth.options().copy()).try_pooled(self, None)?;
+        let permit = self.reserve()?;
+        let core = self.auth.accept(ids)?;
         Ok(life::Connection::new(core, permit))
     }
 

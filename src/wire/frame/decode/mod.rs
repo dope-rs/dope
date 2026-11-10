@@ -31,7 +31,7 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
     ) -> Result<Decoded<frame::Frame<Data, Ranges, C>>, E>
     where
         Data: From<P>,
-        DataMap: Copy + Fn(&'a [u8]) -> Result<P, M>,
+        DataMap: Fn(&'a [u8]) -> Result<P, M>,
         RangeMap: Fn(ranges::Validated<'a>) -> Result<Ranges, M>,
         CidMap: Fn(Notice<cid::Ref<'a>>) -> Notice<C>,
         E: From<error::Fault> + From<M>,

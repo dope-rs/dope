@@ -5,7 +5,7 @@ use rustls::{ServerConfig, quic};
 
 use crate::{conn, errors, security::qkdf, stream};
 use conn::{life, wire};
-use life::{accept, initial::assembly, options, tls::servers};
+use life::{accept, initial::assembly, options};
 use wire::{path::setup, tls};
 
 pub(crate) struct Acceptor {
@@ -75,19 +75,5 @@ impl Acceptor {
             valid: ids.peer_address_validated,
         }
         .try_finish(&mut None)
-    }
-
-    pub(crate) fn try_pooled<'pool, const DOMAIN: u8, B, D>(
-        self,
-        pool: &'pool servers::Pool<DOMAIN>,
-        keys: Option<qkdf::Pair>,
-    ) -> Result<(conn::Connection<DOMAIN, B, D>, life::tls::Permit<'pool>), errors::Connect>
-    where
-        B: stream::Recv,
-        D: buffer::raw::Segment,
-    {
-        let permit = pool.reserve()?;
-        let conn = self.try_owned(pool.authority().config(), keys)?;
-        Ok((conn, permit))
     }
 }

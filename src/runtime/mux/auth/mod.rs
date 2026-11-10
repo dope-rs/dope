@@ -141,7 +141,8 @@ where
         config: ServerConfig,
     ) -> Accepted<DOMAIN, B, Self::Send, Self::Session> {
         let init = initial::Acceptor::new(ids, config.0);
-        let (conn, permit) = init.try_pooled(server.pool, Some(config.1))?;
+        let permit = server.pool.reserve()?;
+        let conn = init.try_owned(server.pool.authority().config(), Some(config.1))?;
         Ok((conn, Some(permit)))
     }
 }

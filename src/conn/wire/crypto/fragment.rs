@@ -35,7 +35,7 @@ struct Index {
 }
 
 pub(super) struct Fragment {
-    workspace: tail::Block<Index, u8>,
+    workspace: tail::Block<Index, mem::MaybeUninit<u8>>,
 }
 
 pub(super) struct Shadow<'a> {
@@ -52,7 +52,7 @@ struct Changed;
 impl Span {
     const EMPTY: Self = Self { start: 0, end: 0 };
 
-    pub(super) fn new(start: usize, end: usize) -> Option<Self> {
+    fn new(start: usize, end: usize) -> Option<Self> {
         if start > end || end > MAX {
             return None;
         }
@@ -87,19 +87,25 @@ impl Span {
 }
 
 impl Insert {
-    fn copy(self, target: &mut [u8], body: &[u8], source: usize, span: Span) -> Option<Copied> {
+    fn copy(
+        self,
+        target: &mut [mem::MaybeUninit<u8>],
+        body: &[u8],
+        source: usize,
+        span: Span,
+    ) -> Option<Copied> {
         let source = source.checked_add(span.start().checked_sub(self.input.start())?)?;
         let len = span.end().checked_sub(span.start())?;
         let source = body.get(source..source.checked_add(len)?)?;
         let target = target.get_mut(span.range())?;
-        target.copy_from_slice(source);
+        target.write_copy_of_slice(source);
         Some(Copied)
     }
 
     fn write(
         self,
         covered: &[Span],
-        target: &mut [u8],
+        target: &mut [mem::MaybeUninit<u8>],
         body: &[u8],
         source: usize,
     ) -> Option<Written> {
@@ -205,11 +211,11 @@ impl Index {
 
 impl Fragment {
     pub(super) fn try_new(base: u64) -> Result<Self, alloc::Exhausted> {
-        let plan = tail::Plan::fixed::<MAX>();
+        let plan = tail::Plan::<Index, u8>::fixed::<MAX>();
         let index = Index::new(base);
         let memory = plan.try_allocate()?;
         Ok(Self {
-            workspace: memory.repeat(index, 0),
+            workspace: memory.init(index),
         })
     }
 
@@ -220,9 +226,12 @@ impl Fragment {
     }
 
     pub(super) fn bytes(&self, span: Span) -> Option<&[u8]> {
-        tail::View::new(&self.workspace)
+        let bytes = tail::View::new(&self.workspace)
             .as_slice()
-            .get(span.range())
+            .get(span.range())?;
+        // SAFETY: Cursor replays this prepared span only after apply writes its
+        // uncovered bytes and publishes their union with initialized spans.
+        Some(unsafe { bytes.assume_init_ref() })
     }
 
     pub(super) fn consume(&mut self, span: Span) -> Result<(), conn::Error> {
