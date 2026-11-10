@@ -1,12 +1,11 @@
-use dope::core::Errno;
-use dope::core::driver::{result::SubmitError, route};
+use dope::core::driver::route;
 use dope::core::io::datagram::ReceiveError;
 use o3::buffer;
 use o3::buffer::Residency;
 use std::{net, num};
 
 use dope::{
-    core::{driver::schedule::clock, io::transfer},
+    core::driver::schedule::clock,
     manifold::network::datagram::{RejectCause, send},
 };
 
@@ -185,24 +184,7 @@ impl<I: id::Temporal, const DOMAIN: u8> Accepted<I, DOMAIN> {
     }
 }
 
-/// Terminal result of one accepted socket payload.
-pub enum Outcome {
-    Sent(transfer::Len),
-    Failed(Errno),
-    Submit(SubmitError),
-    Shutdown,
-}
-
-impl From<&send::Outcome> for Outcome {
-    fn from(outcome: &send::Outcome) -> Self {
-        match outcome {
-            send::Outcome::Sent(bytes) => Self::Sent(*bytes),
-            send::Outcome::Failed(errno) => Self::Failed(*errno),
-            send::Outcome::Submit(error) => Self::Submit(*error),
-            send::Outcome::Shutdown => Self::Shutdown,
-        }
-    }
-}
+pub use send::Outcome;
 
 /// CQE-linked borrow of the exact payload owner being retired.
 ///
@@ -211,7 +193,7 @@ impl From<&send::Outcome> for Outcome {
 pub struct Settlement<'owner, I: id::Temporal = id::Static, const DOMAIN: u8 = 0> {
     owner: Owner<I, DOMAIN>,
     destination: net::SocketAddr,
-    outcome: Outcome,
+    outcome: &'owner Outcome,
     payload: &'owner [u8],
     settled_at: I::Observation,
 }
@@ -232,7 +214,7 @@ impl<'owner, 'd, const DOMAIN: u8> Settlement<'owner, id::Driver<'d>, DOMAIN> {
                 send::Owner::Flight(owner) => Owner::flight(endpoint, owner),
             },
             destination: event.destination(),
-            outcome: event.outcome().into(),
+            outcome: event.outcome(),
             payload,
             settled_at: event.settled_at(),
         }
@@ -249,7 +231,7 @@ impl<'owner, I: id::Temporal, const DOMAIN: u8> Settlement<'owner, I, DOMAIN> {
     }
 
     pub const fn outcome(&self) -> &Outcome {
-        &self.outcome
+        self.outcome
     }
 
     pub const fn payload(&self) -> &'owner [u8] {

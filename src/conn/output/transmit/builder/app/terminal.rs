@@ -3,17 +3,14 @@ use crate::conn::stream::state::transmit::log::journal;
 use o3::buffer::{self, write};
 use std::{mem, num::NonZero, time};
 
-use crate::conn;
-use crate::conn::output::{
+use crate::conn::output::transmit::{
     self,
-    transmit::{
-        self,
-        builder::{self, pending},
-        packet::{plan::Plan, seals},
-        permit::{self, fit},
-    },
+    builder::{self, pending},
+    packet::{plan::Plan, seals},
+    permit::{self, fit},
 };
 use crate::conn::wire::path;
+use crate::conn::{self, life::status::phase};
 use crate::proto::recovery::{numbers, pmtud};
 use crate::security::crypto::output::Draft;
 use crate::wire::frame::close;
@@ -128,7 +125,7 @@ pub(in crate::conn::output::transmit) fn admit<
     D: buffer::raw::Segment,
 >(
     conn: &conn::Machine<DOMAIN, B, D>,
-    close: &output::PendingClose,
+    close: &phase::Close,
     max: usize,
 ) -> Option<Close> {
     let seal = if let Some(write) = conn.handshake.keys.write() {
@@ -166,21 +163,20 @@ pub(in crate::conn::output::transmit) fn admit<
         }
     };
     let code = match close {
-        output::PendingClose::Application {
+        phase::Close::LocalApplication {
             error_code: value, ..
         } if epoch == conn::Epoch::Application => close::Code::Application(*value),
-        output::PendingClose::Application { .. } => close::Code::Transport {
+        phase::Close::LocalApplication { .. } => close::Code::Transport {
             error_code: conn::APPLICATION_ERROR,
             frame_type: varint::VarInt::ZERO,
         },
-        output::PendingClose::Transport {
-            error_code: value,
-            frame_type: frame,
-            ..
-        } => close::Code::Transport {
+        phase::Close::LocalTransport(value) => close::Code::Transport {
             error_code: *value,
-            frame_type: *frame,
+            frame_type: varint::VarInt::ZERO,
         },
+        phase::Close::PeerApplication { .. } | phase::Close::PeerTransport { .. } => {
+            unreachable!("close")
+        }
     };
     let fixed = 1 + usize::from(match code {
         close::Code::Application(value) => value.as_varint().encoded_len(),
@@ -225,16 +221,11 @@ pub(in crate::conn::output::transmit) fn close<
     };
     let limit = limit.get();
     let mut reason: &[u8] = match close {
-        output::PendingClose::Application { .. }
-            if matches!(code, close::Code::Transport { .. }) =>
-        {
-            &[]
+        phase::Close::LocalApplication { reason, .. } if epoch == conn::Epoch::Application => {
+            reason
         }
-        output::PendingClose::Application { reason, .. }
-        | output::PendingClose::Transport { reason, .. } => reason,
+        _ => &[],
     };
-    let encoding = number.encoding();
-    let pn_len = number.encoded_len();
     while fixed + varint::VarInt::width(reason.len()) + reason.len() > limit {
         let len = reason.len();
         let encoded = fixed + varint::VarInt::width(len) + len;
@@ -243,6 +234,31 @@ pub(in crate::conn::output::transmit) fn close<
     let len = reason.len();
     let close = frame::Borrowed::try_close(code, reason)
         .map_err(|error| transmit::Admission::Encoding { epoch, error })?;
+    let mut commit = Plan::new(epoch, number);
+    commit.flags.set_close(true);
+    let target = build.destination;
+    if let Protection::OneRtt(phase) = seal {
+        let dcid = *build.connection.path.peer.id();
+        target.prefix(dst)?;
+        let mut draft = Draft::try_new(
+            dst.append(),
+            short::Ref::new(dcid.as_ref_id(), commit.packet_number.encoding(), phase),
+        )
+        .map_err(transmit::Admission::Protection)?;
+        close
+            .encode(&mut draft.append())
+            .map_err(|error| transmit::Admission::Payload {
+                error,
+                requested: fixed + varint::VarInt::width(len) + len,
+            })?;
+        let prepared =
+            pending::Packet::try_new(journal::Schedule::new(build).finish(), commit, target)
+                .map_err(|(_, error)| error.into_error())?;
+        return match prepared.protect(draft) {
+            Ok(((), prepared)) => Ok(Some(prepared)),
+            Err(failure) => failure.into_error().map_or(Ok(None), Err),
+        };
+    }
     let frames = &mut build.connection.scratch.frames;
     frames.clear();
     close
@@ -265,13 +281,10 @@ pub(in crate::conn::output::transmit) fn close<
             })?;
     }
     let mut frames = mem::take(&mut build.connection.scratch.frames);
-    let mut commit = Plan::new(epoch, number);
-    commit.flags.set_close(true);
-    let target = build.destination;
     target.prefix(dst).inspect_err(|_| {
         build.connection.scratch.frames = mem::take(&mut frames);
     })?;
-    let mut prepared =
+    let prepared =
         match pending::Packet::try_new(journal::Schedule::new(build).finish(), commit, target) {
             Ok(prepared) => prepared,
             Err((scratch, error)) => {
@@ -279,67 +292,19 @@ pub(in crate::conn::output::transmit) fn close<
                 return Err(error.into_error());
             }
         };
-    let mut prepared = match seal {
-        Protection::Initial => {
-            use kind::Initial;
-
-            match seals::long::<DOMAIN, B, D, Initial>(dst, &frames, prepared) {
-                Ok(((), prepared)) => prepared,
-                Err(mut failure) => {
-                    let scratch = failure.scratch();
-                    frames.clear();
-                    scratch.frames = frames;
-                    return failure.into_error().map_or(Ok(None), Err);
-                }
-            }
-        }
+    let sealed = match seal {
+        Protection::Initial => seals::long::<DOMAIN, B, D, kind::Initial>(dst, &frames, prepared),
         Protection::Handshake => {
-            use kind::Handshake;
-
-            match seals::long::<DOMAIN, B, D, Handshake>(dst, &frames, prepared) {
-                Ok(((), prepared)) => prepared,
-                Err(mut failure) => {
-                    let scratch = failure.scratch();
-                    frames.clear();
-                    scratch.frames = frames;
-                    return failure.into_error().map_or(Ok(None), Err);
-                }
-            }
+            seals::long::<DOMAIN, B, D, kind::Handshake>(dst, &frames, prepared)
         }
-        Protection::OneRtt(phase) => {
-            let mut header = mem::take(&mut prepared.scratch().header);
-            header.clear();
-            let dcid = *prepared.conn().path.peer.id();
-            let needed = 1 + dcid.len() + usize::from(pn_len);
-            let encoded =
-                match short::Ref::new(dcid.as_ref_id(), encoding, phase).encode_into(&mut header) {
-                    Ok(encoded) => encoded,
-                    Err(error) => {
-                        let scratch = prepared.reject();
-                        scratch.header = header;
-                        scratch.frames = frames;
-                        return Err(transmit::Admission::Payload {
-                            error,
-                            requested: needed,
-                        });
-                    }
-                };
-            let ((), mut prepared) =
-                match prepared.protect(seals::Segments::new(dst, encoded, &frames)) {
-                    Ok(output) => output,
-                    Err(failure) => {
-                        let mut failure = failure.release();
-                        let scratch = failure.scratch();
-                        header.clear();
-                        scratch.header = header;
-                        frames.clear();
-                        scratch.frames = frames;
-                        return failure.into_error().map_or(Ok(None), Err);
-                    }
-                };
-            header.clear();
-            prepared.scratch().header = header;
-            prepared
+        Protection::OneRtt(_) => unreachable!("epoch"),
+    };
+    let ((), mut prepared) = match sealed {
+        Ok(output) => output,
+        Err(mut failure) => {
+            frames.clear();
+            failure.scratch().frames = frames;
+            return failure.into_error().map_or(Ok(None), Err);
         }
     };
     frames.clear();

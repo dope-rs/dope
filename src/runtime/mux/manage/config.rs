@@ -1,7 +1,5 @@
 use std::{marker, num, pin};
 
-use dope::manifold::network::datagram;
-
 use crate::{
     conn,
     runtime::{mux, routing},
@@ -45,11 +43,7 @@ impl<
     }
 
     pub fn enable_gso(&mut self) -> Result<(), manage::GsoError> {
-        let Some(limits) =
-            datagram::GSO_LIMITS.filter(|limits| limits.capacity().count() <= usize::from(u8::MAX))
-        else {
-            return Err(manage::GsoError::Unavailable);
-        };
+        let limits = manage::gso_limits()?;
         self.mux.as_mut().project().state.outgoing.cache.batch = Some(packet::Gso::new(limits));
         Ok(())
     }

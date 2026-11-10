@@ -30,6 +30,12 @@ impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::S
         Path { machine }
     }
 
+    pub(crate) fn reject_gso(&mut self, key: std::num::NonZero<u64>) {
+        if self.machine.path.gso == Some(key) {
+            self.machine.path.gso = None;
+        }
+    }
+
     /// Queues an application probe with a distinct token for each request.
     /// Cancel it when the application stops waiting for its response.
     pub fn try_probe(&mut self, data: [u8; 8]) -> Result<(), probe::Error> {

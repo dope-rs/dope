@@ -17,7 +17,7 @@ use plan::Record;
 mod storage;
 
 pub(super) use storage::{Control, Records, Vacant};
-pub(in crate::conn) use storage::{Group, RecvIndex, Storage};
+pub(in crate::conn) use storage::{Group, Index, Storage};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::conn) enum Admission {

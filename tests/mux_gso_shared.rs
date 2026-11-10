@@ -5,6 +5,7 @@ pub mod common;
 use common::runtime::gso::{self, Capture};
 use dope_quic::wire::packet::cid;
 use dope_test::harness::observe::VecCellExt as _;
+use o3::buffer::Residency as _;
 use peer::Receiver as _;
 use std::{
     pin::Pin,
@@ -72,6 +73,7 @@ fn same_destination_shares() {
     let ready = local.established.take();
     let handles = ready.clone();
     local.established.set(ready);
+    let mut reused = None;
     for lengths in [[1_150; CONNECTIONS], [0, 1, 2, 0]] {
         for (ordinal, handle) in handles.iter().copied().enumerate() {
             assert_eq!(
@@ -103,6 +105,11 @@ fn same_destination_shares() {
         );
         assert_eq!(burst[0].packet_count().get(), CONNECTIONS);
         assert!(burst[0].is_segmented());
+        let storage = (burst[0].payload().as_ptr(), burst[0].resident());
+        if let Some(previous) = reused {
+            assert_eq!(storage, previous, "eligible original allocation is reused");
+        }
+        reused = Some(storage);
         for segment in burst[0].segments_mut() {
             if lengths[0] == 0 {
                 assert_eq!(segment.len(), 29);

@@ -1,7 +1,7 @@
 use crate::runtime::endpoint::Payload;
 use dope::manifold::network::datagram::send;
 
-use crate::runtime::Transit;
+use crate::runtime::{Transit, brand};
 
 use std::{iter, marker, pin};
 
@@ -112,8 +112,12 @@ impl<
             .recycle(outgoing.into_storage());
     }
 
-    pub(crate) fn reclaim<Q>(&mut self, payload: send::Payload<'_, '_, Payload<Q>>) {
-        let packet = match payload {
+    pub(crate) fn reclaim<Q>(
+        &mut self,
+        payload: send::Payload<'_, '_, Payload<Q>>,
+        gso_failed: bool,
+    ) {
+        let mut packet = match payload {
             send::Payload::Owned(packet) => packet.into_inner(),
             send::Payload::Buffer(packet) => match packet.into_inner() {
                 Payload::Retry(packet) => packet.into_storage(),
@@ -121,13 +125,28 @@ impl<
             },
             send::Payload::Packet(_) => return,
         };
-        self.mux
-            .as_mut()
-            .project()
-            .state
-            .outgoing
-            .cache
-            .recycle(packet);
+        let state = self.mux.as_mut().project().state;
+        if gso_failed {
+            brand::Token::with_mut(state, |brand, state| {
+                let domain = state.domain();
+                routing::registry::Scope::with(&mut state.registry, |mut slots| {
+                    for (position, generation, path) in
+                        crate::runtime::raw::participants(&mut packet)
+                    {
+                        let Some(key) = slots.bind(domain, domain.handle(position, generation))
+                        else {
+                            continue;
+                        };
+                        slots
+                            .access::<false>(key, brand.reborrow())
+                            .conn
+                            .path()
+                            .reject_gso(path);
+                    }
+                });
+            });
+        }
+        state.outgoing.cache.recycle(packet);
     }
 
     pub(in crate::runtime) fn submit<'quota, R, E>(

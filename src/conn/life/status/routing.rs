@@ -40,6 +40,10 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Path<'co
         Self { connection: conn }
     }
 
+    pub(crate) fn gso(&self) -> Option<std::num::NonZero<u64>> {
+        self.connection.path.gso
+    }
+
     pub fn is_reset(&self) -> bool {
         self.connection.control.probe().is_reset()
     }

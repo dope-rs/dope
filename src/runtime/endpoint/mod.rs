@@ -352,25 +352,6 @@ where
     }
 }
 
-impl<'d, const ID: u8, H, B, A, M, Q: buffer::Residency + buffer::raw::Source>
-    dispatch::raw::Projection<'d> for Endpoint<'d, ID, H, B, A, M, Q>
-where
-    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
-    B: Storage<'d, resident::Shared<'d>>,
-    M: owner::Binding<'d, ID>,
-    Transport<'d, ID, H, B, A, M::Mode, Q>: dispatch::raw::Manifold<'d>,
-{
-    type Inner = Transport<'d, ID, H, B, A, M::Mode, Q>;
-
-    fn inner(self: pin::Pin<&Self>) -> pin::Pin<&Self::Inner> {
-        self.project_ref().udp
-    }
-
-    fn inner_mut(self: pin::Pin<&mut Self>) -> pin::Pin<&mut Self::Inner> {
-        self.project().udp
-    }
-}
-
 impl<'d, const ID: u8, H, B, A, M, Q: buffer::Residency + buffer::raw::Source> event::Drive<'d>
     for Endpoint<'d, ID, H, B, A, M, Q>
 where

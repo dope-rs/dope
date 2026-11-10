@@ -7,7 +7,6 @@ use crate::{
     runtime::{brand, mux, routing::registry},
     stream,
 };
-use conn::wire::packet::Fresh as _;
 use drive::{MIN_GSO_PACKETS, Step};
 use mux::{auth, output, router};
 use router::drive;
@@ -38,6 +37,7 @@ pub(super) fn flush_group<
         return Ok(Step::Idle);
     }
     let classify = |slot: &registry::Slot<C, DOMAIN, B, A::Send, A::Session>| {
+        slot.conn.view().path().gso()?;
         if slot.is_first() {
             return None;
         }
@@ -53,6 +53,7 @@ pub(super) fn flush_group<
         return Ok(Step::Idle);
     };
     let destination = slot.peer_addr;
+    let domain = binding.domain;
     let room = outgoing.gso_room(
         class
             .max_packet_bytes
@@ -97,27 +98,41 @@ pub(super) fn flush_group<
         outgoing,
         now,
         |fatal, slots, output| {
-            output.emit_gso(len, bytes, destination, |batch| {
-                batch.prepare();
-                for &key in picks {
-                    let mut entry = slots.entry(key);
-                    let mut slot = entry.access::<false>(fatal.reborrow());
-                    let before = batch.packets();
-                    let result = slot.conn.output().append_gso(
-                        batch,
-                        now,
-                        class.max_packet_bytes.get(),
-                        *slot.peer_addr,
-                    );
-                    if batch.packets() != before {
-                        *slot.first_flush = false;
-                    }
-                    if let Err(error) = result {
-                        return (None, Err((key, error)));
-                    }
-                }
-                (None, Ok(()))
-            })
+            output
+                .emit_gso(
+                    len,
+                    bytes,
+                    class.max_packet_bytes.get() + destination.overhead(),
+                    len,
+                    destination,
+                    |flight| {
+                        for &key in picks {
+                            let handle = slots.handle(domain, key);
+                            let mut entry = slots.entry(key);
+                            let mut slot = entry.access::<false>(fatal.reborrow());
+                            let path = slot
+                                .conn
+                                .view()
+                                .path()
+                                .gso()
+                                .unwrap_or_else(|| unreachable!("path"));
+                            let (_, result) = flight.append(handle, path, |batch| {
+                                slot.conn.output().send_gso(
+                                    batch,
+                                    now,
+                                    1,
+                                    class.max_packet_bytes.get(),
+                                    *slot.peer_addr,
+                                )
+                            });
+                            if let Err(error) = result {
+                                return (None, Err((key, error)));
+                            }
+                        }
+                        (None, Ok(()))
+                    },
+                )
+                .unwrap_or_else(|error| (0, Err((anchor, error.into()))))
         },
     );
     match result {

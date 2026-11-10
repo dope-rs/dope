@@ -32,17 +32,6 @@ impl<'header, 'body, K: kind::Long> Body<'header, 'body, K> {
     }
 }
 
-impl<'header, 'body> Body<'header, 'body, kind::OneRtt> {
-    pub(crate) fn new(header: header::Ref<'header, kind::OneRtt>, body: &'body [u8]) -> Self {
-        Self { header, body }
-    }
-
-    pub(crate) fn number(&self) -> u64 {
-        self.header.layout.number().get()
-    }
-}
-
 const _: () = {
     assert!(size_of::<Body<'static, 'static, kind::Initial>>() == 6 * size_of::<usize>());
-    assert!(size_of::<Body<'static, 'static, kind::OneRtt>>() == 6 * size_of::<usize>());
 };

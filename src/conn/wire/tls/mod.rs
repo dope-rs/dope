@@ -65,6 +65,14 @@ impl<const DOMAIN: u8> Handshake<DOMAIN, ()> {
 }
 
 impl<const DOMAIN: u8, A> Handshake<DOMAIN, A> {
+    pub(in crate::conn) fn peer_certificates(
+        &self,
+    ) -> Option<&[rustls::pki_types::CertificateDer<'static>]> {
+        (!self.tls.is_handshaking())
+            .then(|| self.tls.peer_certificates())
+            .flatten()
+    }
+
     pub(in crate::conn) fn keys(&self) -> Borrow<'_, DOMAIN> {
         Borrow { keys: &self.keys }
     }

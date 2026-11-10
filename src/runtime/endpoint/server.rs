@@ -114,6 +114,12 @@ impl<const ID: u8, R: receive::Policy> Plan<'static, ID, R> {
 }
 
 impl<'g, const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<'g, ID, R, L> {
+    /// Enables segmentation before this server admits traffic; the default is off.
+    pub fn enable_gso(mut self) -> Result<Self, crate::runtime::mux::manage::GsoError> {
+        self.endpoint.config.capacity.gso = Some(crate::runtime::mux::manage::gso_limits()?);
+        Ok(self)
+    }
+
     fn prepare(
         bind: Socket<'g>,
         route: L,

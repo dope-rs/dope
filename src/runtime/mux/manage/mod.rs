@@ -12,6 +12,12 @@ pub enum GsoError {
     Unavailable,
 }
 
+pub(in crate::runtime) fn gso_limits() -> Result<dope::core::io::datagram::GsoLimits, GsoError> {
+    dope::manifold::network::datagram::GSO_LIMITS
+        .filter(|limits| limits.capacity().count() <= usize::from(u8::MAX))
+        .ok_or(GsoError::Unavailable)
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Status {
     Complete,

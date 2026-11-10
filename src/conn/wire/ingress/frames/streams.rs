@@ -36,7 +36,7 @@ pub(super) fn try_apply<B: stream::Recv, S: sources::Backing<B>>(
                         .try_stream()
                         .map(|stream| stream.map(|stream| (*index, stream)))
                         .map_err(|error| detail::Stream::Backing {
-                            frame: index.get(),
+                            frame: *index.as_inner() as usize,
                             error,
                         })
                 });
@@ -58,7 +58,7 @@ pub(super) fn try_apply<B: stream::Recv, S: sources::Backing<B>>(
                         .take()
                         .map(Some)
                         .map_err(|error| detail::Stream::Backing {
-                            frame: frame.get(),
+                            frame: *frame.as_inner() as usize,
                             error,
                         })
                 });

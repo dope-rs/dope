@@ -5,6 +5,25 @@ use o3::buffer::{self, resident};
 use crate::conn;
 use crate::stream;
 
+/// The first admitted local or peer close, retained until the connection is dropped.
+#[derive(Debug)]
+pub enum Close {
+    LocalApplication {
+        error_code: crate::errors::Code,
+        reason: Vec<u8>,
+    },
+    LocalTransport(crate::wire::varint::VarInt),
+    PeerApplication {
+        error_code: crate::errors::Code,
+        reason: Result<Vec<u8>, o3::alloc::Error>,
+    },
+    PeerTransport {
+        error_code: crate::wire::varint::VarInt,
+        frame_type: crate::wire::varint::VarInt,
+        reason: Result<Vec<u8>, o3::alloc::Error>,
+    },
+}
+
 #[repr(transparent)]
 pub struct State<
     'conn,
@@ -42,6 +61,15 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> State<'c
 
     pub fn is_confirmed(&self) -> bool {
         self.conn.egress.lifecycle.handshake_confirmed
+    }
+
+    pub fn close(&self) -> Option<&'conn Close> {
+        self.conn.egress.lifecycle.pending_close.as_ref()
+    }
+
+    /// Certificates or raw public keys after authenticated TLS completion.
+    pub fn peer_certificates(&self) -> Option<&'conn [rustls::pki_types::CertificateDer<'static>]> {
+        self.conn.handshake.peer_certificates()
     }
 
     /// Whether TLS has accepted early data.

@@ -144,19 +144,20 @@ impl<'d, const DOMAIN: u8, B: client::Backoff> Lifecycle<'d, DOMAIN, B> {
         endpoint.change::<phase::Data>(handle);
     }
 
-    pub(super) fn reconnect(
+    pub(super) fn reconnect<'scope>(
         &mut self,
+        scope: brand::Token<'scope>,
         handle: id::Handle<id::Driver<'d>, DOMAIN>,
         again: Option<life::Reconnect>,
-    ) {
-        let Some(bound) = self.index(handle) else {
-            return;
-        };
+    ) -> Option<client::SlotScope<'scope>> {
+        let bound = self.index(handle)?;
         let index = bound.slot.index() as usize;
-        let Some(endpoint) = self.endpoints.common_mut(index) else {
-            return;
-        };
+        let endpoint = self.endpoints.common_mut(index)?;
         endpoint.reconnect = again;
+        Some(client::SlotScope::new(
+            scope,
+            bound.attempt.id(handle.domain().identity(), bound.slot),
+        ))
     }
 
     pub(super) fn take_again(&mut self, due: &due::Due) -> Option<life::Reconnect> {

@@ -70,7 +70,33 @@ impl<'connection, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
     pub(in crate::conn::wire::ingress) fn drain(
         &mut self,
         now: time::Instant,
+        code: crate::wire::frame::close::Code,
+        bytes: &[u8],
     ) -> Result<(), conn::Timing> {
+        use crate::conn::life::status::phase::Close;
+        use crate::wire::frame::close::Code;
+        use o3::alloc::VecExt as _;
+        let mut reason = std::mem::take(&mut self.connection.scratch.frames);
+        reason.clear();
+        let reason = (|| {
+            if reason.capacity() < bytes.len() {
+                drop(reason);
+                reason = Vec::try_new(bytes.len())?;
+            }
+            reason.extend_from_slice(bytes);
+            Ok(reason)
+        })();
+        self.connection.egress.lifecycle.pending_close = Some(match code {
+            Code::Application(error_code) => Close::PeerApplication { error_code, reason },
+            Code::Transport {
+                error_code,
+                frame_type,
+            } => Close::PeerTransport {
+                error_code,
+                frame_type,
+                reason,
+            },
+        });
         if let Some(change) = self.connection.drain() {
             self.pending.merge(change.effects());
         }

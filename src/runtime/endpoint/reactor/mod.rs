@@ -270,6 +270,7 @@ where
         let mut this = self.project();
         let failed = matches!(done.outcome(), send::Outcome::Submit(error)
             if error.cause() == SubmitCause::IdentityExhausted);
+        let gso_failed = matches!(done.outcome(), send::Outcome::GsoFailed(_));
         let domain = this.mux.as_ref().get_ref().domain();
         let handler = this.mux.as_mut().handler_mut();
         <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Socket::call(|| {
@@ -279,7 +280,7 @@ where
             )
         });
         let (_, _, _, data, _) = done.into_parts();
-        this.mux.as_mut().output().reclaim(data);
+        this.mux.as_mut().output().reclaim(data, gso_failed);
         if failed && !*this.stopping {
             Self::stop(this.mux, this.pooled, this.stopping, this.rotation);
         }

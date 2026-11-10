@@ -48,14 +48,6 @@ struct Reservation<'storage> {
     byte: NonZero<usize>,
 }
 
-/// One segmentation flight whose queue credit and builder share this exact
-/// borrow. Consequently packet state cannot be committed into a flight whose
-/// output owner could disappear or lose admission before publication.
-struct GsoFlight<'storage> {
-    slot: Reservation<'storage>,
-    batch: &'storage mut packet::Gso,
-}
-
 pub(in crate::runtime) enum Submit<'quota, R, E> {
     Empty,
     Deferred,
@@ -164,21 +156,6 @@ impl Reservation<'_> {
     }
 }
 
-impl GsoFlight<'_> {
-    fn commit(self, addr: Peer) -> usize {
-        let Self { slot, batch } = self;
-        let Some(ready) = batch.take() else {
-            return 0;
-        };
-        let outgoing = if ready.packets.get() == 1 {
-            Flight::plain(addr, ready.payload)
-        } else {
-            Flight::batch(addr, ready.payload, ready.segment_size, ready.packets)
-        };
-        slot.commit(outgoing).map_or(0, NonZero::get)
-    }
-}
-
 impl Cache {
     fn recycle(&mut self, mut packet: Vec<u8>) {
         packet.clear();
@@ -228,29 +205,38 @@ impl Storage {
             .min(self.bytes_capacity.saturating_sub(self.pending.bytes()) / max)
     }
 
-    fn gso_flight(&mut self, packet: usize, byte: usize) -> Option<GsoFlight<'_>> {
+    pub(super) fn emit_gso<E>(
+        &mut self,
+        packet: usize,
+        byte: usize,
+        outer: usize,
+        participants: usize,
+        fallback: Peer,
+        emit: impl FnOnce(&mut crate::runtime::raw::Gso<'_>) -> (Option<Peer>, Result<(), E>),
+    ) -> Result<(usize, Result<(), E>), conn::output::transmit::Admission> {
         let Self {
             pending,
             bytes_capacity: limit,
             cache,
         } = self;
-        let slot = pending.reserve(*limit, packet, byte)?;
-        let batch = cache.batch.as_mut()?;
-        Some(GsoFlight { slot, batch })
-    }
-
-    pub(super) fn emit_gso<E>(
-        &mut self,
-        packet: usize,
-        byte: usize,
-        fallback: Peer,
-        emit: impl for<'batch> FnOnce(&'batch mut packet::Gso) -> (Option<Peer>, Result<(), E>),
-    ) -> (usize, Result<(), E>) {
-        let Some(flight) = self.gso_flight(packet, byte) else {
-            return (0, Ok(()));
+        let Some(slot) = pending.reserve(*limit, packet, byte) else {
+            return Ok((0, Ok(())));
         };
-        let (addr, result) = emit(flight.batch);
-        (flight.commit(addr.unwrap_or(fallback)), result)
+        let Some(batch) = cache.batch.as_mut() else {
+            return Ok((0, Ok(())));
+        };
+        let mut batch = crate::runtime::raw::Gso::try_new(batch, packet, outer, participants)?;
+        let (addr, result) = emit(&mut batch);
+        let Some(ready) = batch.finish() else {
+            return Ok((0, result));
+        };
+        let addr = addr.unwrap_or(fallback);
+        let outgoing = if ready.packets.get() == 1 {
+            Flight::plain(addr, ready.payload)
+        } else {
+            Flight::batch(addr, ready.payload, ready.segment_size, ready.packets)
+        };
+        Ok((slot.commit(outgoing).map_or(0, NonZero::get), result))
     }
 
     pub(super) fn emit_owned(

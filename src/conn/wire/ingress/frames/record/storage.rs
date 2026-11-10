@@ -22,37 +22,25 @@ type Rows<'a, 'slots, 'id> =
     init::Prefix<'a, 'slots, FrameRecord<'id>, { conn::MAX_FRAMES_PER_PACKET }>;
 type Indices<'a, 'scope, I> = init::Prefix<'a, 'scope, I, { conn::MAX_FRAMES_PER_PACKET }>;
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(in crate::conn) struct RecvIndex<'slots>(capacity::Key<'slots, u8>);
-
-impl RecvIndex<'_> {
-    pub(in crate::conn) fn get(self) -> usize {
-        *self.0.as_inner() as usize
-    }
-}
-
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-struct SendIndex<'slots>(capacity::Key<'slots, u8>);
+pub(in crate::conn) type Index<'slots> = capacity::Key<'slots, u8>;
 
 /// These backing arrays contain no live packet values outside their scopes.
 pub(in crate::conn) struct Storage {
     frames: Box<[mem::MaybeUninit<FrameRecord<'static>>; conn::MAX_FRAMES_PER_PACKET]>,
-    receives: [mem::MaybeUninit<RecvIndex<'static>>; conn::MAX_FRAMES_PER_PACKET],
-    sends: [mem::MaybeUninit<SendIndex<'static>>; conn::MAX_FRAMES_PER_PACKET],
+    receives: [mem::MaybeUninit<Index<'static>>; conn::MAX_FRAMES_PER_PACKET],
+    sends: [mem::MaybeUninit<Index<'static>>; conn::MAX_FRAMES_PER_PACKET],
 }
 
 pub(in super::super) struct Records<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> {
     frames: &'a mut Rows<'f, 'slots, 'id>,
-    receives: &'a mut Indices<'r, 'recv, RecvIndex<'slots>>,
-    sends: &'a mut Indices<'s, 'send, SendIndex<'slots>>,
+    receives: &'a mut Indices<'r, 'recv, Index<'slots>>,
+    sends: &'a mut Indices<'s, 'send, Index<'slots>>,
 }
 
 pub(in super::super) struct Vacant<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> {
     frame: init::Slot<'a, 'f, 'slots, FrameRecord<'id>, { conn::MAX_FRAMES_PER_PACKET }>,
-    receives: &'a mut Indices<'r, 'recv, RecvIndex<'slots>>,
-    sends: &'a mut Indices<'s, 'send, SendIndex<'slots>>,
+    receives: &'a mut Indices<'r, 'recv, Index<'slots>>,
+    sends: &'a mut Indices<'s, 'send, Index<'slots>>,
 }
 
 impl Storage {
@@ -74,10 +62,10 @@ impl Storage {
         init::Prefix::<FrameRecord<'id>, { conn::MAX_FRAMES_PER_PACKET }>::with(
             &mut self.frames,
             |frames| {
-                init::Prefix::<RecvIndex<'_>, { conn::MAX_FRAMES_PER_PACKET }>::with(
+                init::Prefix::<Index<'_>, { conn::MAX_FRAMES_PER_PACKET }>::with(
                     &mut self.receives,
                     |receives| {
-                        init::Prefix::<SendIndex<'_>, { conn::MAX_FRAMES_PER_PACKET }>::with(
+                        init::Prefix::<Index<'_>, { conn::MAX_FRAMES_PER_PACKET }>::with(
                             &mut self.sends,
                             |sends| {
                                 run(Records {
@@ -94,12 +82,12 @@ impl Storage {
     }
 }
 
-impl<'id> Vacant<'_, '_, '_, 'id, '_, '_, '_, '_> {
+impl<'slots, 'id> Vacant<'_, '_, 'slots, 'id, '_, '_, '_, '_> {
     pub(in super::super) fn insert(
         self,
         record: FrameRecord<'id>,
         app: bool,
-    ) -> Result<(), detail::Plan> {
+    ) -> Result<Index<'slots>, detail::Plan> {
         let receive = app && matches!(record.kind, Kind::Stream(_) | Kind::Reset(_));
         let send = app
             && matches!(
@@ -115,7 +103,7 @@ impl<'id> Vacant<'_, '_, '_, 'id, '_, '_, '_, '_> {
                     needed: conn::MAX_FRAMES_PER_PACKET + 1,
                     available: conn::MAX_FRAMES_PER_PACKET,
                 })?
-                .insert(RecvIndex(key));
+                .insert(key);
         }
         if send {
             self.sends
@@ -125,15 +113,15 @@ impl<'id> Vacant<'_, '_, '_, 'id, '_, '_, '_, '_> {
                     needed: conn::MAX_FRAMES_PER_PACKET + 1,
                     available: conn::MAX_FRAMES_PER_PACKET,
                 })?
-                .insert(SendIndex(key));
+                .insert(key);
         }
-        Ok(())
+        Ok(key)
     }
 }
 
 pub(in crate::conn) struct Group<'a, 'f, 'slots, 'id> {
     id: stream::Id,
-    indices: &'a [RecvIndex<'slots>],
+    indices: &'a [Index<'slots>],
     frames: &'a mut Rows<'f, 'slots, 'id>,
 }
 
@@ -142,15 +130,15 @@ impl<'a, 'f, 'slots, 'id> Group<'a, 'f, 'slots, 'id> {
         self.id
     }
     pub(in crate::conn) fn records(&self) -> impl Iterator<Item = &FrameRecord<'id>> {
-        self.indices.iter().map(|index| self.frames.get(index.0))
+        self.indices.iter().map(|index| self.frames.get(*index))
     }
     pub(in crate::conn) fn try_for_each<T, E>(
         &mut self,
-        mut visit: impl FnMut(RecvIndex<'slots>, Option<Receive<'_>>) -> Result<ops::ControlFlow<T>, E>,
+        mut visit: impl FnMut(Index<'slots>, Option<Receive<'_>>) -> Result<ops::ControlFlow<T>, E>,
     ) -> Result<ops::ControlFlow<T>, E> {
         for &index in self.indices {
             if let ops::ControlFlow::Break(value) =
-                visit(index, self.frames.get_mut(index.0).receive())?
+                visit(index, self.frames.get_mut(index).receive())?
             {
                 return Ok(ops::ControlFlow::Break(value));
             }
@@ -161,9 +149,9 @@ impl<'a, 'f, 'slots, 'id> Group<'a, 'f, 'slots, 'id> {
 
 pub(in super::super) struct SendGroup<'a, 'f, 'slots, 'id, 'r> {
     id: stream::Id,
-    indices: &'a [SendIndex<'slots>],
+    indices: &'a [Index<'slots>],
     frames: &'a mut Rows<'f, 'slots, 'id>,
-    receives: &'a mut &'r [RecvIndex<'slots>],
+    receives: &'a mut &'r [Index<'slots>],
 }
 
 impl<'id> SendGroup<'_, '_, '_, 'id, '_> {
@@ -173,11 +161,11 @@ impl<'id> SendGroup<'_, '_, '_, 'id, '_> {
     pub(in super::super) fn has_stop(&self) -> bool {
         self.indices
             .iter()
-            .any(|index| matches!(self.frames.get(index.0).kind, Kind::Stop(_)))
+            .any(|index| matches!(self.frames.get(*index).kind, Kind::Stop(_)))
     }
     pub(in super::super) fn admit_stops(&mut self, key: Option<resident::Key>) {
         for index in self.indices {
-            if let Kind::Stop(record) = &mut self.frames.get_mut(index.0).kind {
+            if let Kind::Stop(record) = &mut self.frames.get_mut(*index).kind {
                 record.key = key;
                 record.admitted = true;
             }
@@ -185,14 +173,14 @@ impl<'id> SendGroup<'_, '_, '_, 'id, '_> {
     }
     pub(in super::super) fn receive(&mut self) -> Option<&FrameRecord<'id>> {
         while let Some((index, rest)) = self.receives.split_first() {
-            if self.frames.get(index.0).id.get() >= self.id.get() {
+            if self.frames.get(*index).id.get() >= self.id.get() {
                 break;
             }
             *self.receives = rest;
         }
         self.receives
             .iter()
-            .map(|index| self.frames.get(index.0))
+            .map(|index| self.frames.get(*index))
             .take_while(|record| record.id == self.id)
             .find(|record| {
                 matches!(
@@ -208,8 +196,8 @@ impl<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> Records<'a, 'f, 'slots, 'id, 'r,
         // SAFETY: both keys read immutable row identities through the same
         // retained frame prefix. Sorting cannot mutate those identities.
         unsafe {
-            sort(self.receives, |index| self.frames.get(index.0).id.get());
-            sort(self.sends, |index| self.frames.get(index.0).id.get());
+            sort(self.receives, |index| self.frames.get(index).id.get());
+            sort(self.sends, |index| self.frames.get(index).id.get());
         }
     }
 
@@ -225,16 +213,16 @@ impl<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> Records<'a, 'f, 'slots, 'id, 'r,
     pub(in super::super) fn as_slice(&self) -> &[FrameRecord<'id>] {
         self.frames.as_slice()
     }
-    pub(in super::super) fn get(&self, index: RecvIndex<'slots>) -> &FrameRecord<'id> {
-        self.frames.get(index.0)
+    pub(in super::super) fn get(&self, index: Index<'slots>) -> &FrameRecord<'id> {
+        self.frames.get(index)
     }
-    pub(in super::super) fn order(&self) -> &[RecvIndex<'slots>] {
+    pub(in super::super) fn order(&self) -> &[Index<'slots>] {
         self.receives.as_slice()
     }
-    pub(in super::super) fn receive_id(&self, index: RecvIndex<'slots>) -> stream::Id {
-        self.frames.get(index.0).id
+    pub(in super::super) fn receive_id(&self, index: Index<'slots>) -> stream::Id {
+        self.frames.get(index).id
     }
-    pub(in super::super) fn source(&self) -> &Indices<'r, 'recv, RecvIndex<'slots>> {
+    pub(in super::super) fn source(&self) -> &Indices<'r, 'recv, Index<'slots>> {
         self.receives
     }
 
@@ -244,8 +232,8 @@ impl<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> Records<'a, 'f, 'slots, 'id, 'r,
     ) -> Result<(), E> {
         let mut order = self.receives.as_slice();
         while let Some(first) = order.first() {
-            let id = self.frames.get(first.0).id;
-            let (indices, rest) = order.split_while(|index| self.frames.get(index.0).id == id);
+            let id = self.frames.get(*first).id;
+            let (indices, rest) = order.split_while(|index| self.frames.get(*index).id == id);
             apply(Group {
                 id,
                 indices,
@@ -263,8 +251,8 @@ impl<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> Records<'a, 'f, 'slots, 'id, 'r,
         let mut order = self.sends.as_slice();
         let mut receives = self.receives.as_slice();
         while let Some(first) = order.first() {
-            let id = self.frames.get(first.0).id;
-            let (indices, rest) = order.split_while(|index| self.frames.get(index.0).id == id);
+            let id = self.frames.get(*first).id;
+            let (indices, rest) = order.split_while(|index| self.frames.get(*index).id == id);
             apply(SendGroup {
                 id,
                 indices,
@@ -375,6 +363,6 @@ unsafe fn sort<I: Copy>(indices: &mut Indices<'_, '_, I>, key: impl Fn(I) -> u64
     }
 }
 
-const _: () = assert!(mem::size_of::<RecvIndex<'_>>() == 1);
-const _: () = assert!(mem::size_of::<SendIndex<'_>>() == 1);
+const _: () = assert!(mem::size_of::<Index<'_>>() == 1);
+const _: () = assert!(mem::size_of::<Index<'_>>() == 1);
 const _: () = assert!(conn::MAX_FRAMES_PER_PACKET <= u8::MAX as usize + 1);

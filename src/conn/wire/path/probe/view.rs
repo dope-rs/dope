@@ -8,6 +8,10 @@ pub(in crate::conn) struct View<'a> {
 }
 
 impl<'a> View<'a> {
+    pub(in crate::conn) const fn next_key(&self) -> std::num::NonZero<u64> {
+        self.state.next_control_key
+    }
+
     pub(in crate::conn) const fn retired(&self) -> u64 {
         self.state.retired
     }

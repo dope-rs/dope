@@ -167,11 +167,13 @@ impl<'d, F: for<'a> FnMut(Result<client::SlotId, Callback<'a>>) + Unpin, const P
         let callback = match event {
             net::Event::Receive { error, .. } => Callback::SocketReceive(error),
             net::Event::Settled(settlement) => match settlement.outcome() {
-                net::Outcome::Failed(error) => Callback::SocketSend {
-                    destination: settlement.destination(),
-                    payload: settlement.payload(),
-                    error: *error,
-                },
+                net::Outcome::Failed(error) | net::Outcome::GsoFailed(error) => {
+                    Callback::SocketSend {
+                        destination: settlement.destination(),
+                        payload: settlement.payload(),
+                        error: *error,
+                    }
+                }
                 _ => return,
             },
             _ => return,

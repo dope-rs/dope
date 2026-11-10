@@ -207,7 +207,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
             })
     }
 
-    pub(super) fn entry(&self, index: record::RecvIndex<'slots>) -> Entry<'_, 'wire, 'id, B, S> {
+    pub(super) fn entry(&self, index: record::Index<'slots>) -> Entry<'_, 'wire, 'id, B, S> {
         Entry {
             backing: &self.backing,
             record: self.input.records.get(index),
@@ -216,7 +216,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
         }
     }
 
-    pub(super) fn id(&self, index: record::RecvIndex<'slots>) -> Id {
+    pub(super) fn id(&self, index: record::Index<'slots>) -> Id {
         self.input.records.receive_id(index)
     }
 
@@ -224,13 +224,13 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
         self.input.records.as_slice()
     }
 
-    pub(super) fn order(&self) -> &[record::RecvIndex<'slots>] {
+    pub(super) fn order(&self) -> &[record::Index<'slots>] {
         self.input.records.order()
     }
 
     pub(super) fn source(
         &self,
-    ) -> &init::Prefix<'r, 'recv, record::RecvIndex<'slots>, { conn::MAX_FRAMES_PER_PACKET }> {
+    ) -> &init::Prefix<'r, 'recv, record::Index<'slots>, { conn::MAX_FRAMES_PER_PACKET }> {
         self.input.records.source()
     }
 

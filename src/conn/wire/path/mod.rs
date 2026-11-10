@@ -24,6 +24,7 @@ pub(in crate::conn) struct State {
     pub(in crate::conn) peer: peer::Peer,
     pub(in crate::conn) local: local::State,
     pub(in crate::conn) origin: origin::State,
+    pub(in crate::conn) gso: Option<num::NonZero<u64>>,
     address: state::State,
 }
 
@@ -143,6 +144,7 @@ impl State {
             local: local::State::new(local, reset, limit),
             origin: origin::State::new(original, first, tokens),
             address: state::State::new(side, fixed),
+            gso: Some(std::num::NonZero::<u64>::MIN),
         }
     }
 
@@ -536,6 +538,7 @@ impl State {
     fn migrate(&mut self, path: Key, address: Peer, control: &mut control::Pending) {
         control.challenges().abandon(path);
         self.address.active = Some(address);
+        self.gso = Some(control.probe().next_key());
         self.address.candidate = None;
         self.sweep(path, control);
     }

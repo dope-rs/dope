@@ -107,7 +107,7 @@ impl Observed {
                             *ledger = Ledger::Failed(Failure::Contract(error));
                         }
                     }
-                    net::Outcome::Failed(error) => {
+                    net::Outcome::Failed(error) | net::Outcome::GsoFailed(error) => {
                         let contract = oracle.settle(bytes, Outcome::Failed).err();
                         *ledger = Ledger::Failed(Failure::Send {
                             bytes,

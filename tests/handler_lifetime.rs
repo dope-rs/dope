@@ -109,6 +109,7 @@ fn pin_keeps_address() {
     );
     assert_eq!(peer.shutting.take(), [(1, 0)]);
     assert_eq!(peer.retired.take(), [(2, 1)]);
+    assert_eq!(local.causes.get(), 1);
     assert_eq!(local.certificates.get(), 0);
     assert_eq!(peer.certificates.get(), 0);
     for counts in [&local, &peer] {

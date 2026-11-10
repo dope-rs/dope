@@ -12,12 +12,13 @@ use core::driver;
 use dope::core;
 use dope::manifold::app::dispatch;
 use dope::manifold::app::dispatch::event;
-use dope::manifold::network::datagram;
+use dope::runtime::executor;
 use driver::route;
 use driver::schedule;
 
 use crate::conn::id;
 use crate::runtime::endpoint;
+use crate::runtime::endpoint::Transport;
 use crate::runtime::endpoint::control;
 use crate::runtime::endpoint::owner;
 use crate::runtime::endpoint::reactor;
@@ -45,12 +46,7 @@ where
     H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
     B: Storage<'d, resident::Shared<'d>>,
     M: owner::Binding<'d, ID>,
-    datagram::Endpoint<
-        'd,
-        route::KeyTag<ID>,
-        reactor::Engine<'d, H, ID, B, A, M::Mode, Q>,
-        endpoint::Payload<Q>,
-    >: dispatch::raw::Manifold<
+    Transport<'d, ID, H, B, A, M::Mode, Q>: dispatch::raw::Manifold<
             'd,
             Route = route::KeyTag<ID>,
             PrePark = dispatch::raw::Retained,
@@ -59,15 +55,15 @@ where
 {
     type Route = route::KeyTag<ID>;
     type Dispatch = event::Driven<dispatch::raw::Plain>;
-    type Install = dispatch::raw::Projected<Self>;
+    type Install = Self;
     type Finish = Self;
-    type Activate = dispatch::raw::Projected<Self>;
-    type Probe = dispatch::raw::Projected<Self>;
+    type Activate = dispatch::raw::Plain;
+    type Probe = Self;
     type PrePark = dispatch::raw::Retained;
     type Shutdown = dispatch::raw::Plain;
 
     const COORDS: usize =
-        <<Self as dispatch::raw::Projection<'d>>::Inner as dispatch::raw::Manifold<'d>>::COORDS;
+        <Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::COORDS;
 
     unsafe fn pre_park<'a, 'turn>(
         mut self: pin::Pin<&'a mut Self>,
@@ -98,6 +94,69 @@ where
     ) -> pin::Pin<&'a mut Self> {
         dispatch::raw::Manifold::shutdown(self.as_mut().project().udp, turn, driver);
         self
+    }
+}
+
+impl<'d, const ID: u8, H, B, A, M, Q: Residency + buffer::raw::Source>
+    dispatch::raw::Installs<'d, Self> for endpoint::Endpoint<'d, ID, H, B, A, M, Q>
+where
+    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
+    B: crate::stream::Recv,
+    M: owner::Binding<'d, ID>,
+    Transport<'d, ID, H, B, A, M::Mode, Q>: dispatch::raw::Manifold<'d>,
+{
+    fn call<'app, 'owner>(
+        install: executor::raw::Install<'app, 'owner, 'd, Self>,
+    ) -> executor::raw::Install<'app, 'owner, 'd, Self> {
+        let (mut owner, proof) = install.into_parts();
+        let child = executor::raw::Install::new(owner.as_mut().project().udp, proof);
+        let proof = <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Install as dispatch::raw::Installs<'d, _>>::call(child).into_install();
+        executor::raw::Install::new(owner, proof)
+    }
+}
+
+// SAFETY: the private projection retains the installed owner and exact route.
+unsafe impl<'d, const ID: u8, H, B, A, M, Q: Residency + buffer::raw::Source>
+    dispatch::raw::Activate<'d, route::KeyTag<ID>> for endpoint::Endpoint<'d, ID, H, B, A, M, Q>
+where
+    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
+    B: crate::stream::Recv,
+    M: owner::Binding<'d, ID>,
+{
+    type Access = dispatch::raw::Plain;
+
+    unsafe fn activate<'turn>(
+        self: pin::Pin<&mut Self>,
+        target: route::Target<'d, route::KeyTag<ID>>,
+        turn: schedule::Turn<'turn, 'd>,
+        driver: &mut dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) {
+        // SAFETY: projection preserves the caller's installation and route proofs.
+        unsafe { dispatch::raw::Activate::activate(self.project().udp, target, turn, driver) };
+    }
+}
+
+// SAFETY: the unchanged native plan describes the same privately pinned owner.
+unsafe impl<'d, const ID: u8, H, B, A, M, Q: Residency + buffer::raw::Source>
+    dispatch::raw::Probe<'d, Self> for endpoint::Endpoint<'d, ID, H, B, A, M, Q>
+where
+    H: handler::Handler<ID, B, resident::Shared<'d>, id::Driver<'d>>,
+    B: crate::stream::Recv,
+    M: owner::Binding<'d, ID>,
+    Transport<'d, ID, H, B, A, M::Mode, Q>: dispatch::raw::Manifold<'d>,
+{
+    type Plan = <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Probe as dispatch::raw::Probe<'d, Transport<'d, ID, H, B, A, M::Mode, Q>>>::Plan;
+
+    fn select() -> Option<Self::Plan> {
+        <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Probe as dispatch::raw::Probe<'d, Transport<'d, ID, H, B, A, M::Mode, Q>>>::select()
+    }
+
+    fn run(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
+        <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Probe as dispatch::raw::Probe<'d, _>>::run(call.map_owner(|owner| owner.project_ref().udp))
+    }
+
+    fn stop(call: dispatch::raw::Call<'_, '_, '_, 'd, Self, Self::Plan>) -> schedule::Progress<'d> {
+        <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Probe as dispatch::raw::Probe<'d, _>>::stop(call.map_owner(|owner| owner.project_ref().udp))
     }
 }
 

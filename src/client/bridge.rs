@@ -474,7 +474,13 @@ where
         event: closing::Event<'_, Self, DOMAIN, P::Receive, resident::Shared<'d>, id::Driver<'d>>,
     ) {
         let (event, again) = event.into_saved();
-        let (this, _, handle) = event.into();
-        this.project().lifecycle.reconnect(handle, again);
+        let (this, mut slot, handle) = event.into();
+        let brand = slot.brand();
+        let mut this = this.project();
+        if let Some(bound) = this.lifecycle.reconnect(brand.reborrow(), handle, again) {
+            this.protocol
+                .as_mut()
+                .closing(bound, slot.transport().view().lifecycle());
+        }
     }
 }

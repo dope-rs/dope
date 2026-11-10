@@ -36,8 +36,8 @@ where
             cid.as_ref(),
         )?
     };
-    if closes {
-        packet.drain(now)?;
+    if let Some((code, reason)) = closes {
+        packet.drain(now, code, reason)?;
         return Ok(frames::Disposition::Drop);
     }
     let (conn, past) = packet.state();

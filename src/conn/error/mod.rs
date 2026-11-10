@@ -29,6 +29,7 @@ pub enum Error {
     Path(path::Error),
     HeaderDecode,
     Frame(error::Fault),
+    FrameBody(frame::Projection),
     FrameLimit { actual: usize, maximum: usize },
     Handshake(wire::Handshake),
     Tls(wire::Tls),
@@ -55,9 +56,10 @@ pub enum Error {
 impl Error {
     pub(in crate::conn) fn close_code(&self) -> Option<varint::VarInt> {
         match self {
-            Self::Internal | Self::Timing(_) | Self::Path(path::Error::Peer(_)) => {
-                Some(conn::INTERNAL_ERROR)
-            }
+            Self::Internal
+            | Self::FrameBody(_)
+            | Self::Timing(_)
+            | Self::Path(path::Error::Peer(_)) => Some(conn::INTERNAL_ERROR),
             Self::FlowControl => Some(FLOW_CONTROL_ERROR),
             Self::StreamLimit => Some(STREAM_LIMIT_ERROR),
             Self::StreamState => Some(STREAM_STATE_ERROR),

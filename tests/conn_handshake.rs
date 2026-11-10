@@ -82,6 +82,8 @@ fn roundtrips_datagrams() {
     )
     .expect("fixture peers must open");
 
+    assert!(client.view().lifecycle().peer_certificates().is_none());
+
     assert!(
         client.view().lifecycle().is_opening(),
         "a fresh client must begin in the handshaking state"
@@ -115,6 +117,8 @@ fn roundtrips_datagrams() {
         server.view().lifecycle().is_ready(),
         "three fixture flights must establish the server"
     );
+    assert!(client.view().lifecycle().peer_certificates().is_some());
+    assert!(server.view().lifecycle().peer_certificates().is_none());
 
     let peer =
         (client.view().peer().params()).expect("established peer parameters must be retained");

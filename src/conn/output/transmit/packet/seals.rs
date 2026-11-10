@@ -129,30 +129,6 @@ impl<'a, 'b, 'c, const DOMAIN: u8, K: LongKind<DOMAIN>> Seal<DOMAIN> for Long<'a
     }
 }
 
-pub(in crate::conn::output::transmit) struct Segments<'a, 'b, 'c> {
-    dst: write::Append<'a>,
-    header: header::Body<'b, 'c, kind::OneRtt>,
-}
-
-impl<'a, 'b, 'c> Segments<'a, 'b, 'c> {
-    pub(in crate::conn::output::transmit) fn new(
-        dst: &'a mut write::Append<'_>,
-        header: header::Ref<'b, kind::OneRtt>,
-        payload: &'c [u8],
-    ) -> Self {
-        Self {
-            dst: dst.append(),
-            header: header::Body::new(header, payload),
-        }
-    }
-}
-
-impl output::Extent for Segments<'_, '_, '_> {
-    fn wire_len(&self) -> NonZero<usize> {
-        self.header.wire_len()
-    }
-}
-
 impl<'a, const DOMAIN: u8> Seal<DOMAIN> for output::Draft<'a> {
     type Output = ();
     type Permit<'key>
@@ -178,39 +154,6 @@ impl<'a, const DOMAIN: u8> Seal<DOMAIN> for output::Draft<'a> {
         Self: 'key,
     {
         let (wire, number) = permit.seal_draft(self, number)?;
-        Ok(Sealed {
-            output: (),
-            bytes: wire.into_len(),
-            packet_number: number,
-        })
-    }
-}
-
-impl<'a, 'b, 'c, const DOMAIN: u8> Seal<DOMAIN> for Segments<'a, 'b, 'c> {
-    type Output = ();
-    type Permit<'key>
-        = packets::Permit<'key>
-    where
-        Self: 'key;
-
-    fn reserve<'key>(
-        state: tls::Borrow<'key, DOMAIN>,
-    ) -> Result<Option<Self::Permit<'key>>, crypto::Error>
-    where
-        Self: 'key,
-    {
-        state.get().write().map(packets::Write::permit).transpose()
-    }
-
-    fn seal<'key>(
-        self,
-        permit: Self::Permit<'key>,
-        number: numbers::Sealing,
-    ) -> Result<Sealed<Self::Output>, crypto::Error>
-    where
-        Self: 'key,
-    {
-        let (wire, number) = permit.seal(self.dst, self.header, number)?;
         Ok(Sealed {
             output: (),
             bytes: wire.into_len(),

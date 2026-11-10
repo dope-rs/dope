@@ -74,6 +74,12 @@ fn journal_keeps_prefix() {
             .iter()
             .map(|flight| flight.packet_count().get())
             .sum::<usize>();
+        if budget == 0 {
+            assert!(
+                matches!(cause, Some(Error::Admission(Admission::Payload { requested, .. })) if requested > 1200)
+            );
+            assert_eq!(packets, 0, "first reservation precedes packet commit");
+        }
         if matches!(
             &cause,
             Some(Error::Admission(

@@ -100,15 +100,6 @@ impl<'wire> Ref<'wire> {
         Ok(header::Layout::new(self.encoding, 1 + self.dcid.len()))
     }
 
-    pub(crate) fn encode_into<'out>(
-        self,
-        out: &'out mut Vec<u8>,
-    ) -> Result<header::Ref<'out, kind::OneRtt>, alloc::Error> {
-        let mut out = write::Append::new(out);
-        let layout = self.append(&mut out)?;
-        Ok(header::Ref::new(out.into_mut(), layout))
-    }
-
     pub(crate) fn prefix<'out>(
         self,
         out: &'out mut Vec<u8>,

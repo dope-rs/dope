@@ -67,6 +67,11 @@ fn saturated_progress() {
                 ENDPOINT,
             )
             .expect("loopback server resources must form an endpoint plan");
+            let srv_plan = if want_gso && dope::manifold::network::datagram::GSO_LIMITS.is_some() {
+                srv_plan.enable_gso().expect("server startup segmentation")
+            } else {
+                srv_plan
+            };
             let cli_plan = client::Plan::<CLIENT_ROUTE>::new(
                 "127.0.0.1:0"
                     .parse::<SocketAddr>()

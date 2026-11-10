@@ -52,7 +52,7 @@ pub enum Error {
 /// Validated endpoint settings retained after its lower plans are constructed.
 #[derive(Clone, Copy)]
 pub(crate) struct Validated {
-    capacity: builder::Plan,
+    pub(super) capacity: builder::Plan,
     receive: settings::Datagram,
     packet: Size,
     framing: Option<(PrefixPlan, num::NonZero<u16>)>,

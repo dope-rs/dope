@@ -22,14 +22,14 @@ pub struct CommitPermit<'commit> {
 }
 
 /// Parsing accounts for payloads while the initialized record owner admits rows.
-pub(super) struct Build {
+pub(super) struct Build<'slots> {
     bytes: usize,
     dgrams: usize,
     max: Option<u64>,
-    close: bool,
+    close: Option<record::Index<'slots>>,
 }
 
-impl Build {
+impl<'slots> Build<'slots> {
     fn try_bytes(current: usize, add: usize) -> Result<usize, detail::Plan> {
         let limit = u16::MAX as usize;
         let Some(total) = current.checked_add(add) else {
@@ -54,13 +54,13 @@ impl Build {
             bytes: 0,
             dgrams,
             max,
-            close: false,
+            close: None,
         }
     }
 
     pub(super) fn try_record<'id>(
         &mut self,
-        slot: record::Vacant<'_, '_, '_, 'id, '_, '_, '_, '_>,
+        slot: record::Vacant<'_, '_, 'slots, 'id, '_, '_, '_, '_>,
         body: &frame::Body<'_, 'id>,
         kind: frames::PacketKind,
         local: Initiator,
@@ -68,8 +68,8 @@ impl Build {
         used: NonZero<usize>,
     ) -> Result<(), detail::Plan> {
         let admitted = record::Admitted::new(kind, local, frame)?;
+        let close = matches!(admitted.frame().view(), frame::View::ConnectionClose { .. });
         match admitted.frame().view() {
-            frame::View::ConnectionClose { .. } => self.close = true,
             frame::View::Datagram { length, data }
                 if self.max.is_none_or(|max| used.get() as u64 > max) =>
             {
@@ -96,7 +96,11 @@ impl Build {
             self.bytes = Self::try_bytes(self.bytes, accepted)?;
             self.dgrams = dgrams;
         }
-        slot.insert(record, kind.is_app())
+        let index = slot.insert(record, kind.is_app())?;
+        if close {
+            self.close.get_or_insert(index);
+        }
+        Ok(())
     }
 }
 
@@ -106,7 +110,7 @@ pub(super) struct Plan<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> {
     body: frame::Body<'wire, 'id>,
     records: record::Records<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>,
     bytes: usize,
-    close: bool,
+    close: Option<record::Index<'slots>>,
 }
 
 pub(super) struct Reserved<
@@ -157,7 +161,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
         work: &'a mut scratch::Buffers,
         body: frame::Body<'wire, 'id>,
         records: record::Records<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>,
-        build: Build,
+        build: Build<'slots>,
     ) -> Self {
         Self {
             work,
@@ -173,16 +177,25 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
         state: &mut State<B, D>,
         next: u64,
         cid: Option<&frames::PacketCid<'_>>,
-    ) -> Result<bool, conn::Error> {
-        if self.close {
-            check::validate(
-                &receive::Update::new(state),
-                self.records.as_slice(),
-                next,
-                cid,
-            )?;
-        }
-        Ok(self.close)
+    ) -> Result<Option<(frame::close::Code, &'wire [u8])>, conn::Error> {
+        let Some(index) = self.close else {
+            return Ok(None);
+        };
+        check::validate(
+            &receive::Update::new(state),
+            self.records.as_slice(),
+            next,
+            cid,
+        )?;
+        let frame::View::ConnectionClose { code, reason } = self.records.get(index).view() else {
+            unreachable!("close");
+        };
+        Ok(Some((
+            code,
+            self.body
+                .resolve(reason.clone())
+                .map_err(conn::Error::FrameBody)?,
+        )))
     }
 
     pub(super) fn try_reserve<'state, B: stream::Recv, D: buffer::raw::Segment>(

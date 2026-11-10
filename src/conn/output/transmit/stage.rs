@@ -3,9 +3,9 @@ use std::time;
 
 use crate::conn::stream::{State, Streams, state::streams};
 use crate::conn::wire::tls::ciphers::Update;
-use crate::conn::{self, output};
+use crate::conn::{self, life::status::phase::Close, output};
 use crate::security::crypto;
-use crate::{stream, wire::varint};
+use crate::stream;
 use output::{control, transmit::Admission};
 
 pub(super) struct Stage<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> {
@@ -73,10 +73,9 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
                 self.conn.close_now();
                 return Ok(Outcome::Closed);
             }
-            let _ = self.conn.queue_close(output::PendingClose::transport(
-                conn::AEAD_LIMIT_REACHED,
-                varint::VarInt::ZERO,
-            ));
+            let _ = self
+                .conn
+                .queue_close(Close::LocalTransport(conn::AEAD_LIMIT_REACHED));
         }
         if !self.conn.handshake.keys.has_write() {
             return Ok(Outcome::Ready(None));
@@ -91,10 +90,9 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
             Ok(()) => Ok(Outcome::Ready(Some(admitted))),
             Err(Update::Timing(error)) => Err(Admission::Timing(self.conn.fail_timing(error))),
             Err(Update::Dimensions(error)) => {
-                let _ = self.conn.queue_close(output::PendingClose::transport(
-                    conn::INTERNAL_ERROR,
-                    varint::VarInt::ZERO,
-                ));
+                let _ = self
+                    .conn
+                    .queue_close(Close::LocalTransport(conn::INTERNAL_ERROR));
                 Err(Admission::Protection(error))
             }
             Err(Update::AeadLimitReached) => {
@@ -107,16 +105,13 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
                 } else {
                     conn::KEY_UPDATE_ERROR
                 };
-                let _ = self
-                    .conn
-                    .queue_close(output::PendingClose::transport(code, varint::VarInt::ZERO));
+                let _ = self.conn.queue_close(Close::LocalTransport(code));
                 Ok(Outcome::Ready(Some(admitted)))
             }
             Err(Update::UnexpectedEpoch) => {
-                let _ = self.conn.queue_close(output::PendingClose::transport(
-                    conn::INTERNAL_ERROR,
-                    varint::VarInt::ZERO,
-                ));
+                let _ = self
+                    .conn
+                    .queue_close(Close::LocalTransport(conn::INTERNAL_ERROR));
                 Ok(Outcome::Ready(Some(admitted)))
             }
         }

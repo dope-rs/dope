@@ -1,5 +1,4 @@
 pub mod domains;
-pub mod queue;
 pub mod sender;
 pub mod socket;
 pub mod timing;
@@ -142,6 +141,7 @@ pub struct Attempts {
     pub connected: bool,
     pub previous: Cell<Option<AttemptId>>,
     pub current: Cell<Option<AttemptId>>,
+    pub closing: Cell<Option<AttemptId>>,
     pub exact_checked: Rc<Cell<bool>>,
 }
 
@@ -284,7 +284,24 @@ impl<'d> protocol::Protocol<'d> for Events {
     fn close<'scope>(mut self: Pin<&'scope mut Self>, slot: client::SlotScope<'scope>) {
         self.as_ref().observe();
         self.slot("close", &slot, self.attempts.connects.get());
+        assert_eq!(self.attempts.closing.take(), Some(slot.attempt_id()));
         self.as_mut().project().attempts.connected = false;
+    }
+
+    fn closing<'scope, const DOMAIN: u8>(
+        self: Pin<&'scope mut Self>,
+        slot: client::SlotScope<'scope>,
+        state: dope_quic::conn::life::status::phase::State<
+            'scope,
+            DOMAIN,
+            Vec<u8>,
+            o3::buffer::resident::Shared<'d>,
+        >,
+    ) {
+        if self.attempts.connected {
+            assert!(state.peer_certificates().is_some());
+            assert_eq!(self.attempts.closing.replace(Some(slot.attempt_id())), None);
+        }
     }
 
     fn stream_event<'scope>(

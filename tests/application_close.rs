@@ -5,6 +5,7 @@ use common::peer::Pair;
 use common::suite::mux::paths;
 use common::suite::peers::path;
 use dope::core::driver::schedule::clock;
+use dope_quic::conn::life::status::phase::Close;
 use dope_quic::conn::{Mutation, State, stream, wire::packet::Batch};
 use dope_quic::errors::{Code, SendFailure};
 use dope_quic::security::qkdf::Initial;
@@ -199,7 +200,9 @@ fn closes_application() {
             ));
             scope.application().ready();
             let stream = scope.streams().send().open_bidi().expect("open stream");
-            scope.lifecycle().close(Code::ZERO, Vec::new());
+            scope
+                .lifecycle()
+                .close(Code::from_u16(401), b"expired".to_vec());
             assert!(!scope.view().lifecycle().is_closed());
             assert!(matches!(
                 scope.streams().send().open_bidi(),
@@ -230,6 +233,10 @@ fn closes_application() {
             .expect("peer packet transfer");
         assert_eq!(client.view().lifecycle().state(), State::Closing);
         assert_eq!(server.view().lifecycle().state(), State::Draining);
+        server.with_scope(|mut scope| scope.lifecycle().close(Code::ZERO, Vec::new()));
+        assert!(
+            matches!(server.view().lifecycle().close(), Some(Close::PeerApplication { error_code, reason: Ok(reason) }) if error_code.get() == 401 && reason == b"expired")
+        );
         for conn in [&mut client, &mut server] {
             let deadline = conn
                 .view()
@@ -239,8 +246,64 @@ fn closes_application() {
             conn.with_scope(|mut scope| scope.recovery().try_loss(deadline))
                 .expect("terminal expiry");
             assert!(conn.view().lifecycle().is_closed());
+            assert!(conn.view().lifecycle().close().is_some());
         }
     });
+}
+
+#[test]
+fn peer_close_retains_first_cause_even_when_storage_fails() {
+    use common::suite::peers::packet;
+    for (malformed, fail) in [(true, false), (false, true), (false, false)] {
+        let now = Instant::now();
+        let mut pair = packet::Pair::try_new(1, now, |_| {}).expect("connected peer");
+        let mut frames = vec![0x1c, 7, 6, 0x50, 0];
+        frames.resize(5 + 4096, 0x61);
+        frames.extend_from_slice(&[0x1d, 9, 0]);
+        if malformed {
+            frames.push(0xff);
+        }
+        let mut packet = pair.peer.packet(&frames).expect("protected close");
+        let mut receive = || {
+            pair.server.with_scope(|mut scope| {
+                scope
+                    .input(&mut pair.work)
+                    .recv_packet(&mut packet, now, |_| {})
+            })
+        };
+        let received = if fail {
+            Tracker::fail_after(0, receive)
+        } else {
+            receive()
+        };
+        if malformed {
+            assert!(received.is_err());
+            assert!(matches!(
+                pair.server.view().lifecycle().close(),
+                Some(Close::LocalTransport(_))
+            ));
+            continue;
+        }
+        received.expect("peer close commits despite retention failure");
+        let Some(Close::PeerTransport {
+            error_code,
+            frame_type,
+            reason,
+        }) = pair.server.view().lifecycle().close()
+        else {
+            panic!("peer transport close")
+        };
+        assert_eq!((error_code.get(), frame_type.get()), (7, 6));
+        assert_eq!(
+            reason.as_deref(),
+            if fail {
+                Err(&o3::alloc::Error::Exhausted)
+            } else {
+                Ok(&frames[5..4101])
+            }
+        );
+        assert_eq!(pair.server.view().lifecycle().state(), State::Draining);
+    }
 }
 
 #[test]

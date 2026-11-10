@@ -9,15 +9,14 @@ use crate::{
     runtime::{brand, mux, routing::registry},
     stream,
 };
+use conn::id;
 use conn::output::transmit;
-use conn::{id, wire};
 use issuer::Source as _;
 use mux::{auth, handler, output, router};
 use registry::Scope;
 use router::routing;
 use routing::issuer;
 use routing::state::timers;
-use wire::packet;
 
 mod groups;
 
@@ -43,8 +42,9 @@ fn flush_packet_quantum(gso: Option<datagram::GsoLimits>, peers: usize) -> usize
         .min(max)
 }
 
-fn flush_slot_round<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T>(
+fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, T>(
     mut slot: registry::Access<'_, C, DOMAIN, B, D, T, false>,
+    handle: id::Handle<I, DOMAIN>,
     output: &mut output::Storage,
     peers: usize,
     now: time::Instant,
@@ -58,17 +58,22 @@ fn flush_slot_round<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
         slot.peer_addr.overhead()
     };
     let outer = max.saturating_add(overhead);
-    let gso = if slot
-        .conn
-        .view()
-        .permit()
-        .is_gso_ready(size, MIN_GSO_PACKETS)
-    {
-        output.cache.batch.as_ref().map(packet::Gso::limits)
-    } else {
-        None
-    };
-    let quota = flush_packet_quantum(gso, peers);
+    let gso = path
+        .gso()
+        .filter(|_| {
+            slot.conn
+                .view()
+                .permit()
+                .is_gso_ready(size, MIN_GSO_PACKETS)
+        })
+        .and_then(|path| {
+            output
+                .cache
+                .batch
+                .as_ref()
+                .map(|batch| (batch.limits(), path))
+        });
+    let quota = flush_packet_quantum(gso.map(|(limits, _)| limits), peers);
     let room = output
         .pending
         .capacity()
@@ -79,31 +84,32 @@ fn flush_slot_round<C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
     }
     let space = output.bytes_capacity.saturating_sub(output.pending.bytes());
     let chunk = match gso {
-        Some(limits) => mux::FLUSH_BYTE_QUANTUM.min(limits.max_bytes().into_raw()),
+        Some((limits, _)) => mux::FLUSH_BYTE_QUANTUM.min(limits.max_bytes().into_raw()),
         None => mux::FLUSH_BYTE_QUANTUM,
     };
     let bytes = space.min(chunk.max(outer.get()));
-    let mut count = room.min(bytes / outer);
-    if let Some(limits) = gso {
+    let mut count = room.min(bytes / outer).min(conn::MAX_BATCH_PACKETS);
+    if let Some((limits, _)) = gso {
         count = count.min(limits.capacity().count());
     }
     if count == 0 {
         return Ok(router::Flush::Backpressure);
     }
 
-    let (sent, result) = if gso.is_some() {
+    let (sent, result) = if let Some((_, path)) = gso {
         let count = if slot.conn.view().path().has_output() {
             1
         } else {
             count
         };
-        output.emit_gso(count, bytes, *slot.peer_addr, |batch| {
-            let (target, result) =
+        output.emit_gso(count, bytes, outer.get(), 1, *slot.peer_addr, |flight| {
+            let (target, result) = flight.append(handle, path, |batch| {
                 slot.conn
                     .output()
-                    .send_gso(batch, now, count, size, *slot.peer_addr);
+                    .send_gso(batch, now, count, size, *slot.peer_addr)
+            });
             (target.and_then(transmit::Destination::network), result)
-        })
+        })?
     } else {
         output.emit_round(count, outer.get(), *slot.peer_addr, |packet| {
             let (target, result) = slot
@@ -171,7 +177,7 @@ fn flush_slot<'storage, 'id, A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stre
         outgoing,
         now,
         |slot, output| {
-            let round = flush_slot_round(slot, output, peers, now);
+            let round = flush_slot_round(slot, handle, output, peers, now);
             let ready = match &round {
                 Ok(router::Flush::More | router::Flush::Backpressure) | Err(_) => true,
                 Ok(router::Flush::Idle | router::Flush::Waiting) => false,

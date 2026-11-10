@@ -97,6 +97,14 @@ pub trait Protocol<'d> {
 
     fn close<'scope>(self: pin::Pin<&'scope mut Self>, slot: client::SlotScope<'scope>);
 
+    /// Borrows terminal state before native retirement; `close` remains budgeted.
+    fn closing<'scope, const DOMAIN: u8>(
+        self: pin::Pin<&'scope mut Self>,
+        _: client::SlotScope<'scope>,
+        _: conn::life::status::phase::State<'scope, DOMAIN, Self::Receive, resident::Shared<'d>>,
+    ) {
+    }
+
     /// Observes socket events with their original endpoint and payload owners.
     /// Settled payloads remain borrowed until this call returns, then are recycled.
     /// Native send errors do not become permanent client failures.

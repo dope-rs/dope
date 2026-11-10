@@ -1,5 +1,5 @@
 use crate::{conn, errors, stream};
-use conn::output;
+use conn::life::status::phase::Close;
 use o3::buffer;
 use std::time;
 
@@ -38,10 +38,10 @@ impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::S
     }
 
     pub fn close(&mut self, code: errors::Code, reason: Vec<u8>) {
-        if let Some(change) = self
-            .machine
-            .queue_close(output::PendingClose::application(code, reason))
-        {
+        if let Some(change) = self.machine.queue_close(Close::LocalApplication {
+            error_code: code,
+            reason,
+        }) {
             self.machine.record::<RECONCILE>(change.effects().bits());
         }
     }

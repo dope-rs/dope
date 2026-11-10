@@ -5,7 +5,7 @@ use o3::buffer::{self, storage::Shared};
 pub(in crate::conn) mod storage;
 
 use crate::proto::path::Peer;
-use crate::{conn, stream, wire::varint};
+use crate::{conn, stream};
 use conn::stream::Streams;
 use conn::{output, wire};
 use output::{control, recovery};
@@ -78,7 +78,6 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
     pub(in crate::conn) fn close_now(&mut self) {
         self.discard_queued();
         self.egress.lifecycle.state = conn::State::Closed;
-        self.egress.lifecycle.pending_close = None;
         self.set_deadline(None);
         self.peer.reconcile.set_ready(false);
     }
@@ -126,7 +125,6 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
         }
         self.discard_queued();
         self.egress.lifecycle.state = conn::State::Draining;
-        self.egress.lifecycle.pending_close = None;
         self.set_deadline(None);
         self.peer.reconcile.set_ready(false);
         Some(CloseChange)
@@ -223,12 +221,12 @@ impl<const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Machine<DOMAIN,
             return changed.then_some(CloseChange);
         }
         let code = error.close_code()?;
-        self.queue_close(output::PendingClose::transport(code, varint::VarInt::ZERO))
+        self.queue_close(conn::life::status::phase::Close::LocalTransport(code))
     }
 
     pub(in crate::conn) fn queue_close(
         &mut self,
-        close: output::PendingClose,
+        close: conn::life::status::phase::Close,
     ) -> Option<CloseChange> {
         if self.is_closing() {
             return None;

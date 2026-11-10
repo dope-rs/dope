@@ -54,9 +54,7 @@ impl<'d> App<'d> {
             return control::Flow::Idle;
         }
         if this.client.view().gso_active().is_none() {
-            let srv_gso = this.server.enable_gso().is_ok();
-            let cli_gso = this.client.enable_gso().is_ok();
-            let active = srv_gso && cli_gso;
+            let active = this.client.enable_gso().is_ok();
             if !active {
                 this.server.disable_gso();
                 this.client.disable_gso();

@@ -14,11 +14,11 @@ pub mod transmit;
 pub use count::Count;
 pub(super) use derived::Derived;
 
+use crate::errors;
 use crate::proto::recovery::{numbers, pmtud, rtt};
-use crate::{errors, wire::varint};
 
 use crate::conn;
-use crate::conn::life::options;
+use crate::conn::life::{options, status::phase::Close};
 use crate::conn::machine::storage::capacity;
 
 pub(super) struct Setup {
@@ -179,7 +179,7 @@ impl Datagram {
 }
 
 pub(super) struct Lifecycle {
-    pub(super) pending_close: Option<PendingClose>,
+    pub(super) pending_close: Option<Close>,
     /// Fixed Opening or Closing/Draining deadline, selected by `state`.
     pub(super) deadline: Option<time::Instant>,
     close_stride: NonZero<u32>,
@@ -190,7 +190,7 @@ pub(super) struct Lifecycle {
 }
 
 impl Lifecycle {
-    pub(super) fn close(&self) -> Option<&PendingClose> {
+    pub(super) fn close(&self) -> Option<&Close> {
         (self.state == conn::State::Closing && self.close_remaining == 0)
             .then_some(self.pending_close.as_ref())
             .flatten()
@@ -346,41 +346,10 @@ impl Egress {
     }
 }
 
-#[derive(Clone)]
-pub(super) enum PendingClose {
-    Application {
-        error_code: errors::Code,
-        reason: Vec<u8>,
-    },
-    Transport {
-        error_code: varint::VarInt,
-        frame_type: varint::VarInt,
-        reason: Vec<u8>,
-    },
-}
-
-impl PendingClose {
-    pub(super) fn application(code: errors::Code, reason: Vec<u8>) -> Self {
-        Self::Application {
-            error_code: code,
-            reason,
-        }
-    }
-
-    pub(super) fn transport(code: varint::VarInt, frame: varint::VarInt) -> Self {
-        Self::Transport {
-            error_code: code,
-            frame_type: frame,
-            reason: Vec::new(),
-        }
-    }
-}
-
 const _: () = assert!(std::mem::size_of::<journals::Packet>() == 48);
 const _: () = assert!(std::mem::size_of::<AmpSent>() == 3 * std::mem::size_of::<u64>());
 const _: () =
     assert!(std::mem::size_of::<Option<time::Instant>>() == std::mem::size_of::<time::Instant>());
 /// Keeps split close variants within the former tagged-record layout.
-const _: () = assert!(
-    std::mem::size_of::<PendingClose>() <= std::mem::size_of::<(bool, u64, u64, Vec<u8>)>()
-);
+const _: () =
+    assert!(std::mem::size_of::<Close>() <= std::mem::size_of::<(bool, u64, u64, Vec<u8>)>());

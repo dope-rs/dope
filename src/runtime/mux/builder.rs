@@ -44,6 +44,7 @@ pub struct Plan {
     queue: capacity::Limit<{ mux::MAX_OUTGOING_CAPACITY }>,
     bytes: capacity::Limit<{ mux::MAX_OUTGOING_BYTES }>,
     opening_lifetime: Option<Positive>,
+    pub(in crate::runtime) gso: Option<core::io::datagram::GsoLimits>,
 }
 
 impl Plan {
@@ -56,6 +57,7 @@ impl Plan {
             queue,
             bytes,
             opening_lifetime: None,
+            gso: None,
         }
     }
 
@@ -83,6 +85,7 @@ impl Plan {
             queue,
             bytes,
             opening_lifetime: None,
+            gso: None,
         })
     }
 
@@ -117,7 +120,14 @@ impl Plan {
 
 const _: () = {
     assert!(mux::MAX_CONNECTIONS < usize::MAX);
-    assert!(std::mem::size_of::<Plan>() == std::mem::size_of::<([u32; 3], Option<Positive>)>());
+    assert!(
+        std::mem::size_of::<Plan>()
+            == std::mem::size_of::<(
+                [u32; 3],
+                Option<Positive>,
+                Option<core::io::datagram::GsoLimits>
+            )>()
+    );
 };
 
 pub struct Builder<A, H, const DOMAIN: u8, B>
@@ -298,19 +308,21 @@ where
         rng: A::Random,
     ) -> Result<router::Router<H, DOMAIN, B, A>, Failure> {
         let plan = self.limits;
+        let mut state = router::State::try_new(
+            router::Binding {
+                domain: id,
+                route: self.route,
+                issuer: rng,
+                opening_lifetime: plan.opening_lifetime,
+            },
+            plan.conns(),
+            capacity::Count::new(plan.queue.count().get()),
+            plan.bytes(),
+            self.server,
+        )?;
+        state.outgoing.cache.batch = plan.gso.map(crate::conn::wire::packet::Gso::new);
         Ok(router::Router {
-            state: router::State::try_new(
-                router::Binding {
-                    domain: id,
-                    route: self.route,
-                    issuer: rng,
-                    opening_lifetime: plan.opening_lifetime,
-                },
-                plan.conns(),
-                capacity::Count::new(plan.queue.count().get()),
-                plan.bytes(),
-                self.server,
-            )?,
+            state,
             handler: self.events,
         })
     }

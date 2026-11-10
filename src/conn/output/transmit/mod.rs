@@ -448,25 +448,9 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         bytes: usize,
         active: Peer,
     ) -> (Option<Destination>, Result<(), Error>) {
-        let (outcome, result) =
-            self.report::<false>(batch, now, packets, bytes, Policy::Fallback(active));
-        match result {
-            Ok(()) => (outcome.destination, Ok(())),
-            Err(error) => (outcome.destination, Err(error)),
-        }
-    }
-
-    /// Appends exactly one packet to a mux-owned cross-connection GSO flight.
-    /// The caller prepares the resident sink once and retains it across a
-    /// sequence of short, non-overlapping connection borrows.
-    pub(crate) fn append_gso(
-        &mut self,
-        batch: &mut Gso,
-        now: time::Instant,
-        bytes: usize,
-        active: Peer,
-    ) -> Result<(), Error> {
-        batch::Batch::new(&mut *self.connection, Policy::Exact(active)).fill(batch, now, 1, bytes)
+        let (outcome, result) = batch::Batch::new(&mut *self.connection, Policy::Fallback(active))
+            .report::<false, _>(batch, now, packets, bytes);
+        (outcome.destination, result)
     }
 
     fn report<const OBSERVE: bool>(

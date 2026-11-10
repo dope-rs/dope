@@ -8,7 +8,7 @@ use crate::conn::wire::permits;
 use crate::conn::wire::permits::Reservation as _;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::conn) enum Allocation {
+pub(crate) enum Allocation {
     Segments {
         error: alloc::Error,
         requested: usize,
@@ -189,6 +189,21 @@ impl Gso {
         self.limits
     }
 
+    pub(crate) fn try_prepare(&mut self, required: usize) -> Result<&mut Vec<u8>, Allocation> {
+        let Storage::Vacant(bytes) = &mut self.storage else {
+            unreachable!("flight")
+        };
+        bytes.clear();
+        if bytes.capacity() < required {
+            *bytes = Vec::new();
+            *bytes = Vec::try_new(required).map_err(|error| Allocation::Payload {
+                error,
+                requested: required,
+            })?;
+        }
+        Ok(bytes)
+    }
+
     pub(crate) const fn packets(&self) -> usize {
         match &self.storage {
             Storage::Vacant(_) => 0,
@@ -275,17 +290,6 @@ impl Sink for Gso {
                 requested: outer,
             })?;
         Ok(Some(permits::Gso::new(self, limit)))
-    }
-}
-
-impl Fresh for Gso {
-    fn prepare(&mut self) {
-        let mut value = match mem::replace(&mut self.storage, Storage::Vacant(Vec::new())) {
-            Storage::Vacant(value) => value,
-            Storage::Ready(ready) => ready.payload.into_storage(),
-        };
-        value.clear();
-        self.storage = Storage::Vacant(value);
     }
 }
 

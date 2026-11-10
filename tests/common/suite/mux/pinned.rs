@@ -20,6 +20,7 @@ pub struct Counts {
     pub bytes: Cell<Vec<Vec<u8>>>,
     pub created: Cell<usize>,
     pub certificates: Cell<usize>,
+    pub causes: Cell<usize>,
 }
 
 pub struct Capture<'a> {
@@ -74,6 +75,10 @@ impl closing::Sink<0, Vec<u8>, storage::Shared, id::Static> for Capture<'_> {
         let (this, mut slot, _) = event.into();
         let counts = this.as_ref().get_ref().counts;
         this.observe();
+        counts.causes.set(
+            counts.causes.get()
+                + usize::from(slot.transport().view().lifecycle().close().is_some()),
+        );
         counts
             .shutting
             .push((slot.application().replace(2), counts.retired.len()));

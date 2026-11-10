@@ -151,6 +151,13 @@ fn native_session_policy() {
             .exchange(now, 6)
             .expect("warm actual native session cache");
         first.try_ready().expect("issuing handshake");
+        let certificates = first
+            .client
+            .view()
+            .lifecycle()
+            .peer_certificates()
+            .expect("authenticated server")
+            .to_vec();
         drop(first);
         let client = clients::Authority::try_new(config, name).expect("client authority");
         let mut pair = Pair {
@@ -168,6 +175,7 @@ fn native_session_policy() {
             work: conn::Workspace::try_new().expect("receive workspace"),
         };
         drop(client);
+        assert!(pair.client.view().lifecycle().peer_certificates().is_none());
         let stream = pair
             .client
             .with_scope(|mut scope| scope.streams().send().open_bidi().map(|stream| stream.id()));
@@ -209,6 +217,11 @@ fn native_session_policy() {
             pair.exchange(now, 6)
                 .expect("current native policy handshake");
             pair.try_ready().expect("current policy authenticates");
+            assert_eq!(
+                pair.client.view().lifecycle().peer_certificates(),
+                Some(certificates.as_slice())
+            );
+            assert!(pair.server.view().lifecycle().peer_certificates().is_some());
             assert_eq!(pair.client.view().lifecycle().is_early(), early);
         } else {
             let failure = pair

@@ -1,5 +1,5 @@
 use crate::security::crypto::output;
-use o3::{buffer::write, mem::Rejected};
+use o3::mem::Rejected;
 use rustls::Error;
 use std::{mem, time};
 
@@ -8,7 +8,7 @@ use crate::{
     conn::wire::tls::{ciphers, keys},
     proto::recovery::numbers,
     security::crypto,
-    wire::packet::{header, kind, long, short},
+    wire::packet::{long, short},
 };
 use crypto::op;
 
@@ -130,18 +130,6 @@ impl<'key> Write<'key> {
 }
 
 impl Permit<'_> {
-    pub(in crate::conn) fn seal<'packet, A>(
-        self,
-        dst: write::Append<'packet>,
-        header: header::Body<'_, '_, kind::OneRtt>,
-        auth: A,
-    ) -> Result<(op::Wire<'packet>, op::Protected<A>), crypto::Error> {
-        let pn = header.number();
-        let (head, proof) = self.write.current.seal(dst, header, auth)?;
-        self.write.finish(pn);
-        Ok((head, proof))
-    }
-
     pub(in crate::conn) fn seal_draft<'packet>(
         self,
         draft: output::Draft<'packet>,
