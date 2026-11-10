@@ -56,7 +56,7 @@ pub(in crate::conn) struct Candidate<'a> {
     phase: local::Publication,
 }
 
-impl Candidate<'_> {
+impl<'a> Candidate<'a> {
     pub(in crate::conn) fn record(&self) -> local::Announcement {
         self.record
     }
@@ -66,8 +66,8 @@ impl Candidate<'_> {
     pub(in crate::conn) fn owner(&self) -> Option<owner::Key<kind::NewCid>> {
         *self.owner
     }
-    pub(in crate::conn) fn commit(self, key: owner::Key<kind::NewCid>) {
-        *self.owner = Some(key);
+    pub(in crate::conn) fn into_owner(self) -> &'a mut Option<owner::Key<kind::NewCid>> {
+        self.owner
     }
 }
 

@@ -34,8 +34,8 @@ pub(in crate::conn) enum Error {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<Queues>() == 200);
-    assert!(std::mem::size_of::<Lanes>() == 136);
+    assert!(std::mem::size_of::<Queues>() == 184);
+    assert!(std::mem::size_of::<Lanes>() == 116);
     assert!(std::mem::size_of::<Flights>() == 64);
     assert!(std::mem::size_of::<Error>() == 16);
     assert!(std::mem::size_of::<State>() == 8);
@@ -215,7 +215,7 @@ unsafe impl depot::raw::KeySource for Front<'_> {
 pub(in crate::conn::output::control) struct Lanes {
     bits: u16,
     ready_bits: u16,
-    kind_counts: [u32; control::LANE_COUNT],
+    kind_counts: [u16; control::LANE_COUNT],
     ready: [keyed::Fifo<storage::Key>; control::LANE_COUNT],
 }
 

@@ -328,7 +328,7 @@ fn kind(record: delivery::Control) -> Option<Lane> {
     })
 }
 
-const _: () = assert!(std::mem::size_of::<Pending>() == 512);
+const _: () = assert!(std::mem::size_of::<Pending>() == 496);
 const _: () = assert!(std::mem::size_of::<Option<owner::Key<kind::MaxData>>>() == 8);
 const _: () = assert!(std::mem::size_of::<owner::Signal<kind::ResetStream>>() == 8);
 const _: () = assert!(std::mem::size_of::<Ready<'static>>() == std::mem::size_of::<&Pending>());

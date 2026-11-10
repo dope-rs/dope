@@ -21,7 +21,7 @@ struct Change<'a> {
     action: Action,
 }
 
-pub(super) enum Action {
+enum Action {
     Insert,
     Revise {
         index: links::Index,
@@ -31,22 +31,53 @@ pub(super) enum Action {
     Retire(links::Index),
 }
 
-pub(super) enum Relation {
+enum Relation {
     Current,
     Change(Action),
 }
 
 impl Action {
-    pub(super) fn admission(&self) -> u32 {
+    fn admission(&self) -> u32 {
         match self {
             Self::Insert | Self::Retire(_) => 1,
             Self::Revise { .. } | Self::Recycle(_) => 0,
         }
     }
+
+    fn commit<P, Kind>(
+        self,
+        set: &mut Set,
+        record: delivery::Control,
+        owner: &mut Option<owner::Key<Kind>>,
+    ) {
+        match self {
+            Self::Revise { index, next } => {
+                // SAFETY: classification retains this exact occupied slot and next revision;
+                // both callers retain the original journal and distinct owner loans.
+                let live = unsafe {
+                    depot::raw::Proof::<(_, _), Initialized<P>>::new(((&mut *set, ()), index))
+                };
+                let (mut slot, ()) = Set::project(live);
+                slot.slot.get_mut().revision = next;
+                slot.replace(record);
+                return;
+            }
+            Self::Recycle(index) | Self::Retire(index) => {
+                // SAFETY: the classified action retains this journal's occupied member.
+                let live = unsafe {
+                    depot::raw::Proof::<(_, _), Initialized<P>>::new(((&mut *set, ()), index))
+                };
+                let (slot, ()) = Set::project(live);
+                slot.remove();
+            }
+            Self::Insert => {}
+        }
+        *owner = Some(Insert { set, record }.commit().owner());
+    }
 }
 
 impl Relation {
-    pub(super) fn classify<Kind>(
+    fn classify<Kind>(
         set: &Set,
         owner: Option<owner::Key<Kind>>,
         record: delivery::Control,
@@ -71,6 +102,26 @@ impl Relation {
             None => Action::Recycle(index),
         };
         Relation::Change(action)
+    }
+}
+
+impl Set {
+    pub(in crate::conn::output::control) fn try_queue<Kind>(
+        &mut self,
+        owner: &mut Option<owner::Key<Kind>>,
+        record: delivery::Control,
+    ) -> Result<(), control::Admission> {
+        let action = match Relation::classify(self, *owner, record) {
+            Relation::Current => return Ok(()),
+            Relation::Change(action) => action,
+        };
+        let records = Count::new(action.admission());
+        self.slots
+            .try_grow(records)
+            .map_err(|reason| control::Admission { records, reason })?
+            .commit();
+        action.commit::<Kind, Kind>(self, record, owner);
+        Ok(())
     }
 }
 
@@ -137,44 +188,11 @@ impl<'a> Batch<'a> {
         for change in changes.into_iter().flatten().chain(replace) {
             let Change { offer, action } = change;
             let record = delivery::Control::NewConnectionId(offer.record());
-            match action {
-                Action::Revise { index, next } => {
-                    // SAFETY: this batch retains the original journal, live slot and exact
-                    // next revision; distinct CID owner loans cannot target one another's slot.
-                    let live = unsafe {
-                        depot::raw::Proof::<(_, _), Initialized<local::Candidate<'a>>>::new((
-                            (&mut pending.storage, ()),
-                            index,
-                        ))
-                    };
-                    let (mut slot, ()) = Set::project(live);
-                    slot.slot.get_mut().revision = next;
-                    slot.replace(record);
-                }
-                Action::Recycle(index) | Action::Retire(index) => {
-                    // SAFETY: classification retained this exact occupied member in the batch.
-                    let live = unsafe {
-                        depot::raw::Proof::<(_, _), Initialized<local::Candidate<'a>>>::new((
-                            (&mut pending.storage, ()),
-                            index,
-                        ))
-                    };
-                    let (slot, ()) = Set::project(live);
-                    slot.remove();
-                    let insert = Insert {
-                        set: &mut pending.storage,
-                        record,
-                    };
-                    offer.commit(insert.commit().owner());
-                }
-                Action::Insert => {
-                    let insert = Insert {
-                        set: &mut pending.storage,
-                        record,
-                    };
-                    offer.commit(insert.commit().owner());
-                }
-            }
+            action.commit::<local::Candidate<'a>, _>(
+                &mut pending.storage,
+                record,
+                offer.into_owner(),
+            );
         }
     }
 }

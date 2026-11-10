@@ -9,7 +9,6 @@ use crate::conn::{
         delivery,
     },
 };
-use changes::{Action, Relation};
 pub(in crate::conn) use changes::{Batch, Cid};
 use control::{owner, revision};
 pub(in crate::conn::output::control) use entry::Entry;
@@ -166,45 +165,6 @@ impl Set {
         Ok(Insert { set: self, record })
     }
 
-    pub(in crate::conn::output::control) fn try_queue<Kind>(
-        &mut self,
-        owner: &mut Option<owner::Key<Kind>>,
-        record: delivery::Control,
-    ) -> Result<(), control::Admission> {
-        let action = match Relation::classify(self, *owner, record) {
-            Relation::Current => return Ok(()),
-            Relation::Change(action) => action,
-        };
-        let records = Count::new(action.admission());
-        self.slots
-            .try_grow(records)
-            .map_err(|reason| control::Admission { records, reason })?
-            .commit();
-        match action {
-            Action::Revise { index, next } => {
-                // SAFETY: the first classification retains this exact slot and next revision
-                // under the unchanged exclusive set and original owner loan.
-                let live = unsafe {
-                    depot::raw::Proof::<(_, _), Initialized<Kind>>::new(((&mut *self, ()), index))
-                };
-                let (mut slot, ()) = Self::project(live);
-                slot.slot.get_mut().revision = next;
-                slot.replace(record);
-            }
-            Action::Recycle(index) | Action::Retire(index) => {
-                // SAFETY: the owned classified action still denotes this set's live member.
-                let live = unsafe {
-                    depot::raw::Proof::<(_, _), Initialized<Kind>>::new(((&mut *self, ()), index))
-                };
-                let (slot, ()) = Self::project(live);
-                slot.remove();
-                *owner = Some(Insert { set: self, record }.commit().owner());
-            }
-            Action::Insert => *owner = Some(Insert { set: self, record }.commit().owner()),
-        }
-        Ok(())
-    }
-
     pub(in crate::conn::output::control) fn arm_probes(&mut self, epoch: crate::conn::Epoch) {
         let cycle = epoch.bind_mut(&mut self.topology.flights.probe_round);
         if let Some(next) = cycle.checked_add(1) {
@@ -276,7 +236,7 @@ impl Set {
 }
 
 const _: () = {
-    assert!(mem::size_of::<Set>() == 232);
+    assert!(mem::size_of::<Set>() == 216);
     assert!(
         mem::size_of::<Insert<'static>>()
             == mem::size_of::<&Set>() + mem::size_of::<delivery::Control>()
