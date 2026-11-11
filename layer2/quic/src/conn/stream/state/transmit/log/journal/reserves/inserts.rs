@@ -1,5 +1,5 @@
 use crate::conn::{
-    machine::storage::{self, demand},
+    machine::storage::demand,
     output::delivery,
     stream::state::transmit::{
         log::{self, journal, links},
@@ -77,7 +77,7 @@ impl Fresh<'_> {
             retry_work: work,
         } = journal;
         let group = match *owner {
-            Some(id) => groups.entry(id.key().handle()),
+            Some(id) => groups.entry(id.key()),
             None => demand::Entry::Stale(groups),
         };
         let group = match group {
@@ -91,7 +91,7 @@ impl Fresh<'_> {
                 };
                 let live = Groups { table, send }.insert();
                 let group = demand::Occupied::project(live).0;
-                *owner = Some(log::GroupId::new(storage::Key::new(group.key())));
+                *owner = Some(log::GroupId::new(group.key()));
                 group
             }
         };
@@ -165,10 +165,7 @@ unsafe impl<'a> demand::raw::Owner<{ u32::MAX }> for Nodes<'a> {
     ) {
         (
             self.nodes,
-            (
-                log::GroupId::new(storage::Key::new(self.group.key())),
-                self.value,
-            ),
+            (log::GroupId::new(self.group.key()), self.value),
         )
     }
 

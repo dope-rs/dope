@@ -40,7 +40,7 @@ pub(in crate::conn::stream::state::transmit::log) fn parts<'a, P: planes::Plane,
     storage::Key<P::Tag>,
     &'a keyed::Link<storage::Key<P::Tag>, P>,
 ) {
-    (storage::Key::new(entry.key()), P::link(entry.get()))
+    (entry.key(), P::link(entry.get()))
 }
 
 // SAFETY: binding checked this slot and link plane in the retained table.
@@ -56,7 +56,7 @@ impl<'a, P: planes::Plane> Walk<'a, P> {
         self,
         key: storage::Key<P::Tag>,
     ) -> Option<Selected<Self, Index, P>> {
-        let value = self.entries.get(key.handle())?;
+        let value = self.entries.get(key)?;
         if !P::link(value).is_linked(key) {
             return None;
         }
@@ -73,7 +73,7 @@ impl<'a, P: planes::Plane> Walk<'a, P> {
     ) -> (storage::Key<P::Tag>, &'a P::Value) {
         let live = unsafe { live.map(|(walk, index)| (walk.entries, index)) };
         let (key, value) = demand::Entries::project(live);
-        (storage::Key::new(key), value)
+        (key, value)
     }
 }
 

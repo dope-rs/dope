@@ -72,7 +72,7 @@ impl<'a> Record<'a> {
     }
 
     pub(in crate::conn::stream::state::transmit::log) fn lose(mut self) {
-        if self.node.get().is_acked(storage::Key::new(self.node.key())) {
+        if self.node.get().is_acked(self.node.key()) {
             return;
         }
         if !self.group.get().active {
@@ -80,7 +80,7 @@ impl<'a> Record<'a> {
             return;
         }
         let node = self.node.get();
-        if node.carriers == 0 || !node.delivery.is_linked(storage::Key::new(self.node.key())) {
+        if node.carriers == 0 || !node.delivery.is_linked(self.node.key()) {
             return;
         }
         if node.carriers > 1 {
@@ -112,7 +112,7 @@ impl<'a> Record<'a> {
     pub(in crate::conn::stream::state::transmit::log) fn acknowledge(
         mut self,
     ) -> Option<Record<'a, (), (), Active>> {
-        let key = storage::Key::new(self.node.key());
+        let key = self.node.key();
         if self.node.get().is_acked(key) {
             return None;
         }
@@ -221,8 +221,8 @@ impl<'a, P: log::raw::Selected> Record<'a, P, (), Active> {
 impl<'a, P, G, S> Record<'a, P, G, S> {
     pub(super) fn advance(&mut self) {
         let position = log::Position {
-            group: storage::Key::new(self.group.key()),
-            node: storage::Key::new(self.node.key()),
+            group: self.group.key(),
+            node: self.node.key(),
         };
         if self.queues.probe.cursor == Some(position) {
             let member = unsafe {
@@ -238,7 +238,7 @@ impl<'a, P, G, S> Record<'a, P, G, S> {
                     };
                     self.queues.probe.cursor = Some(log::Position {
                         group: position.group,
-                        node: storage::Key::new(demand::Entries::project(live).0),
+                        node: demand::Entries::project(live).0,
                     });
                 }
                 None => {

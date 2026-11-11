@@ -1,6 +1,5 @@
 use o3::buffer;
 
-use crate::conn::machine::storage;
 use crate::conn::output::{control, delivery};
 use crate::conn::stream::state::transmit::{self, log, queue};
 use crate::conn::stream::{event::queue::Pending, state::resident::Table};
@@ -117,7 +116,7 @@ impl<'a, 'map, D: buffer::raw::Segment> Ack<'a, 'map, D> {
         let mut last = first.range;
         let mut next = record.next(Account::Active);
         while let Some(record) = next {
-            let key = storage::Key::new(record.node.key());
+            let key = record.node.key();
             let node = record.node.get();
             if !node.is_acked(key) {
                 break;

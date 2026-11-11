@@ -234,7 +234,8 @@ impl Retry {
         live: Selected<(&mut journal::Journal, Self), storage::Key<log::NodeTag>, Self>,
     ) -> delivery::Handle<delivery::Stream> {
         let (record, retry) = Record::project(live);
-        let handle = delivery::Handle::from_slot(retry.0.index() as u16, retry.0.generation());
+        let handle =
+            delivery::Handle::from_slot(retry.0.index() as u16, retry.0.generation().get());
         Transfer::resend(record).commit();
         handle
     }
@@ -262,7 +263,8 @@ impl Probe {
         live: Selected<(&mut journal::Journal, Self), storage::Key<log::NodeTag>, Self>,
     ) -> delivery::Handle<delivery::Stream> {
         let (record, probe) = Record::project(live);
-        let handle = delivery::Handle::from_slot(probe.key.index() as u16, probe.key.generation());
+        let handle =
+            delivery::Handle::from_slot(probe.key.index() as u16, probe.key.generation().get());
         record.probe(probe.carriers);
         handle
     }

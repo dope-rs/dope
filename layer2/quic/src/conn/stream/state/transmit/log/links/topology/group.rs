@@ -25,8 +25,7 @@ impl<'a> Group<'a, 'a> {
         journal: &'a mut journal::Journal,
         group: log::GroupId,
     ) -> Option<Self> {
-        let demand::Entry::Occupied(entry) = journal.storage.groups.entry(group.key().handle())
-        else {
+        let demand::Entry::Occupied(entry) = journal.storage.groups.entry(group.key()) else {
             return None;
         };
         if !entry.get().active {
@@ -92,7 +91,7 @@ impl<G> Group<'_, '_, G> {
         queues: &mut journal::Queues,
         nodes: demand::Entries<'_, log::Node, log::NodeTag>,
     ) {
-        let key = storage::Key::new(entry.key());
+        let key = entry.key();
         let journal::ProbeQueue { chain, cursor } = &mut queues.probe;
         if let Ok(member) = keyed::Slot::try_new(Member {
             entry,
@@ -125,7 +124,7 @@ impl<G> Group<'_, '_, G> {
                     })
                 });
                 *cursor = Some(log::Position {
-                    group: storage::Key::new(key),
+                    group: key,
                     node: Walk::get(unsafe { live.as_ref() }).0,
                 });
             }
