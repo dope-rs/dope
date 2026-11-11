@@ -129,57 +129,48 @@ fn revoke_keeps_ready() {
 
 #[test]
 fn detach_keeps_ready() {
-    let mut reports = Vec::new();
-    Runtime::throughput().with_scope(
-        |scope| {
-            let site = scope.driver_ref();
-            let target = site
-                .targets::<KeyTag<0>>()
-                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                .dispatch();
-            let ready = site.ready().make_slot(target).expect("ready slot");
-            for retry in [false, true] {
-                let store = site
-                    .scheduler()
-                    .try_storage(conn::Capacity::fixed::<1>())
-                    .expect("credit storage");
-                let slot = store.get(SlotIndex::ZERO).expect("credit slot");
-                let control = slot.control();
-                let held = control
-                    .arm(target, ready.target())
-                    .expect("idle credit")
-                    .claim();
-                if retry {
-                    held.retry();
-                } else {
-                    drop(held);
-                }
-                assert!(slot.is_active());
-                assert!(!slot.is_held());
-                scope.finish(false, |_, last| {
-                    ready.activate();
-                    last.credit().detach(&store);
-                    assert!(matches!(slot.take(), Take::Idle));
-                    assert!(!slot.is_active());
-                    assert!(matches!(
-                        control.arm(target, ready.target()),
-                        Err(Arm::Detached)
-                    ));
-                    assert!(matches!(ready.take(), Readiness::Ready));
-                    assert!(matches!(ready.take(), Readiness::Idle));
-                });
-                drop(store);
+    Runtime::throughput().run(|scope| {
+        let site = scope.driver_ref();
+        let target = site
+            .targets::<KeyTag<0>>()
+            .bind(SlotIndex::ZERO, Epoch::INITIAL)
+            .dispatch();
+        let ready = site.ready().make_slot(target).expect("ready slot");
+        for retry in [false, true] {
+            let store = site
+                .scheduler()
+                .try_storage(conn::Capacity::fixed::<1>())
+                .expect("credit storage");
+            let slot = store.get(SlotIndex::ZERO).expect("credit slot");
+            let control = slot.control();
+            let held = control
+                .arm(target, ready.target())
+                .expect("idle credit")
+                .claim();
+            if retry {
+                held.retry();
+            } else {
+                drop(held);
+            }
+            assert!(slot.is_active());
+            assert!(!slot.is_held());
+            scope.finish(false, |_, last| {
+                ready.activate();
+                last.credit().detach(&store);
+                assert!(matches!(slot.take(), Take::Idle));
+                assert!(!slot.is_active());
                 assert!(matches!(
                     control.arm(target, ready.target()),
-                    Err(Arm::Stale(_))
+                    Err(Arm::Detached)
                 ));
-            }
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+                assert!(matches!(ready.take(), Readiness::Ready));
+                assert!(matches!(ready.take(), Readiness::Idle));
+            });
+            drop(store);
+            assert!(matches!(
+                control.arm(target, ready.target()),
+                Err(Arm::Stale(_))
+            ));
+        }
+    });
 }

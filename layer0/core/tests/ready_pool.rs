@@ -15,46 +15,36 @@ use crate::common::rt::{Runtime, finish, recover};
 
 #[test]
 fn reuses_ready_pool() {
-    let mut reports = Vec::new();
+    Runtime::throughput().run(|scope| {
+        let (_, ctx, mut control) = scope.split();
+        let driver = ctx.driver_ref();
+        let target = driver
+            .targets::<KeyTag<0>>()
+            .bind(SlotIndex::ZERO, Epoch::INITIAL)
+            .dispatch();
 
-    Runtime::throughput().with_scope(
-        |scope| {
-            let (_, ctx, mut control) = scope.split();
-            let driver = ctx.driver_ref();
-            let target = driver
-                .targets::<KeyTag<0>>()
-                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                .dispatch();
-
-            let ((), usage) = Tracker::usage(|| {
-                for cycle in 0..4 {
-                    {
-                        let turn = control.begin();
-                        for step in 0..schedule::LIMIT {
-                            let slot = (driver.ready().make_slot(target))
-                                .expect("recycled dynamic ready slot");
-                            slot.activate();
-                            let mut rounds = turn.ready();
-                            let index = cycle * schedule::LIMIT + step;
-                            assert!(
-                                rounds
-                                    .drain(|token| assert!(target.matches(token)))
-                                    .is_some(),
-                                "ready slot was not drained at iteration {index}",
-                            );
-                        }
+        let ((), usage) = Tracker::usage(|| {
+            for cycle in 0..4 {
+                {
+                    let turn = control.begin();
+                    for step in 0..schedule::LIMIT {
+                        let slot = (driver.ready().make_slot(target))
+                            .expect("recycled dynamic ready slot");
+                        slot.activate();
+                        let mut rounds = turn.ready();
+                        let index = cycle * schedule::LIMIT + step;
+                        assert!(
+                            rounds
+                                .drain(|token| assert!(target.matches(token)))
+                                .is_some(),
+                            "ready slot was not drained at iteration {index}",
+                        );
                     }
                 }
-            });
-            assert_eq!(usage, (0, 0));
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+            }
+        });
+        assert_eq!(usage, (0, 0));
+    });
 }
 
 #[test]

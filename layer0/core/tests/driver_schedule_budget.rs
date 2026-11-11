@@ -131,107 +131,98 @@ fn reserve_is_atomic() {
     let config = Runtime::quic::<2, 8>()
         .config()
         .with_domains(settings::Domain::ONE);
-    let mut reports = Vec::new();
 
-    Runtime { config }.with_scope(
-        |scope| {
+    Runtime { config }.run(|scope| {
+        {
+            let (_, _, mut turn) = scope.split();
             {
-                let (_, _, mut turn) = scope.split();
-                {
-                    let active = turn.begin();
-                    assert!(matches!(
-                        Reserved::reserve(active.turn().app(), OVER, false),
-                        schedule::Capacity::Exhausted
-                    ));
-                    let observed = Reserved::reserve(active.turn().app(), FULL, false);
-                    assert!(
-                        matches!(&observed, schedule::Capacity::Available(_)),
-                        "full batch minus its first item"
-                    );
-                    if let schedule::Capacity::Available(batch) = observed {
-                        let work = active.turn().app();
-                        assert!(
-                            work.permit().is_some(),
-                            "only unreserved work remains available"
-                        );
-                        assert!(
-                            work.permit().is_none(),
-                            "reserved work cannot be spent through an alias"
-                        );
-                        batch.with((), |(), bound| {
-                            // SAFETY: this FULL-item reservation settles exactly TWO items.
-                            ((), unsafe { bound.take(TWO.get()) })
-                        });
-                        let work = active.turn().app();
-                        assert_eq!(work.drain_count(), schedule::LIMIT - 2);
-                    }
-                }
-
-                {
-                    let active = turn.begin();
-                    {
-                        let observed = Reserved::reserve(active.turn().app(), NEXT, false);
-                        assert!(
-                            matches!(&observed, schedule::Capacity::Available(_)),
-                            "complete budget"
-                        );
-                        assert!(active.turn().app().permit().is_none());
-                    }
+                let active = turn.begin();
+                assert!(matches!(
+                    Reserved::reserve(active.turn().app(), OVER, false),
+                    schedule::Capacity::Exhausted
+                ));
+                let observed = Reserved::reserve(active.turn().app(), FULL, false);
+                assert!(
+                    matches!(&observed, schedule::Capacity::Available(_)),
+                    "full batch minus its first item"
+                );
+                if let schedule::Capacity::Available(batch) = observed {
                     let work = active.turn().app();
-                    assert_eq!(work.drain_count(), schedule::LIMIT);
+                    assert!(
+                        work.permit().is_some(),
+                        "only unreserved work remains available"
+                    );
+                    assert!(
+                        work.permit().is_none(),
+                        "reserved work cannot be spent through an alias"
+                    );
+                    batch.with((), |(), bound| {
+                        // SAFETY: this FULL-item reservation settles exactly TWO items.
+                        ((), unsafe { bound.take(TWO.get()) })
+                    });
+                    let work = active.turn().app();
+                    assert_eq!(work.drain_count(), schedule::LIMIT - 2);
                 }
+            }
 
+            {
+                let active = turn.begin();
                 {
-                    let active = turn.begin();
-                    let observed = Reserved::reserve(active.turn().app(), FULL, true);
+                    let observed = Reserved::reserve(active.turn().app(), NEXT, false);
                     assert!(
                         matches!(&observed, schedule::Capacity::Available(_)),
-                        "preceding item and batch capacity"
+                        "complete budget"
                     );
-                    if let schedule::Capacity::Available(batch) = observed {
-                        assert_eq!(active.turn().app().drain_count(), 0);
-                        batch.with((), |(), bound| {
-                            // SAFETY: this FULL-item reservation settles exactly TWO items.
-                            ((), unsafe { bound.take(TWO.get()) })
-                        });
-                        assert_eq!(active.turn().app().drain_count(), schedule::LIMIT - 2);
-                    }
+                    assert!(active.turn().app().permit().is_none());
                 }
+                let work = active.turn().app();
+                assert_eq!(work.drain_count(), schedule::LIMIT);
+            }
 
-                {
-                    let active = turn.begin();
-                    let observed = Reserved::reserve(active.turn().app(), FULL, true);
-                    assert!(
-                        matches!(&observed, schedule::Capacity::Available(_)),
-                        "replayed batch capacity"
-                    );
-                    if let schedule::Capacity::Available(batch) = observed {
-                        batch.with((), |(), bound| ((), bound.empty()));
-                        assert_eq!(active.turn().app().drain_count(), schedule::LIMIT - 1);
-                    }
+            {
+                let active = turn.begin();
+                let observed = Reserved::reserve(active.turn().app(), FULL, true);
+                assert!(
+                    matches!(&observed, schedule::Capacity::Available(_)),
+                    "preceding item and batch capacity"
+                );
+                if let schedule::Capacity::Available(batch) = observed {
+                    assert_eq!(active.turn().app().drain_count(), 0);
+                    batch.with((), |(), bound| {
+                        // SAFETY: this FULL-item reservation settles exactly TWO items.
+                        ((), unsafe { bound.take(TWO.get()) })
+                    });
+                    assert_eq!(active.turn().app().drain_count(), schedule::LIMIT - 2);
                 }
+            }
 
-                {
-                    let active = turn.begin();
-                    let observed = Reserved::reserve(active.turn().app(), FOUR, false);
-                    assert!(
-                        matches!(&observed, schedule::Capacity::Available(_)),
-                        "fresh batch capacity"
-                    );
-                    if let schedule::Capacity::Available(batch) = observed {
-                        batch.with((), |(), bound| ((), bound.empty()));
-                        assert_eq!(active.turn().app().drain_count(), schedule::LIMIT);
-                    }
+            {
+                let active = turn.begin();
+                let observed = Reserved::reserve(active.turn().app(), FULL, true);
+                assert!(
+                    matches!(&observed, schedule::Capacity::Available(_)),
+                    "replayed batch capacity"
+                );
+                if let schedule::Capacity::Available(batch) = observed {
+                    batch.with((), |(), bound| ((), bound.empty()));
+                    assert_eq!(active.turn().app().drain_count(), schedule::LIMIT - 1);
                 }
-            };
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+            }
+
+            {
+                let active = turn.begin();
+                let observed = Reserved::reserve(active.turn().app(), FOUR, false);
+                assert!(
+                    matches!(&observed, schedule::Capacity::Available(_)),
+                    "fresh batch capacity"
+                );
+                if let schedule::Capacity::Available(batch) = observed {
+                    batch.with((), |(), bound| ((), bound.empty()));
+                    assert_eq!(active.turn().app().drain_count(), schedule::LIMIT);
+                }
+            }
+        };
+    });
 }
 
 #[test]
@@ -239,48 +230,39 @@ fn maint_share_is_nested() {
     let config = Runtime::quic::<2, 8>()
         .config()
         .with_domains(settings::Domain::ONE);
-    let mut reports = Vec::new();
 
-    Runtime { config }.with_scope(
-        |scope| {
-            let (_, _, mut turn) = scope.split();
-            let active = turn.begin();
-            let work = active.turn().maint();
+    Runtime { config }.run(|scope| {
+        let (_, _, mut turn) = scope.split();
+        let active = turn.begin();
+        let work = active.turn().maint();
 
-            work.share::<3, _>(|| {
-                assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3));
-                assert!(work.permit().is_some());
+        work.share::<3, _>(|| {
+            assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3));
+            assert!(work.permit().is_some());
 
-                work.share::<2, _>(|| {
-                    assert_eq!(
-                        work.remaining(),
-                        (schedule::LIMIT.div_ceil(3) - 1).div_ceil(2)
-                    );
-                    assert!(work.permit().is_some());
-                });
-                assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3) - 2);
-            });
-            assert_eq!(work.remaining(), schedule::LIMIT - 2);
-
-            work.share::<{ usize::MAX }, _>(|| {
-                assert_eq!(work.remaining(), 1);
+            work.share::<2, _>(|| {
+                assert_eq!(
+                    work.remaining(),
+                    (schedule::LIMIT.div_ceil(3) - 1).div_ceil(2)
+                );
                 assert!(work.permit().is_some());
             });
+            assert_eq!(work.remaining(), schedule::LIMIT.div_ceil(3) - 2);
+        });
+        assert_eq!(work.remaining(), schedule::LIMIT - 2);
+
+        work.share::<{ usize::MAX }, _>(|| {
+            assert_eq!(work.remaining(), 1);
+            assert!(work.permit().is_some());
+        });
+        assert_eq!(work.remaining(), schedule::LIMIT - 3);
+
+        work.share::<1, _>(|| {
             assert_eq!(work.remaining(), schedule::LIMIT - 3);
-
-            work.share::<1, _>(|| {
-                assert_eq!(work.remaining(), schedule::LIMIT - 3);
-                assert!(work.permit().is_some());
-            });
-            assert_eq!(work.remaining(), schedule::LIMIT - 4);
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+            assert!(work.permit().is_some());
+        });
+        assert_eq!(work.remaining(), schedule::LIMIT - 4);
+    });
 }
 
 #[test]
@@ -288,37 +270,28 @@ fn app_share_returns_unused() {
     let config = Runtime::quic::<2, 8>()
         .config()
         .with_domains(settings::Domain::ONE);
-    let mut reports = Vec::new();
 
-    Runtime { config }.with_scope(
-        |scope| {
-            let (_, _, mut turn) = scope.split();
-            let active = turn.begin();
-            let work = active.turn().app();
+    Runtime { config }.run(|scope| {
+        let (_, _, mut turn) = scope.split();
+        let active = turn.begin();
+        let work = active.turn().app();
 
-            work.share::<3, _>(|share| {
-                assert_eq!(share.work().remaining(), schedule::LIMIT.div_ceil(3));
-                assert!(share.work().permit().is_some());
-            });
-            assert_eq!(work.remaining(), schedule::LIMIT - 1);
+        work.share::<3, _>(|share| {
+            assert_eq!(share.work().remaining(), schedule::LIMIT.div_ceil(3));
+            assert!(share.work().permit().is_some());
+        });
+        assert_eq!(work.remaining(), schedule::LIMIT - 1);
 
-            work.share::<2, _>(|share| {
-                assert_eq!(share.work().remaining(), (schedule::LIMIT - 1).div_ceil(2));
-                assert!(share.work().permit().is_some());
-            });
-            assert_eq!(work.remaining(), schedule::LIMIT - 2);
+        work.share::<2, _>(|share| {
+            assert_eq!(share.work().remaining(), (schedule::LIMIT - 1).div_ceil(2));
+            assert!(share.work().permit().is_some());
+        });
+        assert_eq!(work.remaining(), schedule::LIMIT - 2);
 
-            work.share::<1, _>(|share| {
-                assert_eq!(share.work().remaining(), schedule::LIMIT - 2);
-            });
-            assert_eq!(work.remaining(), schedule::LIMIT - 2);
-            assert!(!active.is_exhausted());
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+        work.share::<1, _>(|share| {
+            assert_eq!(share.work().remaining(), schedule::LIMIT - 2);
+        });
+        assert_eq!(work.remaining(), schedule::LIMIT - 2);
+        assert!(!active.is_exhausted());
+    });
 }

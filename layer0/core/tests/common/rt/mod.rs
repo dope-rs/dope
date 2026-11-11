@@ -31,6 +31,19 @@ pub fn recover(failure: recovery::Recovery<'_, '_>) -> std::convert::Infallible 
 }
 
 impl Runtime {
+    pub fn run(self, run: impl for<'a, 'd> FnOnce(&mut life::Scope<'a, 'd>)) {
+        let mut reports = Vec::new();
+        self.with_scope(
+            run,
+            recovery::Policy::new(|event| reports.push(event), recover),
+            finish,
+        );
+        assert!(
+            reports.is_empty(),
+            "unexpected reclaimed operations: {reports:?}"
+        );
+    }
+
     pub fn with_scope(
         self,
         run: impl for<'a, 'd> FnOnce(&mut life::Scope<'a, 'd>),
