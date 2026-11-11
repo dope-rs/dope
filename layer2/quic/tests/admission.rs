@@ -201,10 +201,7 @@ fn atomic_parts_resume() {
 
     let sent_at = Instant::now() + Duration::from_secs(1);
     assert!(server.receive_from(&mut work, &mut client, sent_at).is_ok());
-    let ack_at = server
-        .view()
-        .recovery()
-        .send_at(sent_at + Duration::from_millis(1));
+    let ack_at = server.view().send_at(sent_at + Duration::from_millis(1));
     assert!(client.receive_from(&mut work, &mut server, ack_at).is_ok());
 
     assert!(client.poll().poll_event() == Some(Event::Writable));

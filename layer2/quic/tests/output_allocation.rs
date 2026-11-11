@@ -38,7 +38,6 @@ fn queue_alloc_retry() {
         .expect("retry must retain queue capacity and byte credit");
     let now = client
         .view()
-        .recovery()
         .send_at(Instant::now() + Duration::from_secs(1));
     for mut packet in client.with_scope(|mut scope| {
         let (packets, result) = scope.output().send(now);
@@ -75,9 +74,8 @@ fn datagram_alloc_retry() {
         .expect("fixture datagram fits the queue");
     let now = client
         .view()
-        .recovery()
         .send_at(Instant::now() + Duration::from_secs(1));
-    let timer = client.view().recovery().next_timer();
+    let timer = client.view().next_timer();
     let (packets, result) = Tracker::fail_after(0, || {
         client.with_scope(|mut scope| scope.output().send(now))
     });
@@ -90,7 +88,7 @@ fn datagram_alloc_retry() {
             requested: 1,
         })
     );
-    assert_eq!(client.view().recovery().next_timer(), timer);
+    assert_eq!(client.view().next_timer(), timer);
 
     for mut packet in client.with_scope(|mut scope| {
         let (packets, result) = scope.output().send(now);

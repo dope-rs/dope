@@ -77,7 +77,6 @@ fn pto() {
     assert!(!batch.is_empty());
     let deadline = client
         .view()
-        .recovery()
         .next_timer()
         .expect("unacknowledged path challenge must arm control PTO");
     let probe_at = deadline + Duration::from_millis(1);
@@ -137,10 +136,7 @@ fn delayed_ack() {
             .receive_all(&mut work, &mut batches.original, sent_at)
             .expect("original path challenge must pass server ingress");
 
-        let ack_at = server
-            .view()
-            .recovery()
-            .send_at(sent_at + Duration::from_millis(1));
+        let ack_at = server.view().send_at(sent_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -152,7 +148,6 @@ fn delayed_ack() {
 
         let deadline = client
             .view()
-            .recovery()
             .next_timer()
             .expect("unacknowledged path challenge must arm control PTO");
         let probe_at = deadline + Duration::from_millis(1);
@@ -172,10 +167,7 @@ fn delayed_ack() {
             .receive_all(&mut work, &mut batches.probe, probe_at)
             .expect("path challenge probe must pass server ingress");
 
-        let late_at = server
-            .view()
-            .recovery()
-            .send_at(probe_at + Duration::from_millis(1));
+        let late_at = server.view().send_at(probe_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -195,10 +187,7 @@ fn delayed_ack() {
             client.with_scope(|mut scope| scope.path().try_probe(next)),
             Ok(())
         );
-        let next_at = client
-            .view()
-            .recovery()
-            .send_at(retire + Duration::from_millis(1));
+        let next_at = client.view().send_at(retire + Duration::from_millis(1));
         client
             .with_scope(|mut scope| {
                 scope
@@ -216,10 +205,7 @@ fn delayed_ack() {
         server
             .receive_all(&mut work, &mut batches.replacement, next_at)
             .expect("replacement path challenge must pass server ingress");
-        let reply_at = server
-            .view()
-            .recovery()
-            .send_at(next_at + Duration::from_millis(1));
+        let reply_at = server.view().send_at(next_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -233,10 +219,7 @@ fn delayed_ack() {
             .expect("replacement response must pass client ingress");
         assert!(client.view().path().has_token(&next));
 
-        let final_at = client
-            .view()
-            .recovery()
-            .send_at(reply_at + Duration::from_millis(1));
+        let final_at = client.view().send_at(reply_at + Duration::from_millis(1));
         client
             .with_scope(|mut scope| {
                 scope

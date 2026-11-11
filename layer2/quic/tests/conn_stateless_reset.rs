@@ -352,7 +352,7 @@ fn restart_recovers() {
     client
         .with_scope(|mut scope| scope.datagrams().try_send(vec![0]))
         .expect("established test connection must accept a DATAGRAM");
-    let release = client.view().recovery().send_at(Instant::now());
+    let release = client.view().send_at(Instant::now());
     let (emitted_packets, send_result) =
         client.with_scope(|mut scope| scope.output().send(release));
     send_result.expect("warmed connection journals must admit the application packet");

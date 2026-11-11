@@ -34,7 +34,7 @@ fn pto_full() {
     assert_eq!(sent.len(), 1);
     let view = mux.conn(handle).expect("retained client").view();
     assert_eq!(view.recovery().unacked(Epoch::Initial), 1);
-    let at = view.recovery().next_timer().expect("Initial PTO") + Duration::from_nanos(1);
+    let at = view.next_timer().expect("Initial PTO") + Duration::from_nanos(1);
     let probe = Capture::output(&mut mux, at).expect("reserved PTO output");
     assert_eq!(probe.len(), 1);
     let view = mux.conn(handle).expect("retained client").view();
@@ -73,7 +73,7 @@ fn pto_retries_initial() {
         "client Initial in flight"
     );
 
-    let deadline = (client.view().recovery().next_timer()).expect("PTO armed after sending");
+    let deadline = (client.view().next_timer()).expect("PTO armed after sending");
     assert!(deadline > t0);
 
     let t1 = deadline + Duration::from_millis(1);
@@ -198,7 +198,7 @@ fn server_crypto_uses_pto() {
     }
     assert_eq!(server.view().recovery().unacked(Epoch::Initial), 0);
     assert_ne!(server.view().recovery().unacked(Epoch::Handshake), 0);
-    let deadline = (server.view().recovery().next_timer()).expect("server CRYPTO PTO");
+    let deadline = (server.view().next_timer()).expect("server CRYPTO PTO");
     let probe_at = deadline + Duration::from_millis(1);
     assert_eq!(
         server.with_scope(|mut scope| scope.recovery().try_loss(probe_at)),
@@ -260,7 +260,7 @@ fn server_crypto_uses_pto() {
             .into_iter()
             .any(|space| server.view().recovery().unacked(space) != 0)
         {
-            let deadline = (server.view().recovery().next_timer()).expect("next server CRYPTO PTO");
+            let deadline = (server.view().next_timer()).expect("next server CRYPTO PTO");
             now = deadline + Duration::from_millis(1);
             assert_eq!(
                 server.with_scope(|mut scope| scope.recovery().try_loss(now)),
@@ -271,7 +271,7 @@ fn server_crypto_uses_pto() {
             .into_iter()
             .any(|space| client.view().recovery().unacked(space) != 0)
         {
-            let deadline = (client.view().recovery().next_timer()).expect("next client CRYPTO PTO");
+            let deadline = (client.view().next_timer()).expect("next client CRYPTO PTO");
             now = now.max(deadline + Duration::from_millis(1));
             assert_eq!(
                 client.with_scope(|mut scope| scope.recovery().try_loss(now)),
@@ -304,7 +304,7 @@ fn pto_backoff_grows() {
             .with_scope(|mut scope| scope.output().send(t0)), (packets, Ok(())) if !packets.is_empty()),
         "fresh client journals must admit its Initial"
     );
-    let pto1 = (client.view().recovery().next_timer()).expect("first PTO");
+    let pto1 = (client.view().next_timer()).expect("first PTO");
 
     let t1 = pto1 + Duration::from_millis(1);
     assert_eq!(
@@ -316,7 +316,7 @@ fn pto_backoff_grows() {
             .with_scope(|mut scope| scope.output().send(t1)), (packets, Ok(())) if !packets.is_empty()),
         "warmed client journals must admit its first PTO probes"
     );
-    let pto2 = (client.view().recovery().next_timer()).expect("second PTO");
+    let pto2 = (client.view().next_timer()).expect("second PTO");
     let span1 = pto1.saturating_duration_since(t0);
     let span2 = pto2.saturating_duration_since(t1);
     assert!(
@@ -334,7 +334,7 @@ fn pto_backoff_grows() {
             .with_scope(|mut scope| scope.output().send(t2)), (packets, Ok(())) if !packets.is_empty()),
         "warmed client journals must admit its second PTO probes"
     );
-    let pto3 = (client.view().recovery().next_timer()).expect("third PTO");
+    let pto3 = (client.view().next_timer()).expect("third PTO");
     let span3 = pto3.saturating_duration_since(t2);
     assert!(
         span3 > span2,
@@ -456,7 +456,7 @@ fn huge_ack_retains_losses() {
         .with_scope(|mut scope| scope.output().send_batch(&mut batch, ack, 64, 1200))
         .expect("ACK flight");
     assert_eq!(batch.packets(), 1);
-    let due = client.view().recovery().next_timer();
+    let due = client.view().next_timer();
     let mut now = start;
     for bit in (0..u64::BITS).rev() {
         if let Some(next) = now.checked_add(Duration::from_secs(1_u64 << bit)) {
@@ -499,5 +499,5 @@ fn huge_ack_retains_losses() {
     assert_eq!(client.view().recovery().in_flight(), flight);
     assert!(client.view().lifecycle().is_closed());
     assert!(!client.view().lifecycle().is_ready());
-    assert_eq!(client.view().recovery().next_timer(), due);
+    assert_eq!(client.view().next_timer(), due);
 }

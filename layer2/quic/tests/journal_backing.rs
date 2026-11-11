@@ -119,7 +119,7 @@ fn reuses_canceled_suffix() {
                 .send_streams()
                 .send(stream, bytes)
                 .expect("send");
-            now = pair.server.view().recovery().send_at(now);
+            now = pair.server.view().send_at(now);
             let effects = pair
                 .server
                 .with_scope(|mut scope| scope.output().send_effects(&mut batch, now, 1, 1200))
@@ -159,7 +159,7 @@ fn reuses_canceled_suffix() {
                         .send_streams()
                         .send(next, b"c")
                         .expect("fresh byte");
-                    now = pair.server.view().recovery().send_at(now);
+                    now = pair.server.view().send_at(now);
                     let effects = pair
                         .server
                         .with_scope(|mut scope| {

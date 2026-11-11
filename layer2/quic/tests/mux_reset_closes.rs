@@ -130,7 +130,6 @@ fn reset_closes_match() -> Result<(), Error> {
             assert!(!conn.view().path().is_reset());
             let at = conn
                 .view()
-                .recovery()
                 .send_at(now + std::time::Duration::from_millis(1));
             assert!(Capture::send(&mut client, other, vec![7], at).is_ok());
             Capture::relay_once(&mut client, &mut server, CLIENT, at)?;

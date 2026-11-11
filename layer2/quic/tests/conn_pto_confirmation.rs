@@ -24,7 +24,7 @@ fn pto_waits_for_confirm() {
     assert!(!client.view().lifecycle().is_confirmed());
     assert_eq!(client.view().recovery().unacked(Epoch::Initial), 0);
     assert_ne!(client.view().recovery().unacked(Epoch::Handshake), 0);
-    assert!(client.view().recovery().next_timer().is_some());
+    assert!(client.view().next_timer().is_some());
 
     let (packets, send_result) = server.with_scope(|mut scope| scope.output().send(now));
     send_result.expect("server must emit handshake ACK and confirmation");
@@ -53,14 +53,14 @@ fn pto_waits_for_confirm() {
     client
         .with_scope(|mut scope| scope.datagrams().try_send(b"pending".to_vec()))
         .expect("ready client must admit application DATAGRAM");
-    let at = client.view().recovery().send_at(now);
+    let at = client.view().send_at(now);
     let (held, send_result) = client.with_scope(|mut scope| scope.output().send(at));
     send_result.expect("client must emit application packet");
     assert!(!held.is_empty());
     assert_eq!(client.inspection().tx_queued(), 0);
     assert_ne!(client.view().recovery().unacked(Epoch::Application), 0);
     assert_eq!(
-        client.view().recovery().next_timer(),
+        client.view().next_timer(),
         None,
         "unconfirmed application flight must not arm PTO"
     );
@@ -75,7 +75,6 @@ fn pto_waits_for_confirm() {
     assert!(
         client
             .view()
-            .recovery()
             .next_timer()
             .expect("confirmed application flight must arm PTO")
             > at
@@ -105,11 +104,7 @@ fn handshake_loss_uses_peer_ack_delay() {
 
     let mut last = Vec::new();
     for _ in 0..3 {
-        sent_at = client
-            .view()
-            .recovery()
-            .next_timer()
-            .expect("Handshake PTO");
+        sent_at = client.view().next_timer().expect("Handshake PTO");
         client
             .with_scope(|mut scope| scope.recovery().try_loss(sent_at))
             .expect("Handshake probes");

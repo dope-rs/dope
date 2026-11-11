@@ -55,7 +55,7 @@ fn ack_keeps_safe_wake() {
         .expect("ACK retirement must retain the earlier safe mux wake");
     let timer = client
         .conn(handle)
-        .and_then(|conn| conn.view().recovery().next_timer())
+        .and_then(|conn| conn.view().next_timer())
         .expect("the acknowledged fixture connection must retain its idle timer");
     assert!(
         safe < timer,
@@ -98,7 +98,7 @@ fn pto_replaces_deadline() {
 
     let pto = client
         .conn(handle)
-        .and_then(|conn| conn.view().recovery().next_timer())
+        .and_then(|conn| conn.view().next_timer())
         .expect("a dropped application packet must arm its PTO timer");
     let fired_at = pto + Duration::from_nanos(1);
     Pin::new(&mut client).observe(fired_at, |mut turn| {

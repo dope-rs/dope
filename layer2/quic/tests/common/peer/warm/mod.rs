@@ -30,7 +30,7 @@ impl Drain {
         work: &mut conn::Workspace,
         ready_at: Instant,
     ) -> Result<Instant, Error> {
-        let sent_at = client.view().recovery().send_at(ready_at);
+        let sent_at = client.view().send_at(ready_at);
         client
             .with_scope(|mut scope| {
                 scope
@@ -44,7 +44,7 @@ impl Drain {
         let reply_at = sent_at
             .checked_add(delay)
             .ok_or(Error::Deadline(sent_at, delay))?;
-        let reply_at = server.view().recovery().send_at(reply_at);
+        let reply_at = server.view().send_at(reply_at);
         server
             .with_scope(|mut scope| {
                 scope

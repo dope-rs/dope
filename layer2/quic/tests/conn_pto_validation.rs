@@ -57,7 +57,7 @@ fn initial_ack_arms_probe() {
     );
     let due = ack_at + Duration::from_millis(30);
     assert_eq!(
-        client.view().recovery().next_timer(),
+        client.view().next_timer(),
         Some(due),
         "unvalidated client must arm fallback from the current ACK time"
     );
@@ -69,7 +69,7 @@ fn initial_ack_arms_probe() {
         Some(Duration::from_millis(10))
     );
     assert_eq!(
-        client.view().recovery().next_timer(),
+        client.view().next_timer(),
         Some(due),
         "duplicate Initial ACK must preserve the fallback deadline"
     );
@@ -121,7 +121,6 @@ fn initial_ack_backoff() {
     for _ in 0..2 {
         fired = client
             .view()
-            .recovery()
             .next_timer()
             .expect("Initial flight must arm PTO")
             + Duration::from_millis(1);
@@ -173,7 +172,7 @@ fn initial_ack_backoff() {
         Some(Duration::from_millis(10))
     );
     assert_eq!(
-        client.view().recovery().next_timer(),
+        client.view().next_timer(),
         Some(fired + Duration::from_millis(120)),
         "Initial ACK must preserve PTO backoff until server validation"
     );

@@ -234,7 +234,7 @@ fn rejected_ticket_credit() {
                     .expect("queued data");
             });
         }
-        now = client.view().recovery().send_at(now);
+        now = client.view().send_at(now);
         server
             .receive_from(&mut work, &mut client, now)
             .expect("application flight");
@@ -256,11 +256,11 @@ fn rejected_ticket_credit() {
                 got, expected,
                 "fresh credit bounds ordered application delivery"
             );
-            now = server.view().recovery().send_at(now);
+            now = server.view().send_at(now);
             client
                 .receive_from(&mut work, &mut server, now)
                 .expect("updated peer credit");
-            now = client.view().recovery().send_at(now);
+            now = client.view().send_at(now);
             server
                 .receive_from(&mut work, &mut client, now)
                 .expect("next application flight");
@@ -363,7 +363,7 @@ fn rejected_stream_count() {
             .expect("bounded client flight");
     }
     assert!(client.view().lifecycle().is_ready() && server.view().lifecycle().is_ready());
-    now = client.view().recovery().send_at(now);
+    now = client.view().send_at(now);
     server
         .receive_from(&mut work, &mut client, now)
         .expect("blocked stream flight at pacing release");
@@ -399,7 +399,7 @@ fn rejected_stream_count() {
         .send_streams()
         .finish(first_bidi)
         .expect("first permitted bidi FIN");
-    now = client.view().recovery().send_at(now);
+    now = client.view().send_at(now);
     server
         .receive_from(&mut work, &mut client, now)
         .expect("permitted stream flight");
@@ -419,11 +419,11 @@ fn rejected_stream_count() {
         .send_streams()
         .finish(first_bidi)
         .expect("permitted bidi response FIN");
-    now = server.view().recovery().send_at(now);
+    now = server.view().send_at(now);
     client
         .receive_from(&mut work, &mut server, now)
         .expect("increased MAX_STREAMS");
-    now = client.view().recovery().send_at(now);
+    now = client.view().send_at(now);
     server
         .receive_from(&mut work, &mut client, now)
         .expect("newly permitted stream flight");
@@ -435,11 +435,11 @@ fn rejected_stream_count() {
             .as_deref(),
         Some(b"early-retained".as_slice())
     );
-    now = server.view().recovery().send_at(now);
+    now = server.view().send_at(now);
     client
         .receive_from(&mut work, &mut server, now)
         .expect("increased bidi MAX_STREAMS");
-    now = client.view().recovery().send_at(now);
+    now = client.view().send_at(now);
     server
         .receive_from(&mut work, &mut client, now)
         .expect("newly permitted STOP and RESET");

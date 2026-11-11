@@ -436,13 +436,13 @@ impl Wire {
         }
         let client_deadline = retiring
             .conn(old)
-            .and_then(|conn| conn.view().recovery().next_timer())
+            .and_then(|conn| conn.view().next_timer())
             .ok_or(Error::Runtime(runtime::Error::Deadline(now)))?;
         let server_deadline = self
             .server
             .router
             .conn(old_inbound)
-            .and_then(|conn| conn.view().recovery().next_timer())
+            .and_then(|conn| conn.view().next_timer())
             .ok_or(Error::Runtime(runtime::Error::Deadline(now)))?;
         let deadline = client_deadline.max(server_deadline);
         Pin::new(&mut retiring)

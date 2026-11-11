@@ -200,7 +200,7 @@ fn control_full_is_atomic() {
         {
             break;
         }
-        at = client.view().recovery().send_at(at + delay);
+        at = client.view().send_at(at + delay);
         let (next, result) = client.with_scope(|mut scope| scope.output().send(at));
         result.expect("returned capacity must admit the preserved challenges");
         packets = next;
@@ -245,8 +245,8 @@ fn small_probe_keeps_cursor() {
                 .expect("the initial flight fits the journal");
             assert_eq!(dropped.packets(), 1);
 
-            let deadline = (client.view().recovery().next_timer())
-                .expect("the dropped stream packet must arm PTO");
+            let deadline =
+                (client.view().next_timer()).expect("the dropped stream packet must arm PTO");
             let probe_at = deadline + Duration::from_millis(1);
             assert_eq!(client.recovery().try_loss(probe_at), Ok(()));
 

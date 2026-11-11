@@ -41,7 +41,7 @@ fn retains_reordered_epoch() {
             server
                 .with_scope(|mut scope| scope.datagrams().try_send(payload.to_vec()))
                 .expect("the peer's old-phase datagram must be admitted");
-            now = server.view().recovery().send_at(now);
+            now = server.view().send_at(now);
             let (packets, send_result) = server.with_scope(|mut scope| scope.output().send(now));
             send_result.expect("the peer's old-phase datagram must enter a packet");
             assert!(!packets.is_empty());
@@ -53,7 +53,7 @@ fn retains_reordered_epoch() {
                 .with_scope(|mut scope| scope.datagrams().try_send(b"old phase".to_vec()))
                 .is_ok()
         );
-        now = client.view().recovery().send_at(now);
+        now = client.view().send_at(now);
         let (mut old, send_result) = client.with_scope(|mut scope| scope.output().send(now));
         send_result.expect("the old-phase datagram must enter a packet");
         assert_eq!(client.inspection().tx_queued(), 0);
@@ -85,7 +85,7 @@ fn retains_reordered_epoch() {
                 .with_scope(|mut scope| scope.datagrams().try_send(b"new phase".to_vec()))
                 .is_ok()
         );
-        now = client.view().recovery().send_at(now);
+        now = client.view().send_at(now);
         assert!(server.receive_from(&mut work, &mut client, now).is_ok());
         assert_eq!(
             server
@@ -108,7 +108,7 @@ fn retains_reordered_epoch() {
                 .with_scope(|mut scope| scope.datagrams().try_send(b"response phase".to_vec()))
                 .is_ok()
         );
-        now = server.view().recovery().send_at(now);
+        now = server.view().send_at(now);
         assert!(client.receive_from(&mut work, &mut server, now).is_ok());
         assert_eq!(
             client
@@ -139,10 +139,7 @@ fn retains_reordered_epoch() {
             ));
         }
 
-        let next = client
-            .view()
-            .recovery()
-            .send_at(now + Duration::from_secs(10));
+        let next = client.view().send_at(now + Duration::from_secs(10));
         assert!(
             client
                 .with_scope(|mut scope| scope.security().at(next).update())

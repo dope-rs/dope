@@ -220,7 +220,7 @@ fn client_accepts_retry() {
     assert!(!first.is_empty(), "client must emit its first Initial");
     assert!(client.view().recovery().unacked(Epoch::Initial) > 0);
     assert_eq!(client.view().recovery().unacked(Epoch::Application), 0);
-    assert!(client.view().recovery().next_timer().is_some());
+    assert!(client.view().next_timer().is_some());
 
     let new_scid = vec![0xF0, 0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62, 0xb5];
     let token = b"server-issued-retry-token".to_vec();
@@ -252,7 +252,7 @@ fn client_accepts_retry() {
         "the valid Retry must enter the client after discarded Retries"
     );
     assert_eq!(client.view().recovery().unacked(Epoch::Initial), 0);
-    assert_eq!(client.view().recovery().next_timer(), None);
+    assert_eq!(client.view().next_timer(), None);
 
     let (mut second, send_result) =
         client.with_scope(|mut scope| scope.output().send(Instant::now()));

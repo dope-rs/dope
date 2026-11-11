@@ -105,7 +105,6 @@ fn padding_retains_slot() {
     let idle = pair
         .client
         .view()
-        .recovery()
         .next_timer()
         .expect("the settled fixture has an idle deadline");
     let mut now = Instant::now() + Duration::from_secs(1);
@@ -146,7 +145,7 @@ fn padding_retains_slot() {
             assert_eq!(rejected.payload(), [0x42; 16]);
             assert_eq!(arena.available(), 0);
             assert_eq!(pair.client.view().recovery().in_flight(), before);
-            assert_eq!(pair.client.view().recovery().next_timer(), Some(idle));
+            assert_eq!(pair.client.view().next_timer(), Some(idle));
             packet = rejected;
         }
         let (result, activity) = Tracker::counts(|| {
@@ -174,7 +173,6 @@ fn padding_retains_slot() {
             assert!(
                 pair.client
                     .view()
-                    .recovery()
                     .next_timer()
                     .is_some_and(|deadline| now < deadline && deadline < idle),
                 "the pooled commit must arm a fresh PTO before the idle deadline"
@@ -373,7 +371,7 @@ fn timing_returns_owner() {
     packet.payload_mut().fill(0x42);
     let pointer = packet.payload().as_ptr();
     let before = pair.client.view().recovery().in_flight();
-    let due = pair.client.view().recovery().next_timer();
+    let due = pair.client.view().next_timer();
     let mut now = start;
     for bit in (0..u64::BITS).rev() {
         if let Some(next) = now.checked_add(Duration::from_secs(1_u64 << bit)) {
@@ -407,7 +405,7 @@ fn timing_returns_owner() {
     assert_eq!(pair.client.view().recovery().in_flight(), before);
     assert!(pair.client.view().lifecycle().is_closed());
     assert!(!pair.client.view().lifecycle().is_ready());
-    assert_eq!(pair.client.view().recovery().next_timer(), due);
+    assert_eq!(pair.client.view().next_timer(), due);
     drop(packet);
     assert_eq!(arena.available(), 1);
 }
@@ -434,7 +432,7 @@ fn batch_keeps_both_errors() {
             .receive(&mut work, wire, start)
             .expect("client Initial");
     }
-    let due = server.view().recovery().next_timer();
+    let due = server.view().next_timer();
     let mut now = start;
     for bit in (0..u64::BITS).rev() {
         if let Some(next) = now.checked_add(Duration::from_secs(1_u64 << bit)) {
@@ -476,7 +474,7 @@ fn batch_keeps_both_errors() {
         batch.byte_len() as u64
     );
     assert!(server.view().lifecycle().is_closed());
-    assert_eq!(server.view().recovery().next_timer(), due);
+    assert_eq!(server.view().next_timer(), due);
     for wire in batch.iter_mut() {
         client
             .receive(&mut work, wire, start)

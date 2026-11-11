@@ -44,7 +44,7 @@ impl<'batch> Flight<'batch> {
         count: usize,
         bytes: usize,
     ) -> Result<Self, transmit::Failure> {
-        let sent_at = conn.view().recovery().send_at(ready_at);
+        let sent_at = conn.view().send_at(ready_at);
         Self::emit_at(conn, batch, sent_at, count, bytes)
     }
 

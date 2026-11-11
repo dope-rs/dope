@@ -65,10 +65,7 @@ fn delayed_ack() {
         assert_eq!(server.recv().recv(srv_vic, &mut received), Ok(64));
         assert!(received[1..].iter().all(|&byte| byte == 0x71));
 
-        let ctrl_at = server
-            .view()
-            .recovery()
-            .send_at(sent_at + Duration::from_millis(1));
+        let ctrl_at = server.view().send_at(sent_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -90,7 +87,7 @@ fn delayed_ack() {
                 .timing()
                 .ack_ms(),
         ));
-        let old_at = client.view().recovery().send_at(ctrl_at + delay);
+        let old_at = client.view().send_at(ctrl_at + delay);
         let old_ack = Flight::emit_at(&mut client, &mut batches.delayed_old_ack, old_at, 1, 1_200)
             .expect("pre-admitted old ACK journals must accept the flight");
         assert!(!old_ack.is_empty());
@@ -114,7 +111,6 @@ fn delayed_ack() {
             .expect("victim receive stream must stop once");
         let loss_at = server
             .view()
-            .recovery()
             .next_timer()
             .expect("unacknowledged receive control must arm PTO")
             + Duration::from_millis(1);
@@ -126,10 +122,7 @@ fn delayed_ack() {
             .receive_all(&mut work, &mut batches.reset, loss_at)
             .expect("victim reset must pass server ingress");
 
-        let free_at = server
-            .view()
-            .recovery()
-            .send_at(loss_at + Duration::from_millis(1));
+        let free_at = server.view().send_at(loss_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -149,10 +142,7 @@ fn delayed_ack() {
                     error_code: dope_quic::errors::Code::from_u8(0x73),
                 })
         );
-        let ack_at = client
-            .view()
-            .recovery()
-            .send_at(free_at + Duration::from_millis(1));
+        let ack_at = client.view().send_at(free_at + Duration::from_millis(1));
         client
             .with_scope(|mut scope| {
                 scope
@@ -164,10 +154,7 @@ fn delayed_ack() {
             .receive_all(&mut work, &mut batches.release_ack, ack_at)
             .expect("release acknowledgement must pass server ingress");
 
-        let limit_at = server
-            .view()
-            .recovery()
-            .send_at(ack_at + Duration::from_millis(1));
+        let limit_at = server.view().send_at(ack_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -214,10 +201,7 @@ fn delayed_ack() {
             .deliver_at(&mut work, &mut server, late_at)
             .expect("delayed acknowledgment must reach its peer after emission");
 
-        let grant_at = server
-            .view()
-            .recovery()
-            .send_at(late_at + Duration::from_millis(1));
+        let grant_at = server.view().send_at(late_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -284,10 +268,7 @@ fn delayed_ack() {
             break;
         }
 
-        let fill_at = server
-            .view()
-            .recovery()
-            .send_at(done + Duration::from_millis(1));
+        let fill_at = server.view().send_at(done + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -299,10 +280,7 @@ fn delayed_ack() {
         client
             .receive_all(&mut work, &mut batches.drain.server, fill_at)
             .expect("replenished stream credit must pass client ingress");
-        let ack_at = client
-            .view()
-            .recovery()
-            .send_at(fill_at + Duration::from_millis(1));
+        let ack_at = client.view().send_at(fill_at + Duration::from_millis(1));
         client
             .with_scope(|mut scope| {
                 scope

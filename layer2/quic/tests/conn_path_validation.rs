@@ -225,11 +225,7 @@ fn cancel_releases_probe_capacity() {
         .with_scope(|mut scope| scope.path().try_probe(next))
         .expect("canceled pending probe releases capacity");
 
-    let now = pair
-        .server
-        .view()
-        .recovery()
-        .send_at(clock + Duration::from_secs(1));
+    let now = pair.server.view().send_at(clock + Duration::from_secs(1));
     let mut batch = Batch::default();
     pair.server
         .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1_200))
@@ -297,7 +293,7 @@ fn stale_ack_keeps_slot() {
         pair.server
             .with_scope(|mut scope| scope.path().try_probe(token))
             .expect("queued challenge");
-        now = pair.server.view().recovery().send_at(now);
+        now = pair.server.view().send_at(now);
         pair.server
             .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1_200))
             .expect("challenge carrier");
@@ -335,13 +331,7 @@ fn stale_ack_keeps_slot() {
         .expect("delayed original carrier ACK");
     assert!(!pair.server.view().path().has_token(&next));
 
-    let now = pair
-        .server
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("replacement PTO")
-        + Duration::from_nanos(1);
+    let now = pair.server.view().next_timer().expect("replacement PTO") + Duration::from_nanos(1);
     pair.server
         .with_scope(|mut scope| scope.recovery().try_loss(now))
         .expect("replacement timeout");

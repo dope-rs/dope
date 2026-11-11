@@ -13,10 +13,7 @@ fn candidate_credit_parks() {
     let (mut peer, mut server, handle, at) = paths::try_wire().expect("wire path fixture");
     let target = SocketAddr::from(([10, 0, 0, 1], 50_001));
     let (valid, timer) = Pair::access(&mut server, handle, at, |conn| {
-        (
-            conn.view().path().is_valid(),
-            conn.view().recovery().next_timer(),
-        )
+        (conn.view().path().is_valid(), conn.view().next_timer())
     })
     .expect("connection state");
     assert!(valid);

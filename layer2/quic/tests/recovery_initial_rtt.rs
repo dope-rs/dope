@@ -22,13 +22,11 @@ fn initial_pto_has_variance() {
             })
             .is_empty()
     );
-    let recovery = client.view().recovery();
+    let view = client.view();
+    let recovery = view.recovery();
     assert_eq!(recovery.smoothed_rtt(), None);
     assert_eq!(recovery.min_rtt(), None);
-    assert_eq!(
-        recovery.next_timer(),
-        Some(now + Duration::from_millis(999))
-    );
+    assert_eq!(view.next_timer(), Some(now + Duration::from_millis(999)));
 }
 
 #[test]
@@ -66,7 +64,6 @@ fn migration_resets_rtt() {
             .conn(pair.server_id)
             .expect("server connection")
             .view()
-            .recovery()
             .next_timer(),
         Some(sent + Duration::from_millis(1_024)),
         "the unsampled path includes initial variance and the peer's 25 ms ACK allowance",

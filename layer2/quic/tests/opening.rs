@@ -147,10 +147,7 @@ fn stop_after_fin_ack_does_not_reopen_peer_send() {
         .send_streams()
         .finish(response)
         .expect("response FIN");
-    let response_at = server
-        .view()
-        .recovery()
-        .send_at(now + Duration::from_millis(30));
+    let response_at = server.view().send_at(now + Duration::from_millis(30));
     client
         .receive_from(&mut work, &mut server, response_at)
         .expect("response delivery");
@@ -161,7 +158,6 @@ fn stop_after_fin_ack_does_not_reopen_peer_send() {
 
     let ack_at = client
         .view()
-        .recovery()
         .send_at(response_at + Duration::from_millis(30));
     let mut packet = Batch::default();
     let effects = client
@@ -290,18 +286,14 @@ fn late_ack_keeps_slot() {
             })
             .expect("server accepts original packet");
     }
-    let ack_at = server.view().recovery().send_at(sent_at + ack_wait);
+    let ack_at = server.view().send_at(sent_at + ack_wait);
     let mut first = Batch::default();
     server
         .with_scope(|mut scope| scope.output().send_batch(&mut first, ack_at, 1, 1_200))
         .expect("warmed server journals must admit the first stream acknowledgement");
     assert!(!first.is_empty());
 
-    let deadline = client
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("stream PTO is armed");
+    let deadline = client.view().next_timer().expect("stream PTO is armed");
     let probe_at = deadline + Duration::from_millis(1);
     assert_eq!(
         client.with_scope(|mut scope| scope.recovery().try_loss(probe_at)),
@@ -321,10 +313,7 @@ fn late_ack_keeps_slot() {
             })
             .expect("server accepts probe packet");
     }
-    let late_at = server
-        .view()
-        .recovery()
-        .send_at(probe_at + Duration::from_millis(30));
+    let late_at = server.view().send_at(probe_at + Duration::from_millis(30));
     let mut late_ack = Batch::default();
     server
         .with_scope(|mut scope| scope.output().send_batch(&mut late_ack, late_at, 1, 1_200))

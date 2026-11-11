@@ -58,10 +58,7 @@ fn admits_after_control() {
         .expect("emit receive credit");
     assert_eq!(control.packets(), 1);
 
-    let at = client
-        .view()
-        .recovery()
-        .send_at(now + Duration::from_millis(1));
+    let at = client.view().send_at(now + Duration::from_millis(1));
     let result = client.with_scope(|mut scope| scope.output().try_packet(packet, at, 1200));
     let sealed = result
         .as_ref()
@@ -83,7 +80,6 @@ fn admits_after_control() {
 
     let deadline = client
         .view()
-        .recovery()
         .next_timer()
         .expect("unacknowledged flight arms recovery");
     assert_eq!(

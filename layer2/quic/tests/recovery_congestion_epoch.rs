@@ -202,7 +202,7 @@ fn higher_ack_releases_pto_time_loss() {
         previous = Some(number);
         if index == 0 {
             let window = pair.server.view().recovery().window();
-            let due = pair.server.view().recovery().next_timer().expect("PTO");
+            let due = pair.server.view().next_timer().expect("PTO");
             pair.server
                 .with_scope(|mut scope| scope.recovery().try_loss(due))
                 .expect("PTO arms probes without declaring loss");

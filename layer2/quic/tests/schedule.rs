@@ -122,10 +122,7 @@ fn owners_wait_for_prefix() {
             .expect("server accepts suffix packet");
     }
 
-    let ack_at = server
-        .view()
-        .recovery()
-        .send_at(sent_at + Duration::from_millis(1));
+    let ack_at = server.view().send_at(sent_at + Duration::from_millis(1));
     let (packets, result) = server.with_scope(|mut scope| scope.output().send(ack_at));
     result.expect("configured server journals must admit the scheduled ACK");
     for mut packet in packets {
@@ -160,7 +157,7 @@ fn owners_wait_for_prefix() {
         Some(expected.as_slice())
     );
 
-    let ack2_at = server.view().recovery().send_at(prefix);
+    let ack2_at = server.view().send_at(prefix);
     let (ack2, result) = server.with_scope(|mut scope| scope.output().send(ack2_at));
     result.expect("configured server journals must admit the second ACK");
     assert!(!ack2.is_empty());
@@ -243,10 +240,7 @@ fn late_control_keeps_slot() {
     assert_eq!(server.recv().recv(old_recv, &mut received), Ok(64));
     assert_eq!(received, [0x51; 64]);
 
-    let ctrl_at = server
-        .view()
-        .recovery()
-        .send_at(sent_at + Duration::from_millis(1));
+    let ctrl_at = server.view().send_at(sent_at + Duration::from_millis(1));
     let mut old_ctrl = Batch::default();
     server
         .with_scope(|mut scope| scope.output().send_batch(&mut old_ctrl, ctrl_at, 1, 1_200))
@@ -262,7 +256,7 @@ fn late_control_keeps_slot() {
             .expect("client accepts original control packet");
     }
 
-    let old_at = client.view().recovery().send_at(ctrl_at + delay);
+    let old_at = client.view().send_at(ctrl_at + delay);
     let mut late_ack = Batch::default();
     let late_ack = Flight::emit_at(&mut client, &mut late_ack, old_at, 1, 1_200)
         .expect("pre-admitted late ACK journals must accept the flight");
@@ -284,12 +278,8 @@ fn late_control_keeps_slot() {
         .recv()
         .stop(old_recv, Code::from_u8(0x62))
         .expect("stop victim receive stream");
-    let loss_at = server
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("control PTO is armed")
-        + Duration::from_millis(1);
+    let loss_at =
+        server.view().next_timer().expect("control PTO is armed") + Duration::from_millis(1);
     assert_eq!(
         server.with_scope(|mut scope| scope.recovery().try_loss(loss_at)),
         Ok(())
@@ -304,10 +294,7 @@ fn late_control_keeps_slot() {
             .expect("server accepts reset packet");
     }
 
-    let free_at = server
-        .view()
-        .recovery()
-        .send_at(loss_at + Duration::from_millis(1));
+    let free_at = server.view().send_at(loss_at + Duration::from_millis(1));
     let mut packets = Batch::default();
     server
         .with_scope(|mut scope| scope.output().send_batch(&mut packets, free_at, 2, 1_200))
@@ -330,10 +317,7 @@ fn late_control_keeps_slot() {
                 error_code: dope_quic::errors::Code::from_u8(0x61),
             })
     );
-    let limit_at = server
-        .view()
-        .recovery()
-        .send_at(free_at + Duration::from_millis(1));
+    let limit_at = server.view().send_at(free_at + Duration::from_millis(1));
     server
         .with_scope(|mut scope| scope.output().send_batch(&mut packets, limit_at, 2, 1_200))
         .expect("configured server journals must admit the limited-window packets");
@@ -384,10 +368,7 @@ fn late_control_keeps_slot() {
         .deliver_at(&mut work, &mut server, late_at)
         .expect("delayed acknowledgment must reach its peer after emission");
 
-    let grant_at = server
-        .view()
-        .recovery()
-        .send_at(late_at + Duration::from_millis(1));
+    let grant_at = server.view().send_at(late_at + Duration::from_millis(1));
     let mut credit = Batch::default();
     server
         .with_scope(|mut scope| scope.output().send_batch(&mut credit, grant_at, 1, 1_200))

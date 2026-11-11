@@ -199,7 +199,7 @@ fn holds_credit() {
         .recv()
         .stop(peer, Code::MAX)
         .expect("reset receive half remains stopped");
-    let reset_at = client.view().recovery().send_at(reset_at);
+    let reset_at = client.view().send_at(reset_at);
     let (packets, result) = client.with_scope(|mut scope| scope.output().send(reset_at));
     result.expect("late stop output");
     assert!(packets.is_empty(), "RESET suppresses late STOP_SENDING");
@@ -273,10 +273,7 @@ fn discards_unread() {
     let reset_at = data_at + Duration::from_millis(1);
     let received = client.receive_from(&mut work, &mut server, reset_at);
     assert!(received.is_ok());
-    let ack_at = client
-        .view()
-        .recovery()
-        .send_at(reset_at + Duration::from_millis(30));
+    let ack_at = client.view().send_at(reset_at + Duration::from_millis(30));
     let received = server.receive_from(&mut work, &mut client, ack_at);
     assert!(received.is_ok());
 

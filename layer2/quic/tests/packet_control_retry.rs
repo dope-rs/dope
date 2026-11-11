@@ -40,8 +40,15 @@ fn full_journal_sends_before_retry() {
     for id in ids {
         pair.server.recv().stop(id.id(), Code::ZERO).expect("stop");
     }
-    let reset = pair.server.send_streams().open_uni().expect("reverse stream");
-    pair.server.send_streams().reset(reset, Code::ZERO).expect("reset");
+    let reset = pair
+        .server
+        .send_streams()
+        .open_uni()
+        .expect("reverse stream");
+    pair.server
+        .send_streams()
+        .reset(reset, Code::ZERO)
+        .expect("reset");
     for _ in 0..4 {
         now += Duration::from_millis(30);
         pair.exchange(now, 1).expect("send queued stops and retry");
@@ -80,7 +87,6 @@ fn control_stream_retry() {
             .expect("path challenge");
         let now = client
             .view()
-            .recovery()
             .send_at(Instant::now() + Duration::from_secs(1));
         let before = client.view().recovery().in_flight();
         let mut batch = Batch::default();
@@ -105,14 +111,8 @@ fn control_stream_retry() {
             .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1200))
             .expect("retry retains both selections");
         assert_eq!(batch.packets(), 1);
-        let next = client.view().recovery().send_at(now);
-        assert!(
-            next < client
-                .view()
-                .recovery()
-                .next_timer()
-                .expect("retry arms PTO")
-        );
+        let next = client.view().send_at(now);
+        assert!(next < client.view().next_timer().expect("retry arms PTO"));
         let mut idle = Batch::default();
         client
             .with_scope(|mut scope| scope.output().send_batch(&mut idle, next, 1, 1200))

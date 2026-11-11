@@ -120,7 +120,6 @@ fn close_reclaims_retry() {
         .conn(handle)
         .expect("live connection")
         .view()
-        .recovery()
         .send_at(now);
     assert!(due > now);
     assert_eq!(
@@ -145,11 +144,7 @@ fn close_reclaims_retry() {
     Capture::output(&mut client, now).expect("fixture output");
     let conn = client.conn(handle).expect("closing connection retained");
     assert_eq!(conn.view().lifecycle().state(), State::Closing);
-    let deadline = conn
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("terminal deadline");
+    let deadline = conn.view().next_timer().expect("terminal deadline");
     assert!(deadline > due);
     assert_eq!(
         Pin::new(&mut client).observe(now, |turn| turn.deadline()),

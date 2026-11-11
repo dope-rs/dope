@@ -32,8 +32,7 @@ fn crypto_slot_probes() {
     let (first, send_result) = client.with_scope(|mut scope| scope.output().send(now));
     send_result.expect("one fresh CRYPTO record must fit one vacant slot");
     assert_eq!(first.len(), 1);
-    let deadline =
-        (client.view().recovery().next_timer()).expect("the in-flight Initial must arm PTO");
+    let deadline = (client.view().next_timer()).expect("the in-flight Initial must arm PTO");
     let at = deadline + Duration::from_millis(1);
     assert_eq!(
         client.with_scope(|mut scope| scope.recovery().try_loss(at)),
@@ -92,7 +91,6 @@ fn crypto_full_keeps_bytes() {
     assert!(
         server
             .view()
-            .recovery()
             .next_timer()
             .is_some_and(|deadline| deadline < now + Duration::from_secs(30)),
         "the committed first epoch must arm PTO before the idle deadline"
@@ -177,8 +175,8 @@ fn ack_releases_crypto() {
         send_result.expect("the server must acknowledge the original Initial");
         assert!(!reply.is_empty());
         let at = if probe {
-            let deadline = (client.view().recovery().next_timer())
-                .expect("the unacknowledged Initial must arm PTO");
+            let deadline =
+                (client.view().next_timer()).expect("the unacknowledged Initial must arm PTO");
             let at = deadline + Duration::from_millis(1);
             assert_eq!(
                 client.with_scope(|mut scope| scope.recovery().try_loss(at)),

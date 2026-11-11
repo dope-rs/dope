@@ -32,10 +32,7 @@ fn retired_local_stays_done() {
     });
     let sent = Instant::now() + Duration::from_secs(1);
     Receiver::receive_from(&mut server, &mut wire, &mut client, sent).expect("FIN delivery");
-    let ack = server
-        .view()
-        .recovery()
-        .send_at(sent + Duration::from_millis(30));
+    let ack = server.view().send_at(sent + Duration::from_millis(30));
     Receiver::receive_from(&mut client, &mut wire, &mut server, ack).expect("FIN acknowledgement");
 
     client.with_scope(|mut scope| {
@@ -151,11 +148,7 @@ fn held_eof_stays_done() {
             let send = streams.view().resolve_send(id).expect("send half");
             streams.send().finish(send).expect("reply FIN");
         });
-        let retired = pair
-            .server
-            .view()
-            .recovery()
-            .send_at(now + Duration::from_secs(1));
+        let retired = pair.server.view().send_at(now + Duration::from_secs(1));
         pair.retired(retired)
             .expect("reply FIN and its authenticated ACK");
         pair.receive(bytes::HELD_FIN, retired)
@@ -190,7 +183,6 @@ fn held_eof_stays_done() {
             let at = pair
                 .server
                 .view()
-                .recovery()
                 .send_at(retired + Duration::from_millis(30));
             let (packets, send_result) =
                 pair.server.with_scope(|mut scope| scope.output().send(at));

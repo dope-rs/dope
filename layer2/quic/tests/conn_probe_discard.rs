@@ -65,8 +65,7 @@ fn discard_stops_probe() -> Result<(), Error> {
     assert_eq!(conn.view().recovery().unacked(Epoch::Initial), 0);
     let pending = conn.view().recovery().unacked(Epoch::Handshake);
     assert!(pending > 0);
-    let probe_at =
-        conn.view().recovery().next_timer().expect("handshake PTO") + Duration::from_nanos(1);
+    let probe_at = conn.view().next_timer().expect("handshake PTO") + Duration::from_nanos(1);
     let probe = Capture::output(&mut client, probe_at).map_err(Error::Output)?;
     assert_eq!(
         probe

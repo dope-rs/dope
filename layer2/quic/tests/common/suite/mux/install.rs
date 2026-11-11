@@ -153,7 +153,7 @@ pub fn reap(
         .map_err(runtime::Error::Output)?;
     let deadline = mux
         .conn(handle)
-        .and_then(|conn| conn.view().recovery().next_timer())
+        .and_then(|conn| conn.view().next_timer())
         .ok_or(runtime::Error::Deadline(now))?;
     Pin::new(&mut *mux)
         .observe(deadline, |mut turn| turn.output().drive())

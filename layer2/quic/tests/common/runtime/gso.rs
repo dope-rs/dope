@@ -287,7 +287,7 @@ impl Capture {
     ) -> Result<Instant, errors::Access> {
         handles.iter().try_fold(now, |release, handle| {
             let conn = mux.conn(*handle).ok_or(errors::Access::InvalidHandle)?;
-            Ok(conn.view().recovery().send_at(release))
+            Ok(conn.view().send_at(release))
         })
     }
 

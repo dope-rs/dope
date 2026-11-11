@@ -20,7 +20,7 @@ fn overflow_uses_peer_max() {
 
         for (elapsed, delay) in [(20, 0), (60, delay)] {
             pair.server.send_streams().send(stream, b"x").expect("send");
-            sent = pair.server.view().recovery().send_at(sent);
+            sent = pair.server.view().send_at(sent);
             pair.server
                 .with_scope(|mut scope| scope.output().send_batch(&mut batch, sent, 1, 1200))
                 .expect("packet");

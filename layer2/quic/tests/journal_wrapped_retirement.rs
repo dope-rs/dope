@@ -22,7 +22,7 @@ fn retains_wrapped() {
     for count in [64, 32] {
         for _ in 0..count {
             pair.server.send_streams().send(stream, b"x").expect("send");
-            now = pair.server.view().recovery().send_at(now);
+            now = pair.server.view().send_at(now);
             pair.server
                 .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1200))
                 .expect("packet");

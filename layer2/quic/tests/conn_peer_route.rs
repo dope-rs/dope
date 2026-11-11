@@ -139,12 +139,7 @@ fn reuses_opaque_peer_cid() {
         })
         .expect("plain connection");
     for _ in 0..3 {
-        now = client
-            .conn(handle)
-            .expect("connection")
-            .view()
-            .recovery()
-            .send_at(now);
+        now = client.conn(handle).expect("connection").view().send_at(now);
         for mut flight in dispatch::Capture::output(&mut client, now).expect("client output") {
             for packet in flight.segments_mut() {
                 server.receive(packet).expect("native server input");
@@ -274,7 +269,7 @@ fn reuses_opaque_peer_cid() {
     let mut server =
         params::Server::try_new(policy, remote, encoded).expect("resuming native server");
     let mut work = conn::Workspace::try_new().expect("workspace");
-    let at = resumed.view().recovery().send_at(now);
+    let at = resumed.view().send_at(now);
     let (flight, send_result) = resumed.with_scope(|mut scope| scope.output().send(at));
     send_result.expect("reconnect Initial flight");
     assert!(!flight.is_empty());

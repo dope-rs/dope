@@ -68,9 +68,9 @@ fn wakes_at_pacing_deadline() {
     let view = conn.view();
     let recovery = view.recovery();
     assert!(recovery.in_flight() < recovery.window(), "cwnd has room");
-    let due = recovery.send_at(now);
+    let due = view.send_at(now);
     assert!(due > now, "pacing is the active blocker");
-    assert!(due < recovery.next_timer().expect("unacknowledged flight"));
+    assert!(due < view.next_timer().expect("unacknowledged flight"));
     assert_eq!(packet.payload().as_ptr(), payload);
     assert_eq!(arena.available(), 0);
 

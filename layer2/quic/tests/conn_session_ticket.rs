@@ -58,11 +58,7 @@ fn ticket_survives_pto() {
     assert_ne!(server.view().recovery().unacked(Epoch::Application), 0);
     assert!(cache.take_tls13_ticket(&name).is_none());
 
-    let deadline = server
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("ticket loss arms PTO");
+    let deadline = server.view().next_timer().expect("ticket loss arms PTO");
     let probe_at = deadline + Duration::from_millis(1);
     assert_eq!(
         server.with_scope(|mut scope| scope.recovery().try_loss(probe_at)),

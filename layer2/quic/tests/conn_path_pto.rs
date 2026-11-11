@@ -33,7 +33,7 @@ fn candidate_preserves_pto() {
             (
                 state.in_flight(),
                 state.window(),
-                state.send_at(at),
+                view.send_at(at),
                 view.path().mtu(),
             )
         })
@@ -57,7 +57,7 @@ fn candidate_preserves_pto() {
         (
             state.in_flight(),
             state.window(),
-            state.next_timer().expect("unacknowledged stream PTO"),
+            view.next_timer().expect("unacknowledged stream PTO"),
             view.path().mtu() as usize,
         )
     })
@@ -90,7 +90,7 @@ fn candidate_preserves_pto() {
     let (sent, window, timer) = Pair::access(&mut server, handle, at, |conn| {
         let view = conn.view();
         let state = view.recovery();
-        (state.in_flight(), state.window(), state.next_timer())
+        (state.in_flight(), state.window(), view.next_timer())
     })
     .expect("staged congestion state");
     assert!(sent <= window && window - sent < mtu as u64);
@@ -153,7 +153,6 @@ fn candidate_preserves_journal() {
         .conn(server)
         .expect("active connection")
         .view()
-        .recovery()
         .next_timer()
         .expect("active PTO");
     let target = SocketAddr::from(([10, 0, 0, 1], 50_001));
@@ -170,7 +169,6 @@ fn candidate_preserves_journal() {
         .conn(server)
         .expect("candidate connection")
         .view()
-        .recovery()
         .send_at(at + Duration::from_millis(1));
     assert!(at < due);
     let flight = Capture::output(&mut pair.server, at).expect("journal pressure defers candidate");
@@ -202,7 +200,6 @@ fn candidate_preserves_journal() {
             .conn(server)
             .expect("acknowledged connection")
             .view()
-            .recovery()
             .send_at(at);
         let flight = Capture::output(&mut pair.server, at).expect("pending output");
         resumed |= flight.iter().any(|packet| packet.addr() == target);

@@ -45,7 +45,6 @@ fn retransmits_retiring_advertisement() {
                 .conn(handle)
                 .expect("live connection")
                 .view()
-                .recovery()
                 .send_at(now);
         } else {
             assert!(matches!(
@@ -56,7 +55,6 @@ fn retransmits_retiring_advertisement() {
                 .conn(handle)
                 .expect("live connection")
                 .view()
-                .recovery()
                 .next_timer()
                 .expect("unacknowledged advertisements arm PTO")
                 + Duration::from_nanos(1);
@@ -198,7 +196,6 @@ fn replenishes_before_retirement_within_slot_limit() {
             .conn(inbound)
             .expect("live server")
             .view()
-            .recovery()
             .send_at(now);
         let rotation = Count::relay_at(&mut server, &mut client, remote, send_at)
             .expect("authenticated rotation");
@@ -217,7 +214,6 @@ fn replenishes_before_retirement_within_slot_limit() {
             .conn(outbound)
             .expect("live client")
             .view()
-            .recovery()
             .send_at(send_at + Duration::from_millis(1));
         let retirement = Count::relay_at(&mut client, &mut server, local, retire_at)
             .expect("authenticated retirement");
@@ -356,7 +352,7 @@ fn reuses_rotated_slot() {
     Pin::new(&mut server).observe(live_at, |mut turn| turn.output().drain().count());
     let deadline = (server
         .conn(inbound)
-        .and_then(|conn| conn.view().recovery().next_timer()))
+        .and_then(|conn| conn.view().next_timer()))
     .expect("lost rotation control arms PTO");
     let probe_at = deadline + Duration::from_millis(1);
     let rotation = Count::relay_at(&mut server, &mut client, peer, probe_at).expect("CID relay_at");
@@ -440,10 +436,10 @@ fn reuses_rotated_slot() {
                 Pin::new(&mut client).observe(now, |turn| turn.deadline()),
                 server
                     .conn(inbound)
-                    .and_then(|conn| conn.view().recovery().next_timer()),
+                    .and_then(|conn| conn.view().next_timer()),
                 client
                     .conn(outbound)
-                    .and_then(|conn| conn.view().recovery().next_timer()),
+                    .and_then(|conn| conn.view().next_timer()),
             ]
             .into_iter()
             .flatten()
@@ -457,7 +453,6 @@ fn reuses_rotated_slot() {
             .conn(inbound)
             .expect("retirement retains the replacement CIDs")
             .view()
-            .recovery()
             .send_at(done);
         Count::relay_at(&mut server, &mut client, peer, fill_at).expect("CID relay_at");
         cycle_at = fill_at;
@@ -516,7 +511,6 @@ fn reuses_rotated_slot() {
         assert_eq!(server.handler().datagrams, 1);
         let bound = *recovery_bound.get_or_insert_with(|| {
             conn.view()
-                .recovery()
                 .next_timer()
                 .expect("pending output retains a recovery deadline")
         });

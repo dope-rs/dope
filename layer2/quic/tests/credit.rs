@@ -83,7 +83,6 @@ fn lost_fin_retransmits() {
 
     let timeout = client
         .view()
-        .recovery()
         .next_timer()
         .expect("FIN loss arms a recovery timer")
         + Duration::from_millis(1);
@@ -363,11 +362,7 @@ fn stop_freezes_stream_credit() {
             .as_deref(),
         Some(&b"defgh"[..])
     );
-    let now = pair
-        .server
-        .view()
-        .recovery()
-        .send_at(now + Duration::from_millis(30));
+    let now = pair.server.view().send_at(now + Duration::from_millis(30));
     pair.server
         .with_scope(|mut scope| scope.output().send(now))
         .1

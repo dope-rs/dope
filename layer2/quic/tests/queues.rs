@@ -41,7 +41,7 @@ fn traverses_after_removal() {
     let mut resets = Vec::new();
     let mut now = Instant::now();
     for _ in 0..256 {
-        now = client.view().recovery().send_at(now);
+        now = client.view().send_at(now);
         assert!(server.receive_from(&mut work, &mut client, now).is_ok());
         for (index, peer) in peers.iter().enumerate() {
             if index % 3 == 0 {
@@ -64,7 +64,7 @@ fn traverses_after_removal() {
                 resets.push(id);
             }
         }
-        now = server.view().recovery().send_at(now);
+        now = server.view().send_at(now);
         assert!(client.receive_from(&mut work, &mut server, now).is_ok());
         if resets.len() == 43
             && received

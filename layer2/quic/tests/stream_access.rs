@@ -384,10 +384,7 @@ fn stopped_peer_closed() {
     });
     let reset = sent + Duration::from_millis(1);
     Receiver::receive_from(&mut client, &mut wire, &mut server, reset).expect("reset delivery");
-    let ack = client
-        .view()
-        .recovery()
-        .send_at(reset + Duration::from_millis(30));
+    let ack = client.view().send_at(reset + Duration::from_millis(30));
     Receiver::receive_from(&mut server, &mut wire, &mut client, ack).expect("reset ACK");
     server.with_scope(|mut scope| {
         let mut streams = scope.streams();

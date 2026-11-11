@@ -63,7 +63,7 @@ fn server_respects_limit() {
     let mut blocked = false;
     let mut now = t0;
     for round in 0..16 {
-        if let Some(deadline) = server.view().recovery().next_timer() {
+        if let Some(deadline) = server.view().next_timer() {
             now = now.max(deadline) + Duration::from_millis(1);
             assert_eq!(
                 server.with_scope(|mut scope| scope.recovery().try_loss(now)),
@@ -99,7 +99,7 @@ fn server_respects_limit() {
     assert!(total < 3 * server.view().path().received());
     for _ in 0..2 {
         assert_eq!(
-            server.view().recovery().next_timer(),
+            server.view().next_timer(),
             None,
             "insufficient positive credit must not retain a PTO deadline"
         );
@@ -118,7 +118,7 @@ fn server_respects_limit() {
             .is_empty()
         );
     }
-    assert_eq!(server.view().recovery().next_timer(), None);
+    assert_eq!(server.view().next_timer(), None);
     let before = server.view().path().received();
     server
         .receive(&mut work, &mut [0u8; 1200], now)
@@ -127,7 +127,6 @@ fn server_respects_limit() {
     assert!(!server.view().path().is_valid());
     let due = server
         .view()
-        .recovery()
         .next_timer()
         .expect("raw credit restores the retained PTO deadline");
     now = now.max(due) + Duration::from_millis(1);
@@ -151,7 +150,6 @@ fn server_respects_limit() {
     assert!(!server.view().path().is_valid());
     let due = server
         .view()
-        .recovery()
         .next_timer()
         .expect("repeated Initial credit admits the next PTO");
     now = now.max(due) + Duration::from_millis(1);
@@ -219,7 +217,7 @@ fn close_waits_for_credit() -> Result<(), Error> {
     assert!((1..29).contains(&(3 * received - total)));
     let conn = server.conn(handle).expect("server");
     assert_eq!(conn.view().path().received(), received);
-    assert_eq!(conn.view().recovery().next_timer(), None);
+    assert_eq!(conn.view().next_timer(), None);
     assert!(!conn.view().path().is_valid());
     Capture::with_conn(&mut server, handle, now, |mut scope| {
         scope.lifecycle().close(Code::ZERO, Vec::new());
@@ -234,7 +232,6 @@ fn close_waits_for_credit() -> Result<(), Error> {
     assert!(closing.view().lifecycle().is_closing());
     let deadline = closing
         .view()
-        .recovery()
         .next_timer()
         .expect("terminal deadline survives amplification blocking");
     assert!(deadline > now);
@@ -273,7 +270,7 @@ fn close_waits_for_credit() -> Result<(), Error> {
     assert!(total <= 3 * (received + 1200));
     let closing = server.conn(handle).expect("emitted close owner retained");
     assert!(closing.view().lifecycle().is_closing());
-    assert_eq!(closing.view().recovery().next_timer(), Some(deadline));
+    assert_eq!(closing.view().next_timer(), Some(deadline));
     assert_eq!(srv_log.borrow().closed, [handle]);
     assert!(
         Capture::output(&mut server, deadline)

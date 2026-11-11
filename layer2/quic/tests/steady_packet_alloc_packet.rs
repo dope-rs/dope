@@ -182,7 +182,6 @@ fn initial_pto() {
     assert_eq!(batch.packets(), 1);
     let deadline = client
         .view()
-        .recovery()
         .next_timer()
         .expect("unacknowledged Initial CRYPTO must arm PTO");
 
@@ -270,7 +269,6 @@ fn application_pto() {
     assert_ne!(server.view().recovery().unacked(Epoch::Application), 0);
     let deadline = server
         .view()
-        .recovery()
         .next_timer()
         .expect("unacknowledged application CRYPTO must arm PTO");
     let probe_at = deadline + Duration::from_millis(1);

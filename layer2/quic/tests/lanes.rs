@@ -32,7 +32,7 @@ fn reuses_acked_lane() {
             .expect("available send credit");
         let mut received = Vec::with_capacity(len);
         for _ in 0..len {
-            now = client.view().recovery().send_at(now);
+            now = client.view().send_at(now);
             assert!(
                 server.receive_from(&mut work, &mut client, now).is_ok(),
                 "stream packet"
@@ -128,10 +128,7 @@ fn retire(first: usize, owners: usize) -> usize {
     let count = received.len();
     assert!(count >= first && count < first + 1_500);
     if owners == 3 {
-        now = client
-            .view()
-            .recovery()
-            .send_at(now + Duration::from_millis(1));
+        now = client.view().send_at(now + Duration::from_millis(1));
         let effects = client
             .with_scope(|mut scope| scope.output().send_effects(&mut batch, now, 1, 1_200))
             .expect("held fresh packet");

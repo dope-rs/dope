@@ -47,10 +47,7 @@ fn ack_bypasses_full_cwnd() {
         if batch.is_empty() {
             break;
         }
-        now = client
-            .view()
-            .recovery()
-            .send_at(now + Duration::from_nanos(1));
+        now = client.view().send_at(now + Duration::from_nanos(1));
     }
     let full = client.view().recovery().in_flight();
     assert!(

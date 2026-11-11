@@ -102,7 +102,7 @@ impl Server {
         work: &mut conn::Workspace,
         now: Instant,
     ) -> Result<(), Error> {
-        let now = client.view().recovery().send_at(now);
+        let now = client.view().send_at(now);
         let (packets, result) = client.with_scope(|mut scope| scope.output().send(now));
         result
             .map_err(Transfer::Output)

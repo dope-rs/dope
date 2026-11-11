@@ -167,14 +167,12 @@ fn rotates_before_retiring() {
     assert_eq!(closing.view().lifecycle().state(), State::Closing);
     let client_deadline = closing
         .view()
-        .recovery()
         .next_timer()
         .expect("client terminal deadline");
     let draining = server.conn(inbound).expect("draining server retained");
     assert_eq!(draining.view().lifecycle().state(), State::Draining);
     let server_deadline = draining
         .view()
-        .recovery()
         .next_timer()
         .expect("server terminal deadline");
     assert!(client_deadline > close_at);

@@ -175,11 +175,7 @@ fn initial_close_floor() {
         } if error_code.get() == 0x0c && reason.is_empty()
     ));
     assert_eq!(client.view().lifecycle().state(), State::Closing);
-    let deadline = client
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("terminal deadline");
+    let deadline = client.view().next_timer().expect("terminal deadline");
     client
         .with_scope(|mut scope| scope.recovery().try_loss(deadline))
         .expect("terminal expiry");
@@ -238,11 +234,7 @@ fn closes_application() {
             matches!(server.view().lifecycle().close(), Some(Close::PeerApplication { error_code, reason: Ok(reason) }) if error_code.get() == 401 && reason == b"expired")
         );
         for conn in [&mut client, &mut server] {
-            let deadline = conn
-                .view()
-                .recovery()
-                .next_timer()
-                .expect("terminal deadline");
+            let deadline = conn.view().next_timer().expect("terminal deadline");
             conn.with_scope(|mut scope| scope.recovery().try_loss(deadline))
                 .expect("terminal expiry");
             assert!(conn.view().lifecycle().is_closed());
@@ -400,7 +392,6 @@ fn unavailable_close_output_still_expires() {
     assert!(batch.is_empty());
     let deadline = client
         .view()
-        .recovery()
         .next_timer()
         .expect("output independent deadline");
     assert_eq!(deadline.duration_since(now), Duration::from_millis(2_997));

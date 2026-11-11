@@ -145,11 +145,9 @@ fn returns_timeout_leases() {
     ));
     Capture::discard(&mut server, started).expect("pooled TLS discard");
     let conn = (client.conn(handle)).expect("timed client connection remains live");
-    let local_at =
-        (conn.view().recovery().next_timer()).expect("timed client connection has a deadline");
+    let local_at = (conn.view().next_timer()).expect("timed client connection has a deadline");
     let conn = (server.conn(peer)).expect("timed server connection remains live");
-    let peer_at =
-        (conn.view().recovery().next_timer()).expect("timed server connection has a deadline");
+    let peer_at = (conn.view().next_timer()).expect("timed server connection has a deadline");
     let expired = local_at.max(peer_at) + Duration::from_secs(3);
     assert!(expired < started + Duration::from_secs(30));
     Pin::new(&mut client).observe(expired, |mut turn| {
@@ -292,12 +290,7 @@ fn client_opening_starts_at_admission_and_survives_retry() {
         })
         .expect("client admission");
     assert_eq!(
-        client
-            .conn(handle)
-            .expect("opening")
-            .view()
-            .recovery()
-            .next_timer(),
+        client.conn(handle).expect("opening").view().next_timer(),
         Some(expires)
     );
     let packets = Capture::take(&mut client, started + Duration::from_secs(20))
@@ -318,7 +311,6 @@ fn client_opening_starts_at_admission_and_survives_retry() {
             .conn(handle)
             .expect("same opening")
             .view()
-            .recovery()
             .next_timer(),
         Some(expires)
     );

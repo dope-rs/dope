@@ -52,11 +52,7 @@ fn terminal_send_preserves_cause_when_full() {
             pair.server
                 .receive_from(&mut pair.work, &mut pair.client, sent)
                 .expect("FIN delivery");
-            let ack = pair
-                .server
-                .view()
-                .recovery()
-                .send_at(sent + Duration::from_millis(30));
+            let ack = pair.server.view().send_at(sent + Duration::from_millis(30));
             pair.client
                 .receive_from(&mut pair.work, &mut pair.server, ack)
                 .expect("FIN acknowledgement");

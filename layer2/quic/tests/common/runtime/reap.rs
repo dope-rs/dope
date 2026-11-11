@@ -150,7 +150,6 @@ impl Credit {
                 .conn(handle)
                 .ok_or(CreditError::Missing)?
                 .view()
-                .recovery()
                 .next_timer();
             let Some(due) = due else { break };
             credit.advance(due)?;
@@ -159,7 +158,6 @@ impl Credit {
             .conn(handle)
             .ok_or(CreditError::Missing)?
             .view()
-            .recovery()
             .next_timer();
         credit.blocked = credit.left()?;
         let added = raw
@@ -173,7 +171,6 @@ impl Credit {
             .conn(handle)
             .ok_or(CreditError::Missing)?
             .view()
-            .recovery()
             .next_timer()
             .ok_or(CreditError::Runtime(Error::Deadline(credit.now)))?;
         credit.advance(due)?;

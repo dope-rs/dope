@@ -95,7 +95,7 @@ fn cancel<B: Recv>(work: &mut Workspace, released: usize) {
                 send.finish(stream).expect("stream FIN");
             }
         });
-        now = sender.view().recovery().send_at(now);
+        now = sender.view().send_at(now);
         let (packets, result) = sender.with_scope(|mut scope| scope.output().send(now));
         result.expect("sender output");
         assert_eq!(packets.len(), 1);

@@ -51,10 +51,7 @@ fn copied_cache_lifecycle() {
     let sent = Instant::now() + Duration::from_secs(1);
     let received = server.receive_from(&mut work, &mut client, sent);
     assert!(received.is_ok());
-    let ack = server
-        .view()
-        .recovery()
-        .send_at(sent + Duration::from_millis(30));
+    let ack = server.view().send_at(sent + Duration::from_millis(30));
     let received = client.receive_from(&mut work, &mut server, ack);
     assert!(received.is_ok());
 
@@ -72,10 +69,7 @@ fn copied_cache_lifecycle() {
     let sent = ack + Duration::from_secs(1);
     let received = server.receive_from(&mut work, &mut client, sent);
     assert!(received.is_ok());
-    let ack = server
-        .view()
-        .recovery()
-        .send_at(sent + Duration::from_millis(30));
+    let ack = server.view().send_at(sent + Duration::from_millis(30));
     let received = client.receive_from(&mut work, &mut server, ack);
     assert!(received.is_ok());
     assert_eq!(client.stream_state().cached_bytes(), 64);
@@ -96,10 +90,7 @@ fn copied_cache_lifecycle() {
     let sent = ack + Duration::from_secs(1);
     let received = server.receive_from(&mut work, &mut client, sent);
     assert!(received.is_ok());
-    let ack = server
-        .view()
-        .recovery()
-        .send_at(sent + Duration::from_millis(30));
+    let ack = server.view().send_at(sent + Duration::from_millis(30));
     let received = client.receive_from(&mut work, &mut server, ack);
     assert!(received.is_ok());
 
@@ -141,10 +132,7 @@ fn borrowed_cache_block() {
     let sent = Instant::now() + Duration::from_secs(1);
     let received = server.receive_from(&mut work, &mut client, sent);
     assert!(received.is_ok());
-    let ack = server
-        .view()
-        .recovery()
-        .send_at(sent + Duration::from_millis(30));
+    let ack = server.view().send_at(sent + Duration::from_millis(30));
     let received = client.receive_from(&mut work, &mut server, ack);
     assert!(received.is_ok());
     assert_eq!(client.stream_state().cached_bytes(), 64);

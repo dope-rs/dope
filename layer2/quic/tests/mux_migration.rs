@@ -394,10 +394,8 @@ fn new_peer_cid_resumes_pending_path_validation() {
     );
     dispatch::Capture::send(&mut server, handle, b"resumed".to_vec(), at)
         .expect("application output resumes");
-    let send_at = Pair::access(&mut server, handle, at, |conn| {
-        conn.view().recovery().send_at(at)
-    })
-    .expect("native send deadline");
+    let send_at = Pair::access(&mut server, handle, at, |conn| conn.view().send_at(at))
+        .expect("native send deadline");
     let output = dispatch::Capture::output(&mut server, send_at).expect("resumed output");
     let mut payloads = Vec::new();
     for mut packet in output {

@@ -56,12 +56,7 @@ fn server_initial_loss() {
                     .expect("client must ignore Handshake packets before the server Initial");
             }
         }
-        let mut at = pair
-            .server
-            .view()
-            .recovery()
-            .next_timer()
-            .expect("server PTO");
+        let mut at = pair.server.view().next_timer().expect("server PTO");
         pair.server
             .with_scope(|mut scope| scope.recovery().try_loss(at))
             .expect("server must arm its retransmission");
@@ -106,8 +101,8 @@ fn server_initial_loss() {
                 break;
             }
             at = [
-                pair.client.view().recovery().next_timer(),
-                pair.server.view().recovery().next_timer(),
+                pair.client.view().next_timer(),
+                pair.server.view().next_timer(),
             ]
             .into_iter()
             .flatten()
@@ -142,7 +137,6 @@ fn padded_ack_in_flight() {
         .expect("client key admission");
     let pto = client
         .view()
-        .recovery()
         .next_timer()
         .expect("outstanding client CRYPTO must retain PTO");
     let window = client.view().recovery().window();
@@ -150,10 +144,7 @@ fn padded_ack_in_flight() {
     let mut ack = Batch::default();
     let mut blocked = false;
     for number in 0..=window / 1200 {
-        at = client
-            .view()
-            .recovery()
-            .send_at(at + Duration::from_millis(1));
+        at = client.view().send_at(at + Duration::from_millis(1));
         assert!(at < pto, "ACK fixture must not expire the CRYPTO PTO");
         let mut ping = Initial::new(prefix.scid.into_slice(), prefix.dcid.into_slice(), number)
             .seal_with(&[frame::TYPE_PING], &mut seal)
@@ -165,7 +156,7 @@ fn padded_ack_in_flight() {
         client
             .with_scope(|mut scope| scope.output().send_batch(&mut ack, at, 1, 1200))
             .expect("client ACK admission");
-        assert_eq!(client.view().recovery().next_timer(), Some(pto));
+        assert_eq!(client.view().next_timer(), Some(pto));
         if window.saturating_sub(before) < 1200 {
             assert!(ack.is_empty(), "padding must obey the congestion window");
             assert_eq!(client.view().recovery().in_flight(), before);
@@ -228,10 +219,7 @@ fn retry_ack_no_pad() {
     let mut at = now;
     let mut batch = Batch::default();
     for _ in 0..window / 1200 {
-        at = client
-            .view()
-            .recovery()
-            .send_at(at + Duration::from_millis(1));
+        at = client.view().send_at(at + Duration::from_millis(1));
         client
             .with_scope(|mut scope| scope.output().send_batch(&mut batch, at, 1, 1200))
             .expect("retried CRYPTO must fill the window");
@@ -240,13 +228,9 @@ fn retry_ack_no_pad() {
     assert_eq!(client.view().recovery().in_flight(), window);
     let pto = client
         .view()
-        .recovery()
         .next_timer()
         .expect("retried CRYPTO must retain PTO");
-    at = client
-        .view()
-        .recovery()
-        .send_at(at + Duration::from_millis(1));
+    at = client.view().send_at(at + Duration::from_millis(1));
     assert!(at < pto);
     let mut seal = Raw::initial(&retry::CLIENT_CID, Side::Server, 0).expect("retried server keys");
     let mut ping = Initial::new(prefix.scid.into_slice(), &retry::CLIENT_CID, 0)
@@ -260,7 +244,7 @@ fn retry_ack_no_pad() {
         .expect("unpadded ACK must pass a full window");
     assert_eq!(batch.byte_len(), 1200);
     assert_eq!(client.view().recovery().in_flight(), window);
-    assert_eq!(client.view().recovery().next_timer(), Some(pto));
+    assert_eq!(client.view().next_timer(), Some(pto));
     let packet = batch.iter_mut().next().expect("client Initial ACK");
     let head = Prefix::decode(packet).expect("retried Initial prefix");
     assert_eq!(head.token, token);
@@ -323,7 +307,6 @@ fn probe_discards_initial() {
     }
     let at = client
         .view()
-        .recovery()
         .next_timer()
         .expect("client Handshake fallback PTO");
     client

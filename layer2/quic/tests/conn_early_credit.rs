@@ -61,12 +61,13 @@ fn early_flow_waits_for_credit() {
                 .expect("early flight")
                 .is_empty()
         );
-        let recovery = client.conn(handle).expect("client").view().recovery();
+        let view = client.conn(handle).expect("client").view();
+        let recovery = view.recovery();
         assert!(
             recovery.unacked(conn::Epoch::Application) != 0,
             "credit {credit}"
         );
-        let now = recovery.send_at(now);
+        let now = view.send_at(now);
         assert!(
             Capture::output(&mut client, now)
                 .expect("finite discovery")
@@ -161,7 +162,7 @@ fn early_control_credit() {
     let now = credit.now;
     let conn = server.conn(handle).expect("server");
     assert_eq!(conn.view().path().received(), credit.received);
-    assert_eq!(conn.view().recovery().next_timer(), None);
+    assert_eq!(conn.view().next_timer(), None);
     assert!(!conn.view().lifecycle().is_ready());
     assert!(!conn.view().path().is_valid());
     Capture::with_conn(&mut server, handle, now, |mut scope| {
@@ -181,12 +182,7 @@ fn early_control_credit() {
             .is_empty()
     );
     assert_eq!(
-        server
-            .conn(handle)
-            .expect("server")
-            .view()
-            .recovery()
-            .next_timer(),
+        server.conn(handle).expect("server").view().next_timer(),
         None
     );
     let due = Pin::new(&mut server).observe(now, |turn| turn.deadline());
@@ -201,11 +197,7 @@ fn early_control_credit() {
     Capture::receive(&mut server, CLIENT, &mut raw, now).expect("raw ingress credit");
     let conn = server.conn(handle).expect("server");
     assert_eq!(conn.view().path().received(), credit.received + 1200);
-    let pto = conn
-        .view()
-        .recovery()
-        .next_timer()
-        .expect("retained future PTO");
+    let pto = conn.view().next_timer().expect("retained future PTO");
     let unacked = conn.view().recovery().unacked(conn::Epoch::Application);
     let due = Pin::new(&mut server)
         .observe(now, |turn| turn.deadline())

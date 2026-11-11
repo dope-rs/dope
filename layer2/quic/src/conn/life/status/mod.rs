@@ -13,7 +13,7 @@ use o3::buffer::{self, resident};
 use dope::core::driver::schedule::clock;
 
 use crate::conn;
-use crate::conn::output::transmit::permit;
+use crate::conn::output::transmit::permit::{self, fit};
 use crate::conn::stream::access;
 use crate::stream;
 
@@ -65,8 +65,25 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> View<'co
         routing::Path::new(self.connection)
     }
 
-    pub fn recovery(&self) -> recovery::View<'conn, DOMAIN, B, D> {
-        recovery::View::new(self.connection)
+    pub fn recovery(&self) -> recovery::Metrics<'conn, DOMAIN, B, D> {
+        recovery::Metrics::new(self.connection)
+    }
+
+    pub fn next_timer(&self) -> Option<time::Instant> {
+        fit::timer_deadline(&permit::Permit::new(self.connection))
+    }
+
+    pub fn send_at(&self, ready_at: time::Instant) -> time::Instant {
+        match self
+            .connection
+            .egress
+            .cc
+            .release()
+            .or(self.connection.egress.activity.last_activity)
+        {
+            Some(at) => at.max(ready_at),
+            None => ready_at,
+        }
     }
 
     pub fn peer(&self) -> routing::Peer<'conn, DOMAIN, B, D> {

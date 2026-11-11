@@ -262,7 +262,6 @@ fn blocked_head_keeps_smaller_reservation() {
         .conn(handle)
         .expect("first connection")
         .view()
-        .recovery()
         .next_timer()
         .expect("probe deadline");
     Capture::drive(&mut client, now).expect("blocked probe");

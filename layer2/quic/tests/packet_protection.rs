@@ -248,7 +248,7 @@ fn integrity_limit_stops_packet_processing() {
     pair.client
         .with_scope(|mut scope| scope.datagrams().try_send(vec![0x53; 64]))
         .expect("payload keeps the tag outside the header sample");
-    now = pair.client.view().recovery().send_at(now);
+    now = pair.client.view().send_at(now);
     let (packets, result) = pair.client.with_scope(|mut scope| scope.output().send(now));
     result.expect("protected datagram");
     let valid = packets
@@ -318,11 +318,7 @@ fn confidentiality_limit_preserves_final_close() {
             .with_scope(|mut scope| scope.datagrams().try_send(vec![value; 64]))
             .expect("queued datagram");
     }
-    now = pair
-        .server
-        .view()
-        .recovery()
-        .send_at(now + Duration::from_secs(1));
+    now = pair.server.view().send_at(now + Duration::from_secs(1));
     let mut batch = Batch::default();
     pair.server
         .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 64, 1200))
@@ -337,7 +333,7 @@ fn confidentiality_limit_preserves_final_close() {
             Some(vec![value; 64]),
         );
     }
-    now = pair.server.view().recovery().send_at(now);
+    now = pair.server.view().send_at(now);
     pair.client
         .receive_from(&mut pair.work, &mut pair.server, now)
         .expect("the final legal encryption carries CONNECTION_CLOSE");

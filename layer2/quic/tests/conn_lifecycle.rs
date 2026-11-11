@@ -65,11 +65,7 @@ fn close_closes_peer() {
     result.expect("draining output");
     assert!(packets.is_empty());
     for conn in [&mut client, &mut server] {
-        let deadline = conn
-            .view()
-            .recovery()
-            .next_timer()
-            .expect("terminal deadline");
+        let deadline = conn.view().next_timer().expect("terminal deadline");
         conn.with_scope(|mut scope| scope.recovery().try_loss(deadline))
             .expect("terminal expiry");
         assert!(conn.view().lifecycle().is_closed());

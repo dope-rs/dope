@@ -123,10 +123,7 @@ fn delayed_ack() {
         server
             .receive_all(&mut work, &mut batches.original, sent_at)
             .expect("original stream packet must pass server ingress");
-        let ack_at = server
-            .view()
-            .recovery()
-            .send_at(sent_at + Duration::from_millis(1));
+        let ack_at = server.view().send_at(sent_at + Duration::from_millis(1));
         server
             .with_scope(|mut scope| {
                 scope
@@ -138,7 +135,6 @@ fn delayed_ack() {
 
         let deadline = client
             .view()
-            .recovery()
             .next_timer()
             .expect("unacknowledged stream packet must arm PTO");
         let probe_at = deadline + Duration::from_millis(1);
@@ -157,10 +153,7 @@ fn delayed_ack() {
         server
             .receive_all(&mut work, &mut batches.probe, probe_at)
             .expect("stream probe must pass server ingress");
-        let late_at = server
-            .view()
-            .recovery()
-            .send_at(probe_at + Duration::from_millis(30));
+        let late_at = server.view().send_at(probe_at + Duration::from_millis(30));
         server
             .with_scope(|mut scope| {
                 scope

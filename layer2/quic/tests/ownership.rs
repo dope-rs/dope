@@ -118,10 +118,7 @@ fn ack_releases_owner_once() {
     let sent_at = Instant::now() + Duration::from_secs(1);
     let received = server.receive_from(&mut work, &mut client, sent_at);
     assert!(received.is_ok(), "client flight must reach server");
-    let ack_at = server
-        .view()
-        .recovery()
-        .send_at(sent_at + Duration::from_millis(1));
+    let ack_at = server.view().send_at(sent_at + Duration::from_millis(1));
     let (packets, result) = server.with_scope(|mut scope| scope.output().send(ack_at));
     result.expect("configured server journals must admit the crossing ACK");
     let copies = packets.clone();
@@ -177,10 +174,7 @@ fn ack_maps_owned_part() {
     let sent_at = Instant::now() + Duration::from_secs(1);
     let received = server.receive_from(&mut work, &mut client, sent_at);
     assert!(received.is_ok(), "client flight must reach server");
-    let ack_at = server
-        .view()
-        .recovery()
-        .send_at(sent_at + Duration::from_millis(1));
+    let ack_at = server.view().send_at(sent_at + Duration::from_millis(1));
     let (packets, result) = server.with_scope(|mut scope| scope.output().send(ack_at));
     result.expect("configured server journals must admit the split-ack output");
     let mut releases = Vec::new();
@@ -267,7 +261,7 @@ fn ack_folds_owners() {
     let mut releases = Vec::new();
     for partial in [true, true, false] {
         let before = client.stream_state().wire_bytes();
-        now = client.view().recovery().send_at(now);
+        now = client.view().send_at(now);
         let effects = client
             .with_scope(|mut scope| scope.output().send_effects(&mut batch, now, 1, 1200))
             .expect("one stream packet fits the journal");
@@ -275,10 +269,7 @@ fn ack_folds_owners() {
         server
             .receive_all(&mut work, &mut batch, now)
             .expect("client flight must reach server");
-        let ack_at = server
-            .view()
-            .recovery()
-            .send_at(now + Duration::from_millis(30));
+        let ack_at = server.view().send_at(now + Duration::from_millis(30));
         let (packets, result) = server.with_scope(|mut scope| scope.output().send(ack_at));
         result.expect("configured server journals must admit the release ACK");
         for mut packet in packets {
@@ -460,10 +451,7 @@ fn late_write_is_retired() {
     let response = request + Duration::from_secs(1);
     let received = client.receive_from(&mut work, &mut server, response);
     assert!(received.is_ok(), "response must reach client");
-    let ack_at = client
-        .view()
-        .recovery()
-        .send_at(response + Duration::from_millis(1));
+    let ack_at = client.view().send_at(response + Duration::from_millis(1));
     let received = server.receive_from(&mut work, &mut client, ack_at);
     assert!(received.is_ok(), "acknowledgement must reach server");
 
