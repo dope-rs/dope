@@ -1,13 +1,9 @@
-use core::{num::NonZero, pin, task::Poll};
+use core::{num::NonZero, pin};
 
 use o3::{depot, depot::array};
 
 use crate::{
-    context::wake,
-    core::driver::schedule::ready::{
-        task,
-        task::{Error, pool, topology},
-    },
+    core::driver::schedule::ready::{task, task::topology},
     task::{batch, storage::caps},
 };
 
@@ -46,7 +42,7 @@ pub(crate) struct Index<const N: usize>(NonZero<u16>);
 #[pin_project::pin_project(!Unpin)]
 pub(crate) struct Bindings<'d, const N: usize> {
     #[pin]
-    items: [crate::task::raw::Binding<'d, Index<N>>; N],
+    items: [task::raw::Node<'d, Index<N>>; N],
     capacity: caps::Slots<N>,
 }
 
@@ -117,7 +113,7 @@ unsafe impl<const N: usize> topology::raw::Index for Index<N> {
 impl<'d, const N: usize> Bindings<'d, N> {
     pub(in crate::task) fn new() -> Self {
         Self {
-            items: [const { crate::task::raw::Binding::new() }; N],
+            items: [const { task::raw::Node::new() }; N],
             capacity: caps::Slots::<N>::new(),
         }
     }
@@ -125,37 +121,11 @@ impl<'d, const N: usize> Bindings<'d, N> {
     pub(in crate::task) fn at(
         self: pin::Pin<&Self>,
         index: Index<N>,
-    ) -> pin::Pin<&crate::task::raw::Binding<'d, Index<N>>> {
+    ) -> pin::Pin<&task::raw::Node<'d, Index<N>>> {
         let items = self.project_ref().items;
         // SAFETY: Index<N> proves the selected element is in bounds, and a
         // pinned array pins each element for this projection's lifetime.
         unsafe { items.map_unchecked(|items| items.get_unchecked(index.get())) }
-    }
-
-    pub(crate) fn poll_pool<'a, D, T>(
-        self: pin::Pin<&'a Self>,
-        edge: topology::Edge<'a, 'd, Index<N>>,
-        pool: &pool::Pool<'d, D, N>,
-        root: pool::Root<'d>,
-        poll: impl FnOnce(wake::Waker<'d>) -> Poll<T>,
-    ) -> Result<Poll<T>, Error>
-    where
-        'd: 'a,
-    {
-        let binding = self.at(edge.local());
-        // SAFETY: the edge selects the exact binding in the same pinned
-        // scheduler owner, and `pool` is exclusively lent to that owner.
-        unsafe { crate::task::raw::Binding::poll_pool(binding, edge, pool, root, poll) }
-    }
-
-    pub(crate) fn reclaim_pool<D>(
-        self: pin::Pin<&Self>,
-        index: Index<N>,
-        pool: &pool::Pool<'d, D, N>,
-        root: pool::Root<'d>,
-    ) {
-        let binding = self.at(index);
-        crate::task::raw::Binding::reclaim_pool(binding, pool, root)
     }
 }
 

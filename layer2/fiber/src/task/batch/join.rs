@@ -196,7 +196,10 @@ where
             let pool = *this.pool;
             for index in slots::Index::until(this.state.next()) {
                 this.table.as_mut().cancel(index, |bindings| {
-                    bindings.reclaim_pool(index, &pool.tasks, root);
+                    if let Some(bound) = task::raw::Binding::get(bindings.at(index)) {
+                        // SAFETY: this node was admitted by this exact pool and root.
+                        unsafe { bound.reclaim_pool(&pool.tasks, root) };
+                    }
                 });
             }
         }
@@ -216,26 +219,33 @@ where
     F: abi::Fiber<'d>,
 {
     match table.as_mut().visit(index, (), |fiber, bindings, ()| {
-        let poll = bindings.poll_pool(edge, pool, root, |wake| {
-            match permit {
-                Some(permit) => unsafe {
-                    context::raw::Live::new(fiber).child_with(context.as_mut(), wake, permit)
-                },
-                None => {
-                    // SAFETY: progress consumes its original PollCall admission
-                    // for exactly the first live child; later children carry permits.
-                    // Table::visit ends this child's live state on Ready.
-                    unsafe { context::raw::Live::new(fiber).child(context.as_mut(), wake) }
-                }
+        let node = bindings.at(edge.local());
+        let bound = match task::raw::Binding::get(node) {
+            Some(bound) => bound,
+            None => {
+                let admit = match pool.try_admit(root) {
+                    Ok(admit) => admit,
+                    Err(error) => return slots::Action::Keep(Err(error)),
+                };
+                // SAFETY: this vacant pinned node and edge belong to this pool.
+                unsafe { task::raw::Binding::bind_leased(node, admit, edge) }
             }
-        });
-        let poll = match poll {
-            Ok(poll) => poll,
-            Err(error) => return slots::Action::Keep(Err(error)),
+        };
+        let wake = context::wake::Waker::from_parent(bound.waker());
+        // SAFETY: Table::visit retains this live pinned fiber until completion.
+        // Only the first child can consume the original PollCall admission.
+        let poll = unsafe {
+            let live = context::raw::Live::new(fiber);
+            match permit {
+                Some(permit) => live.child_with(context.as_mut(), wake, permit),
+                None => live.child(context.as_mut(), wake),
+            }
         };
         let Poll::Ready(output) = poll else {
             return slots::Action::Keep(Ok(state::Completion::Pending));
         };
+        // SAFETY: this node was admitted by this exact pool and root.
+        unsafe { bound.reclaim_pool(pool, root) };
         slots::Action::Complete(output, Ok(state::Completion::Ready))
     }) {
         slots::Phase::Live(result) => result,

@@ -8,7 +8,6 @@ use crate::{
     core::driver::schedule::{app, ready::task},
     task::{
         group::ready::Ready,
-        raw::Binding,
         storage::slots::{Bindings, Index},
     },
 };
@@ -174,32 +173,42 @@ where
             let attach = ready.attach(index);
 
             let mut slot = index.project(this.slots.as_mut());
-            let binding = this.bindings.as_ref().at(index);
-            // SAFETY: this member selects this group's initialized pinned fiber
-            // and binding. Only the initial admission can omit a new child credit.
-            let poll = unsafe {
-                Binding::poll_domain(binding, attach, this.domain, |wake| {
-                    let fiber = slot
-                        .as_mut()
-                        .map_unchecked_mut(|slot| slot.assume_init_mut());
-                    let live = context::raw::Live::new(fiber);
-                    match permit {
-                        Some(permit) => live.child_with(context.as_mut(), wake, permit),
-                        None => live.child(context.as_mut(), wake),
-                    }
-                })
-            };
-            let (output, claim) = match poll {
-                Err(error) => {
-                    member.retry();
-                    return Drive::Failed {
-                        completed: done.len(),
-                        error: Error(error),
+            let node = this.bindings.as_ref().at(index);
+            let bound = match task::raw::Binding::get(node) {
+                Some(bound) => bound,
+                None => {
+                    let admit = match this.domain.try_admit() {
+                        Ok(admit) => admit,
+                        Err(error) => {
+                            member.retry();
+                            return Drive::Failed {
+                                completed: done.len(),
+                                error: Error(error),
+                            };
+                        }
                     };
+                    // SAFETY: this vacant pinned node and edge belong to this domain.
+                    unsafe { task::raw::Binding::bind_leased(node, admit, attach) }
                 }
-                Ok(Poll::Pending) => continue,
-                Ok(Poll::Ready(done)) => done,
             };
+            let wake = wake::Waker::from_parent(bound.waker());
+            // SAFETY: this member selects this group's initialized pinned fiber.
+            // Only the initial admission can omit a new child credit.
+            let poll = unsafe {
+                let fiber = slot
+                    .as_mut()
+                    .map_unchecked_mut(|slot| slot.assume_init_mut());
+                let live = context::raw::Live::new(fiber);
+                match permit {
+                    Some(permit) => live.child_with(context.as_mut(), wake, permit),
+                    None => live.child(context.as_mut(), wake),
+                }
+            };
+            let Poll::Ready(output) = poll else {
+                continue;
+            };
+            // SAFETY: this node was admitted by this group's exact domain.
+            let claim = unsafe { bound.reclaim(this.domain) };
             match claim {
                 task::Reclaim::Reusable => member.release(),
                 task::Reclaim::Retired => member.retire(),
@@ -236,7 +245,10 @@ impl<'d, F, const N: usize> PinnedDrop for Group<'d, F, N> {
         let mut live = this.ready.live();
         while let Some(index) = live.first() {
             live.remove(index);
-            let _ = Binding::reclaim(this.bindings.as_ref().at(index), this.domain);
+            if let Some(bound) = task::raw::Binding::get(this.bindings.as_ref().at(index)) {
+                // SAFETY: this node was admitted by this group's exact domain.
+                let _ = unsafe { bound.reclaim(this.domain) };
+            }
             let slot = index.project(this.slots.as_mut());
             // SAFETY: live retains each initialized fiber until this sole drop.
             unsafe { slot.get_unchecked_mut().assume_init_drop() };
