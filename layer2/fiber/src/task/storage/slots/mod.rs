@@ -6,7 +6,7 @@ use crate::{
     context::wake,
     core::driver::schedule::ready::{
         task,
-        task::{Domain, Error, Reclaim, pool, topology},
+        task::{Error, pool, topology},
     },
     task::{batch, storage::caps},
 };
@@ -16,7 +16,6 @@ pub(crate) mod raw;
 pub(crate) enum Action<O, R> {
     Keep(R),
     Complete(O, R),
-    Vacate(R),
 }
 
 pub(crate) enum Phase<I, R> {
@@ -76,6 +75,11 @@ impl<const N: usize> Index<N> {
         (self.0.get() - 1) as usize
     }
 
+    pub(in crate::task) fn project<T>(self, items: pin::Pin<&mut [T; N]>) -> pin::Pin<&mut T> {
+        // SAFETY: this index is below N, and a pinned array pins each element.
+        unsafe { items.map_unchecked_mut(|items| items.get_unchecked_mut(self.get())) }
+    }
+
     /// Mints the niche encoding for an index already proven to be below `N`.
     /// # Safety
     /// `raw` must be below the element count `N`, which is at most `u16::MAX`.
@@ -111,14 +115,14 @@ unsafe impl<const N: usize> topology::raw::Index for Index<N> {
 }
 
 impl<'d, const N: usize> Bindings<'d, N> {
-    fn new() -> Self {
+    pub(in crate::task) fn new() -> Self {
         Self {
             items: [const { crate::task::raw::Binding::new() }; N],
             capacity: caps::Slots::<N>::new(),
         }
     }
 
-    fn at(
+    pub(in crate::task) fn at(
         self: pin::Pin<&Self>,
         index: Index<N>,
     ) -> pin::Pin<&crate::task::raw::Binding<'d, Index<N>>> {
@@ -126,30 +130,6 @@ impl<'d, const N: usize> Bindings<'d, N> {
         // SAFETY: Index<N> proves the selected element is in bounds, and a
         // pinned array pins each element for this projection's lifetime.
         unsafe { items.map_unchecked(|items| items.get_unchecked(index.get())) }
-    }
-
-    pub(crate) fn poll_domain<'a, D, T>(
-        self: pin::Pin<&'a Self>,
-        edge: topology::Edge<'a, 'd, Index<N>>,
-        domain: &mut Domain<'d, D, N>,
-        poll: impl FnOnce(wake::Waker<'d>) -> Poll<T>,
-    ) -> Result<Poll<(T, Reclaim)>, Error>
-    where
-        'd: 'a,
-    {
-        let binding = self.at(edge.local());
-        // SAFETY: the edge selects the exact binding in the same pinned
-        // scheduler owner, which reclaims it before either endpoint is dropped.
-        unsafe { crate::task::raw::Binding::poll_domain(binding, edge, domain, poll) }
-    }
-
-    pub(crate) fn reclaim<D>(
-        self: pin::Pin<&Self>,
-        index: Index<N>,
-        domain: &mut Domain<'d, D, N>,
-    ) -> Option<Reclaim> {
-        let binding = self.at(index);
-        crate::task::raw::Binding::reclaim(binding, domain)
     }
 
     pub(crate) fn poll_pool<'a, D, T>(
@@ -244,11 +224,7 @@ impl<'d, F, O, const N: usize> Table<'d, F, O, N> {
     ) -> (pin::Pin<&mut Task<F, O>>, pin::Pin<&Bindings<'d, N>>) {
         let this = self.project();
         let bindings = this.bindings.into_ref();
-        let slots = this.slots;
-        // SAFETY: Index<N> proves the selected element is in bounds. The
-        // projection keeps the binding and slot borrows disjoint.
-        let slot = unsafe { slots.map_unchecked_mut(|items| items.get_unchecked_mut(index.get())) };
-        (slot, bindings)
+        (index.project(this.slots), bindings)
     }
 
     pub(in crate::task) fn drain_exact(
@@ -258,13 +234,7 @@ impl<'d, F, O, const N: usize> Table<'d, F, O, N> {
         let mut slots = self.project().slots;
         array::Vec::from_fn(complete.len(), |slot| {
             let index = Index::from_vacant(&slot);
-            // SAFETY: the constructor's admitted ordinal is below N and this
-            // projection retains the exact pinned table's exclusive borrow.
-            let entry = unsafe {
-                slots
-                    .as_mut()
-                    .map_unchecked_mut(|slots| slots.get_unchecked_mut(index.get()))
-            };
+            let entry = index.project(slots.as_mut());
             // SAFETY: this owner retains Completed until its last admitted output
             // is taken; no table mutation can intervene or revisit an ordinal.
             unsafe { raw::Done::exact(entry) }.take()

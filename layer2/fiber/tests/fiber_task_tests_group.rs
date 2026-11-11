@@ -255,9 +255,10 @@ fn hot_path_allocates_none() {
             let root = (root).expect("ready slot");
             let target = root.target();
             let parent = RootWaker::from(target);
-            let (group, (allocs, bytes)) =
-                Tracker::usage(|| Group::<Ready<usize>, 16>::try_with(parent, from_fn(Ready::new)));
-            assert_eq!((allocs, bytes), (0, 0));
+            let measured = Tracker::begin();
+            let group = Group::<Ready<usize>, 16>::try_with(parent, from_fn(Ready::new));
+            let usage = measured.finish();
+            assert_eq!((usage.allocations, usage.allocated_bytes), (0, 0));
             let group = (group).expect("inline group allocation");
             let mut group = pin!(group);
             assert!(group.len() == Len::MAX);

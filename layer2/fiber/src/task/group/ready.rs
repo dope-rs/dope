@@ -222,6 +222,10 @@ impl<'d, const N: usize> Ready<'d, N> {
     pub(super) fn len(&self) -> array::Len<N> {
         self.members.len()
     }
+
+    pub(super) fn live(&self) -> bits::Set<Index<N>, N> {
+        self.members.0.get().live
+    }
 }
 
 const _: () = {

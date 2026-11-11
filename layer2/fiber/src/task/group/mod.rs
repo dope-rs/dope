@@ -1,5 +1,4 @@
-use core::{mem, pin, task::Poll};
-use std::convert;
+use core::{mem, mem::MaybeUninit, pin, task::Poll};
 
 use o3::depot::{array, array::bits};
 
@@ -9,10 +8,8 @@ use crate::{
     core::driver::schedule::{app, ready::task},
     task::{
         group::ready::Ready,
-        storage::{
-            slots,
-            slots::{Action, Bindings, Index, Phase, Table},
-        },
+        raw::Binding,
+        storage::slots::{Bindings, Index},
     },
 };
 
@@ -42,7 +39,9 @@ pub enum Drive<const N: usize> {
 #[pin_project::pin_project(PinnedDrop)]
 pub struct Group<'d, F, const N: usize> {
     #[pin]
-    table: Table<'d, F, (), N>,
+    slots: [MaybeUninit<F>; N],
+    #[pin]
+    bindings: Bindings<'d, N>,
     #[pin]
     ready: Ready<'d, N>,
     domain: task::Domain<'d, DomainTag, N>,
@@ -66,34 +65,36 @@ impl Error {
 impl<'d, F, const N: usize> Group<'d, F, N> {
     /// Reserves the exact driver task domain without allocating group storage.
     pub fn try_new(parent: wake::RootWaker<'d>) -> Result<Self, Error> {
-        Self::try_table(parent, Table::vacant, bits::Set::EMPTY)
+        let (ready, domain) = Self::admit(parent, bits::Set::EMPTY)?;
+        Ok(Self {
+            slots: [const { MaybeUninit::uninit() }; N],
+            bindings: Bindings::new(),
+            ready,
+            domain,
+        })
     }
 
     /// Reserves the task domain and schedules every input in array order.
     pub fn try_with(parent: wake::RootWaker<'d>, fibers: [F; N]) -> Result<Self, Error> {
-        let group = Self::try_table(
-            parent,
-            || Table::from_map(fibers, convert::identity),
-            bits::Set::EMPTY.complement(),
-        )?;
-        group.domain.wake_parent();
-        Ok(group)
+        let (ready, domain) = Self::admit(parent, bits::Set::EMPTY.complement())?;
+        domain.wake_parent();
+        Ok(Self {
+            slots: fibers.map(MaybeUninit::new),
+            bindings: Bindings::new(),
+            ready,
+            domain,
+        })
     }
 
-    fn try_table(
+    fn admit(
         parent: wake::RootWaker<'d>,
-        table: impl FnOnce() -> Table<'d, F, (), N>,
         live: bits::Set<Index<N>, N>,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Ready<'d, N>, task::Domain<'d, DomainTag, N>), Error> {
         const { assert!(N > 0 && N <= 16) };
         let parent: wake::Waker<'d> = parent.into();
         let ready = Ready::try_new(parent.0, live).map_err(Error)?;
         let domain = task::Domain::try_new(parent.0).map_err(Error)?;
-        Ok(Self {
-            table: table(),
-            ready,
-            domain,
-        })
+        Ok((ready, domain))
     }
 
     pub fn len(&self) -> array::Len<N> {
@@ -172,51 +173,39 @@ where
             let index = member.index();
             let attach = ready.attach(index);
 
-            let output = match this.table.as_mut().visit(
-                index,
-                member,
-                |fiber, bindings: pin::Pin<&Bindings<'d, N>>, member| {
-                    let poll = bindings.poll_domain(attach, this.domain, |wake| {
-                        // SAFETY: this live table slot is vacated on Ready.
-                        // Only drive_admit supplies the first existing credit;
-                        // every subsequent child carries its own permit.
-                        let live = unsafe { context::raw::Live::new(fiber) };
-                        match permit {
-                            Some(permit) => live.child_with(context.as_mut(), wake, permit),
-                            None => unsafe { live.child(context.as_mut(), wake) },
-                        }
-                    });
-                    match poll {
-                        Err(error) => {
-                            member.retry();
-                            Action::Keep(Err(Error(error)))
-                        }
-                        Ok(Poll::Pending) => Action::Keep(Ok(None)),
-                        Ok(Poll::Ready((output, claim))) => {
-                            match claim {
-                                task::Reclaim::Reusable => member.release(),
-                                task::Reclaim::Retired => member.retire(),
-                            };
-                            Action::Vacate(Ok(Some(output)))
-                        }
+            let mut slot = index.project(this.slots.as_mut());
+            let binding = this.bindings.as_ref().at(index);
+            // SAFETY: this member selects this group's initialized pinned fiber
+            // and binding. Only the initial admission can omit a new child credit.
+            let poll = unsafe {
+                Binding::poll_domain(binding, attach, this.domain, |wake| {
+                    let fiber = slot
+                        .as_mut()
+                        .map_unchecked_mut(|slot| slot.assume_init_mut());
+                    let live = context::raw::Live::new(fiber);
+                    match permit {
+                        Some(permit) => live.child_with(context.as_mut(), wake, permit),
+                        None => live.child(context.as_mut(), wake),
                     }
-                },
-            ) {
-                Phase::Live(Ok(output)) => output,
-                Phase::Live(Err(error)) => {
+                })
+            };
+            let (output, claim) = match poll {
+                Err(error) => {
+                    member.retry();
                     return Drive::Failed {
                         completed: done.len(),
-                        error,
+                        error: Error(error),
                     };
                 }
-                Phase::Vacant(member) | Phase::Done(member) => {
-                    member.release();
-                    None
-                }
+                Ok(Poll::Pending) => continue,
+                Ok(Poll::Ready(done)) => done,
             };
-            let Some(output) = output else {
-                continue;
+            match claim {
+                task::Reclaim::Reusable => member.release(),
+                task::Reclaim::Retired => member.retire(),
             };
+            // SAFETY: reclaim detached this exact live slot before its sole drop.
+            unsafe { slot.get_unchecked_mut().assume_init_drop() };
             done.insert(index);
             complete(output);
         }
@@ -230,15 +219,11 @@ where
 
 impl<'group, 'd, F, const N: usize> Vacant<'group, 'd, F, N> {
     /// Fills the proven task-domain vacancy and schedules its initial poll.
-    pub fn insert(mut self, fiber: F) {
-        let mut this = self.group.as_mut().project();
-        // SAFETY: this consumed vacancy retains the exact group's exclusive
-        // pin. Its ready selection excludes live and retired members. Both
-        // constructors initialize the table and membership together; completion
-        // vacates an entry before its reusable membership can be observed.
-        // No independent ready/table pair can enter this insertion path.
-        let vacant = unsafe { slots::raw::Vacant::pinned(this.table.as_mut(), self.slot.index()) };
-        vacant.insert(fiber);
+    pub fn insert(self, fiber: F) {
+        let this = self.group.project();
+        let slot = self.slot.index().project(this.slots);
+        // SAFETY: this group's vacancy excludes initialized and retired slots.
+        unsafe { slot.get_unchecked_mut() }.write(fiber);
         this.ready.as_ref().fill(self.slot);
         this.domain.wake_parent();
     }
@@ -248,10 +233,13 @@ impl<'group, 'd, F, const N: usize> Vacant<'group, 'd, F, N> {
 impl<'d, F, const N: usize> PinnedDrop for Group<'d, F, N> {
     fn drop(self: pin::Pin<&mut Self>) {
         let mut this = self.project();
-        for index in Index::<N>::until(array::Len::MAX) {
-            this.table.as_mut().cancel(index, |bindings| {
-                let _ = bindings.reclaim(index, this.domain);
-            });
+        let mut live = this.ready.live();
+        while let Some(index) = live.first() {
+            live.remove(index);
+            let _ = Binding::reclaim(this.bindings.as_ref().at(index), this.domain);
+            let slot = index.project(this.slots.as_mut());
+            // SAFETY: live retains each initialized fiber until this sole drop.
+            unsafe { slot.get_unchecked_mut().assume_init_drop() };
         }
     }
 }

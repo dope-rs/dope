@@ -100,11 +100,6 @@ impl<F, O> Task<F, O> {
                 this.state = State::Staged;
                 Phase::Live(result)
             }
-            Action::Vacate(result) => {
-                // SAFETY: the phase check retains this exact live pinned slot.
-                unsafe { this.vacate() };
-                Phase::Live(result)
-            }
         }
     }
 
@@ -158,17 +153,6 @@ impl<'a, F, O> Vacant<'a, F, O> {
         // This capability retains the exact exclusive entry until consumption.
         let slot = unsafe { table.slots.get_unchecked_mut(index.get()) };
         Self { slot }
-    }
-
-    /// # Safety
-    /// This exact pinned entry must have no initialized fiber or output.
-    pub(in crate::task) unsafe fn pinned<'d, const N: usize>(
-        table: pin::Pin<&'a mut slots::Table<'d, F, O, N>>,
-        index: slots::Index<N>,
-    ) -> Self {
-        // SAFETY: this capability can only initialize the vacant entry;
-        // it cannot move the table or any existing pinned fiber.
-        unsafe { Self::new(table.get_unchecked_mut(), index) }
     }
 
     pub(in crate::task) fn insert(self, fiber: F) {
