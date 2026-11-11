@@ -8,10 +8,7 @@ pub mod common;
 
 use std::{cell::Cell, rc::Rc, time};
 
-use dope_runtime::executor::{
-    drive,
-    session::{Error, Kind},
-};
+use dope_runtime::executor::{drive, session::Error};
 
 use crate::common::{
     runtime::executor::shutdown::timeouts::*,
@@ -55,17 +52,6 @@ fn timeout_reuses_session() {
                         ) else {
                             panic!("stalled shutdown must report its deadline");
                         };
-                        let kind = error.kind().map(
-                            |output| matches!(output, Err(output) if Rc::ptr_eq(&output.0, &out)),
-                        );
-                        assert!(matches!(
-                            kind,
-                            Kind::Quiesce {
-                                output: true,
-                                drive: drive::Error::QuiescenceTimeout,
-                                disarm: None,
-                            }
-                        ));
                         assert!(!out.get());
                         let Error::Quiesce {
                             output,

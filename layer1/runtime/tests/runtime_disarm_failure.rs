@@ -10,7 +10,7 @@ use dope_core::{
 use dope_runtime::{
     executor::{
         Executor, InstallError, drive,
-        session::{Completion, Error, Kind},
+        session::{Completion, Error},
     },
     shutdown, topology,
     topology::lending,
@@ -92,16 +92,14 @@ fn quiesce_disarm_output() {
                             })
                             .err()
                             .expect("retained output and cleanup failures");
-                        let kind = error
-                            .kind()
-                            .map(|output| matches!(output, Err(output) if ptr::eq(output.0, &out)));
                         assert!(
-                            matches!(&kind, Kind::Quiesce {
-                                output: true,
+                            matches!(&error, Error::Quiesce {
+                                output: Err(output),
                                 drive: drive::Error::QuiescenceTimeout,
                                 disarm: Some(error),
-                            } if *error == cause),
-                            "{kind:?}"
+                            } if *error == cause && ptr::eq(output.0, &out)),
+                            "{:?}",
+                            error.cause()
                         );
                         assert_eq!(events.get(), 0x1234);
                         assert!(!out.get(), "callback output remains owned by its caller");
@@ -147,14 +145,14 @@ fn lending_disarm_drop() {
                         lending::Error::Build(error) => match error {},
                         lending::Error::Run(error) => error,
                     };
-                    let kind = error.kind().map(Result::is_ok);
                     assert!(
-                        matches!(&kind, Kind::Quiesce {
-                            output: true,
+                        matches!(&error, Error::Quiesce {
+                            output: Ok(_),
                             drive: drive::Error::TimerDisarm(error),
                             disarm: None,
                         } if *error == cause),
-                        "{kind:?}"
+                        "{:?}",
+                        error.cause()
                     );
                     assert_eq!(events.get(), 0x162534, "client precedes provider cleanup");
                 });

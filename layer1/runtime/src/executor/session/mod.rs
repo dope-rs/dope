@@ -40,38 +40,6 @@ pub enum Cause<'a> {
     },
 }
 
-#[derive(Debug)]
-pub enum Kind<'a, T> {
-    Drive(&'a drive::Error),
-    Quiesce {
-        output: T,
-        drive: &'a drive::Error,
-        disarm: Option<Errno>,
-    },
-    Install {
-        cause: &'a InstallError,
-        disarm: Option<Errno>,
-    },
-}
-
-impl<'a, T> Kind<'a, T> {
-    pub fn map<U>(self, map: impl FnOnce(T) -> U) -> Kind<'a, U> {
-        match self {
-            Self::Drive(error) => Kind::Drive(error),
-            Self::Quiesce {
-                output,
-                drive,
-                disarm,
-            } => Kind::Quiesce {
-                output: map(output),
-                drive,
-                disarm,
-            },
-            Self::Install { cause, disarm } => Kind::Install { cause, disarm },
-        }
-    }
-}
-
 pub(crate) struct Core<'a, 'd, Q> {
     pub(crate) scope: life::Scope<'a, 'd>,
     pub(super) pending: Option<Event<'d>>,

@@ -40,25 +40,6 @@ impl<T> Error<'_, T> {
             },
         }
     }
-
-    pub fn kind(&self) -> session::Kind<'_, &T> {
-        match self {
-            Self::Drive(error) => session::Kind::Drive(error),
-            Self::Quiesce {
-                output,
-                drive,
-                disarm,
-            } => session::Kind::Quiesce {
-                output,
-                drive,
-                disarm: *disarm,
-            },
-            Self::Install { cause, disarm } => session::Kind::Install {
-                cause,
-                disarm: *disarm,
-            },
-        }
-    }
 }
 
 impl<T> From<drive::Error> for Error<'_, T> {

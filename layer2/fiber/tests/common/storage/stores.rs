@@ -7,16 +7,6 @@ use dope_fiber::{
 
 pub struct Domain;
 
-pub struct Empty<T>(pub T);
-
-impl<T> Stream<'_> for Empty<T> {
-    type Item = ();
-
-    fn poll_next(_: PollCall<'_, '_, '_, Self>) -> Poll<Option<()>> {
-        Poll::Ready(None)
-    }
-}
-
 #[pin_project::pin_project(PinnedDrop, !Unpin)]
 pub struct Pinned {
     pub(crate) address: Cell<Option<ptr::NonNull<Self>>>,
