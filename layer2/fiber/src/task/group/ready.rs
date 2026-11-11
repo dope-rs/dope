@@ -20,11 +20,8 @@ struct State<const N: usize> {
     live: bits::Set<Index<N>, N>,
 }
 
-#[repr(transparent)]
-struct Members<const N: usize>(cell::Cell<State<N>>);
-
 pub(super) struct Ready<'d, const N: usize> {
-    members: Members<N>,
+    members: cell::Cell<State<N>>,
     endpoint: topology::Endpoint<'d, Index<N>>,
 }
 
@@ -38,67 +35,13 @@ impl<const N: usize> Vacancy<N> {
 }
 
 pub(super) struct Drain<'queue, 'd, const N: usize> {
-    members: &'queue Members<N>,
+    members: &'queue cell::Cell<State<N>>,
     endpoint: Option<topology::Drain<'queue, 'd, Index<N>>>,
 }
 
 pub(super) struct Member<'queue, const N: usize> {
-    members: &'queue Members<N>,
+    members: &'queue cell::Cell<State<N>>,
     index: Index<N>,
-}
-
-impl<const N: usize> Members<N> {
-    fn new(live: bits::Set<Index<N>, N>) -> Self {
-        Self(cell::Cell::new(State {
-            current: bits::Set::EMPTY,
-            next: live,
-            live,
-        }))
-    }
-
-    fn ready(&self) -> bits::Set<Index<N>, N> {
-        let state = self.0.get();
-        state.current.union(state.next).intersect(state.live)
-    }
-
-    fn len(&self) -> array::Len<N> {
-        self.0.get().live.len()
-    }
-
-    fn vacant(&self) -> Option<Index<N>> {
-        let state = self.0.get();
-        state.live.union(state.next).complement().first()
-    }
-
-    fn fill(&self, index: Index<N>) {
-        let mut state = self.0.get();
-        state.live.insert(index);
-        state.next.insert(index);
-        self.0.set(state);
-    }
-
-    fn begin(&self) {
-        let mut state = self.0.get();
-        if state.current.is_empty() {
-            let next = state.next.intersect(state.live);
-            if next.is_empty() {
-                return;
-            }
-            state.current = next;
-            state.next = state.next.without(state.live);
-            self.0.set(state);
-        }
-    }
-
-    fn front(&self) -> Option<Index<N>> {
-        self.0.get().current.first()
-    }
-
-    fn take(&self, index: Index<N>) {
-        let mut state = self.0.get();
-        state.current.remove(index);
-        self.0.set(state);
-    }
 }
 
 impl<const N: usize> Member<'_, N> {
@@ -106,33 +49,28 @@ impl<const N: usize> Member<'_, N> {
         self.index
     }
 
-    pub(super) fn release(self) {
-        let mut state = self.members.0.get();
-        state.current.remove(self.index);
-        state.next.remove(self.index);
+    pub(super) fn finish(self, claim: task::Reclaim) {
+        let mut state = self.members.get();
+        // Selection already removed this member from current.
+        match claim {
+            task::Reclaim::Reusable => state.next.remove(self.index),
+            task::Reclaim::Retired => state.next.insert(self.index),
+        }
         state.live.remove(self.index);
-        self.members.0.set(state);
+        self.members.set(state);
     }
 
     pub(super) fn retry(self) {
-        let mut state = self.members.0.get();
+        let mut state = self.members.get();
         state.next.insert(self.index);
-        self.members.0.set(state);
-    }
-
-    pub(super) fn retire(self) {
-        let mut state = self.members.0.get();
-        state.current.remove(self.index);
-        state.next.insert(self.index);
-        state.live.remove(self.index);
-        self.members.0.set(state);
+        self.members.set(state);
     }
 }
 
 impl<'queue, const N: usize> Drain<'queue, '_, N> {
     pub(super) fn pop(&mut self) -> Option<Member<'queue, N>> {
-        let index = if let Some(index) = self.members.front() {
-            self.members.take(index);
+        let index = if let Some(index) = self.front() {
+            self.take(index);
             index
         } else {
             self.endpoint.as_mut()?.pop()?
@@ -141,6 +79,16 @@ impl<'queue, const N: usize> Drain<'queue, '_, N> {
             members: self.members,
             index,
         })
+    }
+
+    fn front(&self) -> Option<Index<N>> {
+        self.members.get().current.first()
+    }
+
+    fn take(&self, index: Index<N>) {
+        let mut state = self.members.get();
+        state.current.remove(index);
+        self.members.set(state);
     }
 }
 
@@ -159,11 +107,11 @@ impl<'queue, const N: usize> app::Drain for Drain<'queue, '_, N> {
         (): &mut (),
         take: impl FnOnce() -> Option<P>,
     ) -> app::Selection<Self::Item<'_>, P, Self::Candidate<'_>> {
-        let (index, permit) = if let Some(index) = self.members.front() {
+        let (index, permit) = if let Some(index) = self.front() {
             let Some(permit) = take() else {
                 return Some(Err(index));
             };
-            self.members.take(index);
+            self.take(index);
             (index, permit)
         } else {
             match self.endpoint.as_mut()?.next_when(&mut (), take)? {
@@ -187,17 +135,26 @@ impl<'d, const N: usize> Ready<'d, N> {
         live: bits::Set<Index<N>, N>,
     ) -> Result<Self, task::Error> {
         Ok(Self {
-            members: Members::new(live),
+            members: cell::Cell::new(State {
+                current: bits::Set::EMPTY,
+                next: live,
+                live,
+            }),
             endpoint: topology::Endpoint::try_new(parent)?,
         })
     }
 
     pub(super) fn vacant(&self) -> Option<Vacancy<N>> {
-        self.members.vacant().map(Vacancy)
+        let state = self.members.get();
+        let index = state.live.union(state.next).complement().first()?;
+        Some(Vacancy(index))
     }
 
     pub(super) fn fill(self: pin::Pin<&Self>, slot: Vacancy<N>) {
-        self.members.fill(slot.0);
+        let mut state = self.members.get();
+        state.live.insert(slot.0);
+        state.next.insert(slot.0);
+        self.members.set(state);
     }
 
     pub(super) fn attach<'a>(
@@ -208,7 +165,15 @@ impl<'d, const N: usize> Ready<'d, N> {
     }
 
     pub(super) fn begin(&self) -> Drain<'_, 'd, N> {
-        self.members.begin();
+        let mut state = self.members.get();
+        if state.current.is_empty() {
+            let next = state.next.intersect(state.live);
+            if !next.is_empty() {
+                state.current = next;
+                state.next = state.next.without(state.live);
+                self.members.set(state);
+            }
+        }
         Drain {
             members: &self.members,
             endpoint: self.endpoint.drain(),
@@ -216,21 +181,23 @@ impl<'d, const N: usize> Ready<'d, N> {
     }
 
     pub(super) fn is_ready(&self) -> bool {
-        !self.members.ready().is_empty() || !self.endpoint.is_empty()
+        let state = self.members.get();
+        let ready = state.current.union(state.next).intersect(state.live);
+        !ready.is_empty() || !self.endpoint.is_empty()
     }
 
     pub(super) fn len(&self) -> array::Len<N> {
-        self.members.len()
+        self.live().len()
     }
 
     pub(super) fn live(&self) -> bits::Set<Index<N>, N> {
-        self.members.0.get().live
+        self.members.get().live
     }
 }
 
 const _: () = {
     assert!(core::mem::size_of::<State<16>>() == core::mem::size_of::<u64>());
     assert!(core::mem::align_of::<State<16>>() == core::mem::align_of::<u64>());
-    assert!(core::mem::size_of::<Members<16>>() == core::mem::size_of::<u64>());
+    assert!(core::mem::size_of::<cell::Cell<State<16>>>() == core::mem::size_of::<u64>());
     assert!(core::mem::size_of::<Ready<'static, 16>>() == 3 * core::mem::size_of::<usize>());
 };

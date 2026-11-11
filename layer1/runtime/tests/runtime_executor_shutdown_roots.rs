@@ -6,14 +6,14 @@ use dope_runtime::executor::session::Completion;
 use dope_test::harness::scenario::TIMEOUT;
 pub mod common;
 
-use std::{cell::Cell, ops::ControlFlow, rc::Rc, task::Poll, time};
+use std::{cell::Cell, mem::MaybeUninit, ops::ControlFlow, rc::Rc, task::Poll, time};
 
 use dope_core::driver::schedule::clock;
 use dope_runtime::{
     executor::{drain, drive},
     shutdown,
 };
-use o3::base::time::Positive;
+use o3::{base::time::Positive, mem::slot};
 
 use crate::common::{
     runtime::executor::shutdown::{Count, DrainProbe, roots::*},
@@ -207,6 +207,8 @@ fn drain_orders_completion() {
                                         dropped: &dropped,
                                         begun: &begun,
                                     };
+                                    let mut storage = MaybeUninit::uninit();
+                                    let root = slot::Vacant::new(&mut storage).insert(root);
                                     if !draining {
                                         return match app
                                             .drive_until(root)

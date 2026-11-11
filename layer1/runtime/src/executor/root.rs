@@ -83,3 +83,15 @@ pub trait Root<'d>: Sized {
     type Output;
     fn poll(context: Context<'_, 'd, Self>) -> task::Poll<Self::Output>;
 }
+
+impl<'d, R: Root<'d>> Root<'d> for o3::mem::slot::Occupied<'_, R> {
+    type Output = R::Output;
+
+    fn poll(context: Context<'_, 'd, Self>) -> task::Poll<Self::Output> {
+        let (root, wake, work, driver) = context.into_parts();
+        // SAFETY: the executor owns this slot through every poll and its drop;
+        // the inner root stays at this address until dropped before quiescence.
+        let root = unsafe { pin::Pin::new_unchecked(root.get_mut().get_mut()) };
+        R::poll(Context::new(root, wake, work, driver))
+    }
+}

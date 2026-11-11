@@ -1,6 +1,9 @@
 use core::{mem, mem::MaybeUninit, pin, task::Poll};
 
-use o3::depot::{array, array::bits};
+use o3::{
+    depot::{array, array::bits},
+    mem::slot,
+};
 
 use crate::{
     abi, context,
@@ -63,14 +66,20 @@ impl Error {
 
 impl<'d, F, const N: usize> Group<'d, F, N> {
     /// Reserves the exact driver task domain without allocating group storage.
-    pub fn try_new(parent: wake::RootWaker<'d>) -> Result<Self, Error> {
+    pub fn try_new<'a>(
+        mut target: slot::Vacant<'a, Self>,
+        parent: wake::RootWaker<'d>,
+    ) -> Result<slot::Occupied<'a, Self>, Error> {
         let (ready, domain) = Self::admit(parent, bits::Set::EMPTY)?;
-        Ok(Self {
-            slots: [const { MaybeUninit::uninit() }; N],
-            bindings: Bindings::new(),
-            ready,
-            domain,
-        })
+        let pointer = target.get_mut().as_mut_ptr();
+        // SAFETY: this vacant slot is exclusive; slots contains only MaybeUninit.
+        // Every other field is initialized before the occupied owner is issued.
+        unsafe {
+            (&raw mut (*pointer).bindings).write(Bindings::new());
+            (&raw mut (*pointer).ready).write(ready);
+            (&raw mut (*pointer).domain).write(domain);
+            Ok(target.assume_init())
+        }
     }
 
     /// Reserves the task domain and schedules every input in array order.
@@ -209,10 +218,7 @@ where
             };
             // SAFETY: this node was admitted by this group's exact domain.
             let claim = unsafe { bound.reclaim(this.domain) };
-            match claim {
-                task::Reclaim::Reusable => member.release(),
-                task::Reclaim::Retired => member.retire(),
-            };
+            member.finish(claim);
             // SAFETY: reclaim detached this exact live slot before its sole drop.
             unsafe { slot.get_unchecked_mut().assume_init_drop() };
             done.insert(index);

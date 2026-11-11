@@ -1,4 +1,4 @@
-use std::{cell::Cell, pin::pin, rc::Rc};
+use std::{cell::Cell, mem::MaybeUninit, pin::pin, rc::Rc};
 
 use dope::core::driver::{
     life::recovery,
@@ -9,7 +9,7 @@ use dope_fiber::{
     context::{Context, wake::RootWaker},
 };
 use dope_test::{alloc, alloc::Tracker};
-use o3::depot::array::Len;
+use o3::{depot::array::Len, mem::slot};
 
 use crate::common::runtime::{self, Setup};
 pub mod common;
@@ -38,11 +38,9 @@ fn self_wake_waits_for_turn() {
             let root = (root).expect("ready slot");
             let target = root.target();
             let polls = Rc::new(Cell::new(0));
-            let group = Group::<SelfWake, 1>::try_new(RootWaker::from(target));
+            let group = Group::try_with(RootWaker::from(target), [SelfWake(Rc::clone(&polls))]);
             let group = (group).expect("group domain");
             let mut group = pin!(group);
-            let vacant = group.as_mut().vacant().expect("group vacancy");
-            vacant.insert(SelfWake(Rc::clone(&polls)));
 
             Context::with_target(
                 target,
@@ -87,56 +85,58 @@ fn polls_ready_members() {
             let polls2 = Rc::new(Cell::new(0));
             let wake1 = Rc::new(Cell::new(None));
             let wake2 = Rc::new(Cell::new(None));
-            let group = Group::<WakeProbe<'_>, 2>::try_new(parent);
+            let mut storage = MaybeUninit::uninit();
+            let group = Group::<WakeProbe<'_>, 2>::try_new(slot::Vacant::new(&mut storage), parent);
             let group = (group).expect("group allocation");
-            let mut group = pin!(group);
-            let (allocs, bytes) = Tracker::during(|| {
-                for (polls, wake) in [(&polls1, &wake1), (&polls2, &wake2)] {
-                    group
-                        .as_mut()
-                        .vacant()
-                        .expect("group vacancy")
-                        .insert(WakeProbe {
-                            polls: Rc::clone(polls),
-                            wake: Rc::clone(wake),
-                        });
-                }
-            });
-            assert_eq!((allocs, bytes), (0, 0));
-            assert_eq!((polls1.get(), polls2.get()), (0, 0));
-            assert_eq!(
-                turn.ready_round(|target| {
-                    assert!(
-                        targets
-                            .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                            .dispatch()
-                            .matches(target)
-                    );
-                }),
-                1
-            );
+            group.with_pin(|mut group| {
+                let (allocs, bytes) = Tracker::during(|| {
+                    for (polls, wake) in [(&polls1, &wake1), (&polls2, &wake2)] {
+                        group
+                            .as_mut()
+                            .vacant()
+                            .expect("group vacancy")
+                            .insert(WakeProbe {
+                                polls: Rc::clone(polls),
+                                wake: Rc::clone(wake),
+                            });
+                    }
+                });
+                assert_eq!((allocs, bytes), (0, 0));
+                assert_eq!((polls1.get(), polls2.get()), (0, 0));
+                assert_eq!(
+                    turn.ready_round(|target| {
+                        assert!(
+                            targets
+                                .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                                .dispatch()
+                                .matches(target)
+                        );
+                    }),
+                    1
+                );
 
-            Context::with_target(
-                target,
-                turn.turn().app(),
-                driver.reborrow(),
-                |mut context| {
-                    assert!(
-                        group.as_mut().drive_ready(context.as_mut(), |_| {})
-                            == Drive::Complete(Len::ZERO)
-                    );
-                    assert_eq!((polls1.get(), polls2.get()), (1, 1));
-                    let wake = wake1.take();
-                    let wake = (wake).expect("first wake");
-                    wake.wake();
-                    turn.ready_round(|_| {});
-                    assert!(
-                        group.as_mut().drive_ready(context.as_mut(), |_| {})
-                            == Drive::Complete(Len::ZERO)
-                    );
-                    assert_eq!((polls1.get(), polls2.get()), (2, 1));
-                },
-            );
+                Context::with_target(
+                    target,
+                    turn.turn().app(),
+                    driver.reborrow(),
+                    |mut context| {
+                        assert!(
+                            group.as_mut().drive_ready(context.as_mut(), |_| {})
+                                == Drive::Complete(Len::ZERO)
+                        );
+                        assert_eq!((polls1.get(), polls2.get()), (1, 1));
+                        let wake = wake1.take();
+                        let wake = (wake).expect("first wake");
+                        wake.wake();
+                        turn.ready_round(|_| {});
+                        assert!(
+                            group.as_mut().drive_ready(context.as_mut(), |_| {})
+                                == Drive::Complete(Len::ZERO)
+                        );
+                        assert_eq!((polls1.get(), polls2.get()), (2, 1));
+                    },
+                );
+            });
         },
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
