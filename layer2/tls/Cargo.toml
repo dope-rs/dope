@@ -1,6 +1,6 @@
 [package]
 name = "dope-tls"
-version = "0.59.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "TCP TLS streams for dope runtime, rustls-backed"

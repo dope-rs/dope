@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "dope-quic"
-version = "0.60.1"
+version = "0.69.0"
 dependencies = [
  "aws-lc-rs",
  "dope",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "dope-tls"
-version = "0.59.0"
+version = "0.69.0"
 dependencies = [
  "dope",
  "dope-fiber",

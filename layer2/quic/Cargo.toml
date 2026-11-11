@@ -1,6 +1,6 @@
 [package]
 name = "dope-quic"
-version = "0.60.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "QUIC x dope"
