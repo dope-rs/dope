@@ -132,15 +132,14 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         self.finish_at(handle.into_inner(), local)
     }
 
-    fn finish_at<H>(
+    fn finish_at<H, E>(
         self,
         handle: H,
         local: net::SocketAddr,
     ) -> Result<(Descriptor<'d>, net::SocketAddr), Error>
     where
-        crate::Engine: engine::Install<OwnedSlot, H>,
-        <crate::Engine as engine::Install<OwnedSlot, H>>::Error:
-            Into<<crate::Backend as kernel::Source>::Failure<driver::route::indices::SlotIndex>>,
+        crate::Engine: engine::Install<OwnedSlot, H, Error = E>,
+        E: Into<<crate::Backend as kernel::Source>::Failure<driver::route::indices::SlotIndex>>,
     {
         match self.driver.native().install(self.reservation, handle) {
             Ok(fd) => Ok((fd, local)),

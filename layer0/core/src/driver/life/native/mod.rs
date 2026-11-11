@@ -157,15 +157,14 @@ impl<'a, 'd> Access<'a, 'd> {
         }
     }
 
-    pub(crate) fn install<H>(
+    pub(crate) fn install<H, E>(
         self,
         hold: slot::Reserved<'d>,
         handle: H,
     ) -> Result<handles::Descriptor<'d>, result::Kernel>
     where
-        Engine: engine::Install<handles::OwnedSlot, H>,
-        <Engine as engine::Install<handles::OwnedSlot, H>>::Error:
-            Into<<crate::Backend as kernel::Source>::Failure<indices::SlotIndex>>,
+        Engine: engine::Install<handles::OwnedSlot, H, Error = E>,
+        E: Into<<crate::Backend as kernel::Source>::Failure<indices::SlotIndex>>,
     {
         let state = &mut *self.local.backend;
         let slot = handles::OwnedSlot::from(hold.slot());
