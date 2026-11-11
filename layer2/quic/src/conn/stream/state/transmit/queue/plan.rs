@@ -1,0 +1,284 @@
+use o3::buffer;
+use std::convert;
+
+use crate::{conn, stream};
+
+use crate::wire::varint::VarInt;
+use conn::stream::Error;
+use conn::stream::state::transmit::queue;
+use conn::stream::{resident, state::resident::Table};
+use queue::{budget, occupied::Append};
+use send::admit;
+use stream::{outbound, send};
+
+pub(in crate::conn) fn check_copy<D: buffer::raw::Segment>(
+    queue: &mut queue::Map<D>,
+    data: &[u8],
+) -> Result<(), Error> {
+    queue
+        .data
+        .budget
+        .admit(outbound::Charge::for_copy(data))
+        .map_err(|error| match error {
+            budget::Denied::Blocked => Error::Capacity,
+            budget::Denied::TooLarge => Error::ValueOutOfRange,
+        })
+}
+
+pub(in crate::conn) fn recycle<D: buffer::raw::Segment>(
+    queue: &mut queue::Map<D>,
+    parts: send::Parts<D>,
+) {
+    queue.data.budget.recycle(&mut queue.data.buffers, parts);
+}
+
+pub(in crate::conn) fn terminal<D: buffer::raw::Segment>(
+    queue: &mut queue::Map<D>,
+    slot: Option<u32>,
+    local: bool,
+) -> Option<admit::Cause> {
+    match slot {
+        Some(slot) => queue.core.bind_at(slot)?.get_mut().open().err(),
+        None => local.then_some(admit::Cause::Retired),
+    }
+}
+
+/// Retains the entire issuing queue unchanged until its admitted input is published.
+pub(in crate::conn) struct Observed<'a, D: buffer::raw::Segment, C, W> {
+    source: admit::Source,
+    owner: outbound::Input<W>,
+    queue: &'a mut queue::Map<D>,
+    charge: outbound::Charge,
+    commit: C,
+}
+
+pub(in crate::conn::stream::state::transmit) struct Ignore;
+
+impl<D: buffer::raw::Segment, W> admit::Commit<D, W> for Ignore {
+    type Observation = ();
+    type Retained = Self;
+    type Discarded = Self;
+
+    fn observe(&mut self, _: &W) {}
+
+    fn retained(self, (): (), _: admit::Admission<'_, D, W>) -> Self {
+        self
+    }
+
+    fn discarded(self, (): (), _: admit::Discard<W>) -> Self {
+        self
+    }
+}
+
+pub(in crate::conn) enum Rejected<C, W, V> {
+    Discarded {
+        source: admit::Source,
+        commit: C,
+        cause: admit::Cause,
+        observation: V,
+    },
+    Blocked {
+        owner: W,
+        commit: C,
+    },
+    Failed {
+        owner: W,
+        commit: C,
+        error: Error,
+    },
+}
+
+impl<C, W, V> Rejected<C, W, V> {
+    pub(in crate::conn) fn into_outcome<D: buffer::raw::Segment, E>(
+        self,
+        map: impl FnOnce(Error) -> E,
+    ) -> admit::Outcome<D, C, E, W>
+    where
+        C: admit::Commit<D, W, Observation = V>,
+    {
+        match self {
+            Self::Discarded {
+                source,
+                commit,
+                cause,
+                observation,
+            } => admit::Outcome::Discarded(
+                commit.discarded(observation, admit::Discard::new(source, cause)),
+            ),
+            Self::Blocked { owner, commit } => admit::Outcome::Blocked { owner, commit },
+            Self::Failed {
+                owner,
+                commit,
+                error,
+            } => admit::Outcome::Failed {
+                owner,
+                commit,
+                error: map(error),
+            },
+        }
+    }
+}
+
+impl<'a, D: buffer::raw::Segment, C, W> Observed<'a, D, C, W> {
+    pub(in crate::conn) fn try_new(
+        source: admit::Source,
+        owner: W,
+        mut commit: C,
+        queue: &'a mut queue::Map<D>,
+        terminal: impl FnOnce(&mut queue::Map<D>) -> Option<admit::Cause>,
+    ) -> Result<Self, Rejected<C, W, C::Observation>>
+    where
+        C: admit::Commit<D, W>,
+        W: send::raw::Batch<D>,
+    {
+        let (owner, charge) = match outbound::Input::try_new(owner) {
+            Ok(input) => input,
+            Err((owner, error)) => {
+                return Err(Rejected::Failed {
+                    owner,
+                    commit,
+                    error: Error::Demand(error),
+                });
+            }
+        };
+        if let Err(denied) = queue.data.budget.check(charge) {
+            if let Some(cause) = terminal(queue) {
+                let owner = owner.into_owner();
+                let observation = commit.observe(&owner);
+                recycle(queue, owner.into_parts());
+                return Err(Rejected::Discarded {
+                    source,
+                    commit,
+                    cause,
+                    observation,
+                });
+            }
+            return Err(match denied {
+                budget::Denied::Blocked => {
+                    queue.data.budget.block();
+                    Rejected::Blocked {
+                        owner: owner.into_owner(),
+                        commit,
+                    }
+                }
+                budget::Denied::TooLarge => Rejected::Failed {
+                    owner: owner.into_owner(),
+                    commit,
+                    error: Error::ValueOutOfRange,
+                },
+            });
+        }
+        Ok(Self {
+            source,
+            owner,
+            queue,
+            charge,
+            commit,
+        })
+    }
+
+    pub(in crate::conn) fn apply(
+        self,
+        id: queue::Id,
+        credit: VarInt,
+        mode: queue::Preparation,
+        table: &mut Table,
+    ) -> admit::Outcome<D, C, Error, W>
+    where
+        C: admit::Commit<D, W>,
+        W: send::raw::Batch<D>,
+    {
+        self.select(
+            |queue| queue.try_prepared(id, None, credit, mode, table, |_, slot| slot),
+            convert::identity,
+        )
+    }
+
+    pub(in crate::conn) fn try_apply(
+        self,
+        local: resident::Local,
+        credit: VarInt,
+        mode: queue::Preparation,
+        table: &mut Table,
+    ) -> admit::Outcome<D, C, resident::Error, W>
+    where
+        C: admit::Commit<D, W>,
+        W: send::raw::Batch<D>,
+    {
+        self.select(
+            |queue| queue.try_live(local, credit, mode, table),
+            resident::Error::Stream,
+        )
+    }
+
+    fn select<E>(
+        self,
+        select: impl for<'s> FnOnce(&'s mut queue::Map<D>) -> Result<Option<queue::Occupied<'s, D>>, E>,
+        map: impl FnOnce(Error) -> E,
+    ) -> admit::Outcome<D, C, E, W>
+    where
+        C: admit::Commit<D, W>,
+        W: send::raw::Batch<D>,
+    {
+        let Self {
+            source,
+            owner,
+            queue,
+            charge,
+            mut commit,
+        } = self;
+        let bytes = charge.wire_bytes;
+        let mut occupied = match select(queue) {
+            Ok(Some(occupied)) => occupied,
+            Ok(None) => {
+                let owner = owner.into_owner();
+                let observation = commit.observe(&owner);
+                recycle(queue, owner.into_parts());
+                return admit::Outcome::Discarded(commit.discarded(
+                    observation,
+                    admit::Discard::new(source, admit::Cause::Retired),
+                ));
+            }
+            Err(error) => {
+                return admit::Outcome::Failed {
+                    owner: owner.into_owner(),
+                    commit,
+                    error,
+                };
+            }
+        };
+        let (_, entry, mut chunks, pending, budget, buffers) = occupied.split();
+        let open = match entry.open() {
+            Ok(open) => open,
+            Err(cause) => {
+                let owner = owner.into_owner();
+                let observation = commit.observe(&owner);
+                budget.recycle(buffers, owner.into_parts());
+                return admit::Outcome::Discarded(
+                    commit.discarded(observation, admit::Discard::new(source, cause)),
+                );
+            }
+        };
+        let Some(append) = Append::new(open, pending, bytes) else {
+            return admit::Outcome::Failed {
+                owner: owner.into_owner(),
+                commit,
+                error: map(Error::ValueOutOfRange),
+            };
+        };
+        let (boundary, retained) = match chunks.try_extend(owner.observe(source, commit)) {
+            Ok(output) => output,
+            Err(rejected) => {
+                return admit::Outcome::Failed {
+                    owner: rejected.owner,
+                    commit: rejected.commit,
+                    error: map(Error::Chunks(rejected.error)),
+                };
+            }
+        };
+        budget.commit(charge, buffers);
+        append.commit(boundary);
+        occupied.refresh(true);
+        admit::Outcome::Retained(retained)
+    }
+}

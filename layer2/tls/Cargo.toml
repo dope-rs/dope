@@ -1,0 +1,24 @@
+[package]
+name = "dope-tls"
+version = "0.59.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "TCP TLS streams for dope runtime, rustls-backed"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[lib]
+test = false
+
+[dependencies]
+rustls.workspace = true
+dope.workspace = true
+o3.workspace = true
+webpki-roots = "1.0.11"
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
+dope-fiber.workspace = true
+dope-test.workspace = true
+pin-project.workspace = true

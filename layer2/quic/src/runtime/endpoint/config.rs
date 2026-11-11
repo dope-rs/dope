@@ -1,0 +1,172 @@
+use dope::core::driver::settings::errors::Claim;
+use std::{net, num};
+
+use dope::core::driver::settings;
+use dope::core::io::datagram::payload;
+use dope::manifold::{self, network::datagram::plan};
+use dope_sys::io::socket::route::selector::PrefixPlan;
+use o3::base::time::Positive;
+
+use crate::proto::cid::Rotation;
+use crate::proto::datagram::Size;
+use crate::runtime::mux::builder;
+
+#[derive(Clone, Copy)]
+pub struct Config {
+    pub max_conns: usize,
+    pub outgoing_capacity: usize,
+    pub outgoing_bytes_capacity: usize,
+    pub packet_buffer_slots: u32,
+    pub packet_buffer_bytes: u32,
+    pub cid_rotation: Rotation,
+    /// Optional absolute lifetime from each connection's initial admission to
+    /// authenticated TLS completion. Packets, progress and Retry cannot extend it.
+    /// `None` preserves the transport's existing idle-timeout policy.
+    pub opening_lifetime: Option<Positive>,
+}
+
+/// Invalid relationship in an endpoint capacity plan.
+///
+/// This is a compact configuration error, not an I/O failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Error {
+    Capacity(builder::Error),
+    OutgoingBytes {
+        got: usize,
+        min: usize,
+    },
+    Receive(Claim),
+    PacketBytes {
+        got: u32,
+    },
+    Extent(payload::ExtentError),
+    OutgoingPrefix {
+        packets: usize,
+        bytes: usize,
+        prefix: num::NonZero<u8>,
+    },
+    Datagram(manifold::ConfigError),
+}
+
+/// Validated endpoint settings retained after its lower plans are constructed.
+#[derive(Clone, Copy)]
+pub(crate) struct Validated {
+    pub(super) capacity: builder::Plan,
+    receive: settings::Datagram,
+    packet: Size,
+    framing: Option<(PrefixPlan, num::NonZero<u16>)>,
+    cid_rotation: Rotation,
+}
+
+/// Validated endpoint settings paired with their datagram construction inputs.
+#[derive(Clone, Copy)]
+pub(crate) struct Validation {
+    config: Validated,
+    datagram: plan::Config,
+}
+
+impl Config {
+    /// Driver baseline for a QUIC endpoint with a validated datagram layout.
+    pub const fn driver(receive: settings::Datagram) -> settings::Config {
+        settings::Config::new(
+            settings::QueueLayout::fixed::<256, 1024>(),
+            settings::Schedule::DEFAULT,
+            settings::FileSlots::fixed::<0, 16>(),
+            receive.receive(),
+            settings::Domain::ONE,
+            settings::Progress::Prompt,
+        )
+    }
+
+    pub(crate) fn validated(
+        self,
+        framing: Option<(PrefixPlan, net::SocketAddr)>,
+    ) -> Result<Validation, Error> {
+        let outgoing_bytes = match framing {
+            Some((prefix, _)) => self
+                .outgoing_capacity
+                .checked_mul(usize::from(prefix.extent().get()))
+                .and_then(|extra| self.outgoing_bytes_capacity.checked_add(extra))
+                .ok_or(Error::OutgoingPrefix {
+                    packets: self.outgoing_capacity,
+                    bytes: self.outgoing_bytes_capacity,
+                    prefix: prefix.extent(),
+                })?,
+            None => self.outgoing_bytes_capacity,
+        };
+        let mut capacity =
+            builder::Plan::try_new(self.max_conns, self.outgoing_capacity, outgoing_bytes)
+                .map_err(Error::Capacity)?;
+        if let Some(lifetime) = self.opening_lifetime {
+            capacity = capacity.opening_lifetime(lifetime);
+        }
+        if self.outgoing_bytes_capacity < 1200 {
+            return Err(Error::OutgoingBytes {
+                got: self.outgoing_bytes_capacity,
+                min: 1200,
+            });
+        }
+        let ring =
+            settings::Ring::try_round(self.packet_buffer_slots.max(2)).map_err(Error::Receive)?;
+        let Some(packet) = Size::new(self.packet_buffer_bytes) else {
+            return Err(Error::PacketBytes {
+                got: self.packet_buffer_bytes,
+            });
+        };
+        let bytes = num::NonZero::<u16>::from(packet);
+        let bytes = match framing {
+            Some((prefix, address)) => {
+                payload::try_extent(address, bytes.into(), usize::from(prefix.extent().get()))
+                    .map_err(Error::Extent)?
+            }
+            None => bytes,
+        };
+        let receive = settings::Datagram::new(ring, payload::Len::from(bytes));
+        let datagram =
+            plan::Config::new(capacity.outgoing(), capacity.bytes(), capacity.outgoing())
+                .map_err(Error::Datagram)?;
+        Ok(Validation {
+            config: Validated {
+                capacity,
+                receive,
+                packet,
+                framing: framing.map(|(prefix, address)| (prefix, payload::maximum(address))),
+                cid_rotation: self.cid_rotation,
+            },
+            datagram,
+        })
+    }
+}
+
+impl Validated {
+    pub(crate) const fn connections(self) -> usize {
+        self.capacity.connections()
+    }
+
+    pub(crate) const fn capacity(self) -> builder::Plan {
+        self.capacity
+    }
+
+    pub(crate) const fn receive(self) -> settings::Datagram {
+        self.receive
+    }
+
+    pub(crate) const fn packet(self) -> Size {
+        self.packet
+    }
+
+    pub(crate) const fn framing(self) -> Option<(PrefixPlan, num::NonZero<u16>)> {
+        self.framing
+    }
+
+    pub(crate) const fn cid_rotation(self) -> Rotation {
+        self.cid_rotation
+    }
+}
+
+impl Validation {
+    pub(super) const fn into_parts(self) -> (Validated, plan::Config) {
+        (self.config, self.datagram)
+    }
+}
