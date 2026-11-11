@@ -15,6 +15,7 @@ pub struct Streams {
     local_uni: usize,
 }
 
+#[derive(Clone, Copy)]
 pub(in crate::conn) struct Limits {
     events: queue::Plan,
     receive_segments: Parts,
@@ -195,19 +196,6 @@ impl Limits {
             send_segments: self.send_segments.0.get(),
             local_bidi: self.local[0].get(),
             local_uni: self.local[1].get(),
-        }
-    }
-
-    pub(super) const fn copy(&self) -> Self {
-        Self {
-            events: self.events,
-            receive_segments: self.receive_segments,
-            max_send_bytes: self.max_send_bytes,
-            max_send_resident: self.max_send_resident,
-            send_segments: self.send_segments,
-            local: self.local,
-            peer: self.peer,
-            capacities: self.capacities,
         }
     }
 }

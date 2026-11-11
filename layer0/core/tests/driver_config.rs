@@ -1,13 +1,9 @@
-use dope_core::{
-    driver::{life::recovery, route::KeyTag},
-    io::socket::install::Install,
-};
+use dope_core::{driver::route::KeyTag, io::socket::install::Install};
 use o3::buffer::storage::Zero;
 
 use crate::common::rt::{
-    Runtime, finish,
+    Runtime,
     profile::{Minimal, Receive, StreamOnly},
-    recover,
 };
 pub mod common;
 
@@ -262,34 +258,25 @@ fn stream_datagram() {
 
     use dope_core::io::socket::install;
 
-    let mut reports = Vec::new();
-
-    Runtime::for_profile::<StreamOnly>().with_driver(
-        |mut driver| {
-            let address = SocketAddr::from(([127, 0, 0, 1], 0));
-            let first = (TcpListener::bind(address)).expect("first adoption input");
-            for result in [
-                Install::bind_udp(driver.reborrow(), address, common::DATAGRAM),
-                Install::adopt_udp(driver.reborrow(), first.into()),
-            ] {
-                assert!(
-                    matches!(
-                        result,
-                        Err(install::Error::Receive(error))
-                            if error.actual() == transfer::NonZero::fixed::<1>()
-                                && error.required() == settings::Receive::MIN_DATAGRAM_SLOT
-                    ),
-                    "receive capacity must fail before socket validation"
-                );
-            }
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    Runtime::for_profile::<StreamOnly>().run(|scope| {
+        let mut driver = scope.context();
+        let address = SocketAddr::from(([127, 0, 0, 1], 0));
+        let first = (TcpListener::bind(address)).expect("first adoption input");
+        for result in [
+            Install::bind_udp(driver.reborrow(), address, common::DATAGRAM),
+            Install::adopt_udp(driver.reborrow(), first.into()),
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Err(install::Error::Receive(error))
+                        if error.actual() == transfer::NonZero::fixed::<1>()
+                            && error.required() == settings::Receive::MIN_DATAGRAM_SLOT
+                ),
+                "receive capacity must fail before socket validation"
+            );
+        }
+    });
 }
 
 #[test]

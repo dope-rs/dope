@@ -74,25 +74,7 @@ pub enum ReceiveError {
 }
 
 /// Rejected receive storage together with its exact decode cause.
-pub struct Failure<'d> {
-    buffer: recv::Lease<'d>,
-    cause: Cause,
-}
-
-impl<'d> Failure<'d> {
-    const fn new(buffer: recv::Lease<'d>, cause: Cause) -> Self {
-        Self { buffer, cause }
-    }
-
-    pub fn into_parts(self) -> (recv::Lease<'d>, Cause) {
-        (self.buffer, self.cause)
-    }
-
-    /// Returns rejected storage to its original pool and retains the exact cause.
-    pub fn release(self) -> Cause {
-        self.cause
-    }
-}
+pub type Failure<'d> = Rejected<recv::Lease<'d>, Cause>;
 
 const _: () = assert!(mem::size_of::<Cause>() == 3 * mem::size_of::<usize>());
 const _: () = assert!(mem::size_of::<Failure<'static>>() == 6 * mem::size_of::<usize>());

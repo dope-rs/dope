@@ -57,29 +57,14 @@ const _: () = {
 };
 
 /// A fixed-file table index proven to fit the kernel's 24-bit field.
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(transparent)]
-pub(crate) struct Index([u8; 3]);
-
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 #[repr(transparent)]
 pub struct Fixed(num::NonZero<u32>);
 
-impl Index {
-    pub(crate) const fn from_le(bytes: [u8; 3]) -> Self {
-        Self(bytes)
-    }
-
-    const fn encoded(self) -> num::NonZero<u32> {
-        let bytes = self.0;
-        let raw = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]);
-        num::NonZero::<u32>::MIN.saturating_add(raw)
-    }
-}
-
 impl Fixed {
-    pub(crate) const fn new(index: Index) -> Self {
-        Self(index.encoded())
+    pub(crate) const fn new(bytes: [u8; 3]) -> Self {
+        let raw = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]);
+        Self(num::NonZero::<u32>::MIN.saturating_add(raw))
     }
 
     pub(crate) const fn index(self) -> u32 {
@@ -92,15 +77,14 @@ impl Fixed {
 }
 
 impl Target for Fixed {
-    const ZERO: Self = Self::new(Index::from_le([0; 3]));
+    const ZERO: Self = Self::new([0; 3]);
 
     fn from_le(bytes: [u8; 3]) -> Self {
-        Self::new(Index::from_le(bytes))
+        Self::new(bytes)
     }
 }
 
 const _: () = {
-    assert!(mem::size_of::<Index>() == 3);
     assert!(mem::size_of::<Fixed>() == mem::size_of::<u32>());
     assert!(mem::size_of::<Option<Fixed>>() == mem::size_of::<u32>());
 };

@@ -10,11 +10,11 @@ impl<C: Context> Source<C> for Uring {
     const GROUP: u16 = <Self as provided::Source>::PROVIDED;
 
     fn target(slot: C::Target) -> sq::Fixed {
-        sq::Fixed::new(sq::Index::from_le(slot.into()))
+        sq::Fixed::new(slot.into())
     }
 
     fn outbound(slot: C::Outbound) -> sq::Fixed {
-        sq::Fixed::new(sq::Index::from_le(slot.into()))
+        sq::Fixed::new(slot.into())
     }
 
     fn datagram<'d>(fd: &C::Datagram<'d>) -> sq::Fixed {

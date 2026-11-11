@@ -1,4 +1,3 @@
-use dope_core::driver::life::recovery;
 use o3::depot::queue::resident;
 
 pub mod common;
@@ -14,7 +13,7 @@ use dope_core::driver::schedule::ready::{
 };
 use dope_test::alloc::Tracker;
 
-use crate::common::rt::{Runtime, finish, recover};
+use crate::common::rt::Runtime;
 
 #[test]
 fn registries_use_backing() {
@@ -27,60 +26,51 @@ fn registries_use_backing() {
     const HANDOFF_ENTRY_BYTES: usize = 16;
     const LANE_BYTES: usize = 16;
 
-    let mut reports = Vec::new();
+    Runtime::throughput().run(|scope| {
+        let driver = scope.context();
+        let driver = driver.driver_ref();
+        let (fanout, alloc) = Tracker::usage(|| Set::try_new(driver, CAPACITY));
+        let fanout = { (fanout).expect("fanout registry must allocate") };
+        assert_eq!(alloc, (1, CAPACITY * BROADCAST_ENTRY_BYTES));
 
-    Runtime::throughput().with_driver(
-        |driver| {
-            let driver = driver.driver_ref();
-            let (fanout, alloc) = Tracker::usage(|| Set::try_new(driver, CAPACITY));
-            let fanout = { (fanout).expect("fanout registry must allocate") };
-            assert_eq!(alloc, (1, CAPACITY * BROADCAST_ENTRY_BYTES));
+        let (queued, alloc) = Tracker::usage(|| queue::Queue::try_new(driver, CAPACITY, LANES));
+        let queued = { (queued).expect("queue registry must allocate") };
+        assert_eq!(
+            alloc,
+            (1, CAPACITY * QUEUE_ENTRY_BYTES + LANE_COUNT * LANE_BYTES,),
+        );
+        let (exact, alloc) = Tracker::usage(|| table::Table::try_new(driver, CAPACITY));
+        let exact = { (exact).expect("exact table registry must allocate") };
+        assert_eq!(alloc, (1, CAPACITY * TABLE_ENTRY_BYTES));
+        let (handoff, alloc) = Tracker::usage(|| {
+            handoff::Queue::<u64, _>::try_new(driver, CAPACITY, resident::Fixed::<LANE_COUNT>)
+        });
+        let handoff = { (handoff).expect("handoff registry must allocate") };
+        assert_eq!(
+            alloc,
+            (1, CAPACITY * HANDOFF_ENTRY_BYTES + LANE_COUNT * LANE_BYTES)
+        );
+        assert!(!fanout.has_pending());
+        assert!(!queued.has_waiters());
+        assert!(matches!(
+            queued.try_wake_one(LANE_COUNT - 1),
+            Ok(wake::Once::Empty)
+        ));
+        assert!(matches!(
+            queued.try_wake_one(LANE_COUNT),
+            Err(bounds)
+                if bounds.index == LANE_COUNT
+                    && bounds.len.get() as usize == LANE_COUNT
+        ));
+        assert!(!exact.has_waiters());
+        assert!(handoff.is_empty::<{ LANE_COUNT - 1 }>());
 
-            let (queued, alloc) = Tracker::usage(|| queue::Queue::try_new(driver, CAPACITY, LANES));
-            let queued = { (queued).expect("queue registry must allocate") };
-            assert_eq!(
-                alloc,
-                (1, CAPACITY * QUEUE_ENTRY_BYTES + LANE_COUNT * LANE_BYTES,),
-            );
-            let (exact, alloc) = Tracker::usage(|| table::Table::try_new(driver, CAPACITY));
-            let exact = { (exact).expect("exact table registry must allocate") };
-            assert_eq!(alloc, (1, CAPACITY * TABLE_ENTRY_BYTES));
-            let (handoff, alloc) = Tracker::usage(|| {
-                handoff::Queue::<u64, _>::try_new(driver, CAPACITY, resident::Fixed::<LANE_COUNT>)
-            });
-            let handoff = { (handoff).expect("handoff registry must allocate") };
-            assert_eq!(
-                alloc,
-                (1, CAPACITY * HANDOFF_ENTRY_BYTES + LANE_COUNT * LANE_BYTES)
-            );
-            assert!(!fanout.has_pending());
-            assert!(!queued.has_waiters());
-            assert!(matches!(
-                queued.try_wake_one(LANE_COUNT - 1),
-                Ok(wake::Once::Empty)
-            ));
-            assert!(matches!(
-                queued.try_wake_one(LANE_COUNT),
-                Err(bounds)
-                    if bounds.index == LANE_COUNT
-                        && bounds.len.get() as usize == LANE_COUNT
-            ));
-            assert!(!exact.has_waiters());
-            assert!(handoff.is_empty::<{ LANE_COUNT - 1 }>());
-
-            let (fixed, alloc) = Tracker::usage(|| {
-                handoff::Queue::<u64, _>::try_new(driver, CAPACITY, resident::Fixed::<2>)
-            });
-            let fixed = (fixed).expect("fixed handoff registry must allocate");
-            assert_eq!(alloc, (1, CAPACITY * HANDOFF_ENTRY_BYTES + 2 * LANE_BYTES));
-            assert!(fixed.is_empty::<0>());
-            assert!(fixed.is_empty::<1>());
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+        let (fixed, alloc) = Tracker::usage(|| {
+            handoff::Queue::<u64, _>::try_new(driver, CAPACITY, resident::Fixed::<2>)
+        });
+        let fixed = (fixed).expect("fixed handoff registry must allocate");
+        assert_eq!(alloc, (1, CAPACITY * HANDOFF_ENTRY_BYTES + 2 * LANE_BYTES));
+        assert!(fixed.is_empty::<0>());
+        assert!(fixed.is_empty::<1>());
+    });
 }

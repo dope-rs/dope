@@ -142,7 +142,7 @@ impl<T: Codec, const N: usize> Progress<T> for Table<Key<T>, N> {
 
 fn fixed(index: u32) -> sq::Fixed {
     let bytes = index.to_le_bytes();
-    sq::Fixed::new(sq::Index::from_le([bytes[0], bytes[1], bytes[2]]))
+    sq::Fixed::new([bytes[0], bytes[1], bytes[2]])
 }
 
 fn token<T: Codec>(slot: sq::Fixed) -> T {

@@ -181,7 +181,7 @@ where
         let target = <C::Token as Codec>::Tuning::new(slot);
         let index: num::NonZero<u32> = target.slot().into();
         let bytes = (index.get() - 1).to_le_bytes();
-        let fixed = sq::Fixed::new(sq::Index::from_le([bytes[0], bytes[1], bytes[2]]));
+        let fixed = sq::Fixed::new([bytes[0], bytes[1], bytes[2]]);
         if let Some(stopped) = self.tuning.cancel_at(fixed, None) {
             *stopped = true;
         }

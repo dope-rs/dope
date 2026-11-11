@@ -190,10 +190,10 @@ impl<'d, ID: Identity> Receive<'d, ID> {
                 Decoded::Packet { source, payload } => Received::Packet { source, payload },
                 Decoded::Address { error, .. } => Received::Failed(ReceiveError::Address(error)),
                 Decoded::Rejected(failed) => {
-                    Received::Failed(ReceiveError::Rejected(failed.release()))
+                    Received::Failed(ReceiveError::Rejected(failed.discard()))
                 }
                 Decoded::Truncated(failed) => {
-                    Received::Failed(ReceiveError::Truncated(failed.release()))
+                    Received::Failed(ReceiveError::Truncated(failed.discard()))
                 }
             })
         })

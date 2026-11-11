@@ -1,6 +1,3 @@
-use crate::common::rt::{finish, recover};
-
-use dope_core::driver::life::recovery;
 pub mod common;
 
 #[global_allocator]
@@ -17,114 +14,98 @@ use crate::common::rt::Runtime;
 
 #[test]
 fn take_keeps_ready() {
-    let mut reports = Vec::new();
-    Runtime::throughput().with_driver(
-        |driver| {
-            let site = driver.driver_ref();
-            let target = site
-                .targets::<KeyTag<0>>()
-                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                .dispatch();
-            let ready = site.ready().make_slot(target).expect("ready slot");
+    Runtime::throughput().run(|scope| {
+        let driver = scope.context();
+        let site = driver.driver_ref();
+        let target = site
+            .targets::<KeyTag<0>>()
+            .bind(SlotIndex::ZERO, Epoch::INITIAL)
+            .dispatch();
+        let ready = site.ready().make_slot(target).expect("ready slot");
+        let store = site
+            .scheduler()
+            .try_storage(conn::Capacity::fixed::<1>())
+            .expect("credit storage");
+        let slot = store.get(SlotIndex::ZERO).expect("credit slot");
+        let control = slot.control();
+        let activity = Tracker::begin();
+        let pending = slot.arm(target, ready.target()).expect("idle credit");
+        assert!(pending.id().slot() == SlotIndex::ZERO);
+        let held = pending.claim();
+        assert!(held.id().slot() == SlotIndex::ZERO);
+        drop(held);
+        assert!(matches!(slot.take(), Take::Ready(Wake::Returned)));
+        assert!(matches!(ready.take(), Readiness::Ready));
+        assert!(matches!(ready.take(), Readiness::Idle));
+        for retry in [false, true] {
+            let held = control
+                .arm(target, ready.target())
+                .expect("idle credit")
+                .claim();
+            ready.activate();
+            if retry {
+                held.retry();
+            } else {
+                drop(held);
+            }
+            assert!(matches!(
+                (retry, slot.take()),
+                (false, Take::Ready(Wake::Returned)) | (true, Take::Ready(Wake::Retry))
+            ));
+            assert!(matches!(slot.take(), Take::Idle));
+            assert!(!slot.is_active());
+            assert!(matches!(ready.take(), Readiness::Ready));
+            assert!(matches!(ready.take(), Readiness::Idle));
+        }
+        let pending = control.arm(target, ready.target()).expect("idle credit");
+        ready.activate();
+        pending.cancel();
+        assert!(matches!(slot.take(), Take::Idle));
+        assert!(!slot.is_active());
+        assert!(matches!(ready.take(), Readiness::Ready));
+        assert!(matches!(ready.take(), Readiness::Idle));
+        assert_eq!(activity.finish(), [0; 4].into());
+    });
+}
+
+#[test]
+fn revoke_keeps_ready() {
+    Runtime::throughput().run(|scope| {
+        let driver = scope.context();
+        let site = driver.driver_ref();
+        let target = site
+            .targets::<KeyTag<0>>()
+            .bind(SlotIndex::ZERO, Epoch::INITIAL)
+            .dispatch();
+        let ready = site.ready().make_slot(target).expect("ready slot");
+        for retry in [false, true] {
             let store = site
                 .scheduler()
                 .try_storage(conn::Capacity::fixed::<1>())
                 .expect("credit storage");
             let slot = store.get(SlotIndex::ZERO).expect("credit slot");
             let control = slot.control();
-            let activity = Tracker::begin();
-            let pending = slot.arm(target, ready.target()).expect("idle credit");
-            assert!(pending.id().slot() == SlotIndex::ZERO);
-            let held = pending.claim();
-            assert!(held.id().slot() == SlotIndex::ZERO);
-            drop(held);
-            assert!(matches!(slot.take(), Take::Ready(Wake::Returned)));
-            assert!(matches!(ready.take(), Readiness::Ready));
-            assert!(matches!(ready.take(), Readiness::Idle));
-            for retry in [false, true] {
-                let held = control
-                    .arm(target, ready.target())
-                    .expect("idle credit")
-                    .claim();
-                ready.activate();
-                if retry {
-                    held.retry();
-                } else {
-                    drop(held);
-                }
-                assert!(matches!(
-                    (retry, slot.take()),
-                    (false, Take::Ready(Wake::Returned)) | (true, Take::Ready(Wake::Retry))
-                ));
-                assert!(matches!(slot.take(), Take::Idle));
-                assert!(!slot.is_active());
-                assert!(matches!(ready.take(), Readiness::Ready));
-                assert!(matches!(ready.take(), Readiness::Idle));
-            }
-            let pending = control.arm(target, ready.target()).expect("idle credit");
+            let held = control
+                .arm(target, ready.target())
+                .expect("idle credit")
+                .claim();
             ready.activate();
-            pending.cancel();
-            assert!(matches!(slot.take(), Take::Idle));
-            assert!(!slot.is_active());
+            if retry {
+                held.retry();
+            } else {
+                drop(held);
+            }
+            assert!(slot.is_active());
+            assert!(!slot.is_held());
+            drop(store);
+            assert!(matches!(
+                control.arm(target, ready.target()),
+                Err(Arm::Stale(_))
+            ));
             assert!(matches!(ready.take(), Readiness::Ready));
             assert!(matches!(ready.take(), Readiness::Idle));
-            assert_eq!(activity.finish(), [0; 4].into());
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn revoke_keeps_ready() {
-    let mut reports = Vec::new();
-    Runtime::throughput().with_driver(
-        |driver| {
-            let site = driver.driver_ref();
-            let target = site
-                .targets::<KeyTag<0>>()
-                .bind(SlotIndex::ZERO, Epoch::INITIAL)
-                .dispatch();
-            let ready = site.ready().make_slot(target).expect("ready slot");
-            for retry in [false, true] {
-                let store = site
-                    .scheduler()
-                    .try_storage(conn::Capacity::fixed::<1>())
-                    .expect("credit storage");
-                let slot = store.get(SlotIndex::ZERO).expect("credit slot");
-                let control = slot.control();
-                let held = control
-                    .arm(target, ready.target())
-                    .expect("idle credit")
-                    .claim();
-                ready.activate();
-                if retry {
-                    held.retry();
-                } else {
-                    drop(held);
-                }
-                assert!(slot.is_active());
-                assert!(!slot.is_held());
-                drop(store);
-                assert!(matches!(
-                    control.arm(target, ready.target()),
-                    Err(Arm::Stale(_))
-                ));
-                assert!(matches!(ready.take(), Readiness::Ready));
-                assert!(matches!(ready.take(), Readiness::Idle));
-            }
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        finish,
-    );
-    assert!(
-        reports.is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+        }
+    });
 }
 
 #[test]

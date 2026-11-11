@@ -101,9 +101,9 @@ impl Options {
 
     pub(crate) fn copy(&self) -> Self {
         Self {
-            transport: self.transport.copy(),
+            transport: self.transport.clone(),
             datagrams: self.datagrams,
-            streams: self.streams.copy(),
+            streams: self.streams,
             journals: self.journals,
             security: Security {
                 stateless_reset_secret: self.security.stateless_reset_secret.clone(),

@@ -22,82 +22,33 @@ pub struct Bytes(usize);
 pub struct Values(usize);
 
 /// Amount held before a reply-resource insertion.
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Current(usize);
-
-impl Current {
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
+pub type Current = diagnostic::Number<0>;
 
 /// Amount introduced by a reply-resource insertion.
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Added(usize);
-
-impl Added {
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
+pub type Added = diagnostic::Number<1>;
 
 /// Fixed upper bound for one reply resource.
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Limit(usize);
-
-impl Limit {
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
+pub type Limit = diagnostic::Number<2>;
 
 /// Amount required by a reply insertion.
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Required(usize);
-
-impl Required {
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
+pub type Required = diagnostic::Number<3>;
 
 /// Amount available under the reply limit or shared credits during admission.
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Available(usize);
+pub type Available = diagnostic::Number<4>;
 
-impl Available {
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
+mod diagnostic {
+    #[derive(Clone, Copy, Eq, PartialEq, Debug)]
+    #[repr(transparent)]
+    pub struct Number<const ROLE: u8>(usize);
 
-    pub const fn get(self) -> usize {
-        self.0
+    impl<const ROLE: u8> Number<ROLE> {
+        pub const fn new(value: usize) -> Self {
+            Self(value)
+        }
+
+        pub const fn get(self) -> usize {
+            self.0
+        }
     }
 }
 
@@ -226,10 +177,6 @@ impl Backpressure {
 
 const _: () = {
     assert!(mem::size_of::<Current>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Added>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Limit>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Required>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Available>() == mem::size_of::<usize>());
     assert!(mem::size_of::<Backpressure>() == 3 * mem::size_of::<usize>());
 };
 

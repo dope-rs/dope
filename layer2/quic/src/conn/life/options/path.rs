@@ -9,6 +9,7 @@ pub struct Path {
     max_pmtu: u64,
 }
 
+#[derive(Clone)]
 pub(in crate::conn) struct Transport {
     params: param::Set,
     max_pmtu: pmtud::Maximum,
@@ -147,13 +148,6 @@ impl Transport {
         Path {
             params: self.params,
             max_pmtu: self.max_pmtu.get(),
-        }
-    }
-
-    pub(super) fn copy(&self) -> Self {
-        Self {
-            params: self.params.clone(),
-            max_pmtu: self.max_pmtu,
         }
     }
 }
