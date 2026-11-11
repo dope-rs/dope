@@ -99,39 +99,6 @@ where
         entry.try_insert(fiber, data, parent)
     }
 
-    pub(crate) fn access<R>(
-        &mut self,
-        id: &Id<'d, D>,
-        access: impl FnOnce(pin::Pin<&mut F>) -> R,
-    ) -> Option<R> {
-        let mut entries = self.pool.entries();
-        let owner = storage::Owner::of(entries.view().header());
-        let key = id.key_for(owner)?;
-        entries.resident(key, access)
-    }
-
-    pub(crate) fn read<R>(
-        &self,
-        id: &Id<'d, D>,
-        read: impl for<'m> FnOnce(&'m M) -> R,
-    ) -> Option<R> {
-        let view = self.pool.view();
-        let owner = storage::Owner::of(view.header());
-        let key = id.key_for(owner)?;
-        view.read(key, read)
-    }
-
-    pub(crate) fn inspect<R>(
-        &self,
-        id: &Id<'d, D>,
-        inspect: impl for<'m> FnOnce(&'m M, phase::State) -> R,
-    ) -> Option<R> {
-        let view = self.pool.view();
-        let owner = storage::Owner::of(view.header());
-        let key = id.key_for(owner)?;
-        view.inspect(key, inspect)
-    }
-
     pub fn poll_ready(
         &mut self,
         work: app::Work<'_, 'd>,
@@ -149,13 +116,6 @@ where
         let (view, mut token) = entries.into_parts();
         let done = ready::Queue::pop(view.reborrow(), &mut token)?;
         Some(done.take())
-    }
-
-    pub(crate) fn try_wake(&self, id: &Id<'d, D>) -> Result<(), WakeError> {
-        let view = self.pool.view();
-        let owner = storage::Owner::of(view.header());
-        let key = id.key_for(owner).ok_or(WakeError::Missing)?;
-        view.try_wake(key)
     }
 
     pub fn wake_next(&mut self) {
@@ -248,14 +208,17 @@ impl<'s, 'd, F: abi::Fiber<'d>, M, D, G> Access<'d, F, M, Domain<'s, D>>
         id: &Scoped<'s, 'd, D>,
         access: impl FnOnce(pin::Pin<&mut F>) -> R,
     ) -> Option<R> {
-        self.source
-            .as_mut()
-            .get_mut()
-            .access(&id.original(), access)
+        let mut entries = self.source.as_mut().get_mut().pool.entries();
+        let owner = storage::Owner::of(entries.view().header());
+        let key = id.original().key_for(owner)?;
+        entries.resident(key, access)
     }
 
     fn read<R>(&self, id: &Scoped<'s, 'd, D>, read: impl for<'m> FnOnce(&'m M) -> R) -> Option<R> {
-        self.source.read(&id.original(), read)
+        let view = self.source.pool.view();
+        let owner = storage::Owner::of(view.header());
+        let key = id.original().key_for(owner)?;
+        view.read(key, read)
     }
 
     fn inspect<R>(
@@ -263,11 +226,17 @@ impl<'s, 'd, F: abi::Fiber<'d>, M, D, G> Access<'d, F, M, Domain<'s, D>>
         id: &Scoped<'s, 'd, D>,
         inspect: impl for<'m> FnOnce(&'m M, phase::State) -> R,
     ) -> Option<R> {
-        self.source.inspect(&id.original(), inspect)
+        let view = self.source.pool.view();
+        let owner = storage::Owner::of(view.header());
+        let key = id.original().key_for(owner)?;
+        view.inspect(key, inspect)
     }
 
     fn try_wake(&self, id: &Scoped<'s, 'd, D>) -> Result<(), set::WakeError> {
-        self.source.try_wake(&id.original())
+        let view = self.source.pool.view();
+        let owner = storage::Owner::of(view.header());
+        let key = id.original().key_for(owner).ok_or(WakeError::Missing)?;
+        view.try_wake(key)
     }
 
     fn poll_ready(
