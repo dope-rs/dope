@@ -54,18 +54,17 @@ impl Input<'_> {
             }
         }
         state.failed |= result.is_err();
-        let (chunk, released) = match staged {
+        let chunk = match staged {
             staged::Staged::Ready(recv) => {
                 drop(recv);
-                (None, buffers::Release::Released)
+                None
             }
-            staged::Staged::Retained(chunk) => (Some(chunk), buffers::Release::Retained),
-            staged::Staged::Released => (None, buffers::Release::Released),
+            staged::Staged::Retained(chunk) => Some(chunk),
+            staged::Staged::Released => None,
         };
         let output = staged::Output {
             chunk,
             control: result,
-            released,
         };
         let len = input.len;
         (output, Plain { bytes, len })

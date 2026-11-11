@@ -8,7 +8,6 @@ use dope::net::{
 };
 use send::reclaim;
 
-use crate::state::buffers;
 use crate::tls;
 use crate::tls::{
     endpoint,
@@ -156,7 +155,6 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
 const _: () = {
     use mode::access;
     use receive::stream;
-    use reserve::Completion as _;
     use wire::receive::{Policy, batch, eof, mode, reserve};
 
     impl<R: roles::Protocol> Policy<tls::Tls<R>> for Ingress<R> {
@@ -188,8 +186,10 @@ const _: () = {
             'd: 'w,
             'w: 'a + 'input,
         {
-            let (txn, output, result) = txn.read(|input| input.read_batch(bytes, cap));
-            finish(txn, output, result, end)
+            let (wire, send, run, recv) = txn.into_parts();
+            let (output, result, released) =
+                receive::Ingress::new(wire, recv).read_batch(bytes, cap);
+            finish(wire, send, run, output, result, released, end)
         }
 
         fn read_lease<'a, 'w, 'd, ID: route::Identity + 'w>(
@@ -202,8 +202,9 @@ const _: () = {
             'd: 'w,
             'w: 'a,
         {
-            let (txn, output, result) = txn.read(|input| input.retain(bytes));
-            finish(txn, output, result, end)
+            let (wire, send, run, recv) = txn.into_parts();
+            let (output, result, released) = receive::Ingress::new(wire, recv).retain(bytes);
+            finish(wire, send, run, output, result, released, end)
         }
     }
 
@@ -226,17 +227,23 @@ const _: () = {
     }
 
     fn finish<'a, 'w, 'd: 'w, R: roles::Protocol + 'w, ID: route::Identity + 'w, T>(
-        mut txn: policy::Transaction<'a, 'w, 'd, R, ID, buffers::Release>,
+        wire: &'a mut tls::Connection<'w, R, ID>,
+        mut send: Option<tls::Buffered<'a, 'w>>,
+        run: &'a mut endpoint::Runtime<'w, 'd, R, ID>,
         output: T,
         result: Result<(), crate::Error>,
+        released: bool,
         end: terminal::Both<'_, terminal::Error<'w, tls::Tls<R>>>,
     ) -> terminal::Processed<T>
     where
         'w: 'a,
     {
-        let flushed = txn.finish();
-        let closed = txn.is_peer_done();
-        txn.complete();
+        let flushed = match send.as_mut() {
+            Some(send) => wire.emit_into(send.buffer_mut()),
+            None => Ok(()),
+        };
+        let closed = wire.peer_closed;
+        policy::release(send, run, released);
         match result.and(flushed) {
             Ok(()) if closed => end.eof(output),
             Ok(()) => end.output(output),

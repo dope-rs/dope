@@ -74,6 +74,10 @@ fn terminal_send_preserves_cause_when_full() {
             let mut streams = scope.streams();
             let terminal = streams.view().resolve_send(terminal).expect("send access");
             assert_eq!(
+                streams.view().is_send_complete(terminal),
+                cause == admit::Cause::Retired
+            );
+            assert_eq!(
                 streams.send().send(terminal, b"late"),
                 Err(Error::Discarded(cause))
             );

@@ -7,7 +7,6 @@ use crate::{error, state::buffers};
 pub(crate) struct Output<'d> {
     pub(crate) chunk: Option<storage::Shared<owners::Edge<owners::Plain, pool::Borrowed<'d>>>>,
     pub(crate) control: Result<(), crate::Error>,
-    pub(crate) released: buffers::Release,
 }
 
 /// The admitted receive loan is either still exclusive or has been published

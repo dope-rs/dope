@@ -367,6 +367,7 @@ fn stopped_peer_closed() {
             .resolve_send(stopped)
             .expect("send direction");
         assert!(!streams.view().is_send_open(send), "unopened peer stream");
+        assert!(!streams.view().is_send_complete(send));
     });
     let sent = Instant::now() + Duration::from_secs(1);
     Receiver::receive_from(&mut server, &mut wire, &mut client, sent).expect("STOP delivery");
@@ -379,8 +380,10 @@ fn stopped_peer_closed() {
         );
         assert_eq!(streams.view().stopped(send), Some(code));
         assert!(!streams.view().is_send_open(send));
+        assert!(!streams.view().is_send_complete(send));
         let other = streams.view().resolve_send(other).expect("unrelated half");
         assert!(streams.view().is_send_open(other), "lazy peer send half");
+        assert!(!streams.view().is_send_complete(other));
     });
     let reset = sent + Duration::from_millis(1);
     Receiver::receive_from(&mut client, &mut wire, &mut server, reset).expect("reset delivery");
@@ -404,6 +407,7 @@ fn stopped_peer_closed() {
             .expect("retired reset is inert");
         assert_eq!(streams.view().stopped(send), None, "send entry retired");
         assert!(!streams.view().is_send_open(send), "retained closed half");
+        assert!(streams.view().is_send_complete(send));
         let recv = streams.view().resolve_recv(stopped).expect("receive half");
         assert!(
             !streams.view().is_recv_eof(recv),

@@ -36,12 +36,12 @@ impl<'s, 'd, R: roles::Protocol + 'd, ID: route::Identity + 'd> Ingress<'s, 'd, 
     ) -> (
         batch::Produced<'id, Batch<'a>>,
         Result<(), error::Error>,
-        buffers::Release,
+        bool,
     )
     where
         'd: 'a,
     {
-        let mut control = (Ok(()), buffers::Release::Retained);
+        let mut control = (Ok(()), false);
         let output = cap.produce(raw::Producer {
             ingress: self,
             bytes,
@@ -55,7 +55,7 @@ impl<'s, 'd, R: roles::Protocol + 'd, ID: route::Identity + 'd> Ingress<'s, 'd, 
     ) -> (
         Option<stream::Retained<'d, 'a>>,
         Result<(), error::Error>,
-        buffers::Release,
+        bool,
     )
     where
         'a: 'd,
@@ -65,15 +65,15 @@ impl<'s, 'd, R: roles::Protocol + 'd, ID: route::Identity + 'd> Ingress<'s, 'd, 
             staged::Output {
                 chunk,
                 control: mut failure,
-                mut released,
             },
             plain,
         ) = direct::Input::owned(self.conn, bytes, self.recv);
+        let mut released = chunk.is_none();
         let output = match stream::Retained::try_new(chunk, Cursor::new(plain)) {
             Ok(output) => output,
             Err(cause) => {
                 self.conn.failed = true;
-                released = buffers::Release::Released;
+                released = true;
                 if failure.is_ok() {
                     failure = Err(cause);
                 }

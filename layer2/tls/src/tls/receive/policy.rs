@@ -1,10 +1,6 @@
 use crate::error;
 use crate::state::buffers;
-use crate::tls::{
-    self, endpoint,
-    receive::{Ingress, waiters},
-    roles,
-};
+use crate::tls::{self, endpoint, receive::waiters, roles};
 use dope::core::driver::{
     receive::credit,
     route::{self, table::conn},
@@ -20,86 +16,42 @@ pub struct Blocked<'a, 'd, ID: route::Identity> {
 pub struct Policy<R>(marker::PhantomData<fn() -> R>);
 
 /// Holds the admitted receive slot and any handshake output loan through processing.
-pub struct Transaction<
-    'a,
-    'w,
-    'd,
-    R: roles::Protocol + 'w,
-    ID: route::Identity + 'w,
-    S = buffers::Reserve<'w>,
-> where
+pub struct Transaction<'a, 'w, 'd, R: roles::Protocol + 'w, ID: route::Identity + 'w>
+where
     'd: 'w,
 {
     wire: &'a mut tls::Connection<'w, R, ID>,
     send: Option<tls::Buffered<'a, 'w>>,
     run: &'a mut endpoint::Runtime<'w, 'd, R, ID>,
-    recv: S,
+    recv: buffers::Reserve<'w>,
 }
 
 impl<'a, 'w, 'd, R: roles::Protocol + 'w, ID: route::Identity + 'w> Transaction<'a, 'w, 'd, R, ID>
 where
     'd: 'w,
 {
-    pub(in crate::tls) fn read<T>(
+    pub(in crate::tls) fn into_parts(
         self,
-        read: impl FnOnce(Ingress<'_, 'w, R, ID>) -> (T, Result<(), error::Error>, buffers::Release),
     ) -> (
-        Transaction<'a, 'w, 'd, R, ID, buffers::Release>,
-        T,
-        Result<(), error::Error>,
+        &'a mut tls::Connection<'w, R, ID>,
+        Option<tls::Buffered<'a, 'w>>,
+        &'a mut endpoint::Runtime<'w, 'd, R, ID>,
+        buffers::Reserve<'w>,
     ) {
-        let Self {
-            wire,
-            send,
-            run,
-            recv,
-        } = self;
-        let (output, result, recv) = read(Ingress::new(wire, recv));
-        (
-            Transaction {
-                wire,
-                send,
-                run,
-                recv,
-            },
-            output,
-            result,
-        )
+        (self.wire, self.send, self.run, self.recv)
     }
 }
 
-impl<'w, 'd, R: roles::Protocol + 'w, ID: route::Identity + 'w>
-    Transaction<'_, 'w, 'd, R, ID, buffers::Release>
-where
-    'd: 'w,
-{
-    pub(in crate::tls) fn is_peer_done(&self) -> bool {
-        self.wire.peer_closed
+pub(in crate::tls) fn release<'w, 'd: 'w, R: roles::Protocol + 'w, ID: route::Identity + 'w>(
+    send: Option<tls::Buffered<'_, 'w>>,
+    run: &mut endpoint::Runtime<'w, 'd, R, ID>,
+    released: bool,
+) {
+    if released {
+        run.waiters.wake(waiters::Resource::Recv);
     }
-
-    pub(in crate::tls) fn finish(&mut self) -> Result<(), error::Error> {
-        if let Some(send) = self.send.as_mut() {
-            self.wire.emit_into(send.buffer_mut())?;
-        }
-        Ok(())
-    }
-}
-
-impl<'w, 'd, R: roles::Protocol + 'w, ID: route::Identity + 'w, S> Transaction<'_, 'w, 'd, R, ID, S>
-where
-    'd: 'w,
-{
-    fn release(self, recv: buffers::Release) {
-        drop(self.recv);
-        if recv == buffers::Release::Released {
-            self.run.waiters.wake(waiters::Resource::Recv);
-        }
-        if self
-            .send
-            .is_some_and(|send| send.complete() == send::Availability::Released)
-        {
-            self.run.waiters.wake(waiters::Resource::HandshakeEgress);
-        }
+    if send.is_some_and(|send| send.complete() == send::Availability::Released) {
+        run.waiters.wake(waiters::Resource::HandshakeEgress);
     }
 }
 
@@ -109,18 +61,8 @@ where
     'd: 'w,
 {
     fn complete(self) {
-        self.release(buffers::Release::Released);
-    }
-}
-
-impl<'w, 'd, R: roles::Protocol + 'w, ID: route::Identity + 'w> reserve::Completion
-    for Transaction<'_, 'w, 'd, R, ID, buffers::Release>
-where
-    'd: 'w,
-{
-    fn complete(self) {
-        let recv = self.recv;
-        self.release(recv);
+        drop(self.recv);
+        release(self.send, self.run, true);
     }
 }
 impl<R: roles::Protocol> reserve::Try<tls::Tls<R>> for Policy<R> {

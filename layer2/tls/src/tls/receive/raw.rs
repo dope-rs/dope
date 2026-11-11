@@ -1,4 +1,4 @@
-use crate::state::{buffers, direct, staged};
+use crate::state::{direct, staged};
 use o3::buffer::pool::owners;
 use std::num;
 
@@ -39,7 +39,7 @@ use crate::{
 pub(super) struct Producer<'s, 'd, 'input, 'f, R: roles::Protocol + 'd, ID: Identity + 'd> {
     pub(super) ingress: Ingress<'s, 'd, R, ID>,
     pub(super) bytes: &'input mut [u8],
-    pub(super) control: &'f mut (Result<(), error::Error>, buffers::Release),
+    pub(super) control: &'f mut (Result<(), error::Error>, bool),
 }
 
 // SAFETY: Input::owned returns one pooled chunk and one initialized input prefix at most.
@@ -52,11 +52,10 @@ unsafe impl<'d: 'input, 'input, R: roles::Protocol + 'd, ID: Identity + 'd>
             staged::Output {
                 chunk,
                 control: failure,
-                released,
             },
             plain,
         ) = direct::Input::owned(self.ingress.conn, self.bytes, self.ingress.recv);
-        *self.control = (failure, released);
+        *self.control = (failure, chunk.is_none());
         Batch {
             owned: chunk,
             plain: plain.into_chunk(),

@@ -7,7 +7,7 @@ use o3::{
 
 /// Exclusive receive storage transferred from pool admission to one read.
 #[repr(transparent)]
-pub struct Reserve<'d>(pool::Span<owners::Plain, pool::Borrowed<'d>>);
+pub(crate) struct Reserve<'d>(pool::Span<owners::Plain, pool::Borrowed<'d>>);
 
 impl<'d> Reserve<'d> {
     pub(super) fn copy(
@@ -24,12 +24,6 @@ impl<'d> Reserve<'d> {
             .commit();
         Ok(self.0.freeze())
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Release {
-    Released,
-    Retained,
 }
 
 pub(crate) enum Receive {

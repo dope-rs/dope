@@ -274,7 +274,13 @@ fn late_ack_keeps_slot() {
     let sent_at = Instant::now() + Duration::from_secs(1);
     let mut original = Batch::default();
     client
-        .with_scope(|mut scope| scope.output().send_batch(&mut original, sent_at, 1, 1_200))
+        .with_scope(|mut scope| {
+            let result = scope.output().send_batch(&mut original, sent_at, 1, 1_200);
+            let streams = scope.streams();
+            let send = streams.view().resolve_send(victim.id()).expect("sent half");
+            assert!(!streams.view().is_send_complete(send));
+            result
+        })
         .expect("warmed client journals must admit the original stream packet");
     assert_eq!(original.packets(), 1);
     for packet in original.iter_mut() {
@@ -341,6 +347,16 @@ fn late_ack_keeps_slot() {
         .send_streams()
         .finish(next)
         .expect("finish replacement stream");
+    client.with_scope(|mut scope| {
+        let streams = scope.streams();
+        let view = streams.view();
+        let retired = view.resolve_send(victim.id()).expect("retired half");
+        let next = view.resolve_send(next.id()).expect("replacement half");
+        let unknown = dope_quic::wire::stream::Id::new(next.get() + 4).expect("unopened ID");
+        assert!(view.is_send_complete(retired));
+        assert!(!view.is_send_complete(next));
+        assert!(!view.is_send_complete(view.resolve_send(unknown).expect("send direction")));
+    });
 
     for packet in late_ack.iter_mut() {
         client

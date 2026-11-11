@@ -119,6 +119,23 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
             )
     }
 
+    /// Whether FIN acknowledgement or reset retirement ended a known send half.
+    /// Completion alone does not distinguish delivery from cancellation.
+    pub fn is_send_complete(&self, id: id::Send<'conn>) -> bool {
+        let id = id.id();
+        let streams = &self.connection.streams;
+        if streams.is_send_done(id) {
+            return true;
+        }
+        match streams.transmit.map().find(id, &streams.resident) {
+            Some(entry) => matches!(entry.phase(), queue::Phase::Acked),
+            None => {
+                id.initiator() == streams.local()
+                    && id.number() < *id.direction().bind(&streams.local_initiated.opened)
+            }
+        }
+    }
+
     pub fn stopped(&self, id: id::Send<'conn>) -> Option<crate::errors::Code> {
         self.connection
             .streams
