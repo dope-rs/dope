@@ -1,6 +1,6 @@
 [package]
 name = "dope-core"
-version.workspace = true
+version = "0.69.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Owned native I/O and completion driver for dope"

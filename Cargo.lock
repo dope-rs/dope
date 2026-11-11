@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "dope-core"
-version = "0.69.0"
+version = "0.69.1"
 dependencies = [
  "dope-kqueue",
  "dope-sys",
