@@ -18,10 +18,7 @@ use dope::{
             transfer,
         },
     },
-    manifold::{
-        app::Host,
-        file::{appender, read},
-    },
+    manifold::{app::Host, file::read},
     runtime::executor::session,
 };
 use dope_fiber::{abi::Task, file::Operation};
@@ -72,7 +69,7 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                     scenario::TIMEOUT,
                     |mut app| {
                         let (port, directory, input, completed, waker) =
-                            (&port, &directory, &input, &completed, &waker);
+                            (&port, directory, &input, &completed, &waker);
                         fibers::TEST.try_run(&mut app, dope_fiber::fiber!('_ => async move {
                             let read::Completion::Open { request, result } =
                                 Operation::new(&port, read::Request::Open(request))
@@ -136,8 +133,25 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                                 panic!("open error completion")
                             };
                             assert!(matches!(result, Err(read::Error::System(Errno::NOT_FOUND))));
+                            let next = open(&directory, "renamed");
+                            let mut rename = read::Request::Rename {
+                                directory,
+                                old: file::path::Component::parse_os("data".as_ref())
+                                    .expect("old name").try_to_owned().expect("old name owner"),
+                                new: file::path::Component::parse_os("renamed".as_ref())
+                                    .expect("new name").try_to_owned().expect("new name owner"),
+                            };
+                            for expected in [Ok(()), Err(read::Error::System(Errno::NOT_FOUND))] {
+                                let read::Completion::Rename { directory, old, new, result } =
+                                    Operation::new(&port, rename).await.ok().expect("rename admission")
+                                else {
+                                    panic!("rename completion")
+                                };
+                                assert_eq!(result, expected);
+                                rename = read::Request::Rename { directory, old, new };
+                            }
                             let occupied = port
-                                .try_request(read::Request::Open(open(&directory, "data")))
+                                .try_request(read::Request::Open(next))
                                 .ok().expect("occupy the only slot");
                             let rejected = port.try_request(read::Request::Read(request))
                                 .err().expect("full read admission");
@@ -354,38 +368,30 @@ fn cancelled_open_reclaims_an_already_opened_descriptor() {
                     Host::new(observed),
                     scenario::TIMEOUT,
                     |mut app| {
-                        for request in [
-                            read::Request::Open(open(&directory, "data")),
-                            read::Request::Prepare(appender::Prepare::new(
-                                open(&directory, "data").into_path(),
-                                Some(b'c'),
-                            )),
-                        ] {
-                            submitted.set(false);
-                            cancelled.set(false);
-                            ticket.set(Some(
-                                port.try_request(request).ok().expect("open admission"),
-                            ));
-                            // Cancel immediately before Reader consumes the successful Open CQ.
-                            fibers::TEST
-                                .try_run(
-                                    &mut app,
-                                    dope_fiber::abi::poll_fn(|context| {
-                                        if cancelled.get() {
-                                            std::task::Poll::Ready(())
-                                        } else {
-                                            context.wake();
-                                            std::task::Poll::Pending
-                                        }
-                                    }),
-                                )
-                                .expect("successful detached Open dispatch");
-                            assert!(submitted.get(), "the original Open flight was submitted");
-                            assert!(
-                                cancelled.get(),
-                                "the successful Open cancelled its exact ticket"
-                            );
-                        }
+                        ticket.set(Some(
+                            port.try_request(read::Request::Open(open(&directory, "data")))
+                                .ok()
+                                .expect("open admission"),
+                        ));
+                        // Cancel immediately before Reader consumes the successful Open CQ.
+                        fibers::TEST
+                            .try_run(
+                                &mut app,
+                                dope_fiber::abi::poll_fn(|context| {
+                                    if cancelled.get() {
+                                        std::task::Poll::Ready(())
+                                    } else {
+                                        context.wake();
+                                        std::task::Poll::Pending
+                                    }
+                                }),
+                            )
+                            .expect("successful detached Open dispatch");
+                        assert!(submitted.get(), "the original Open flight was submitted");
+                        assert!(
+                            cancelled.get(),
+                            "the successful Open cancelled its exact ticket"
+                        );
 
                         drop(
                             port.try_request(read::Request::Open(open(&directory, "data")))

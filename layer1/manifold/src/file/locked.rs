@@ -1,9 +1,6 @@
 use std::os::fd;
 
-use dope_core::{
-    Errno,
-    io::fs::{self, File},
-};
+use dope_core::io::fs::{self, File};
 
 use crate::file::LockError;
 
@@ -16,24 +13,12 @@ impl Locked {
     pub fn try_new(file: File) -> Result<(Self, fs::Offset), LockError> {
         file.try_lock().map_err(LockError::Lock)?;
         let metadata = file.metadata().map_err(LockError::Metadata)?;
-        let file = Self::from_locked(file, metadata.kind())?;
-        let length = metadata.len().map_err(LockError::Length)?;
-        Ok((file, fs::Offset::from(length)))
-    }
-
-    pub(super) fn from_locked(file: File, kind: fs::Kind) -> Result<Self, LockError> {
+        let kind = metadata.kind();
         if !kind.is_regular() {
             return Err(LockError::NotRegular(kind));
         }
-        Ok(Self(file))
-    }
-
-    pub(super) fn try_read_at<'a>(
-        &self,
-        bytes: &'a mut [u8],
-        offset: fs::Offset,
-    ) -> Result<&'a mut [u8], Errno> {
-        self.0.try_read_at(bytes, offset)
+        let length = metadata.len().map_err(LockError::Length)?;
+        Ok((Self(file), fs::Offset::from(length)))
     }
 }
 

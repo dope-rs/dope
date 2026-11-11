@@ -22,7 +22,6 @@ use o3::{
 
 use crate::{
     client::attempt,
-    file::appender,
     service::{self, health},
 };
 
@@ -56,7 +55,6 @@ pub enum Error {
     Service(service::Reconcile),
     Pool(service::Error),
     Retry(health::Error),
-    Appender(appender::OpenError),
     Watchdog(timer::Error),
 }
 

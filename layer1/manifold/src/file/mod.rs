@@ -1,4 +1,3 @@
-pub mod appender;
 mod locked;
 pub mod read;
 

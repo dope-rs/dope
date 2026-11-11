@@ -12,10 +12,7 @@ use std::{mem, num};
 use app::{creation, receive::ingress};
 /// The route identity vocabulary every manifold generic is parameterized by.
 pub use dope_core::driver::route;
-use dope_core::{
-    driver::{retained::flight, route::table, schedule::clock},
-    io::transfer,
-};
+use dope_core::driver::{retained::flight, route::table, schedule::clock};
 use dope_net::link::{egress::ResidentSize, pool};
 use o3::{base::time::Positive, buffer::hold::limits, depot::capacity};
 
@@ -60,40 +57,6 @@ impl<E> From<creation::Error> for BuildError<E> {
     }
 }
 
-/// Invalid construction relationship not already represented by an input
-/// type. This compact value never formats or allocates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppendShape {
-    ZeroBlocks,
-    ZeroBytes,
-    BlockLimit { actual: usize, maximum: usize },
-    Total { blocks: usize, bytes: usize },
-}
-
-impl AppendShape {
-    pub(crate) const fn validate<const N: usize, const B: usize>() -> Result<(), Self> {
-        if N == 0 {
-            return Err(Self::ZeroBlocks);
-        }
-        if B == 0 {
-            return Err(Self::ZeroBytes);
-        }
-        if B > transfer::MAX_BYTES {
-            return Err(Self::BlockLimit {
-                actual: B,
-                maximum: transfer::MAX_BYTES,
-            });
-        }
-        if N.checked_mul(B).is_none() {
-            return Err(Self::Total {
-                blocks: N,
-                bytes: B,
-            });
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConfigError {
     ConnectorOutboundCapacity {
@@ -101,7 +64,6 @@ pub enum ConfigError {
         available: usize,
     },
     ConnectorRouteUnavailable,
-    AppendGeometry(AppendShape),
     DatagramPendingZero,
     DatagramPendingCapacity(table::Invalid),
     DatagramReceiveCapacity {

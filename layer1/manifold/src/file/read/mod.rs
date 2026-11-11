@@ -21,10 +21,7 @@ use o3::{
     mem::{self, Rejected, Return, lease::Open, quota},
 };
 
-use crate::{
-    app::dispatch,
-    file::appender::{self, Preparation, Prepare},
-};
+use crate::app::dispatch;
 
 mod raw;
 
@@ -95,7 +92,6 @@ pub enum Request<R: Return> {
     },
     Read(Read<R>),
     Metadata(Metadata),
-    Prepare(Prepare),
 }
 
 /// A terminal native operation returns its original request owners unchanged.
@@ -118,7 +114,6 @@ pub enum Completion<R: Return> {
         file: fs::File,
         result: Result<fs::metadata::Value, MetadataError>,
     },
-    Prepare(Result<appender::Prepared, appender::OpenError>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,14 +257,12 @@ enum Outcome {
     Rename(Result<(), Error>),
     Read(Result<transfer::Len, Error>),
     Metadata,
-    Prepare,
 }
 
 enum Active<'d> {
     Open(flight::Flight<'d, route::kind::Open>),
     Read(flight::Flight<'d, route::kind::Read>),
     Sync(flight::Flight<'d, route::kind::Sync>),
-    Tail(flight::Flight<'d, route::kind::Read>),
 }
 
 enum Phase<'d> {
@@ -318,7 +311,7 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
         let entry = slot.state();
         entry.insert(request);
         entry.detached.set(false);
-        entry.phase.set(Some(Phase::Queued));
+        entry.restore(Some(Phase::Queued));
         self.pending.set(self.pending.get() + 1);
         slot.push::<WORK>(());
         Ok(Ticket { slot })
@@ -334,7 +327,7 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
             drop((request, outcome));
             false
         } else {
-            entry.phase.set(Some(Phase::Done(outcome)));
+            entry.restore(Some(Phase::Done(outcome)));
             if let Some(waiter) = entry.waiter.take() {
                 waiter.wake();
                 false
@@ -381,15 +374,12 @@ impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
                         }),
                         Outcome::Metadata,
                     ) => Completion::Metadata { file, result },
-                    (Request::Prepare(Prepare(Preparation::Done(result))), Outcome::Prepare) => {
-                        Completion::Prepare(result)
-                    }
                     _ => unreachable!("operation"),
                 })
             }
             phase @ Some(Phase::Queued | Phase::Active { .. }) => {
                 entry.waiter.set(waiter);
-                entry.phase.set(phase);
+                entry.restore(phase);
                 Poll::Pending(self)
             }
             None => unreachable!("ticket"),
@@ -410,7 +400,7 @@ impl<R: Return> Drop for Ticket<'_, '_, R> {
                 drop((request, outcome));
             }
             phase @ Some(Phase::Queued | Phase::Active { .. }) => {
-                entry.phase.set(phase);
+                entry.restore(phase);
                 slot.push::<WORK>(());
             }
             None => unreachable!("ticket"),
@@ -456,27 +446,8 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
                 request.state = MetadataState::Done(Err(MetadataError::Operation(cause)));
                 Outcome::Metadata
             }
-            Request::Prepare(Prepare(preparation)) => {
-                if let Preparation::Metadata { request, .. } = preparation {
-                    request.release(&mut self.free);
-                }
-                *preparation = Preparation::Done(Err(appender::OpenError::Request(cause)));
-                Outcome::Prepare
-            }
         });
         self.port.settle(slot, outcome)
-    }
-
-    fn prepare(&self, slot: &Slot<'_, 'd, R>, preparation: Preparation) {
-        let done = matches!(preparation, Preparation::Done(_));
-        let entry = slot.state();
-        entry.insert(Request::Prepare(Prepare(preparation)));
-        if done {
-            self.port.settle(slot, Outcome::Prepare);
-        } else {
-            entry.phase.set(Some(Phase::Queued));
-            slot.push::<WORK>(());
-        }
     }
 
     fn close(&mut self) {
@@ -514,14 +485,14 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
                         raw::submit(entry, &self.flights, &mut self.free, driver)
                     };
                     match submitted {
-                        Ok(flight) => entry.phase.set(Some(Phase::Active {
+                        Ok(flight) => entry.restore(Some(Phase::Active {
                             flight,
                             stopping: false,
                         })),
                         Err(Error::Submission(cause))
                             if matches!(cause.cause(), SubmitCause::Full) =>
                         {
-                            entry.phase.set(Some(Phase::Queued));
+                            entry.restore(Some(Phase::Queued));
                             slot.push::<WORK>(());
                             return;
                         }
@@ -552,7 +523,7 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
                             }
                         }
                     }
-                    entry.phase.set(Some(Phase::Active { flight, stopping }));
+                    entry.restore(Some(Phase::Active { flight, stopping }));
                     if let Some(cause) = rejected {
                         driver.rejected(cause);
                     }
@@ -561,7 +532,7 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
                         return;
                     }
                 }
-                phase @ (Some(Phase::Done(_)) | None) => entry.phase.set(phase),
+                phase @ (Some(Phase::Done(_)) | None) => entry.restore(phase),
             }
         }
     }
@@ -583,7 +554,7 @@ impl<'d> Active<'d> {
     ) -> Result<flight::cancel::Outcome, flight::cancel::Failure> {
         match self {
             Self::Open(flight) => flight.try_stop(driver),
-            Self::Read(flight) | Self::Tail(flight) => flight.try_stop(driver),
+            Self::Read(flight) => flight.try_stop(driver),
             Self::Sync(flight) => flight.try_stop(driver),
         }
     }
@@ -613,7 +584,7 @@ impl<'d, ID: Identity, R: Return<Item = Buffer<'d>>> executor::raw::Finishes<'d,
                 Some(Phase::Queued | Phase::Active { .. }) => {
                     this.fail(&slot, Error::Shutdown);
                 }
-                phase => slot.state().phase.set(phase),
+                phase => slot.state().restore(phase),
             }
         }
         executor::raw::Finish::new(owner, install, proof)
