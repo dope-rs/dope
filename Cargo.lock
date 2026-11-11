@@ -148,9 +148,9 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "o3"
-version = "0.52.4"
+version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c4279007fdb45ce04250e79a7404dd09c514b00df801a982f1cdca3225f1c66"
+checksum = "b212ccb58735c2656137bb8d81f2bc9f28c29b7c01dacebd7a28cddcd2636531"
 
 [[package]]
 name = "pin-project"

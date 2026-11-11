@@ -51,7 +51,7 @@ dope-kqueue = { path = "layer0/kqueue", version = "0.69.0" }
 dope-gen = { path = "layer1/gen", version = "0.69.0" }
 engine = { package = "dope", path = "layer1/dope" }
 fibers = { package = "dope-fiber", path = "layer2/fiber" }
-o3 = "0.52"
+o3 = "0.53"
 libc = "0.2.191"
 pin-project = "1.1.13"
 proc-macro2 = "1.0.107"
