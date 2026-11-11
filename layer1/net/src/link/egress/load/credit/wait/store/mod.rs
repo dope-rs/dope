@@ -78,8 +78,6 @@ pub(in crate::link::egress::load::credit) struct Selected<'a, 'pool, 'p, 'd> {
     record: &'a mut Record<'p, 'd>,
     scope: &'pool credit::Pool<'p, 'd, credit::Ready<'p, 'd>>,
     index: tree::Candidate,
-    key: ready::Retained<'d>,
-    amount: credit::Queued,
 }
 
 pub(super) struct Records<'a, 'p, 'd> {
@@ -173,13 +171,15 @@ impl<'pool, 'p, 'd> Selected<'_, 'pool, 'p, 'd> {
 
     pub(in crate::link::egress::load::credit) fn activate(self, owner: driver::Reference<'d>) {
         let lane = self.lane();
+        // SAFETY: selection exclusively lends this unchanged Waiting record.
+        let waiting = unsafe { &*self.record.payload.waiting };
         // Activation only inserts the current key into the driver's ready set;
         // it cannot run application code or change this selected credit.
-        match owner.ready().try_activate(self.key) {
+        match owner.ready().try_activate(waiting.key) {
             Ok(()) => {
-                let grant = lane.account().acquire(self.amount.amount());
+                let grant = lane.account().acquire(waiting.amount.amount());
                 self.record.payload.granted = mem::ManuallyDrop::new(Granted {
-                    key: self.key,
+                    key: waiting.key,
                     grant,
                 });
                 self.record.kind = Kind::Granted;
@@ -280,15 +280,12 @@ impl<'a, 'p, 'd> Records<'a, 'p, 'd> {
         scope: &'pool credit::Pool<'p, 'd, credit::Ready<'p, 'd>>,
     ) -> (Selected<'a, 'pool, 'p, 'd>, tree::Waiting) {
         let record = unsafe { &mut *self.pointer.as_ptr().add(index.offset()) };
-        let waiting = unsafe { *record.payload.waiting };
         let proof = tree::Waiting::new(index.index());
         (
             Selected {
                 record,
                 scope,
                 index,
-                key: waiting.key,
-                amount: waiting.amount,
             },
             proof,
         )

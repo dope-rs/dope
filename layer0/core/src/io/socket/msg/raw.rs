@@ -53,25 +53,15 @@ impl<'a, const N: usize> Vectored<'a, N>
     }
 }
 
-pub(super) trait Project<'a> {
-    fn slice(self) -> &'a [u8];
-}
-
-impl<'a> Project<'a> for &'a msg::Iovec {
-    fn slice(self) -> &'a [u8] {
-        // SAFETY: construction proves the bytes live for the graph lifetime.
-        unsafe { socket::raw::Iovec::as_slice(self) }
-    }
-}
-
 impl<'a, const N: usize> super::Vectored<'a, N> {
     /// Projects a sole descriptor with its admitted byte bound.
     pub fn contiguous(&self) -> Option<transfer::View<'a>> {
         let [iovec] = self.iovs else {
             return None;
         };
-        // SAFETY: the sole descriptor's length equals the admitted message length.
-        let bytes = unsafe { buffer::bytes::bounded::raw::Input::new(iovec.slice()) };
+        // SAFETY: the graph retains the sole descriptor's admitted bytes for 'a.
+        let bytes =
+            unsafe { buffer::bytes::bounded::raw::Input::new(socket::raw::Iovec::as_slice(iovec)) };
         Some(transfer::View::from_prefix(
             buffer::bytes::Prefix::from_raw(bytes),
         ))
@@ -146,9 +136,10 @@ unsafe impl<'a: 'b, 'b> buffer::raw::Scatter<'b> for Cursor<'a> {
                 self.local = 0;
                 continue;
             }
-            // SAFETY: the non-empty retained iovec has live backing bytes;
-            // cursor construction and transitions keep `local` within it.
-            let bytes = unsafe { iovec.slice().get_unchecked(self.local as usize..) };
+            // SAFETY: the graph retains these bytes for 'a; cursor construction
+            // and transitions keep `local` within this nonempty descriptor.
+            let bytes =
+                unsafe { socket::raw::Iovec::as_slice(iovec).get_unchecked(self.local as usize..) };
             let len = bytes.len().min(cap.get());
             self.local += len as u32;
             let consumed = transfer::Len::prefix(len, self.remaining);
