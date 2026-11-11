@@ -6,9 +6,9 @@ mod cores;
 mod lease;
 mod stores;
 
-pub(in crate::conn) use cores::{Core, Occupied};
+pub(in crate::conn) use cores::Occupied;
 pub(in crate::conn) use lease::Lease;
-use stores::Storage;
+pub(in crate::conn) use stores::Core;
 
 const NONE: u32 = u32::MAX;
 

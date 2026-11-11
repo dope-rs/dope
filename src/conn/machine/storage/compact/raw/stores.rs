@@ -6,7 +6,8 @@ use o3::alloc::array;
 use o3::depot::arena::slab::external;
 use o3::depot::{capacity, queue::links};
 
-pub(in crate::conn) struct Storage<T, G: external::Generation> {
+#[repr(transparent)]
+pub(in crate::conn) struct Core<T, G: external::Generation> {
     pub(in crate::conn::machine::storage::compact) slots:
         array::Block<mem::MaybeUninit<compact::Slot<T, G>>, capacity::Count, State>,
 }
@@ -43,17 +44,17 @@ impl State {
     }
 }
 
-impl<T, G> Storage<T, G>
+impl<T, G> Core<T, G>
 where
     G: external::Generation,
 {
-    pub(super) fn empty(room: capacity::Count) -> Self {
+    pub(in crate::conn) fn empty(room: capacity::Count) -> Self {
         Self {
             slots: array::Block::empty(alloc::raw::Empty::EMPTY, State::new(room)),
         }
     }
 
-    pub(super) fn try_new(cap: capacity::Count) -> Result<Self, alloc::Error> {
+    pub(in crate::conn) fn try_new(cap: capacity::Count) -> Result<Self, alloc::Error> {
         Ok(Self {
             slots: array::Block::try_new(cap, State::new(cap))?,
         })
@@ -112,7 +113,7 @@ where
     }
 }
 
-fn slot<T, G>(store: &Storage<T, G>, index: u32) -> Option<&compact::Slot<T, G>>
+fn slot<T, G>(store: &Core<T, G>, index: u32) -> Option<&compact::Slot<T, G>>
 where
     G: external::Generation,
 {
@@ -120,7 +121,7 @@ where
         .then(|| unsafe { store.slot(links::Index::from(NonZero::new_unchecked(index + 1))) })
 }
 
-impl<T, G> Drop for Storage<T, G>
+impl<T, G> Drop for Core<T, G>
 where
     G: external::Generation,
 {
