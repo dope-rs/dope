@@ -142,7 +142,7 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
         };
         let result = wire.seal_close(buffer);
         send.drop_empty();
-        let output = tls::Connection::<R, ID>::finish(send.consume_none(), result.is_err());
+        let output = tls::Connection::<R, ID>::finish(send.buffered(), result.is_err());
         match result {
             Err(cause) => end.terminal(
                 output,

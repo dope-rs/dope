@@ -319,7 +319,7 @@ pub mod contract {
         {
             let (case, storage) = context.into_parts();
             let (ready, allocations) = Tracker::usage(|| match case {
-                Self::Buffered => storage.consume_none().buffered().close_after(),
+                Self::Buffered => storage.buffered().close_after(),
                 Self::Vectored => {
                     let mut plan = send::progress::Plan::vectored(storage, &plain);
                     {
@@ -352,7 +352,7 @@ pub mod contract {
                     assert!(input.is_empty());
                     assert_eq!(input.remaining(), transfer::Len::ZERO);
                     assert_eq!(store.0.as_ref(), b"abcdef");
-                    plan.finish().buffered().close_after()
+                    plan.finish().close_after()
                 }
             });
             assert_eq!(allocations, (0, 0));

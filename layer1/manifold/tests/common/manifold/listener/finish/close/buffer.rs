@@ -19,7 +19,7 @@ pub(crate) fn plain<'a, const CAP: usize>(
         .write_slice(part.as_slice())
         .expect("buffered plain input");
     part.commit();
-    plan.finish().buffered()
+    plan.finish()
 }
 
 pub(crate) fn vectored<'a, const CAP: usize, const N: usize>(
@@ -39,7 +39,7 @@ pub(crate) fn vectored<'a, const CAP: usize, const N: usize>(
             .expect("buffered vectored input");
     }
     parts.commit();
-    plan.finish().buffered()
+    plan.finish()
 }
 
 pub(crate) fn complete<'a, const CAP: usize>(

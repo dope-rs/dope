@@ -194,7 +194,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         let cause = self.refill(egress);
         let close = self.failed;
         let free = send.free_empty();
-        let ready = Self::finish(send.consume_none(), close);
+        let ready = Self::finish(send.buffered(), close);
         let output = send::Transition::new(ready, free);
         match cause {
             Some(cause) => end.terminal(
@@ -215,7 +215,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
             return send::Transition::unchanged(send.buffer_wait().close_after());
         }
         let free = send.free_empty();
-        let ready = Self::finish(send.consume_none(), true);
+        let ready = Self::finish(send.buffered(), true);
         send::Transition::new(ready, free)
     }
 
@@ -233,7 +233,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         let cause = self.drain(egress);
         let close = self.failed;
         send.drop_empty();
-        let output = Self::finish(send.consume_none(), close);
+        let output = Self::finish(send.buffered(), close);
         match cause {
             Some(cause) => end.terminal(
                 output,
@@ -252,7 +252,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
             return send.buffer_wait().close_after();
         }
         send.drop_empty();
-        Self::finish(send.consume_none(), true)
+        Self::finish(send.buffered(), true)
     }
 
     fn resume(
@@ -288,10 +288,9 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
     }
 
     pub(crate) fn finish<'b>(
-        used: send::Consumed<'b, tls::SendState<'d>>,
+        ready: send::Prepared<'b, reclaim::OnSubmit, send::Plain<'b>>,
         close: bool,
     ) -> send::Prepared<'b, reclaim::OnSubmit, send::Plain<'b>> {
-        let ready = used.buffered();
         if close { ready.close_after() } else { ready }
     }
 }

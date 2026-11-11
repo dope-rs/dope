@@ -81,14 +81,6 @@ pub struct Completion<'a, P: reclaim::Policy, S: Store> {
     policy: marker::PhantomData<fn() -> P>,
 }
 
-/// Plaintext progress issued by the exact admitted input plan.
-/// The exclusive send-storage transaction stays paired with that progress.
-#[must_use = "consumed storage must be turned into a prepared send"]
-pub struct Consumed<'a, S: Store> {
-    storage: Storage<'a, S>,
-    consumed: transfer::Len,
-}
-
 impl<'a, P: reclaim::Policy, S: Store> Completion<'a, P, S> {
     pub(crate) fn from_sent(storage: Storage<'a, S>, sent: Sent) -> Self {
         Self {
@@ -125,14 +117,6 @@ impl<'a, S: Store> Storage<'a, S> {
         self.storage.as_slice()
     }
 
-    /// Issues the zero-consumption proof without a fallible integer conversion.
-    pub fn consume_none(self) -> Consumed<'a, S> {
-        Consumed {
-            storage: self,
-            consumed: transfer::Len::ZERO,
-        }
-    }
-
     /// Retains exact owner-backed input through completion while holding this
     /// storage transaction's exclusive lifetime.
     pub fn input(self, plain: Plain<'a>) -> Prepared<'a, reclaim::OnComplete, Plain<'a>> {
@@ -150,7 +134,12 @@ impl<'a, S: Store> Storage<'a, S> {
 
     /// Prepares connection-owned output without consuming caller input.
     pub fn buffered(self) -> Prepared<'a, reclaim::OnSubmit, Plain<'a>> {
-        self.consume_none().buffered()
+        self.prepared(transfer::Len::ZERO)
+    }
+
+    fn prepared(self, consumed: transfer::Len) -> Prepared<'a, reclaim::OnSubmit, Plain<'a>> {
+        let bytes = self.storage.as_slice();
+        Prepared::new(Plain::proven(bytes), consumed, self.scope)
     }
 
     /// Sends retained output, or waits for shared capacity when it is empty.
@@ -166,19 +155,6 @@ impl<'a, S: Store> Storage<'a, S> {
     /// Prepares no output and consumes no caller input.
     pub fn empty<P: reclaim::Policy>(self) -> Prepared<'a, P, Empty> {
         Prepared::new(Empty, P::empty(), self.scope)
-    }
-}
-
-impl<'a, S: Store> Consumed<'a, S> {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.storage.storage.as_slice().is_empty()
-    }
-
-    /// Prepares connection-owned output with the exact proven consumption.
-    pub fn buffered(self) -> Prepared<'a, reclaim::OnSubmit, Plain<'a>> {
-        let bytes = self.storage.storage.as_slice();
-        Prepared::new(Plain::proven(bytes), self.consumed, self.storage.scope)
     }
 }
 

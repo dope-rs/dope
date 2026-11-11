@@ -202,7 +202,7 @@ impl send::Policy<Wire> for Egress {
             .writes
             .push(store.bytes.write_slice(part.as_slice()));
         part.commit();
-        end.output(plan.finish().buffered())
+        end.output(plan.finish())
     }
 
     fn prepare_many<'a, 'd, ID: Identity + 'd, const N: usize>(
@@ -226,7 +226,7 @@ impl send::Policy<Wire> for Egress {
                 .push(store.bytes.write_slice(part.bytes()));
         }
         parts.commit();
-        end.output(plan.finish().buffered())
+        end.output(plan.finish())
     }
 
     fn after_send<'a, 'd, ID: Identity + 'd>(
@@ -242,7 +242,7 @@ impl send::Policy<Wire> for Egress {
             wire.terminal_inflight = false;
             wire.probe.observe(Event::ControlSent);
         }
-        end.output(Transition::unchanged(send.consume_none().buffered()))
+        end.output(Transition::unchanged(send.buffered()))
     }
 
     fn settle<'a, 'd, ID: Identity + 'd>(
@@ -261,7 +261,7 @@ impl send::Policy<Wire> for Egress {
             wire.terminal_inflight = false;
             wire.probe.observe(Event::ControlSent);
         }
-        Transition::unchanged(send.consume_none().buffered())
+        Transition::unchanged(send.buffered())
     }
 
     fn flush<'a, 'd, ID: Identity + 'd>(

@@ -3,7 +3,7 @@ use std::marker;
 use dope_core::io::{socket::msg, transfer, transfer::progress};
 use o3::buffer::segments::scatter;
 
-use crate::wire::send;
+use crate::wire::send::{self, reclaim};
 
 /// One send-storage transaction bound to its exact input cursor.
 #[must_use = "input progress must be finished into the bound send storage"]
@@ -49,11 +49,8 @@ impl<'a, S: send::Store> Plan<'a, S, progress::Bytes<'a>> {
         }
     }
 
-    pub fn finish(self) -> send::Consumed<'a, S> {
-        send::Consumed {
-            storage: self.send,
-            consumed: self.input.into_len(),
-        }
+    pub fn finish(self) -> send::Prepared<'a, reclaim::OnSubmit, send::Plain<'a>> {
+        self.send.prepared(self.input.into_len())
     }
 }
 
@@ -119,11 +116,9 @@ impl<'data, S: send::Store, const N: usize> Plan<'data, S, Vectored<'data, N>> {
         }
     }
 
-    pub fn finish(self) -> send::Consumed<'data, S> {
-        send::Consumed {
-            storage: self.send,
-            consumed: self.input.total.abs_diff(self.input.remaining()),
-        }
+    pub fn finish(self) -> send::Prepared<'data, reclaim::OnSubmit, send::Plain<'data>> {
+        self.send
+            .prepared(self.input.total.abs_diff(self.input.remaining()))
     }
 }
 

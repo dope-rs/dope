@@ -97,9 +97,9 @@ where
             (self.observe)(Event::Write(store.bytes.write_slice(&[PREFIX])));
             (self.observe)(Event::Write(store.bytes.write_slice(part.as_slice())));
             part.commit();
-            return plan.finish().buffered();
+            return plan.finish();
         }
-        send.consume_none().buffered()
+        send.buffered()
     }
 }
 
@@ -237,7 +237,7 @@ where
         let (wire, send) = context.into_parts();
         let used = plain.bytes();
         if !wire.is_ready() || !send.bytes.is_empty() || send.bytes.available() <= used.into_raw() {
-            return end.output(send.consume_none().buffered());
+            return end.output(send.buffered());
         }
         let mut plan = Plan::vectored(send, &plain);
         let (store, mut input) = plan.parts();
@@ -247,7 +247,7 @@ where
             (wire.observe)(Event::Write(store.bytes.write_slice(part.bytes())));
         }
         parts.commit();
-        end.output(plan.finish().buffered())
+        end.output(plan.finish())
     }
 
     fn after_send<'a, 'd, ID: Identity + 'd>(
@@ -259,7 +259,7 @@ where
     {
         let done = context.into_state();
         let send = done.consume_max();
-        end.output(Transition::unchanged(send.consume_none().buffered()))
+        end.output(Transition::unchanged(send.buffered()))
     }
 
     fn settle<'a, 'd, ID: Identity + 'd>(
@@ -271,7 +271,7 @@ where
     {
         let done = context.into_state();
         let send = done.consume_max();
-        Transition::unchanged(send.consume_none().buffered())
+        Transition::unchanged(send.buffered())
     }
 
     fn flush<'a, 'd, ID: Identity + 'd>(
@@ -282,7 +282,7 @@ where
         'd: 'a,
     {
         let send = context.into_state();
-        end.output(send.consume_none().buffered())
+        end.output(send.buffered())
     }
 
     fn drain<'a, 'd, ID: Identity + 'd>(
@@ -293,7 +293,7 @@ where
         'd: 'a,
     {
         let send = context.into_state();
-        send.consume_none().buffered()
+        send.buffered()
     }
 }
 
