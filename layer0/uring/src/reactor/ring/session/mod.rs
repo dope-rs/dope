@@ -16,9 +16,7 @@ use dope_sys::{
     memory::{Failure as _, buffer::provided},
     probe,
     probe::{
-        Cause, Context as _, Outcome as _, State, Stopped,
-        cleanup::{Cleanup as _, Rejection},
-        receive, session,
+        Cause, Context as _, Outcome as _, State, Stopped, cleanup::Rejection, receive, session,
     },
     ring::{
         Access as _,
@@ -180,14 +178,14 @@ where
             Ok(canary) => canary,
             Err(error) => return Err(Self::Cleanup::open(ring, error).into_result()),
         };
-        let buffer = canary.into_buffer::<GROUP>();
-        let cause = match ring
-            .registry()
-            .buffer(buffer.address, buffer.entries, GROUP)
-        {
+        let (address, entries) = canary.registration();
+        let cause = match ring.registry().buffer(address, entries, GROUP) {
             Ok(()) => {
                 return Ok(Self {
-                    owner: buffer.bind(ring),
+                    owner: register::raw::Buffered {
+                        owner: ring,
+                        storage: canary,
+                    },
                     file: (),
                 });
             }
@@ -196,7 +194,7 @@ where
         Err(Self::Cleanup::canary(
             ring,
             Setup::Register(cause).into(),
-            buffer.into_storage(),
+            canary,
         ))
     }
 

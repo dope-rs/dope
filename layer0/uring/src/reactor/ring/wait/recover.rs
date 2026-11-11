@@ -2,11 +2,11 @@ use dope_sys::{
     io::Close,
     kernel, memory,
     probe::{
-        Cause, State, Stopped, accept::Accept as _, cleanup, cleanup::Failure, session,
+        Cause, State, Stopped, accept::Accept as _, cleanup::Failure, session,
         session::Pending as _,
     },
     ring::{
-        Access, Owner as _,
+        Owner as _,
         map::{Storage, Unmap},
     },
     table::{token, token::host},
@@ -44,12 +44,7 @@ enum Pending<T: token::Codec, L: memory::raw::Canary> {
     Cancel(Stopped<Stage<Occupied<T, L>>, Fault<T>>),
 }
 
-impl<T: token::Codec, L: memory::raw::Canary, P: Copy> cleanup::Cleanup for Recover<T, L, P> {
-    type Primary = P;
-    type Ring = Ring<T>;
-    type File = <Ring<T> as Access>::File;
-    type Accept = Accepted<T>;
-    type Session = Session<T, L>;
+impl<T: token::Codec, L: memory::raw::Canary, P: Copy> memory::Cleanup<P> for Recover<T, L, P> {
     type Error = Error<T>;
 
     fn try_close(self, mut report: impl FnMut(Error<T>)) -> Result<P, Self> {
@@ -77,34 +72,6 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy> cleanup::Cleanup for Reco
         }
     }
 
-    fn raw(ring: Ring<T>, primary: P) -> Result<P, Self> {
-        Self::closed(ring.try_close(), primary, Pending::Raw)
-    }
-
-    fn file(ring: Ring<T>, primary: P, file: Self::File) -> Result<P, Self> {
-        Self::closed(ring.close_file(file), primary, Pending::File)
-    }
-
-    fn accept(state: Accepted<T>, primary: P, file: Self::File) -> Result<P, Self> {
-        Self::closed(state.try_close(file), primary, Pending::File)
-    }
-
-    fn session(state: Session<T, L>, primary: P) -> Result<P, Self> {
-        Self::closed(state.try_close(), primary, Pending::Session)
-    }
-
-    fn receive(state: Stage<Occupied<T, L>>, primary: P) -> Result<P, Self> {
-        Self::pending(state, primary, Pending::Cancel, Pending::Receive)
-    }
-
-    fn socket(state: Direct<T, L>, primary: P) -> Result<P, Self> {
-        Self::closed(state.try_close(), primary, Pending::Socket)
-    }
-
-    fn option(state: Stage<Direct<T, L>>, primary: P) -> Result<P, Self> {
-        Self::pending(state, primary, Pending::Option, Pending::Socket)
-    }
-
     fn primary(&self) -> P {
         self.primary
     }
@@ -123,6 +90,38 @@ impl<T: token::Codec, L: memory::raw::Canary, P: Copy> cleanup::Cleanup for Reco
 }
 
 impl<T: token::Codec, L: memory::raw::Canary, P: Copy> Recover<T, L, P> {
+    pub fn raw(ring: Ring<T>, primary: P) -> Result<P, Self> {
+        Self::closed(ring.try_close(), primary, Pending::Raw)
+    }
+
+    pub fn file(ring: Ring<T>, primary: P, file: register::raw::Occupied) -> Result<P, Self> {
+        Self::closed(ring.close_file(file), primary, Pending::File)
+    }
+
+    pub fn accept(
+        state: Accepted<T>,
+        primary: P,
+        file: register::raw::Occupied,
+    ) -> Result<P, Self> {
+        Self::closed(state.try_close(file), primary, Pending::File)
+    }
+
+    pub fn session(state: Session<T, L>, primary: P) -> Result<P, Self> {
+        Self::closed(state.try_close(), primary, Pending::Session)
+    }
+
+    pub fn receive(state: Stage<Occupied<T, L>>, primary: P) -> Result<P, Self> {
+        Self::pending(state, primary, Pending::Cancel, Pending::Receive)
+    }
+
+    pub fn socket(state: Direct<T, L>, primary: P) -> Result<P, Self> {
+        Self::closed(state.try_close(), primary, Pending::Socket)
+    }
+
+    pub fn option(state: Stage<Direct<T, L>>, primary: P) -> Result<P, Self> {
+        Self::pending(state, primary, Pending::Option, Pending::Socket)
+    }
+
     fn closed<S>(
         result: Result<(), S>,
         primary: P,

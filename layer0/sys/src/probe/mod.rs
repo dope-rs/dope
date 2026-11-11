@@ -87,12 +87,8 @@ pub trait Source: ring::Source + submit::Control {
     where
         Self: complete::Observe<T>;
 
-    type Cleanup<T: token::Codec, L: memory::raw::Canary, P: Copy>: cleanup::Cleanup<
-            Primary = P,
-            Ring = Self::Ring<T>,
-            File = <Self::Ring<T> as Access>::File,
-            Accept = Self::Accept<T>,
-            Session = Self::Session<T, L>,
+    type Cleanup<T: token::Codec, L: memory::raw::Canary, P: Copy>: memory::Cleanup<
+            P,
             Error = cleanup::Failure<
                 map::Storage<<<Self::Ring<T> as Close>::State as map::Unmap>::Error>,
                 Cause<

@@ -39,13 +39,6 @@ impl<L: memory::raw::Receive> provided::Cleanup for Cleanup<L> {
     type Context = buffers::raw::Context<L>;
     type Producer = Producer<L>;
 
-    fn entries(
-        current: <mappings::Mapping<Entry> as Close>::State,
-        context: buffers::raw::Context<L>,
-    ) -> Self {
-        Self::with_region(current, context)
-    }
-
     fn payload(current: <mappings::Mapping<u8> as Close>::State) -> Self {
         Self::region(current)
     }

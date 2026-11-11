@@ -5,7 +5,7 @@ use dope_sys::{
     memory, probe,
     probe::{
         Context as _, Stopped,
-        cleanup::{Cleanup as _, Rejection, Release as _},
+        cleanup::{Rejection, Release as _},
         receive,
         receive::Context as _,
         session::{Empty as _, Occupied as _, Pending as _, Session as _},

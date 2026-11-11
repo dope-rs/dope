@@ -17,10 +17,8 @@ pub trait Storage: Close<State: Retry + memory::Failure> + Sized {
     type Layout: memory::raw::Canary;
     type Index: Copy;
     type Error: provided::Failure<Cleanup = Self::State>;
-    type Buffer<const GROUP: u16>;
 
     fn new() -> Result<Self, Self::Error>;
-    fn into_buffer<const GROUP: u16>(self) -> Self::Buffer<GROUP>;
 
     /// # Safety
     /// No kernel operation or other borrower may access the payload scalar.

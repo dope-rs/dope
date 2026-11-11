@@ -5,7 +5,7 @@ use dope_sys::{
         Failure as _,
         buffer::{provided, provided::Cleanup as _},
     },
-    probe::{cleanup, cleanup::Cleanup as _},
+    probe::cleanup,
     ring::{create, create::Build as _, map, map::Unmap as _, register::Registration as _},
     table::token,
 };

@@ -14,14 +14,12 @@ use dope_sys::{
 use crate::reactor::{
     buffers::{self, Canary, Create, Producer},
     cq::Buffer,
-    register,
 };
 
 impl<L: memory::raw::Canary> canary::raw::Storage for Canary<L> {
     type Layout = L;
     type Index = Buffer;
     type Error = Create<L>;
-    type Buffer<const GROUP: u16> = register::raw::Buffer<Self, GROUP>;
 
     fn new() -> Result<Self, Create<L>> {
         let context = buffers::raw::Context::new(L::LAYOUT)?;
@@ -30,13 +28,6 @@ impl<L: memory::raw::Canary> canary::raw::Storage for Canary<L> {
             Err(state) => return Err(state.close(context)),
         };
         Ok(Self { producer, context })
-    }
-
-    fn into_buffer<const GROUP: u16>(self) -> Self::Buffer<GROUP> {
-        let (address, entries) = self.producer.registration();
-        // SAFETY: this owner retains the stable entry and payload mappings
-        // together until the registration is removed or its ring is closed.
-        unsafe { register::raw::Buffer::new(self, address, entries) }
     }
 
     unsafe fn option(&mut self) -> &libc::c_int {

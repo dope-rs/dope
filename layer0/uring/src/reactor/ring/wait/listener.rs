@@ -12,7 +12,6 @@ use dope_sys::{
     probe::{
         Context as _, Outcome as _, Stopped, accept,
         accept::{Accept as _, Range as _},
-        cleanup::Cleanup as _,
     },
     table::{token, token::host},
 };

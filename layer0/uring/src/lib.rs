@@ -48,7 +48,7 @@ use crate::{
         tuning::{State, Table},
     },
     reactor::{
-        buffers::{Canary, Cleanup, Entry, Payload, Producer, Selected},
+        buffers::{Canary, Cleanup, Payload, Producer, Selected},
         cq,
         cq::packet,
         op,

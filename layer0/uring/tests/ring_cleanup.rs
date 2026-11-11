@@ -78,7 +78,7 @@ fn retains_setup_primary() {
 
 #[test]
 fn retains_probe_primary() {
-    use dope_sys::probe::{self, cleanup::Cleanup as _};
+    use dope_sys::memory::Cleanup as _;
 
     let ring = cleanup::try_ring().expect("cleanup ring setup");
     let mut observed = Vec::new();
@@ -112,7 +112,6 @@ fn retains_probe_primary() {
 fn retains_resource_primary() {
     use dope_sys::{
         memory::{self, Cleanup as _},
-        probe::cleanup::Cleanup as _,
         ring::create::{self, Retain as _},
     };
 

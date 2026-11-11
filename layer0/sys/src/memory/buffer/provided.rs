@@ -10,7 +10,6 @@ use crate::{
 pub trait Source {
     const PROVIDED: u16;
     const CANARY: u16;
-    type Entry: Copy;
     type Index: buffer::Index;
     type Context<L: memory::raw::Receive>: Context<Layout = L, Complete = Self::Complete<L::Extent>, Cleanup = Self::Cleanup<L>>;
     type Canary<L: memory::raw::Canary>: canary::raw::Storage<
@@ -25,7 +24,6 @@ pub trait Source {
             Context = Self::Context<L>,
             Pending = Self::Pending<L::Extent>,
             Index = Self::Index,
-            Entry = Self::Entry,
         >;
     type Pending<E: memory::raw::Extent>: buffer::raw::Token<Index = Self::Index, Length = E::Capacity>
         + buffer::raw::Pending<Extent = E, Complete = Self::Complete<E>>;
@@ -74,7 +72,6 @@ pub trait Cleanup: Retry + memory::Failure {
     type Context: Context;
     type Producer: Producer<Context = Self::Context>;
 
-    fn entries(current: <Self::Producer as Close>::State, context: Self::Context) -> Self;
     fn payload(current: <Self::Context as Close>::State) -> Self;
     fn producer(current: <Self::Producer as Close>::State) -> Self;
 }

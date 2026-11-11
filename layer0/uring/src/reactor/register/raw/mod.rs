@@ -11,14 +11,14 @@ use o3::{
 use crate::{Register, Ring, reactor::register::Authority};
 mod closing;
 
-use std::{mem, num, ops, ptr};
+use std::{mem, ops};
 
 pub(crate) use closing::Closing;
 use dope_sys::io;
 
 use crate::{
     error,
-    reactor::{buffers, cq, ring, sq},
+    reactor::{cq, ring, sq},
 };
 
 type Unregister = kernel::Errno<register::Unregister>;
@@ -36,12 +36,6 @@ pub struct Pending<T>(Live<T>);
 enum Live<T> {
     Registered(ring::Release<T>),
     Mapping(<ring::Closing<T> as io::Retry>::Owner),
-}
-
-pub struct Buffer<P, const GROUP: u16> {
-    pub(crate) storage: P,
-    pub(crate) address: ptr::NonNull<buffers::Entry>,
-    pub(crate) entries: num::NonZero<u16>,
 }
 
 pub(crate) struct Buffered<P, const GROUP: u16, R> {
@@ -83,34 +77,6 @@ impl Occupied {
         Self {
             slot,
             local: ThreadBound::NEW,
-        }
-    }
-}
-
-impl<P, const GROUP: u16> Buffer<P, GROUP> {
-    /// # Safety
-    /// `storage` exclusively owns `entries` stable descriptor slots at `address`.
-    /// Every published slot is initialized; moving `storage` preserves their addresses.
-    pub(crate) unsafe fn new(
-        storage: P,
-        address: ptr::NonNull<buffers::Entry>,
-        entries: num::NonZero<u16>,
-    ) -> Self {
-        Self {
-            storage,
-            address,
-            entries,
-        }
-    }
-
-    pub(crate) fn into_storage(self) -> P {
-        self.storage
-    }
-
-    pub(crate) fn bind<R>(self, owner: R) -> Buffered<P, GROUP, R> {
-        Buffered {
-            owner,
-            storage: self.storage,
         }
     }
 }
@@ -233,8 +199,6 @@ impl<P, const GROUP: u16, R> ops::DerefMut for Buffered<P, GROUP, R> {
 const _: () = {
     assert!(mem::size_of::<Retained<()>>() == 7 * mem::size_of::<usize>());
     assert!(mem::align_of::<Retained<()>>() == mem::align_of::<usize>());
-    assert!(mem::size_of::<Buffer<(), 1>>() == 2 * mem::size_of::<usize>());
-    assert!(mem::align_of::<Buffer<(), 1>>() == mem::align_of::<usize>());
     assert!(mem::size_of::<Buffered<(), 1, Ring<()>>>() == mem::size_of::<Ring<()>>());
     assert!(mem::align_of::<Buffered<(), 1, Ring<()>>>() == mem::align_of::<Ring<()>>());
     assert!(mem::size_of::<Buffered<(), 1, Registered<()>>>() == mem::size_of::<Registered<()>>());

@@ -61,7 +61,6 @@ where
         range: Option<bounded::U32<1, { 1 << 24 }>>,
     ) -> Result<(Self, Option<Range>), Failure<Self::Setup, Self::Map, P, Self::Resources, R>> {
         use create::Retain as _;
-        use probe::cleanup::Cleanup as _;
 
         let submit = bounded::U32::<1, { u32::MAX }>::clamp(submit.get() as usize);
         let complete = bounded::U32::<1, { u32::MAX }>::clamp(complete.get() as usize);
@@ -105,7 +104,7 @@ where
         use probe::{
             Context as _,
             accept::Range as _,
-            cleanup::{Cleanup as _, Rejection, Release as _},
+            cleanup::{Rejection, Release as _},
         };
 
         use crate::{reactor::ring::wait::Listener, sockets::probe::Loopback};
@@ -168,7 +167,6 @@ where
     type Cleanup = Result<P, Recover<T, L, P>>;
 
     fn support(mut self) -> Result<Self, Self::Cleanup> {
-        use probe::cleanup::Cleanup as _;
         let result = inspect::Inspect::inspect(&mut self);
         let stopped = match probe::Stopped::attach(self, result) {
             Ok((ring, ())) => return Ok(ring),
@@ -180,7 +178,6 @@ where
     fn empty(mut self, probe: Self::Probe) -> Result<Self, Self::Cleanup> {
         use complete::Drain as _;
         use dope_sys::io::reactor::submit::Queue as _;
-        use probe::cleanup::Cleanup as _;
         use ring::Complete as _;
 
         let submit = {

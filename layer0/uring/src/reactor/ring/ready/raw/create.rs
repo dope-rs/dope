@@ -19,25 +19,19 @@ impl<T: complete::raw::Token, L: memory::raw::Receive> ready::raw::Create for Re
             Err(error) => return Err(Error::Open { ring, error }),
         };
         let (address, entries) = producer.registration();
-        // SAFETY: the producer owns these stable entries and the caller keeps
-        // their exact Context live until the ring and all returned owners close.
-        let buffer = unsafe { register::raw::Buffer::<_, GROUP>::new(producer, address, entries) };
         let mut ring = match ring.try_register() {
             Ok(ring) => ring,
             Err(error) => {
-                return Err(Error::Registration {
-                    error,
-                    producer: buffer.into_storage(),
-                });
+                return Err(Error::Registration { error, producer });
             }
         };
-        let error = match ring
-            .registry()
-            .buffer(buffer.address, buffer.entries, GROUP)
-        {
+        let error = match ring.registry().buffer(address, entries, GROUP) {
             Ok(()) => {
                 return Ok(Self {
-                    owner: buffer.bind(ring),
+                    owner: register::raw::Buffered {
+                        owner: ring,
+                        storage: producer,
+                    },
                 });
             }
             Err(error) => error,
@@ -45,7 +39,7 @@ impl<T: complete::raw::Token, L: memory::raw::Receive> ready::raw::Create for Re
         Err(Error::Provided {
             error,
             ring,
-            producer: buffer.into_storage(),
+            producer,
         })
     }
 }

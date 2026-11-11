@@ -19,10 +19,10 @@ use o3::depot;
 
 use crate::{
     Accepted, Borrowed, Canary, Cleanup, Closing, Context, Control, Cpus, Encoded, Engine, Enter,
-    Entry, Errno, Fault, Fifo, Infallible, MAX, Observe, Operation, Outcome, Payload, Poll,
-    Primary, Producer, Range, Ready, Recover, Released, Resources, Ring, Selected, Session, Source,
-    Table, Timer, Turn, Waiting, accept, admit, affinity, bounded, buffer, buffers, complete, cq,
-    create, delivery,
+    Errno, Fault, Fifo, Infallible, MAX, Observe, Operation, Outcome, Payload, Poll, Primary,
+    Producer, Range, Ready, Recover, Released, Resources, Ring, Selected, Session, Source, Table,
+    Timer, Turn, Waiting, accept, admit, affinity, bounded, buffer, buffers, complete, cq, create,
+    delivery,
     driver::{Quiesced, tuning::Progress},
     engine, enter, errno, error, fast, file, gso, host, kernel, mem, memory, num, op, option,
     packet, permit, pipe, probe, provided, record, ring, socket, sq, submit,
@@ -255,7 +255,6 @@ impl permit::Source for Uring {
 impl provided::Source for Uring {
     const PROVIDED: u16 = 1;
     const CANARY: u16 = 2;
-    type Entry = Entry;
     type Index = cq::Buffer;
     type Context<L: memory::raw::Receive> = buffers::raw::Context<L>;
     type Canary<L: memory::raw::Canary> = Canary<L>;
