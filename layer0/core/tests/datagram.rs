@@ -36,7 +36,7 @@ use crate::common::rt::Runtime;
 #[test]
 fn keeps_next_datagram() {
     type Route = KeyTag<7>;
-    let config = Runtime::quic::<2, 8>()
+    let config = Runtime::quic::<3, 8>()
         .config()
         .with_domains(settings::Domain::ONE);
     let driver = {
@@ -85,8 +85,8 @@ fn keeps_next_datagram() {
                     let local = peer
                         .local_addr()
                         .expect("the bound datagram peer must retain its local address");
-                    let mut received = [None, None];
-                    for (input, output) in [b"123456789".as_slice(), b"12345678"]
+                    let mut received = [None, None, None];
+                    for (input, output) in [b"123456789".as_slice(), b"12345678", b"last"]
                         .into_iter()
                         .zip(&mut received)
                     {
@@ -136,11 +136,10 @@ fn keeps_next_datagram() {
                             b"123456789" => {
                                 matches!(output, Some(datagram::Decoded::Truncated(_)))
                             }
-                            b"12345678" => matches!(output,
+                            _ => matches!(output,
                                 Some(datagram::Decoded::Packet { source, payload })
                                     if *source == local && payload.as_ref() == input
                             ),
-                            _ => false,
                         };
                         assert!(valid, "unexpected datagram fixture");
                         assert!(matches!(

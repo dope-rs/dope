@@ -312,7 +312,7 @@ const _: () = {
 pub(crate) struct Receive(pub(crate) settings::Receive);
 
 // SAFETY: Receive construction validates a positive bounded slot length and a
-// power-of-two entry count whose product fits isize. Copies retain both values.
+// count in 2..=32768 whose product fits isize. Copies retain both values.
 unsafe impl memory::raw::Layout for Receive {
     fn entries(self) -> num::NonZero<u16> {
         self.0.count()

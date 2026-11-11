@@ -33,62 +33,6 @@ impl DomainSum {
     }
 }
 
-/// Power-of-two receive slots valid for one datagram pool.
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct Ring(Buffers);
-
-impl Ring {
-    pub fn try_round(entries: u32) -> Result<Self, errors::Claim> {
-        if entries < 2 {
-            return Err(errors::Config::ReceiveEntriesOutOfRange {
-                actual: entries,
-                minimum: 2,
-                maximum: u16::MAX as u32,
-            }
-            .into());
-        }
-        let count = entries
-            .checked_next_power_of_two()
-            .ok_or(errors::Claim::ReceiveEntriesPowerOfTwoOverflow { requested: entries })?;
-        if count > u32::from(u16::MAX) {
-            return Err(errors::Claim::ReceiveEntriesTooLarge {
-                actual: count as usize,
-                maximum: u16::MAX as usize,
-            });
-        }
-        Ok(Self(Buffers(
-            num::NonZero::<u16>::MIN.saturating_add(count as u16 - 1),
-        )))
-    }
-
-    pub const fn buffers(self) -> Buffers {
-        self.0
-    }
-}
-
-impl TryFrom<u16> for Ring {
-    type Error = errors::Config;
-
-    fn try_from(entries: u16) -> Result<Self, Self::Error> {
-        if entries < 2 {
-            return Err(errors::Config::ReceiveEntriesOutOfRange {
-                actual: entries as u32,
-                minimum: 2,
-                maximum: u16::MAX as u32,
-            });
-        }
-        if !entries.is_power_of_two() {
-            return Err(errors::Config::ReceiveEntriesNotPowerOfTwo { actual: entries });
-        }
-        Ok(Self(Buffers(
-            num::NonZero::<u16>::MIN.saturating_add(entries - 1),
-        )))
-    }
-}
-
-const _: () = assert!(std::mem::size_of::<Ring>() == std::mem::size_of::<Buffers>());
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Datagram(Receive);
@@ -98,18 +42,16 @@ impl Datagram {
     ///
     pub const fn fixed<const ENTRIES: u16, const PAYLOAD: u32>() -> Self {
         const {
-            assert!(ENTRIES >= 2);
-            assert!(ENTRIES.is_power_of_two());
             let len = transfer::NonZero::from_payload(payload::Len::fixed::<PAYLOAD>());
             assert!((ENTRIES as u64) * (len.into_nonzero().get() as u64) <= isize::MAX as u64);
-            let entries = Buffers(num::NonZero::<u16>::MIN.saturating_add(ENTRIES - 1));
+            let entries = Buffers::fixed::<ENTRIES>();
             Self(Receive::from_parts(entries, len))
         }
     }
 
-    pub const fn new(entries: Ring, payload: payload::Len) -> Self {
+    pub const fn new(entries: Buffers, payload: payload::Len) -> Self {
         let len = transfer::NonZero::from_payload(payload);
-        Self(Receive::from_parts(entries.buffers(), len))
+        Self(Receive::from_parts(entries, len))
     }
 
     pub const fn receive(self) -> Receive {
@@ -158,12 +100,38 @@ pub trait Profile {
 pub struct Buffers(num::NonZero<u16>);
 
 impl Buffers {
+    const MAX: u32 = 32_768;
+
+    const fn fixed<const COUNT: u16>() -> Self {
+        const {
+            assert!(COUNT >= 2 && COUNT as u32 <= Self::MAX);
+            Self(num::NonZero::<u16>::MIN.saturating_add(COUNT - 1))
+        }
+    }
+
     pub const fn into_nonzero(self) -> num::NonZero<u16> {
         self.0
     }
 
     pub(crate) const fn get(self) -> u16 {
         self.0.get()
+    }
+}
+
+impl TryFrom<u32> for Buffers {
+    type Error = errors::Config;
+
+    fn try_from(entries: u32) -> Result<Self, Self::Error> {
+        if !(2..=Self::MAX).contains(&entries) {
+            return Err(errors::Config::ReceiveEntriesOutOfRange {
+                actual: entries,
+                minimum: 2,
+                maximum: Self::MAX,
+            });
+        }
+        Ok(Self(
+            num::NonZero::<u16>::MIN.saturating_add(entries as u16 - 1),
+        ))
     }
 }
 

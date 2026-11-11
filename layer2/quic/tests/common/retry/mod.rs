@@ -175,7 +175,7 @@ impl Events {
 
     pub fn settings(entries: u32, res: impl settings::Resource) -> Result<settings::Config, Claim> {
         let baseline = Config::driver(settings::Datagram::new(
-            settings::Ring::try_round(entries)?,
+            settings::Buffers::try_from(entries)?,
             Len::fixed::<2048>(),
         ));
         Needs::from_tree(&res)?.apply_to(baseline)

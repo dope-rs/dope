@@ -66,7 +66,7 @@ fn retains_scalar_failure() {
     let config = Needs::from_tree(&claims)
         .expect("endpoint claims")
         .apply_to(Config::driver(settings::Datagram::new(
-            settings::Ring::try_round(128).expect("receive ring"),
+            settings::Buffers::try_from(128_u32).expect("receive buffers"),
             Len::try_from(2048).expect("packet size"),
         )))
         .expect("driver configuration");

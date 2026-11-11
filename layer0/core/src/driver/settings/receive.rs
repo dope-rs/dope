@@ -1,7 +1,7 @@
 use std::num;
 
 use crate::{
-    driver::settings::{Buffers, Ring, demands, errors},
+    driver::settings::{Buffers, demands, errors},
     io::{datagram::payload, transfer},
 };
 
@@ -18,13 +18,11 @@ impl Receive {
 
     pub const fn fixed<const ENTRIES: u16, const LEN: u32>() -> Self {
         const {
-            assert!(ENTRIES >= 2);
-            assert!(ENTRIES.is_power_of_two());
             assert!(LEN != 0);
             assert!(LEN <= transfer::MAX_BYTES as u32);
             assert!((ENTRIES as usize) <= (isize::MAX as usize) / (LEN as usize));
             Self {
-                entries: Buffers(num::NonZero::<u16>::MIN.saturating_add(ENTRIES - 1)),
+                entries: Buffers::fixed::<ENTRIES>(),
                 len: transfer::NonZero::fixed::<LEN>(),
             }
         }
@@ -46,10 +44,10 @@ impl Receive {
     }
 
     pub fn exact(need: demands::Receive) -> Result<Self, errors::Claim> {
-        let entries = Ring::try_round(need.entries().get())?;
+        let entries = Buffers::try_from(need.entries().get())?;
         let len = transfer::NonZero::try_from(need.buffer_len())
             .map_err(errors::Config::ReceiveBuffer)?;
-        Ok(Self::from_parts(entries.buffers(), len))
+        Ok(Self::from_parts(entries, len))
     }
 
     pub const fn buffers(self) -> Buffers {

@@ -27,18 +27,19 @@ fn provided_owners_wrap() {
     type Context = <Uring as provided::Source>::Context<Layout>;
     type Producer = <Uring as provided::Source>::Producer<Layout>;
 
-    let context = Context::new(Layout::fixed::<2, 16>()).expect("populated payload");
-    // SAFETY: this exclusive mapping contains both sixteen-byte slots.
-    unsafe { context.as_ptr().cast_mut().write_bytes(7, 32) };
+    let context = Context::new(Layout::fixed::<3, 16>()).expect("populated payload");
+    // SAFETY: this exclusive mapping contains three sixteen-byte slots.
+    unsafe { context.as_ptr().cast_mut().write_bytes(7, 48) };
     let mut producer = Producer::new(&context).expect("ring mapping");
     let (entries, count) = producer.registration();
-    assert_eq!(count.get(), 2);
+    assert_eq!(count.get(), 4);
     let tail = entries.cast::<u8>().as_ptr().wrapping_add(14).cast::<u16>();
-    // SAFETY: registration retains two initialized ABI entries until close.
-    assert_eq!(unsafe { tail.read() }, 2);
+    // SAFETY: registration retains the initialized tail until close.
+    assert_eq!(unsafe { tail.read() }, 3);
 
     let zero = Buffer::ZERO;
     let mut invalid = zero;
+    invalid.advance();
     invalid.advance();
     invalid.advance();
     // SAFETY: this emulates a CQE; rejection must not create an owner.
@@ -60,15 +61,18 @@ fn provided_owners_wrap() {
     // SAFETY: the completed token retains this producer's slot; its borrow has ended.
     unsafe { buffer::raw::Release::release(&mut producer, done) };
     // SAFETY: deferred writes do not publish the initialized first tail field.
-    assert_eq!(unsafe { tail.read() }, 2);
+    assert_eq!(unsafe { tail.read() }, 3);
     producer.flush();
     // SAFETY: the producer retains this same live first entry.
-    assert_eq!(unsafe { tail.read() }, 3);
+    assert_eq!(unsafe { tail.read() }, 4);
 
     let mut next = zero;
     next.advance();
+    let mut third = next;
+    third.advance();
+    let indices = [zero, next, third];
     for turn in 1..=u16::MAX {
-        let index = if turn & 1 == 0 { zero } else { next };
+        let index = indices[usize::from(turn % 3)];
         // SAFETY: each emulated CQE reacquires the slot after its prior return.
         let pending =
             unsafe { buffer::raw::Select::select(&producer, index) }.expect("returned slot");
@@ -77,13 +81,13 @@ fn provided_owners_wrap() {
         producer.flush();
     }
     // SAFETY: the complete u16 cycle retains and wraps the published tail.
-    assert_eq!(unsafe { tail.read() }, 2);
-    // SAFETY: both stable entries are initialized and retained by producer.
-    let bytes = unsafe { slice::from_raw_parts(entries.cast::<u8>().as_ptr(), 32) };
-    assert_eq!(&bytes[8..12], &16_u32.to_ne_bytes());
-    assert_eq!(&bytes[24..28], &16_u32.to_ne_bytes());
-    assert_eq!(&bytes[12..14], &0_u16.to_ne_bytes());
-    assert_eq!(&bytes[28..30], &1_u16.to_ne_bytes());
+    assert_eq!(unsafe { tail.read() }, 3);
+    // SAFETY: the three published entries are initialized and retained by producer.
+    let bytes = unsafe { slice::from_raw_parts(entries.cast::<u8>().as_ptr(), 48) };
+    for (entry, bid) in bytes.chunks_exact(16).zip([1_u16, 2, 0]) {
+        assert_eq!(&entry[8..12], &16_u32.to_ne_bytes());
+        assert_eq!(&entry[12..14], &bid.to_ne_bytes());
+    }
     assert!(producer.try_close().is_ok());
     assert!(context.try_close().is_ok());
 }

@@ -14,7 +14,7 @@ impl Layout {
 
     pub const fn fixed<const ENTRIES: u16, const BYTES: u32>() -> Self {
         const {
-            assert!(ENTRIES >= 2 && ENTRIES.is_power_of_two());
+            assert!(ENTRIES >= 2 && ENTRIES <= 32_768);
             assert!(BYTES > 0 && BYTES as usize <= MAX);
             assert!(ENTRIES as usize <= isize::MAX as usize / BYTES as usize);
             Self {
@@ -25,7 +25,7 @@ impl Layout {
     }
 }
 
-// SAFETY: construction checks the ABI bounds, power-of-two ring and mapped extent.
+// SAFETY: construction checks the logical count, ABI bounds and mapped extent.
 unsafe impl memory::raw::Layout for Layout {
     fn entries(self) -> NonZero<u16> {
         self.entries

@@ -126,21 +126,6 @@ impl Close for Region {
     }
 }
 
-impl<T: Copy> Mapping<T> {
-    pub(crate) fn new_with(
-        len: num::NonZero<u16>,
-        mut init: impl FnMut() -> T,
-    ) -> Result<Self, Open> {
-        let mapping = Self::allocate(usize::from(len.get()))?;
-        for index in 0..len.get() {
-            // SAFETY: population admitted len properly aligned T slots, each index
-            // is visited exactly once, and Copy excludes destructors on failure.
-            unsafe { mapping.ptr.as_ptr().add(usize::from(index)).write(init()) };
-        }
-        Ok(mapping)
-    }
-}
-
 impl<T> Close for Mapping<T> {
     type State = Cleanup;
 

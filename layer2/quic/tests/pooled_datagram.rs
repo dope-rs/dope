@@ -50,7 +50,7 @@ fn slot_returns() {
     .expect("client plan");
     let claims = (srv_plan.as_ref(), cli_plan.as_ref());
     let baseline = Config::driver(settings::Datagram::new(
-        settings::Ring::try_round(32).expect("fixture receive ring"),
+        settings::Buffers::try_from(32_u32).expect("fixture receive buffers"),
         Len::try_from(2048).expect("fixture packet size"),
     ));
     let config = Needs::from_tree(&claims)

@@ -21,9 +21,6 @@ pub enum Config {
         minimum: u32,
         maximum: u32,
     },
-    ReceiveEntriesNotPowerOfTwo {
-        actual: u16,
-    },
     ReceiveBuffer(Zero),
     DatagramPayload(payload::Error),
     DescriptorCapacityOutOfRange {
@@ -60,13 +57,6 @@ pub enum Claim {
     ReceiveEntriesOverflow {
         current: u32,
         added: u32,
-    },
-    ReceiveEntriesPowerOfTwoOverflow {
-        requested: u32,
-    },
-    ReceiveEntriesTooLarge {
-        actual: usize,
-        maximum: usize,
     },
     ResidentDomainsOverflow(settings::DomainSum),
     QueueSubmissionsPowerOfTwoOverflow {

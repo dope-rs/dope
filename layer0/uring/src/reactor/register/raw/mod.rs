@@ -89,8 +89,8 @@ impl Occupied {
 
 impl<P, const GROUP: u16> Buffer<P, GROUP> {
     /// # Safety
-    /// `storage` must exclusively own `entries` live buffer-ring elements at
-    /// `address`; moving `storage` must not move those elements.
+    /// `storage` exclusively owns `entries` stable descriptor slots at `address`.
+    /// Every published slot is initialized; moving `storage` preserves their addresses.
     pub(crate) unsafe fn new(
         storage: P,
         address: ptr::NonNull<buffers::Entry>,

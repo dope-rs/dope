@@ -34,6 +34,7 @@ struct View<L> {
 pub struct Producer<L: memory::raw::Receive> {
     entries: mappings::Mapping<Entry>,
     view: View<L>,
+    mask: num::NonZero<u16>,
     tail: u16,
     published: u16,
 }
@@ -55,21 +56,27 @@ impl<L: memory::raw::Receive> provided::Producer for Producer<L> {
             base: context.as_ptr(),
             layout: context.layout(),
         };
-        let mut buffer = Buffer::ZERO;
-        let entries = mappings::Mapping::new_with(view.layout.entries(), || {
-            let bid = buffer;
-            buffer.advance();
-            Entry {
-                addr: view.address(bid),
-                len: view.layout.capacity().get(),
-                bid,
-                tail: 0,
+        let ring = view.layout.entries().get().next_power_of_two();
+        let mut entries = mappings::Mapping::<Entry>::allocate(usize::from(ring))?;
+        let mut bid = Buffer::ZERO;
+        for index in 0..view.layout.entries().get() {
+            // SAFETY: the logical prefix fits this ring and is written before publication.
+            unsafe {
+                entries.as_mut_ptr().add(usize::from(index)).write(Entry {
+                    addr: view.address(bid),
+                    len: view.layout.capacity().get(),
+                    bid,
+                    tail: 0,
+                });
             }
-        })?;
+            bid.advance();
+        }
         let tail = view.layout.entries().get();
         let producer = Self {
             entries,
             view,
+            // SAFETY: Layout admits 2..=32768, so the mask is in 1..=32767.
+            mask: unsafe { num::NonZero::new_unchecked(ring - 1) },
             tail,
             published: tail,
         };
@@ -90,17 +97,19 @@ impl<L: memory::raw::Receive> provided::Producer for Producer<L> {
     }
 
     fn registration(&self) -> (ptr::NonNull<Entry>, num::NonZero<u16>) {
-        (self.entries.as_non_null(), self.view.layout.entries())
+        // SAFETY: new retains a mask in 1..=32767.
+        let entries = unsafe { num::NonZero::new_unchecked(self.mask.get() + 1) };
+        (self.entries.as_non_null(), entries)
     }
 }
 
 impl<L: memory::raw::Receive> Producer<L> {
     pub(super) fn defer<T: buffer::raw::Token<Index = Buffer>>(&mut self, buffer: T) {
         let tail = self.tail;
-        let position = tail & (self.view.layout.entries().get() - 1);
+        let position = tail & self.mask.get();
         let bid = buffer.index();
         // SAFETY: raw::Release alone supplies this producer's unique slot;
-        // the layout masks the deferred position below the entry count.
+        // the ring mask keeps the deferred position inside the entry mapping.
         unsafe {
             let entry = self.entries.as_mut_ptr().add(usize::from(position));
             (&raw mut (*entry).addr).write(self.view.address(bid));

@@ -1,4 +1,3 @@
-use dope::core::driver::settings::errors::Claim;
 use std::{net, num};
 
 use dope::core::driver::settings;
@@ -36,7 +35,7 @@ pub enum Error {
         got: usize,
         min: usize,
     },
-    Receive(Claim),
+    Receive(settings::errors::Config),
     PacketBytes {
         got: u32,
     },
@@ -107,8 +106,8 @@ impl Config {
                 min: 1200,
             });
         }
-        let ring =
-            settings::Ring::try_round(self.packet_buffer_slots.max(2)).map_err(Error::Receive)?;
+        let buffers =
+            settings::Buffers::try_from(self.packet_buffer_slots.max(2)).map_err(Error::Receive)?;
         let Some(packet) = Size::new(self.packet_buffer_bytes) else {
             return Err(Error::PacketBytes {
                 got: self.packet_buffer_bytes,
@@ -122,7 +121,7 @@ impl Config {
             }
             None => bytes,
         };
-        let receive = settings::Datagram::new(ring, payload::Len::from(bytes));
+        let receive = settings::Datagram::new(buffers, payload::Len::from(bytes));
         let datagram =
             plan::Config::new(capacity.outgoing(), capacity.bytes(), capacity.outgoing())
                 .map_err(Error::Datagram)?;

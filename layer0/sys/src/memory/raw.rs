@@ -3,7 +3,7 @@ use std::num;
 use o3::{base::num::bounded, buffer::bytes::bounded::MAX};
 
 /// # Safety
-/// Copies preserve values. Entries are powers of two >= 2; capacity <= `o3::buffer::bytes::bounded::MAX`.
+/// Copies preserve values. Entries are in 2..=32768; capacity <= `o3::buffer::bytes::bounded::MAX`.
 /// The product of entry count and capacity is at most `isize::MAX`.
 pub unsafe trait Layout: Copy {
     fn entries(self) -> num::NonZero<u16>;

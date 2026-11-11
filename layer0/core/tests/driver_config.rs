@@ -58,7 +58,7 @@ fn resident_domains() {
 
 #[test]
 fn composes_demands() {
-    let [three, five] = [3_usize, 5].map(|count| {
+    let [three, four] = [3_usize, 4].map(|count| {
         Entries::try_from(count).expect("fixture entry counts must fit their representation")
     });
 
@@ -76,7 +76,7 @@ fn composes_demands() {
                 Accept::from(Slots::fixed::<4>()),
                 Outbound::fixed::<5>(),
             ))
-            .receive(demands::Receive::new(five, transfer::Len::fixed::<32>()))
+            .receive(demands::Receive::new(four, transfer::Len::fixed::<32>()))
             .domains(settings::Domain::fixed::<3>())
             .schedule(demands::Schedule::fixed::<7, 11>()),
     );
@@ -88,7 +88,7 @@ fn composes_demands() {
 
     assert!((config.file_slots().accept()) == (settings::FileSlots::fixed::<0, 6>().outbound()));
     assert!((config.file_slots().outbound()) == (settings::FileSlots::fixed::<0, 8>().outbound()));
-    assert!((config.receive()) == (settings::Receive::fixed::<8, 64>()));
+    assert!((config.receive()) == (settings::Receive::fixed::<7, 64>()));
     assert!((config.queue_layout()) == (settings::QueueLayout::fixed::<8, 8>()));
     assert!((config.domains()) == (settings::Domain::fixed::<5>()));
     assert_eq!(config.schedule().ready().count().get(), 10);
@@ -109,13 +109,13 @@ fn invalid_receive() {
                 errors::Config::ReceiveEntriesOutOfRange {
                     actual: 1,
                     minimum: 2,
-                    maximum: u16::MAX as u32,
+                    maximum: 32_768,
                 }
             ))
     );
     assert!(
         Receive::exact(demands::Receive::new(three, transfer::Len::fixed::<4096>()))
-            == Ok(Receive::fixed::<4, 4096>())
+            == Ok(Receive::fixed::<3, 4096>())
     );
     assert!(
         Receive::exact(demands::Receive::new(many, transfer::Len::fixed::<0>()))
@@ -140,18 +140,6 @@ fn invalid_receive() {
                 actual: u64::from(prefix) + transfer::MAX_BYTES as u64,
                 maximum: transfer::MAX_BYTES as u32,
             })
-    );
-    assert!(
-        settings::Ring::try_from(1)
-            == Err(errors::Config::ReceiveEntriesOutOfRange {
-                actual: 1,
-                minimum: 2,
-                maximum: u16::MAX as u32,
-            })
-    );
-    assert!(
-        settings::Ring::try_from(3)
-            == Err(errors::Config::ReceiveEntriesNotPowerOfTwo { actual: 3 })
     );
     assert!(
         payload::Len::try_from(0)
@@ -208,48 +196,32 @@ fn datagram_wire_extent_uses_physical_family() {
 fn datagram_layout() {
     use std::num::NonZero;
 
-    for (demand, slots) in [(2, 2), (3, 4), (16_385, 32_768), (32_768, 32_768)] {
-        let result = settings::Ring::try_round(demand);
-        let ring = result.expect("representable receive demand must round up");
-        assert_eq!(ring.buffers().into_nonzero().get(), slots);
+    for demand in [2_u32, 3, 16_385, 32_768] {
+        let buffers = settings::Buffers::try_from(demand).expect("receive demand");
+        assert_eq!(u32::from(buffers.into_nonzero().get()), demand);
         for bytes in [NonZero::<u16>::MIN, NonZero::<u16>::MAX] {
             let payload = payload::Len::from(bytes);
             assert!(payload::Len::try_from(u32::from(bytes.get())) == Ok(payload));
             let len = settings::Receive::MIN_DATAGRAM_SLOT.into_nonzero().get()
                 + u32::from(bytes.get())
                 - 1;
-            let datagram = settings::Datagram::new(ring, payload);
+            let datagram = settings::Datagram::new(buffers, payload);
             let receive = datagram.receive();
             let claim = demands::Receive::from(datagram);
             assert!(settings::Receive::exact(claim) == Ok(receive));
             assert_eq!(receive.buffer_len().into_nonzero().get(), len,);
         }
     }
-    for actual in [0, 1] {
+    for actual in [0, 1, 32_769, u32::MAX] {
         assert!(
-            settings::Ring::try_round(actual)
-                == Err(errors::Claim::Layout(
-                    errors::Config::ReceiveEntriesOutOfRange {
-                        actual,
-                        minimum: 2,
-                        maximum: u16::MAX as u32,
-                    },
-                ))
+            settings::Buffers::try_from(actual)
+                == Err(errors::Config::ReceiveEntriesOutOfRange {
+                    actual,
+                    minimum: 2,
+                    maximum: 32_768,
+                })
         );
     }
-    assert!(
-        settings::Ring::try_round(32_769)
-            == Err(errors::Claim::ReceiveEntriesTooLarge {
-                actual: 65_536,
-                maximum: u16::MAX as usize,
-            },)
-    );
-    assert!(
-        settings::Ring::try_round(u32::MAX)
-            == Err(errors::Claim::ReceiveEntriesPowerOfTwoOverflow {
-                requested: u32::MAX
-            },)
-    );
 }
 
 #[test]
