@@ -1,4 +1,4 @@
-use std::{marker, pin};
+use std::{marker, mem::MaybeUninit, pin};
 
 use dope_core::{
     dope_sys::io::socket::msg::{Header, Iovec},
@@ -11,7 +11,7 @@ use crate::{link::egress::metadata::lane, wire::send};
 /// Pinned descriptor storage for one in-flight vectored send.
 pub(in crate::link::egress) struct Entry<const IOV: usize> {
     pub(super) iovecs: copy::Vec<Iovec, IOV>,
-    header: Header,
+    header: MaybeUninit<Header>,
     pub(super) bytes: transfer::Len,
     pin: marker::PhantomData<marker::PhantomPinned>,
 }
@@ -35,7 +35,7 @@ impl<const IOV: usize> Default for Entry<IOV> {
     fn default() -> Self {
         Self {
             iovecs: copy::Vec::new(),
-            header: Header::new(),
+            header: MaybeUninit::uninit(),
             bytes: transfer::Len::ZERO,
             pin: marker::PhantomData,
         }

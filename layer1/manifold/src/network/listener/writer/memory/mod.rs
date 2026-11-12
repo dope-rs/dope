@@ -104,8 +104,8 @@ pub(in crate::network::listener) struct Flight<B, P: data::position::State> {
     pub(super) header: Header,
     pub(super) source: Option<B>,
     pub(super) position: P,
-    pub(super) iovecs: [msg::Iovec; listener::IOV_CAP],
-    pub(super) message: msg::Header,
+    pub(super) iovecs: [mem::MaybeUninit<msg::Iovec>; listener::IOV_CAP],
+    pub(super) message: mem::MaybeUninit<msg::Header>,
 }
 
 impl<B, P: data::position::State> Flight<B, P> {
@@ -116,8 +116,8 @@ impl<B, P: data::position::State> Flight<B, P> {
             Header::init(&mut *(&raw mut (*slot).header).cast());
             (&raw mut (*slot).source).write(None);
             (&raw mut (*slot).position).write(P::default());
-            (&raw mut (*slot).iovecs).write([msg::Iovec::empty(); listener::IOV_CAP]);
-            (&raw mut (*slot).message).write(msg::Header::new());
+            (&raw mut (*slot).iovecs).write([mem::MaybeUninit::uninit(); listener::IOV_CAP]);
+            (&raw mut (*slot).message).write(mem::MaybeUninit::uninit());
         }
     }
 }

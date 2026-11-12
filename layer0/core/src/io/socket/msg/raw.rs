@@ -24,12 +24,17 @@ impl Iovec for &[u8] {
 pub trait Vectored<'a, const N: usize = { super::MAX_IOVECS }> {
     /// Constructs a retained descriptor graph.
     /// # Safety
-    /// Inputs stay fixed, count fits `N` and `MAX_IOVECS`, and `bytes` is the exact sum.
+    /// The counted prefix is initialized and stays fixed, count fits `N` and
+    /// `MAX_IOVECS`, and `bytes` is the exact sum.
     unsafe fn retain(self) -> super::Vectored<'a, N>;
 }
 
 impl<'a, const N: usize> Vectored<'a, N>
-    for (&'a mut Header, &'a copy::Vec<msg::Iovec, N>, transfer::Len)
+    for (
+        &'a mut mem::MaybeUninit<Header>,
+        &'a copy::Vec<msg::Iovec, N>,
+        transfer::Len,
+    )
 {
     unsafe fn retain(self) -> super::Vectored<'a, N> {
         const { assert!(N <= super::MAX_IOVECS) };
@@ -40,8 +45,8 @@ impl<'a, const N: usize> Vectored<'a, N>
 
 impl<'a, const N: usize> Vectored<'a, N>
     for (
-        &'a mut Header,
-        &'a [msg::Iovec; N],
+        &'a mut mem::MaybeUninit<Header>,
+        &'a [mem::MaybeUninit<msg::Iovec>; N],
         array::Len<N>,
         transfer::Len,
     )
@@ -49,7 +54,9 @@ impl<'a, const N: usize> Vectored<'a, N>
     unsafe fn retain(self) -> super::Vectored<'a, N> {
         const { assert!(N <= super::MAX_IOVECS) };
         let (header, iovecs, count, bytes) = self;
-        super::Vectored::from_parts(header, count.prefix(iovecs), bytes)
+        // SAFETY: the caller retains this exact initialized prefix through completion.
+        let iovecs = unsafe { count.prefix(iovecs).assume_init_ref() };
+        super::Vectored::from_parts(header, iovecs, bytes)
     }
 }
 

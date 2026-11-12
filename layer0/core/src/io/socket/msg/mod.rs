@@ -39,8 +39,12 @@ impl<'a, const N: usize> Vectored<'a, N> {
 }
 
 impl<'a, const N: usize> Vectored<'a, N> {
-    fn from_parts(header: &'a mut Header, iovs: &'a [Iovec], bytes: transfer::Len) -> Self {
-        *header = Header::new();
+    fn from_parts(
+        header: &'a mut mem::MaybeUninit<Header>,
+        iovs: &'a [Iovec],
+        bytes: transfer::Len,
+    ) -> Self {
+        let header = header.write(Header::new());
         header.bind(iovs);
         Self {
             message: Message { header },

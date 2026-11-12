@@ -104,21 +104,22 @@ pub trait Inspect {
 }
 
 pub struct Message {
-    header: Header,
-    iovecs: [Iovec; 5],
+    header: mem::MaybeUninit<Header>,
+    iovecs: [mem::MaybeUninit<Iovec>; 5],
 }
 
 impl Default for Message {
     fn default() -> Self {
         Self {
-            header: Header::new(),
+            header: mem::MaybeUninit::uninit(),
             iovecs: [
                 Iovec::empty(),
                 Iovec::from_slice(b"ab"),
                 Iovec::empty(),
                 Iovec::from_slice(b"cdef"),
                 Iovec::empty(),
-            ],
+            ]
+            .map(mem::MaybeUninit::new),
         }
     }
 }

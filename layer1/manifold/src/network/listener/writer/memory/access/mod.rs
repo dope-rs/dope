@@ -240,7 +240,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
             // SAFETY: the header owner stays pinned for the flight, and `bytes`
             // is a committed in-bounds prefix of it.
             let iovec = unsafe { msg::raw::Iovec::retain(bytes) };
-            this.iovecs[0] = iovec;
+            this.iovecs[0].write(iovec);
             count = array::Len::ONE;
             step.commit();
         }
@@ -266,7 +266,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
                 // SAFETY: the direct lease keeps this source chunk fixed through
                 // terminal completion or quiescence.
                 let iovec = unsafe { msg::raw::Iovec::retain(chunk.bytes()) };
-                *vacant.get_mut(this.iovecs) = iovec;
+                vacant.get_mut(this.iovecs).write(iovec);
                 count = vacant.commit();
             }
         }

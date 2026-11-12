@@ -125,16 +125,21 @@ fn cursor_keeps_owner() {
 
 #[test]
 fn contiguous_keeps_owner() {
+    use std::mem::MaybeUninit;
+
     use dope_core::io::socket::msg::raw::Vectored as _;
-    use dope_sys::io::socket::msg::{Header, Iovec};
+    use dope_sys::io::socket::msg::Iovec;
     use o3::depot::array;
 
     let bytes = b"ab";
-    let mut header = Header::new();
-    let iovecs = [Iovec::from_slice(bytes)];
+    let mut header = MaybeUninit::uninit();
+    let iovecs = [
+        MaybeUninit::new(Iovec::from_slice(bytes)),
+        MaybeUninit::uninit(),
+    ];
     let view = {
         // SAFETY: the borrowed descriptor retains two static bytes.
-        let graph = unsafe { (&mut header, &iovecs, array::Len::MAX, Len::fixed::<2>()).retain() };
+        let graph = unsafe { (&mut header, &iovecs, array::Len::ONE, Len::fixed::<2>()).retain() };
         graph.contiguous().expect("sole descriptor")
     };
     assert_eq!(view.as_slice().as_ptr(), bytes.as_ptr());
