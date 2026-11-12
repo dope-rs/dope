@@ -1,3 +1,5 @@
+use std::mem::MaybeUninit;
+
 use dope_sys::io::socket::msg::{Header, Iovec};
 use o3::buffer::bytes::bounded;
 
@@ -10,9 +12,10 @@ pub struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    pub fn new(header: &'a mut Header) -> Self {
-        *header = Header::new();
-        Self { header }
+    pub fn new(header: &'a mut MaybeUninit<Header>) -> Self {
+        Self {
+            header: header.write(Header::new()),
+        }
     }
 
     pub fn name(&mut self, addr: &'a socket::Inet) {
@@ -29,10 +32,10 @@ impl<'a> Builder<'a> {
     #[must_use]
     pub fn finish<T: AsRef<[u8]>>(
         self,
-        iovecs: &'a mut [Iovec; 1],
+        iovecs: &'a mut MaybeUninit<[Iovec; 1]>,
         payload: &'a bounded::Value<T>,
     ) -> msg::Message<'a> {
-        *iovecs = [Iovec::from_slice(payload.as_ref())];
+        let iovecs = iovecs.write([Iovec::from_slice(payload.as_ref())]);
         self.header.bind(iovecs);
         msg::Message {
             header: self.header,

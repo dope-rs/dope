@@ -1,4 +1,4 @@
-use std::net;
+use std::{mem::MaybeUninit, net};
 
 use dope_core::{
     dope_sys::io::socket::msg::{Header, Iovec},
@@ -12,8 +12,8 @@ pub(in crate::network::datagram) struct Backing<'d, B, M: send::Mode = send::Pla
     retained: retained::Retained<'d, B>,
     target: net::SocketAddr,
     addr: socket::Inet,
-    iovs: [Iovec; 1],
-    msg: Header,
+    iovs: MaybeUninit<[Iovec; 1]>,
+    msg: MaybeUninit<Header>,
     control: M::Flight,
     flight: Option<flight::Flight<'d, Send>>,
 }
@@ -26,8 +26,8 @@ impl<'d, B: AsRef<[u8]>, M: send::Mode> Backing<'d, B, M> {
             retained: queued.retained,
             target,
             addr: socket::Inet::from_std(target),
-            iovs: [Iovec::empty()],
-            msg: Header::new(),
+            iovs: MaybeUninit::uninit(),
+            msg: MaybeUninit::uninit(),
             control,
             flight: None,
         }
