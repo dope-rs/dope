@@ -155,6 +155,7 @@ impl<'d, ID: Identity> app::Lifecycle<'d, 'd, ID> for Deferred {
         _: bool,
         _: egress::Queue<'_, '_, 'd, 32, Shared>,
         _: &mut driver::Context<'_, 'd>,
+        _: &dope_net::wire::Identity,
     ) {
         let ready = self.gate.hits();
         if ready != 1 {

@@ -155,6 +155,10 @@ impl<'d> app::Lifecycle<'d, 'd> for Empty {
         _: bool,
         _: egress::Queue<'_, '_, 'd, 32>,
         _: &mut driver::Context<'_, 'd>,
+        _: &<Self::Wire as dope_net::wire::Spec>::Connection<
+            'd,
+            dope_core::driver::route::KeyTag<0>,
+        >,
     ) {
         self.trace.prepared.set(self.trace.prepared.get() + 1);
     }

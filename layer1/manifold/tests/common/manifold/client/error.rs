@@ -14,6 +14,7 @@ pub enum Error {
     Exhaust(opening::Exhaustion),
     Open(opening::Exhaustion),
     Receive(dope_core::Errno),
+    Truncated(crate::common::contract::codec::errors::Truncated),
     Enqueue(egress::Rejection),
     Admit(exact::Failure),
     Decode(decode::Error),

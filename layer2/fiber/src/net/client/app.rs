@@ -245,6 +245,7 @@ impl<'scope, 'w, 'd: 'w, T: net::Transport, W: input::Execution + 'd, ID: Identi
         _: bool,
         out: egress::Queue<'_, '_, 'd, { client::IOV_CAP }, Self::Send>,
         _drv: &mut driver::Context<'_, 'd>,
+        _: &<Self::Wire as dope::net::wire::Spec>::Connection<'w, ID>,
     ) {
         let pending = out.pending();
         self.port.conns.channel().sync_send(conn.id(), pending);

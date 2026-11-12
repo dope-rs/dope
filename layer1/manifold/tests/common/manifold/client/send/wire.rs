@@ -13,7 +13,7 @@ use wire::receive::{mode::access, reserve};
 
 #[derive(Default)]
 pub struct Wire {
-    pub(crate) established: bool,
+    protocol: Option<Option<&'static [u8]>>,
 }
 
 pub struct Recv;
@@ -58,8 +58,9 @@ impl receive::Policy<Wire> for Recv {
         'w: 'a + 'input,
     {
         let wire = txn.into_wire();
-        wire.established = true;
-        let output = capacity.maybe(Some(&*bytes));
+        let handshake = bytes == b"negotiate";
+        wire.protocol = Some(handshake.then_some(b"h2"));
+        let output = capacity.maybe((!handshake).then_some(&*bytes));
         end.output(output)
     }
 
@@ -74,8 +75,13 @@ impl receive::Policy<Wire> for Recv {
         'w: 'a,
     {
         let wire = txn.into_wire();
-        wire.established = true;
-        let output = Some(bytes.into_shared());
+        let handshake = bytes.as_ref() == b"negotiate";
+        wire.protocol = Some(handshake.then_some(b"h2"));
+        let output = if handshake {
+            None
+        } else {
+            Some(bytes.into_shared())
+        };
         end.output(output)
     }
 }
@@ -94,7 +100,7 @@ impl send::Policy<Wire> for Write {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        if wire.established {
+        if wire.protocol.is_some() {
             end.output(send.input(plain).into_right::<send::Empty>())
         } else {
             end.output(
@@ -113,7 +119,7 @@ impl send::Policy<Wire> for Write {
         'd: 'a,
     {
         let (wire, send) = context.into_parts();
-        if wire.established {
+        if wire.protocol.is_some() {
             end.output(send.vectored(plain).into_right::<send::Empty>())
         } else {
             end.output(
@@ -183,6 +189,15 @@ impl wire::Spec for Wire {
     type Bootstrap = Wire;
     type Receive = Recv;
     type Send = Write;
+
+    fn negotiated_protocol<'a, 'w, ID: Identity + 'w>(
+        connection: &'a Self::Connection<'w, ID>,
+    ) -> std::task::Poll<Option<&'a [u8]>> {
+        match connection.protocol {
+            Some(protocol) => std::task::Poll::Ready(protocol),
+            None => std::task::Poll::Pending,
+        }
+    }
 }
 
 impl domain::Init<Wire> for Wire {

@@ -129,6 +129,10 @@ impl<'w, 'd: 'w> app::Lifecycle<'w, 'd> for Session<'_> {
         _: bool,
         _: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Shared>,
         _: &mut driver::Context<'_, 'd>,
+        _: &<Self::Wire as dope::net::wire::Spec>::Connection<
+            'w,
+            dope::core::driver::route::KeyTag<0>,
+        >,
     ) {
     }
 

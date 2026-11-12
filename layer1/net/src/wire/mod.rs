@@ -31,6 +31,17 @@ pub trait Spec: Sized {
     type Bootstrap;
     type Receive: receive::Policy<Self>;
     type Send: send::Policy<Self>;
+
+    /// Borrows the selected application protocol once negotiation permits output.
+    /// Wires without protocol negotiation return `Ready(None)`.
+    fn negotiated_protocol<'a, 'w, ID: route::Identity + 'w>(
+        _: &'a Self::Connection<'w, ID>,
+    ) -> std::task::Poll<Option<&'a [u8]>>
+    where
+        Self: 'w,
+    {
+        std::task::Poll::Ready(None)
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

@@ -277,7 +277,7 @@ where
             };
             // The same slot's continuation remains set until this exclusive loan clears it.
             slot.state.work.clear_next();
-            match State::active(slot, |active| {
+            match State::active(slot, |active, _| {
                 app::Resumable::resume(
                     this.app,
                     permit,

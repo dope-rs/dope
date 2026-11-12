@@ -319,8 +319,9 @@ where
         queued: bool,
         egress: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Self::Send>,
         driver: &mut driver::Context<'_, 'd>,
+        wire: &W::Connection<'w, ID>,
     ) {
-        let Some(flush) = N::flush() else {
+        let Some(flush) = N::flush::<W>(wire) else {
             return;
         };
         let (id, conn, close, ready) = entry.into_io();

@@ -215,6 +215,10 @@ where
         _: bool,
         queue: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
         driver: &mut driver::Context<'_, 'd>,
+        _: &<Self::Wire as dope_net::wire::Spec>::Connection<
+            'd,
+            dope_core::driver::route::KeyTag<0>,
+        >,
     ) {
         if let Some(call) = self.call.take() {
             if let Some(rule) = call(

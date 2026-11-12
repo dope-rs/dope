@@ -1,9 +1,6 @@
 pub mod common;
 
-use crate::common::manifold::{
-    client::{assert_reclaimed},
-    native,
-};
+use crate::common::manifold::{client::assert_reclaimed, native};
 
 use std::{cell::Cell, net::Ipv4Addr, rc::Rc, time::Duration};
 
@@ -18,9 +15,7 @@ use dope_manifold::{
     service::{Endpoint, Revision, Snapshot, health::Domain, sync::Preserve},
 };
 use dope_net::{link::egress, tcp::Tcp, wire::domain::Local};
-use dope_runtime::{
-    executor::session::{Completion, Scope},
-};
+use dope_runtime::executor::session::{Completion, Scope};
 use dope_test::{
     fibers,
     harness::{
@@ -93,8 +88,13 @@ fn release_wakes_request() {
                     peer.set_nodelay(true).expect("TCP_NODELAY");
                     peer.read_wait(Some(GUARD)).expect("read deadline");
                     peer.write_wait(Some(GUARD)).expect("write deadline");
-                    peer.write_all(b"open").expect("establish parked wire");
+                    peer.write_all(b"negotiate").expect("negotiate parked wire");
                 }
+                assert_eq!(
+                    case.try_wait(&signals.negotiated, 2)
+                        .expect("negotiation wait"),
+                    fibers::Wait::Reached
+                );
                 assert_eq!(
                     case.try_wait(&signals.moved, 2).expect("progress wait"),
                     fibers::Wait::Reached

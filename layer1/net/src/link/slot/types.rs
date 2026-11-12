@@ -121,6 +121,10 @@ where
         self.engine.establish.established().is_some()
     }
 
+    pub const fn wire(&self) -> &W::Connection<'w, ID> {
+        &self.wire
+    }
+
     pub fn close_due(&self, gate: CloseGate) -> Readiness {
         if self.terminal.is_pending()
             || (self.is_draining()

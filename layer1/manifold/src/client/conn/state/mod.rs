@@ -39,9 +39,12 @@ pub(in crate::client) struct Enter<'d, ID: Identity> {
 
 impl<'d, C, O> State<'d, C, O> {
     /// Runs an active callback and settles its close request before returning.
-    pub(in crate::client) fn active<ID: Identity, W, T>(
-        slot: &mut types::Connection<'_, 'd, ID, W, Self>,
-        callback: impl for<'call> FnOnce(ActiveMut<'call, 'd, ID, W, C, O>) -> T,
+    pub(in crate::client) fn active<'w, ID: Identity, W, T>(
+        slot: &mut types::Connection<'w, 'd, ID, W, Self>,
+        callback: impl for<'call> FnOnce(
+            ActiveMut<'call, 'd, ID, W, C, O>,
+            &'call W::Connection<'w, ID>,
+        ) -> T,
     ) -> Active<T>
     where
         W: wire::Spec + 'd,
@@ -50,7 +53,23 @@ impl<'d, C, O> State<'d, C, O> {
             closing::Callback::Ready => {}
             closing::Callback::Sealed => return Active::Sealed,
         }
-        Self::attached(slot, callback)
+        let id = conn::Id::from_key(slot.key());
+        let ready = slot.io().wake_target();
+        let (state, control) = slot.split();
+        let Some(active) = &mut state.phase else {
+            return Active::Opening;
+        };
+        let output = callback(
+            ActiveMut {
+                id,
+                active,
+                closing: &mut state.closing,
+                ready,
+                spec: marker::PhantomData,
+            },
+            control.wire(),
+        );
+        Active::Ready(Self::reconcile(slot, output))
     }
 
     /// Delivers one consumed terminal without reopening finalized callbacks.
@@ -89,29 +108,6 @@ impl<'d, C, O> State<'d, C, O> {
                 Active::Ready(Flow::Discarded(output))
             }
         }
-    }
-
-    fn attached<ID: Identity, W, T>(
-        slot: &mut types::Connection<'_, 'd, ID, W, Self>,
-        callback: impl for<'call> FnOnce(ActiveMut<'call, 'd, ID, W, C, O>) -> T,
-    ) -> Active<T>
-    where
-        W: wire::Spec + 'd,
-    {
-        let id = conn::Id::from_key(slot.key());
-        let ready = slot.io().wake_target();
-        let active = match &mut slot.state.phase {
-            Some(active) => active,
-            None => return Active::Opening,
-        };
-        let output = callback(ActiveMut {
-            id,
-            active,
-            closing: &mut slot.state.closing,
-            ready,
-            spec: marker::PhantomData,
-        });
-        Active::Ready(Self::reconcile(slot, output))
     }
 
     /// Runs an active close callback or settles an opening connection.

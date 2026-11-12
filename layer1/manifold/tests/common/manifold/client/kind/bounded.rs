@@ -182,6 +182,7 @@ impl<'d, ID: route::Identity, F: Fn() -> egress::NonEmpty<Shared>> app::Lifecycl
         _: bool,
         _: egress::Queue<'_, '_, 'd, 32>,
         _: &mut driver::Context<'_, 'd>,
+        _: &dope_net::wire::Identity,
     ) {
         self.active();
     }

@@ -158,6 +158,7 @@ impl<'d, ID: route::Identity> app::Lifecycle<'d, 'd, ID> for Yielding {
         _: bool,
         _: egress::Queue<'_, '_, 'd, 32>,
         _: &mut driver::Context<'_, 'd>,
+        _: &dope_net::wire::Identity,
     ) {
         let conns = self.life.conn.hits();
         if conns != 1 {

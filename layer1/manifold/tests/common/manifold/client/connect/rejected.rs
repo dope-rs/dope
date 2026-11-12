@@ -148,6 +148,7 @@ impl<'d, ID: route::Identity> app::Lifecycle<'d, 'd, ID> for Rejected {
         _: bool,
         _: egress::Queue<'_, '_, 'd, 32, Shared>,
         _: &mut driver::Context<'_, 'd>,
+        _: &dope_net::wire::Identity,
     ) {
         self.mark();
     }

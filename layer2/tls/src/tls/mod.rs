@@ -62,6 +62,19 @@ impl<R: roles::Protocol> wire::Spec for Tls<R> {
     type Bootstrap = protocol::Bootstrap<R>;
     type Receive = protocol::Ingress<R>;
     type Send = protocol::Egress<R>;
+
+    fn negotiated_protocol<'a, 'w, ID: route::Identity + 'w>(
+        connection: &'a Self::Connection<'w, ID>,
+    ) -> std::task::Poll<Option<&'a [u8]>>
+    where
+        Self: 'w,
+    {
+        if connection.can_write() {
+            std::task::Poll::Ready(connection.native.alpn_protocol())
+        } else {
+            std::task::Poll::Pending
+        }
+    }
 }
 
 pub struct Tls<R: roles::Protocol = roles::Server>(marker::PhantomData<R>);

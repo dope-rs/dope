@@ -61,6 +61,10 @@ fn reuses_hello() {
             _ => None,
         }
         .expect("reuse admitted connection");
+    assert!(
+        <Tls<roles::Client> as dope::net::wire::Spec>::negotiated_protocol::<KeyTag<0>>(&wire)
+            .is_pending()
+    );
     let txn = match Policy::<roles::Client>::try_reserve::<KeyTag<0>>(
         &mut wire,
         Some(&mut send),

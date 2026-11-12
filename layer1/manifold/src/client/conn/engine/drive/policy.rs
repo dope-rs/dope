@@ -191,7 +191,7 @@ where
             };
             let reason = slot.state.reconnect(Reason::Remote).reason();
             slot.close_after();
-            let flow = State::active(slot, |active| {
+            let flow = State::active(slot, |active, _| {
                 app::Receive::eof(
                     this.app,
                     conn::Ctx::new(active, turn.reborrow().app()),

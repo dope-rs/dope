@@ -73,7 +73,7 @@ where
                     return receive::Outcome::Continue;
                 };
 
-                match State::active(slot, |active| {
+                match State::active(slot, |active, _| {
                     this.app.chunk(
                         conn::Ctx::new(active, turn.reborrow().app()),
                         egress.reborrow(),
@@ -116,7 +116,7 @@ where
             };
 
             slot.state.record_recv(driver.driver_ref().clock().now());
-            match State::active(slot, |active| {
+            match State::active(slot, |active, _| {
                 let receipt =
                     <<A::Wire as wire::Spec>::Receive as Policy<A::Wire>>::Publication::publish(
                         receipt,

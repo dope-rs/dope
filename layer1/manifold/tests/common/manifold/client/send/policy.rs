@@ -14,13 +14,19 @@ use dope_manifold::{
     service::bindings::endpoint::State,
 };
 use dope_net::link::{egress, event, pool::change::opening};
-use dope_test::harness::signals::{Gate, Progress};
+use dope_test::harness::{
+    observe::Trace,
+    signals::{Gate, Progress},
+};
 use o3::{
     base::{Call, cell::region},
     buffer::{self, hold, storage::Shared},
 };
 
-use crate::common::contract::{codec, codec::errors};
+use crate::common::{
+    contract::{codec, codec::errors},
+    manifold::client::error::Error,
+};
 
 type Owner<'life, 'd, const TAKE: bool, const REPORT: bool = true> =
     State<'life, 'd, Probe<'d>, Logic<TAKE, REPORT>, KeyTag<0>, 1>;
@@ -38,6 +44,7 @@ pub struct Probe<'d> {
     offered: Cell<u32>,
     quarantined: Cell<u32>,
     cleared: Cell<u32>,
+    errors: Trace<Error, 1>,
 }
 
 impl<'d> Probe<'d> {
@@ -52,6 +59,7 @@ impl<'d> Probe<'d> {
             offered: Cell::new(0),
             quarantined: Cell::new(0),
             cleared: Cell::new(0),
+            errors: Trace::default(),
         }
     }
 
@@ -64,6 +72,8 @@ impl<'d> Probe<'d> {
     }
 
     pub fn check<const REPORT: bool>(&self, token: &region::Token<region::Identity<'d, 1>>) {
+        let errors = self.errors.values().expect("callback observations");
+        assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(self.offered.get(), u32::from(REPORT));
         assert_eq!(self.quarantined.get(), 1);
         assert_eq!(self.cleared.get(), 3, "retirement retries then waits");
@@ -243,18 +253,22 @@ impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
     }
 
     fn reject<'e>(
-        _: &mut Owner<'life, 'd, TAKE, REPORT>,
+        owner: &mut Owner<'life, 'd, TAKE, REPORT>,
         error: errors::Truncated,
-        _: &mut Context<'_, 'e, 'd>,
+        context: &mut Context<'_, 'e, 'd>,
     ) -> response::Direct {
-        panic!("unexpected protocol input: {error:?}");
+        owner.root().errors.record(Error::Truncated(error));
+        context.request(close::Directive::cut_final(close::Reason::Protocol));
+        response::Direct::Committed
     }
 }
 
 impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
     policy::Output<'life, 'd, Probe<'d>, KeyTag<0>, 1> for Logic<TAKE, REPORT>
 {
-    fn flush() -> Option<
+    fn flush<'w, W: dope_net::wire::Spec + 'w>(
+        _: &W::Connection<'w, dope_core::driver::route::KeyTag<0>>,
+    ) -> Option<
         impl for<'a, 'c, 't, 'e> Call<(
             &'a mut Owner<'life, 'd, TAKE, REPORT>,
             &'c mut Context<'t, 'e, 'd>,
@@ -326,12 +340,12 @@ impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
     policy::Failed<'life, 'd, Probe<'d>, KeyTag<0>, 1> for Logic<TAKE, REPORT>
 {
     fn failed(
-        _: &mut Owner<'life, 'd, TAKE, REPORT>,
+        owner: &mut Owner<'life, 'd, TAKE, REPORT>,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
         error: attempt::ConnectFault,
         _: &mut driver::Context<'_, 'd>,
     ) {
-        panic!("unexpected connect failure: {error:?}");
+        owner.root().errors.record(Error::Connect(error));
     }
 }
 
@@ -339,12 +353,12 @@ impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
     policy::Exhausted<'life, 'd, Probe<'d>, KeyTag<0>, 1> for Logic<TAKE, REPORT>
 {
     fn exhaust(
-        _: &mut Owner<'life, 'd, TAKE, REPORT>,
+        owner: &mut Owner<'life, 'd, TAKE, REPORT>,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
         error: opening::Exhaustion,
         _: &mut driver::Context<'_, 'd>,
     ) {
-        panic!("unexpected admission failure: {error:?}");
+        owner.root().errors.record(Error::Exhaust(error));
     }
 }
 
@@ -397,8 +411,8 @@ impl<'life, 'd: 'life, const TAKE: bool> policy::Lifecycle<'life, 'd, Probe<'d>,
         (!TAKE).then_some(failure)
     }
 
-    fn io_fail<'e>(_: &mut Owner<'life, 'd, TAKE>, error: Errno, _: &mut Context<'_, 'e, 'd>) {
-        panic!("unexpected receive failure: {error:?}");
+    fn io_fail<'e>(owner: &mut Owner<'life, 'd, TAKE>, error: Errno, _: &mut Context<'_, 'e, 'd>) {
+        owner.root().errors.record(Error::Receive(error));
     }
 
     fn quarantine(
@@ -453,11 +467,11 @@ impl<'life, 'd: 'life> policy::Lifecycle<'life, 'd, Probe<'d>, KeyTag<0>, 1>
     type Drain = Ready;
 
     fn io_fail<'e>(
-        _: &mut Owner<'life, 'd, false, false>,
+        owner: &mut Owner<'life, 'd, false, false>,
         error: Errno,
         _: &mut Context<'_, 'e, 'd>,
     ) {
-        panic!("unexpected receive failure: {error:?}");
+        owner.root().errors.record(Error::Receive(error));
     }
 
     fn quarantine(
@@ -553,26 +567,31 @@ pub fn check_transmit<const TAKE: bool, const REPORT: bool>() {
             let hash = runtime.hash_state(health::Domain::DEFAULT);
             let peers = Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
             let run = |app: &mut dyn RuntimeCase| {
-                assert_eq!(
-                    app.try_wait(&probe, 1).expect("client connected"),
-                    fibers::Wait::Reached,
+                let connected = app.try_wait(&probe, 1);
+                assert!(
+                    matches!(connected, Ok(fibers::Wait::Reached)),
+                    "connect: {connected:?}; callbacks: {:?}",
+                    probe.errors.values(),
                 );
                 let peer = listener
                     .accept_for(scenario::TIMEOUT)
                     .expect("accept peer")
                     .expect("connected peer");
                 peer.shutdown(net::Shutdown::Write).expect("receive EOF");
-                assert_eq!(
-                    app.try_wait(&probe.eof, 1).expect("retained EOF"),
-                    fibers::Wait::Reached,
+                let eof = app.try_wait(&probe.eof, 1);
+                assert!(
+                    matches!(eof, Ok(fibers::Wait::Reached)),
+                    "EOF: {eof:?}; callbacks: {:?}",
+                    probe.errors.values(),
                 );
                 peer::Peer::try_reset(&peer).expect("reset on close");
                 drop(peer);
                 probe.send();
-                assert_eq!(
-                    app.try_wait(&probe.closed, 1)
-                        .expect("send failure retirement"),
-                    fibers::Wait::Reached,
+                let closed = app.try_wait(&probe.closed, 1);
+                assert!(
+                    matches!(closed, Ok(fibers::Wait::Reached)),
+                    "retirement: {closed:?}; callbacks: {:?}",
+                    probe.errors.values(),
                 );
             };
             let result = if REPORT {

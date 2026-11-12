@@ -385,6 +385,7 @@ impl<'w, 'd: 'w, ID: Identity> app::Lifecycle<'w, 'd, ID> for Failed {
         _: bool,
         _: egress::Queue<'_, '_, 'd, 32, Shared>,
         _: &mut driver::Context<'_, 'd>,
+        _: &Wire,
     ) {
         self.counts.prepared.set(self.counts.prepared.get() + 1);
     }

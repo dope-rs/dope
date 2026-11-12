@@ -33,6 +33,12 @@ fn inflight_receive() {
                 "inflight receive must not leave a spinning waiter"
             );
             for key in keys {
+                assert_eq!(
+                    <dope_tls::tls::Tls as dope::net::wire::Spec>::negotiated_protocol::<KeyTag<0>>(
+                        pool.inspect().get(key).expect("established peer").wire(),
+                    ),
+                    std::task::Poll::Ready(None)
+                );
                 {
                     let mut driver = scope.context();
                     assert!(matches!(

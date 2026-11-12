@@ -345,10 +345,11 @@ impl<'life, 'd: 'life, P: ?Sized, L, F, ID: Identity, const MAX: usize> session:
 where
     L: policy::Output<'life, 'd, P, ID, MAX>,
 {
-    fn flush()
-    -> Option<impl for<'a, 'c, 't, 'e> Call<policy::output::Args<'a, 'c, 't, 'e, 'd, Self, ID>>>
+    fn flush<'w, W: wire::Spec + 'w>(
+        wire: &W::Connection<'w, ID>,
+    ) -> Option<impl for<'a, 'c, 't, 'e> Call<policy::output::Args<'a, 'c, 't, 'e, 'd, Self, ID>>>
     {
-        let flush = L::flush()?;
+        let flush = L::flush::<W>(wire)?;
         Some(
             move |(owner, ctx, input): policy::output::Args<'_, '_, '_, '_, 'd, Self, ID>| {
                 flush.call((&mut owner.endpoint, ctx, input));

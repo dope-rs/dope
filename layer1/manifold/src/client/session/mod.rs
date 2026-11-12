@@ -345,8 +345,9 @@ pub trait Parser<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
 pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
     /// Prepares output and publishes input progress before send submission.
     /// An earlier send may still be in flight; its retained owners stay borrowed.
-    fn flush() -> Option<impl for<'a, 'c, 't, 'e> Call<output::Args<'a, 'c, 't, 'e, 'd, Self, ID>>>
-    {
+    fn flush<'w, W: wire::Spec + 'w>(
+        _: &W::Connection<'w, ID>,
+    ) -> Option<impl for<'a, 'c, 't, 'e> Call<output::Args<'a, 'c, 't, 'e, 'd, Self, ID>>> {
         None::<Infallible>
     }
 

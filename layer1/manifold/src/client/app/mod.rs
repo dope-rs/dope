@@ -13,7 +13,7 @@ use dope_net::{
         egress::{self, data},
         pool::{change::opening, recv::input},
     },
-    wire::{domain, open, receive::Chunk, terminal},
+    wire::{self, domain, open, receive::Chunk, terminal},
 };
 use o3::{
     base::{Call, cell::region, time::Positive},
@@ -327,6 +327,7 @@ pub trait Lifecycle<'w, 'd: 'w, ID: Identity = KeyTag<0>>: Receive<'d, ID> {
         queued: bool,
         egress: egress::Queue<'_, 'e, 'd, { client::IOV_CAP }, Self::Send>,
         driver: &mut driver::Context<'_, 'd>,
+        wire: &<Self::Wire as wire::Spec>::Connection<'w, ID>,
     );
 
     fn sent(

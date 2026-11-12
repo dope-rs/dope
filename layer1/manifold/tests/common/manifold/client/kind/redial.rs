@@ -118,7 +118,9 @@ impl<'d, 'test> Plain<'d> for Redial<'test> {
 }
 
 impl<'d, 'test> Output<'d> for Redial<'test> {
-    fn flush() -> Option<
+    fn flush<'w, W: dope_net::wire::Spec + 'w>(
+        _: &W::Connection<'w, dope_core::driver::route::KeyTag<0>>,
+    ) -> Option<
         impl for<'a, 'c, 't, 'e> Call<(
             &'a mut Self,
             &'c mut turns::Context<'t, 'e, 'd, Self::ConnState, Self::Send>,

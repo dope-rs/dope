@@ -36,6 +36,7 @@ use crate::common::{
 #[derive(Clone, Default)]
 pub struct Signals {
     pub(crate) conn: Gate,
+    pub(crate) negotiated: Gate,
     pub(crate) moved: Gate,
     pub(crate) sent: Gate,
     pub(crate) closed: Gate,
@@ -51,7 +52,7 @@ pub struct Lane {
 impl<'d> Session<'d> for Lane {
     type Codec = codec::Pending<5>;
     type Connect = Full;
-    type ConnState = ();
+    type ConnState = bool;
     type Failure = Observed;
     type Receipt = ();
     type Requests = request::Enabled;
@@ -106,6 +107,25 @@ impl<'d> Plain<'d> for Lane {
 }
 
 impl<'d> Output<'d> for Lane {
+    fn flush<'w, W: wire::Spec + 'w>(
+        wire: &W::Connection<'w, KeyTag<0>>,
+    ) -> Option<impl for<'a, 'c, 't, 'e> Call<output::Args<'a, 'c, 't, 'e, 'd, Self, KeyTag<0>>>>
+    {
+        Some(
+            move |(owner, context, input): output::Args<'_, '_, '_, '_, 'd, Self, KeyTag<0>>| {
+                if !*context.state
+                    && let std::task::Poll::Ready(Some(protocol)) =
+                        W::negotiated_protocol::<KeyTag<0>>(wire)
+                {
+                    assert_eq!(protocol, b"h2");
+                    assert_eq!(input, session::Input::Empty);
+                    *context.state = true;
+                    owner.signals.negotiated.hit();
+                }
+            },
+        )
+    }
+
     fn sent() -> impl for<'a, 't> Call<(
         &'a mut Self,
         conn::Id<'d, KeyTag<0>>,
@@ -238,7 +258,7 @@ impl<'d> Retirement<'d> for Lane {
     fn quarantine(
         &self,
         _: conn::Id<'d, KeyTag<0>>,
-        _: &mut (),
+        _: &mut Self::ConnState,
         _: Reason,
         _: &mut (
             region::Token<region::Identity<'d>>,

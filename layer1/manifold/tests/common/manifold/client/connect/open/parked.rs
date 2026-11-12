@@ -352,6 +352,7 @@ impl<'d, ID: Identity> app::Lifecycle<'d, 'd, ID> for Parked {
         _: bool,
         _: egress::Queue<'_, 'e, 'd, 32, Shared>,
         _: &mut driver::Context<'_, 'd>,
+        _: &dope_net::wire::Identity,
     ) {
         let live = self.live.get();
         if !live {

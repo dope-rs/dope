@@ -49,7 +49,9 @@ where
 pub trait Output<'life, 'd: 'life, P: ?Sized + 'life, ID: Identity, const MAX: usize>:
     protocol::Spec<'life, 'd, P, ID, MAX> + Sized
 {
-    fn flush() -> Option<
+    fn flush<'w, W: wire::Spec + 'w>(
+        _: &W::Connection<'w, ID>,
+    ) -> Option<
         impl for<'a, 'c, 't, 'e> Call<output::BoundArgs<'a, 'c, 't, 'e, 'life, 'd, P, Self, ID, MAX>>,
     > {
         None::<Infallible>

@@ -201,12 +201,13 @@ where
                 if !slot.is_connected() {
                     break 'submit;
                 }
-                let active = State::active(slot, |active| {
+                let active = State::active(slot, |active, wire| {
                     this.app.prepare(
                         conn::Ctx::new(active, turn.reborrow().app()),
                         queued,
                         egress.reborrow(),
                         driver,
+                        wire,
                     );
                 });
                 match State::poll_close(slot, this.app) {
