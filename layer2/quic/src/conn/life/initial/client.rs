@@ -28,7 +28,7 @@ impl Client {
     }
 
     pub(crate) fn try_direct<const DOMAIN: u8, B, D>(
-        self,
+        mut self,
         auth: clients::Authority,
         route: impl routing::PeerRoute,
         token: Option<life::Token>,
@@ -66,21 +66,21 @@ impl Client {
             }
         };
         let hs = hs.bind_auth(auth);
-        let Self { dcid, local, input } = self;
+        let reset = self.input.security.stateless_reset_secret.take();
         assembly::Assembly {
-            input,
+            input: &self.input,
             wire: hs,
             identities: setup::Identities {
-                local_cid: local,
-                original_dcid: dcid,
-                peer_cid: dcid,
+                local_cid: self.local,
+                original_dcid: self.dcid,
+                peer_cid: self.dcid,
                 peer_first_scid: None,
             },
             tokens: setup::Tokens::Client(token.unwrap_or_default()),
             shard,
             valid: true,
         }
-        .try_finish(&mut peer)
+        .try_finish(reset, &mut peer)
     }
 
     fn try_tls<const DOMAIN: u8>(

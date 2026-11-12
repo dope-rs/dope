@@ -2,7 +2,8 @@ use o3::{alloc::VecExt as _, buffer};
 use std::collections;
 
 use crate::{
-    conn, errors, proto, proto::recovery::numbers, proto::recovery::pmtud, runtime::routing, stream,
+    conn, errors, proto, proto::recovery::numbers, proto::recovery::pmtud, runtime::routing,
+    security::secrets, stream,
 };
 use conn::stream::Streams;
 use conn::{life::options, output, wire};
@@ -14,8 +15,8 @@ use wire::{
     tls,
 };
 
-pub(super) struct Assembly<const DOMAIN: u8> {
-    pub(super) input: options::Options,
+pub(super) struct Assembly<'a, const DOMAIN: u8> {
+    pub(super) input: &'a options::Options,
     pub(super) wire: tls::Handshake<DOMAIN>,
     pub(super) identities: setup::Identities,
     pub(super) tokens: setup::Tokens,
@@ -23,9 +24,10 @@ pub(super) struct Assembly<const DOMAIN: u8> {
     pub(super) valid: bool,
 }
 
-impl<const DOMAIN: u8> Assembly<DOMAIN> {
+impl<const DOMAIN: u8> Assembly<'_, DOMAIN> {
     pub(super) fn try_finish<B, D>(
         self,
+        reset: Option<secrets::Reset>,
         peer: &mut Option<Set>,
     ) -> Result<conn::Connection<DOMAIN, B, D>, errors::Connect>
     where
@@ -45,7 +47,7 @@ impl<const DOMAIN: u8> Assembly<DOMAIN> {
             datagrams: dgram,
             streams: opts,
             journals: logs,
-            security: crypto,
+            security: _,
         } = input;
         let tp = cfg.params();
         let timer = tp.timing();
@@ -58,7 +60,7 @@ impl<const DOMAIN: u8> Assembly<DOMAIN> {
             identities,
             tokens,
             peer_shard: shard,
-            stateless_reset_secret: crypto.stateless_reset_secret,
+            stateless_reset_secret: reset,
             options: cfg.identity(),
         });
         let egress = output::Egress::new(output::Setup {
@@ -69,7 +71,7 @@ impl<const DOMAIN: u8> Assembly<DOMAIN> {
             pending_datagrams_capacity: dgram.pending(),
             peer_address_validated: valid,
         });
-        let stream = Streams::try_new(side, strm, flow, opts).map_err(errors::Connect::Stream)?;
+        let stream = Streams::try_new(side, strm, flow, *opts).map_err(errors::Connect::Stream)?;
         let mut conn = conn::Connection(conn::Machine {
             egress,
             control: control::Pending::new(ctrl),

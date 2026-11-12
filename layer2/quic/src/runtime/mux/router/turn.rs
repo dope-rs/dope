@@ -340,7 +340,6 @@ impl<
                             .packet_cap(cfg, state.outgoing.bytes_capacity)
                             .ok_or(errors::Receive::Packet(conn::Error::PacketCeiling))?;
                         let input = init.into_inner();
-                        let cfg = cfg.copy();
                         let local = alias
                             .reserve_away(&state.binding.route, &mut state.binding.issuer)
                             .ok_or(errors::Receive::Packet(conn::Error::ConnectionIdLimit))?;

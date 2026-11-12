@@ -43,7 +43,7 @@ pub struct PooledServer<'tls, const DOMAIN: u8> {
 pub struct ConfigRef<'a>(pub(super) &'a options::Options);
 
 #[doc(hidden)]
-pub struct ServerConfig(pub(super) options::Options, pub(super) qkdf::Pair);
+pub struct ServerConfig<'a>(pub(super) &'a options::Options, pub(super) qkdf::Pair);
 
 /// Compile-time coupling of identity, routing, admission, and send ownership.
 #[doc(hidden)]
@@ -66,7 +66,7 @@ pub trait Mode<const DOMAIN: u8>: Boundary {
     fn accept<B: stream::Recv>(
         server: &Self::Server,
         ids: accept::Ids,
-        config: ServerConfig,
+        config: ServerConfig<'_>,
     ) -> Accepted<DOMAIN, B, Self::Send, Self::Session>;
 }
 
@@ -100,7 +100,7 @@ where
     fn accept<B: stream::Recv>(
         server: &Self::Server,
         ids: accept::Ids,
-        config: ServerConfig,
+        config: ServerConfig<'_>,
     ) -> Accepted<DOMAIN, B, Self::Send, Self::Session> {
         let init = initial::Acceptor::new(ids, config.0);
         let conn = init.try_owned(server.config(), Some(config.1))?;
@@ -138,7 +138,7 @@ where
     fn accept<B: stream::Recv>(
         server: &Self::Server,
         ids: accept::Ids,
-        config: ServerConfig,
+        config: ServerConfig<'_>,
     ) -> Accepted<DOMAIN, B, Self::Send, Self::Session> {
         let init = initial::Acceptor::new(ids, config.0);
         let permit = server.pool.reserve()?;

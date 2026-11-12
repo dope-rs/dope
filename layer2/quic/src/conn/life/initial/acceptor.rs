@@ -8,13 +8,13 @@ use conn::{life, wire};
 use life::{accept, initial::assembly, options};
 use wire::{path::setup, tls};
 
-pub(crate) struct Acceptor {
+pub(crate) struct Acceptor<'a> {
     ids: accept::Ids,
-    input: options::Options,
+    input: &'a options::Options,
 }
 
-impl Acceptor {
-    pub(crate) fn new(ids: accept::Ids, opts: options::Options) -> Self {
+impl<'a> Acceptor<'a> {
+    pub(crate) fn new(ids: accept::Ids, opts: &'a options::Options) -> Self {
         Self { ids, input: opts }
     }
 
@@ -74,6 +74,6 @@ impl Acceptor {
             shard: None,
             valid: ids.peer_address_validated,
         }
-        .try_finish(&mut None)
+        .try_finish(input.security.stateless_reset_secret.clone(), &mut None)
     }
 }

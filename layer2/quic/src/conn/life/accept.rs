@@ -96,7 +96,7 @@ impl<const DOMAIN: u8> Authority<DOMAIN> {
         &self,
         ids: Ids,
     ) -> Result<conn::Connection<DOMAIN, Vec<u8>, D>, errors::Connect> {
-        initial::Acceptor::new(ids, self.options.copy()).try_owned(self.config(), None)
+        initial::Acceptor::new(ids, &self.options).try_owned(self.config(), None)
     }
 
     /// Future handshakes receive a fresh session domain for this policy.
